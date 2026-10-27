@@ -1,12 +1,24 @@
 ---
 type: Component
 title: Settings window
-description: "The Settings window and its six panes (General, Spaces, Links, Profiles, Extensions, Content Blocking): what each one edits, how changes reach TabStore, the shared metrics and pane container, the height rule (natural height, capped to the screen, resizable in height only) and the layout traps met on the way."
+description: "The Settings window and its seven panes (General, Spaces, Links, Quick Detour, Profiles, Extensions, Content Blocking): what each one edits, how changes reach TabStore, the shared metrics and pane container (one scrolling body, or since TASK-211 a list and detail column fixed to the pane and scrolling on their own), the height rule (natural height, capped to the screen, resizable in height only) and the layout traps met on the way."
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T19:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T06:00:00Z }
 sources:
+  - id: task-211
+    resource: backlog:TASK-211
+    title: "Settings: keep a pane's list and details fixed; scroll only their contents (and the Quick Detour pane)"
+  - id: quick-detour-pane
+    resource: ../../Detour/Browser/Settings/QuickDetourSettingsViewController.swift
+    title: QuickDetourSettingsViewController.swift
+  - id: columns-tests
+    resource: ../../DetourTests/SettingsPaneColumnsTests.swift
+    title: SettingsPaneColumnsTests.swift
+  - id: task211-harness
+    resource: ../../docs/harness/task211-harness.patch
+    title: TASK-211 harness (columns scrolled by wheel events, frames logged, light and dark, a small screen)
   - id: task-193-5
     resource: backlog:TASK-193.5
     title: "Quick Detour: Opt-Cmd-click entry points, links from other apps, and auto-archive (the Links pane's Quick Detour section)"
@@ -66,7 +78,7 @@ sources:
 # Role
 
 `SettingsWindowController.shared` is one window with a preference-style
-toolbar and six panes. It holds no settings of its own: each pane reads and
+toolbar and seven panes. It holds no settings of its own: each pane reads and
 writes model objects directly (`TabStore`, `Profile`, `ExtensionManager`,
 `ContentBlockerManager`, `ExternalAppPermissionStore`), and persistence
 happens in those owners. The only app-wide setting, the default browser, is
@@ -89,7 +101,9 @@ the current page. See
   root view also holds a required `width == 740`, so no content can widen
   the window (a long extension name used to stretch it to 1104). Full screen
   is off (`.fullScreenNone`), tabbing disallowed.[^task-189]
-- The six view controllers are created once in `init` and kept in `panes`;
+- The seven view controllers (in toolbar order: General, Spaces, Links,
+  Quick Detour, Profiles, Extensions, Content Blocking;
+  `SettingsWindowController.paneOrder`) are created once in `init` and kept in `panes`;
   switching swaps `window.contentViewController` at the current size, then
   `fitWindow` animates to the new pane's height with the top edge fixed (moved
   only as far as needed to stay on the screen).
@@ -107,8 +121,9 @@ is a pure function returning content heights `(initial, minHeight, maxHeight)`:
   natural height; the user drags between the two bounds; past the cap the
   pane scrolls.
 - List panes (Spaces, Links, Profiles, Extensions) have a minimum of 400
-  (`listPaneMinimumHeight`); General and Content Blocking use their natural
-  height, so they are fixed. A list pane shorter than 400 is fixed at 400.
+  (`listPaneMinimumHeight`); General, Quick Detour and Content Blocking use
+  their natural height, so they are fixed. A list pane shorter than 400 is
+  fixed at 400.
 - `refit(current:from:to:)` is for a change while the pane is shown: a window
   still at its old full height follows to the new one; one the user dragged
   shorter keeps its height, clamped into the new bounds.
@@ -125,22 +140,55 @@ screens where the 400 minimum comes down to the cap).
 
 ### The pane container
 
-`SettingsPaneViewController` is the base of every pane:
+`SettingsPaneViewController` is the base of every pane. A fixed
+**description** sits at the top (`paneDescription`, wrapped at
+`740 - 2 * 20`); a pane without one (Extensions, Quick Detour) starts its
+body 20 pt below the toolbar. Below it the pane's **body** (`makeBody()`)
+takes one of two forms, chosen by `scrollsBodyAsWhole`:[^task-211]
 
-- A fixed **description** at the top (`paneDescription`, wrapped at
-  `740 - 2 * 20`), then an `NSScrollView` (flipped clip view) filling the rest.
-  A pane without a description (Extensions) starts its body 20 pt below the
-  toolbar instead.
-- The scroll view's document holds the pane's **body** (`makeBody()`), inset
-  by 20 on the sides and bottom. The document is pinned to the clip view's
-  width, and is at least as tall as the visible area (a `>=` plus a
-  priority-49 `==`), so a list column stretches to fill a window taller than
-  the body.
-- `naturalContentHeight` = margin + description + 12 + the body's
-  `fittingSize` at the clip view's width + margin. The stretch constraints
-  are switched off while measuring, so the window's current height never
-  feeds back into it. `idealBodyHeight(fittingHeight:)` lets a list pane ask
-  for the height that shows every row (rows + the 29 pt button bar).
+- **One scrolling body** (the default: General, Quick Detour, Content
+  Blocking). The body is the document of an `NSScrollView` (flipped clip
+  view) that fills the rest of the pane, inset by 20 on the sides and
+  bottom. The document is pinned to the clip view's width, and is at least
+  as tall as the visible area (a `>=` plus a priority-49 `==`). `scrollView`
+  is that scroll view.
+- **Fixed columns** (`scrollsBodyAsWhole == false`: Spaces, Links,
+  Profiles, Extensions). The body is pinned to the pane's edges, 12 below
+  the description and 20 from the sides and bottom; `scrollView` is nil.
+  The master list (its bordered box, table and +/- bar) fills the body's
+  height, and so does the detail column, which is a
+  `makeColumnScrollView(document:estimatedWidth:)`: a
+  `SettingsColumnScrollView` (flipped clip view, autohiding scroller) whose
+  document is pinned to its top and width and is as tall as its content (a
+  pane pins its content's bottom to the document with `==`; a priority-1
+  zero height defines an empty column). Each scrolls only its own contents,
+  so scrolling the details never moves the list, and the other way round.
+  When the details show another item than before (tracked by id:
+  `shownSpaceID`, `shownProfileID`, `shownExtensionID`, so a click, an add,
+  a delete, an uninstall or `showSpacesPane(selectSpaceID:)` all count) the
+  pane calls `scrollColumnsToTop()`, so they start at the top; a rebuild for
+  the same item (an extension's switch toggled, an update) keeps the
+  offset. Links has no detail column: its route list is the scrolling
+  column, and the Default with its caption are fixed below it (see
+  [Links](#links)).
+- `SettingsColumnScrollView` is the scroll view of every master list and
+  detail column. In `tile()`, a column scrolled to its end (and long enough
+  to scroll) is put back at its end after the clip view is resized, so
+  dragging the window shorter or a refit never slides the last rows out of
+  view; anywhere else the offset is kept, and content that fits stays at
+  its top. The sidebar's `SpacePageView` does the same in its
+  `layout()` (TASK-192).
+- `naturalContentHeight` = margin + description + 12 + the body's height +
+  margin. The body's height is its `fittingSize` at its width (the clip
+  view's in a scrolling body, narrower with legacy scrollers). In a column
+  pane each visible column scroll view is held, for the measurement, at the
+  full `fittingSize` of its document (measured at its clip view's width, its
+  `estimatedWidth` before the first layout), so the body's fitting height
+  counts the whole column plus anything above or below it (Extensions'
+  Uninstall button). The stretch constraints are switched off while
+  measuring, so the window's current height never feeds back into it.
+  `idealBodyHeight(fittingHeight:)` lets a list pane ask for the height
+  that shows every row (rows + the 29 pt button bar).
 - A pane calls `contentHeightDidChange()` when rows appear or disappear or a
   list's length changes (Spaces add/delete, Profiles selection and the
   rows it hides, Extensions rebuilds and selection, Content Blocking's table
@@ -196,8 +244,9 @@ section title is 12 pt semibold, like System Settings' group headers.
 |---|---|---|
 | General | 90, fixed | Detour > Settings… (Cmd+,), which opens whatever pane was last shown |
 | Spaces | 400 minimum; 628 with 19 spaces | the sidebar's add-space and edit-space actions (`showSpacesPane(selectSpaceID:)`), the Spaces menu's Manage Spaces… (`openSpacesSettings`) |
-| Links | 400 minimum (no routes; still 400 with the Quick Detour section and its warning line, window frame 488 tall, seen 2026-10-25); 743 with 5 routes (measured before the Quick Detour section); capped (1242 on a 1410 pt screen) with 21 routes, then scrolls | toolbar; Open Links Settings… in the blocked space-deletion alert (`showLinksPane(highlightingSpaceID:)`) |
-| Profiles | 630 (Private) / 709 (a normal profile) to 1218 (custom UA, warning, 15 extensions) | toolbar only |
+| Links | 400 minimum (no routes); 743 with 5 routes (measured before the Quick Detour section came and went); capped (1242 on a 1410 pt screen) with 12 routes, then the route list scrolls (177 pt of list at 400, 129 pt at a 352 pt cap, 2026-10-27) | toolbar; Open Links Settings… in the blocked space-deletion alert (`showLinksPane(highlightingSpaceID:)`) |
+| Quick Detour | 248, fixed (with the Debug build's warning line, 2026-10-27) | toolbar only |
+| Profiles | 630 (Private) / 709 (a normal profile) to 1218 (custom UA, warning, 15 extensions); 1047 for Private with 14 extensions (2026-10-27) | toolbar only |
 | Extensions | 400 (none, or one small extension) to 1092 (22 permissions, 4 hosts, 6 optional) | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
 | Content Blocking | 243, fixed | toolbar only |
 
@@ -231,24 +280,52 @@ rows can be dragged to reorder (`TabStore.moveSpace(from:to:)`).
 
 ## Links
 
-Air Traffic Control's routes and Default, one bordered list of three-line
-rows (URL, From app, Open in) with New Route above and the Default below,
-then the **Quick Detour** section (TASK-193.2): "Open Quick Detour from any
-app with" and a shortcut recorder (`ShortcutRecorderView`), a warning line
-when the shortcut is refused or another app holds it, and help text; see
-[Quick Detour](./quick-detour.md#the-settings-control). TASK-193.5 added to
-that section the Opt-Cmd-click switch ("Open links and sidebar tabs in Quick
-Detour with ⌥⌘-click"), the idle auto-close pop-up ("Close Quick Detour
-windows not used for [Never, 1 hour, 6 hours, 12 hours, 1 day]", 6 hours by
-default) with its help, and a caption pointing links from other apps to
-the routes and the Default, where Quick Detour is now an Open in target; see
-[Quick Detour](./quick-detour.md#the-settings-section).
-Not a master list with a detail column: every route is edited in place, as
-in Arc's sheet. The list box is as tall as its rows (no inner scrolling; its
-scroll view hands the wheel to the pane's), so the pane grows with the
-routes to the cap and then scrolls. The behaviour, the validation (in
+Air Traffic Control's routes and Default: "Routes" with New Route beside
+it, one bordered list of three-line rows (URL, From app, Open in), then the
+Default and its caption. Not a master list with a detail column: every route
+is edited in place, as in Arc's sheet. Since TASK-211 the list fills the
+pane's height between "Routes" and the Default, and its rows scroll inside
+it (a `SettingsColumnScrollView`, so a list scrolled to its end stays at its
+end); the Default and its caption stay at the bottom of the pane, 20 pt above
+the window's edge, at every height.[^task-211] The list asks for the height
+of all its rows at priority 250 (below the window's stay-put priority, so it
+never resizes the window but does count in the natural height) and keeps at
+least the empty list's 56 pt at priority 490. The Default and caption fit
+the 400 pt minimum with room for about one and a half routes, so the
+minimum was not raised. A highlighted route (the blocked-deletion alert) is
+scrolled into view inside the list; a highlighted Default is always in view.
+
+Until TASK-211 the list was as tall as its rows (its scroll view handed the
+wheel to the pane's) and the pane scrolled as a whole, with the Quick Detour
+section below the caption; that section is now the
+[Quick Detour pane](#quick-detour). The behaviour, the validation (in
 `LinkRouteStore`) and the choices made are on
 [link routing](./link-routing.md#the-links-pane).
+
+## Quick Detour
+
+The controls for [Quick Detour](./quick-detour.md), moved out of the Links
+pane by TASK-211 (user decision 2026-10-26: Links keeps the routes and the
+Default only). The toolbar item sits after Links, labelled
+`QuickDetour.displayName` with the SF Symbol `macwindow.on.rectangle` (a
+window over another: the launcher opens over the app in front). No master
+list, so it scrolls as one body, like General; no description and no
+section title (the toolbar names it). Top to bottom:
+
+- "[✓] Open Quick Detour from any app with" and the shortcut recorder
+  (`ShortcutRecorderView`), a warning line when the shortcut is refused or
+  not registered (a Debug build says it does not register without
+  `DETOUR_GLOBAL_HOTKEY=1`), and help text (TASK-193.2; see
+  [the Settings control](./quick-detour.md#the-settings-control)).
+- "Open links and sidebar tabs in Quick Detour with ⌥⌘-click" and its help,
+  the idle auto-close pop-up ("Close Quick Detour windows not used for
+  [Never, 1 hour, 6 hours, 12 hours, 1 day]", 6 hours by default) and its
+  help, and a caption pointing links from other apps to a route's Open in
+  or the Default "on the Links pane" (TASK-193.5; see
+  [the Settings section](./quick-detour.md#the-settings-section)).
+
+The pane retries a refused shortcut when it appears
+(`QuickDetourHotKey.retryIfFailed`) and ends a recording when it disappears.
 
 ## Profiles
 
@@ -309,12 +386,18 @@ decisions with their own switches, the install source with "Check for
 Updates" / "Reload" / "Install Now" and the banner for permissions an update
 added, and Uninstall. "Add Extension…" offers loading an unpacked extension
 or opening the Chrome Web Store. The list's rows are 28 pt. The detail
-column is one vertical stack in the pane's scroll view, as tall as its
-content: the header (icon; the name, wrapping to two lines and then
+column is one vertical stack in a column scroll view of its own (TASK-211;
+before, in the pane's scroll view, so scrolling it moved the list too), as
+tall as its content: the header (icon; the name, wrapping to two lines and then
 truncated; the version; "Settings…" at the trailing edge), the description,
 the source and update rows, the pending-permissions banner (it makes the
 column taller and squeezes nothing), Enabled, Allow in Private and its note,
-"Permissions", and Uninstall last. The permissions are a bordered group as
+"Permissions". **Uninstall Extension** is not in the column: it sits
+under it, 20 pt below the column's scroll view and level with the bottom of
+the list, so it stays in view however far the details scroll (user request
+during TASK-211; Spaces and Profiles have no comparable action at the end of
+their details, since deleting goes through the list's − button, which is
+always in view). The permissions are a bordered group as
 tall as its rows (one permission: 32 pt), or one line of text when the
 extension asks for none; there is no inner scroll view any more (it had a
 96 pt floor and put a one-line list in a 287 pt box). The behaviour behind those controls is
@@ -348,6 +431,15 @@ setting on the Profiles pane, not here.
   moment the pane is swapped in, with no animation (Content Blocking did this
   when shrinking onto it). Pin with `<=` plus a low-priority `==`
   (`bottomHug`), or let something stretch (a list column).[^task-189]
+  This is about a scrolling body, whose document is at least as tall as the
+  visible area. A column scroll view's document has no such tie to the
+  window, so a column's content pins its bottom with `==`.[^task-211]
+- **The overlay scroller of a detail column draws over its right edge.**
+  The column ends at the pane's 20 pt margin, so while it scrolls the
+  overlay scroller sits over the column's last few points (a group's
+  border); the old whole-body scroller sat in the window's margin. With
+  "always show scroll bars" the clip view narrows instead and the wrapping
+  labels re-measure.[^task-211]
 - **Bounds and animation.** Setting `contentMaxSize` below the window's
   current height (or `contentMinSize` above it) resizes the window at once.
   `fitWindow` widens the bounds to cover the current height, animates, and sets
@@ -393,6 +485,12 @@ setting on the Profiles pane, not here.
   animated resize cannot be sampled from a main-thread timer;
   `CGWindowListCopyWindowInfo` on a background thread sees every
   frame.[^survey-harness]
+- **Scroll-wheel events for a harness: leave out the gesture phases.** A
+  `CGEvent` scroll with `.began`/`.changed`/`.ended` phases, turned into an
+  `NSEvent` and handed to the hit view's `scrollWheel(with:)`, left a column
+  whose content fits overscrolled by 400 pt (the rubber band never sprang
+  back); a phase-less event (a mouse wheel's) scrolls and clamps as a person's
+  would.[^task211-harness]
 - **A shell-launched instance never becomes the key app**, so anything that
   depends on `NSApp.keyWindow` cannot be driven that way.[^layout-notes]
 - **`TabStore.updateProfile` always posts `UserAgentDidChange`.** Every
@@ -405,13 +503,27 @@ setting on the Profiles pane, not here.
 # Tests
 
 `SettingsPaneHeightTests` covers the height rule (cap, minimum, short
-screens, refit); `LinkRouteEditorTests` the Links pane's rules (target
+screens, refit); `SettingsPaneColumnsTests` the two pane forms with a fake
+list pane and the real panes (the list and the detail column filling the
+body below the description at every height from the 200 pt floor to 900,
+each scrolling without moving the other, the detail document as tall as its
+content, the natural height from the detail content or the rows and never
+from the window, a scrolling body still one scroll view, which panes take
+which form, the toolbar order with Quick Detour after Links, the Quick
+Detour pane's natural height, Links fitting the 400 pt minimum, and the end
+anchoring of `SettingsColumnScrollView`); `LinkRouteEditorTests` the Links pane's rules (target
 menus, drag destination, warnings, drafts); `ProfileSettingsLayoutTests` the Profiles sections, which
 rows show for a normal and the Private profile, and the row spacing. The panes have no dedicated UI tests; their layout is
 checked at runtime with the TASK-189 survey harness (every pane and state,
 light and dark, frames measured; pane switches, drags, the cap and a real
 second screen; uninstalling the only extension through the pane; a run with
-`-AppleShowScrollBars Always`). Their behaviour is tested through the model code they call: `TabStoreTests` and the profile and space suites,
+`-AppleShowScrollBars Always`) and the TASK-211 harness (every list pane at
+its minimum with 18 spaces, 15 profiles, 14 extensions and 12 routes:
+scroll-wheel events over the details and over the list, frames and offsets
+logged to show the other did not move, a list scrolled to its end kept there
+when the window shrinks by 50 pt, Links' Default and caption unmoved by a
+wheel over the routes or over them, a 520 pt screen capping the panes at
+352, the Quick Detour pane; light and dark). Their behaviour is tested through the model code they call: `TabStoreTests` and the profile and space suites,
 `ExternalAppPermissionTests`, `ContentBlockerWhitelistTests`,
 `ExtensionOptionsPageEntryTests`, and the extension update and permission
 suites.
@@ -428,4 +540,6 @@ suites.
 
 [^layout-notes]: Settings pane layout lessons
 [^task-189]: TASK-189
+[^task-211]: TASK-211
+[^task211-harness]: TASK-211 harness
 [^survey-harness]: TASK-189 survey harness

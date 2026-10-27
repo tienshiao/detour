@@ -1,0 +1,321 @@
+TASK-211 runtime harness: the Settings list panes with their list and detail
+column fixed and scrolling on their own, Links' route list scrolling above a
+fixed Default, the new Quick Detour pane, and Extensions' Uninstall button
+fixed below the details. Temporary code, never committed to Detour/. Gated on
+DETOUR_VERIFY_DIR; DETOUR_VERIFY_APPEARANCE light or dark; DETOUR_VERIFY_EXTS
+a folder of unpacked MV3 extensions (14 copies named "Verify Ext eNN", each
+with 12 API permissions and 3 hosts, so the detail column overflows). Data
+dir DetourVerify2110; seeds 18 spaces, 15 profiles, 12 routes once. Waits
+for 12 s of HID idle before showing Settings (which activates the app).
+Scroll-wheel events are phase-less pixel CGEvents turned into NSEvents and
+handed to the view hit at the column's middle (phased events left a column
+overscrolled). run.sh is TASK-213's with the data dir and the extensions
+folder changed (SHOOT lines served with screencapture -l, only the launched
+PID killed).
+
+    git apply docs/harness/task211-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    run.sh light; run.sh dark
+    git apply -R docs/harness/task211-harness.patch && xcodegen generate
+
+Results (2026-10-27, light and dark logs identical apart from idle waits;
+28 captures; no "Unable to simultaneously satisfy"):
+- Toolbar: General, Spaces, Links, Quick Detour, Profiles, Extensions,
+  Content Blocking. No list pane has a body scroll view.
+- At the 400 pt minimum: Spaces list 220x304 (offset max 200), details
+  460x333; Profiles list 220x289 (max 131), details 460x318 (content 965);
+  Extensions list 220x331 (max 61), details 460x316 (content 601) above
+  Uninstall (260,20 139x24, 20 pt gap). A wheel over the details scrolled
+  them (Profiles 0->400, Extensions 0->285 = end) with the list frame and
+  offset unchanged; a wheel over the list scrolled it to its end with the
+  details unchanged. Uninstall stayed at the same frame and visible with
+  the details at their end. Selecting another row put the details at 0.
+- A list scrolled to its end at min+50 stayed at its end when the window
+  shrank to the minimum (Spaces 150->200, Profiles 81->131, Extensions
+  11->61, all = max).
+- Links at 400: route list 698x177 (content 1248) between "Routes" and the
+  Default; a wheel over it scrolled 0->600 with "Routes", "Default" and the
+  caption unmoved; a wheel over the caption moved nothing; caption 20 pt
+  above the window's bottom. At its natural (capped) 1242 the list scrolls
+  to 229 at most.
+- Quick Detour: 248 pt, fixed, one scrolling body, every control laid out.
+- A 520 pt screen (screenUsableHeightOverride) caps Profiles and Links at
+  352: Profiles list 241 / details 270; Links list 129, at its end.
+- Natural heights: Spaces 600 (18 spaces), Profiles 1047 (Private with 14
+  extension switches), Extensions 685 (= 601 + 20 + 24 + margins), Links
+  1242 (cap).
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 915860d..ce5291c 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        runTask211HarnessIfRequested(wc)
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task211Harness.swift b/Detour/App/Task211Harness.swift
+new file mode 100644
+index 0000000..b8dfdea
+--- /dev/null
++++ b/Detour/App/Task211Harness.swift
+@@ -0,0 +1,256 @@
++// TEMP TASK-211 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask211HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let ap = env["DETOUR_VERIFY_APPEARANCE"] ?? "light"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(ap).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        NSApp.appearance = NSAppearance(named: ap == "dark" ? .darkAqua : .aqua)
++        let store = TabStore.shared
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func humanIdle() -> Double {
++            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
++        }
++        func awaitIdle(_ seconds: Double = 12) async {
++            var waited = 0.0
++            while humanIdle() < seconds {
++                if waited == 0 { log("waiting for the machine to be idle (idle \(Int(humanIdle())) s)") }
++                await sleep(2); waited += 2
++            }
++            if waited > 0 { log("idle again after \(Int(waited)) s") }
++        }
++        func shoot(_ name: String, _ window: NSWindow?) async {
++            guard let window else { return log("no window for \(name)") }
++            window.displayIfNeeded()
++            await sleep(0.8)
++            log("SHOOT \(ap)-\(name) \(window.windowNumber)")
++            await sleep(1.5)
++        }
++        func r(_ rect: NSRect) -> String {
++            "(\(Int(rect.minX)),\(Int(rect.minY)) \(Int(rect.width))x\(Int(rect.height)))"
++        }
++        func columnScrolls(_ v: NSView) -> [SettingsColumnScrollView] {
++            ((v as? SettingsColumnScrollView).map { [$0] } ?? []) + v.subviews.flatMap(columnScrolls)
++        }
++        func texts(_ v: NSView) -> [NSTextField] {
++            ((v as? NSTextField).map { [$0] } ?? []) + v.subviews.flatMap(texts)
++        }
++        func maxOffset(_ s: NSScrollView) -> CGFloat {
++            var probe = s.contentView.bounds; probe.origin.y = 1e7
++            return s.contentView.constrainBoundsRect(probe).origin.y
++        }
++        func describe(_ s: NSScrollView) -> String {
++            let doc = s.documentView?.frame.height ?? 0
++            return "frame\(r(s.convert(s.bounds, to: nil))) offset=\(Int(s.contentView.bounds.origin.y))/\(Int(maxOffset(s))) clipH=\(Int(s.contentView.bounds.height)) docH=\(Int(doc))"
++        }
++        /// A scroll-wheel event delivered to the view under `point` (window
++        /// coordinates), as a trackpad's would be: it travels up the
++        /// responder chain to the scroll view that takes it.
++        func wheel(_ window: NSWindow, at point: NSPoint, dy: Int32) -> String {
++            guard let content = window.contentView,
++                  let hit = content.hitTest(content.convert(point, from: nil)) else { return "no view" }
++            let screen = window.convertPoint(toScreen: point)
++            let flipped = CGPoint(x: screen.x, y: (NSScreen.screens.first?.frame.height ?? 0) - screen.y)
++            // A mouse wheel's event: no gesture phases, so no rubber-banding.
++            if let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
++                                wheel1: dy, wheel2: 0, wheel3: 0) {
++                cg.location = flipped
++                if let e = NSEvent(cgEvent: cg) { hit.scrollWheel(with: e) }
++            }
++            return String(describing: type(of: hit))
++        }
++
++        Task { @MainActor in
++            await sleep(2.5)
++            log("start \(ap)")
++            // Seed once: spaces, profiles, routes and extensions enough to overflow.
++            let home = wc.activeSpace ?? store.nonIncognitoSpaces.first!
++            let defaultProfile = home.profile!
++            if store.nonIncognitoSpaces.count < 18 {
++                for i in store.nonIncognitoSpaces.count..<18 {
++                    _ = store.addSpace(name: "Space \(i)", emoji: "🧪", colorHex: "#4A90D9", profileID: defaultProfile.id)
++                }
++            }
++            if store.profiles.count < 15 {
++                for i in store.profiles.count..<15 { _ = store.addProfile(name: "Profile \(i)") }
++            }
++            let routes = store.linkRoutes
++            if routes.routes.count < 12 {
++                let targets = store.nonIncognitoSpaces
++                for i in routes.routes.count..<12 {
++                    _ = routes.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "site\(i).example"),
++                                             target: .space(targets[i % targets.count].id), sortOrder: i))
++                }
++            }
++            if let extRoot = env["DETOUR_VERIFY_EXTS"] {
++                let dirs = (try? FileManager.default.contentsOfDirectory(atPath: extRoot))?.sorted() ?? []
++                for dir in dirs {
++                    let name = "Verify Ext \(dir)"
++                    guard !ExtensionManager.shared.extensions.contains(where: { $0.manifest.name == name }) else { continue }
++                    do { _ = try ExtensionManager.shared.install(from: URL(fileURLWithPath: extRoot).appendingPathComponent(dir)) }
++                    catch { log("install \(dir) failed: \(error)") }
++                }
++            }
++            log("seeded: spaces=\(store.nonIncognitoSpaces.count) profiles=\(store.profiles.count) routes=\(store.linkRoutes.routes.count) extensions=\(ExtensionManager.shared.extensions.count)")
++            await sleep(1.5)
++
++            await awaitIdle()
++            let swc = SettingsWindowController.shared
++            swc.showWindow(nil)
++            guard let sw = swc.window else { return log("no settings window") }
++            await sleep(1.5)
++            let chrome = sw.frame.height - sw.contentLayoutRect.height
++
++            func showPane(_ id: String) async -> SettingsPaneViewController? {
++                guard let item = sw.toolbar?.items.first(where: { $0.itemIdentifier.rawValue == id }),
++                      let action = item.action else { log("no toolbar item \(id)"); return nil }
++                NSApp.sendAction(action, to: item.target, from: item)
++                await sleep(1.2)
++                return sw.contentViewController as? SettingsPaneViewController
++            }
++            func setContentHeight(_ h: CGFloat) async {
++                let old = sw.frame
++                sw.setFrame(NSRect(x: old.minX, y: old.maxY - h - chrome, width: old.width, height: h + chrome), display: true)
++                sw.layoutIfNeeded()
++                await sleep(0.4)
++            }
++            func height() -> Int { Int(sw.contentLayoutRect.height) }
++            func bounds() -> String { "min=\(Int(sw.contentMinSize.height)) max=\(Int(sw.contentMaxSize.height))" }
++
++            // Toolbar: the new Quick Detour item next to Links.
++            log("toolbar: \(sw.toolbar?.items.map { "\($0.itemIdentifier.rawValue)[\($0.label)]" }.joined(separator: " ") ?? "-")")
++
++            for id in ["spaces", "profiles", "extensions"] {
++                guard let pane = await showPane(id) else { continue }
++                let scrolls = columnScrolls(pane.view)
++                guard let list = scrolls.first(where: { $0.documentView is NSTableView }),
++                      let detail = scrolls.first(where: { !($0.documentView is NSTableView) }) else {
++                    log("\(id): columns not found (\(scrolls.count))"); continue
++                }
++                log("\(id) natural: height=\(height()) \(bounds()) bodyScroll=\(pane.scrollView == nil ? "none" : "present")")
++                // The pane's own minimum (400).
++                await setContentHeight(sw.contentMinSize.height)
++                log("\(id) at min \(height()): list \(describe(list)) | detail \(describe(detail))")
++                let listFrame = list.convert(list.bounds, to: nil), detailFrame = detail.convert(detail.bounds, to: nil)
++                let listOffset = list.contentView.bounds.origin.y
++                func uninstall() -> String {
++                    func find(_ v: NSView) -> NSButton? {
++                        if let b = v as? NSButton, b.title == "Uninstall Extension" { return b }
++                        return v.subviews.lazy.compactMap(find).first
++                    }
++                    guard let b = find(pane.view) else { return "none" }
++                    let f = b.convert(b.bounds, to: nil)
++                    let d = detail.convert(detail.bounds, to: nil)
++                    return "\(r(f)) visible=\(!b.isHiddenOrHasHiddenAncestor && sw.contentView!.convert(sw.contentView!.bounds, to: nil).contains(f)) gapToDetails=\(Int(d.minY - f.maxY)) insideDetails=\(b.isDescendant(of: detail))"
++                }
++                if id == "extensions" { log("extensions Uninstall before scrolling: \(uninstall())") }
++                // Scroll the details with a wheel over them.
++                let overDetail = NSPoint(x: detailFrame.midX, y: detailFrame.midY)
++                let hitD = wheel(sw, at: overDetail, dy: -400)
++                await sleep(0.3)
++                log("\(id) wheel over details (hit \(hitD)): detail \(describe(detail)) | list \(describe(list)) listMoved=\(list.convert(list.bounds, to: nil) != listFrame || list.contentView.bounds.origin.y != listOffset)")
++                if id == "extensions" { log("extensions Uninstall after scrolling to the end: \(uninstall())") }
++                await shoot("\(id)-detail-scrolled", sw)
++                // Scroll the list with a wheel over it.
++                let detailOffset = detail.contentView.bounds.origin.y
++                let hitL = wheel(sw, at: NSPoint(x: listFrame.midX, y: listFrame.midY), dy: -2000)
++                await sleep(0.3)
++                log("\(id) wheel over list (hit \(hitL)): list \(describe(list)) | detail \(describe(detail)) detailMoved=\(detail.convert(detail.bounds, to: nil) != detailFrame || detail.contentView.bounds.origin.y != detailOffset)")
++                await shoot("\(id)-list-scrolled", sw)
++                // Another row selected: its details start at the top.
++                if let table = list.documentView as? NSTableView {
++                    let before = Int(detail.contentView.bounds.origin.y)
++                    let row = table.selectedRow == 1 ? 2 : 1
++                    table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
++                    await sleep(0.4)
++                    log("\(id) selected row \(row): detail offset \(before) -> \(Int(detail.contentView.bounds.origin.y)) | list \(describe(list))")
++                    table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
++                    await sleep(0.4)
++                }
++                // At the end of an overflowing list, shrink the window: the end stays in view.
++                await setContentHeight(sw.contentMinSize.height + 50)
++                list.contentView.scroll(to: NSPoint(x: 0, y: maxOffset(list))); list.reflectScrolledClipView(list.contentView)
++                log("\(id) at \(height()) list scrolled to end: \(describe(list))")
++                await setContentHeight(sw.contentMinSize.height)
++                log("\(id) shrunk by 50 to \(height()): list at end=\(abs(list.contentView.bounds.origin.y - maxOffset(list)) < 0.5) \(describe(list))")
++                // Then grow past the list's height and back.
++                let atEnd = abs(list.contentView.bounds.origin.y - maxOffset(list)) < 0.5
++                await setContentHeight(sw.contentMaxSize.height)
++                log("\(id) grown to \(height()): list at end before=\(atEnd) after=\(abs(list.contentView.bounds.origin.y - maxOffset(list)) < 0.5) \(describe(list))")
++                await setContentHeight(sw.contentMinSize.height)
++                log("\(id) shrunk to \(height()): list at end=\(abs(list.contentView.bounds.origin.y - maxOffset(list)) < 0.5) \(describe(list)) | detail \(describe(detail))")
++            }
++
++            // Links: the routes scroll in their list; the Default and its caption stay at the bottom.
++            if let pane = await showPane("links") {
++                let scrolls = columnScrolls(pane.view)
++                log("links natural: height=\(height()) \(bounds()) bodyScroll=\(pane.scrollView == nil ? "none" : "present") columns=\(scrolls.count)")
++                await setContentHeight(sw.contentMinSize.height)
++                let fixed = texts(pane.view).filter { $0.stringValue.hasPrefix("For every link") || $0.stringValue == "Default" || $0.stringValue == "Routes" }
++                func fixedFrames() -> String { fixed.map { "'\($0.stringValue.prefix(14))'\(r($0.convert($0.bounds, to: nil)))" }.joined(separator: " ") }
++                if let list = scrolls.first {
++                    let before = fixedFrames()
++                    log("links at min \(height()): list \(describe(list)) fixed: \(before)")
++                    let lf = list.convert(list.bounds, to: nil)
++                    let hit = wheel(sw, at: NSPoint(x: lf.midX, y: lf.midY), dy: -600)
++                    await sleep(0.3)
++                    log("links wheel over list (hit \(hit)): list \(describe(list)) fixed moved=\(fixedFrames() != before)")
++                    await shoot("links-min-scrolled", sw)
++                    // A wheel over the Default leaves everything in place.
++                    if let caption = fixed.first(where: { $0.stringValue.hasPrefix("For every link") }) {
++                        let cf = caption.convert(caption.bounds, to: nil)
++                        let offset = list.contentView.bounds.origin.y
++                        let hit2 = wheel(sw, at: NSPoint(x: cf.midX, y: cf.midY), dy: -300)
++                        await sleep(0.3)
++                        log("links wheel over caption (hit \(hit2)): list offset \(Int(offset)) -> \(Int(list.contentView.bounds.origin.y)) fixed moved=\(fixedFrames() != before)")
++                    }
++                    let margin = pane.view.convert(pane.view.bounds, to: nil).minY
++                    log("links caption bottom gap to window bottom: \(fixed.first(where: { $0.stringValue.hasPrefix("For every link") }).map { Int($0.convert($0.bounds, to: nil).minY - margin) } ?? -1)")
++                }
++                await setContentHeight(sw.contentMaxSize.height)
++                log("links at max \(height()): \(scrolls.first.map(describe) ?? "-") fixed: \(fixedFrames())")
++            }
++
++            // Quick Detour: its own pane, one scrolling body.
++            if let pane = await showPane("quickdetour") {
++                log("quickdetour: height=\(height()) \(bounds()) bodyScroll=\(pane.scrollView == nil ? "none" : "present")")
++                for t in texts(pane.view) where !t.isHidden && !t.stringValue.isEmpty {
++                    log("  '\(t.stringValue.prefix(40))' \(r(t.convert(t.bounds, to: nil)))")
++                }
++                await shoot("quickdetour", sw)
++            }
++
++            // A small display: the cap comes down to the screen.
++            swc.screenUsableHeightOverride = 520
++            for id in ["profiles", "links"] {
++                guard let pane = await showPane(id) else { continue }
++                await setContentHeight(sw.contentMinSize.height)
++                let scrolls = columnScrolls(pane.view)
++                log("small screen \(id): height=\(height()) \(bounds()) columns: \(scrolls.map(describe).joined(separator: " | "))")
++                await shoot("\(id)-small-screen", sw)
++            }
++            swc.screenUsableHeightOverride = nil
++
++            // Natural-height shots of each list pane.
++            for id in ["spaces", "profiles", "extensions", "links"] {
++                _ = await showPane(id)
++                await setContentHeight(sw.contentMaxSize.height)
++                await shoot("\(id)-natural", sw)
++            }
++            log("done")
++        }
++    }
++}
++#endif

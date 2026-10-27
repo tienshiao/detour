@@ -138,7 +138,7 @@ final class QuickDetourHotKey {
         registration.setSuspended(recording)
     }
 
-    /// Tries a refused shortcut again (the Links pane does when it appears).
+    /// Tries a refused shortcut again (the Quick Detour settings pane does when it appears).
     func retryIfFailed() {
         registration.retryIfFailed()
     }

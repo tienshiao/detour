@@ -34,6 +34,8 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
         TabStore.shared.profiles.filter { !$0.isIncognito || $0.id == TabStore.incognitoProfileID }
     }
     private var selectedIndex: Int = 0
+    /// The profile the detail column last showed: another one scrolls it to the top.
+    private var shownProfileID: UUID?
 
     private var selectedProfile: Profile? {
         let list = profiles
@@ -46,6 +48,7 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
     }
 
     override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }
+    override var scrollsBodyAsWhole: Bool { false }
 
     /// Tall enough to show every profile without scrolling the list.
     override func idealBodyHeight(fittingHeight: CGFloat) -> CGFloat {
@@ -65,7 +68,7 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
         let listContainer = SettingsListContainerView()
         container.addSubview(listContainer)
 
-        let scrollView = NSScrollView()
+        let scrollView = SettingsColumnScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
@@ -257,9 +260,13 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
             sectionViews[section] = view
         }
 
-        // The sections are part of the pane's body: an overflowing column
-        // scrolls with the whole pane instead of inside a scroll view of its own.
-        container.addSubview(sectionsStack)
+        // The sections scroll in a column of their own, so scrolling them
+        // leaves the profile list in place (TASK-211).
+        let detailDocument = NSView()
+        detailDocument.addSubview(sectionsStack)
+        let detailScroll = makeColumnScrollView(document: detailDocument,
+                                                estimatedWidth: SettingsMetrics.detailColumnWidth)
+        container.addSubview(detailScroll)
 
         // Layout
         NSLayoutConstraint.activate([
@@ -280,10 +287,15 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
             buttonStack.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor, constant: 4),
             buttonStack.bottomAnchor.constraint(equalTo: listContainer.bottomAnchor, constant: -2),
 
-            sectionsStack.topAnchor.constraint(equalTo: container.topAnchor),
-            sectionsStack.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: SettingsMetrics.sectionGap),
-            sectionsStack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            sectionsStack.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+            detailScroll.topAnchor.constraint(equalTo: container.topAnchor),
+            detailScroll.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: SettingsMetrics.sectionGap),
+            detailScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            detailScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+
+            sectionsStack.topAnchor.constraint(equalTo: detailDocument.topAnchor),
+            sectionsStack.leadingAnchor.constraint(equalTo: detailDocument.leadingAnchor),
+            sectionsStack.trailingAnchor.constraint(equalTo: detailDocument.trailingAnchor),
+            sectionsStack.bottomAnchor.constraint(equalTo: detailDocument.bottomAnchor),
         ])
         return container
     }
@@ -433,6 +445,11 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
 
     private func updateRightPane() {
         guard let profile = selectedProfile else { return }
+        // Another profile (picked, added or deleted) shows its details from the top.
+        if profile.id != shownProfileID {
+            shownProfileID = profile.id
+            scrollColumnsToTop()
+        }
         profileNameField.stringValue = profile.name
         profileNameField.isEditable = !profile.isIncognito
         if let index = ArchiveThreshold.allCases.firstIndex(of: profile.archiveThreshold) {

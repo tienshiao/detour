@@ -9,12 +9,16 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private static let generalID = NSToolbarItem.Identifier("general")
     private static let spacesID = NSToolbarItem.Identifier("spaces")
     private static let linksID = NSToolbarItem.Identifier("links")
+    private static let quickDetourID = NSToolbarItem.Identifier("quickdetour")
     private static let profilesID = NSToolbarItem.Identifier("profiles")
     private static let extensionsID = NSToolbarItem.Identifier("extensions")
     private static let contentBlockerID = NSToolbarItem.Identifier("contentblocker")
 
     private var panes: [NSToolbarItem.Identifier: SettingsPaneViewController] = [:]
-    private let paneOrder: [NSToolbarItem.Identifier] = [generalID, spacesID, linksID, profilesID, extensionsID, contentBlockerID]
+    /// The toolbar's panes, in order.
+    static let paneOrder: [NSToolbarItem.Identifier] = [
+        generalID, spacesID, linksID, quickDetourID, profilesID, extensionsID, contentBlockerID,
+    ]
 
     /// Replaces the height of the screen's visible frame in the height rule,
     /// so a harness can exercise the cap on a tall screen. Nil in the app.
@@ -54,6 +58,8 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
         let linksVC = LinksSettingsViewController()
         panes[Self.linksID] = linksVC
+
+        panes[Self.quickDetourID] = QuickDetourSettingsViewController()
 
         let profilesVC = ProfilesSettingsViewController()
         panes[Self.profilesID] = profilesVC
@@ -120,6 +126,11 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         case Self.linksID:
             item.label = "Links"
             item.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "Links")
+        case Self.quickDetourID:
+            // A window over another: Quick Detour opens over the app in front.
+            item.label = QuickDetour.displayName
+            item.image = NSImage(systemSymbolName: "macwindow.on.rectangle",
+                                 accessibilityDescription: QuickDetour.displayName)
         case Self.profilesID:
             item.label = "Profiles"
             item.image = NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: "Profiles")
@@ -138,15 +149,15 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        paneOrder
+        Self.paneOrder
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        paneOrder
+        Self.paneOrder
     }
 
     func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        paneOrder
+        Self.paneOrder
     }
 
     @objc private func selectPane(_ sender: NSToolbarItem) {

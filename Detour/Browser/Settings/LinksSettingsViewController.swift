@@ -9,6 +9,10 @@ import UniformTypeIdentifiers
 /// to reorder. The rules (target menus, drag destinations, warnings, drafts)
 /// live in `LinkRouteEditor.swift`; the store validates and saves, and is
 /// read by the resolver for every link, so a change applies to the next one.
+///
+/// The route list fills the pane's height under "Routes" and scrolls its
+/// own rows; the Default and its caption stay at the bottom (TASK-211, which
+/// also moved the Quick Detour controls to a pane of their own).
 final class LinksSettingsViewController: SettingsPaneViewController, NSTableViewDataSource, NSTableViewDelegate,
                                          NSTextFieldDelegate, NSMenuDelegate, TabStoreObserver {
     private let editor = LinkRouteEditor(store: TabStore.shared.linkRoutes)
@@ -41,23 +45,6 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
     private var scrollsToHighlightOnFit = false
     private var storeObserver: NSObjectProtocol?
 
-    // The Quick Detour section (TASK-193.2): the global hotkey.
-    private var hotKey: QuickDetourHotKey { .shared }
-    private var hotKeyCheckbox: NSButton!
-    private var hotKeyRecorder: ShortcutRecorderView!
-    private var hotKeyWarningIcon: NSImageView!
-    private var hotKeyWarningLabel: SettingsWrappingLabel!
-    /// The help text sits under the row, or under the warning when one shows.
-    private var hotKeyHelpBelowRow: NSLayoutConstraint!
-    private var hotKeyHelpBelowWarning: NSLayoutConstraint!
-    /// Why the recorder refused the last shortcut typed, while it records.
-    private var hotKeyRefusal: String?
-    private var hotKeyObservers: [NSObjectProtocol] = []
-    // Its other entry points and the idle auto-close (TASK-193.5).
-    private var quickDetourSettings: QuickDetourSettings { .shared }
-    private var optionCommandCheckbox: NSButton!
-    private var idleTimeoutPopUp: NSPopUpButton!
-
     private static let dragType = NSPasteboard.PasteboardType("com.detour.link-route")
     /// The list's height with no routes: one line of text.
     private static let emptyListHeight: CGFloat = 56
@@ -67,6 +54,9 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
     }
 
     override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }
+    /// The routes scroll inside their list; the Default and its caption stay
+    /// at the bottom of the pane (TASK-211).
+    override var scrollsBodyAsWhole: Bool { false }
 
     // MARK: - Building
 
@@ -84,11 +74,11 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
         let box = SettingsListContainerView()
         container.addSubview(box)
 
-        tableScroll = LinkRouteListScrollView()
+        tableScroll = SettingsColumnScrollView()
         tableScroll.translatesAutoresizingMaskIntoConstraints = false
-        tableScroll.hasVerticalScroller = false
+        tableScroll.hasVerticalScroller = true
+        tableScroll.autohidesScrollers = true
         tableScroll.hasHorizontalScroller = false
-        tableScroll.verticalScrollElasticity = .none
         tableScroll.horizontalScrollElasticity = .none
         tableScroll.borderType = .noBorder
         tableScroll.drawsBackground = false
@@ -149,17 +139,21 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
             estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin)
         container.addSubview(caption)
 
-        let quickDetourSection = makeQuickDetourSection(in: container)
-
+        // The list asks for the height of all its rows, weakly: in a window
+        // shorter than that it gives way and its rows scroll. Below the
+        // window's stay-put priority, so it never resizes the window.
         listHeight = box.heightAnchor.constraint(equalToConstant: Self.emptyListHeight)
+        listHeight.priority = .defaultLow
+        let listFloor = box.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.emptyListHeight)
+        listFloor.priority = NSLayoutConstraint.Priority(490)
         defaultBottomAtPopUp = defaultPopUp.bottomAnchor.constraint(equalTo: defaultRow.bottomAnchor,
                                                                     constant: -LinkRouteHighlightView.insetY)
         defaultBottomAtWarning = defaultWarningLabel.bottomAnchor.constraint(equalTo: defaultRow.bottomAnchor,
                                                                              constant: -LinkRouteHighlightView.insetY)
         let inset: CGFloat = 1  // inside the box's border
         NSLayoutConstraint.activate([
-            // Nothing above the list stretches: in a window taller than the
-            // pane (the 400 pt minimum) the space goes below the caption.
+            // The list takes the height the title above it and the Default
+            // below it leave: it fills the pane at every window height.
             newRouteButton.topAnchor.constraint(equalTo: container.topAnchor),
             newRouteButton.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             routesTitle.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -169,6 +163,7 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
             box.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             box.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             listHeight,
+            listFloor,
 
             tableScroll.topAnchor.constraint(equalTo: box.topAnchor, constant: inset),
             tableScroll.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: inset),
@@ -204,162 +199,9 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
             caption.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: LinkRouteHighlightView.insetX),
             caption.trailingAnchor.constraint(equalTo: container.trailingAnchor),
 
-            quickDetourSection.topAnchor.constraint(equalTo: caption.bottomAnchor, constant: SettingsMetrics.sectionGap),
-            quickDetourSection.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
-            bottomHug(quickDetourSection.bottomAnchor, container.bottomAnchor),
+            caption.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         return container
-    }
-
-    /// "Quick Detour": [✓] Open Quick Detour from any app with [⌥⌘N], a
-    /// warning line when the shortcut is refused or not registered, and the
-    /// help text; then (TASK-193.5) a switch for Opt-Cmd-click, the idle
-    /// auto-close pop-up with its help, and a caption saying links from other
-    /// apps are routed by Open in above (no switch of their own). Returned as
-    /// a guide from the title's top to the caption's bottom.
-    private func makeQuickDetourSection(in container: NSView) -> NSLayoutGuide {
-        let title = NSTextField.settingsSectionTitle(QuickDetour.displayName)
-        container.addSubview(title)
-
-        hotKeyCheckbox = NSButton(checkboxWithTitle: "Open \(QuickDetour.displayName) from any app with",
-                                  target: self, action: #selector(hotKeyCheckboxChanged))
-        hotKeyCheckbox.translatesAutoresizingMaskIntoConstraints = false
-        hotKeyCheckbox.setAccessibilityIdentifier("quickDetourHotKeyEnabled")
-        container.addSubview(hotKeyCheckbox)
-
-        hotKeyRecorder = ShortcutRecorderView()
-        hotKeyRecorder.setAccessibilityIdentifier("quickDetourHotKeyShortcut")
-        hotKeyRecorder.setAccessibilityLabel("\(QuickDetour.displayName) shortcut")
-        hotKeyRecorder.problem = { shortcut in
-            HotKeyShortcutValidation.problem(for: shortcut, menu: NSApp.mainMenu,
-                                             ownAction: #selector(AppDelegate.newQuickDetourWindow(_:)),
-                                             systemHotKeys: HotKeyShortcutValidation.currentSystemHotKeys())
-        }
-        hotKeyRecorder.onChange = { [weak self] shortcut in
-            self?.hotKey.settings.shortcut = shortcut
-        }
-        hotKeyRecorder.onRecordingChange = { [weak self] recording in
-            self?.hotKey.setRecording(recording)
-        }
-        hotKeyRecorder.onRefuse = { [weak self] message in
-            self?.hotKeyRefusal = message
-            self?.updateHotKeySection()
-        }
-        container.addSubview(hotKeyRecorder)
-
-        hotKeyWarningIcon = LinkRouteCellView.makeWarning().icon
-        hotKeyWarningLabel = SettingsWrappingLabel(wrapping: "", estimatedWidth: SettingsMetrics.windowWidth
-            - 2 * SettingsMetrics.paneMargin - LinkRouteHighlightView.insetX - LinkRouteCellView.warningIconWidth
-            - LinkRouteCellView.warningIconGap)
-        hotKeyWarningLabel.isHidden = true
-        container.addSubview(hotKeyWarningIcon)
-        container.addSubview(hotKeyWarningLabel)
-
-        let help = SettingsWrappingLabel(
-            wrapping: "The launcher opens over the app in front; Escape or a click elsewhere closes it. The same shortcut is File > New \(QuickDetour.displayName) Window while Detour is in front, also when this is off.",
-            estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin - LinkRouteHighlightView.insetX)
-        container.addSubview(help)
-
-        hotKeyHelpBelowRow = help.topAnchor.constraint(equalTo: hotKeyRecorder.bottomAnchor,
-                                                       constant: SettingsMetrics.controlToHelp)
-        hotKeyHelpBelowWarning = help.topAnchor.constraint(equalTo: hotKeyWarningLabel.bottomAnchor,
-                                                           constant: SettingsMetrics.controlToHelp)
-        let rowLeading = container.leadingAnchor
-        NSLayoutConstraint.activate([
-            title.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-
-            hotKeyRecorder.topAnchor.constraint(equalTo: title.bottomAnchor, constant: SettingsMetrics.sectionTitleToRows),
-            hotKeyCheckbox.leadingAnchor.constraint(equalTo: rowLeading, constant: LinkRouteHighlightView.insetX),
-            hotKeyCheckbox.centerYAnchor.constraint(equalTo: hotKeyRecorder.centerYAnchor),
-            hotKeyRecorder.leadingAnchor.constraint(equalTo: hotKeyCheckbox.trailingAnchor,
-                                                    constant: SettingsMetrics.labelToControl),
-            hotKeyRecorder.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
-
-            hotKeyWarningIcon.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
-            hotKeyWarningIcon.centerYAnchor.constraint(equalTo: hotKeyWarningLabel.topAnchor,
-                                                       constant: LinkRouteCellView.warningFirstLineCenter),
-            hotKeyWarningLabel.topAnchor.constraint(equalTo: hotKeyRecorder.bottomAnchor,
-                                                    constant: LinkRouteCellView.lineGap),
-            hotKeyWarningLabel.leadingAnchor.constraint(equalTo: hotKeyWarningIcon.trailingAnchor,
-                                                        constant: LinkRouteCellView.warningIconGap),
-            hotKeyWarningLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-
-            hotKeyHelpBelowRow,
-            help.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
-            help.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-        ])
-
-        // Opt-Cmd-click on a link or a sidebar tab.
-        optionCommandCheckbox = NSButton(checkboxWithTitle: "Open links and sidebar tabs in \(QuickDetour.displayName) with ⌥⌘-click",
-                                         target: self, action: #selector(optionCommandCheckboxChanged))
-        optionCommandCheckbox.translatesAutoresizingMaskIntoConstraints = false
-        optionCommandCheckbox.setAccessibilityIdentifier("quickDetourOptionCommandClick")
-        container.addSubview(optionCommandCheckbox)
-        let optionCommandHelp = SettingsWrappingLabel(
-            wrapping: "A sidebar tab opens as a copy; the tab stays where it is.",
-            estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin - LinkRouteHighlightView.insetX)
-        container.addSubview(optionCommandHelp)
-
-        // The idle auto-close.
-        let idleLabel = NSTextField(labelWithString: "Close \(QuickDetour.displayName) windows not used for")
-        idleLabel.font = .systemFont(ofSize: 13)
-        idleLabel.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(idleLabel)
-        idleTimeoutPopUp = NSPopUpButton()
-        idleTimeoutPopUp.translatesAutoresizingMaskIntoConstraints = false
-        idleTimeoutPopUp.setAccessibilityIdentifier("quickDetourIdleTimeout")
-        idleTimeoutPopUp.setAccessibilityLabel("Close \(QuickDetour.displayName) windows not used for")
-        for timeout in QuickDetourIdleTimeout.allCases {
-            idleTimeoutPopUp.addItem(withTitle: timeout.title)
-            idleTimeoutPopUp.lastItem?.representedObject = timeout.rawValue
-        }
-        idleTimeoutPopUp.target = self
-        idleTimeoutPopUp.action = #selector(idleTimeoutChanged)
-        container.addSubview(idleTimeoutPopUp)
-        let idleHelp = SettingsWrappingLabel(
-            wrapping: "They go to the archive, marked auto-closed, and reopen from there. The window in front, one playing sound and Private ones stay open.",
-            estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin - LinkRouteHighlightView.insetX)
-        container.addSubview(idleHelp)
-
-        // Links from other apps: routed, so no switch here.
-        let linksCaption = SettingsWrappingLabel(
-            wrapping: "To open links from other apps in \(QuickDetour.displayName), choose \(QuickDetour.displayName) as a route's Open in, or as the Default, above.",
-            estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin - LinkRouteHighlightView.insetX)
-        container.addSubview(linksCaption)
-
-        NSLayoutConstraint.activate([
-            optionCommandCheckbox.topAnchor.constraint(equalTo: help.bottomAnchor, constant: SettingsMetrics.rowGap),
-            optionCommandCheckbox.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
-            optionCommandCheckbox.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
-            optionCommandHelp.topAnchor.constraint(equalTo: optionCommandCheckbox.bottomAnchor,
-                                                   constant: SettingsMetrics.controlToHelp),
-            optionCommandHelp.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
-            optionCommandHelp.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-
-            idleTimeoutPopUp.topAnchor.constraint(equalTo: optionCommandHelp.bottomAnchor, constant: SettingsMetrics.rowGap),
-            idleLabel.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
-            idleLabel.firstBaselineAnchor.constraint(equalTo: idleTimeoutPopUp.firstBaselineAnchor),
-            idleTimeoutPopUp.leadingAnchor.constraint(equalTo: idleLabel.trailingAnchor,
-                                                      constant: SettingsMetrics.labelToControl),
-            idleTimeoutPopUp.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
-            idleHelp.topAnchor.constraint(equalTo: idleTimeoutPopUp.bottomAnchor, constant: SettingsMetrics.controlToHelp),
-            idleHelp.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
-            idleHelp.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-
-            linksCaption.topAnchor.constraint(equalTo: idleHelp.bottomAnchor, constant: SettingsMetrics.rowGap),
-            linksCaption.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
-            linksCaption.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-        ])
-
-        let section = NSLayoutGuide()
-        container.addLayoutGuide(section)
-        NSLayoutConstraint.activate([
-            section.topAnchor.constraint(equalTo: title.topAnchor),
-            section.bottomAnchor.constraint(equalTo: linksCaption.bottomAnchor),
-            section.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            section.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-        ])
-        return section
     }
 
     override func viewDidLoad() {
@@ -372,83 +214,20 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
             MainActor.assumeIsolated { self?.refresh() }
         }
         refresh()
-        for name in [QuickDetourHotKeySettings.didChangeNotification, QuickDetourHotKey.stateDidChangeNotification,
-                     QuickDetourSettings.didChangeNotification] {
-            hotKeyObservers.append(NotificationCenter.default.addObserver(
-                forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.updateHotKeySection() }
-            })
-        }
-        updateHotKeySection()
     }
 
     deinit {
         if let storeObserver { NotificationCenter.default.removeObserver(storeObserver) }
-        for observer in hotKeyObservers { NotificationCenter.default.removeObserver(observer) }
     }
 
     override func viewWillAppear() {
         super.viewWillAppear()
         refresh()
-        // Another app may have let go of a refused shortcut since.
-        hotKey.retryIfFailed()
-        updateHotKeySection()
-    }
-
-    // MARK: - Quick Detour
-
-    @objc private func hotKeyCheckboxChanged() {
-        hotKey.settings.isEnabled = hotKeyCheckbox.state == .on
-    }
-
-    @objc private func optionCommandCheckboxChanged() {
-        quickDetourSettings.isOptionCommandClickEnabled = optionCommandCheckbox.state == .on
-    }
-
-    @objc private func idleTimeoutChanged() {
-        guard let raw = idleTimeoutPopUp.selectedItem?.representedObject as? String,
-              let timeout = QuickDetourIdleTimeout(rawValue: raw) else { return }
-        quickDetourSettings.idleTimeout = timeout
-    }
-
-    /// The checkbox and recorder from the settings; the warning line from the
-    /// recorder's refusal, else the registration's state.
-    private func updateHotKeySection() {
-        optionCommandCheckbox.state = quickDetourSettings.isOptionCommandClickEnabled ? .on : .off
-        if let index = QuickDetourIdleTimeout.allCases.firstIndex(of: quickDetourSettings.idleTimeout) {
-            idleTimeoutPopUp.selectItem(at: index)
-        }
-        let settings = hotKey.settings
-        hotKeyCheckbox.state = settings.isEnabled ? .on : .off
-        if !hotKeyRecorder.isRecording {
-            hotKeyRecorder.shortcut = settings.shortcut
-            hotKeyRefusal = nil
-        }
-
-        var message = hotKeyRefusal ?? hotKey.availability.settingsMessage
-        if message == nil, settings.isEnabled {
-            if hotKey.state == .noShortcut {
-                message = "No shortcut: click the field and type one."
-            } else {
-                message = QuickDetourHotKey.message(for: hotKey.state)
-            }
-        }
-        let shown = hotKeyWarningLabel.isHidden ? nil : hotKeyWarningLabel.stringValue
-        LinkRouteCellView.setWarning(message, icon: hotKeyWarningIcon, label: hotKeyWarningLabel)
-        // Off first, so the two are never on together.
-        if message == nil {
-            hotKeyHelpBelowWarning.isActive = false
-            hotKeyHelpBelowRow.isActive = true
-        } else {
-            hotKeyHelpBelowRow.isActive = false
-            hotKeyHelpBelowWarning.isActive = true
-        }
-        if shown != message { contentHeightDidChange() }
     }
 
     /// A warning's line count depends on the row's width, which is the
-    /// window's less the pane's scroll bar ("always show scroll bars"):
-    /// re-measure when it changes.
+    /// list's less its own scroll bar when the routes overflow ("always show
+    /// scroll bars"): re-measure when it changes.
     override func viewDidLayout() {
         super.viewDidLayout()
         guard tableView.bounds.width > 0, abs(tableView.bounds.width - measuredRowWidth) > 0.5 else { return }
@@ -457,8 +236,6 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
 
     override func viewDidDisappear() {
         super.viewDidDisappear()
-        // The hotkey is suspended while the recorder records.
-        hotKeyRecorder.endRecording()
         guard highlightedSpaceID != nil else { return }
         highlightedSpaceID = nil
         refresh()
@@ -495,17 +272,11 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
         return isHighlighted(saved.target)
     }
 
+    /// The Default stays at the bottom of the pane, always in view; only a
+    /// route can be out of sight in the list.
     private func scrollToFirstHighlight() {
-        guard let document = scrollView.documentView else { return }
-        let rect: NSRect
-        if let index = rows.firstIndex(where: { isHighlighted($0) }) {
-            rect = tableView.convert(tableView.rect(ofRow: index), to: document)
-        } else if isHighlighted(store.defaultTarget) {
-            rect = defaultRow.convert(defaultRow.bounds, to: document)
-        } else {
-            return
-        }
-        document.scrollToVisible(rect.insetBy(dx: 0, dy: -8))
+        guard let index = rows.firstIndex(where: { isHighlighted($0) }) else { return }
+        tableView.scrollRowToVisible(index)
     }
 
     // MARK: - Refreshing
@@ -810,8 +581,7 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
         // The list has grown (the window follows a moment later): lay it out
         // so the new row exists, show it, and put the cursor in its pattern.
         view.layoutSubtreeIfNeeded()
-        let rect = tableView.convert(tableView.rect(ofRow: index), to: scrollView.documentView)
-        scrollView.documentView?.scrollToVisible(rect)
+        tableView.scrollRowToVisible(index)
         if let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: true) as? LinkRouteCellView {
             view.window?.makeFirstResponder(cell.patternField)
         }
@@ -984,14 +754,6 @@ private final class LinkRouteTableView: NSTableView {
 private final class LinkRouteTargetBox: NSObject {
     let target: LinkRouteTarget
     init(_ target: LinkRouteTarget) { self.target = target }
-}
-
-/// The route list's own scroll view never scrolls (it is as tall as its
-/// rows); scrolling over it scrolls the pane.
-private final class LinkRouteListScrollView: NSScrollView {
-    override func scrollWheel(with event: NSEvent) {
-        nextResponder?.scrollWheel(with: event)
-    }
 }
 
 /// A route row: a separator above every row but the first, and the accent

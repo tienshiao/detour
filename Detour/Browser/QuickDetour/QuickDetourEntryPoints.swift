@@ -8,7 +8,7 @@ import AppKit
 // MARK: - Settings
 
 /// How long a Quick Detour may go unused before it closes into the archive
-/// (Settings > Links > Quick Detour). Arc's Little Arc closes after 6 hours,
+/// (Settings > Quick Detour). Arc's Little Arc closes after 6 hours,
 /// the default here too (user decision 2026-10-26).
 enum QuickDetourIdleTimeout: String, CaseIterable, Equatable {
     case never

@@ -18,6 +18,8 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
     }
 
     private var selectedIndex: Int = 0
+    /// The space the detail column last showed: another one scrolls it to the top.
+    private var shownSpaceID: UUID?
 
     private var selectedSpace: Space? {
         let list = spaces
@@ -30,6 +32,7 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
     }
 
     override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }
+    override var scrollsBodyAsWhole: Bool { false }
 
     /// Tall enough to show every space without scrolling the list.
     override func idealBodyHeight(fittingHeight: CGFloat) -> CGFloat {
@@ -44,7 +47,7 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
         let listContainer = SettingsListContainerView()
         container.addSubview(listContainer)
 
-        let scrollView = NSScrollView()
+        let scrollView = SettingsColumnScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
@@ -143,10 +146,16 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
         gridView.rowAlignment = .firstBaseline
         gridView.row(at: 3).rowAlignment = .none
         gridView.row(at: 3).yPlacement = .center
-        container.addSubview(gridView)
 
-        // Layout: the list fills the body's height; the grid starts level
-        // with the list's top (defect 11) and never pushes past the bottom.
+        // The grid scrolls on its own in a window too short for it (TASK-211).
+        let detailDocument = NSView()
+        detailDocument.addSubview(gridView)
+        let detailScroll = makeColumnScrollView(document: detailDocument,
+                                                estimatedWidth: SettingsMetrics.detailColumnWidth)
+        container.addSubview(detailScroll)
+
+        // Layout: the list and the detail column fill the body's height; the
+        // grid starts level with the list's top (defect 11).
         NSLayoutConstraint.activate([
             listContainer.topAnchor.constraint(equalTo: container.topAnchor),
             listContainer.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -165,10 +174,15 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
             buttonStack.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor, constant: 4),
             buttonStack.bottomAnchor.constraint(equalTo: listContainer.bottomAnchor, constant: -2),
 
-            gridView.topAnchor.constraint(equalTo: container.topAnchor),
-            gridView.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: SettingsMetrics.sectionGap),
-            gridView.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
-            gridView.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+            detailScroll.topAnchor.constraint(equalTo: container.topAnchor),
+            detailScroll.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: SettingsMetrics.sectionGap),
+            detailScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            detailScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+
+            gridView.topAnchor.constraint(equalTo: detailDocument.topAnchor),
+            gridView.leadingAnchor.constraint(equalTo: detailDocument.leadingAnchor),
+            gridView.trailingAnchor.constraint(lessThanOrEqualTo: detailDocument.trailingAnchor),
+            gridView.bottomAnchor.constraint(equalTo: detailDocument.bottomAnchor),
         ])
         return container
     }
@@ -234,6 +248,12 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
 
     private func updateRightPane() {
         guard let space = selectedSpace else { return }
+        // Another space (picked, added, deleted, or selected from outside)
+        // shows its details from the top.
+        if space.id != shownSpaceID {
+            shownSpaceID = space.id
+            scrollColumnsToTop()
+        }
         nameField.stringValue = space.name
         emojiButton.title = space.emoji
         colorWell.color = NSColor(hex: space.colorHex) ?? .controlAccentColor

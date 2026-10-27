@@ -6,7 +6,11 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extensio
 
 class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewDataSource, NSTableViewDelegate {
     private var tableView: NSTableView!
+    /// The detail column's document, inside `detailScroll`.
     private var detailContainer: NSView!
+    private var detailScroll: NSScrollView!
+    /// Below the scrolling details, always in view (user request, TASK-211).
+    private var uninstallButton: NSButton!
     private var emptyStateView: NSView!
     private var listContainer: NSView!
     private var addButton: NSButton!
@@ -21,6 +25,8 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
     /// and `install` appends the replacement, so the index alone would jump to
     /// another extension; `reloadList` reselects by this id first.
     private var selectedExtensionID: String?
+    /// The extension the detail column last showed: another one scrolls it to the top.
+    private var shownExtensionID: String?
 
     /// Per-extension result of the last "Check for Updates" / "Reload" click,
     /// kept here because the detail view is rebuilt on every
@@ -36,6 +42,7 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
     }
 
     override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }
+    override var scrollsBodyAsWhole: Bool { false }
 
     /// Tall enough to show every extension without scrolling the list.
     override func idealBodyHeight(fittingHeight: CGFloat) -> CGFloat {
@@ -44,9 +51,10 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         return max(fittingHeight, rows + SettingsMetrics.listBarHeight)
     }
 
-    // The detail column is one stack in the pane's scroll view (TASK-189): the
-    // window takes its natural height, and a column taller than the screen
-    // scrolls with the whole pane. Nothing in it scrolls on its own.
+    // The detail column is one stack in a column scroll view of its own
+    // (TASK-211; TASK-189 made it one stack): the window takes its natural
+    // height, and a column taller than the window scrolls by itself, leaving
+    // the list in place. Nothing inside the column scrolls on its own.
     override func makeBody() -> NSView {
         let container = NSView()
 
@@ -55,7 +63,7 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         self.listContainer = listContainer
         container.addSubview(listContainer)
 
-        let scrollView = NSScrollView()
+        let scrollView = SettingsColumnScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
@@ -107,8 +115,16 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
 
         // Right side: detail area
         detailContainer = NSView()
-        detailContainer.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(detailContainer)
+        detailScroll = makeColumnScrollView(document: detailContainer,
+                                            estimatedWidth: SettingsMetrics.detailColumnWidth)
+        container.addSubview(detailScroll)
+
+        // Uninstall sits under the details, outside their scroll view, so it
+        // stays in view however far the details scroll.
+        uninstallButton = NSButton(title: "Uninstall Extension", target: self, action: #selector(uninstallClicked))
+        uninstallButton.controlSize = .regular
+        uninstallButton.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(uninstallButton)
 
         // Empty state
         emptyStateView = NSView()
@@ -151,10 +167,13 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
             buttonStack.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor, constant: 4),
             buttonStack.bottomAnchor.constraint(equalTo: listContainer.bottomAnchor, constant: -2),
 
-            detailContainer.topAnchor.constraint(equalTo: container.topAnchor),
-            detailContainer.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: SettingsMetrics.sectionGap),
-            detailContainer.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            detailContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            detailScroll.topAnchor.constraint(equalTo: container.topAnchor),
+            detailScroll.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: SettingsMetrics.sectionGap),
+            detailScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            detailScroll.bottomAnchor.constraint(equalTo: uninstallButton.topAnchor, constant: -SettingsMetrics.sectionGap),
+
+            uninstallButton.leadingAnchor.constraint(equalTo: detailScroll.leadingAnchor),
+            uninstallButton.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
             emptyStateView.topAnchor.constraint(equalTo: container.topAnchor),
             emptyStateView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -193,14 +212,16 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         if exts.isEmpty {
             emptyStateView.isHidden = false
             listContainer.isHidden = true
-            detailContainer.isHidden = true
+            detailScroll.isHidden = true
+            uninstallButton.isHidden = true
             // A hidden view still takes part in layout: the last extension's
             // detail column would keep the empty state at its height.
             detailContainer.subviews.forEach { $0.removeFromSuperview() }
         } else {
             emptyStateView.isHidden = true
             listContainer.isHidden = false
-            detailContainer.isHidden = false
+            detailScroll.isHidden = false
+            uninstallButton.isHidden = false
             if let id = wantedID, let index = exts.firstIndex(where: { $0.id == id }) {
                 selectedIndex = index
             } else {
@@ -219,6 +240,12 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         detailContainer.subviews.forEach { $0.removeFromSuperview() }
 
         guard let ext = selectedExtension else { return }
+        // Another extension (picked, or after an uninstall) shows its details
+        // from the top; the same one rebuilt keeps its offset.
+        if ext.id != shownExtensionID {
+            shownExtensionID = ext.id
+            scrollColumnsToTop()
+        }
         let column = SettingsMetrics.detailColumnWidth
         let resolvedName = ExtensionManager.shared.displayName(for: ext.id)
         let resolvedDesc = ExtensionManager.shared.displayDescription(for: ext.id)
@@ -289,13 +316,9 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         let permsHeader = NSTextField.settingsSectionTitle("Permissions")
         let permissions = makePermissionsList(for: ext)
 
-        // Uninstall button, at the end of the column
-        let uninstallButton = NSButton(title: "Uninstall Extension", target: self, action: #selector(uninstallClicked))
-        uninstallButton.controlSize = .regular
-
         var views: [NSView] = [header, descLabel, sep, updateSection]
         if let pendingBanner { views.append(pendingBanner) }
-        views += [enabledRow, privateRow, privateNote, permsHeader, permissions, uninstallButton]
+        views += [enabledRow, privateRow, privateNote, permsHeader, permissions]
         let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -305,7 +328,6 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         stack.setCustomSpacing(SettingsMetrics.controlToHelp, after: privateRow)
         stack.setCustomSpacing(SettingsMetrics.sectionGap, after: privateNote)
         stack.setCustomSpacing(SettingsMetrics.sectionTitleToRows, after: permsHeader)
-        stack.setCustomSpacing(SettingsMetrics.sectionGap, after: permissions)
         stack.translatesAutoresizingMaskIntoConstraints = false
         detailContainer.addSubview(stack)
 
@@ -315,7 +337,7 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         var fullWidth: [NSView] = [header, descLabel, sep, updateSection, privateNote, permissions]
         if let pendingBanner { fullWidth.append(pendingBanner) }
         // Nothing in the column is squeezed: it is as tall as its content, and
-        // the pane scrolls when that is taller than the window.
+        // the column scrolls when that is taller than the window.
         for view in views {
             view.setContentCompressionResistancePriority(.required, for: .vertical)
         }
@@ -323,8 +345,9 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
             stack.topAnchor.constraint(equalTo: detailContainer.topAnchor),
             stack.leadingAnchor.constraint(equalTo: detailContainer.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: detailContainer.trailingAnchor),
-            // `<=`: a required equality would cap the window (see `bottomHug`).
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: detailContainer.bottomAnchor),
+            // The column's document is as tall as the stack; it scrolls in
+            // its own scroll view, so this does not cap the window.
+            stack.bottomAnchor.constraint(equalTo: detailContainer.bottomAnchor),
         ])
         // Another extension's detail column has another natural height.
         contentHeightDidChange()

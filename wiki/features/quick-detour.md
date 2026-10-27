@@ -4,7 +4,7 @@ title: Quick Detour
 description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, what is not restored, and Open in <Space> (Cmd+O): the default space, the dropdown grouped by profile, the same tab and web view handed to a space of the same profile, a reload in another profile's, Private into a Private window, and the teardown order; and the profile pill (TASK-193.4): its menu, switching reloading the address in a new page on the other profile in the same window (a close and an open for extensions, the new profile's history scope, into and out of Private with the download question), and Open in following; and TASK-193.5's other entry points and archive: Opt-Cmd-click on a link (any frame, in a Peek, a Private page's into Private; never routed) or on a sidebar tab (a copy of its address: normal, sleeping, a split row's clicked pane, pinned, favourite), links from other apps through Air Traffic Control's Quick Detour target (the frontmost window's profile, never Private), the archive (closed-tab rows under the profile's Quick Detour scope, no migration; closed, at quit, and auto-closed; restore reopens a window with the back/forward list; Private never; profile deletion), the idle auto-close (a pure wall-clock rule, what counts as use, a periodic and wake check, a Debug override) and the Settings controls; and TASK-210's bar: the main window's site settings popover in place of the extensions list, the host and Open in dragging the window once a press moves (a first press on a background window only brings it forward), no subtitle on the dropdown, and the palette's own prompt; and TASK-213's popover layout: the host as its header, picture in picture and dev mode in a section of their own, left out of a Quick Detour's."
 tags: [window, tabs, history, privacy, extensions, palette]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T19:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T06:00:00Z }
 stale_after: 2026-12-31T00:00:00Z
 sources:
   - id: task-193
@@ -202,7 +202,7 @@ launcher from any app (and from Detour), on the screen under the pointer.
 | `HotKeyRecordingOutcome` | What a key press does in the recorder: Escape alone cancels, Delete or Forward Delete alone clears, anything else is validated and recorded or refused. |
 | `HotKeyRegistration` | The state machine: `off`, `noShortcut`, `suspended`, `registered(shortcut)`, `failed(shortcut, error)`. Holds at most one registration; lets go of the old one before registering a new one (a second registration in one process is refused); a refused one keeps the user's choice and holds nothing; `retryIfFailed`; suspended while the recorder records, resuming onto the latest setting. |
 | `QuickDetourHotKeySettings` | `QuickDetourHotKeyEnabled` and `QuickDetourHotKeyShortcut` in `UserDefaultsScope.defaults` (the standard domain in the default data directory, `<bundle id>.<data dir>` elsewhere). A cleared shortcut is an empty dictionary, so it is not mistaken for "never set". |
-| `QuickDetourHotKey` | Wires them: applies the settings on every change (at once: off unregisters, a new shortcut re-registers), retries a refused shortcut when Detour becomes active and when the Links pane appears, sets the File menu item's key equivalent, and posts `stateDidChangeNotification` for Settings. |
+| `QuickDetourHotKey` | Wires them: applies the settings on every change (at once: off unregisters, a new shortcut re-registers), retries a refused shortcut when Detour becomes active and when the Quick Detour settings pane appears, sets the File menu item's key equivalent, and posts `stateDidChangeNotification` for Settings. |
 | `CarbonHotKeyRegistrar` | `RegisterEventHotKey` with `kEventHotKeyExclusive` on the application event target, one `kEventHotKeyPressed` handler, the presses checked against its own signature and ids. |
 
 **Why Carbon `RegisterEventHotKey`.** It needs no permission: no
@@ -312,7 +312,7 @@ browser, browser).[^harness-2]
 
 ### The Settings control
 
-Settings > Links > **Quick Detour**: "[✓] Open Quick Detour from any app
+Settings > **Quick Detour** (a pane of its own since TASK-211; before, a section of the Links pane): "[✓] Open Quick Detour from any app
 with [⌃⌥⌘F12]", a warning line under the row, and help text saying the
 launcher opens over the app in front and that the same shortcut is File >
 New Quick Detour Window while Detour is in front, also when the hotkey is
@@ -953,7 +953,7 @@ dimmed); an uninstalled one's record is purged — the closed-tab rules.
 ## Idle auto-close
 
 A Quick Detour not used for the configured time closes into the archive as
-auto-closed. Settings > Links > Quick Detour: Never, 1 hour, **6 hours**
+auto-closed. Settings > Quick Detour: Never, 1 hour, **6 hours**
 (the default, as Arc's), 12 hours, 1 day.
 
 **The rule** is pure, `QuickDetour.shouldAutoClose(_:now:interval:)` over
@@ -989,7 +989,10 @@ Debug builds only.
 
 ## The Settings section
 
-Settings > Links > Quick Detour, after the hotkey row and its help:
+Settings > Quick Detour, after the hotkey row and its help. These rows and
+the hotkey's were the last section of the Links pane until TASK-211 moved
+them to a pane of their own (user decision 2026-10-26), next to Links in the
+toolbar, scrolling as one body; see [Settings](./settings.md#quick-detour).
 
 - **[✓] Open links and sidebar tabs in Quick Detour with ⌥⌘-click**
   (`QuickDetourOptionCommandClickEnabled`, on by default), with "A sidebar
@@ -1001,7 +1004,8 @@ Settings > Links > Quick Detour, after the hotkey row and its help:
   there. The window in front, one playing sound and Private ones stay
   open."
 - A caption: "To open links from other apps in Quick Detour, choose Quick
-  Detour as a route's Open in, or as the Default, above." — no switch.
+  Detour as a route's Open in, or as the Default, on the Links pane." — no
+  switch.
 
 `QuickDetourSettings` keeps them in `UserDefaultsScope.defaults` beside the
 hotkey's and posts `didChangeNotification`; both take effect at the next

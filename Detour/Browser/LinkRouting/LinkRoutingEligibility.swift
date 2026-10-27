@@ -40,7 +40,7 @@ struct InPageLinkRequest: Equatable {
     /// The page the link is on (the main frame's document).
     var pageURL: URL?
     var targetURL: URL
-    /// Settings > Links: Opt-Cmd-click opens a Quick Detour (TASK-193.5).
+    /// Settings > Quick Detour: Opt-Cmd-click opens a Quick Detour (TASK-193.5).
     /// Off, Opt-Cmd is a Cmd+click as before.
     var quickDetourClickEnabled: Bool = true
 }
