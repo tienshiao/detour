@@ -4,7 +4,7 @@ title: Content blocking
 description: "The built-in blocker: EasyList-family filter lists compiled to WKContentRuleLists, per-profile list toggles, the per-site switch implemented through a WebKit preferences SPI, and the blocked-resource counter."
 tags: [content-blocker, webkit, profiles, spi, privacy]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:52:27Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T07:40:00Z }
 sources:
   - id: manager
     resource: ../../Detour/Browser/ContentBlocker/ContentBlockerManager.swift
@@ -69,6 +69,15 @@ sources:
   - id: webkit-compiler
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebCore/contentextensions/ContentExtensionCompiler.cpp
     title: WebKit ContentExtensionCompiler.cpp (action merging, conditions)
+  - id: webkit-parser
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebCore/contentextensions/ContentExtensionParser.cpp
+    title: WebKit ContentExtensionParser.cpp (one condition per trigger, if-domain to page URL regex, lower-case ASCII domains)
+  - id: task-201
+    resource: backlog:TASK-201
+    title: Cosmetic rules with both included and excluded domains compile to a trigger WebKit rejects
+  - id: domain-list-tests
+    resource: ../../DetourTests/ContentBlockerDomainListTests.swift
+    title: ContentBlockerDomainListTests.swift
 ---
 
 # What it does
@@ -123,7 +132,8 @@ older parser output is recompiled even though nothing was fetched: see
   are both dropped and counted as skipped. ABP
   regex literals are rewritten: `{n,m}` quantifiers are expanded into repeated
   atoms and `(a|b)` disjunctions into several rules, because WebKit's rule
-  regex supports neither.
+  regex supports neither. A domain list (`a.example,~b.example##`,
+  `$domain=a|~b`) becomes one page condition; see "Domain lists".
 - **Compile** (`ContentRuleStore`) encodes the rules to JSON and hands it
   to `WKContentRuleListStore`. On a compile error it bisects the rules
   (`findBadRules`, depth capped at 20, serial) to find and strip the
@@ -134,6 +144,88 @@ older parser output is recompiled even though nothing was fetched: see
 Every successful compile posts `.contentBlockerRulesDidChange`
 (`reapplyRuleLists`); status changes post `.contentBlockerStatusDidChange` for
 the Settings pane.
+
+## Domain lists
+
+WebKit takes **one** page condition per trigger: `if-domain`,
+`unless-domain`, `if-top-url`, `unless-top-url`, `if-frame-url` or
+`unless-frame-url`; a second one fails the whole compile ("more than one
+condition", `JSONMultipleConditions`). `if-domain` and `unless-domain` are
+compiled into page URL regexes (`[a-z][a-z+.-]*:\/\/([^/]*\.)*<domain>[:/]`
+for a `*domain`), and a domain must be lower-case ASCII
+(`JSONDomainNotLowerCaseASCII`).[^webkit-parser] Until TASK-201 the parser
+gave a list with included **and** excluded domains both an `if-domain` and an
+`unless-domain`; the bad-rule search then stripped the rule.[^task-201]
+
+`EasyListParser.domainCondition(included:excluded:)` now gives one condition,
+for element hiding and `domain=` alike, with Adblock Plus's rule that the
+most specific listed domain decides for a page:
+
+| Domain list | Condition |
+|---|---|
+| none | none |
+| only included | `if-domain` |
+| only excluded | `unless-domain` |
+| an exclusion outside every included domain (`a.example,~b.example`) | dropped (a no-op): `if-domain` |
+| an included domain also excluded (`a,~a`) | that domain dropped; none left: the rule is skipped (counted) |
+| included domains none of which converts to ASCII | the rule is skipped, never widened to every page |
+| an exclusion under an included domain (`a.example,~sub.a.example`) | `if-top-url`: patterns for the included domains less the excluded subtrees |
+
+WebKit's URL regexes have no alternation and no lookahead, so "any subdomain
+but `sub`" is spelled out as several `if-top-url` entries, walking the
+exclusions as a tree of labels: the node's own host exactly, any host whose
+next label is none of the node's children, and each child that is not
+excluded itself, recursively. "Any label but `sub`" is `[^/.:s][^/.:]*`, `s`,
+`s[^/.:u][^/.:]*`, `su`, `su[^/.:b][^/.:]*`, `sub[^/.:]+`. An included domain
+under an exclusion (`a,~sub.a,in.sub.a`) is its own root, so it is back in.
+Patterns are anchored, skip any user info (`([^/@]*@)?`; a label never
+holds an `@`, so `http://x@sub.a.example/` stays excluded) and end in `[:/]`
+like WebKit's own, so `http://evil.example/?u=http://a.example/` and
+`a.example.evil.example` do not match. An exclusion with a label outside `[a-z0-9_-]` is ignored.
+
+`if-top-url` keeps the trigger otherwise the same as `if-domain`: every load
+of the page, every frame, never merged into the shared style sheet. A mixed
+element-hiding rule is domain-specific (after the `$generichide`
+exceptions), and a pattern-less cosmetic exception
+(`@@$generichide,domain=a|~sub.a`) takes the `if-top-url` as its page
+condition.
+
+**Options rejected.** An `if-domain` rule followed by an
+`ignore-previous-rules` for the excluded subdomain: it undoes every earlier
+action of the list on that page, not only this rule's (all hiding before it,
+or every block rule for the URL), so it is not a per-rule exclusion. A
+document-only trigger (`resource-type` `document`, the page's host in
+`url-filter`, `unless-domain` for the exclusion): WebKit keeps a document
+load's selectors for the new document, so it would work for hiding, but not
+for network rules, whose `url-filter` is the resource URL, and it would stop
+hiding in frames of other hosts.
+
+**How many rules this touches.** None of the four shipped lists has a mixed
+domain list (copies of 2026-10-26: 0 element-hiding and 0 `domain=` rules
+with both kinds), and the parser's output for them is unchanged apart from
+the two rules below. Bad rules stripped per list, before and after, found by
+bisecting each list through `WKContentRuleListStore` with a standalone
+tool:[^task-201]
+
+| List | Parsed | Stripped before | After |
+|---|---|---|---|
+| `easylist` | 71,316 | 0 | 0 |
+| `easyprivacy` | 56,310 | 0 | 0 |
+| `easylist-cookie` | 25,079 | 2 | 0 |
+| `urlhaus-filter` | 102,775 | 0 | 0 |
+
+`easylist-cookie`'s two were not mixed lists: their domain lists held
+internationalised domains (`przesył-energii.pl`, `wanderwege-graubünden.ch`),
+which `sanitizeDomain` turned into `przesy%C5%82-energii.pl` with
+`URLComponents.percentEncodedHost` (percent-encoding, upper-case hex). It now
+uses `encodedHost`, which is punycode (`xn--przesy-energii-lnc.pl`); a host
+IDNA cannot encode (`xn--ü.de`) still comes back percent-encoded and is left
+out. With the
+fix the app compiles all four lists whole ("Active" equals "In List"), and a
+list carrying `lvh.me,~sub.lvh.me##.t201-ad` and
+`/t201-ad.js$domain=lvh.me|~sub.lvh.me` hid and blocked on lvh.me and
+www.lvh.me and did neither on sub.lvh.me and x.sub.lvh.me
+(`docs/harness/task201-harness.patch`).[^task-201]
 
 ## Lists over the rule cap
 
@@ -176,7 +268,7 @@ No list is near the cap. Parser output for the lists as fetched on
 |---|---|---|---|
 | `easylist` | 75,661 | 75,661 | 50.4% |
 | `easyprivacy` | 56,158 | 56,158 | 37.4% |
-| `easylist-cookie` | 25,010 | 25,008 (2 stripped as invalid) | 16.7% |
+| `easylist-cookie` | 25,010 | 25,008 (2 stripped as invalid, fixed by TASK-201: see "Domain lists") | 16.7% |
 | `urlhaus-filter` | 9,605 | 9,605 | 6.4% |
 
 ### What a chunk holds
@@ -344,7 +436,8 @@ in a web view by `ContentBlockerExceptionTests`:
 - A rule with a condition (`if-domain`, `unless-domain`, `if-top-url`, ...)
   is never merged: each is its own action, evaluated on every load, and its
   condition patterns are compiled per rule. `if-domain` and `unless-domain`
-  are compiled into top-URL patterns; a trigger takes one condition.
+  are compiled into top-URL patterns; a trigger takes one condition (see
+  "Domain lists").
 
 ## How the parser maps `@@` options (TASK-199)
 
@@ -438,7 +531,7 @@ A compiled rule list in WebKit's store is reused at launch, and a refresh
 only recompiles when the list text changed (an unchanged list answers 304),
 so a parser fix would never reach an existing install. Every successful
 compile records `ContentBlocker.<id>.rulesFormat` =
-`EasyListParser.rulesFormatVersion` (2 since TASK-199); at launch a list
+`EasyListParser.rulesFormatVersion` (2 since TASK-199, 3 since TASK-201); at launch a list
 whose recorded format differs, or is missing (every install before
 TASK-199), is recompiled from the cached text, and the lists found stay
 attached until the new ones replace them
@@ -506,7 +599,8 @@ Order is kept in two places:
   of the same list (`waitingCompiles`) and starts it once that one has
   completed, bad-rule search included. Without this, a compile still
   searching for bad rules recorded its list over a later compile that
-  finished first (`easylist-cookie` searches on every compile: 2 bad rules).
+  finished first (`easylist-cookie` searched on every compile for its 2
+  bad rules until TASK-201 fixed them).
   Different lists compile independently; the work queue is serial, so the
   chunks of a list reach WebKit in order. (WebKit also fixed parallel
   compiles of one identifier failing, in 2025-07.)
@@ -618,6 +712,18 @@ EasyPrivacy cannot un-block something EasyList blocks.
   `$generichide`, `$elemhide`, `$document`, and an unexcepted host) checking
   the blocked-load callback and the computed `display` of a generic and a
   specific hidden element, with a third-party image on the page.
+- `ContentBlockerDomainListTests` - `domainCondition` (exclusions outside
+  the included domains dropped, an included domain excluded again, the
+  `if-top-url` patterns matched against URLs on and off the included domain:
+  near-miss labels, deeper exclusions, an included domain under an
+  exclusion, query-string and suffix lookalikes), the parser's output for
+  element hiding, `domain=` blocks and exceptions and a pattern-less
+  `$generichide` (one condition, the right section, evaluated with
+  `RuleListEvaluator`), punycode for internationalised domains, and every
+  such rule compiled one by one through a real `WKContentRuleListStore`.
+  `ContentBlockerExceptionTests` adds two web view tests: a mixed list
+  compiles whole (no rule stripped) and hides and blocks on a.example and
+  www.a.example, not on sub.a.example and x.sub.a.example.
 - `ContentRuleStoreThreadingTests` - encoding of every chunk, every bad-rule
   probe and the cleaned chunk off the main queue (an injected encoder records
   the thread), the default encoding equal to the JSON given to WebKit before
@@ -653,6 +759,8 @@ EasyPrivacy cannot un-block something EasyList blocks.
 [^task-155]: In a split filter list an exception in a later chunk than its block rule does not apply
 [^task-199]: $generichide / $elemhide exceptions compile to ignore-previous-rules and unblock all loads on those hosts
 [^task-200]: Serialise block-list rules to JSON and search for bad rules off the main thread
+[^task-201]: Cosmetic rules with both included and excluded domains compile to a trigger WebKit rejects
+[^webkit-parser]: WebKit ContentExtensionParser.cpp (one condition per trigger, if-domain to page URL regex, lower-case ASCII domains)
 [^webkit-rule-list-store]: WebKit APIContentRuleListStore.cpp (main-thread asserts, JSON parsed on main, work queue per store path)
 [^webkit-backend]: WebKit ContentExtensionsBackend.cpp (per-list evaluation, global style sheet gate)
 [^webkit-compiler]: WebKit ContentExtensionCompiler.cpp (action merging, conditions)

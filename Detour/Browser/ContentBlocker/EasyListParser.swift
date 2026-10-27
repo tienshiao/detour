@@ -11,7 +11,12 @@ class EasyListParser {
     /// `$elemhide` exceptions are page-wide and come before the block rules;
     /// `$document` adds a page-wide allowlist; `$important` block rules come
     /// last; `$badfilter` rules and the rules they name are left out.
-    static let rulesFormatVersion = 2
+    ///
+    /// 3 (TASK-201): a domain list with included and excluded domains gets
+    /// one page condition (`DomainCondition`), not an `if-domain` plus an
+    /// `unless-domain` WebKit rejects; internationalised domains are punycode,
+    /// not percent-encoded.
+    static let rulesFormatVersion = 3
 
     struct ParseResult {
         let rules: [[String: Any]]
@@ -93,7 +98,9 @@ class EasyListParser {
         // Element hiding rules: ##.class, ##[attr], domain##selector
         if let hashRange = line.range(of: "##") {
             guard let rule = parseElementHidingRule(line, separatorRange: hashRange) else { return [] }
-            let isGeneric = (rule["trigger"] as? [String: Any])?["if-domain"] == nil
+            // Generic: no included domain (`##sel`, `~domain##sel`).
+            let trigger = rule["trigger"] as? [String: Any]
+            let isGeneric = trigger?["if-domain"] == nil && trigger?["if-top-url"] == nil
             return [(isGeneric ? .genericHiding : .specificHiding, rule)]
         }
 
@@ -124,6 +131,182 @@ class EasyListParser {
         return kept.isEmpty ? pattern : pattern + "$" + kept.joined(separator: ",")
     }
 
+    // MARK: - Domain lists
+
+    /// The page condition of a rule's domain list (`a.example,~b.example##`,
+    /// `$domain=a.example|~b.example`). WebKit takes **one** condition per
+    /// trigger and rejects a rule with both `if-domain` and `unless-domain`
+    /// (TASK-201), so a list with both kinds is resolved here.
+    enum DomainCondition: Equatable {
+        /// No domains: the rule applies on every page.
+        case everyPage
+        /// `*domain` entries: these domains and their subdomains.
+        case ifDomain([String])
+        /// `*domain` entries: every page except these domains and their subdomains.
+        case unlessDomain([String])
+        /// Page URL patterns, for included domains with excluded subdomains.
+        case ifTopURL([String])
+        /// Every included domain is excluded again: the rule applies nowhere.
+        case noPage
+    }
+
+    /// Adblock Plus semantics: for a page, the most specific listed domain
+    /// (the page's host or its nearest listed parent) decides. So an
+    /// exclusion outside every included domain changes nothing and is
+    /// dropped, an included domain excluded as well is dropped, and an
+    /// included domain under an exclusion is back in. Only an exclusion under
+    /// an included domain needs more than `if-domain`: the condition is then
+    /// `if-top-url`, with patterns matching each included domain's pages less
+    /// the excluded subtrees (`topURLPatterns`).
+    ///
+    /// Domains are lower-case ASCII, without the `~` and without a `*` prefix.
+    static func domainCondition(included: [String], excluded: [String]) -> DomainCondition {
+        guard !included.isEmpty else {
+            return excluded.isEmpty ? .everyPage : .unlessDomain(excluded.map { "*" + $0 })
+        }
+        // Sets: `domain=` lists run to hundreds of entries.
+        let excludedSet = Set(excluded)
+        var seenRoots = Set<String>()
+        let roots = included.filter { !excludedSet.contains($0) && seenRoots.insert($0).inserted }
+        guard !roots.isEmpty else { return .noPage }
+
+        // The exclusions under each root, as labels relative to it, nearest first
+        // (`x.sub.a.example` under `a.example` is ["sub", "x"]).
+        let exclusionsByRoot = roots.map { root in
+            excluded.compactMap { domain -> [String]? in
+                guard domain.hasSuffix("." + root) else { return nil }
+                let labels = domain.dropLast(root.count + 1).split(separator: ".", omittingEmptySubsequences: false)
+                guard labels.allSatisfy(isPlainLabel) else { return nil }
+                return labels.reversed().map(String.init)
+            }
+        }
+        guard exclusionsByRoot.contains(where: { !$0.isEmpty }) else {
+            return .ifDomain(roots.map { "*" + $0 })
+        }
+        return .ifTopURL(zip(roots, exclusionsByRoot).flatMap { root, exclusions in
+            topURLPatterns(for: root, excluding: exclusions)
+        })
+    }
+
+    /// The start of every page URL pattern: WebKit's own scheme part for
+    /// `if-domain`, anchored, then any user info (`user:pass@`), so the
+    /// host patterns never see an `@`.
+    private static let pageURLStart = "^[a-z][a-z+.-]*:\\/\\/([^/@]*@)?"
+    /// Any characters of a host label (no `@`, which would let user info
+    /// pass for a label: `http://x@sub.a.example/`).
+    private static let labelCharacters = "[^/.:@]"
+
+    /// A label an exclusion pattern can be built from: letters, digits, `-`
+    /// and `_` (the characters a character class can take as they are).
+    private static func isPlainLabel(_ label: Substring) -> Bool {
+        !label.isEmpty && label.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+    }
+
+    /// Patterns for the pages of `root` and its subdomains, less the excluded
+    /// subtrees (`exclusions`: label paths relative to `root`, nearest label
+    /// first). WebKit's URL regexes have no alternation and no lookahead, so
+    /// "any label but these" is spelled out as several patterns (one list
+    /// entry each), walking the exclusions as a tree of labels:
+    ///
+    /// - at each kept node, its own host (`sub.a.example` exactly);
+    /// - any host whose next label is none of the node's children
+    ///   (`labelPatterns(excluding:)`);
+    /// - the children that are not excluded themselves, recursively.
+    private static func topURLPatterns(for root: String, excluding exclusions: [[String]]) -> [String] {
+        var patterns: [String] = []
+        func walk(suffix: String, exclusions: [[String]]) {
+            // An empty path is the node itself, excluded: nothing below it is kept.
+            guard !exclusions.contains(where: \.isEmpty) else { return }
+            guard !exclusions.isEmpty else {
+                // Nothing excluded below: the domain and all its subdomains.
+                patterns.append(pageURLStart + "([^/]*\\.)*" + suffix + "[:/]")
+                return
+            }
+            patterns.append(pageURLStart + suffix + "[:/]")
+            let children = exclusions.map { $0[0] }
+            for label in labelPatterns(excluding: Set(children)) {
+                patterns.append(pageURLStart + "([^/]*\\.)*" + label + "\\." + suffix + "[:/]")
+            }
+            var seen = Set<String>()
+            for child in children where seen.insert(child).inserted {
+                walk(suffix: child + "\\." + suffix,
+                     exclusions: exclusions.filter { $0[0] == child }.map { Array($0.dropFirst()) })
+            }
+        }
+        walk(suffix: escapedDomain(root), exclusions: exclusions)
+        return patterns
+    }
+
+    /// Patterns that together match any host label except those in `labels`
+    /// (plain labels only, see `isPlainLabel`): `sub` gives `[^/.:@s][^/.:@]*`,
+    /// `s`, `s[^/.:@u][^/.:@]*`, `su`, `su[^/.:@b][^/.:@]*`, `sub[^/.:@]+`.
+    private static func labelPatterns(excluding labels: Set<String>) -> [String] {
+        var patterns: [String] = []
+        func walk(prefix: String, rests: [Substring]) {
+            if !prefix.isEmpty && !rests.contains(where: \.isEmpty) {
+                patterns.append(prefix)
+            }
+            // `-` last in the class, where it is a literal.
+            let next = Set(rests.compactMap(\.first)).sorted { a, b in a == "-" ? false : b == "-" ? true : a < b }
+            if next.isEmpty {
+                patterns.append(prefix + labelCharacters + "+")
+            } else {
+                patterns.append(prefix + "[^/.:@" + String(next) + "]" + labelCharacters + "*")
+            }
+            for character in next {
+                walk(prefix: prefix + String(character),
+                     rests: rests.filter { $0.first == character }.map { $0.dropFirst() })
+            }
+        }
+        walk(prefix: "", rests: labels.map { Substring($0) })
+        return patterns
+    }
+
+    /// A domain as a literal in a URL pattern, escaped the way WebKit escapes
+    /// an `if-domain` entry (so a `*` stays a literal there too).
+    private static func escapedDomain(_ domain: String) -> String {
+        var result = ""
+        for character in domain {
+            if "\\{}[].?*$+()|^".contains(character) { result.append("\\") }
+            result.append(character)
+        }
+        return result
+    }
+
+    /// Sets the trigger's page condition. False when the rule applies on no page.
+    private func applyDomains(_ entries: [String], to trigger: inout [String: Any]) -> Bool {
+        switch domainCondition(ofEntries: entries) {
+        case .everyPage: break
+        case .ifDomain(let domains): trigger["if-domain"] = domains
+        case .unlessDomain(let domains): trigger["unless-domain"] = domains
+        case .ifTopURL(let patterns): trigger["if-top-url"] = patterns
+        case .noPage: return false
+        }
+        return true
+    }
+
+    /// The page condition of a raw domain list (`a.example`, `~b.example`
+    /// entries), sanitised; entries that do not sanitise are left out. A list
+    /// that names included domains none of which sanitises applies on no
+    /// page, never on every page.
+    private func domainCondition(ofEntries entries: [String]) -> DomainCondition {
+        var included: [String] = []
+        var excluded: [String] = []
+        var namesIncluded = false
+        for entry in entries {
+            if entry.hasPrefix("~") {
+                guard let domain = sanitizeDomain(String(entry.dropFirst())), !domain.isEmpty else { continue }
+                excluded.append(domain)
+            } else {
+                namesIncluded = namesIncluded || !entry.isEmpty
+                guard let domain = sanitizeDomain(entry), !domain.isEmpty else { continue }
+                included.append(domain)
+            }
+        }
+        if namesIncluded && included.isEmpty { return .noPage }
+        return Self.domainCondition(included: included, excluded: excluded)
+    }
+
     // MARK: - Element Hiding
 
     private func parseElementHidingRule(_ line: String, separatorRange: Range<String.Index>) -> [String: Any]? {
@@ -134,20 +317,7 @@ class EasyListParser {
         var trigger: [String: Any] = ["url-filter": ".*"]
 
         if !domainPart.isEmpty {
-            let domains = domainPart.split(separator: ",").map(String.init)
-            var ifDomains: [String] = []
-            var unlessDomains: [String] = []
-            for domain in domains {
-                if domain.hasPrefix("~") {
-                    guard let d = sanitizeDomain(String(domain.dropFirst())), !d.isEmpty else { continue }
-                    unlessDomains.append("*\(d)")
-                } else {
-                    guard let d = sanitizeDomain(domain), !d.isEmpty else { continue }
-                    ifDomains.append("*\(d)")
-                }
-            }
-            if !ifDomains.isEmpty { trigger["if-domain"] = ifDomains }
-            if !unlessDomains.isEmpty { trigger["unless-domain"] = unlessDomains }
+            guard applyDomains(domainPart.split(separator: ",").map(String.init), to: &trigger) else { return nil }
         }
 
         return [
@@ -217,8 +387,8 @@ class EasyListParser {
     private func networkExceptionRules(_ line: String) -> [[String: Any]] {
         let urlFilters = convertPatternToRegexes(line)
         guard !urlFilters.isEmpty else { return [] }
-        return urlFilters.map { urlFilter in
-            let (trigger, _) = buildTrigger(from: line, urlFilter: urlFilter)
+        return urlFilters.compactMap { urlFilter in
+            guard let trigger = buildTrigger(from: line, urlFilter: urlFilter) else { return nil }
             return [
                 "trigger": trigger,
                 "action": ["type": "ignore-previous-rules"]
@@ -239,9 +409,16 @@ class EasyListParser {
         let pattern = patternPart(of: line)
         var trigger: [String: Any] = ["url-filter": ".*"]
         if pattern.isEmpty || pattern == "*" {
-            let (domainTrigger, _) = buildTrigger(from: line, urlFilter: ".*")
-            guard let domains = domainTrigger["if-domain"] as? [String], !domains.isEmpty else { return nil }
-            trigger["if-domain"] = domains
+            // The domains it names: `if-domain`, or `if-top-url` for included
+            // domains with excluded subdomains. Only exclusions name no page.
+            let entries = optionTokens(in: line)
+                .filter { $0.hasPrefix("domain=") }
+                .flatMap { $0.dropFirst("domain=".count).split(separator: "|").map(String.init) }
+            switch domainCondition(ofEntries: entries) {
+            case .ifDomain(let domains): trigger["if-domain"] = domains
+            case .ifTopURL(let patterns): trigger["if-top-url"] = patterns
+            case .everyPage, .unlessDomain, .noPage: return nil
+            }
         } else {
             let pageFilters = convertPatternToRegexes(line)
             guard !pageFilters.isEmpty else { return nil }
@@ -278,8 +455,8 @@ class EasyListParser {
             return []
         }
 
-        return urlFilters.map { urlFilter in
-            let (trigger, _) = buildTrigger(from: line, urlFilter: urlFilter)
+        return urlFilters.compactMap { urlFilter in
+            guard let trigger = buildTrigger(from: line, urlFilter: urlFilter) else { return nil }
             return [
                 "trigger": trigger,
                 "action": ["type": "block"]
@@ -289,7 +466,10 @@ class EasyListParser {
 
     // MARK: - Pattern Conversion
 
-    private func buildTrigger(from line: String, urlFilter: String) -> ([String: Any], [String]) {
+    /// The trigger of a network rule for one of its URL filters. Nil when its
+    /// `domain=` list leaves no page (every included domain excluded again,
+    /// or none sanitises).
+    private func buildTrigger(from line: String, urlFilter: String) -> [String: Any]? {
         var trigger: [String: Any] = ["url-filter": urlFilter]
         var options: [String] = []
 
@@ -304,8 +484,7 @@ class EasyListParser {
         }
 
         // Process domain options
-        var ifDomains: [String] = []
-        var unlessDomains: [String] = []
+        var domainEntries: [String] = []
         var resourceTypes: [String] = []
         var excludeResourceTypes: [String] = []
         var thirdParty: Bool?
@@ -316,15 +495,7 @@ class EasyListParser {
 
             if lower.hasPrefix("domain=") {
                 let domainList = String(opt.dropFirst("domain=".count))
-                for domain in domainList.split(separator: "|").map(String.init) {
-                    if domain.hasPrefix("~") {
-                        guard let d = sanitizeDomain(String(domain.dropFirst())), !d.isEmpty else { continue }
-                        unlessDomains.append("*\(d)")
-                    } else {
-                        guard let d = sanitizeDomain(domain), !d.isEmpty else { continue }
-                        ifDomains.append("*\(d)")
-                    }
-                }
+                domainEntries += domainList.split(separator: "|").map(String.init)
             } else if lower == "third-party" {
                 thirdParty = true
             } else if lower == "~third-party" {
@@ -338,8 +509,7 @@ class EasyListParser {
             }
         }
 
-        if !ifDomains.isEmpty { trigger["if-domain"] = ifDomains }
-        if !unlessDomains.isEmpty { trigger["unless-domain"] = unlessDomains }
+        guard applyDomains(domainEntries, to: &trigger) else { return nil }
         if !resourceTypes.isEmpty { trigger["resource-type"] = resourceTypes }
         if !excludeResourceTypes.isEmpty && resourceTypes.isEmpty {
             // Compute allowed types as all minus excluded
@@ -357,7 +527,7 @@ class EasyListParser {
             trigger["url-filter-is-case-sensitive"] = false
         }
 
-        return (trigger, options)
+        return trigger
     }
 
     private func findOptionSeparator(in line: String) -> String.Index? {
@@ -552,7 +722,9 @@ class EasyListParser {
         // Convert non-ASCII domain to punycode via URL host resolution
         var components = URLComponents()
         components.host = d
-        if let ascii = components.percentEncodedHost, ascii.allSatisfy({ $0.isASCII }) {
+        // `encodedHost` falls back to percent-encoding (upper-case hex, which
+        // WebKit rejects) for a host IDNA cannot encode (`xn--ü.de`).
+        if let ascii = components.encodedHost, ascii.allSatisfy({ $0.isASCII }), !ascii.contains("%") {
             return ascii
         }
         return nil

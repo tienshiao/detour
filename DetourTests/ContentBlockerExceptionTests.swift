@@ -342,6 +342,8 @@ final class ContentBlockerExceptionTests: XCTestCase {
 
     func testACompiledListIsReusedOnlyWhenItsFormatIsCurrent() {
         XCTAssertGreaterThanOrEqual(EasyListParser.rulesFormatVersion, 2, "TASK-199 changed the compiled output")
+        XCTAssertGreaterThanOrEqual(EasyListParser.rulesFormatVersion, 3,
+                                    "TASK-201 changed mixed domain lists and internationalised domains")
         XCTAssertTrue(ContentBlockerManager.shouldReuseCompiledList(recordedFormat: EasyListParser.rulesFormatVersion))
         XCTAssertFalse(ContentBlockerManager.shouldReuseCompiledList(recordedFormat: nil),
                        "a list compiled before the format was recorded")
@@ -378,6 +380,10 @@ final class ContentBlockerExceptionTests: XCTestCase {
     """
 
     private func compiledLists(_ text: String) async throws -> [WKContentRuleList] {
+        try await compiledStore(text).lists
+    }
+
+    private func compiledStore(_ text: String) async throws -> (store: ContentRuleStore, lists: [WKContentRuleList]) {
         let storage = ContentBlockerStorage(
             ruleListStore: WKContentRuleListStore(url: directory),
             filterListCacheDirectory: directory,
@@ -387,7 +393,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
             store.compile(identifier: "easylist", rules: rules(text)) { continuation.resume(returning: $0) }
         }
         XCTAssertEqual(lists.count, 1)
-        return lists
+        return (store, lists)
     }
 
     private struct PageResult {
@@ -477,6 +483,40 @@ final class ContentBlockerExceptionTests: XCTestCase {
         XCTAssertNotEqual(result.specificDisplay, "none")
     }
 
+    // MARK: - Mixed included and excluded domains (TASK-201)
+
+    /// `a.example,~sub.a.example##sel` and `$domain=a.example|~sub.a.example`
+    /// used to carry two page conditions, which WebKit rejects; the list's
+    /// bad-rule search then stripped them. They hide and block on the
+    /// included domain and not on the excluded subdomain.
+    private let mixedDomainList = """
+    ##.generic-ad
+    a.example,~sub.a.example,~b.example##.specific-ad
+    /jquery.popunder.js$domain=a.example|~sub.a.example|~b.example
+    """
+
+    func testAMixedDomainListAppliesOnTheIncludedDomainInAWebView() async throws {
+        let (store, lists) = try await compiledStore(mixedDomainList)
+        XCTAssertEqual(store.compiledRuleCount(forList: "easylist"), 3, "no rule stripped as bad")
+
+        for page in [URL(string: "http://a.example/")!, URL(string: "http://www.a.example/")!] {
+            let result = try await load(page, lists: lists, expectHidden: true)
+            XCTAssertEqual(result.specificDisplay, "none", "\(page)")
+            XCTAssertTrue(result.blocked.contains(page.appendingPathComponent("jquery.popunder.js")),
+                          "\(page) blocked: \(result.blocked)")
+        }
+    }
+
+    func testAMixedDomainListDoesNotApplyOnTheExcludedSubdomainInAWebView() async throws {
+        let lists = try await compiledLists(mixedDomainList)
+
+        for page in [URL(string: "http://sub.a.example/")!, URL(string: "http://x.sub.a.example/")!] {
+            let result = try await load(page, lists: lists, expectHidden: true)
+            XCTAssertNotEqual(result.specificDisplay, "none", "\(page)")
+            XCTAssertTrue(result.blocked.isEmpty, "\(page) blocked: \(result.blocked)")
+        }
+    }
+
     // MARK: - Helpers
 
     /// `/jquery.popunder.js` on the page's own scheme, host and port: a
@@ -544,7 +584,7 @@ struct RuleListEvaluator {
                 unlessDomains: trigger["unless-domain"] as? [String],
                 ifTopURLs: (trigger["if-top-url"] as? [String])?.compactMap { regex($0, caseSensitive: topCaseSensitive) },
                 unlessTopURLs: (trigger["unless-top-url"] as? [String])?.compactMap { regex($0, caseSensitive: topCaseSensitive) },
-                isGenericHiding: type == "css-display-none" && trigger["if-domain"] == nil)
+                isGenericHiding: type == "css-display-none" && trigger["if-domain"] == nil && trigger["if-top-url"] == nil)
         }
     }
 
