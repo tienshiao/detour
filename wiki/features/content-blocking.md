@@ -4,7 +4,7 @@ title: Content blocking
 description: "The built-in blocker: EasyList-family filter lists compiled to WKContentRuleLists, per-profile list toggles, the per-site switch implemented through a WebKit preferences SPI, and the blocked-resource counter."
 tags: [content-blocker, webkit, profiles, spi, privacy]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T07:40:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
 sources:
   - id: manager
     resource: ../../Detour/Browser/ContentBlocker/ContentBlockerManager.swift
@@ -78,6 +78,9 @@ sources:
   - id: domain-list-tests
     resource: ../../DetourTests/ContentBlockerDomainListTests.swift
     title: ContentBlockerDomainListTests.swift
+  - id: task-202
+    resource: backlog:TASK-202
+    title: Clear Cache & Redownload can be undone by a compile that was already running
 ---
 
 # What it does
@@ -240,11 +243,11 @@ left. Each chunk is an independent rule list in WebKit's store, so
 
 | Operation | Rule |
 |---|---|
-| `compile(identifier:rules:)` | Compiles every chunk. When at least one compiled it records the list's chunk count, removes stale chunks, and completes with all of the list's chunks. When none did, the list is left as it was. |
+| `compile(identifier:rules:)` | Compiles every chunk. When at least one compiled it records the list's chunk count, removes stale chunks, and completes `.compiled` with all of the list's chunks. When none did, the list is left as it was (`.failed`). Cleared meanwhile: `.superseded` (see "Clear Cache & Redownload"). |
 | `cachedLists(forList:)` | Every compiled chunk, in order. This is what a web view gets. |
 | `compiledRuleCount(forList:)`, `isCompiled(list:)` | The sum over the chunks, an exception the chunks repeat counted once; compiled when any chunk is. Settings shows these. |
 | `lookUpList(identifier:)` | The launch path: looks up as many chunks as the last compile recorded. |
-| `invalidateAll()` | Removes every chunk and forgets rule counts and chunk counts. |
+| `invalidateAll()` | Removes every chunk and forgets rule counts and chunk counts. Supersedes every compile and look-up asked for before it. |
 
 The chunk count of a list lives in defaults as
 `ContentBlocker.<id>.chunkCount`, written only when it is above 1, so a list
@@ -612,6 +615,9 @@ Order is kept in two places:
   compile is dropped ("Not compiling ...: a compile of newer text has
   started") when a newer ticket of its list already started.
 
+- **Clear Cache & Redownload wins over everything before it** (TASK-202):
+  see the next section.
+
 Measured with the main-queue heartbeat (`docs/harness/task200-harness.patch`,
 same scenarios as TASK-199, Debug build, load average 18–45): the upgrade
 recompile of all four lists went from gaps of 486, 515 and 527 ms (TASK-199:
@@ -620,6 +626,66 @@ recompile of all four lists went from gaps of 486, 515 and 527 ms (TASK-199:
 tick (about 430–450 ms, with or without a compile) and the harness creating
 its first test tab (WebContent launch, 250–650 ms). Rules are still freed on
 main when a compile completes (28 samples per recompile).
+
+## Clear Cache & Redownload
+
+`ContentBlockerManager.clearCacheAndRedownload` removes every compiled
+list (`ContentRuleStore.invalidateAll`), the cached text and the bookkeeping
+keys, then fetches every list unconditionally. Until TASK-202 nothing
+stopped the work already under way: a compile waiting in `waitingCompiles`,
+encoding, inside WebKit or searching for bad rules completed afterwards and
+recorded its chunks and counts, and the manager its `rulesFormat`, all from
+text that had just been deleted. With the redownload offline the cleared
+lists came back, marked current, with no cache text, ETag or `lastFetch`
+behind them. A compile already in WebKit also rewrote its file after
+`invalidateAll`'s removal (WebKit's store runs compiles and removals on one
+serial work queue per store path, in call order), so the next launch found
+it.[^task-202]
+
+Now two layers each refuse what was asked for before the clear:
+
+| Stage at the clear | What stops it |
+|---|---|
+| Text chosen (a cache read or a download's text) but not yet handed to the store: parsing on the parse queue | `FilterListCompileOrder.supersedeTicketsTaken()`: every ticket taken before the clear is refused at `shouldStartCompile` ("Not compiling ...: ... or the cache was cleared"). A cache read that then finds its file deleted does not fall back to a download (`isSuperseded(ticket:)`); the clear's own redownload stands in for it. A download whose response arrives after the clear is not refused: its text is fresh from the server, so it is cached and compiled like the redownload's. |
+| Handed to the store | `ContentRuleStore`'s `generation`, bumped by `invalidateAll`; `compile` keeps the generation it was called in. Waiting for its list: completes when dequeued, never encoded. Encoding: completes when the encoding comes back to main. Inside WebKit: the chunk's callback removes what WebKit wrote and completes only once the removal is done, so the next compile of the list (queued behind it) cannot be overtaken by the removal. Bad-rule search: stops probing, no cleaned list is compiled. |
+| A launch look-up | `lookUpList` answered after the clear records nothing and removes what it found from WebKit's store (`invalidateAll` removes only the chunks in memory, so the next launch would find it), unless a compile of the list asked for since is running or has recorded the chunk. `initialize` tickets each look-up, so one answered after the clear neither compiles from cache nor downloads. |
+
+A superseded compile completes `CompileOutcome.superseded`, distinct from
+`.failed`: the manager treats `.failed` from a cache compile as "no usable
+cache" and downloads the list, so a superseded one would have added a second
+download beside the clear's. It does nothing for `.superseded`.
+
+`refreshingIdentifiers` (Settings' "Updating...") is kept per refresh
+(`FilterListRefreshes`): Update Now and Clear Cache & Redownload each
+`begin` a refresh with a token, and every way its fetch ends (an error, a
+304, a dropped or superseded compile, a compile) `end`s its own token. A
+fetch from before a newer refresh of the same list, ending late, leaves the
+newer one running. Before, a download dropped by the ticket check never
+cleared its list's flag, and a superseded compile ending would have cleared
+the redownload's.
+
+Nothing removes one list from the store (switching a list off in a profile
+only stops attaching it; the compiled list is shared by every profile), so
+`invalidateAll` is the only invalidation and one store-wide generation is
+enough. The queued compiles are not dropped from `waitingCompiles` at the
+clear: they complete `.superseded` in turn, which keeps a list's compiles
+strictly ordered (the redownload's compile waits for the superseded one's
+removal).
+
+Not handled: web views keep the rule lists they already have after the
+clear until the next rules change (the redownload's compile posts it);
+offline, the selected tab keeps blocking with the cleared lists while new
+tabs get none. That predates TASK-202.
+
+Seen at runtime (`docs/harness/task202-harness.patch`, lists served by a
+URLProtocol, the clear 1.5 s after easylist's launch compile was handed to
+the store):[^task-202]
+
+| Run | At the clear | Result |
+|---|---|---|
+| online | easylist and easyprivacy in WebKit, easylist-cookie encoding, urlhaus-filter parsing | each superseded at that stage (os_log "Discarded the compile of easylist: the rule lists were cleared while it ran", "... while it was encoded", "Not compiling urlhaus-filter from cache: ... or the cache was cleared"); one fetch per list; every list then the redownload's counts (71,319 / 56,313 / 25,082 / 102,778, three rules more than the cached text) with `rulesFormat` 3 |
+| offline | the same | nothing compiled, no `rulesFormat`, no file in the rule list store, "Not loaded" in Settings, 4 fetches (the clear's) |
+| offline, code before TASK-202 | the same | all four lists Active with `rulesFormat` 3 and their files back in the store, cache text gone, 8 fetches |
 
 # Why the per-site switch is not a rule list
 
@@ -730,7 +796,14 @@ EasyPrivacy cannot un-block something EasyList blocks.
   and a compiled store file byte-identical to one compiled from it, a second
   compile of a list waiting for the first's bad-rule search (the second's
   list is kept), different lists not waiting for each other, and the
-  `FilterListCompileOrder` tickets.
+  `FilterListCompileOrder` tickets. For Clear Cache & Redownload (TASK-202),
+  an injected WebKit compile (`RuleListCompiler`) calls `invalidateAll`
+  while WebKit compiles or at the first bad-rule probe: the compile is
+  `.superseded`, records nothing and leaves nothing in WebKit's store (a new
+  store finds nothing); a compile asked for after the clear is kept even
+  though the superseded one finished later; compiles queued or encoding at
+  the clear never reach WebKit; a look-up answered after it records nothing;
+  tickets taken before it are refused; `FilterListRefreshes` tokens.
 - `ContentRuleListChunkTests` - the chunk arithmetic, the layout of a split
   list (every chunk ends with the exceptions, no chunk over the cap, a
   repeated exception counted once, exceptions beyond half the cap left out),
@@ -760,6 +833,7 @@ EasyPrivacy cannot un-block something EasyList blocks.
 [^task-199]: $generichide / $elemhide exceptions compile to ignore-previous-rules and unblock all loads on those hosts
 [^task-200]: Serialise block-list rules to JSON and search for bad rules off the main thread
 [^task-201]: Cosmetic rules with both included and excluded domains compile to a trigger WebKit rejects
+[^task-202]: Clear Cache & Redownload can be undone by a compile that was already running
 [^webkit-parser]: WebKit ContentExtensionParser.cpp (one condition per trigger, if-domain to page URL regex, lower-case ASCII domains)
 [^webkit-rule-list-store]: WebKit APIContentRuleListStore.cpp (main-thread asserts, JSON parsed on main, work queue per store path)
 [^webkit-backend]: WebKit ContentExtensionsBackend.cpp (per-list evaluation, global style sheet gate)

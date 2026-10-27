@@ -1,0 +1,328 @@
+TASK-202 runtime harness: Clear Cache & Redownload during the launch compile
+from the cached list text, online and offline, with the lists served by a
+URLProtocol (no network). Temporary code, never committed to Detour/. Gated
+on DETOUR_VERIFY_DIR.
+
+    SP=<scratch>; mkdir -p $SP/served $SP/out
+    # served/<id>.txt: the four filter lists (copies of 2026-10-26) with three
+    # extra rules appended (||t202-redownload-{a,b,c}.example^), so the
+    # redownload's counts (71,319 / 56,313 / 25,082 / 102,778) differ from
+    # the cached text's (71,316 / 56,310 / 25,079 / 102,775).
+    git apply docs/harness/task202-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # run.sh <run> <data dir> <offline 0|1>: seeds a FRESH
+    # ~/Library/Application Support/<data dir>/ContentBlocker/<id>.txt with
+    # the unmodified copies (the "cached text"), streams the build's
+    # content-blocker os_log (log stream, processImagePath CONTAINS
+    # ".derived"), launches
+    DETOUR_DATA_DIR=<data dir> DETOUR_VERIFY_DIR=$SP/out DETOUR_VERIFY_RUN=<run> \
+        DETOUR_VERIFY_LISTS=$SP/served DETOUR_VERIFY_OFFLINE=<0|1> \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # serves SHOOT lines with screencapture -l, kills only that PID after "done"
+    git apply -R docs/harness/task202-harness.patch && xcodegen generate
+
+The harness keeps AppDelegate from starting the content blocker. After 12 s
+of HID idle it opens Settings > Content Blocking, calls
+ContentBlockerManager.initialize() (nothing compiled, so every list compiles
+from its cached text, the launch path), waits until easylist's compile has
+been handed to the store (its ruleCount key is written on main just before),
+waits 1.5 s and clicks "Clear Cache & Redownload": a posted click, and when
+that does not land within 1 s (a locked screen drops posted events) the
+button's performClick. It logs each list's rulesFormat, In List, Active,
+chunks, refreshing state, cache text, ETag and lastFetch before, at and right
+after the click, then once nothing has changed for 20 s, with the rule list
+store's files and the Settings pane's texts.
+
+Results (2026-10-27):
+- "offline" (DetourVerify2021, posted click; the screen locked after this
+  run, so the later runs used performClick): os_log "Not compiling
+  easyprivacy from cache: ... or the cache was cleared" (its parse was
+  running) and "Discarded the compile of easylist: the rule lists were
+  cleared while it ran". Final: every list rulesFormat nil, In List and
+  Active "—", "Not loaded", no file in ContentRuleLists, refreshing empty.
+  It also showed the gap fixed next: easylist-cookie and urlhaus-filter,
+  whose parse had not started, found their text deleted and downloaded
+  again (a second, unconditional fetch each).
+- "online2" (DetourVerify2023, after that fix): at the click easylist and
+  easyprivacy were in WebKit, easylist-cookie encoding, urlhaus-filter
+  parsing. os_log: "Not compiling easylist-cookie: the rule lists were
+  cleared while it was encoded", "Discarded the compile of easylist / of
+  easyprivacy: ... while it ran", "Not compiling urlhaus-filter from cache:
+  ... or the cache was cleared". One fetch per list (Clear's). Final: every
+  list rulesFormat 3 with the redownload's counts (In List = Active =
+  71,319 / 56,313 / 25,082 / 102,778), ETag "t202-v2", 4 rule lists for the
+  profile. (urlhaus-filter took 3 minutes on the loaded machine.)
+- "offline3" (DetourVerify2024): the same supersessions, plus "Not
+  compiling urlhaus-filter from cache: the cache was cleared" with no
+  second fetch (4 fetches in all, Clear's). Final as in "offline".
+- "beforefix-offline" (DetourVerify2025, ContentRuleStore.swift and
+  ContentBlockerManager.swift as on main before TASK-202, same harness):
+  the bug. Final: all four lists Active (71,316 / 56,310 / 25,079 /
+  102,775) with rulesFormat 3 and their files in ContentRuleLists, while
+  their cache text, ETag and lastFetch were gone (In List "—" for three of
+  them), and 8 fetches (each stale compile's refreshIfNeeded fetched again).
+- "final-offline" (DetourVerify2026, the code after the review fixes):
+  the same as "offline3": easylist and easyprivacy discarded in WebKit,
+  easylist-cookie's parse refused, urlhaus-filter's cache read skipped with
+  no download; final state empty, 4 fetches.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 64c96ee..b17660e 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -76,7 +76,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         // Initialize content blocker (fetch/compile rule lists)
++        #if DEBUG
++        if !startTask202HarnessIfRequested() {   // TEMP — DO NOT COMMIT
++            ContentBlockerManager.shared.initialize()
++        }
++        #else
+         ContentBlockerManager.shared.initialize()
++        #endif
+ 
+         // Initialize extension manager before window creation so toolbar
+         // items are available when the toolbar delegate is first queried
+@@ -124,6 +130,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask202HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task202Harness.swift b/Detour/App/Task202Harness.swift
+new file mode 100644
+index 0000000..2a72064
+--- /dev/null
++++ b/Detour/App/Task202Harness.swift
+@@ -0,0 +1,226 @@
++// TEMP TASK-202 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++/// The harness log: wall clock, seconds since the harness started, line.
++enum Task202Log {
++    static let env = ProcessInfo.processInfo.environment
++    static let start = ProcessInfo.processInfo.systemUptime
++    static let queue = DispatchQueue(label: "task202.log")
++    static var logURL: URL? {
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return nil }
++        return URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(env["DETOUR_VERIFY_RUN"] ?? "run").log")
++    }
++    static let clock: DateFormatter = {
++        let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f
++    }()
++    static func log(_ line: String) {
++        guard let logURL else { return }
++        let stamped = String(format: "%@ [%7.3f] %@\n", clock.string(from: Date()),
++                             ProcessInfo.processInfo.systemUptime - start, line)
++        queue.async {
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++    }
++}
++
++/// Serves the filter list URLs from DETOUR_VERIFY_LISTS, or fails them as
++/// offline with DETOUR_VERIFY_OFFLINE=1 (no network either way).
++final class Task202ListProtocol: URLProtocol {
++    static func identifier(for url: URL?) -> String? {
++        ContentBlockerManager.filterLists.first { $0.url == url }?.identifier
++    }
++    override class func canInit(with request: URLRequest) -> Bool { identifier(for: request.url) != nil }
++    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
++    override func startLoading() {
++        let id = Self.identifier(for: request.url) ?? "?"
++        if Task202Log.env["DETOUR_VERIFY_OFFLINE"] == "1" {
++            Task202Log.log("FETCH \(id) -> offline (NSURLErrorNotConnectedToInternet)")
++            client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
++            return
++        }
++        let dir = Task202Log.env["DETOUR_VERIFY_LISTS"] ?? ""
++        let body = try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("\(id).txt"))
++        let status = body == nil ? 404 : 200
++        Task202Log.log("FETCH \(id) -> \(status) (\(body?.count ?? 0) bytes)")
++        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
++                                       headerFields: ["ETag": "\"t202-v2\"", "Content-Type": "text/plain"])!
++        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
++        if let body { client?.urlProtocol(self, didLoad: body) }
++        client?.urlProtocolDidFinishLoading(self)
++    }
++    override func stopLoading() {}
++}
++
++extension AppDelegate {
++    /// Before ContentBlockerManager.initialize(): the list URL protocol. True
++    /// when the harness runs; it then starts the content blocker itself, once
++    /// Settings > Content Blocking is on screen.
++    func startTask202HarnessIfRequested() -> Bool {
++        guard Task202Log.logURL != nil else { return false }
++        URLProtocol.registerClass(Task202ListProtocol.self)
++        Task202Log.log("start rulesFormatVersion=\(EasyListParser.rulesFormatVersion) offline=\(Task202Log.env["DETOUR_VERIFY_OFFLINE"] ?? "0")")
++        NotificationCenter.default.addObserver(forName: .contentBlockerRulesDidChange, object: nil, queue: .main) { _ in
++            Task202Log.log("contentBlockerRulesDidChange")
++        }
++        NotificationCenter.default.addObserver(forName: .contentBlockerStatusDidChange, object: nil, queue: .main) { _ in
++            Task202Log.log("contentBlockerStatusDidChange refreshing=\(ContentBlockerManager.shared.refreshingIdentifiers.sorted())")
++        }
++        return true
++    }
++
++    /// Opens Settings > Content Blocking, starts the content blocker (the
++    /// launch compile from the cached text), clicks Clear Cache & Redownload
++    /// while easylist's compile runs, and logs each list's state before,
++    /// right after and once everything has settled.
++    func runTask202HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard Task202Log.logURL != nil else { return }
++        let log = Task202Log.log
++        let env = Task202Log.env
++        let run = env["DETOUR_VERIFY_RUN"] ?? "run"
++        let manager = ContentBlockerManager.shared
++        let storage = ContentBlockerStorage.current
++        let defaults = storage.defaults
++        let ruleListDirectory = storage.filterListCacheDirectory.deletingLastPathComponent()
++            .appendingPathComponent("ContentRuleLists", isDirectory: true)
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func humanIdle() -> Double {
++            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
++        }
++        func awaitIdle(_ seconds: Double = 12) async {
++            var waited = 0.0
++            while humanIdle() < seconds {
++                if waited == 0 { log("waiting for the machine to be idle (idle \(Int(humanIdle())) s)") }
++                await sleep(2); waited += 2
++            }
++            if waited > 0 { log("idle again after \(Int(waited)) s") }
++        }
++        func shoot(_ name: String, _ window: NSWindow?) async {
++            guard let window else { return log("no window for \(name)") }
++            window.displayIfNeeded()
++            await sleep(0.5)
++            log("SHOOT \(run)-\(name) \(window.windowNumber)")
++            await sleep(1.0)
++        }
++        var eventNumber = 9200
++        func click(_ view: NSView) -> Bool {
++            guard let w = view.window else { log("click: no window"); return false }
++            if humanIdle() < 1 { log("ABORT human input before a click: not posted"); return false }
++            let p = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
++            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
++                eventNumber += 1
++                if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
++                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
++                                              context: nil, eventNumber: eventNumber, clickCount: 1,
++                                              pressure: type == .leftMouseDown ? 1 : 0) {
++                    NSApp.postEvent(e, atStart: false)
++                }
++            }
++            return true
++        }
++        func waitFor(_ what: String, timeout: Double, interval: Double = 0.05, _ cond: () -> Bool) async -> Bool {
++            let deadline = Date().addingTimeInterval(timeout)
++            while Date() < deadline {
++                if cond() { return true }
++                await sleep(interval)
++            }
++            log("TIMEOUT waiting for \(what)")
++            return false
++        }
++        func buttons(_ v: NSView) -> [NSButton] {
++            ((v as? NSButton).map { [$0] } ?? []) + v.subviews.flatMap(buttons)
++        }
++        func texts(_ v: NSView) -> [NSTextField] {
++            ((v as? NSTextField).map { [$0] } ?? []) + v.subviews.flatMap(texts)
++        }
++        func value(_ key: String) -> String {
++            defaults.object(forKey: key).map { "\($0)" } ?? "nil"
++        }
++        func storeFiles() -> String {
++            let files = (try? FileManager.default.contentsOfDirectory(atPath: ruleListDirectory.path))?.sorted() ?? []
++            return files.isEmpty ? "none" : files.joined(separator: ",")
++        }
++        func state(_ label: String) {
++            let profile = wc.activeSpace?.profile
++            for list in ContentBlockerManager.filterLists {
++                let id = list.identifier
++                let cacheText = FileManager.default.fileExists(
++                    atPath: storage.filterListCacheDirectory.appendingPathComponent("\(id).txt").path)
++                log("STATE \(label) \(id): rulesFormat=\(value("ContentBlocker.\(id).rulesFormat")) inList=\(value("ContentBlocker.\(id).ruleCount")) active=\(manager.compiledRuleCount(for: id).map(String.init) ?? "nil") compiled=\(manager.isCompiled(identifier: id)) chunks=\(manager.ruleStore.cachedLists(forList: id).count) refreshing=\(manager.refreshingIdentifiers.contains(id)) cacheText=\(cacheText) etag=\(value("ContentBlocker.\(id).etag")) lastFetch=\(value("ContentBlocker.\(id).lastFetch"))")
++            }
++            let attached = profile.map { ContentBlockerManager.ruleLists(for: $0, in: manager.ruleStore).count } ?? -1
++            log("STATE \(label) profile rule lists=\(attached) storeFiles=\(storeFiles())")
++        }
++
++        Task { @MainActor in
++            await sleep(2)
++            await awaitIdle()
++            let swc = SettingsWindowController.shared
++            swc.showWindow(nil)
++            guard let sw = swc.window else { return log("no settings window") }
++            await sleep(1.0)
++            if let item = sw.toolbar?.items.first(where: { $0.itemIdentifier.rawValue == "contentblocker" }),
++               let action = item.action {
++                NSApp.sendAction(action, to: item.target, from: item)
++            } else { log("no Content Blocking toolbar item") }
++            await sleep(1.2)
++            guard let pane = sw.contentViewController else { return log("no pane") }
++            state("before")
++            await shoot("before", sw)
++
++            log("initialize")
++            manager.initialize()
++            // ruleCount is written on main just before the compile is handed
++            // to the store: from then on easylist's launch compile is running.
++            guard await waitFor("easylist's compile", timeout: 120, { defaults.object(forKey: "ContentBlocker.easylist.ruleCount") != nil }) else {
++                return log("done")
++            }
++            log("easylist compile handed to the store (inList=\(value("ContentBlocker.easylist.ruleCount")))")
++            await sleep(Double(env["DETOUR_VERIFY_CLEAR_DELAY"] ?? "") ?? 1.5)
++            state("at-click")
++            guard let clear = buttons(pane.view).first(where: { $0.title == "Clear Cache & Redownload" }) else {
++                log("no Clear button"); return log("done")
++            }
++            if NSApp.keyWindow !== sw { sw.makeKeyAndOrderFront(nil) }
++            func cleared() -> Bool { defaults.object(forKey: "ContentBlocker.easylist.ruleCount") == nil }
++            guard click(clear) else { return log("done") }
++            if await waitFor("the posted click", timeout: 1.0, { cleared() }) {
++                log("CLICKED Clear Cache & Redownload (posted click)")
++            } else {
++                // A locked screen drops posted events: press the same button.
++                clear.performClick(nil)
++                log("CLICKED Clear Cache & Redownload (performClick fallback, cleared=\(cleared()))")
++            }
++            state("after-click")
++            await shoot("after-click", sw)
++
++            // Settle: the redownload done, then long enough for any compile
++            // that was running at the click to have finished.
++            _ = await waitFor("the redownload", timeout: 180, interval: 0.5, { manager.refreshingIdentifiers.isEmpty })
++            log("refreshing empty")
++            // Settled: nothing changed for 20 s (at most 4 minutes).
++            var lastSummary = ""
++            var unchangedFor = 0.0
++            for _ in 0..<160 {
++                await sleep(1.5)
++                let summary = ContentBlockerManager.filterLists.map {
++                    "\($0.identifier)=\(value("ContentBlocker.\($0.identifier).rulesFormat"))/\(value("ContentBlocker.\($0.identifier).ruleCount"))/\(manager.compiledRuleCount(for: $0.identifier).map(String.init) ?? "-")"
++                }.joined(separator: " ") + " files=\(storeFiles())"
++                if summary != lastSummary { log("SETTLE \(summary)"); lastSummary = summary; unchangedFor = 0 }
++                else { unchangedFor += 1.5 }
++                if unchangedFor >= 20, manager.refreshingIdentifiers.isEmpty { break }
++            }
++            state("final")
++            let status = texts(pane.view).map(\.stringValue).filter { !$0.isEmpty }.joined(separator: " | ")
++            log("PANE texts: \(status)")
++            await shoot("final", sw)
++            log("done")
++        }
++    }
++}
++#endif

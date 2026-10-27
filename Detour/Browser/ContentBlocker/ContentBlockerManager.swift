@@ -28,8 +28,14 @@ extension Notification.Name {
 /// chosen; a compile asks `shouldStartCompile` on the main queue just before
 /// it is handed to the store, and is dropped when a compile of newer text
 /// already started.
+///
+/// Clear Cache & Redownload refuses every ticket taken before it (TASK-202):
+/// that text was read before the cache was deleted, and a compile of it
+/// would bring back the lists the user cleared.
 struct FilterListCompileOrder {
     private var lastTicket = 0
+    /// Tickets up to this one are refused: taken before the last clear.
+    private var lastSupersededTicket = 0
     /// The ticket of the newest compile started, by list identifier.
     private var started: [String: Int] = [:]
 
@@ -40,12 +46,52 @@ struct FilterListCompileOrder {
     }
 
     /// Whether the compile of the text ticketed `ticket` may start: false
-    /// when a compile of the list's newer text has started. Records the
-    /// start when true.
+    /// when a compile of the list's newer text has started, or the ticket
+    /// was taken before the last clear. Records the start when true.
     mutating func shouldStartCompile(ticket: Int, for identifier: String) -> Bool {
+        if isSuperseded(ticket: ticket) { return false }
         if let newest = started[identifier], newest > ticket { return false }
         started[identifier] = ticket
         return true
+    }
+
+    /// Clear Cache & Redownload: refuses every ticket taken so far.
+    mutating func supersedeTicketsTaken() {
+        lastSupersededTicket = lastTicket
+    }
+
+    /// Whether the ticket was taken before the last clear.
+    func isSuperseded(ticket: Int) -> Bool {
+        ticket <= lastSupersededTicket
+    }
+}
+
+/// The refreshes Settings shows as "Updating...", by list (TASK-202).
+///
+/// A refresh is one fetch the user asked for (Update Now, Clear Cache &
+/// Redownload). Every way that fetch ends (no change, an error, a dropped
+/// or superseded compile, a compile) ends its refresh by its token, so a
+/// fetch from before a newer refresh of the same list, ending late, leaves
+/// the newer one running.
+struct FilterListRefreshes {
+    private var lastToken = 0
+    /// The token of each list's running refresh.
+    private var running: [String: Int] = [:]
+
+    /// The lists being refreshed.
+    var identifiers: Set<String> { Set(running.keys) }
+
+    /// Starts a refresh of the list, taking over from one already running,
+    /// and returns its token.
+    mutating func begin(_ identifier: String) -> Int {
+        lastToken += 1
+        running[identifier] = lastToken
+        return lastToken
+    }
+
+    /// Ends the list's refresh `token`; a refresh begun since keeps running.
+    mutating func end(_ identifier: String, token: Int) {
+        if running[identifier] == token { running[identifier] = nil }
     }
 }
 
@@ -92,8 +138,16 @@ class ContentBlockerManager {
         // For each list, try to look up compiled rules first, then fetch if needed
         pendingLookups = Self.filterLists.count
         for list in Self.filterLists {
+            // Refused once Clear Cache & Redownload runs: a look-up answered
+            // after it finds nothing, and its redownload stands in for the
+            // launch compile and the fallback download (TASK-202).
+            let lookUpTicket = compileOrder.takeTicket()
             ruleStore.lookUpList(identifier: list.identifier) { [weak self] existingLists in
                 guard let self else { return }
+                guard !self.compileOrder.isSuperseded(ticket: lookUpTicket) else {
+                    log.info("Not compiling \(list.identifier, privacy: .public) at launch: the cache was cleared")
+                    return self.lookupCompleted()
+                }
                 let recordedFormat = self.defaults.object(forKey: self.rulesFormatKey(list.identifier)) as? Int
                 if !existingLists.isEmpty && Self.shouldReuseCompiledList(recordedFormat: recordedFormat) {
                     // Already compiled, check if refresh needed
@@ -265,19 +319,31 @@ class ContentBlockerManager {
 
     // MARK: - Force Refresh
 
-    private(set) var refreshingIdentifiers: Set<String> = []
+    /// Main queue only.
+    private var refreshes = FilterListRefreshes()
+
+    var refreshingIdentifiers: Set<String> { refreshes.identifiers }
 
     func forceRefreshAll() {
         for list in Self.filterLists {
-            refreshingIdentifiers.insert(list.identifier)
-            fetchAndCompile(list: list)
+            fetchAndCompile(list: list, refresh: refreshes.begin(list.identifier))
         }
         postStatusChange()
     }
 
+    /// Main queue only.
+    private func endRefresh(of identifier: String, _ refresh: Int?) {
+        if let refresh { refreshes.end(identifier, token: refresh) }
+    }
+
     func clearCacheAndRedownload() {
-        // Invalidate all compiled rules in WebKit, every chunk of every list
+        // Invalidate all compiled rules in WebKit, every chunk of every list.
+        // Compiles already handed to the store complete `.superseded`, and
+        // text ticketed before now (a cache read, or a download whose
+        // response was handled) is never compiled (TASK-202). A download
+        // still in flight is fresh text and compiles when it arrives.
         ruleStore.invalidateAll()
+        compileOrder.supersedeTicketsTaken()
 
         // Delete cached text files
         for list in Self.filterLists {
@@ -334,7 +400,15 @@ class ContentBlockerManager {
         parseQueue.async { [weak self] in
             guard let self else { return }
             guard let text = try? String(contentsOf: textFile, encoding: .utf8) else {
-                DispatchQueue.main.async(execute: onMiss)
+                DispatchQueue.main.async {
+                    // Deleted by Clear Cache & Redownload since: its
+                    // redownload stands in for this one (TASK-202).
+                    guard !self.compileOrder.isSuperseded(ticket: ticket) else {
+                        log.info("Not compiling \(list.identifier, privacy: .public) from cache: the cache was cleared")
+                        return
+                    }
+                    onMiss()
+                }
                 return
             }
 
@@ -343,18 +417,22 @@ class ContentBlockerManager {
 
             DispatchQueue.main.async {
                 guard self.compileOrder.shouldStartCompile(ticket: ticket, for: list.identifier) else {
-                    log.info("Not compiling \(list.identifier, privacy: .public) from cache: a compile of newer text has started")
+                    log.info("Not compiling \(list.identifier, privacy: .public) from cache: a compile of newer text has started, or the cache was cleared")
                     return
                 }
                 self.defaults.set(result.rules.count, forKey: "ContentBlocker.\(list.identifier).ruleCount")
-                self.ruleStore.compile(identifier: list.identifier, rules: result.rules) { [weak self] compiled in
-                    if !compiled.isEmpty {
+                self.ruleStore.compile(identifier: list.identifier, rules: result.rules) { [weak self] outcome in
+                    switch outcome {
+                    case .compiled:
                         self?.recordRulesFormat(of: list.identifier)
                         self?.postStatusChange()
                         self?.reapplyRuleLists()
                         self?.refreshIfNeeded(list: list)
-                    } else {
+                    case .failed:
                         onMiss()
+                    case .superseded:
+                        // Cleared meanwhile: the redownload replaces it.
+                        break
                     }
                 }
             }
@@ -368,8 +446,9 @@ class ContentBlockerManager {
     /// The response is handled on `URLSession`'s queue only to write the
     /// text to the cache; the bookkeeping (ETag, fetch date, rule count,
     /// `refreshingIdentifiers`) is recorded on the main queue, and the text
-    /// is parsed on a utility queue.
-    private func fetchAndCompile(list: FilterList, conditional: Bool = true) {
+    /// is parsed on a utility queue. `refresh` is the token of the refresh
+    /// this fetch is (nil for one nobody asked for), ended on every path.
+    private func fetchAndCompile(list: FilterList, conditional: Bool = true, refresh: Int? = nil) {
         var request = URLRequest(url: list.url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
 
@@ -395,7 +474,7 @@ class ContentBlockerManager {
             func finish(recordingFetch: Bool = false) {
                 DispatchQueue.main.async {
                     if recordingFetch { self.defaults.set(Date(), forKey: lastFetchKey) }
-                    self.refreshingIdentifiers.remove(list.identifier)
+                    self.endRefresh(of: list.identifier, refresh)
                     self.postStatusChange()
                 }
             }
@@ -435,14 +514,16 @@ class ContentBlockerManager {
 
                     DispatchQueue.main.async {
                         guard self.compileOrder.shouldStartCompile(ticket: ticket, for: list.identifier) else {
-                            log.info("Not compiling the download of \(list.identifier, privacy: .public): a compile of newer text has started")
+                            log.info("Not compiling the download of \(list.identifier, privacy: .public): a compile of newer text has started, or the cache was cleared")
+                            self.endRefresh(of: list.identifier, refresh)
+                            self.postStatusChange()
                             return
                         }
                         self.defaults.set(result.rules.count, forKey: "ContentBlocker.\(list.identifier).ruleCount")
-                        self.ruleStore.compile(identifier: list.identifier, rules: result.rules) { [weak self] compiled in
-                            self?.refreshingIdentifiers.remove(list.identifier)
+                        self.ruleStore.compile(identifier: list.identifier, rules: result.rules) { [weak self] outcome in
+                            self?.endRefresh(of: list.identifier, refresh)
                             self?.postStatusChange()
-                            if !compiled.isEmpty {
+                            if case .compiled = outcome {
                                 self?.recordRulesFormat(of: list.identifier)
                                 log.info("Compiled \(list.identifier, privacy: .public) successfully")
                                 self?.reapplyRuleLists()

@@ -176,8 +176,8 @@ final class ContentBlockerTests: XCTestCase {
                 let compileExp = expectation(description: "Fallback compile \(name) chunk \(index)")
                 var fallbackList: WKContentRuleList?
 
-                ruleStore.compile(identifier: "fallback-\(chunkID)", rules: chunk) { lists in
-                    fallbackList = lists.first
+                ruleStore.compile(identifier: "fallback-\(chunkID)", rules: chunk) { outcome in
+                    fallbackList = outcome.lists.first
                     compileExp.fulfill()
                 }
 

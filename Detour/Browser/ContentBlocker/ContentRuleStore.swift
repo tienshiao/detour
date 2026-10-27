@@ -215,6 +215,11 @@ enum ContentRuleListChunks {
 /// until the previous compile of its list has completed, bad-rule search
 /// included, so a slower earlier compile can never record its list over a
 /// later one. Different lists compile independently.
+///
+/// `invalidateAll` supersedes every compile and look-up asked for before it
+/// (TASK-202): waiting, encoding, inside WebKit or searching for bad rules,
+/// such a compile records nothing, removes what WebKit wrote for it, and
+/// completes `.superseded` at its next step on the main queue.
 class ContentRuleStore {
     /// The most rules handed to WebKit as one rule list.
     static let defaultMaxRulesPerList = 150_000
@@ -237,24 +242,63 @@ class ContentRuleStore {
 
     /// Turns rules into the JSON WebKit compiles; called on `workQueue` only.
     typealias RuleListEncoder = ([[String: Any]]) -> String?
+    /// Compiles JSON into a rule list under an identifier, completing on the
+    /// main queue: `WKContentRuleListStore.compileContentRuleList`. Called on
+    /// the main queue only.
+    typealias RuleListCompiler = (_ identifier: String, _ encodedRuleList: String,
+                                  _ completion: @escaping (WKContentRuleList?, Error?) -> Void) -> Void
+
+    /// How a compile ended.
+    enum CompileOutcome {
+        /// At least one chunk compiled: every chunk of the list.
+        case compiled([WKContentRuleList])
+        /// Nothing compiled; the list is left as it was.
+        case failed
+        /// `invalidateAll` ran after the compile was asked for: it recorded
+        /// nothing and left nothing in WebKit's store (TASK-202).
+        case superseded
+
+        /// The list's chunks; empty unless `.compiled`.
+        var lists: [WKContentRuleList] {
+            if case .compiled(let lists) = self { return lists }
+            return []
+        }
+    }
     /// Serial, so the chunks of a list, and the lists, reach WebKit in the
     /// order they were asked for.
     private let workQueue: DispatchQueue
     private let encode: RuleListEncoder
+    private let compileRuleList: RuleListCompiler
     /// The compiles waiting for the running compile of their list, by list
     /// identifier. A list has an entry while one of its compiles runs.
     private var waitingCompiles: [String: [() -> Void]] = [:]
+    /// Bumped by `invalidateAll`. A compile or look-up keeps the generation
+    /// it was asked for in, and once that is not the current one it records
+    /// nothing (TASK-202).
+    private var generation = 0
+
+    private func isSuperseded(_ generation: Int) -> Bool {
+        generation != self.generation
+    }
 
     /// `workQueue` and `encode` are injected so a test can see where the
-    /// encoding runs.
+    /// encoding runs, `compileRuleList` so it can act while WebKit compiles
+    /// (nil: `storage`'s rule list store).
     init(storage: ContentBlockerStorage = .current, maxRulesPerList: Int = ContentRuleStore.defaultMaxRulesPerList,
          workQueue: DispatchQueue = DispatchQueue(label: "com.detourbrowser.content-rule-store", qos: .utility),
-         encode: @escaping RuleListEncoder = ContentRuleStore.encodedRuleList) {
-        ruleListStore = storage.ruleListStore
+         encode: @escaping RuleListEncoder = ContentRuleStore.encodedRuleList,
+         compileRuleList: RuleListCompiler? = nil) {
+        let ruleListStore = storage.ruleListStore
+        self.ruleListStore = ruleListStore
         defaults = storage.defaults
         self.maxRulesPerList = maxRulesPerList
         self.workQueue = workQueue
         self.encode = encode
+        self.compileRuleList = compileRuleList ?? { identifier, json, completion in
+            ruleListStore.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: json) { list, error in
+                completion(list, error)
+            }
+        }
     }
 
     /// The JSON WebKit compiles a rule list from. Never on the main queue: it
@@ -315,17 +359,29 @@ class ContentRuleStore {
     /// Looks the list's chunks up in WebKit's store (the launch path: nothing
     /// is in memory yet) and completes, on the main queue, with the ones
     /// found. Empty means the list has to be compiled.
+    /// A look-up answered after `invalidateAll` records nothing, and removes
+    /// what it found from WebKit's store: `invalidateAll` only removes the
+    /// chunks it knew of, so the cleared list would be found again at the
+    /// next launch (TASK-202).
     func lookUpList(identifier: String, completion: @escaping ([WKContentRuleList]) -> Void) {
         let group = DispatchGroup()
+        let generation = generation
         for chunkIdentifier in chunkIdentifiers(forList: identifier) where compiledLists[chunkIdentifier] == nil {
             group.enter()
             ruleListStore.lookUpContentRuleList(forIdentifier: chunkIdentifier) { [weak self] list, _ in
-                if let self, let list {
-                    self.compiledLists[chunkIdentifier] = list
-                    // Restore the compiled count saved by the compile that produced it
-                    if let count = self.defaults.object(forKey: self.compiledRuleCountKey(chunkIdentifier)) as? Int {
-                        self.compiledRuleCounts[chunkIdentifier] = count
-                    }
+                guard let self, let list else { return group.leave() }
+                guard !self.isSuperseded(generation) else {
+                    // A compile of the list asked for since (running, or
+                    // done and recorded) replaces the chunk; removing it now
+                    // could remove that compile's.
+                    guard self.waitingCompiles[identifier] == nil,
+                          self.compiledLists[chunkIdentifier] == nil else { return group.leave() }
+                    return self.discardSuperseded(list, identifier: chunkIdentifier) { group.leave() }
+                }
+                self.compiledLists[chunkIdentifier] = list
+                // Restore the compiled count saved by the compile that produced it
+                if let count = self.defaults.object(forKey: self.compiledRuleCountKey(chunkIdentifier)) as? Int {
+                    self.compiledRuleCounts[chunkIdentifier] = count
                 }
                 group.leave()
             }
@@ -336,21 +392,26 @@ class ContentRuleStore {
     }
 
     /// Compiles `rules` as the list `identifier`, in as many chunks as the
-    /// cap requires, and completes on the main queue with every chunk of the
-    /// list — empty when nothing compiled, in which case the list is left as
-    /// it was. Call on the main queue. Starts once the previous compile of
+    /// cap requires, and completes on the main queue: `.compiled` with every
+    /// chunk of the list, or `.failed` when nothing compiled, in which case
+    /// the list is left as it was. Call on the main queue. Starts once the previous compile of
     /// the same list has completed.
     ///
     /// When at least one chunk compiled, the list is recorded as having this
     /// many chunks and the chunks a longer previous compile left behind are
     /// removed from WebKit's store. A chunk that failed keeps whatever an
     /// earlier compile left under its identifier.
-    func compile(identifier: String, rules: [[String: Any]], completion: @escaping ([WKContentRuleList]) -> Void) {
+    ///
+    /// When `invalidateAll` runs before it completes, it completes
+    /// `.superseded` having recorded nothing, once what WebKit wrote for it
+    /// is removed again, so the next compile of the list starts after that.
+    func compile(identifier: String, rules: [[String: Any]], completion: @escaping (CompileOutcome) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
+        let generation = generation
         let start = { [weak self] in
-            guard let self else { return completion([]) }
-            self.compileNow(identifier: identifier, rules: rules) { [weak self] lists in
-                completion(lists)
+            guard let self else { return completion(.failed) }
+            self.compileNow(identifier: identifier, rules: rules, generation: generation) { [weak self] outcome in
+                completion(outcome)
                 self?.startNextCompile(of: identifier)
             }
         }
@@ -383,7 +444,12 @@ class ContentRuleStore {
 
     /// Chunks and encodes the rules on `workQueue`, then compiles every chunk
     /// from the main queue.
-    private func compileNow(identifier: String, rules: [[String: Any]], completion: @escaping ([WKContentRuleList]) -> Void) {
+    private func compileNow(identifier: String, rules: [[String: Any]], generation: Int,
+                            completion: @escaping (CompileOutcome) -> Void) {
+        guard !isSuperseded(generation) else {
+            log.info("Not compiling \(identifier, privacy: .public): the rule lists were cleared after it was asked for")
+            return completion(.superseded)
+        }
         let maxRulesPerList = maxRulesPerList
         let encode = encode
         offMain({ () -> [EncodedChunk] in
@@ -403,13 +469,18 @@ class ContentRuleStore {
                 EncodedChunk(rules: $0.rules, countedRuleCount: $0.countedRuleCount, json: encode($0.rules))
             }
         }, then: { [weak self] encoded in
-            guard let self, !encoded.isEmpty else { return completion([]) }
-            self.compileChunks(encoded, identifier: identifier, completion: completion)
+            guard let self else { return completion(.failed) }
+            guard !self.isSuperseded(generation) else {
+                log.info("Not compiling \(identifier, privacy: .public): the rule lists were cleared while it was encoded")
+                return completion(.superseded)
+            }
+            guard !encoded.isEmpty else { return completion(.failed) }
+            self.compileChunks(encoded, identifier: identifier, generation: generation, completion: completion)
         })
     }
 
-    private func compileChunks(_ chunks: [EncodedChunk], identifier: String,
-                               completion: @escaping ([WKContentRuleList]) -> Void) {
+    private func compileChunks(_ chunks: [EncodedChunk], identifier: String, generation: Int,
+                               completion: @escaping (CompileOutcome) -> Void) {
         let group = DispatchGroup()
         var compiledAny = false
         // Only the count outlives the loop: the chunks' JSON is not kept
@@ -418,19 +489,22 @@ class ContentRuleStore {
         for (index, chunk) in chunks.enumerated() {
             let chunkIdentifier = ContentRuleListChunks.identifier(forList: identifier, chunk: index)
             group.enter()
-            compileChunk(identifier: chunkIdentifier, chunk: chunk) { list in
+            compileChunk(identifier: chunkIdentifier, chunk: chunk, generation: generation) { list in
                 if list != nil { compiledAny = true }
                 group.leave()
             }
         }
 
         group.notify(queue: .main) { [weak self] in
-            guard let self, compiledAny else {
-                completion([])
-                return
+            guard let self else { return completion(.failed) }
+            // Every chunk superseded has removed itself by now.
+            guard !self.isSuperseded(generation) else {
+                log.info("Discarded the compile of \(identifier, privacy: .public): the rule lists were cleared while it ran")
+                return completion(.superseded)
             }
+            guard compiledAny else { return completion(.failed) }
             self.recordChunkCount(chunkCount, forList: identifier)
-            completion(self.cachedLists(forList: identifier))
+            completion(.compiled(self.cachedLists(forList: identifier)))
         }
     }
 
@@ -471,10 +545,11 @@ class ContentRuleStore {
     /// Compiles one rule list of at most `maxRulesPerList` rules under
     /// `identifier`, stripping individually bad rules when the whole set is
     /// refused. The first `countedRuleCount` rules are the ones the chunk adds
-    /// to its list's rule count.
-    private func compileChunk(identifier: String, chunk: EncodedChunk,
+    /// to its list's rule count. Superseded, it records nothing and
+    /// completes nil once what WebKit wrote for it is removed.
+    private func compileChunk(identifier: String, chunk: EncodedChunk, generation: Int,
                               completion: @escaping (WKContentRuleList?) -> Void) {
-        guard !chunk.rules.isEmpty else {
+        guard !chunk.rules.isEmpty, !isSuperseded(generation) else {
             completion(nil)
             return
         }
@@ -487,19 +562,35 @@ class ContentRuleStore {
         // The completion keeps the rules for the bad-rule search, not the JSON.
         let rules = chunk.rules
         let countedRuleCount = chunk.countedRuleCount
-        ruleListStore.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: jsonString) { [weak self] list, error in
+        compileRuleList(identifier, jsonString) { [weak self] list, error in
             guard let self else { return completion(nil) }
+            guard !self.isSuperseded(generation) else {
+                return self.discardSuperseded(list, identifier: identifier) { completion(nil) }
+            }
             if let error {
                 log.error("Compile error for \(identifier, privacy: .public): \(error.localizedDescription)")
                 // Try to recover by stripping bad rules via binary search
-                self.compileWithFallback(identifier: identifier, rules: rules,
-                                         countedRuleCount: countedRuleCount, completion: completion)
+                self.compileWithFallback(identifier: identifier, rules: rules, countedRuleCount: countedRuleCount,
+                                         generation: generation, completion: completion)
                 return
             }
             if let list {
                 self.recordCompiled(list, identifier: identifier, countedRuleCount: countedRuleCount)
             }
             completion(list)
+        }
+    }
+
+    /// Removes from WebKit's store the rule list a superseded compile wrote
+    /// (nil: it wrote none), then calls `then`. Waiting for the removal keeps
+    /// it ahead of the next compile of the same identifier.
+    private func discardSuperseded(_ list: WKContentRuleList?, identifier: String, then: @escaping () -> Void) {
+        guard list != nil else { return then() }
+        ruleListStore.removeContentRuleList(forIdentifier: identifier) { error in
+            if let error {
+                log.error("Failed to remove superseded \(identifier, privacy: .public): \(error.localizedDescription)")
+            }
+            then()
         }
     }
 
@@ -523,12 +614,12 @@ class ContentRuleStore {
     /// When full compilation fails, use binary search to find and strip only
     /// the bad rules. The search's probes and the cleaned rules are sliced and
     /// encoded on `workQueue`; only WebKit's compile calls are made on main.
-    private func compileWithFallback(identifier: String, rules: [[String: Any]], countedRuleCount: Int,
+    private func compileWithFallback(identifier: String, rules: [[String: Any]], countedRuleCount: Int, generation: Int,
                                      completion: @escaping (WKContentRuleList?) -> Void) {
         log.info("Fallback: binary search for bad rules in \(rules.count) rules for \(identifier, privacy: .public)")
 
-        findBadRules(rules[...], depth: 0, identifier: identifier) { [weak self] badIndices in
-            guard let self else { return completion(nil) }
+        findBadRules(rules[...], depth: 0, identifier: identifier, generation: generation) { [weak self] badIndices in
+            guard let self, !self.isSuperseded(generation) else { return completion(nil) }
             let badSet = Set(badIndices)
 
             guard !badSet.isEmpty else {
@@ -547,8 +638,11 @@ class ContentRuleStore {
             self.offMain({
                 encode(rules.enumerated().compactMap { badSet.contains($0.offset) ? nil : $0.element })
             }, then: { [weak self] jsonString in
-                guard let self, let jsonString else { return completion(nil) }
-                self.ruleListStore.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: jsonString) { [weak self] list, error in
+                guard let self, let jsonString, !self.isSuperseded(generation) else { return completion(nil) }
+                self.compileRuleList(identifier, jsonString) { [weak self] list, error in
+                    if let self, self.isSuperseded(generation) {
+                        return self.discardSuperseded(list, identifier: identifier) { completion(nil) }
+                    }
                     if let error {
                         log.error("Fallback compile still failed for \(identifier, privacy: .public): \(error.localizedDescription)")
                         completion(nil)
@@ -566,8 +660,10 @@ class ContentRuleStore {
 
     /// Recursively bisects rules to find indices of individually bad rules.
     /// `rules` is a slice of the chunk, so its indices are the chunk's.
-    private func findBadRules(_ rules: ArraySlice<[String: Any]>, depth: Int, identifier: String,
+    /// Stops probing once superseded (the caller then discards the result).
+    private func findBadRules(_ rules: ArraySlice<[String: Any]>, depth: Int, identifier: String, generation: Int,
                               completion: @escaping ([Int]) -> Void) {
+        guard !isSuperseded(generation) else { return completion([]) }
         // Bail out if recursion is too deep
         guard depth <= 20 else {
             log.warning("Binary search: max depth reached, marking \(rules.count) rules as bad at offset \(rules.startIndex)")
@@ -594,9 +690,9 @@ class ContentRuleStore {
             // Split in half and recurse serially (left then right)
             let mid = rules.startIndex + rules.count / 2
             guard let self else { return completion([]) }
-            self.findBadRules(rules[..<mid], depth: depth + 1, identifier: identifier) { [weak self] leftBad in
+            self.findBadRules(rules[..<mid], depth: depth + 1, identifier: identifier, generation: generation) { [weak self] leftBad in
                 guard let self else { return completion(leftBad) }
-                self.findBadRules(rules[mid...], depth: depth + 1, identifier: identifier) { rightBad in
+                self.findBadRules(rules[mid...], depth: depth + 1, identifier: identifier, generation: generation) { rightBad in
                     completion(leftBad + rightBad)
                 }
             }
@@ -609,7 +705,7 @@ class ContentRuleStore {
         let encode = encode
         offMain({ encode(Array(rules)) }, then: { [weak self] jsonString in
             guard let self, let jsonString else { return completion(false) }
-            self.ruleListStore.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: jsonString) { [weak self] list, error in
+            self.compileRuleList(identifier, jsonString) { [weak self] list, error in
                 if list != nil {
                     self?.ruleListStore.removeContentRuleList(forIdentifier: identifier) { _ in }
                 }
@@ -642,8 +738,10 @@ class ContentRuleStore {
     }
 
     /// Removes every compiled chunk of every list from WebKit's store and
-    /// forgets the counts and chunk counts that described them.
+    /// forgets the counts and chunk counts that described them. Supersedes
+    /// every compile and look-up asked for before (TASK-202).
     func invalidateAll() {
+        generation += 1
         for chunkIdentifier in compiledLists.keys {
             ruleListStore.removeContentRuleList(forIdentifier: chunkIdentifier) { _ in }
         }

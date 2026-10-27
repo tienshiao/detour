@@ -52,7 +52,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
 
     private func compile(_ store: ContentRuleStore, _ identifier: String, _ rules: [[String: Any]]) async -> [WKContentRuleList] {
         await withCheckedContinuation { continuation in
-            store.compile(identifier: identifier, rules: rules) { continuation.resume(returning: $0) }
+            store.compile(identifier: identifier, rules: rules) { continuation.resume(returning: $0.lists) }
         }
     }
 
@@ -162,12 +162,12 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
             group.enter()
             group.enter()
             store.compile(identifier: "easylist-cookie", rules: [block("a"), badRule, block("b")]) {
-                cookieLists = $0
+                cookieLists = $0.lists
                 spy.record("cookie done")
                 group.leave()
             }
             store.compile(identifier: "easyprivacy", rules: [block("c")]) {
-                privacyLists = $0
+                privacyLists = $0.lists
                 spy.record("privacy done")
                 group.leave()
             }
@@ -209,6 +209,206 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
         XCTAssertGreaterThan(order.takeTicket(), easylist)
     }
 
+    // MARK: - Clear Cache & Redownload (TASK-202)
+
+    private func compileOutcome(_ store: ContentRuleStore, _ identifier: String,
+                                _ rules: [[String: Any]]) async -> ContentRuleStore.CompileOutcome {
+        await withCheckedContinuation { continuation in
+            store.compile(identifier: identifier, rules: rules) { continuation.resume(returning: $0) }
+        }
+    }
+
+    private func lookUp(_ store: ContentRuleStore, _ identifier: String) async -> [WKContentRuleList] {
+        await withCheckedContinuation { continuation in
+            store.lookUpList(identifier: identifier) { continuation.resume(returning: $0) }
+        }
+    }
+
+    /// Every rule list in the storage's WebKit store, sorted.
+    private func storedIdentifiers(_ storage: ContentBlockerStorage) async -> [String] {
+        await withCheckedContinuation { continuation in
+            storage.ruleListStore.getAvailableContentRuleListIdentifiers { continuation.resume(returning: ($0 ?? []).sorted()) }
+        }
+    }
+
+    /// The content blocker keys the storage's defaults suite holds.
+    private func contentBlockerKeys(_ storage: ContentBlockerStorage) -> [String] {
+        storage.defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("ContentBlocker.") }.sorted()
+    }
+
+    nonisolated private func isSuperseded(_ outcome: ContentRuleStore.CompileOutcome) -> Bool {
+        if case .superseded = outcome { return true }
+        return false
+    }
+
+    /// The launch recompile is inside WebKit when the user clears the cache:
+    /// it records nothing, and what WebKit wrote for it is removed, so the
+    /// next launch finds nothing either.
+    func testClearingWhileWebKitCompilesRecordsNothing() async throws {
+        let storage = try makeStorage("store")
+        let hook = CompileHook()
+        let store = ContentRuleStore(storage: storage, maxRulesPerList: 2, compileRuleList: hook.compiler(storage.ruleListStore))
+        _ = await compile(store, "easylist", ["a", "b", "c"].map(block))
+        XCTAssertTrue(store.isCompiled(list: "easylist"), "compiled before, as at launch")
+
+        hook.whileCompiling = { [weak store] _ in
+            hook.whileCompiling = nil
+            store?.invalidateAll()
+        }
+        let outcome = await compileOutcome(store, "easylist", ["d", "e", "f", "g", "h"].map(block))
+
+        XCTAssertTrue(isSuperseded(outcome), "a compile cleared under it is superseded, not failed: \(outcome)")
+        XCTAssertFalse(store.isCompiled(list: "easylist"))
+        XCTAssertNil(store.compiledRuleCount(forList: "easylist"))
+        XCTAssertEqual(contentBlockerKeys(storage), [], "no count or chunk count recorded")
+        let stored = await storedIdentifiers(storage)
+        XCTAssertEqual(stored, [], "nothing the superseded compile wrote stays in WebKit's store")
+        let found = await lookUp(ContentRuleStore(storage: storage, maxRulesPerList: 2), "easylist")
+        XCTAssertEqual(found.count, 0, "the next launch finds nothing")
+    }
+
+    /// A compile asked for after the clear waits for the superseded one, and
+    /// the removal of what the superseded one wrote does not take its list.
+    func testACompileAskedForAfterClearingIsKept() async throws {
+        let storage = try makeStorage("store")
+        let hook = CompileHook()
+        let store = ContentRuleStore(storage: storage, compileRuleList: hook.compiler(storage.ruleListStore))
+        var outcomes: [String] = []
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let group = DispatchGroup()
+            group.enter()
+            group.enter()
+            hook.whileCompiling = { [weak store] _ in
+                hook.whileCompiling = nil
+                store?.invalidateAll()
+                store?.compile(identifier: "easylist", rules: ["c", "d"].map(self.block)) {
+                    outcomes.append("redownload \(self.isSuperseded($0) ? "superseded" : "\($0.lists.count)")")
+                    group.leave()
+                }
+            }
+            store.compile(identifier: "easylist", rules: [block("a")]) {
+                outcomes.append("launch \(self.isSuperseded($0) ? "superseded" : "\($0.lists.count)")")
+                group.leave()
+            }
+            group.notify(queue: .main) { continuation.resume() }
+        }
+
+        XCTAssertEqual(outcomes, ["launch superseded", "redownload 1"])
+        XCTAssertEqual(store.compiledRuleCount(forList: "easylist"), 2, "the redownload's list is the one kept")
+        let stored = await storedIdentifiers(storage)
+        XCTAssertEqual(stored, ["easylist"])
+        let found = await lookUp(ContentRuleStore(storage: storage), "easylist")
+        XCTAssertEqual(found.count, 1, "the redownload's list is in WebKit's store")
+    }
+
+    /// Compiles that were waiting for their list, or encoding, when the
+    /// cache was cleared never reach WebKit; one asked for afterwards runs.
+    func testCompilesQueuedOrEncodingWhenClearedDoNotRun() async throws {
+        let storage = try makeStorage("store")
+        let spy = EncoderSpy()
+        let hook = CompileHook()
+        let store = ContentRuleStore(storage: storage, encode: spy.encode, compileRuleList: hook.compiler(storage.ruleListStore))
+        var outcomes: [String] = []
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let group = DispatchGroup()
+            func record(_ name: String) -> (ContentRuleStore.CompileOutcome) -> Void {
+                group.enter()
+                return { outcome in
+                    outcomes.append("\(name) \(self.isSuperseded(outcome) ? "superseded" : "\(outcome.lists.count)")")
+                    group.leave()
+                }
+            }
+            store.compile(identifier: "easylist", rules: [block("a")], completion: record("encoding"))
+            store.compile(identifier: "easylist", rules: ["b", "c"].map(block), completion: record("queued"))
+            store.invalidateAll()
+            store.compile(identifier: "easylist", rules: ["d", "e", "f"].map(block), completion: record("after"))
+            group.notify(queue: .main) { continuation.resume() }
+        }
+
+        XCTAssertEqual(outcomes, ["encoding superseded", "queued superseded", "after 1"])
+        XCTAssertFalse(spy.events.contains("encode 2"), "the queued compile is not even encoded")
+        XCTAssertEqual(hook.identifiers, ["easylist"], "only the compile asked for after the clear reaches WebKit")
+        XCTAssertEqual(store.compiledRuleCount(forList: "easylist"), 3)
+    }
+
+    /// A list searching for its bad rules when the cache is cleared stops
+    /// searching and compiles no cleaned list.
+    func testClearingDuringTheBadRuleSearchStopsIt() async throws {
+        let storage = try makeStorage("store")
+        let hook = CompileHook()
+        let store = ContentRuleStore(storage: storage, compileRuleList: hook.compiler(storage.ruleListStore))
+        hook.whileCompiling = { [weak store] identifier in
+            guard identifier.contains("-probe-") else { return }
+            hook.whileCompiling = nil
+            store?.invalidateAll()
+        }
+
+        let outcome = await compileOutcome(store, "easylist-cookie", [block("a"), badRule, block("b")])
+
+        XCTAssertTrue(isSuperseded(outcome), "\(outcome)")
+        XCTAssertEqual(hook.identifiers.filter { $0.contains("-probe-") }.count, 1, "the search stops at the clear")
+        XCTAssertEqual(hook.identifiers.filter { $0 == "easylist-cookie" }.count, 1, "no cleaned list is compiled")
+        XCTAssertFalse(store.isCompiled(list: "easylist-cookie"))
+        XCTAssertEqual(contentBlockerKeys(storage), [])
+        let stored = await storedIdentifiers(storage)
+        XCTAssertEqual(stored, [])
+    }
+
+    /// A look-up answered after the clear does not bring the list back.
+    func testALookUpAnsweredAfterClearingRecordsNothing() async throws {
+        let storage = try makeStorage("store")
+        _ = await compile(ContentRuleStore(storage: storage), "easylist", [block("a")])
+        let relaunched = ContentRuleStore(storage: storage)
+
+        let found = await withCheckedContinuation { continuation in
+            relaunched.lookUpList(identifier: "easylist") { continuation.resume(returning: $0) }
+            relaunched.invalidateAll()
+        }
+
+        XCTAssertEqual(found.count, 0)
+        XCTAssertFalse(relaunched.isCompiled(list: "easylist"))
+        XCTAssertNil(relaunched.compiledRuleCount(forList: "easylist"))
+        let stored = await storedIdentifiers(storage)
+        XCTAssertEqual(stored, [], "the list found after the clear is removed, so the next launch does not find it")
+    }
+
+    /// A cache parse still running when the cache is cleared does not compile
+    /// its (deleted) text; the redownload's does.
+    func testClearingRefusesTicketsTakenBefore() {
+        var order = FilterListCompileOrder()
+        let cache = order.takeTicket()
+        let otherList = order.takeTicket()
+        order.supersedeTicketsTaken()
+        let download = order.takeTicket()
+        XCTAssertTrue(order.isSuperseded(ticket: cache), "a cache read failing after the clear does not download again")
+        XCTAssertFalse(order.isSuperseded(ticket: download))
+        XCTAssertFalse(order.shouldStartCompile(ticket: cache, for: "easylist"))
+        XCTAssertFalse(order.shouldStartCompile(ticket: otherList, for: "easyprivacy"))
+        XCTAssertTrue(order.shouldStartCompile(ticket: download, for: "easylist"))
+    }
+
+    func testARefreshEndsWhenItsFetchEnds() {
+        var refreshes = FilterListRefreshes()
+        let token = refreshes.begin("easylist")
+        XCTAssertEqual(refreshes.identifiers, ["easylist"])
+        refreshes.end("easylist", token: token)
+        XCTAssertEqual(refreshes.identifiers, [])
+    }
+
+    /// Clear Cache & Redownload during a refresh: the earlier fetch ending
+    /// (its compile superseded) leaves the new refresh running.
+    func testAnEarlierFetchEndingLeavesANewerRefreshRunning() {
+        var refreshes = FilterListRefreshes()
+        let earlier = refreshes.begin("easylist")
+        let other = refreshes.begin("easyprivacy")
+        let newer = refreshes.begin("easylist")
+        refreshes.end("easylist", token: earlier)
+        XCTAssertEqual(refreshes.identifiers, ["easylist", "easyprivacy"])
+        refreshes.end("easylist", token: newer)
+        refreshes.end("easyprivacy", token: other)
+        XCTAssertEqual(refreshes.identifiers, [])
+    }
+
     // MARK: - Sample
 
     /// Every section the parser emits: generic and specific hiding, both
@@ -231,6 +431,22 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
     @@||allowed.example^$document
     ||evil.example^$important
     """
+}
+
+/// Hands each compile to WebKit and then, while WebKit compiles, runs
+/// `whileCompiling` with the identifier. Main queue only.
+private final class CompileHook {
+    var whileCompiling: ((String) -> Void)?
+    /// Every identifier handed to WebKit, in order.
+    private(set) var identifiers: [String] = []
+
+    func compiler(_ ruleListStore: WKContentRuleListStore) -> ContentRuleStore.RuleListCompiler {
+        { [self] identifier, json, completion in
+            identifiers.append(identifier)
+            ruleListStore.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: json) { completion($0, $1) }
+            whileCompiling?(identifier)
+        }
+    }
 }
 
 /// Encodes like the store and records where it ran: from the store's work

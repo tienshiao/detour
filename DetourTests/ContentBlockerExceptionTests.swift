@@ -390,7 +390,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
             defaults: try XCTUnwrap(UserDefaults(suiteName: defaultsSuiteName)))
         let store = ContentRuleStore(storage: storage)
         let lists = await withCheckedContinuation { continuation in
-            store.compile(identifier: "easylist", rules: rules(text)) { continuation.resume(returning: $0) }
+            store.compile(identifier: "easylist", rules: rules(text)) { continuation.resume(returning: $0.lists) }
         }
         XCTAssertEqual(lists.count, 1)
         return (store, lists)
