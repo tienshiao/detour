@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-20 07:21'
-updated_date: '2026-10-04 18:41'
+updated_date: '2026-10-27 22:22'
 labels: []
 dependencies: []
 references:
@@ -32,4 +32,6 @@ recentHistory (the palette's list before anything is typed) groups ALL of the sp
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-04: measured again during TASK-153 on a 300,000-visit history (HistoryURLSearchBenchmarkTests, Debug, loaded machine): recentHistory 142-151 ms alone on the main thread. TASK-163 covers the reads that wait behind long queries and searchHistory's cost; this task stays the one for recentHistory's aggregation.
+
+2026-10-27: TASK-209 (cd5a09d) changed recentHistory to walk visits newest-first and stop early, over the whole profile; the empty-field list went from 33 ms to 9 ms on the 55,000-visit benchmark. Check this task's ACs against that before working on it. Still open from TASK-209's review: the read runs on the main thread.
 <!-- SECTION:NOTES:END -->
