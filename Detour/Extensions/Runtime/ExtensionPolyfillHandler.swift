@@ -942,18 +942,13 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// handler is profile-scoped, so such a tab belongs in one of *this*
     /// profile's spaces — it gets that profile's cookies and search engine, and
     /// its closed-tab stack is the only one this profile's extensions may
-    /// reopen from. The last-active space is preferred only when it is one of
-    /// them (it is global, and the focused window can belong to another
-    /// profile); otherwise the profile's first space. Nil when the profile is
-    /// gone, or has no space at all — never another profile's space.
+    /// reopen from. Which one is `tabs.create`'s rule,
+    /// `ExtensionManager.newTabSpace(for:)`: the space the profile used last
+    /// (TASK-226). Nil when the profile is gone, or has no space at all —
+    /// never another profile's space.
     private func targetSpace() -> Space? {
         guard let profile else { return nil }
-        if let lastActiveID = ExtensionManager.shared.lastActiveSpaceID,
-           let lastActive = TabStore.shared.space(withID: lastActiveID),
-           lastActive.profileID == profile.id {
-            return lastActive
-        }
-        return TabStore.shared.spaces.first { $0.profileID == profile.id }
+        return ExtensionManager.shared.newTabSpace(for: profile)
     }
 
     /// Whether the extension declared a given manifest permission. Used to gate

@@ -90,6 +90,9 @@ sources:
   - id: task-225
     resource: backlog:TASK-225
     title: windows.create opens a window for a javascript URL
+  - id: task-226
+    resource: backlog:TASK-226
+    title: tabs.create adds its tab to the profile's first space, not the one in use
   - id: webkit-windows-api
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIWindowsCocoa.mm
     title: WebKit WebExtensionContextAPIWindowsCocoa.mm (windowsCreate, read 2026-10-27)
@@ -246,8 +249,27 @@ window opens. Before this, the window took `AppDelegate.assignDefaultSpace`'s
 space (the key normal window's, else the global last active, else the first),
 so an extension of profile A could open a window, with its URL, on profile
 B's space, with B's cookies and history and in B's extension
-contexts.[^task-223] `tabs.create` still adds to the profile's first space in
-sidebar order (`space(for:)`), not its most recently used one.
+contexts.[^task-223]
+
+## Opening a tab
+
+`tabs.create` without a `windowId` (`openNewTabUsing`), and the polyfill's
+`search.query` and `sessions.restore` (`ExtensionPolyfillHandler.targetSpace`),
+add their tab to `ExtensionManager.newTabSpace(for:)`: for a normal profile,
+the same `TabStore.mostRecentlyUsedSpace(ofProfile:)` as a normal window from
+`windows.create`. An incognito profile's spaces are never in `spaceUseOrder`,
+so there it is the global last active space
+(`ExtensionManager.lastActiveSpaceID`, the space the last window to become key
+showed then) when it is that profile's, else its first space; there is no test
+of two Private windows. A profile with no space gets no tab anywhere:
+`tabs.create` rejects ("the profile has no space"; it used to resolve with
+nothing) and the polyfill calls answer "No space in this profile". Before
+TASK-226, `tabs.create` took the profile's first space in sidebar order, which
+no window may show, so the user never saw the tab, and the polyfill calls a
+third rule (the global last active space if it was this profile's, else the
+first).[^task-226] WebKit hands the delegate the window a `windowId` names
+(`configuration.window`), which Detour does not read yet: the tab goes to the
+same space either way.
 
 ## javascript: URLs
 
@@ -382,6 +404,11 @@ The planned changes to the window model are in the
   and with no space (refused, no window). A `javascript:` URL refused by
   `windows.create`, `tabs.create` and `tabs.update` (the page left alone) in
   every form, in one test to keep the suite's retained profiles down.
+  `tabs.create` without a `windowId` lands in the caller's most recently used
+  space (two spaces, the second used last, another profile in front), and is
+  refused once the profile has no space, from both transports and forms.
+  `ExtensionPolyfillProfileWiringTests` covers `search.query` choosing the
+  sending profile's most recently used space.
 - In tests a web view must be registered as a tab (`registerProbeTab` in `ExtensionTestSupport`) before content-script messaging works; that was the real cause of six tests once skipped as "sandbox limits".[^task-20]
 
 # Related
@@ -408,5 +435,6 @@ The planned changes to the window model are in the
 [^windows-create-tests]: ExtensionWindowsCreatePrivateTests
 [^task-223]: windows.create from a normal profile can open its window on another profile's space
 [^task-225]: windows.create opens a window for a javascript URL
+[^task-226]: tabs.create adds its tab to the profile's first space, not the one in use
 [^task-224]: A normal-profile extension not allowed in Private can still open a Private window with windows.create({incognito true})
 [^webkit-windows-api]: WebKit WebExtensionContextAPIWindowsCocoa.mm (windowsCreate, read 2026-10-27)

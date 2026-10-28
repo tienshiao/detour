@@ -1802,12 +1802,28 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         Profile.profile(owning: controller)
     }
 
-    /// Find a space belonging to the profile that owns a controller.
-    /// Returns nil if the profile has no open spaces — callers should not create
-    /// tabs in a different profile's space.
-    private func space(for controller: WKWebExtensionController) -> Space? {
-        let targetProfile = profile(for: controller)
-        return TabStore.shared.spaces.first { $0.profileID == targetProfile?.id }
+    /// The space a tab an extension opens without naming a window goes to:
+    /// `tabs.create` without a `windowId`, and the polyfill's `search.query`
+    /// and `sessions.restore` (`ExtensionPolyfillHandler.targetSpace`). Always
+    /// one of `profile`'s own spaces, never another profile's (its tabs would
+    /// load with that profile's cookies and history); nil when it has none.
+    ///
+    /// A normal profile's is the space it used last,
+    /// `TabStore.mostRecentlyUsedSpace(ofProfile:)`, which is also where
+    /// `windows.create` opens a normal window (TASK-223, TASK-226; it calls
+    /// this): the profile's first space may be one no window shows. An
+    /// incognito profile's spaces are never in `spaceUseOrder`, so there it is
+    /// the global last active space when it is that profile's
+    /// (`lastActiveSpaceID`, the space the last window to become key showed
+    /// then), else its first.
+    func newTabSpace(for profile: Profile) -> Space? {
+        let store = TabStore.shared
+        guard profile.isIncognito else { return store.mostRecentlyUsedSpace(ofProfile: profile.id) }
+        if let lastActiveSpaceID, let lastActive = store.space(withID: lastActiveSpaceID),
+           lastActive.profileID == profile.id {
+            return lastActive
+        }
+        return store.spaces.first { $0.profileID == profile.id }
     }
 
     /// Select a tab and notify window controllers.
@@ -1947,11 +1963,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping ((any WKWebExtensionTab)?, (any Error)?) -> Void
     ) {
-        guard let space = space(for: controller) else {
-            completionHandler(nil, nil)
+        guard let callerProfile = profile(for: controller) else {
+            completionHandler(nil, Self.extensionError("Cannot open a tab for an unknown profile"))
             return
         }
-
         let url = configuration.url ?? URL(string: "about:blank")!
         // Refused before a tab exists: `BrowserTab.load(_:)` would drop the
         // URL and leave a blank tab reported as a success (TASK-86).
@@ -1961,6 +1976,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
         guard !Self.isJavaScriptURL(url) else {
             completionHandler(nil, Self.extensionError(Self.javaScriptURLRefusal))
+            return
+        }
+        guard let space = newTabSpace(for: callerProfile) else {
+            completionHandler(nil, Self.extensionError("Cannot open a tab: the profile has no space"))
             return
         }
         let tab: BrowserTab
@@ -2046,7 +2065,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             // front window's space, which may be another profile's: its tabs
             // would load with that profile's cookies and history (TASK-223).
             // A profile with no space has nowhere to open one.
-            guard let space = TabStore.shared.mostRecentlyUsedSpace(ofProfile: callerProfile.id) else {
+            guard let space = newTabSpace(for: callerProfile) else {
                 completionHandler(nil, Self.extensionError("Cannot open a window: the profile has no space"))
                 return
             }

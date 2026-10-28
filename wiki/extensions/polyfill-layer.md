@@ -180,9 +180,11 @@ does:
   on `favicon` and on the profile; see
   [favicons](#favicons-are-profile-scoped) below.
 - `offscreen.*` uses only the handler's own profile's context.
-- `sessions.restore` and `search.query` act in `targetSpace()`: the last-active
-  space when it belongs to this profile, else the profile's first space, never
-  another profile's.
+- `sessions.restore` and `search.query` act in `targetSpace()`, which is
+  `tabs.create`'s rule (`ExtensionManager.newTabSpace(for:)`): a normal
+  profile's most recently used space, never another profile's (TASK-226;
+  before, the global last active space when it was this profile's, else the
+  profile's first). See [opening a tab](./tab-and-window-bridge.md#opening-a-tab).
 - Gap-filling namespaces that Chrome leaves undefined without a permission
   (`privacy`, `webRequest`) are installed only when the manifest declares it,
   so feature detection stays truthful.[^task-3]

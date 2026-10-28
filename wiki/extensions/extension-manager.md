@@ -182,7 +182,7 @@ tabs.
 | Callback | What Detour does |
 |---|---|
 | `openWindowsFor`, `focusedWindowFor` | Browser windows whose active space belongs to the controller's profile, and that profile's [Quick Detour](../features/quick-detour.md) windows (`extensionListedWindows()`); the key window only if it is one of them |
-| `openNewTabUsing`, `openNewWindowUsing` | Create through `TabStore`; an extension URL gets `addExtensionTab` with the context's configuration; `detour://` and `javascript:` URLs are refused; a window opened for a Private context is always Private, a normal context's Private window is refused unless the extension is allowed in Private, and a normal window opens on the caller's profile's most recently used space ([opening a window](./tab-and-window-bridge.md#opening-a-window)) |
+| `openNewTabUsing`, `openNewWindowUsing` | Create through `TabStore`; an extension URL gets `addExtensionTab` with the context's configuration; `detour://` and `javascript:` URLs are refused; a window opened for a Private context is always Private, a normal context's Private window is refused unless the extension is allowed in Private, and a normal window, like a new tab (`newTabSpace(for:)`), goes to the caller's profile's most recently used space ([opening a window](./tab-and-window-bridge.md#opening-a-window), [opening a tab](./tab-and-window-bridge.md#opening-a-tab)) |
 | `openOptionsPageFor` | Reuses an open options tab ([popup and options UI](./popup-and-options-ui.md)) |
 | `presentActionPopup` | `browser.action.openPopup()` only; a user click presents the popup directly |
 | `promptForPermissions`, `…ToAccess`, `…MatchPatterns` | An alert, and the answer saved ([Permissions](./permissions.md)) |

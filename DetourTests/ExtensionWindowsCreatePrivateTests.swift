@@ -731,6 +731,60 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         XCTAssertEqual(tab.url, url)
     }
 
+    // MARK: - tabs.create's space (TASK-226)
+
+    /// `tabs.create` without a `windowId` adds its tab to the caller's
+    /// profile's most recently used space, as `windows.create` opens on it
+    /// (TASK-223): with two spaces on the profile and the second used last,
+    /// not the first, and not the front window's space of another profile.
+    /// A profile with no space is refused, and the other profile's space still
+    /// gets nothing. One loaded profile for both halves (see `retainedProfiles`).
+    func testTabsCreateAddsToTheCallersMostRecentlyUsedSpaceAndIsRefusedWithoutOne() async throws {
+        let ext = try await makeExtension()
+        let caller = makeProfile("Tabs Create Caller")
+        let other = makeProfile("Tabs Create Other")
+        let page = try await loadPage(ext, in: caller)
+        let url = try await serve()
+
+        let first = addSpace(of: caller)
+        let used = addSpace(of: caller)
+        browserWindow(showing: first)
+        browserWindow(showing: used)
+        let frontSpace = browserWindow(showingANewSpaceOf: other)
+
+        var created = 0
+        for transport in Transport.allCases {
+            for form in Form.allCases {
+                let called = try await call("tabs.create", [["url": url.absoluteString, "active": false]],
+                                            via: transport, form: form, page: page)
+                XCTAssertNil(called.error, called.label)
+                XCTAssertNotNil((called.value as? [String: Any])?["id"] as? Int,
+                                "\(called.label): \(String(describing: called.value))")
+                created += 1
+                XCTAssertEqual(used.tabs.count, created, "\(called.label): \(used.tabs.map(\.url))")
+            }
+        }
+        XCTAssertTrue(first.tabs.isEmpty, "\(first.tabs.map(\.url))")
+        XCTAssertTrue(frontSpace.tabs.isEmpty, "\(frontSpace.tabs.map(\.url))")
+
+        closeBrowserWindows()
+        browserWindow(showing: frontSpace)
+        for space in [first, used] {
+            space.tabs.forEach { $0.teardown() }
+            TabStore.shared.forceRemoveSpace(id: space.id)
+        }
+        for transport in Transport.allCases {
+            for form in Form.allCases {
+                let called = try await call("tabs.create", [["url": url.absoluteString]],
+                                            via: transport, form: form, page: page)
+                XCTAssertTrue(called.error?.contains("no space") ?? false,
+                              "\(called.label): \(String(describing: called.error)) \(String(describing: called.value))")
+                XCTAssertNil(called.value, called.label)
+            }
+        }
+        XCTAssertTrue(frontSpace.tabs.isEmpty, "\(frontSpace.tabs.map(\.url))")
+    }
+
     private func assertRefusedAJavaScriptURL(_ called: Called, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(called.error?.contains("javascript:") ?? false,
                       "\(called.label): \(String(describing: called.error)) \(String(describing: called.value))",

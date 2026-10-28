@@ -852,6 +852,39 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
                        "the tab should use the sending profile's search engine, got \(String(describing: opened.url))")
     }
 
+    /// TASK-226: within the sending profile the tab goes to the space it used
+    /// last (`TabStore.mostRecentlyUsedSpace(ofProfile:)`, the rule
+    /// `tabs.create` and `windows.create` use), not its first one, and never
+    /// to the global last active space of another profile.
+    func testSearchQueryOpensTabInTheProfilesMostRecentlyUsedSpace() async throws {
+        let ext = try await makeTestExtension()
+        let profileA = makeProfile("Search MRU Profile A")
+        let profileB = makeProfile("Search MRU Profile B")
+        _ = profileA.extensionController
+        _ = profileB.extensionController
+
+        let spaceA = addSpace(for: profileA, name: "Search MRU Space A")
+        let firstB = addSpace(for: profileB, name: "Search MRU First B")
+        let usedB = addSpace(for: profileB, name: "Search MRU Used B")
+        TabStore.shared.noteSpaceUsed(firstB.id)
+        TabStore.shared.noteSpaceUsed(usedB.id)
+        TabStore.shared.noteSpaceUsed(spaceA.id)
+        ExtensionManager.shared.lastActiveSpaceID = spaceA.id
+
+        let handlerB = try XCTUnwrap(profileB.polyfillHandler)
+        let reply = await nativeReply(
+            handlerB,
+            ["type": "search.query", "extensionID": ext.id,
+             "params": ["query": ["text": "detour mru test"]]],
+            verifiedExtensionID: ext.id
+        )
+
+        XCTAssertNil(reply.error, "search.query failed: \(String(describing: reply.error))")
+        XCTAssertTrue(spaceA.tabs.isEmpty, "the other profile's space must not gain a tab")
+        XCTAssertTrue(firstB.tabs.isEmpty, "the profile's first space is not the one it used last")
+        XCTAssertEqual(usedB.tabs.count, 1, "the tab belongs in the profile's most recently used space")
+    }
+
     /// NEGATIVE: the handler's profile has no space at all. Falling back to the
     /// last-active space would leak the search into another profile, so the
     /// request must fail instead.
