@@ -84,6 +84,9 @@ sources:
   - id: task-223
     resource: backlog:TASK-223
     title: windows.create from a normal profile can open its window on another profile's space
+  - id: task-224
+    resource: backlog:TASK-224
+    title: A normal-profile extension not allowed in Private can still open a Private window with windows.create({incognito true})
   - id: webkit-windows-api
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIWindowsCocoa.mm
     title: WebKit WebExtensionContextAPIWindowsCocoa.mm (windowsCreate, read 2026-10-27)
@@ -193,7 +196,7 @@ plus any open Quick Detour AppKit does not list yet; `openWindowsFor`,
 | Caller's profile | `incognito` | Window |
 |---|---|---|
 | Incognito (Private windows and quarantines share it) | anything, or left out | Private |
-| Normal | `true` | Private |
+| Normal | `true` | Private if the extension is allowed in Private; otherwise refused |
 | Normal | `false` or left out | normal, on the caller's profile's most recently used space; refused when the profile has no space |
 
 The incognito row is the user's decision of 2026-10-27 (TASK-214). Before it,
@@ -212,9 +215,17 @@ refusing the call (most calls would fail).[^task-214]
 
 A Private window opened this way is a Private browser window on the shared
 Private store, not a quarantine's own store. A normal context that asks for
-`incognito: true` gets the window but no window object back: WebKit reports a
-Private window only to a context with access to Private data, so the promise
-resolves with `undefined`.[^windows-create-tests] A caller whose profile
+`incognito: true` gets the window only if the user allowed the extension in
+Private (`ExtensionManager.refusesPrivateWindow`, over
+`isEnabled(extensionID:inProfile: TabStore.incognitoProfileID)`, so a missing
+row refuses, as it keeps the extension out of Private); otherwise the call is
+refused ("the extension is not allowed in Private") before any window opens,
+which is Chrome's rule for an extension without incognito access. Before
+TASK-224 an extension kept out of Private could still put a page of its
+choosing in front of the user there.[^task-224] An allowed caller gets the
+window but no window object back: WebKit reports a Private window only to a
+context with access to Private data, so the promise resolves with
+`undefined`.[^windows-create-tests] A caller whose profile
 cannot be resolved is refused, and so is a `detour://` URL, before any window
 opens (it used to be dropped, leaving an empty window reported as a success).
 
@@ -345,7 +356,9 @@ The planned changes to the window model are in the
   context (`incognito` left out, `false`, `true`; with a quarantine in
   front) and from a normal one, from the worker and an extension page, in the
   promise and callback forms; a `detour://` URL fails in every
-  form and opens no window. A normal caller with another profile's window in
+  form and opens no window. A normal caller's `incognito: true` opens a
+  Private window when the extension is allowed in Private and is refused
+  (no row, or a row saying off) when it is not. A normal caller with another profile's window in
   front, with no window on its profile (its last active space, not its first),
   and with no space (refused, no window). (Shipped WebKit does not refuse a `javascript:`
   URL here, whatever its `main` branch says: a window opens.)
@@ -374,4 +387,5 @@ The planned changes to the window model are in the
 [^task-214]: An extension allowed in Private can open a normal-profile window with windows.create
 [^windows-create-tests]: ExtensionWindowsCreatePrivateTests
 [^task-223]: windows.create from a normal profile can open its window on another profile's space
+[^task-224]: A normal-profile extension not allowed in Private can still open a Private window with windows.create({incognito true})
 [^webkit-windows-api]: WebKit WebExtensionContextAPIWindowsCocoa.mm (windowsCreate, read 2026-10-27)

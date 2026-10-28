@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-10-28
+* **Update**: TASK-224 — [Tab and window bridge](extensions/tab-and-window-bridge.md) "Opening a window": `windows.create({incognito: true})` from a normal context is refused before any window opens unless the extension is allowed in Private (`ExtensionManager.refusesPrivateWindow` over `isEnabled(extensionID:inProfile:)` for the built-in Private profile, so a missing row refuses; Chrome's rule); an allowed caller still gets the window and `undefined`. Also [Private profile extensions](extensions/private-profile-extensions.md) (the rule) and [extension manager](extensions/extension-manager.md).
 * **Update**: TASK-223 — [Tab and window bridge](extensions/tab-and-window-bridge.md) "Opening a window": a normal window from `windows.create` opens on the caller's profile's most recently used space (`TabStore.mostRecentlyUsedSpace(ofProfile:)`, the Quick Detour Open in rule), never on another profile's front window space; with no window on the profile its last active space (the user's decision); a profile with no space is refused before a window opens. The open gap recorded by TASK-214 is removed from the limits; `tabs.create` still uses the profile's first space.
 
 ## 2026-10-27

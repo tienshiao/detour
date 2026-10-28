@@ -552,6 +552,8 @@ document.getElementById('btn-windows-current').addEventListener('click', async (
 
 // From a Private or quarantine window both buttons open a Private window:
 // Detour cannot tell `incognito: false` from leaving it out (TASK-214).
+// From a normal window, Create Private is refused, and the error shown, unless
+// the extension is allowed in Private (Settings > Extensions, TASK-224).
 async function createWindow(incognito) {
   try {
     const options = { url: 'https://example.com/' };

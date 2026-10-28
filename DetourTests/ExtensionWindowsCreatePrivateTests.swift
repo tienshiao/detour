@@ -25,6 +25,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     private var servers: [LoopbackHTTPServer] = []
     private var browserWindows: [BrowserWindowController] = []
     private var createdSpaceIDs: [UUID] = []
+    private var databaseExtensionIDs: [String] = []
 
     /// Released profiles take their process pool down with them, which WebKit
     /// traps on inside an IPC dispatch (`ExtensionPrivateStoreTests`): kept for
@@ -56,6 +57,14 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
         }
         registeredExtensionIDs.removeAll()
+        // The row's deletion cascades to its `profileExtension` rows.
+        for id in databaseExtensionIDs {
+            // Allowed in Private, it may have been loaded into the built-in
+            // Private profile too, when that profile's controller exists.
+            for profile in TabStore.shared.profiles { profile.unloadExtension(id: id) }
+            AppDatabase.shared.deleteExtension(id: id)
+        }
+        databaseExtensionIDs.removeAll()
         for server in servers { server.stop() }
         servers.removeAll()
         for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
@@ -120,6 +129,24 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         ExtensionManager.shared.extensions.append(ext)
         registeredExtensionIDs.append(id)
         return ext
+    }
+
+    /// `ext` saved in the shared database as installed and globally enabled,
+    /// with its built-in Private profile row on, off, or left out (`nil`,
+    /// which means off, TASK-74) — what "Allow in Private" decides.
+    private func installInSharedDatabase(_ ext: WebExtension, allowedInPrivate: Bool?) {
+        installTestExtension(ext, in: AppDatabase.shared,
+                             manifestJSON: (try? testExtensionManifestData(ext)) ?? Data("{}".utf8))
+        databaseExtensionIDs.append(ext.id)
+        if let allowedInPrivate { setAllowedInPrivate(ext, allowedInPrivate) }
+    }
+
+    /// Writes `ext`'s built-in Private profile row. The row's foreign key wants
+    /// the Private profile's own row, saved first, or the write fails silently.
+    private func setAllowedInPrivate(_ ext: WebExtension, _ allowed: Bool) {
+        AppDatabase.shared.saveProfile(TabStore.shared.ensureIncognitoProfile().toRecord())
+        AppDatabase.shared.setProfileExtensionEnabled(
+            extensionID: ext.id, profileID: TabStore.incognitoProfileID.uuidString, enabled: allowed)
     }
 
     /// An incognito profile of its own — never the built-in Private profile
@@ -291,6 +318,23 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         XCTAssertTrue(ExtensionManager.opensPrivateWindow(requested: true, callerIsIncognito: false))
         XCTAssertTrue(ExtensionManager.opensPrivateWindow(requested: false, callerIsIncognito: true))
         XCTAssertTrue(ExtensionManager.opensPrivateWindow(requested: true, callerIsIncognito: true))
+    }
+
+    /// TASK-224: only a normal caller asking for Private needs the extension
+    /// allowed there; a Private caller is running in Private already.
+    func testThePrivateAccessRule() {
+        for allowed in [false, true] {
+            XCTAssertFalse(ExtensionManager.refusesPrivateWindow(requested: false, callerIsIncognito: false,
+                                                                 allowedInPrivate: allowed))
+            XCTAssertFalse(ExtensionManager.refusesPrivateWindow(requested: false, callerIsIncognito: true,
+                                                                 allowedInPrivate: allowed))
+            XCTAssertFalse(ExtensionManager.refusesPrivateWindow(requested: true, callerIsIncognito: true,
+                                                                 allowedInPrivate: allowed))
+        }
+        XCTAssertTrue(ExtensionManager.refusesPrivateWindow(requested: true, callerIsIncognito: false,
+                                                            allowedInPrivate: false))
+        XCTAssertFalse(ExtensionManager.refusesPrivateWindow(requested: true, callerIsIncognito: false,
+                                                             allowedInPrivate: true))
     }
 
     // MARK: - From Private
@@ -486,18 +530,59 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         XCTAssertEqual(space.tabs.map(\.url), [url], created.label, file: file, line: line)
     }
 
-    /// As before TASK-214: a normal context asking for a Private window gets
-    /// one, but WebKit reports no window to a context without access to
-    /// Private data, so the promise resolves with nothing.
-    func testFromANormalProfileIncognitoTrueOpensAPrivateWindow() async throws {
+    /// A normal context of an extension the user allowed in Private, asking
+    /// for a Private window, gets one, but WebKit reports no window to a
+    /// context without access to Private data, so the promise resolves with
+    /// nothing.
+    func testFromANormalProfileIncognitoTrueOpensAPrivateWindowWhenAllowedInPrivate() async throws {
         let ext = try await makeExtension()
+        installInSharedDatabase(ext, allowedInPrivate: true)
         let normal = makeProfile("Windows Create Normal To Private")
         let page = try await loadPage(ext, in: normal)
         let url = try await serve()
         browserWindow(showingANewSpaceOf: normal)
 
-        let created = try await create(["url": url.absoluteString, "incognito": true],
-                                       via: .worker, form: .promise, page: page)
-        assertOpenedAPrivateWindow(created, showing: url, reportsWindow: false)
+        for (transport, form) in [(Transport.worker, Form.promise), (.page, .callback)] {
+            let created = try await create(["url": url.absoluteString, "incognito": true],
+                                           via: transport, form: form, page: page)
+            assertOpenedAPrivateWindow(created, showing: url, reportsWindow: false)
+            closeBrowserWindows()
+        }
+    }
+
+    /// TASK-224: an extension the user kept out of Private (no row for the
+    /// Private profile, which means off, or a row saying off) cannot put a
+    /// page in front of them there. The call is refused before any window
+    /// opens, from both transports, as a rejection and as `lastError`.
+    func testFromANormalProfileIncognitoTrueIsRefusedWhenNotAllowedInPrivate() async throws {
+        let ext = try await makeExtension()
+        installInSharedDatabase(ext, allowedInPrivate: nil)
+        let normal = makeProfile("Windows Create Not In Private")
+        let page = try await loadPage(ext, in: normal)
+        let url = try await serve()
+        let space = browserWindow(showingANewSpaceOf: normal)
+
+        func assertRefused(_ created: Created, file: StaticString = #filePath, line: UInt = #line) {
+            XCTAssertTrue(created.error?.contains("not allowed in Private") ?? false,
+                          "\(created.label): \(String(describing: created.error))", file: file, line: line)
+            XCTAssertNil(created.window, created.label, file: file, line: line)
+            XCTAssertEqual(created.opened.count, 0, created.label, file: file, line: line)
+        }
+
+        for transport in Transport.allCases {
+            for form in Form.allCases {
+                assertRefused(try await create(["url": url.absoluteString, "incognito": true],
+                                               via: transport, form: form, page: page))
+            }
+        }
+
+        setAllowedInPrivate(ext, false)
+        assertRefused(try await create(["url": url.absoluteString, "incognito": true],
+                                       via: .page, form: .promise, page: page))
+        XCTAssertTrue(space.tabs.isEmpty, "\(space.tabs.map(\.url))")
+
+        // The same extension's normal windows are not affected.
+        let created = try await create(["url": url.absoluteString], via: .worker, form: .callback, page: page)
+        assertOpenedANormalWindow(created, on: space, showing: url)
     }
 }

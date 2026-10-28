@@ -1968,6 +1968,17 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         requested || callerIsIncognito
     }
 
+    /// Whether `windows.create` is refused for asking for a Private window: a
+    /// normal context asks for one but the user has not allowed the extension
+    /// in Private (TASK-224, Chrome's rule for an extension without incognito
+    /// access). It would otherwise put a page of its choosing in front of the
+    /// user there. A context in an incognito profile is running there already.
+    /// `allowedInPrivate` is a database read, made only when it decides.
+    nonisolated static func refusesPrivateWindow(requested: Bool, callerIsIncognito: Bool,
+                                                 allowedInPrivate: @autoclosure () -> Bool) -> Bool {
+        requested && !callerIsIncognito && !allowedInPrivate()
+    }
+
     func webExtensionController(
         _ controller: WKWebExtensionController,
         openNewWindowUsing configuration: WKWebExtension.WindowConfiguration,
@@ -1987,6 +1998,19 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // dropping the URL left an empty window reported as a success.
         guard !configuration.tabURLs.contains(where: { InternalPage.isInternal($0) }) else {
             completionHandler(nil, Self.extensionError("Cannot open a \(InternalPage.scheme):// URL"))
+            return
+        }
+
+        // "Allowed in Private" is the one enabled-state rule for the built-in
+        // Private profile, where a missing row means off (TASK-74). An
+        // extension that cannot be identified is not allowed.
+        if Self.refusesPrivateWindow(
+            requested: configuration.shouldBePrivate, callerIsIncognito: callerProfile.isIncognito,
+            allowedInPrivate: extensionIDFromContext(extensionContext).map {
+                isEnabled(extensionID: $0, inProfile: TabStore.incognitoProfileID)
+            } ?? false) {
+            completionHandler(nil, Self.extensionError(
+                "Cannot open a Private window: the extension is not allowed in Private"))
             return
         }
 
