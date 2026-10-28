@@ -1990,9 +1990,23 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             return
         }
 
-        let wc = BrowserWindowController(incognito: Self.opensPrivateWindow(
-            requested: configuration.shouldBePrivate, callerIsIncognito: callerProfile.isIncognito))
-        appDelegate.assignDefaultSpace(to: wc)
+        let wc: BrowserWindowController
+        if Self.opensPrivateWindow(requested: configuration.shouldBePrivate,
+                                   callerIsIncognito: callerProfile.isIncognito) {
+            // A Private window makes its own space.
+            wc = BrowserWindowController(incognito: true)
+        } else {
+            // A normal window opens on the caller's own profile, never on the
+            // front window's space, which may be another profile's: its tabs
+            // would load with that profile's cookies and history (TASK-223).
+            // A profile with no space has nowhere to open one.
+            guard let space = TabStore.shared.mostRecentlyUsedSpace(ofProfile: callerProfile.id) else {
+                completionHandler(nil, Self.extensionError("Cannot open a window: the profile has no space"))
+                return
+            }
+            wc = BrowserWindowController(incognito: false)
+            wc.setActiveSpace(id: space.id, selectTab: false)
+        }
 
         // TODO: Handle configuration.tabs (moving existing tabs to new window)
 

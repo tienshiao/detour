@@ -81,6 +81,9 @@ sources:
   - id: windows-create-tests
     resource: ../../DetourTests/ExtensionWindowsCreatePrivateTests.swift
     title: ExtensionWindowsCreatePrivateTests
+  - id: task-223
+    resource: backlog:TASK-223
+    title: windows.create from a normal profile can open its window on another profile's space
   - id: webkit-windows-api
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIWindowsCocoa.mm
     title: WebKit WebExtensionContextAPIWindowsCocoa.mm (windowsCreate, read 2026-10-27)
@@ -191,7 +194,7 @@ plus any open Quick Detour AppKit does not list yet; `openWindowsFor`,
 |---|---|---|
 | Incognito (Private windows and quarantines share it) | anything, or left out | Private |
 | Normal | `true` | Private |
-| Normal | `false` or left out | normal, on the key normal window's space (`AppDelegate.assignDefaultSpace`) |
+| Normal | `false` or left out | normal, on the caller's profile's most recently used space; refused when the profile has no space |
 
 The incognito row is the user's decision of 2026-10-27 (TASK-214). Before it,
 an extension allowed in Private could open a normal window on a normal
@@ -214,6 +217,23 @@ Private window only to a context with access to Private data, so the promise
 resolves with `undefined`.[^windows-create-tests] A caller whose profile
 cannot be resolved is refused, and so is a `detour://` URL, before any window
 opens (it used to be dropped, leaving an empty window reported as a success).
+
+A normal window opens on one of the caller's own profile's spaces:
+`TabStore.mostRecentlyUsedSpace(ofProfile:)`, the first of `spaceUseOrder`
+on that profile, else its first space in sidebar order (the same rule as
+Quick Detour's Open in default, `QuickDetour.mostRecentlyUsedSpace`). The key
+window's space heads the use order, so a caller whose profile is in front gets
+that space as before. When another profile is in front, the caller's most
+recently used space is taken whether or not a window shows it: the user's
+decision of 2026-10-28 for a profile with no open space was its last active
+one, and no separate "a space some window shows" step was needed on top. A
+profile with no space at all is refused ("the profile has no space") before a
+window opens. Before this, the window took `AppDelegate.assignDefaultSpace`'s
+space (the key normal window's, else the global last active, else the first),
+so an extension of profile A could open a window, with its URL, on profile
+B's space, with B's cookies and history and in B's extension
+contexts.[^task-223] `tabs.create` still adds to the profile's first space in
+sidebar order (`space(for:)`), not its most recently used one.
 
 ## Active tab
 
@@ -308,11 +328,6 @@ its configuration's controller is the asking context's.
   the key window's is the likely cause; it has not been confirmed.[^task-81]
 - `openNewWindowUsing` ignores `configuration.tabs` (moving existing tabs into
   the new window is a TODO in the code).
-- A normal window `openNewWindowUsing` opens takes `AppDelegate.assignDefaultSpace`'s
-  space (the key normal window's, else the last active), which need not be the
-  caller's profile: an extension of profile A can open a window, with its URL,
-  on profile B's space. `tabs.create` uses the caller's profile (`space(for:)`).
-  Found in the TASK-214 review; not fixed.
 
 The planned changes to the window model are in the
 [Claude extension epic](./claude-extension-epic.md); this page describes `main`.
@@ -330,7 +345,9 @@ The planned changes to the window model are in the
   context (`incognito` left out, `false`, `true`; with a quarantine in
   front) and from a normal one, from the worker and an extension page, in the
   promise and callback forms; a `detour://` URL fails in every
-  form and opens no window. (Shipped WebKit does not refuse a `javascript:`
+  form and opens no window. A normal caller with another profile's window in
+  front, with no window on its profile (its last active space, not its first),
+  and with no space (refused, no window). (Shipped WebKit does not refuse a `javascript:`
   URL here, whatever its `main` branch says: a window opens.)
 - In tests a web view must be registered as a tab (`registerProbeTab` in `ExtensionTestSupport`) before content-script messaging works; that was the real cause of six tests once skipped as "sandbox limits".[^task-20]
 
@@ -356,4 +373,5 @@ The planned changes to the window model are in the
 [^task-193-4]: Quick Detour: a profile selector in the title bar
 [^task-214]: An extension allowed in Private can open a normal-profile window with windows.create
 [^windows-create-tests]: ExtensionWindowsCreatePrivateTests
+[^task-223]: windows.create from a normal profile can open its window on another profile's space
 [^webkit-windows-api]: WebKit WebExtensionContextAPIWindowsCocoa.mm (windowsCreate, read 2026-10-27)

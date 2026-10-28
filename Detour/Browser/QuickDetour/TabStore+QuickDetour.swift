@@ -220,6 +220,14 @@ extension TabStore {
                                          profiles: profiles.map(Self.openInSnapshot(of:)), useOrder: spaceUseOrder)
     }
 
+    /// `profileID`'s most recently used normal space, else its first in
+    /// sidebar order; nil when it has none (`QuickDetour.mostRecentlyUsedSpace`).
+    /// Where an extension's `windows.create` opens a normal window (TASK-223).
+    func mostRecentlyUsedSpace(ofProfile profileID: UUID) -> Space? {
+        QuickDetour.mostRecentlyUsedSpace(ofProfile: profileID, spaces: spaces.map(Self.openInSnapshot(of:)),
+                                          useOrder: spaceUseOrder).flatMap(space(withID:))
+    }
+
     /// The profile pill's menu for a Quick Detour on `windowProfile`, from
     /// the store's profiles (`QuickDetour.profileMenu`).
     func quickDetourProfileMenu(windowProfile: Profile) -> QuickDetourProfileMenu {

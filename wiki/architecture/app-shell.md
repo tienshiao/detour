@@ -82,7 +82,9 @@ entry.
 
 `assignDefaultSpace(to:)` picks, in order: the key browser window's space
 (unless that window is Private), `TabStore.lastActiveSpaceID`, the first
-non-incognito space.
+non-incognito space. An extension's `windows.create` does not use it: its
+window opens on the caller's profile's own space
+([opening a window](../extensions/tab-and-window-bridge.md#opening-a-window)).
 
 `application(_:open:)` accepts only `http` and `https` URLs and opens each in
 the key window's active space, or in a new window when there is none. The app

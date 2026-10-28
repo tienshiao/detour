@@ -7,8 +7,9 @@ import WebKit
 /// window, whatever `incognito` says. WebKit hands the delegate
 /// `incognito ?? false`, so a call that leaves the key out cannot be told from
 /// one that asks for a normal window, and a normal window would carry a
-/// Private page's address into a profile's cookies and history. Calls from a
-/// normal profile's context are unchanged.
+/// Private page's address into a profile's cookies and history. A normal
+/// profile's context opens a normal window on one of its own profile's spaces
+/// (TASK-223), never on the space of another profile's window in front.
 ///
 /// Real contexts through the production wiring (`Profile.extensionController`
 /// with `ExtensionManager` as its delegate), asked from the service worker and
@@ -168,12 +169,23 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     }
 
     /// A normal window on a new space of `profile`, in front and registered
-    /// with the app delegate, so a normal window `windows.create` opens takes
-    /// its space (`AppDelegate.assignDefaultSpace`).
+    /// with the app delegate. Showing it makes the space its profile's most
+    /// recently used one.
+    @discardableResult
     private func browserWindow(showingANewSpaceOf profile: Profile) -> Space {
+        let space = addSpace(of: profile)
+        browserWindow(showing: space)
+        return space
+    }
+
+    private func addSpace(of profile: Profile) -> Space {
         let space = TabStore.shared.addSpace(name: "Windows Create", emoji: "🧪", colorHex: "007AFF",
                                              profileID: profile.id)
         createdSpaceIDs.append(space.id)
+        return space
+    }
+
+    private func browserWindow(showing space: Space) {
         let wc = BrowserWindowController(incognito: false)
         wc.sidebarSplitView.autosaveName = nil
         wc.setActiveSpace(id: space.id, selectTab: false)
@@ -181,7 +193,6 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         wc.window?.makeKeyAndOrderFront(nil)
         (NSApp.delegate as? AppDelegate)?.registerWindowController(wc)
         browserWindows.append(wc)
-        return space
     }
 
     /// A quarantine window on `privateProfile` with `url` loaded.
@@ -366,8 +377,9 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         }
     }
 
-    // MARK: - From a normal profile (unchanged)
+    // MARK: - From a normal profile
 
+    /// The caller's profile is in front: the window opens on that space.
     func testFromANormalProfileOpensANormalWindowInTheFrontSpace() async throws {
         let ext = try await makeExtension()
         let normal = makeProfile("Windows Create Normal")
@@ -377,15 +389,101 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         for (transport, form) in [(Transport.worker, Form.promise), (.page, .callback)] {
             let space = browserWindow(showingANewSpaceOf: normal)
             let created = try await create(["url": url.absoluteString], via: transport, form: form, page: page)
-            XCTAssertNil(created.error, created.label)
-            XCTAssertEqual(created.window?["incognito"] as? Bool, false, "\(created.label): \(String(describing: created.window))")
-            XCTAssertEqual(created.opened.count, 1, created.label)
-            let wc = try XCTUnwrap(created.opened.first, created.label)
-            XCTAssertFalse(wc.isIncognito, created.label)
-            XCTAssertEqual(wc.activeSpaceID, space.id, created.label)
-            XCTAssertTrue(space.tabs.contains { $0.url == url }, created.label)
+            assertOpenedANormalWindow(created, on: space, showing: url)
             closeBrowserWindows()
         }
+    }
+
+    /// The task's case: another profile's window is in front. The window
+    /// opens on the caller's own space, where its tabs load with the caller's
+    /// cookies and history, and the front window's space gets nothing.
+    func testFromANormalProfileWithAnotherProfileInFrontOpensOnTheCallersSpace() async throws {
+        let ext = try await makeExtension()
+        let caller = makeProfile("Windows Create Caller")
+        let other = makeProfile("Windows Create Other")
+        let page = try await loadPage(ext, in: caller)
+        let url = try await serve()
+
+        for transport in Transport.allCases {
+            for form in Form.allCases {
+                let callerSpace = browserWindow(showingANewSpaceOf: caller)
+                let frontSpace = browserWindow(showingANewSpaceOf: other)
+                let created = try await create(["url": url.absoluteString], via: transport, form: form, page: page)
+                assertOpenedANormalWindow(created, on: callerSpace, showing: url)
+                XCTAssertTrue(frontSpace.tabs.isEmpty, "\(created.label): \(frontSpace.tabs.map(\.url))")
+                closeBrowserWindows()
+            }
+        }
+    }
+
+    /// No window shows the caller's profile: the window opens on the space of
+    /// it used last (the user's decision), not on its first space and not on
+    /// the front window's.
+    func testFromANormalProfileWithNoOpenSpaceOpensOnItsLastActiveSpace() async throws {
+        let ext = try await makeExtension()
+        let caller = makeProfile("Windows Create Closed Caller")
+        let other = makeProfile("Windows Create Closed Other")
+        let page = try await loadPage(ext, in: caller)
+        let url = try await serve()
+
+        for (transport, form) in [(Transport.worker, Form.callback), (.page, .promise)] {
+            let first = addSpace(of: caller)
+            let lastActive = addSpace(of: caller)
+            browserWindow(showing: first)
+            browserWindow(showing: lastActive)
+            closeBrowserWindows()
+            let frontSpace = browserWindow(showingANewSpaceOf: other)
+
+            let created = try await create(["url": url.absoluteString], via: transport, form: form, page: page)
+            assertOpenedANormalWindow(created, on: lastActive, showing: url)
+            XCTAssertTrue(first.tabs.isEmpty, created.label)
+            XCTAssertTrue(frontSpace.tabs.isEmpty, created.label)
+            closeBrowserWindows()
+            // Gone before the next pass, so its `first` is the profile's first space again.
+            for space in [first, lastActive] {
+                space.tabs.forEach { $0.teardown() }
+                TabStore.shared.forceRemoveSpace(id: space.id)
+            }
+        }
+    }
+
+    /// A profile with no space has nowhere of its own to open a window: the
+    /// call is refused before any window opens, rather than borrowing the
+    /// front window's space.
+    func testFromANormalProfileWithNoSpaceIsRefusedAndOpensNoWindow() async throws {
+        let ext = try await makeExtension()
+        let caller = makeProfile("Windows Create Spaceless")
+        let other = makeProfile("Windows Create Spaceless Other")
+        let page = try await loadPage(ext, in: caller)
+        let url = try await serve()
+        let frontSpace = browserWindow(showingANewSpaceOf: other)
+
+        for transport in Transport.allCases {
+            for form in Form.allCases {
+                let created = try await create(["url": url.absoluteString], via: transport, form: form, page: page)
+                XCTAssertTrue(created.error?.contains("no space") ?? false,
+                              "\(created.label): \(String(describing: created.error))")
+                XCTAssertNil(created.window, created.label)
+                XCTAssertEqual(created.opened.count, 0, created.label)
+            }
+        }
+        XCTAssertTrue(frontSpace.tabs.isEmpty, "\(frontSpace.tabs.map(\.url))")
+    }
+
+    /// The call succeeded and opened one normal window, on `space`, whose new
+    /// tab shows `url`.
+    private func assertOpenedANormalWindow(_ created: Created, on space: Space, showing url: URL,
+                                           file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertNil(created.error, created.label, file: file, line: line)
+        XCTAssertEqual(created.window?["incognito"] as? Bool, false,
+                       "\(created.label): \(String(describing: created.window))", file: file, line: line)
+        XCTAssertEqual(created.opened.count, 1, created.label, file: file, line: line)
+        let wc = created.opened.first
+        XCTAssertEqual(wc?.isIncognito, false, created.label, file: file, line: line)
+        XCTAssertEqual(wc?.activeSpaceID, space.id,
+                       "\(created.label): opened on \(String(describing: wc?.activeSpace?.profile?.name))",
+                       file: file, line: line)
+        XCTAssertEqual(space.tabs.map(\.url), [url], created.label, file: file, line: line)
     }
 
     /// As before TASK-214: a normal context asking for a Private window gets
@@ -396,7 +494,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         let normal = makeProfile("Windows Create Normal To Private")
         let page = try await loadPage(ext, in: normal)
         let url = try await serve()
-        _ = browserWindow(showingANewSpaceOf: normal)
+        browserWindow(showingANewSpaceOf: normal)
 
         let created = try await create(["url": url.absoluteString, "incognito": true],
                                        via: .worker, form: .promise, page: page)
