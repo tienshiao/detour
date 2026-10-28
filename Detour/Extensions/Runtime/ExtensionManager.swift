@@ -1958,6 +1958,16 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         completionHandler(tab, nil)
     }
 
+    /// Whether `windows.create` opens a Private window. A context in an
+    /// incognito profile — the one behind Private windows and quarantines —
+    /// only ever opens Private windows: WebKit passes `incognito ?? false`, so
+    /// a call that leaves the key out cannot be told from one that asks for a
+    /// normal window, and a normal window would carry a Private page's address
+    /// into a profile's cookies and history (TASK-214).
+    nonisolated static func opensPrivateWindow(requested: Bool, callerIsIncognito: Bool) -> Bool {
+        requested || callerIsIncognito
+    }
+
     func webExtensionController(
         _ controller: WKWebExtensionController,
         openNewWindowUsing configuration: WKWebExtension.WindowConfiguration,
@@ -1968,8 +1978,20 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             completionHandler(nil, nil)
             return
         }
+        // Without the caller's profile there is no telling whether it is Private.
+        guard let callerProfile = profile(for: controller) else {
+            completionHandler(nil, Self.extensionError("Cannot open a window for an unknown profile"))
+            return
+        }
+        // Refused before a window exists, as `openNewTabUsing` does (TASK-86):
+        // dropping the URL left an empty window reported as a success.
+        guard !configuration.tabURLs.contains(where: { InternalPage.isInternal($0) }) else {
+            completionHandler(nil, Self.extensionError("Cannot open a \(InternalPage.scheme):// URL"))
+            return
+        }
 
-        let wc = BrowserWindowController(incognito: configuration.shouldBePrivate)
+        let wc = BrowserWindowController(incognito: Self.opensPrivateWindow(
+            requested: configuration.shouldBePrivate, callerIsIncognito: callerProfile.isIncognito))
         appDelegate.assignDefaultSpace(to: wc)
 
         // TODO: Handle configuration.tabs (moving existing tabs to new window)
@@ -1977,7 +1999,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // Open new tabs for specified URLs
         var lastTab: BrowserTab?
         if let space = wc.activeSpace {
-            for url in configuration.tabURLs where !InternalPage.isInternal(url) {
+            for url in configuration.tabURLs {
                 if url.scheme == "webkit-extension", let extConfig = extensionContext.webViewConfiguration {
                     lastTab = TabStore.shared.addExtensionTab(in: space, url: url, configuration: extConfig)
                 } else {

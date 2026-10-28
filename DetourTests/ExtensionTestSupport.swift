@@ -851,6 +851,15 @@ func promiseOutcomeJS(_ call: String) -> String {
     """#
 }
 
+/// Runs `js` (a `callbackOutcomeJS` / `promiseOutcomeJS` body, or any body
+/// returning a JSON object string) in `page`'s page world and decodes it.
+@MainActor
+func pageEval(_ js: String, in page: WKWebView) async throws -> [String: Any] {
+    let raw = try await page.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
+    let json = try XCTUnwrap(raw as? String, "expected JSON, got \(String(describing: raw))")
+    return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+}
+
 // MARK: - Loopback HTTP server
 
 /// A one-shot-per-connection HTTP/1.1 server on 127.0.0.1, just enough to serve

@@ -225,12 +225,6 @@ final class QuickDetourExtensionTests: XCTestCase {
         return controller
     }
 
-    private func pageEval(_ js: String, in page: WKWebView) async throws -> [String: Any] {
-        let raw = try await page.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
-        let json = try XCTUnwrap(raw as? String, "expected JSON, got \(String(describing: raw))")
-        return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
-    }
-
     private func pagePromise(_ call: String, in page: WKWebView) async throws -> [String: Any] {
         try await pageEval(promiseOutcomeJS(call), in: page)
     }

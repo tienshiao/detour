@@ -550,6 +550,24 @@ document.getElementById('btn-windows-current').addEventListener('click', async (
   }
 });
 
+// From a Private or quarantine window both buttons open a Private window:
+// Detour cannot tell `incognito: false` from leaving it out (TASK-214).
+async function createWindow(incognito) {
+  try {
+    const options = { url: 'https://example.com/' };
+    if (incognito) options.incognito = true;
+    const win = await chrome.windows.create(options);
+    showResult('res-windows', win === undefined
+      ? 'Opened (this context cannot see the new window)'
+      : { id: win.id, incognito: win.incognito, type: win.type });
+  } catch (e) {
+    showResult('res-windows', e.message, true);
+  }
+}
+
+document.getElementById('btn-windows-create').addEventListener('click', () => createWindow(false));
+document.getElementById('btn-windows-create-private').addEventListener('click', () => createWindow(true));
+
 // --- Font Settings ---
 
 document.getElementById('btn-fonts-list').addEventListener('click', async () => {

@@ -72,6 +72,7 @@ The third point cost a week of misdiagnosis and is the one to remember.
 | Every context loaded into an incognito profile gets `hasAccessToPrivateData = true` | `Profile.loadExtensionContext` |
 | The incognito controller is `.nonPersistent()` and its `webViewConfiguration.websiteDataStore` is the profile's `dataStore` | `Profile.extensionController` |
 | The Private profile's worker never receives `runtime.onInstalled` | [runtime.onInstalled](./runtime-installed-event.md) |
+| `windows.create` from a Private context (a Private window's or a quarantine's) always opens a Private window, whatever `incognito` says | `ExtensionManager.opensPrivateWindow`; see [opening a window](./tab-and-window-bridge.md#opening-a-window) (TASK-214) |
 
 Consequences worth knowing:
 

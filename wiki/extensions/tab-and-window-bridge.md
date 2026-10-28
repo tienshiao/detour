@@ -4,7 +4,7 @@ title: Tab and window bridge
 description: How Detour's tabs and windows are presented to WebKit's extension runtime — the WKWebExtensionTab and Window conformances, the rule for when a tab is reported open, closed, moved or active, and what a window lists.
 tags: [extensions, tabs, windows, webkit, lifecycle]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-28T05:00:00Z }
 sources:
   - id: lifecycle
     resource: ../../Detour/Extensions/Runtime/ExtensionTabLifecycle.swift
@@ -75,6 +75,15 @@ sources:
   - id: quick-detour-tests
     resource: ../../DetourTests/QuickDetourExtensionTests.swift
     title: QuickDetourExtensionTests
+  - id: task-214
+    resource: backlog:TASK-214
+    title: An extension allowed in Private can open a normal-profile window with windows.create
+  - id: windows-create-tests
+    resource: ../../DetourTests/ExtensionWindowsCreatePrivateTests.swift
+    title: ExtensionWindowsCreatePrivateTests
+  - id: webkit-windows-api
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIWindowsCocoa.mm
+    title: WebKit WebExtensionContextAPIWindowsCocoa.mm (windowsCreate, read 2026-10-27)
 ---
 
 WebKit's extension runtime keeps its own table of tabs and windows, built
@@ -172,6 +181,40 @@ plus any open Quick Detour AppKit does not list yet; `openWindowsFor`,
   Detour (TASK-193.1), whose one tab is also its active tab; `isPrivate` is
   the window's incognito flag (a Quick Detour's: its profile's).
 
+## Opening a window
+
+`windows.create` reaches `openNewWindowUsing`, which opens a
+`BrowserWindowController`. Whether it is Private is
+`ExtensionManager.opensPrivateWindow(requested:callerIsIncognito:)`:
+
+| Caller's profile | `incognito` | Window |
+|---|---|---|
+| Incognito (Private windows and quarantines share it) | anything, or left out | Private |
+| Normal | `true` | Private |
+| Normal | `false` or left out | normal, on the key normal window's space (`AppDelegate.assignDefaultSpace`) |
+
+The incognito row is the user's decision of 2026-10-27 (TASK-214). Before it,
+an extension allowed in Private could open a normal window on a normal
+profile's space, with its cookies and history, at any address, including the Private
+or quarantined page it was running in. WebKit sets
+`shouldBePrivate = incognito ?? false` before it calls the delegate, so an
+explicit `incognito: false` cannot be told from a call that leaves the key
+out.[^webkit-windows-api] Chrome's split-mode rule (follow the caller unless
+it says `false`) cannot be built on that, and an exception for extensions also
+enabled in a normal profile would have kept the leak for every plain
+`windows.create({url})`. **Rejected**: wrapping `chrome.windows.create` in the
+polyfill to pass an explicit `false` through (more code for a rare call; the
+extension's normal-profile context can open normal windows itself) and
+refusing the call (most calls would fail).[^task-214]
+
+A Private window opened this way is a Private browser window on the shared
+Private store, not a quarantine's own store. A normal context that asks for
+`incognito: true` gets the window but no window object back: WebKit reports a
+Private window only to a context with access to Private data, so the promise
+resolves with `undefined`.[^windows-create-tests] A caller whose profile
+cannot be resolved is refused, and so is a `detour://` URL, before any window
+opens (it used to be dropped, leaving an empty window reported as a success).
+
 ## Active tab
 
 `selectedTabID` is untouched by the Peek rule; it still names the focused pane
@@ -265,6 +308,11 @@ its configuration's controller is the asking context's.
   the key window's is the likely cause; it has not been confirmed.[^task-81]
 - `openNewWindowUsing` ignores `configuration.tabs` (moving existing tabs into
   the new window is a TODO in the code).
+- A normal window `openNewWindowUsing` opens takes `AppDelegate.assignDefaultSpace`'s
+  space (the key normal window's, else the last active), which need not be the
+  caller's profile: an extension of profile A can open a window, with its URL,
+  on profile B's space. `tabs.create` uses the caller's profile (`space(for:)`).
+  Found in the TASK-214 review; not fixed.
 
 The planned changes to the window model are in the
 [Claude extension epic](./claude-extension-epic.md); this page describes `main`.
@@ -278,6 +326,12 @@ The planned changes to the window model are in the
   `popup` window from an extension page and from the worker, isolation from
   another profile (also for a context that loads after the window opened),
   a content script's `sender.tab`, the toolbar button, the close.
+- `ExtensionWindowsCreatePrivateTests` — `windows.create` from an incognito
+  context (`incognito` left out, `false`, `true`; with a quarantine in
+  front) and from a normal one, from the worker and an extension page, in the
+  promise and callback forms; a `detour://` URL fails in every
+  form and opens no window. (Shipped WebKit does not refuse a `javascript:`
+  URL here, whatever its `main` branch says: a window opens.)
 - In tests a web view must be registered as a tab (`registerProbeTab` in `ExtensionTestSupport`) before content-script messaging works; that was the real cause of six tests once skipped as "sandbox limits".[^task-20]
 
 # Related
@@ -300,3 +354,6 @@ The planned changes to the window model are in the
 [^task-193-1]: Quick Detour: the window, its single tab and the palette that opens it
 [^task-193-3]: Quick Detour: Open in <Space> moves the page into a tab of a space (Cmd+O)
 [^task-193-4]: Quick Detour: a profile selector in the title bar
+[^task-214]: An extension allowed in Private can open a normal-profile window with windows.create
+[^windows-create-tests]: ExtensionWindowsCreatePrivateTests
+[^webkit-windows-api]: WebKit WebExtensionContextAPIWindowsCocoa.mm (windowsCreate, read 2026-10-27)
