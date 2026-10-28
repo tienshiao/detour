@@ -46,6 +46,9 @@ sources:
   - id: task-176
     resource: backlog:TASK-176
     title: Reload on a tab whose web process is unresponsive does nothing; terminate the process and reload
+  - id: task-220
+    resource: backlog:TASK-220
+    title: A popup whose content is wider than its first size stays at 126x126 and is cut off
 ---
 
 Much of what Detour knows about WebKit came from reading WebKit's source
@@ -104,6 +107,7 @@ Paths are relative to the repository root and were checked against `main` on
 | `Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIRuntimeCocoa.mm` | UI-process side of `runtime.*`: `runtimeConnectNative`, `runtimeReload` |
 | `Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp` | Controller load and unload[^task-22] |
 | `Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionWindowCocoa.mm` | `WebExtensionWindow::tabs()` drops a window's whole tab list unless the active tab is in it[^task-132-21] — background for the [Claude extension epic](../extensions/claude-extension-epic.md) |
+| `Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionActionCocoa.mm` | `popupWebView` turns on size-to-content autosizing (800 × 600 maximum) and reports the content size as `intrinsicContentSize`; `_WKWebExtensionActionPopover` and `popupSizeDidChange`, how WebKit's own popover follows it[^task-220] — see [extension popup](../extensions/popup-and-options-ui.md) |
 | `Source/WebKit/WebProcess/Extensions/API/Cocoa/` | Web-process side of each API (`WebExtensionAPIRuntimeCocoa.mm`, …) |
 | `Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp` | The weak JS wrapper cache behind [chrome.runtime patching](../extensions/chrome-runtime-patching.md) |
 
@@ -186,3 +190,4 @@ on [service worker unload rules](./service-worker-unload-rules.md).[^notes-sourc
 [^task-132-21]: A window with nothing selected reports no tabs to extensions
 [^task-175]: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
 [^task-176]: Reload on a tab whose web process is unresponsive does nothing; terminate the process and reload
+[^task-220]: A popup whose content is wider than its first size stays at 126x126 and is cut off

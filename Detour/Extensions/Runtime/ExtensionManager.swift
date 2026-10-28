@@ -2152,10 +2152,12 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             self?.activePopovers.removeValue(forKey: extID)
             self?.popupCompletionHandlers.removeValue(forKey: extID)?(nil)
         }
-        popoverController.presentPopupWebView(popupWebView)
-
+        // Stored before presenting: a popup that cannot be presented reports
+        // its close from inside presentPopupWebView, and that close must find
+        // (and call) the completion handler.
         activePopovers[extID] = popoverController
         popupCompletionHandlers[extID] = completionHandler
+        popoverController.presentPopupWebView(popupWebView)
     }
 
     func webExtensionController(

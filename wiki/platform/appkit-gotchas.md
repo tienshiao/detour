@@ -82,6 +82,9 @@ sources:
   - id: task-169
     resource: backlog:TASK-169
     title: A hover-revealed sidebar sometimes stays open instead of hiding again
+  - id: task-220
+    resource: backlog:TASK-220
+    title: A popup whose content is wider than its first size stays at 126x126 and is cut off
   - id: notes-keyloop
     resource: "Agent session notes, 2026-10-02 (not in the repository)"
     title: Key-view loop probe findings
@@ -177,6 +180,8 @@ Related.
 | `NSPopover` does not expose its positioning view. Its window is a child of the presenting window, but only from `didShow`; at `willShow` it is not yet.[^task-127] | Deciding which popovers belong to the window | Observe `NSPopover.didShowNotification` and test `popover.contentViewController?.view.window?.parent === window` |
 | A `.semitransient` popover whose anchor collapses under it can stay shown and post no `didClose` (seen in a standalone probe, not reproduced in the app).[^task-127] Ordering its parent window out, or minimizing it, also leaves it `isShown` with no `didClose`; it returns with the window. A shown popover with no remaining reference stays alive and shown. Removing the anchor's view from the hierarchy closes it, with `didClose`.[^task-169] | A hold keyed on `didClose` could stick | Keep popovers weakly and ask `isShown` when the answer matters (`refreshSidebarPopoverHold`) |
 | For an animated popover `didShow` was posted about 0.5 s after `show(relativeTo:of:preferredEdge:)` returned; `isShown` and the child-window relation were true as soon as it returned.[^task-169] | The sidebar's popover hold starts late | Known gap, unfixed |
+| In the test host a popover's close animation never finishes: after `close()` the window is ordered out but `isShown` stays true and `popoverDidClose` never comes.[^task-220] | Testing the extension popup's close cleanup | Call the delegate method from the test ([popup sizing](../extensions/popup-and-options-ui.md)) |
+| A popover's window is 26 points larger than its content in each direction.[^task-220] | A 126 × 126 window in a window list was a 100 × 100 extension popup | Subtract 26 before comparing with content sizes |
 
 # Appearance and capture
 
@@ -227,6 +232,7 @@ from a probe or a measurement.
 [^task-130]: Keyboard focus stays behind on a tab list whose page has slid off screen
 [^task-131]: A focused tab list loses keyboard focus when the space list changes
 [^task-169]: A hover-revealed sidebar sometimes stays open instead of hiding again
+[^task-220]: A popup whose content is wider than its first size stays at 126x126 and is cut off
 [^design]: Split tabs design (sections 5 and 11)
 [^commit-b9ef265]: Sidebar: ID-based drag payloads, pure drop resolver, drag fixes
 [^notes-keyloop]: Key-view loop probe findings
