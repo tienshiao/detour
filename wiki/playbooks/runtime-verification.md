@@ -216,6 +216,11 @@ pgrep -f "$APP/Contents/MacOS/Detour"
   `NSWorkspace.open(_:withApplicationAt:)` cannot resolve production.
   Unregister the copy (`lsregister -u`) and delete its defaults domain,
   WebKit, Caches and HTTPStorages folders afterwards.
+- **`-AppleInterfaceStyle Dark` at launch does not make the app dark.** The
+  argument is accepted but the windows stay light (2026-10-28, TASK-220
+  re-check). Set `NSApp.appearance = NSAppearance(named: .darkAqua)` from the
+  harness instead; an extension page then reports
+  `prefers-color-scheme: dark`.
 - **Make the harness wait for its captures.** On a saturated machine a
   shell watcher can fall seconds behind a timer-driven harness and shoot a
   later state under an earlier name (TASK-186.5: up to 9 s at load ~1000).

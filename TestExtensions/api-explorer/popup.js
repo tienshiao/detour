@@ -559,7 +559,9 @@ async function createWindow(incognito) {
     const options = { url: 'https://example.com/' };
     if (incognito) options.incognito = true;
     const win = await chrome.windows.create(options);
-    showResult('res-windows', win === undefined
+    // A Private window is reported only to a context with access to Private
+    // data; from an extension page WebKit resolves with null, not undefined.
+    showResult('res-windows', win == null
       ? 'Opened (this context cannot see the new window)'
       : { id: win.id, incognito: win.incognito, type: win.type });
   } catch (e) {

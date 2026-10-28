@@ -144,6 +144,19 @@ before its reload finished in 50 ms got the small popover, and the main
 window's pinned button did so on a first open in the runtime
 check.[^harness-220]
 
+A popup whose page takes longer than the 0.5 s wait to load opens blank. On
+the first open after launch the popover appears at the 360 × 480 fallback,
+empty for as long as the page is still loading (about 1.1 s for a 1.5 s
+busy-wait in the page's head), then resizes to the content. On a reopen it
+appears blank at the previous page's size until the new one loads. The final
+size is right both times (runtime re-check of 2026-10-28).[^task-220]
+
+1Password has no popup to size without its desktop app or an account. With
+native messaging denied and no sign-in, it sets its action's popup to empty,
+so a click on its button runs its click handler instead (it opens its
+welcome tab). Checking a real popup's size with 1Password needs a profile
+connected to the app.[^task-220]
+
 The delegate path is only for extension-initiated opens. It anchors to the
 pinned button if there is one, keeps the controller in
 `ExtensionManager.activePopovers`, and calls WebKit's completion handler when
