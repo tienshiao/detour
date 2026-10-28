@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-28T07:56:00Z'
-updated_date: '2026-10-28T08:19:00Z'
+updated_date: '2026-10-28T15:15:00Z'
 labels:
   - extensions
   - security
@@ -60,6 +60,8 @@ Code review (--fix): no correctness findings. Applied: openNewWindowUsing as a s
 Tests: ExtensionWindowsCreatePrivateTests 11/11; with QuickDetourExtensionTests, QuickDetourOpenInTests, ExtensionPrivateDefaultTests, ExtensionPrivateStoreTests and WKExtensionIntegrationTests, 97/97.
 Runtime (/verify, Debug build in .derived, DETOUR_DATA_DIR=DetourVerify223): seeded a Work profile with one space and a probe enabled only in Work (disabled in Default). At launch only the Home window (Default) was shown. The probe's worker called windows.create({url}), which resolved {incognito:false}. browser.db saved the tab in Work / Work Space. On screen: the Example Domain window plus the Home window. Afterwards I removed this run's defaults keys and data dir.
 Not checked at runtime: the most-recently-used choice between two of the profile's spaces (needs space switching in the UI; covered by testFromANormalProfileWithNoOpenSpaceOpensOnItsLastActiveSpace) and the no-space refusal (covered by its test).
+
+Runtime re-check 2026-10-28 (screen unlocked): (F) DetourVerifyRTF with profile ProfA (spaces A1 first in the sidebar, A2), ProfB (B1); probe enabled in ProfA only. A real click on the sidebar's A2 space button switched the launch window to A2 (spaceUseOrder A2, A1); a second window was opened on B1 and made key by a real click (A window clicked first, then B: spaceUseOrder B1, A2, A1). A tab added by the harness in A1 (no window shows A1, A's window not made key) triggered ProfA's worker to call windows.create({url}) with B in front: resolved {incognito:false}; the new window showed A2 with the URL, browser.db saved the tab in A2; nothing in B1 and nothing new in A1. Data dir and defaults keys removed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

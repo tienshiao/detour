@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: 2026-10-27 22:21
-updated_date: '2026-10-28T05:02:00Z'
+updated_date: '2026-10-28T15:15:00Z'
 labels:
   - extensions
   - security
@@ -57,6 +57,8 @@ Decided with the user 2026-10-27: every windows.create from an extension context
 - Tests: ExtensionWindowsCreatePrivateTests 8/8, 3 iterations (24/24); QuickDetourExtensionTests, ExtensionPrivateDefaultTests, ExtensionPrivateStoreTests, WKExtensionIntegrationTests 56/56. The reviewer saw one failure of testFromPrivateWithoutIncognitoOpensAPrivateWindow (worker callback, no window) right after a since-removed javascript: experiment left windows open; not reproduced in 4 later runs.
 - Runtime (/verify, Debug build in .derived, DETOUR_DATA_DIR=DetourVerify214): a seeded probe allowed in Private called windows.create at worker start. Log: normal context -> {incognito:false}; Private context, incognito omitted -> {incognito:true}; incognito:false -> {incognito:true}; detour://history -> rejected 'Cannot open a detour:// URL'. browser.db persisted only the normal call's tab (in Home); 3 page windows on screen (1 normal, 2 Private). Defaults keys and data dir of the run removed. Not checked at runtime: a quarantine window in front (covered by the test), the API Explorer buttons (markup only).
 - Not in scope (follow-up candidates): a normal caller's window lands on the key window's space, which can be another profile's (tabs.create uses the caller's profile); a normal context without Private access can open Private windows (Chrome refuses); javascript: URLs open a window.
+
+Runtime re-check 2026-10-28 (screen unlocked): (E) API Explorer seeded in DetourVerifyRTE, popup opened from the pinned button, Windows buttons pressed with real HID-tap clicks. The Windows section is below the 600 pt fold and the popup cannot scroll (TASK-150), so the section was moved to the top of the popup's DOM from script before clicking; the buttons and handlers are unchanged. Create: a normal window opened on Home with example.com, explorer showed {id, incognito:false, type:normal}. (H) Quarantine in front (opened by the harness on https://example.com/?rt=wincreate&h=1), the Private context of a probe allowed in Private saw the quarantine tab and called windows.create({url}): resolved {incognito:true}, a new Private window with a new Private space opened with the URL; nothing persisted to browser.db. Data dirs and their defaults keys removed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

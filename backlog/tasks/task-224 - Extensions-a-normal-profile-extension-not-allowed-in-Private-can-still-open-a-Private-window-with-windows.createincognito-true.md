@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-28T07:56:00Z'
-updated_date: '2026-10-28T10:55:00Z'
+updated_date: '2026-10-28T15:15:00Z'
 labels:
   - extensions
   - private
@@ -53,6 +53,8 @@ Red (stub refusesPrivateWindow returning false): ExtensionWindowsCreatePrivateTe
 Code review (/code-review --fix, 6 findings): fixed the test's 'row saying off' leg skipping the Private profile row save (setAllowedInPrivate helper). Not taken: (1) pre-existing - a webkit-extension:// URL from a normal context goes into the Private window through addExtensionTab with the normal profile's configuration/persistent store (follow-up candidate); (3) isEnabled also needs the global flag - kept on purpose, it is the rule that decides whether the extension runs in Private, and it fails closed; (4) a shared 'can reach Private' helper - out of scope; (5) the reviewer called the tearDown unload loop dead, but removing it made testFromANormalProfileWithAnotherProfileInFrontOpensOnTheCallersSpace fail 3/3 when run after ExtensionPrivateDefaultTests (the allowed extension stays loaded in the built-in Private profile, whose controller that suite builds); restored with a comment, 2/2 green after; (6) Private profile row left saved - harmless, TabStore load saves it anyway.
 Tests: ExtensionWindowsCreatePrivateTests 13/13, ExtensionPrivateDefaultTests 13/13, ExtensionPrivateStoreTests 5/5, QuickDetourExtensionTests 18/18 (49 in one run, 0 failures). HEAD baseline of the pair: 24/24.
 Runtime (/verify, DETOUR_DATA_DIR=DetourVerify224a, Debug build in .derived): probe extension seeded in the Default profile with no Private row; its worker's windows.create({incognito:true}) logged 'promise rejected Invalid call to windows.create(). Cannot open a Private window: the extension is not allowed in Private.' and the callback form the same as lastError; only the launch window existed. Relaunched with the Private row on: the Private worker also started, the normal worker's promise resolved null and callback null/lastError null, and two 'Example Domain' windows opened. Not verified: clicking the API Explorer's Create Private button in the popup (its catch path shows e.message, and the extension-page transport is covered by the tests).
+
+Runtime re-check 2026-10-28 (screen unlocked): (E) API Explorer, real HID-tap clicks on its popup's Windows buttons (section moved above the fold from script because of TASK-150). Not allowed in Private (no Private row): Create Private showed the red error 'Invalid call to windows.create(). Cannot open a Private window: the extension is not allowed in Private.' and no window opened; Create opened a normal window. Allowed in Private (profileExtension row for 00000000-0000-0000-0000-000000000001 enabled, relaunch): Create Private opened a Private window (incognito=true, Private space, example.com), BUT the explorer's output shows the red error 'null is not an object (evaluating win.id)': WebKit resolves the call with null and createWindow in TestExtensions/api-explorer/popup.js only treats undefined as 'Opened (this context cannot see the new window)'. Test-extension bug, not fixed here (verification only).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

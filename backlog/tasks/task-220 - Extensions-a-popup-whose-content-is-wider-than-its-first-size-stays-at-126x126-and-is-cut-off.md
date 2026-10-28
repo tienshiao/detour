@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: 2026-10-27 22:21
-updated_date: '2026-10-28T12:55:00Z'
+updated_date: '2026-10-28T15:15:00Z'
 labels:
   - extensions
   - bug
@@ -60,6 +60,8 @@ Runtime (/verify, Debug build in .derived, docs/harness/task220-harness.patch, p
 - Old code (DetourVerify2200, light): main window first open 126x126 window / 100x100 web view, intrinsic 220x300 (cut off); Quick Detour 246x326 / 220x300 (reload won the race); grow did not resize either.
 - Fixed, before review (2201 light, 2202 dark) and after review (2203 light, 2204 dark): main window and Quick Detour both first seen at 246x326 window / 220x300 web view (innerWidth 220x300, corner square at 216..220 x 296..300, i.e. fully inside), grown to 366x446 / 340x420, shrunk back to 246x326 / 220x300, closed by Escape; the page saw scheme=light / dark.
 Not verified: the screen was LOCKED for the whole session (ioreg CGSSessionScreenIsLocked true), so there are no screenshots and nothing was checked by eye; posted clicks did not reach the popup page, so the Grow button was pressed from script (the page's own click handler, a real after-load size change) rather than by a click; a slow popup hitting the 0.5 s timeout; a real extension's popup (1Password); action.openPopup() at runtime (covered by the presentPopupWebView test). Popup taller than 600 (TASK-150) unchanged. Data dirs and their defaults keys removed after each run.
+
+Runtime re-check 2026-10-28 (screen unlocked): Debug build in .derived with a temporary command-file harness (reverted), probes seeded in DetourVerifyRTA; every click and Escape was a real HID-tap event, checked to land on the app's own window. (A) 'Verify Popup Size' pinned in the main window and the Quick Detour, light and dark (dark via NSApp.appearance; the -AppleInterfaceStyle Dark launch argument left the app light): first seen at 246x326 window / 220x300 web view, Grow -> 366x446 / 340x420, Shrink -> 246x326 / 220x300, page saw scheme light/dark accordingly, Escape closed it; screenshots checked by eye: whole box, border and corner square visible, nothing cut off, no blank popover, colours right for each mode (shots in the session scratchpad, rt/shots/A-*). (B) Slow popup (1.5 s busy wait in a head script, 300x360): first open after launch is shown at the 0.5 s timeout at the 360x480 fallback (386x506 window) and blank for ~1.1 s, then shrinks to 326x386 / 300x360 with its content; a reopen shows at the previous document's 300x360 size, blank until the page loads. Final size right both times. (C) action.openPopup() from the worker (on tabs.onUpdated of a tab added by the harness): with the key window showing no tab WebKit rejects 'Active tab not found in window'; with a tab selected (real click) the popover opened at 246x326 / 220x300 on first sight and the promise resolved (undefined) after 12 ms, before the popup closed. (D) not checked: the copied 1Password (nativeMessaging denied so it never reached the user's desktop app, not signed in) sets its popup to '' when it has no app connection and no account, so a click runs action.onClicked (it switched to its welcome tab) and there is no popup to measure. Data dirs and their defaults keys removed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

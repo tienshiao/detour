@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-28T08:43:00Z'
-updated_date: '2026-10-28T12:05:00Z'
+updated_date: '2026-10-28T15:15:00Z'
 labels:
   - extensions
   - profiles
@@ -52,6 +52,8 @@ Choices: (1) targetSpace now uses the same rule (AC2). (2) An incognito profile 
 Code review (/code-review --fix, 7 findings): fixed - openNewTabUsing now resolves the profile first ('Cannot open a tab for an unknown profile'), then refuses detour:// and javascript: URLs, then looks up the space, as windows.create does; windows.create's normal branch now calls newTabSpace(for:) so the rule lives in one place; the comment on lastActiveSpaceID corrected (set when a window becomes key, not on a space switch inside it). Not taken: configuration.window still ignored (follow-up); incognito rule is not a true most-recently-used order (stated choice above); the new wiring test leaves its ids at the head of the in-memory spaceUseOrder (harmless, private(set)).
 Tests after review: ExtensionWindowsCreatePrivateTests 16/16, ExtensionPolyfillProfileWiringTests 51 (7 skipped, gated), BrowserTabWakeTests 7/7, InternalPageTests 17/17 (91, 0 failures).
 Runtime (/verify, DETOUR_DATA_DIR=DetourVerify226a, Debug build in .derived): Default profile seeded with spaces Home (sortOrder 0) and Work (1), appState lastActiveSpaceID = Work (launch records it as used); probe worker's tabs.create without windowId in promise and callback forms both resolved (lastError null) and the saved session put both tabs in Work, none in Home. The screen was locked, so no window became key during the run. Not verified at runtime: the no-space refusal and the polyfill search.query/sessions.restore path (covered by tests); the build checked at runtime predates the review's reordering, which does not change this path.
+
+Runtime re-check 2026-10-28 (screen unlocked): (G1) Two Private windows P1, P2 placed side by side; real clicks made P1 then P2 key; a tab added in P1's space triggered the Private context of a probe allowed in Private to call tabs.create({url}): the tab landed in P2 (the key, last-key Private window; result windowId 168 vs trigger 163). Reverse: real click on P1, trigger in P2's space: the tab landed in P1 (windowId 163). (G2) ProfC with no space, probe enabled only there, tabs.create at worker start: promise rejected and callback lastError both 'Invalid call to tabs.create(). Cannot open a tab: the profile has no space.'; no tab in any window or in browser.db. Data dir and defaults keys removed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
