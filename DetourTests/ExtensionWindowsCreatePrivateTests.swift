@@ -11,6 +11,9 @@ import WebKit
 /// profile's context opens a normal window on one of its own profile's spaces
 /// (TASK-223), never on the space of another profile's window in front.
 ///
+/// Also the `javascript:` URL refusals of `windows.create`, `tabs.create`
+/// and `tabs.update` (TASK-225).
+///
 /// Real contexts through the production wiring (`Profile.extensionController`
 /// with `ExtensionManager` as its delegate), asked from the service worker and
 /// from an extension page, in the promise and the callback form.
@@ -100,6 +103,26 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
                 chrome.windows.create(message.options).then(
                     (value) => sendResponse({ value }),
                     (e) => sendResponse({ error: String(e && e.message ? e.message : e) }));
+            }
+            return true;
+        }
+        if (message.type === 'call') {
+            const [namespace, name] = message.api.split('.');
+            const fail = (e) => sendResponse({ error: String(e && e.message ? e.message : e) });
+            try {
+                const fn = chrome[namespace][name].bind(chrome[namespace]);
+                if (message.form === 'callback') {
+                    fn(...message.args, (value) => {
+                        sendResponse({ value: value === undefined ? null : value,
+                                       lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null });
+                    });
+                } else {
+                    fn(...message.args).then(
+                        (value) => sendResponse({ value: value === undefined ? null : value }), fail);
+                }
+            } catch (e) {
+                // An argument WebKit refuses throws before any callback.
+                fail(e);
             }
             return true;
         }
@@ -255,7 +278,10 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
 
     private func create(_ options: [String: Any], via transport: Transport, form: Form,
                         page: WKWebView) async throws -> Created {
-        let before = Set(browserWindowControllers().map(ObjectIdentifier.init))
+        // Held, not just their identifiers: a closed window's controller freed
+        // during the call could hand its address to the new one, which would
+        // then look as if it had been there before.
+        let before = browserWindowControllers()
         var created = Created(window: nil, error: nil, opened: [],
                               label: "\(transport) \(form.rawValue) \(options)")
         switch transport {
@@ -285,9 +311,50 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
                 created.error = outcome["lastErrorInCallback"] as? String
             }
         }
-        created.opened = browserWindowControllers().filter { !before.contains(ObjectIdentifier($0)) }
+        created.opened = browserWindowControllers().filter { wc in !before.contains { $0 === wc } }
         browserWindows.append(contentsOf: created.opened)
         return created
+    }
+
+    /// What one call of `chrome.<api>(...args)` gave: its value (nil when it
+    /// failed or gave nothing) and the rejection or `lastError`.
+    private struct Called {
+        var value: Any?
+        var error: String?
+        var label: String
+    }
+
+    private func call(_ api: String, _ args: [Any], via transport: Transport, form: Form,
+                      page: WKWebView) async throws -> Called {
+        var called = Called(value: nil, error: nil, label: "\(transport) \(form.rawValue) \(api)\(args)")
+        switch transport {
+        case .worker:
+            let answer = try await askWorker(
+                from: page, message: ["type": "call", "api": api, "args": args, "form": form.rawValue])
+            XCTAssertNil(answer["lastError"] as? String, "the page could not reach the worker: \(answer)")
+            let reply = try XCTUnwrap(answer["reply"] as? [String: Any], "\(called.label): \(answer)")
+            called.value = reply["value"].flatMap { $0 is NSNull ? nil : $0 }
+            called.error = (reply["error"] as? String) ?? (reply["lastError"] as? String)
+        case .page:
+            let json = String(decoding: try JSONSerialization.data(withJSONObject: args), as: UTF8.self)
+            switch form {
+            case .promise:
+                let outcome = try await pageEval(promiseOutcomeJS("chrome.\(api)(...\(json))"), in: page)
+                called.value = outcome["value"].flatMap { $0 is NSNull ? nil : $0 }
+                called.error = outcome["message"] as? String
+            case .callback:
+                let outcome = try await pageEval(
+                    callbackOutcomeJS(call: "return chrome.\(api)(...\(json), cb);"), in: page)
+                XCTAssertEqual(outcome["timedOut"] as? Bool, false, "\(called.label): \(outcome)")
+                if let arg0 = outcome["arg0"] as? String {
+                    called.value = try JSONSerialization.jsonObject(with: Data(arg0.utf8),
+                                                                    options: .fragmentsAllowed)
+                    if called.value is NSNull { called.value = nil }
+                }
+                called.error = outcome["lastErrorInCallback"] as? String
+            }
+        }
+        return called
     }
 
     /// The call succeeded, reported an incognito window (or, to a context
@@ -335,6 +402,17 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
                                                             allowedInPrivate: false))
         XCTAssertFalse(ExtensionManager.refusesPrivateWindow(requested: true, callerIsIncognito: false,
                                                              allowedInPrivate: true))
+    }
+
+    /// TASK-225: the scheme compare ignores case, which Foundation's `URL`
+    /// keeps as written.
+    func testTheJavaScriptURLRule() throws {
+        for string in ["javascript:void(0)", "JavaScript:alert(1)", "JAVASCRIPT:x"] {
+            XCTAssertTrue(ExtensionManager.isJavaScriptURL(try XCTUnwrap(URL(string: string))), string)
+        }
+        for string in ["https://example.com/javascript:x", "about:blank", "data:text/html,javascript:x"] {
+            XCTAssertFalse(ExtensionManager.isJavaScriptURL(try XCTUnwrap(URL(string: string))), string)
+        }
     }
 
     // MARK: - From Private
@@ -584,5 +662,79 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         // The same extension's normal windows are not affected.
         let created = try await create(["url": url.absoluteString], via: .worker, form: .callback, page: page)
         assertOpenedANormalWindow(created, on: space, showing: url)
+    }
+
+    // MARK: - javascript: URLs (TASK-225)
+
+    /// A `javascript:` URL has no page to open, and loading one into a tab
+    /// runs the script in that tab's page; Chrome's MV3 refuses it in these
+    /// APIs. Shipped WebKit (macOS 26, Darwin 25.6) passes it through to
+    /// Detour: `windows.create` opened a window, `tabs.create` a tab, and
+    /// `tabs.update` ran the script (WebKit `main` refuses it in
+    /// `windows.create` first). Each is refused before anything opens or
+    /// loads, from both transports, in both forms.
+    ///
+    /// One test with one profile for the three APIs: every profile a test
+    /// loads an extension into is kept for the rest of the process (see
+    /// `retainedProfiles`). With three more of them here, QuickDetourExtensionTests
+    /// run after this suite in one process timed out on page loads, its
+    /// occluded windows' loads never finishing on a loaded machine (TASK-225).
+    func testJavaScriptURLsAreRefusedByWindowsCreateTabsCreateAndTabsUpdate() async throws {
+        let ext = try await makeExtension()
+        let normal = makeProfile("JavaScript URLs")
+        let page = try await loadPage(ext, in: normal)
+        let url = try await serve()
+        let space = browserWindow(showingANewSpaceOf: normal)
+
+        // windows.create, the URL alone and among others.
+        for urls in [["javascript:void(0)"], [url.absoluteString, "javascript:document.title='ran'"]] {
+            for transport in Transport.allCases {
+                for form in Form.allCases {
+                    let created = try await create(["url": urls], via: transport, form: form, page: page)
+                    XCTAssertTrue(created.error?.contains("javascript:") ?? false,
+                                  "\(created.label): \(String(describing: created.error))")
+                    XCTAssertNil(created.window, created.label)
+                    XCTAssertEqual(created.opened.count, 0, created.label)
+                    closeBrowserWindows()
+                }
+            }
+        }
+        browserWindow(showing: space)
+
+        // tabs.create opens no tab.
+        for transport in Transport.allCases {
+            for form in Form.allCases {
+                let called = try await call("tabs.create", [["url": "javascript:document.title='ran'"]],
+                                            via: transport, form: form, page: page)
+                assertRefusedAJavaScriptURL(called)
+            }
+        }
+        XCTAssertTrue(space.tabs.isEmpty, "\(space.tabs.map { $0.url?.absoluteString ?? "nil" })")
+
+        // tabs.update leaves the tab's page alone.
+        let opened = try await call("tabs.create", [["url": url.absoluteString, "active": true]],
+                                    via: .worker, form: .promise, page: page)
+        let tabID = try XCTUnwrap((opened.value as? [String: Any])?["id"] as? Int, opened.label)
+        let tab = try XCTUnwrap(space.tabs.first { $0.url == url }, "\(space.tabs.map(\.url))")
+        try await waitUntil("the tab to load") { !tab.isLoading && tab.title == "Looked Up" }
+        for transport in Transport.allCases {
+            for form in Form.allCases {
+                let called = try await call("tabs.update", [tabID, ["url": "javascript:document.title='ran'"]],
+                                            via: transport, form: form, page: page)
+                assertRefusedAJavaScriptURL(called)
+            }
+        }
+        // Give a script that did get through time to run.
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let title = try await tab.webView?.evaluateJavaScript("document.title") as? String
+        XCTAssertEqual(title, "Looked Up")
+        XCTAssertEqual(tab.url, url)
+    }
+
+    private func assertRefusedAJavaScriptURL(_ called: Called, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(called.error?.contains("javascript:") ?? false,
+                      "\(called.label): \(String(describing: called.error)) \(String(describing: called.value))",
+                      file: file, line: line)
+        XCTAssertNil(called.value, called.label, file: file, line: line)
     }
 }

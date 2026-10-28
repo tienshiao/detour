@@ -108,6 +108,11 @@ extension BrowserTab: WKWebExtensionTab {
             completionHandler(ExtensionManager.extensionError("Cannot navigate to a \(InternalPage.scheme):// URL"))
             return
         }
+        // Loading it would run the script in this tab's page (TASK-225).
+        guard !ExtensionManager.isJavaScriptURL(url) else {
+            completionHandler(ExtensionManager.extensionError(ExtensionManager.javaScriptURLRefusal))
+            return
+        }
         webView?.load(URLRequest(url: url))
         completionHandler(nil)
     }

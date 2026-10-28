@@ -333,6 +333,20 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 userInfo: [NSLocalizedDescriptionKey: message])
     }
 
+    /// A `javascript:` URL, which `windows.create`, `tabs.create` and
+    /// `tabs.update` refuse before anything opens or loads (TASK-225), as
+    /// Chrome's MV3 does. Shipped WebKit (macOS 26, Darwin 25.6) hands such a
+    /// URL to Detour's delegates and `BrowserTab.loadURL`; loading it ran the
+    /// script in the tab's page. Foundation's `URL` keeps a scheme's case
+    /// (`JavaScript:` parses as "JavaScript"), so the compare ignores it.
+    nonisolated static func isJavaScriptURL(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "javascript"
+    }
+
+    /// WebKit prefixes "Invalid call to <api>()." and capitalises the first
+    /// letter, so the message does not start with the scheme.
+    static let javaScriptURLRefusal = "Cannot load a javascript: URL; use chrome.scripting.executeScript instead"
+
     static func nativeHostForbiddenError() -> NSError {
         extensionError(nativeHostForbiddenMessage)
     }
@@ -1945,6 +1959,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             completionHandler(nil, Self.extensionError("Cannot open a \(InternalPage.scheme):// URL"))
             return
         }
+        guard !Self.isJavaScriptURL(url) else {
+            completionHandler(nil, Self.extensionError(Self.javaScriptURLRefusal))
+            return
+        }
         let tab: BrowserTab
         if url.scheme == "webkit-extension", let extConfig = extensionContext.webViewConfiguration {
             tab = TabStore.shared.addExtensionTab(in: space, url: url, configuration: extConfig)
@@ -1998,6 +2016,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // dropping the URL left an empty window reported as a success.
         guard !configuration.tabURLs.contains(where: { InternalPage.isInternal($0) }) else {
             completionHandler(nil, Self.extensionError("Cannot open a \(InternalPage.scheme):// URL"))
+            return
+        }
+        guard !configuration.tabURLs.contains(where: Self.isJavaScriptURL) else {
+            completionHandler(nil, Self.extensionError(Self.javaScriptURLRefusal))
             return
         }
 

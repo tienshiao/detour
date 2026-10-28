@@ -87,6 +87,9 @@ sources:
   - id: task-224
     resource: backlog:TASK-224
     title: A normal-profile extension not allowed in Private can still open a Private window with windows.create({incognito true})
+  - id: task-225
+    resource: backlog:TASK-225
+    title: windows.create opens a window for a javascript URL
   - id: webkit-windows-api
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIWindowsCocoa.mm
     title: WebKit WebExtensionContextAPIWindowsCocoa.mm (windowsCreate, read 2026-10-27)
@@ -246,6 +249,22 @@ B's space, with B's cookies and history and in B's extension
 contexts.[^task-223] `tabs.create` still adds to the profile's first space in
 sidebar order (`space(for:)`), not its most recently used one.
 
+## javascript: URLs
+
+`windows.create` (the URL alone or among others), `tabs.create` and
+`tabs.update` refuse a `javascript:` URL before anything opens or loads
+(`ExtensionManager.isJavaScriptURL`, checked in `openNewWindowUsing`,
+`openNewTabUsing` and `BrowserTab.loadURL`), with "Cannot load a javascript:
+URL; use chrome.scripting.executeScript instead", as Chrome's MV3 refuses
+them. The WebKit shipped with macOS 26.7 (build 25G229, Darwin 25.6) passes
+all three through to Detour, although WebKit's `main` refuses the URL in
+`windows.create` itself:[^webkit-windows-api] `windows.create` opened a
+window, `tabs.create` a tab, and `tabs.update` loaded the URL into the tab,
+which ran the script in its page, so an extension could script a page through
+`tabs.update` instead of `scripting`.[^task-225] WebKit prefixes the
+message with "Invalid call to <api>()." and capitalises its first letter,
+which is why it does not start with the scheme.
+
 ## Active tab
 
 `selectedTabID` is untouched by the Peek rule; it still names the focused pane
@@ -360,8 +379,9 @@ The planned changes to the window model are in the
   Private window when the extension is allowed in Private and is refused
   (no row, or a row saying off) when it is not. A normal caller with another profile's window in
   front, with no window on its profile (its last active space, not its first),
-  and with no space (refused, no window). (Shipped WebKit does not refuse a `javascript:`
-  URL here, whatever its `main` branch says: a window opens.)
+  and with no space (refused, no window). A `javascript:` URL refused by
+  `windows.create`, `tabs.create` and `tabs.update` (the page left alone) in
+  every form, in one test to keep the suite's retained profiles down.
 - In tests a web view must be registered as a tab (`registerProbeTab` in `ExtensionTestSupport`) before content-script messaging works; that was the real cause of six tests once skipped as "sandbox limits".[^task-20]
 
 # Related
@@ -387,5 +407,6 @@ The planned changes to the window model are in the
 [^task-214]: An extension allowed in Private can open a normal-profile window with windows.create
 [^windows-create-tests]: ExtensionWindowsCreatePrivateTests
 [^task-223]: windows.create from a normal profile can open its window on another profile's space
+[^task-225]: windows.create opens a window for a javascript URL
 [^task-224]: A normal-profile extension not allowed in Private can still open a Private window with windows.create({incognito true})
 [^webkit-windows-api]: WebKit WebExtensionContextAPIWindowsCocoa.mm (windowsCreate, read 2026-10-27)
