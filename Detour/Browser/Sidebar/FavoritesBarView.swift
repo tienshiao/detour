@@ -7,15 +7,16 @@ protocol FavoritesBarDelegate: AnyObject {
     func favoritesBar(_ bar: FavoritesBarView, didDoubleClickFavoriteAt index: Int)
     func favoritesBar(_ bar: FavoritesBarView, didReorderFavoriteFrom sourceIndex: Int, to destinationIndex: Int)
     func favoritesBar(_ bar: FavoritesBarView, didRemoveFavoriteAt index: Int)
-    /// The pointer entered or left `tile` (the sidebar's hover card, TASK-190).
-    func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool)
+    /// The pointer entered or left `tile`, or moved onto or off its Peek
+    /// badge (the sidebar's hover card, TASK-190 and TASK-229).
+    func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool, overPeekBadge: Bool)
     /// Opt-Cmd-click on a tile (TASK-193.5): true when a Quick Detour copy
     /// was opened, so the click does nothing else.
     func favoritesBar(_ bar: FavoritesBarView, didQuickDetourClickFavoriteAt index: Int) -> Bool
 }
 
 extension FavoritesBarDelegate {
-    func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool) {}
+    func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool, overPeekBadge: Bool) {}
     func favoritesBar(_ bar: FavoritesBarView, didQuickDetourClickFavoriteAt index: Int) -> Bool { false }
 }
 
@@ -568,6 +569,8 @@ class FavoriteTileView: NSView {
     private var devModeSubscription: AnyCancellable?
     private var trackingArea: NSTrackingArea?
     private var isHovering = false
+    /// Whether the pointer is over the Peek badge (TASK-229).
+    private var isHoveringPeekBadge = false
 
     private static let restingColor = NSColor.labelColor.withAlphaComponent(0.04)
     private static let hoverColor = UIConstants.hoverBackgroundColor
@@ -680,6 +683,13 @@ class FavoriteTileView: NSView {
             .store(in: &faviconSubscriptions)
     }
 
+    /// Where the pointer counts as over the Peek badge (TASK-229): the chip
+    /// and its inset to the tile's top and trailing edges.
+    static func peekBadgeHoverRect(in bounds: NSRect) -> NSRect {
+        let side = peekBadgeInset + peekBadgeSize
+        return NSRect(x: bounds.maxX - side, y: bounds.maxY - side, width: side, height: side)
+    }
+
     private func setupPeekBadge() {
         peekBadgeView.wantsLayer = true
         peekBadgeView.translatesAutoresizingMaskIntoConstraints = false
@@ -721,7 +731,11 @@ class FavoriteTileView: NSView {
     private func applyPeekBadge() {
         let image = favorite.tab?.displayPeekFavicon
         peekFaviconImageView.image = image
+        let changed = peekBadgeView.isHidden != (image == nil)
         peekBadgeView.isHidden = image == nil
+        // A badge appearing under the pointer, or going from under it, moves
+        // the hover card between the tile and the Peek.
+        if changed, isHovering { recheckHover() }
     }
 
     /// Subscribes to the backing tab's `$peekFavicon`, which carries both the
@@ -778,30 +792,52 @@ class FavoriteTileView: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingArea { removeTrackingArea(trackingArea) }
-        trackingArea = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self, userInfo: nil)
+        // .mouseMoved so the hover card can follow the pointer onto the Peek badge.
+        trackingArea = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp],
+                                      owner: self, userInfo: nil)
         addTrackingArea(trackingArea!)
     }
 
     override func mouseEntered(with event: NSEvent) {
-        setHovering(true)
+        setHovering(true, overPeekBadge: isOverPeekBadge(at: convert(event.locationInWindow, from: nil)))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard isHovering else { return }
+        setHovering(true, overPeekBadge: isOverPeekBadge(at: convert(event.locationInWindow, from: nil)))
     }
 
     override func mouseExited(with event: NSEvent) {
-        setHovering(false)
+        setHovering(false, overPeekBadge: false)
     }
 
     /// A tile removed from the bar sends no exit.
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         super.viewWillMove(toWindow: newWindow)
-        if newWindow == nil { setHovering(false) }
+        if newWindow == nil { setHovering(false, overPeekBadge: false) }
     }
 
-    private func setHovering(_ hovering: Bool) {
-        guard hovering != isHovering else { return }
-        isHovering = hovering
-        updateBackground()
+    private func isOverPeekBadge(at point: NSPoint) -> Bool {
+        !peekBadgeView.isHidden && Self.peekBadgeHoverRect(in: bounds).contains(point)
+    }
+
+    /// Re-evaluates the badge hover from the current mouse position.
+    private func recheckHover() {
+        guard let window else { return }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        let inside = bounds.contains(point)
+        setHovering(inside, overPeekBadge: inside && isOverPeekBadge(at: point))
+    }
+
+    private func setHovering(_ hovering: Bool, overPeekBadge: Bool) {
+        guard hovering != isHovering || overPeekBadge != isHoveringPeekBadge else { return }
+        if hovering != isHovering {
+            isHovering = hovering
+            updateBackground()
+        }
+        isHoveringPeekBadge = overPeekBadge
         if let bar = superview as? FavoritesBarView {
-            bar.delegate?.favoritesBar(bar, tile: self, hoverChanged: hovering)
+            bar.delegate?.favoritesBar(bar, tile: self, hoverChanged: hovering, overPeekBadge: overPeekBadge)
         }
     }
 

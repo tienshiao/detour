@@ -85,6 +85,18 @@ enum HoverCardTarget {
     case tab(BrowserTab)
     case pinned(PinnedEntry)
     case favorite(Favorite)
+    /// The Peek badge of a row or tile whose live tab is `host` (TASK-229):
+    /// the card describes the Peek, live, parked or restored.
+    case peek(host: BrowserTab)
+
+    /// The target for the Peek badge of `target`'s row or tile: its live tab,
+    /// when that tab has a Peek. A dormant entry or tile has no tab and so no
+    /// badge.
+    static func peekBadge(of target: HoverCardTarget) -> HoverCardTarget? {
+        if case .peek = target { return nil }
+        guard let host = target.tab, host.peekTab != nil || host.peekURL != nil else { return nil }
+        return .peek(host: host)
+    }
 
     /// The same row content, by object identity.
     func isSame(as other: HoverCardTarget) -> Bool {
@@ -92,6 +104,20 @@ enum HoverCardTarget {
         case (.tab(let a), .tab(let b)): return a === b
         case (.pinned(let a), .pinned(let b)): return a === b
         case (.favorite(let a), .favorite(let b)): return a === b
+        case (.peek(let a), .peek(let b)): return a === b
+        default: return false
+        }
+    }
+
+    /// The same row: the same target, or a row or tile and its own Peek
+    /// badge (TASK-229). A dismissal keeps the card away until the pointer
+    /// leaves the row, not merely crosses the badge's edge.
+    func isSameRow(as other: HoverCardTarget) -> Bool {
+        if isSame(as: other) { return true }
+        switch (self, other) {
+        case (.peek, .peek): return false
+        case (.peek(let host), _): return other.tab === host
+        case (_, .peek(let host)): return tab === host
         default: return false
         }
     }
@@ -102,6 +128,7 @@ enum HoverCardTarget {
         case .tab(let tab): return tab
         case .pinned(let entry): return entry.tab
         case .favorite(let favorite): return favorite.tab
+        case .peek(let host): return host
         }
     }
 
@@ -159,6 +186,8 @@ struct HoverCardContent {
         case .favorite(let favorite):
             text = favorite.tab.map { .make(title: $0.title, url: $0.url) }
                 ?? .make(title: favorite.title, url: favorite.url)
+        case .peek(let host):
+            return peekContent(of: host, isOnScreen: isOnScreen(host))
         }
         guard let tab = target.tab else {
             // Dormant: only the disk can have a picture, under the tile's id.
@@ -166,7 +195,7 @@ struct HoverCardContent {
             switch target {
             case .pinned(let entry): key = entry.id
             case .favorite(let favorite): key = favorite.id
-            case .tab(let tab): key = tab.id
+            case .tab(let tab), .peek(let tab): key = tab.id
             }
             return HoverCardContent(text: text, preview: nil, thumbnailKey: key)
         }
@@ -175,6 +204,19 @@ struct HoverCardContent {
             return HoverCardContent(text: text, preview: nil, thumbnailKey: nil)
         }
         return HoverCardContent(text: text, preview: tab.switcherPreview, thumbnailKey: thumbnailKey(tab))
+    }
+
+    /// A Peek's card: its own title and URL, the URL the host saved for it
+    /// when its tab has none (parked before it ever loaded), or only that URL
+    /// after a relaunch, when the host has no Peek tab and Peeks record no
+    /// history to name it by. Its picture is the Peek's own in-memory one,
+    /// taken when its host was left; none is kept on disk, so a restored
+    /// Peek's card is text only.
+    private static func peekContent(of host: BrowserTab, isOnScreen: Bool) -> HoverCardContent {
+        let peek = host.peekTab
+        let text = HoverCardText.make(title: peek?.title ?? "", url: peek?.url ?? host.peekURL)
+        // A host on screen has its Peek presented over it.
+        return HoverCardContent(text: text, preview: isOnScreen ? nil : peek?.switcherPreview, thumbnailKey: nil)
     }
 }
 

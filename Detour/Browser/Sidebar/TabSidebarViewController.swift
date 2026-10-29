@@ -3766,7 +3766,7 @@ private extension Comparable {
 // MARK: - Hover card (TASK-190)
 
 extension TabSidebarViewController: TabCellHoverDelegate {
-    func tabCell(_ cell: TabCellView, hoverChanged hovering: Bool, splitSide: Int?) {
+    func tabCell(_ cell: TabCellView, hoverChanged hovering: Bool, splitSide: Int?, overPeekBadge: Bool) {
         guard hovering else {
             endCardHover(for: cell)
             return
@@ -3778,7 +3778,14 @@ extension TabSidebarViewController: TabCellHoverDelegate {
             endCardHover(for: cell)
             return
         }
-        beginCardHover(target, view: cell)
+        beginCardHover(cardTarget(target, overPeekBadge: overPeekBadge), view: cell)
+    }
+
+    /// Over the Peek badge the card is the Peek's (TASK-229), else the row's
+    /// or tile's own.
+    private func cardTarget(_ target: HoverCardTarget, overPeekBadge: Bool) -> HoverCardTarget {
+        guard overPeekBadge else { return target }
+        return HoverCardTarget.peekBadge(of: target) ?? target
     }
 
     /// The card target for a table row: a tab, a pinned entry, or the hovered
@@ -3797,7 +3804,10 @@ extension TabSidebarViewController: TabCellHoverDelegate {
     }
 
     private func beginCardHover(_ target: HoverCardTarget, view: NSView) {
-        if let current = cardHover, current.view === view, !current.target.isSame(as: target) {
+        // A split half ends the other half's hover; crossing the Peek badge's
+        // edge does not leave the row (TASK-229): the begin swaps the card,
+        // and a dismissal's suppression holds until the row is left.
+        if let current = cardHover, current.view === view, !current.target.isSameRow(as: target) {
             hoverCard?.hoverEnded(current.target)
         }
         cardHover = (view, target)
@@ -3810,7 +3820,7 @@ extension TabSidebarViewController: TabCellHoverDelegate {
         hoverCard?.hoverEnded(current.target)
     }
 
-    func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool) {
+    func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool, overPeekBadge: Bool) {
         guard hovering else {
             endCardHover(for: tile)
             return
@@ -3820,6 +3830,6 @@ extension TabSidebarViewController: TabCellHoverDelegate {
             endCardHover(for: tile)
             return
         }
-        beginCardHover(.favorite(tile.favorite), view: tile)
+        beginCardHover(cardTarget(.favorite(tile.favorite), overPeekBadge: overPeekBadge), view: tile)
     }
 }

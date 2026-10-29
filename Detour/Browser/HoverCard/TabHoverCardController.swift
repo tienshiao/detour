@@ -73,7 +73,8 @@ final class TabHoverCardController {
             hover = Hover(target: target, rowRectInWindow: rowRectInWindow)
             return
         }
-        if let suppressed, !suppressed.isSame(as: target) { self.suppressed = nil }
+        // Crossing onto or off a row's Peek badge is still the same row.
+        if let suppressed, !suppressed.isSameRow(as: target) { self.suppressed = nil }
         hover = Hover(target: target, rowRectInWindow: rowRectInWindow)
         showTimer?.invalidate()
         showTimer = nil
@@ -100,7 +101,7 @@ final class TabHoverCardController {
 
     /// The pointer left `target`'s row.
     func hoverEnded(_ target: HoverCardTarget) {
-        if let suppressed, suppressed.isSame(as: target) { self.suppressed = nil }
+        if let suppressed, suppressed.isSameRow(as: target) { self.suppressed = nil }
         guard let current = hover, current.target.isSame(as: target) else { return }
         hover = nil
         showTimer?.invalidate()

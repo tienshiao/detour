@@ -42,6 +42,12 @@ sources:
   - id: task-190
     resource: backlog:TASK-190
     title: "Sidebar: custom tab tooltips with the full title, the URL and a page thumbnail"
+  - id: task-229
+    resource: backlog:TASK-229
+    title: "Hover card: show a tab's Peek (its title, URL and thumbnail), including from the Peek favicon in the sidebar row"
+  - id: harness-229
+    resource: ../../docs/harness/task229-harness.patch
+    title: TASK-229 runtime harness
 ---
 
 Sidebar tab rows have no AppKit tooltip. Resting the pointer on a row (or a
@@ -64,6 +70,26 @@ tooltip, which was slow and showed only the title.[^task-190]
 - **A split row** describes only the half under the pointer
   (`TabCellView`'s `hoveredSplitSide`); moving across the divider swaps the
   card at once.
+- **The Peek badge** (the [Peek](../tabs/peek.md)'s favicon at a row's
+  trailing end, or the chip in a favourite tile's corner) has its own card,
+  describing the Peek; the rest of the row or tile keeps the host's card,
+  which says nothing about the Peek (the user's decision, over one card with
+  a Peek section).[^task-229] Moving between the badge and the rest of the
+  row swaps the card at once, placed as the row's card is. The badge is part
+  of its row for dismissal: a card dismissed on the row stays away on the
+  badge, and the reverse, until the pointer leaves the row. It works for
+  normal rows, pinned rows and favourite tiles. Split rows show no Peek
+  badge (`configureSplitCell` passes nil), so they have no Peek card.
+  - A **live or parked** Peek shows its own title and URL (the URL the host
+    saved for it when the Peek tab has none).
+  - A Peek **restored after a relaunch** has no tab, only the host's
+    `peekURL`, and Peeks record no history, so its card is the URL alone.
+  - Its **picture** is the Peek's own in-memory `switcherPreview`, taken
+    when its host is left with the Peek up, and kept while the Peek is
+    parked. None is written to disk, so a restored Peek's card is text only
+    until the Peek has been shown and left again. No picture while the host
+    is on screen: its Peek is then presented over it.
+  - A Peek page with no favicon gives the host no badge, so no Peek card.
 - **Thumbnail:** none for a tab on screen in this window (the selected tab,
   either pane of the selected split, a selected favourite). Otherwise the
   tab's in-memory `switcherPreview`, else the picture on disk. With none the
@@ -114,7 +140,22 @@ FavoriteTileView hover ───► FavoritesBarDelegate ─┼─► TabSidebar
 - **Row to target.** The sidebar resolves the cell's row with
   `sidebarRow(for:)` and `flattenedPinnedItems` / `tabItems`, then the pure
   `HoverCardTarget.forPinnedItem` / `forTabItem` (which also picks the split
-  half). It remembers which view reported which target, so an exit ends that
+  half). Over the Peek badge, `HoverCardTarget.peekBadge(of:)` turns that
+  target into `.peek(host:)` when its live tab has a Peek (`peekTab` or
+  `peekURL`); a dormant entry or tile has no tab and no badge.
+- **Badge hover.** The cell and the tile decide "over the badge" from fixed
+  rects (`TabCellView.peekBadgeHoverRect(in:)`: the badge, its 4 pt inset
+  to the row's edge and half the gap to the close button, full row height;
+  `FavoriteTileView.peekBadgeHoverRect(in:)`: the chip and its inset to the
+  tile's corner), computed from the layout constants rather than the
+  badge's frame, which lags a badge that has just appeared. Both report the
+  change through `mouseMoved` (the tile's tracking area gained
+  `.mouseMoved`), and re-check when the badge appears or goes under a
+  resting pointer. Crossing the badge's edge does not end the row's hover:
+  the sidebar only begins the new target (`beginCardHover` ends the old one
+  only when it is not `isSameRow`, which is how split halves still end each
+  other), so the controller swaps the card in place while one is up, and
+  its suppression check uses `isSameRow` too. It remembers which view reported which target, so an exit ends that
   target even when the cell has since been reconfigured for another row.
 - **Content.** `HoverCardContent.make(for:isOnScreen:thumbnailKey:)` turns a
   target into text, an in-memory preview and the disk key to look under;
@@ -209,9 +250,17 @@ survives a relaunch.
   targets for single, split and pinned rows (no card for folders or a split
   with no side), and content for normal, live/dormant pinned, live/dormant
   favourite, Private and on-screen tabs; placement and screen clamping.
+- `TabHoverCardTests`, Peek (TASK-229): the badge target for normal,
+  pinned and favourite hosts with a live or restored Peek, none for a
+  dormant entry or tile, a host with no Peek or a Peek target; identity by
+  host; content for a live Peek (its own preview, never the host's or a
+  disk key), one without a preview, a parked Peek tab with no URL, a
+  restored Peek (URL only) and a host on screen; the two badge hit rects;
+  `isSameRow` for a row and its badge.
 - `TabHoverCardControllerTests` (real borderless window, fake host): delay
   then show beside the sidebar, leave before the delay, swap on
-  exit-then-enter and enter-then-exit, dismissal suppressing until leave,
+  exit-then-enter and enter-then-exit, between a row and its Peek badge,
+  dismissal holding across the badge, dismissal suppressing until leave,
   dismissal while pending, no card with the sidebar hidden, monitor removed
   when idle.
 - `TabThumbnailTests`: the cache round trip and the sweep rule, keys for
@@ -238,6 +287,18 @@ survives a relaunch.
   `GlassContainerView`) are. Still not seen: a scroll reaching the monitor (a
   `CGEvent`-built scroll `NSEvent` carries no window, and one posted to the
   app's pid is not delivered to a window that is not frontmost).
+- Runtime, Peek cards: [docs/harness/task229-harness.patch](../../docs/harness/task229-harness.patch)
+  (local fixture pages, a relaunch phase). On 2026-10-28, screen locked:
+  the badge swapped the row's card for the Peek's 0.04 s after the move and
+  back, in light and dark; a fresh hover straight onto a pinned badge or a
+  tile chip waited 0.46 s; every card sat 6 pt outside the sidebar, top
+  level with its row; live Peeks (normal, pinned, favourite) showed their
+  own title, URL and picture, a parked Peek kept both, the selected host's
+  Peek had no picture, and after the relaunch restored Peeks showed the URL
+  alone in a 38 pt card.[^harness-229] No pixels were checked: a locked
+  screen gives no window captures, and `cacheDisplay` or `layer.render` of
+  the glass card come out blank; the card view is the one TASK-190 checked
+  in both appearances.
 
 # Related
 
@@ -248,3 +309,5 @@ survives a relaunch.
 
 [^task-190]: TASK-190
 [^harness]: TASK-190 runtime harness
+[^task-229]: TASK-229
+[^harness-229]: TASK-229 runtime harness

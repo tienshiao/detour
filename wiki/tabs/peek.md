@@ -185,6 +185,10 @@ The host carries three persisted fields: `peekURL`, `peekInteractionState` and
   builds a new `BrowserTab` and tears the old one down. The host keeps the
   parked `peekTab` reference anyway, because the sidebar badge reads it through
   `displayPeekFavicon`.
+- The sidebar badge has a hover card of its own describing the Peek: its
+  title and URL, or the URL alone after a relaunch, with the Peek's
+  in-memory picture when it has one
+  ([tab hover card](../features/tab-hover-card.md)).
 - `observePeekTab` mirrors the live Peek's URL and favicon onto the host
   (`savePeekStateForPersistence`, `mirrorPeekFavicon`), so a mid-session save
   restores the Peek where the user navigated it, and every window's row or tile

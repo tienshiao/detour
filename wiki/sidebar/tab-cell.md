@@ -68,7 +68,7 @@ mute, rename and collapse.
 | Host line | the row is in [dev mode](../features/dev-mode.md) (single rows only) | 10 pt `secondaryLabelColor` label under the title, `hostLineLabel`; the title moves up so both lines are centred in the unchanged 36 pt row |
 | Hazard border | the row, or a split half, is in dev mode **and the row is the window's selected row** (`isRowSelected`, pushed by `TabRowView.isSelected`) | Orange/black dashed `HazardBorderView`, made on first use and only hidden on deselection, framed like the hover background (a split half's border matches its half highlight); over the progress bar, under the content |
 | Close button | hover only | Glyph says what it will do: xmark closes a normal tab; **minus** makes a live pinned entry dormant; xmark on a dormant entry removes the pin (`updatePinnedMode`) |
-| Peek favicon | the tab has a parked [Peek](../tabs/peek.md) | Trailing chip; never used for split rendering |
+| Peek favicon | the tab has a parked [Peek](../tabs/peek.md) | Trailing chip; never used for split rendering. Hovering it shows the Peek's [hover card](../features/tab-hover-card.md) (TASK-229) |
 | Split segment | the row is a split | See below |
 | Progress bar | a load is in flight | See below |
 | Hover background | pointer over the row | Extends 6 pt beyond the cell on each side; the drag image and the split-drop overlay mirror this rect |
@@ -150,10 +150,13 @@ Passing `nil` for both favicon and title clears split rendering.
   its own entry's live or dormant state (`updateSplitPinnedMode`).
 - **Hover is per half.** The tracking area includes `.mouseMoved` so the
   highlight and close button follow the pointer across the divider.
-  `updateHover(to:at:)` is the one place hover and the half are decided; it
+  `updateHover(to:at:)` is the one place hover, the half and whether the
+  pointer is over the Peek badge (`peekBadgeHoverRect(in:)`) are decided; it
   reports every change to the cell's `hoverDelegate` (the sidebar, for the
   [tab hover card](../features/tab-hover-card.md)), as do `prepareForReuse`
   and `viewWillMove(toWindow: nil)` for a hovered cell whose row is gone.
+  `mouseMoved` re-reports on any row, not only split rows, so the card can
+  follow the pointer onto the badge.
 - **Formation and dissolve animate inside the row.** The table diff keeps
   the row in place across a split forming or dissolving
   ([row layout](./row-layout.md)), so the same cell is reconfigured from

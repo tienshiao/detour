@@ -1,0 +1,285 @@
+TASK-229 runtime harness: the Peek's hover card. Temporary code, never
+committed to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task229-harness.patch
+    xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # Fixture pages on http://127.0.0.1:8229/: host.html, pinhost.html,
+    # favhost.html, other.html (untitled hosts) and peek1-3.html, each with a
+    # <title> and a <link rel=icon> PNG (a Peek without a favicon has no badge).
+    OUT="$PWD/.derived-logs/task229"; mkdir -p "$OUT"
+    DETOUR_DATA_DIR=DetourVerify229 DETOUR_VERIFY_DIR="$OUT" DETOUR_VERIFY_PHASE=1 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # wait for "done" in $OUT/verify-1.log (about 70 s), kill that pid, then the
+    # same with DETOUR_VERIFY_PHASE=2 (the relaunch, about 20 s).
+    git apply -R docs/harness/task229-harness.patch && xcodegen generate
+
+Phase 1 opens a Peek over a normal tab, a tab then pinned and a tab then
+favourited, leaving each so the host and the Peek are pictured. In light then
+dark it hovers the normal row's body (host card), moves onto the badge (Peek
+card), moves back; enters the pinned row straight onto the badge; enters the
+favourite tile on its chip, then moves to its middle. Then it sleeps the
+normal host (parked Peek) and hovers its badge, and selects the host (Peek
+presented, no picture) and hovers its badge. Phase 2 relaunches and hovers
+the restored hosts' badges (only peekURL left). Hover goes through the views'
+own mouseEntered / mouseMoved / mouseExited; a 120 Hz sampler logs show and
+hide times.
+
+Results (2026-10-28, screen locked, so no window captures; cacheDisplay and
+layer.render of the glass card come out blank): the badge swapped the row's
+card for the Peek's 0.04 s after the move, and back, in light and dark; fresh
+hovers on a pinned badge or a tile chip waited 0.46 s; every card's top was
+level with its row and 6 pt outside the sidebar; live Peeks showed their own
+title, URL and picture (normal, pinned, favourite); the parked Peek kept its
+title and picture; the selected host's Peek card had no picture; restored
+Peeks (normal and pinned) showed the URL alone in a 38 pt card. The favourite
+came back dormant after the relaunch (the harness favourited a tab that also
+stayed in the tab list), so its tile had no badge and showed the tile's card.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 334c0df..0dfdc05 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask229HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task229Harness.swift b/Detour/App/Task229Harness.swift
+new file mode 100644
+index 0000000..8a297bd
+--- /dev/null
++++ b/Detour/App/Task229Harness.swift
+@@ -0,0 +1,227 @@
++// TEMP TASK-229 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask229HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let phase = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PHASE"] ?? "1"
++        let base = "http://127.0.0.1:8229"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(phase).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var clock: TimeInterval = 2.0
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) {
++            clock += dt
++            let timer = Timer(timeInterval: clock, repeats: false) { _ in block() }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        guard let window = wc.window else { return log("no window") }
++        let store = TabStore.shared
++        let sidebar = wc.tabSidebar
++        let card = wc.hoverCard
++
++        func allSubviews(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap(allSubviews) }
++        func rect(_ r: NSRect) -> String { String(format: "(%.0f,%.0f %.0fx%.0f)", r.minX, r.minY, r.width, r.height) }
++        func cells() -> [(row: Int, cell: TabCellView)] {
++            let table = sidebar.tableView
++            return (0 ..< table.numberOfRows).compactMap { row in
++                (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView).map { (row, $0) }
++            }
++        }
++        func cell(_ prefix: String) -> TabCellView? {
++            cells().first { $0.cell.titleLabel.stringValue.hasPrefix(prefix) }?.cell
++        }
++        func tile(_ title: String) -> FavoriteTileView? {
++            allSubviews(sidebar.view).compactMap { $0 as? FavoritesBarView }
++                .filter { $0.window != nil && !$0.visibleRect.isEmpty }
++                .flatMap(\.tileViews).first { $0.favorite.title.hasPrefix(title) }
++        }
++        func rowBody(_ v: NSView) -> NSPoint { NSPoint(x: v.bounds.width * 0.3, y: v.bounds.midY) }
++        func rowBadge(_ v: NSView) -> NSPoint { NSPoint(x: v.bounds.maxX - 4 - 8, y: v.bounds.midY) }
++        func tileChip(_ v: NSView) -> NSPoint { NSPoint(x: v.bounds.maxX - 2 - 7, y: v.bounds.maxY - 2 - 7) }
++        func tileBody(_ v: NSView) -> NSPoint { NSPoint(x: v.bounds.midX, y: v.bounds.midY) }
++
++        var hoverStart: TimeInterval = 0
++        func event(_ type: NSEvent.EventType, _ view: NSView, _ point: NSPoint) -> NSEvent {
++            let p = view.convert(point, to: nil)
++            if type == .mouseMoved {
++                return NSEvent.mouseEvent(with: .mouseMoved, location: p, modifierFlags: [],
++                                          timestamp: ProcessInfo.processInfo.systemUptime,
++                                          windowNumber: window.windowNumber, context: nil,
++                                          eventNumber: 0, clickCount: 0, pressure: 0)!
++            }
++            return NSEvent.enterExitEvent(with: type, location: p, modifierFlags: [],
++                                          timestamp: ProcessInfo.processInfo.systemUptime,
++                                          windowNumber: window.windowNumber, context: nil,
++                                          eventNumber: 0, trackingNumber: 0, userData: nil)!
++        }
++        func enter(_ view: NSView?, _ point: (NSView) -> NSPoint, _ name: String) {
++            guard let view else { return log("ENTER \(name): no view") }
++            hoverStart = ProcessInfo.processInfo.systemUptime
++            view.mouseEntered(with: event(.mouseEntered, view, point(view)))
++            log("ENTER \(name) pending=\(card.isPendingForTesting) showing=\(card.isShowing)")
++        }
++        func move(_ view: NSView?, _ point: (NSView) -> NSPoint, _ name: String) {
++            guard let view else { return log("MOVE \(name): no view") }
++            hoverStart = ProcessInfo.processInfo.systemUptime
++            view.mouseMoved(with: event(.mouseMoved, view, point(view)))
++            log("MOVE \(name) pending=\(card.isPendingForTesting) showing=\(card.isShowing)")
++        }
++        func leave(_ view: NSView?, _ name: String) {
++            guard let view else { return }
++            view.mouseExited(with: event(.mouseExited, view, NSPoint(x: -10, y: -10)))
++            log("EXIT \(name) showing=\(card.isShowing)")
++        }
++        func describeCard(_ label: String) {
++            guard card.isShowing, let panel = card.panelForTesting else {
++                return log("CARD \(label): not showing (pending=\(card.isPendingForTesting))")
++            }
++            let texts = allSubviews(panel.contentView!).compactMap { $0 as? NSTextField }
++                .filter { !$0.isHidden }.map { "\"\($0.stringValue)\"" }
++            let thumb = allSubviews(panel.contentView!).first { $0 is HoverCardThumbnailView }
++            let sidebarScreen = window.convertToScreen(sidebar.view.convert(sidebar.view.visibleRect, to: nil))
++            log("CARD \(label): texts=\(texts) thumbnail=\(thumb.map { $0.isHidden ? "none" : rect($0.frame) } ?? "?") "
++                + "panel=\(rect(panel.frame)) gap=\(panel.frame.minX - sidebarScreen.maxX) "
++                + "appearance=\(panel.effectiveAppearance.name.rawValue)")
++        }
++        func rowTop(_ view: NSView?) -> String {
++            guard let view else { return "?" }
++            return String(format: "%.0f", window.convertToScreen(view.convert(view.bounds, to: nil)).maxY)
++        }
++        func shoot(_ name: String) {
++            if card.isShowing, let content = card.panelForTesting?.contentView,
++               let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
++                content.cacheDisplay(in: content.bounds, to: rep)
++                try? rep.representation(using: .png, properties: [:])?
++                    .write(to: URL(fileURLWithPath: outDir).appendingPathComponent("\(phase)-\(name)-inproc-card.png"))
++            }
++            if card.isShowing, let content = card.panelForTesting?.contentView, let layer = content.layer,
++               let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(content.bounds.width) * 2,
++                                          pixelsHigh: Int(content.bounds.height) * 2, bitsPerSample: 8,
++                                          samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
++                                          colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
++               let ctx = NSGraphicsContext(bitmapImageRep: rep) {
++                ctx.cgContext.scaleBy(x: 2, y: 2)
++                content.effectiveAppearance.performAsCurrentDrawingAppearance { layer.render(in: ctx.cgContext) }
++                try? rep.representation(using: .png, properties: [:])?
++                    .write(to: URL(fileURLWithPath: outDir).appendingPathComponent("\(phase)-\(name)-layer.png"))
++            }
++            let panelNumber = card.isShowing ? (card.panelForTesting?.windowNumber ?? 0) : 0
++            log("SHOOT \(phase)-\(name) \(window.windowNumber) \(panelNumber)")
++        }
++        var wasShowing = false
++        let sampler = Timer(timeInterval: 1.0 / 120.0, repeats: true) { _ in
++            if card.isShowing != wasShowing {
++                wasShowing = card.isShowing
++                log(String(format: "  card %@ %.3f s after the last hover call", wasShowing ? "SHOWN" : "HIDDEN",
++                           ProcessInfo.processInfo.systemUptime - hoverStart))
++            }
++        }
++        RunLoop.main.add(sampler, forMode: .common)
++
++        func hosts() -> [(String, BrowserTab)] {
++            guard let space = wc.activeSpace else { return [] }
++            let normal = space.tabs.map { ($0.title, $0) }
++            let pinned = space.pinnedEntries.compactMap { e in e.tab.map { ("pinned:" + e.pinnedTitle, $0) } }
++            let favs = (space.profile?.favorites ?? []).compactMap { f in f.tab.map { ("fav:" + f.title, $0) } }
++            return normal + pinned + favs
++        }
++        func logPeeks(_ label: String) {
++            for (name, tab) in hosts() {
++                log("PEEK[\(label)] \(name): sleeping=\(tab.isSleeping) peekTab=\(tab.peekTab.map { "\"\($0.title)\" url=\($0.url?.absoluteString ?? "nil") webView=\($0.webView != nil) preview=\($0.switcherPreview != nil)" } ?? "nil") peekURL=\(tab.peekURL?.absoluteString ?? "nil") badge=\(tab.displayPeekFavicon != nil)")
++            }
++        }
++
++        func scenario(_ theme: String) {
++            // Normal row: the row's card, then the badge swaps to the Peek's at once, then back.
++            at(1.0) { enter(cell("Host Page"), rowBody, "host row (\(theme))") }
++            at(0.8) { describeCard("host row \(theme)"); log("rowTop=\(rowTop(cell("Host Page")))") }
++            at(1.0) { move(cell("Host Page"), rowBadge, "host badge") }
++            at(0.05) { describeCard("host badge swap \(theme)") }
++            at(0.5) { shoot("normal-peek-\(theme)") }
++            at(1.0) { move(cell("Host Page"), rowBody, "back to host row") }
++            at(0.05) { describeCard("back to row \(theme)") }
++            at(1.0) { leave(cell("Host Page"), "host") }
++            // Pinned row, entered straight onto the badge: a fresh hover waits.
++            at(1.0) { enter(cell("Pinned Host"), rowBadge, "pinned badge (\(theme))") }
++            at(0.8) { describeCard("pinned badge \(theme)"); log("rowTop=\(rowTop(cell("Pinned Host")))"); shoot("pinned-peek-\(theme)") }
++            at(1.0) { leave(cell("Pinned Host"), "pinned") }
++            // Favourite tile: chip, then the tile.
++            at(1.0) { enter(tile("Favourite Host"), tileChip, "favourite chip (\(theme))") }
++            at(0.8) { describeCard("favourite chip \(theme)"); log("tileTop=\(rowTop(tile("Favourite Host")))"); shoot("favourite-peek-\(theme)") }
++            at(1.0) { move(tile("Favourite Host"), tileBody, "favourite body") }
++            at(0.05) { describeCard("favourite body \(theme)") }
++            at(1.0) { leave(tile("Favourite Host"), "favourite") }
++        }
++
++        if phase == "1" {
++            var tabs: [String: BrowserTab] = [:]
++            at(0) {
++                guard let spaceID = wc.activeSpaceID, let space = store.space(withID: spaceID) else { return log("no space") }
++                for name in ["host", "pinhost", "favhost", "other"] {
++                    tabs[name] = store.addTab(in: space, url: URL(string: "\(base)/\(name).html"))
++                }
++                log("seeded")
++            }
++            for (host, peek) in [("host", "peek1"), ("pinhost", "peek2"), ("favhost", "peek3")] {
++                at(2.5) { tabs[host].map { wc.selectTab(id: $0.id) }; log("selected \(host)") }
++                at(2.5) { wc.showPeekOverlay(url: URL(string: "\(base)/\(peek).html")!); log("peek \(peek) over \(host)") }
++                at(3.0) { tabs["other"].map { wc.selectTab(id: $0.id) }; log("left \(host)") }
++            }
++            at(1.5) {
++                guard let space = wc.activeSpace, let profileID = space.profile?.id else { return }
++                if let pin = tabs["pinhost"] { store.pinTab(id: pin.id, in: space) }
++                if let fav = tabs["favhost"] { store.addFavorite(from: fav, profileID: profileID) }
++                window.makeKeyAndOrderFront(nil)
++                log("pinned + favourited")
++                logPeeks("live")
++            }
++            at(1.0) { NSApp.appearance = NSAppearance(named: .aqua); log("LIGHT") }
++            scenario("light")
++            at(1.0) { NSApp.appearance = NSAppearance(named: .darkAqua); log("DARK") }
++            scenario("dark")
++            // Parked: the host sleeps, its Peek's web view goes.
++            at(1.0) {
++                NSApp.appearance = NSAppearance(named: .aqua)
++                tabs["host"]?.sleep(force: true)
++                log("host slept")
++                logPeeks("parked")
++            }
++            at(1.0) { enter(cell("Host Page"), rowBadge, "parked badge") }
++            at(0.8) { describeCard("parked badge"); shoot("parked-peek-light") }
++            at(1.0) { leave(cell("Host Page"), "parked") }
++            // The host selected: its Peek is on screen, so no picture.
++            at(1.0) { tabs["host"].map { wc.selectTab(id: $0.id) }; log("selected host (Peek re-presented)") }
++            at(3.0) { enter(cell("Host Page"), rowBadge, "selected host badge") }
++            at(0.8) { describeCard("selected host badge"); shoot("selected-peek-light") }
++            at(1.0) { leave(cell("Host Page"), "selected") }
++            at(0.5) { tabs["other"].map { wc.selectTab(id: $0.id) }; store.scheduleSave(); log("left host for the save") }
++            at(4.0) { logPeeks("before quit"); store.saveNow(); log("done") }
++        } else {
++            // Relaunch: the hosts are restored asleep with only their peek columns.
++            at(4.0) { window.makeKeyAndOrderFront(nil); logPeeks("restored") }
++            at(1.0) { NSApp.appearance = NSAppearance(named: .aqua); log("LIGHT") }
++            at(1.0) { enter(cell("Host Page"), rowBadge, "restored badge") }
++            at(0.8) { describeCard("restored badge light"); shoot("restored-peek-light") }
++            at(1.0) { move(cell("Host Page"), rowBody, "restored row") }
++            at(0.05) { describeCard("restored row light") }
++            at(1.0) { leave(cell("Host Page"), "restored") }
++            at(1.0) { enter(tile("Favourite Host"), tileChip, "restored favourite chip") }
++            at(0.8) { describeCard("restored favourite chip light") }
++            at(1.0) { leave(tile("Favourite Host"), "restored favourite") }
++            at(1.0) { NSApp.appearance = NSAppearance(named: .darkAqua); log("DARK") }
++            at(1.0) { enter(cell("Pinned Host"), rowBadge, "restored pinned badge") }
++            at(0.8) { describeCard("restored pinned badge dark"); shoot("restored-peek-dark") }
++            at(1.0) { leave(cell("Pinned Host"), "restored pinned") }
++            at(1.0) { NSApp.appearance = nil; log("done") }
++        }
++    }
++}
++#endif

@@ -32,9 +32,10 @@ class TabRowView: NSTableRowView {
 }
 
 /// Told when a tab row's hover changes: the sidebar's hover card (TASK-190)
-/// follows `TabCellView`'s own hover state, including which split half.
+/// follows `TabCellView`'s own hover state, including which split half and
+/// whether the pointer is over the Peek badge (TASK-229).
 protocol TabCellHoverDelegate: AnyObject {
-    func tabCell(_ cell: TabCellView, hoverChanged hovering: Bool, splitSide: Int?)
+    func tabCell(_ cell: TabCellView, hoverChanged hovering: Bool, splitSide: Int?, overPeekBadge: Bool)
 }
 
 class TabCellView: NSTableCellView, NSTextFieldDelegate {
@@ -113,6 +114,9 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     /// Which half of a split row the mouse is over (0 = left, 1 = right).
     /// Hover chrome (highlight + close button) applies to that half only.
     private var hoveredSplitSide: Int?
+    /// Whether the mouse is over the Peek badge: the hover card is then the
+    /// Peek's, not the row's (TASK-229).
+    private var hoveredPeekBadge = false
 
     // Option A: Ring spinner layer
     private var ringLayer: CAShapeLayer?
@@ -291,10 +295,10 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             splitTitleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             splitTitleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4),
 
-            peekFaviconImageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            peekFaviconImageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.peekBadgeTrailingInset),
             peekFaviconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
             peekFaviconWidthConstraint,
-            peekFaviconImageView.heightAnchor.constraint(equalToConstant: 16),
+            peekFaviconImageView.heightAnchor.constraint(equalToConstant: Self.peekBadgeSize),
         ])
     }
 
@@ -311,9 +315,10 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     override func prepareForReuse() {
         super.prepareForReuse()
         // The row this cell stood for is gone: its hover ends with it.
-        if isHovered { hoverDelegate?.tabCell(self, hoverChanged: false, splitSide: nil) }
+        if isHovered { hoverDelegate?.tabCell(self, hoverChanged: false, splitSide: nil, overPeekBadge: false) }
         isHovered = false
         hoveredSplitSide = nil
+        hoveredPeekBadge = false
         hasPeek = false
         hasSplit = false
         closeButton.isHidden = true
@@ -400,9 +405,11 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private func updateHover(to hovering: Bool, at point: NSPoint?) {
         let wasHovered = isHovered
         let oldSide = hoveredSplitSide
+        let wasOverPeekBadge = hoveredPeekBadge
         defer {
-            if isHovered != wasHovered || hoveredSplitSide != oldSide {
-                hoverDelegate?.tabCell(self, hoverChanged: isHovered, splitSide: hoveredSplitSide)
+            if isHovered != wasHovered || hoveredSplitSide != oldSide || hoveredPeekBadge != wasOverPeekBadge {
+                hoverDelegate?.tabCell(self, hoverChanged: isHovered, splitSide: hoveredSplitSide,
+                                       overPeekBadge: hoveredPeekBadge)
             }
         }
         isHovered = hovering
@@ -411,6 +418,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         } else {
             hoveredSplitSide = nil
         }
+        hoveredPeekBadge = hovering && point.map(isOverPeekBadge(at:)) == true
         closeButton.isHidden = !(hovering && (!hasSplit || hoveredSplitSide == 1))
         splitCloseButton.isHidden = !(hovering && hasSplit && hoveredSplitSide == 0)
         if hovering {
@@ -428,10 +436,18 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        guard isHovered, hasSplit else { return }
+        guard isHovered else { return }
         let point = convert(event.locationInWindow, from: nil)
-        guard splitSide(at: point) != hoveredSplitSide else { return }
+        guard hoverRegionChanged(at: point) else { return }
         updateHover(to: true, at: point)
+    }
+
+    /// Whether `point`, in a hovered row, is in a different split half or on
+    /// the other side of the Peek badge's edge than the hover state says.
+    /// A row that stopped being a split while hovered still has a half on
+    /// record, which counts as a change too.
+    private func hoverRegionChanged(at point: NSPoint) -> Bool {
+        (hasSplit ? splitSide(at: point) : nil) != hoveredSplitSide || isOverPeekBadge(at: point) != hoveredPeekBadge
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -452,8 +468,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         let mouseInWindow = window.mouseLocationOutsideOfEventStream
         let mouseInSelf = convert(mouseInWindow, from: nil)
         let shouldHover = bounds.contains(mouseInSelf)
-        guard shouldHover != isHovered
-            || (hasSplit && shouldHover && splitSide(at: mouseInSelf) != hoveredSplitSide) else { return }
+        guard shouldHover != isHovered || (shouldHover && hoverRegionChanged(at: mouseInSelf)) else { return }
         updateHover(to: shouldHover, at: shouldHover ? mouseInSelf : nil)
     }
 
@@ -495,10 +510,10 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private func updateLayoutState() {
         titleLeadingConstraint.constant = audioPlaying ? 24 : 8
         closeButtonWidthConstraint.constant = (isHovered && (!hasSplit || hoveredSplitSide == 1)) ? 16 : 0
-        closeButtonTrailingConstraint.constant = hasPeek ? -4 : 0
+        closeButtonTrailingConstraint.constant = hasPeek ? -Self.peekBadgeLeadingGap : 0
         splitFaviconWidthConstraint.constant = (hasSplit || isCollapsingSplitSegment) ? 16 : 0
         splitCloseButtonWidthConstraint.constant = (isHovered && hasSplit && hoveredSplitSide == 0) ? 16 : 0
-        peekFaviconWidthConstraint.constant = hasPeek ? 16 : 0
+        peekFaviconWidthConstraint.constant = hasPeek ? Self.peekBadgeSize : 0
         // Deactivate before activating so both trailing rules never coexist.
         if hasSplit {
             titleSingleTrailingConstraint.isActive = false
@@ -517,11 +532,33 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         faviconImageView.image = image ?? NSImage(systemSymbolName: "globe", accessibilityDescription: "Website")
     }
 
+    private static let peekBadgeSize: CGFloat = 16
+    private static let peekBadgeTrailingInset: CGFloat = 4
+    /// The gap between the close button and the Peek badge.
+    private static let peekBadgeLeadingGap: CGFloat = 4
+
+    /// Where the pointer counts as over the Peek badge (TASK-229): the badge,
+    /// the inset to the row's trailing edge and half the gap to the close
+    /// button, the row's full height. From the layout's constants, not the
+    /// badge's frame, which lags a badge that has just appeared.
+    static func peekBadgeHoverRect(in bounds: NSRect) -> NSRect {
+        let width = peekBadgeTrailingInset + peekBadgeSize + peekBadgeLeadingGap / 2
+        return NSRect(x: bounds.maxX - width, y: bounds.minY, width: width, height: bounds.height)
+    }
+
+    private func isOverPeekBadge(at point: NSPoint) -> Bool {
+        hasPeek && Self.peekBadgeHoverRect(in: bounds).contains(point)
+    }
+
     func updatePeekFavicon(_ image: NSImage?) {
+        let hadPeek = hasPeek
         hasPeek = image != nil
         peekFaviconImageView.image = image
         peekFaviconImageView.isHidden = !hasPeek
         updateLayoutState()
+        // A badge appearing under the pointer, or going from under it, moves
+        // the hover card between the row and the Peek.
+        if hasPeek != hadPeek, isHovered { recheckHover() }
     }
 
     /// Configures the right-pane segment of a split row (favicon + title after

@@ -275,6 +275,140 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertNil(content.thumbnailKey)
     }
 
+    // MARK: - Peek (TASK-229)
+
+    private func peekOf(_ target: HoverCardTarget?) -> BrowserTab? {
+        guard case .peek(let host) = target else { return nil }
+        return host
+    }
+
+    func testThePeekBadgeOfARowTargetsItsHost() {
+        let host = makeTab("Host")
+        host.peekTab = makeTab("Peek", url: "https://peek.example/a")
+        XCTAssertTrue(peekOf(HoverCardTarget.peekBadge(of: .tab(host))) === host)
+        let entry = PinnedEntry(pinnedURL: URL(string: "https://a.example")!, pinnedTitle: "A", tab: host)
+        XCTAssertTrue(peekOf(HoverCardTarget.peekBadge(of: .pinned(entry))) === host)
+        let favorite = Favorite(url: URL(string: "https://a.example")!, title: "A", tab: host)
+        XCTAssertTrue(peekOf(HoverCardTarget.peekBadge(of: .favorite(favorite))) === host)
+    }
+
+    func testAParkedOrRestoredPeekHasABadgeCard() {
+        let restored = makeTab("Host")
+        restored.peekURL = URL(string: "https://peek.example/a")
+        XCTAssertTrue(peekOf(HoverCardTarget.peekBadge(of: .tab(restored))) === restored)
+    }
+
+    func testNoPeekBadgeCardWithoutAPeekOrALiveHost() {
+        XCTAssertNil(HoverCardTarget.peekBadge(of: .tab(makeTab())))
+        let dormant = PinnedEntry(pinnedURL: URL(string: "https://a.example")!, pinnedTitle: "A")
+        XCTAssertNil(HoverCardTarget.peekBadge(of: .pinned(dormant)))
+        XCTAssertNil(HoverCardTarget.peekBadge(of: .favorite(Favorite(url: URL(string: "https://a.example")!, title: "A"))))
+        let host = makeTab()
+        host.peekURL = URL(string: "https://peek.example")
+        XCTAssertNil(HoverCardTarget.peekBadge(of: .peek(host: host)), "a Peek has no Peek of its own")
+    }
+
+    func testAPeekBadgeIsInItsHostsRow() {
+        let host = makeTab()
+        let entry = PinnedEntry(pinnedURL: URL(string: "https://a.example")!, pinnedTitle: "A", tab: host)
+        let favorite = Favorite(url: URL(string: "https://a.example")!, title: "A", tab: host)
+        for target in [HoverCardTarget.tab(host), .pinned(entry), .favorite(favorite)] {
+            XCTAssertTrue(target.isSameRow(as: .peek(host: host)))
+            XCTAssertTrue(HoverCardTarget.peek(host: host).isSameRow(as: target))
+        }
+        let other = makeTab()
+        XCTAssertFalse(HoverCardTarget.tab(other).isSameRow(as: .peek(host: host)))
+        XCTAssertFalse(HoverCardTarget.peek(host: other).isSameRow(as: .peek(host: host)))
+        XCTAssertFalse(HoverCardTarget.tab(other).isSameRow(as: .tab(host)))
+    }
+
+    func testPeekTargetsCompareByHost() {
+        let host = makeTab()
+        XCTAssertTrue(HoverCardTarget.peek(host: host).isSame(as: .peek(host: host)))
+        XCTAssertFalse(HoverCardTarget.peek(host: host).isSame(as: .peek(host: makeTab())))
+        // The badge and the rest of the row are different targets.
+        XCTAssertFalse(HoverCardTarget.peek(host: host).isSame(as: .tab(host)))
+        XCTAssertFalse(HoverCardTarget.tab(host).isSame(as: .peek(host: host)))
+    }
+
+    func testALivePeekShowsItsOwnTitleURLAndPreview() {
+        let host = makeTab("Host", url: "https://host.example/")
+        host.switcherPreview = preview()
+        let peek = makeTab("Article", url: "https://www.news.example/story")
+        let image = preview()
+        peek.switcherPreview = image
+        host.peekTab = peek
+        let content = HoverCardContent.make(for: .peek(host: host), isOnScreen: { _ in false },
+                                            thumbnailKey: { $0.id })
+        XCTAssertEqual(content.text, HoverCardText(title: "Article", url: .init(host: "news.example", rest: "/story")))
+        XCTAssertTrue(content.preview === image)
+        XCTAssertNil(content.thumbnailKey, "a Peek has no picture on disk, and never the host's")
+    }
+
+    func testAPeekWithoutAPreviewIsTextOnly() {
+        let host = makeTab()
+        host.switcherPreview = preview()
+        host.peekTab = makeTab("Article", url: "https://news.example/story")
+        let content = HoverCardContent.make(for: .peek(host: host), isOnScreen: { _ in false },
+                                            thumbnailKey: { $0.id })
+        XCTAssertNil(content.preview)
+        XCTAssertNil(content.thumbnailKey)
+    }
+
+    func testAParkedPeekShowsTheSavedURLWhenItsTabHasNone() {
+        let host = makeTab()
+        host.peekTab = BrowserTab(id: UUID(), title: "Article", url: nil, faviconURL: nil,
+                                  cachedInteractionState: nil, spaceID: UUID())
+        host.peekURL = URL(string: "https://news.example/story")
+        let content = HoverCardContent.make(for: .peek(host: host), isOnScreen: { _ in false },
+                                            thumbnailKey: { $0.id })
+        XCTAssertEqual(content.text, HoverCardText(title: "Article", url: .init(host: "news.example", rest: "/story")))
+    }
+
+    func testARestoredPeekIsNamedByItsURL() {
+        // After a relaunch only the host's peek columns are left: no title,
+        // and Peeks record no history to look one up in.
+        let host = makeTab()
+        host.peekURL = URL(string: "https://www.news.example/story")
+        let content = HoverCardContent.make(for: .peek(host: host), isOnScreen: { _ in false },
+                                            thumbnailKey: { $0.id })
+        XCTAssertEqual(content.text, HoverCardText(title: "news.example/story", url: nil))
+        XCTAssertNil(content.preview)
+        XCTAssertNil(content.thumbnailKey)
+    }
+
+    func testAPeekOverTheTabOnScreenShowsNoThumbnail() {
+        // A host on screen has its Peek presented over it.
+        let host = makeTab()
+        let peek = makeTab("Article", url: "https://news.example/story")
+        peek.switcherPreview = preview()
+        host.peekTab = peek
+        let content = HoverCardContent.make(for: .peek(host: host), isOnScreen: { $0 === host },
+                                            thumbnailKey: { $0.id })
+        XCTAssertNil(content.preview)
+        XCTAssertEqual(content.text.title, "Article")
+    }
+
+    // MARK: - Peek badge hit areas
+
+    func testTheRowsPeekBadgeAreaIsItsTrailingEnd() {
+        let bounds = NSRect(x: 0, y: 0, width: 224, height: 32)
+        let area = TabCellView.peekBadgeHoverRect(in: bounds)
+        XCTAssertEqual(area.maxX, bounds.maxX, "the inset to the row's edge belongs to the badge")
+        XCTAssertEqual(area.height, bounds.height)
+        XCTAssertTrue(area.contains(NSPoint(x: 224 - 4 - 8, y: 16)), "the badge's centre")
+        XCTAssertFalse(area.contains(NSPoint(x: 224 - 4 - 16 - 4 - 8, y: 16)), "the close button beside it")
+    }
+
+    func testTheTilesPeekBadgeAreaIsItsChip() {
+        let bounds = NSRect(x: 0, y: 0, width: 44, height: 32)
+        let area = FavoriteTileView.peekBadgeHoverRect(in: bounds)
+        XCTAssertTrue(area.contains(NSPoint(x: 44 - 2 - 7, y: 32 - 2 - 7)), "the chip's centre (top right)")
+        XCTAssertFalse(area.contains(NSPoint(x: 22, y: 16)), "the tile's favicon")
+        XCTAssertEqual(area.maxX, bounds.maxX)
+        XCTAssertEqual(area.maxY, bounds.maxY)
+    }
+
     // MARK: - Placement
 
     func testCardSitsBesideTheSidebarTopAlignedWithTheRow() {
@@ -396,6 +530,48 @@ final class TabHoverCardControllerTests: XCTestCase {
         controller.hoverBegan(.tab(b), rowRectInWindow: row.offsetBy(dx: 0, dy: -32))
         controller.hoverEnded(.tab(a))   // late exit of the old row: ignored
         XCTAssertTrue(controller.isShowing)
+    }
+
+    /// TASK-229: as the pointer crosses into the Peek badge the sidebar
+    /// begins the badge's target over the row's (or the reverse), without
+    /// ending the row's: the pointer has not left the row.
+    func testMovingBetweenTheRowAndItsPeekBadgeSwapsImmediately() {
+        let host = makeTab("Host")
+        host.peekTab = makeTab("Peek")
+        controller.hoverBegan(.tab(host), rowRectInWindow: row)
+        waitUntilShowing()
+        let rowCardTop = try! XCTUnwrap(controller.panelForTesting).frame.maxY
+
+        controller.hoverBegan(.peek(host: host), rowRectInWindow: row)
+        XCTAssertTrue(controller.isShowing, "the Peek's card replaces the row's at once")
+        XCTAssertFalse(controller.isPendingForTesting)
+        XCTAssertEqual(try! XCTUnwrap(controller.panelForTesting).frame.maxY, rowCardTop, accuracy: 0.5,
+                       "placed beside the row as the host's card is")
+
+        controller.hoverBegan(.tab(host), rowRectInWindow: row)
+        XCTAssertTrue(controller.isShowing, "and back")
+    }
+
+    /// TASK-229: a dismissal keeps the card away until the pointer leaves the
+    /// row, not until it crosses onto or off the row's Peek badge.
+    func testDismissSuppressesAcrossThePeekBadgeUntilThePointerLeavesTheRow() {
+        let host = makeTab("Host")
+        host.peekTab = makeTab("Peek")
+        controller.hoverBegan(.tab(host), rowRectInWindow: row)
+        waitUntilShowing()
+        controller.dismiss()
+
+        controller.hoverBegan(.peek(host: host), rowRectInWindow: row)
+        XCTAssertFalse(controller.isShowing)
+        XCTAssertFalse(controller.isPendingForTesting, "the badge is part of the dismissed row")
+        controller.hoverBegan(.tab(host), rowRectInWindow: row)
+        XCTAssertFalse(controller.isPendingForTesting, "and so is the rest of the row")
+
+        // Leaving from the badge ends the suppression.
+        controller.hoverBegan(.peek(host: host), rowRectInWindow: row)
+        controller.hoverEnded(.peek(host: host))
+        controller.hoverBegan(.tab(host), rowRectInWindow: row)
+        XCTAssertTrue(controller.isPendingForTesting)
     }
 
     func testDismissSuppressesUntilThePointerLeavesTheRow() {
