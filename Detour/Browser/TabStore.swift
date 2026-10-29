@@ -505,6 +505,10 @@ class TabStore {
     /// second per change.
     private let historySettleDebounce: TimeInterval
 
+    /// How long after a tab's title changes the session is saved, unless a save
+    /// is already pending (TASK-227). Injected so a test need not wait for it.
+    private let titleSaveDelay: TimeInterval
+
     /// Removes deleted profiles' on-disk WebKit data (TASK-32).
     private let profileDataRemoval: ProfileDataRemoval
 
@@ -542,10 +546,12 @@ class TabStore {
          profileDataRemover: ProfileDataRemoval.Remover = .webKit,
          profileDataRemovalRetryDelays: [TimeInterval] = ProfileDataRemoval.defaultRetryDelays,
          webKitStorageScope: WebKitStorageScope = .current,
-         historySettleDebounce: TimeInterval = 1.0) {
+         historySettleDebounce: TimeInterval = 1.0,
+         titleSaveDelay: TimeInterval = 5.0) {
         self.appDB = appDB
         self.historyDB = historyDB
         self.historySettleDebounce = historySettleDebounce
+        self.titleSaveDelay = titleSaveDelay
         self.profileDataRemoval = ProfileDataRemoval(
             appDB: appDB, remover: profileDataRemover, retryDelays: profileDataRemovalRetryDelays,
             storageScope: webKitStorageScope)
@@ -766,6 +772,19 @@ class TabStore {
         }
         saveWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+    }
+
+    /// Schedules a save `delay` from now unless one is already pending, which
+    /// then writes this change too. Unlike `scheduleSave()` it never pushes a
+    /// pending save back, so a change that repeats faster than the delay still
+    /// reaches the database.
+    private func scheduleSaveUnlessPending(after delay: TimeInterval) {
+        guard saveWorkItem == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            self?.saveNow()
+        }
+        saveWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
     }
 
     /// What a `saveNow()` did (TASK-154).
@@ -5247,6 +5266,20 @@ class TabStore {
         }
 
         observe(\.$title)
+        // A title often settles after the URL and favicon saves have run (a
+        // page that sets it from script, a dead process's page coming back).
+        // It is saved on its own, but never by postponing a pending save: a
+        // page that flashes its title faster than the debounce would hold
+        // every session save off (TASK-227).
+        tab.$title
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, inSession else { return }
+                self.scheduleSaveUnlessPending(after: self.titleSaveDelay)
+            }
+            .store(in: &cancellables)
         observe(\.$url, save: true)
         observe(\.$favicon, save: true)
         observe(\.$peekFavicon)

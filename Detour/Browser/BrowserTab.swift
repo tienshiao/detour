@@ -509,6 +509,15 @@ class BrowserTab: NSObject {
     /// its URL synchronously, and the URL observer then also records it as
     /// `lastAttemptedURL`.
     private(set) var restoringSession = false
+    /// The page `title` is the real title of — reported by its document, or
+    /// persisted with it — or nil while the title is a placeholder. While the
+    /// tab only shows that same page again it keeps the title rather than fall
+    /// back to the URL: a web content process that dies (a crash, a memory
+    /// kill) takes the web view's title with it, and a woken or reloaded page
+    /// commits before its document has one. The placeholder used to replace
+    /// the title then, and a tab put to sleep kept it across every relaunch
+    /// after (TASK-227).
+    private var titledURL: URL?
     /// The internal page this tab may navigate to, set only by
     /// `loadInternalPage(_:)` and by `wake()` for a tab that was already showing
     /// one. `InternalPageNavigationPolicy` refuses every other navigation to the
@@ -578,7 +587,10 @@ class BrowserTab: NSObject {
         self.webView?.isInspectable = true
         // Seed published properties from the existing webView state
         self.url = webView.url
-        if let t = webView.title, !t.isEmpty { self.title = t }
+        if let t = webView.title, !t.isEmpty {
+            self.title = t
+            self.titledURL = webView.url
+        }
         self.isLoading = webView.isLoading
         self.canGoBack = webView.canGoBack
         self.canGoForward = webView.canGoForward
@@ -599,6 +611,8 @@ class BrowserTab: NSObject {
         self.spaceID = spaceID
         super.init()
         self.title = title
+        // An empty persisted title is no title: the URL placeholder may replace it.
+        self.titledURL = title.isEmpty ? nil : url
         self.url = url
         if let page = url.flatMap(InternalPage.init(url:)) {
             // A restored internal page has no favicon URL to download, and its
@@ -625,6 +639,7 @@ class BrowserTab: NSObject {
     func restoreArchivedPage(title: String, interactionState archivedInteractionState: Data?, fallbackURL: URL?,
                              faviconURL: URL?) {
         self.title = title
+        titledURL = title.isEmpty ? nil : fallbackURL
         if let faviconURL {
             self.faviconURL = faviconURL
             self.previousFaviconSite = faviconSiteKey(for: fallbackURL)
@@ -1111,6 +1126,8 @@ class BrowserTab: NSObject {
 
         self.url = url
         lastAttemptedURL = url
+        // The kept title names the page at its new address too.
+        if titledURL != nil { titledURL = url }
         // Title and favicon are deliberately kept, unlike `load`: this is the
         // *same page* coming back from a new internal origin, not a navigation to
         // somewhere else, so replacing them would flash a raw
@@ -1588,9 +1605,15 @@ class BrowserTab: NSObject {
         if let page = ((navigationPending ? lastAttemptedURL : webView?.url) ?? url)
             .flatMap(InternalPage.init(url:)) {
             title = page.title
+            titledURL = nil
         } else if navigationPending, let lastAttemptedURL {
+            // Loading the page the title already names (a reload, a closed tab
+            // reopened) keeps it; anywhere else, say where the tab is going.
+            guard lastAttemptedURL != titledURL else { return }
             title = strippedScheme(lastAttemptedURL)
+            titledURL = nil
         } else if let webTitle = webView?.title, !webTitle.isEmpty {
+            titledURL = titleDocumentURL ?? url
             title = webTitle
         } else if restoringSession {
             // The persisted title outranks the raw URL of a session still being
@@ -1599,9 +1622,15 @@ class BrowserTab: NSObject {
             // `url` is the fallback for a woken web view that has nothing to
             // report — an extension page waiting for its context — now that
             // `wake()` no longer seeds `lastAttemptedURL` (TASK-45).
+            // A page whose process died has no URL of its own any more: it is
+            // the tab's committed `url`. `lastAttemptedURL` still names the
+            // address a load redirected from, which is not a different page.
+            guard displayURL != titledURL, webView?.url != nil || url != titledURL else { return }
             title = strippedScheme(displayURL)
+            titledURL = nil
         } else if !isSleeping {
             title = "New Tab"
+            titledURL = nil
         }
     }
 
@@ -1613,6 +1642,20 @@ class BrowserTab: NSObject {
         guard let host = url?.authorityHost else { return "" }
         return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
+
+    /// The URL of the document the web view's title belongs to. Not
+    /// `webView.url`: while a navigation the page started (a link, Back) is
+    /// still provisional, that is already the destination and the title still
+    /// the old document's. WebKit changes `_committedURL` (WKWebViewPrivate)
+    /// and the title in one transaction, at commit and at a same-document
+    /// navigation such as a `replaceState` (TASK-227).
+    private var titleDocumentURL: URL? {
+        guard let webView else { return nil }
+        guard webView.responds(to: Self.committedURLSelector) else { return webView.url }
+        return webView.value(forKey: "_committedURL") as? URL
+    }
+
+    private static let committedURLSelector = NSSelectorFromString("_committedURL")
 
     private func strippedScheme(_ url: URL) -> String {
         var str = url.absoluteString

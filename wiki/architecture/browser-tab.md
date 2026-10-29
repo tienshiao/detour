@@ -5,7 +5,7 @@ description: "The tab model — an optional WKWebView with published state, slee
 resource: ../../Detour/Browser/BrowserTab.swift
 tags: [architecture, tabs, webkit, sleep]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T06:19:15Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-29T04:30:00Z }
 sources:
   - id: browser-tab
     resource: ../../Detour/Browser/BrowserTab.swift
@@ -40,6 +40,12 @@ sources:
   - id: task-176
     resource: backlog:TASK-176
     title: Reload on a tab whose web process is unresponsive does nothing; terminate the process and reload
+  - id: task-227
+    resource: backlog:TASK-227
+    title: YouTube tabs come back from a relaunch titled with their URL
+  - id: title-retention-tests
+    resource: ../../DetourTests/TabTitleRetentionTests.swift
+    title: TabTitleRetentionTests.swift
 ---
 
 # Role
@@ -190,6 +196,29 @@ Consequences worth knowing:
   scheme-stripped pending URL; the document title; nothing while
   `restoringSession` (the persisted title stays); the scheme-stripped current
   URL; "New Tab" for a live tab with no URL.
+- **A title outlives its page's empty moments (TASK-227).** `titledURL`
+  records the URL the current title really belongs to: set with a document
+  title, a non-empty persisted title (the sleeping init) or archived one
+  (`restoreArchivedPage`), moved by `retarget(to:)`, cleared whenever a
+  placeholder or an internal page's name is shown. A document title is tied
+  to the web view's **`_committedURL`** (WKWebViewPrivate), not to
+  `webView.url`: during a navigation the page started (a link, Back) the
+  URL is already the destination while the title is still the old
+  document's, and WebKit changes `_committedURL` and the title in one
+  transaction, at commit and at a same-document change such as YouTube's
+  `replaceState` that drops `&pp=`. Neither URL placeholder replaces the
+  title while the URL it would show is `titledURL`; with the process gone,
+  the tab's committed `url` counts too, because `lastAttemptedURL` still
+  names the address a load redirected from. Without this, a web content process that
+  died took the title with it (WebKit resets the page's URL and title on
+  process exit, see [unresponsive web process](../platform/unresponsive-web-process.md)),
+  the tab showed `youtube.com/watch?v=…`, the next save stored that, and a
+  tab put to sleep kept it across every relaunch after. The same happened
+  when a woken restored tab committed before its document reported a title,
+  which a hidden web view can take minutes to do
+  ([hidden web view load stalls](../platform/hidden-webview-load-stalls.md)).
+  The cost: a page that empties its own title on the same URL keeps the old
+  one.[^task-227]
 
 `load(_:)` refuses `detour://` URLs; only `loadInternalPage(_:)` and
 `loadRecordedURL(_:)` arm the tab for one. See
@@ -291,5 +320,6 @@ after commit and so reaches no tab since TASK-178). See
 - [Tab and window bridge](../extensions/tab-and-window-bridge.md) — how a tab is reported to extensions.
 
 [^task-45]: A failed wake of a restored tab replaced its session with an error page
+[^task-227]: YouTube tabs come back from a relaunch titled with their URL
 [^task-91]: Per-visit titles and pushState visits
 [^task-122]: A background tab whose load fails never shows the error page
