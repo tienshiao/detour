@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-29T04:25:00Z'
+updated_date: '2026-10-29T04:27:00Z'
 labels:
   - sidebar
   - peek
@@ -31,8 +32,15 @@ Decide when planning, with the user's input on the product question:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Hovering a tab that has a Peek (live or parked) shows the Peek's title and URL on the hover card, in the layout the user chose (a section on the host's card, a separate card for the Peek favicon, or both)
-- [ ] #2 The Peek's thumbnail is shown when one exists, the card has a compact layout when none does, and no Peek or host is woken or shown to make one
-- [ ] #3 Pinned rows, favourite tiles and split panes that have a Peek behave the same as normal rows
-- [ ] #4 The rule changes are covered in TabHoverCardTests (live, parked and no-Peek cases), and the card is checked at runtime in light and dark mode
+- [ ] #1 Hovering the Peek favicon in a sidebar row shows a hover card for the Peek (its title and URL), for a live or a parked Peek; hovering the rest of the row still shows the host tab's card as before
+- [ ] #2 Moving the pointer between the Peek favicon and the rest of the row swaps the card at once (no fresh show delay), and the card is placed beside the row as the host's card is
+- [ ] #3 The Peek's thumbnail is shown when one exists, the card has a compact layout when none does, and no Peek or host is woken or shown to make one
+- [ ] #4 Pinned rows, favourite tiles and split panes that have a Peek behave the same as normal rows
+- [ ] #5 The rule changes are covered in TabHoverCardTests (live, parked and no-Peek cases), and the card is checked at runtime in light and dark mode
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Decision (user, Oct 28 2026): the Peek gets its own hover card, shown while the pointer is over the Peek favicon badge in the sidebar row. The host row's card is unchanged and has no Peek section.
+<!-- SECTION:NOTES:END -->
