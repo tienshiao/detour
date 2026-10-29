@@ -3031,6 +3031,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
         let favicon: NSImage?
         let title: String
         let emphasized: Bool
+        /// The pane's live or parked Peek's favicon, its badge (TASK-229).
+        let peekFavicon: NSImage?
     }
 
     /// Section-agnostic description of a split row. The two-half rendering is
@@ -3068,7 +3070,10 @@ extension TabSidebarViewController: NSTableViewDelegate {
         cell.titleLabel.textColor = descriptor.left.emphasized ? .labelColor : .secondaryLabelColor
         cell.setAccessibilityHelp(descriptor.tooltip)
         cell.updateFavicon(descriptor.left.favicon)
-        cell.updatePeekFavicon(nil)
+        // Before the split segment, so an animated reveal measures and lands
+        // the half-row layout with the panes' Peek badges already in place.
+        cell.updateLeftPanePeekFavicon(descriptor.left.peekFavicon)
+        cell.updatePeekFavicon(descriptor.right.peekFavicon)
         cell.updateSplitPane(favicon: descriptor.right.favicon ?? NSImage(systemSymbolName: "globe", accessibilityDescription: "Website"),
                              title: descriptor.right.title,
                              emphasized: descriptor.right.emphasized,
@@ -3104,8 +3109,10 @@ extension TabSidebarViewController: NSTableViewDelegate {
         let rep = representativeTab(for: item)
         let audioMember = members.first { $0.isPlayingAudio || $0.isMuted }
         let descriptor = SplitCellDescriptor(
-            left: SplitCellHalf(favicon: left.favicon, title: left.title, emphasized: rep === left),
-            right: SplitCellHalf(favicon: right.favicon, title: right.title, emphasized: rep === right),
+            left: SplitCellHalf(favicon: left.favicon, title: left.title, emphasized: rep === left,
+                                peekFavicon: left.displayPeekFavicon),
+            right: SplitCellHalf(favicon: right.favicon, title: right.title, emphasized: rep === right,
+                                 peekFavicon: right.displayPeekFavicon),
             tooltip: "\(left.title) — \(right.title)",
             devMode: Self.splitDevModeMarking(members.map(\.url), profileID: profileID),
             isSleeping: members.allSatisfy { $0.isSleeping },
@@ -3132,8 +3139,10 @@ extension TabSidebarViewController: NSTableViewDelegate {
         let rep = representativePinnedEntry(of: entries)
         let audioTab = entries.compactMap(\.tab).first { $0.isPlayingAudio || $0.isMuted }
         let descriptor = SplitCellDescriptor(
-            left: SplitCellHalf(favicon: left.displayFavicon, title: left.displayTitle, emphasized: rep === left),
-            right: SplitCellHalf(favicon: right.displayFavicon, title: right.displayTitle, emphasized: rep === right),
+            left: SplitCellHalf(favicon: left.displayFavicon, title: left.displayTitle, emphasized: rep === left,
+                                peekFavicon: left.tab?.displayPeekFavicon),
+            right: SplitCellHalf(favicon: right.displayFavicon, title: right.displayTitle, emphasized: rep === right,
+                                 peekFavicon: right.tab?.displayPeekFavicon),
             tooltip: "\(left.displayTitle) — \(right.displayTitle)",
             devMode: Self.splitDevModeMarking(entries.map(\.devModeURL), profileID: profileID),
             isSleeping: entries.allSatisfy { !$0.isLive || $0.tab?.isSleeping == true },

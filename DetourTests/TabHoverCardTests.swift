@@ -625,3 +625,112 @@ final class TabHoverCardControllerTests: XCTestCase {
         XCTAssertFalse(controller.isShowing)
     }
 }
+
+/// TASK-229: a row reports when the pointer is over a Peek badge — the
+/// trailing one of a single row or a split's right pane, and the left pane's
+/// before the divider — so the hover card can be the Peek's.
+final class TabCellPeekBadgeHoverTests: XCTestCase {
+
+    private final class Recorder: TabCellHoverDelegate {
+        var reports: [(hovering: Bool, side: Int?, overPeekBadge: Bool)] = []
+        func tabCell(_ cell: TabCellView, hoverChanged hovering: Bool, splitSide: Int?, overPeekBadge: Bool) {
+            reports.append((hovering, splitSide, overPeekBadge))
+        }
+    }
+
+    private let bounds = NSRect(x: 0, y: 0, width: 240, height: 32)
+    private let badge = NSImage(size: NSSize(width: 16, height: 16))
+
+    private func makeCell(_ recorder: Recorder) -> TabCellView {
+        let cell = TabCellView(frame: bounds)
+        cell.hoverDelegate = recorder
+        return cell
+    }
+
+    private func event(_ type: NSEvent.EventType, at point: NSPoint) -> NSEvent {
+        if type == .mouseMoved {
+            return NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [], timestamp: 0,
+                                      windowNumber: 0, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
+        }
+        return NSEvent.enterExitEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                                      windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0,
+                                      userData: nil)!
+    }
+
+    private func center(_ rect: NSRect) -> NSPoint { NSPoint(x: rect.midX, y: rect.midY) }
+
+    func testASingleRowReportsItsTrailingBadge() {
+        let recorder = Recorder()
+        let cell = makeCell(recorder)
+        cell.updatePeekFavicon(badge)
+        cell.mouseEntered(with: event(.mouseEntered, at: center(TabCellView.peekBadgeHoverRect(in: bounds))))
+        XCTAssertEqual(recorder.reports.last?.overPeekBadge, true)
+        XCTAssertNil(recorder.reports.last?.side)
+        cell.mouseMoved(with: event(.mouseMoved, at: NSPoint(x: 60, y: 16)))
+        XCTAssertEqual(recorder.reports.last?.overPeekBadge, false)
+        XCTAssertEqual(recorder.reports.last?.hovering, true)
+    }
+
+    func testTheLeftPanesBadgeSitsInTheLeftHalfBeforeTheDivider() {
+        let area = TabCellView.leftPanePeekBadgeHoverRect(in: bounds)
+        XCTAssertFalse(area.isEmpty)
+        XCTAssertLessThanOrEqual(area.maxX, bounds.midX, "inside the left half")
+        XCTAssertGreaterThan(area.minX, bounds.midX - 40, "next to the divider, not over the title")
+        XCTAssertEqual(area.height, bounds.height)
+        XCTAssertFalse(area.intersects(TabCellView.peekBadgeHoverRect(in: bounds)))
+    }
+
+    func testASplitRowReportsEachPanesBadgeInItsOwnHalf() {
+        let recorder = Recorder()
+        let cell = makeCell(recorder)
+        cell.updateSplitPane(favicon: badge, title: "Right")
+        cell.updateLeftPanePeekFavicon(badge)
+        cell.updatePeekFavicon(badge)
+
+        cell.mouseEntered(with: event(.mouseEntered, at: center(TabCellView.leftPanePeekBadgeHoverRect(in: bounds))))
+        XCTAssertEqual(recorder.reports.last?.side, 0)
+        XCTAssertEqual(recorder.reports.last?.overPeekBadge, true, "the left pane's badge")
+
+        cell.mouseMoved(with: event(.mouseMoved, at: NSPoint(x: 30, y: 16)))
+        XCTAssertEqual(recorder.reports.last?.side, 0)
+        XCTAssertEqual(recorder.reports.last?.overPeekBadge, false, "the left pane's title")
+
+        cell.mouseMoved(with: event(.mouseMoved, at: center(TabCellView.peekBadgeHoverRect(in: bounds))))
+        XCTAssertEqual(recorder.reports.last?.side, 1)
+        XCTAssertEqual(recorder.reports.last?.overPeekBadge, true, "the right pane's badge")
+    }
+
+    func testAPaneWithoutAPeekHasNoBadgeArea() {
+        let recorder = Recorder()
+        let cell = makeCell(recorder)
+        cell.updateSplitPane(favicon: badge, title: "Right")
+        cell.updateLeftPanePeekFavicon(nil)
+        cell.updatePeekFavicon(badge)
+        cell.mouseEntered(with: event(.mouseEntered, at: center(TabCellView.leftPanePeekBadgeHoverRect(in: bounds))))
+        XCTAssertEqual(recorder.reports.last?.side, 0)
+        XCTAssertEqual(recorder.reports.last?.overPeekBadge, false)
+        XCTAssertTrue(cell.leftPanePeekFaviconImageView.isHidden)
+    }
+
+    func testTheLeftPanesBadgeGoesWithTheSplit() {
+        let cell = makeCell(Recorder())
+        cell.updateSplitPane(favicon: badge, title: "Right")
+        cell.updateLeftPanePeekFavicon(badge)
+        XCTAssertFalse(cell.leftPanePeekFaviconImageView.isHidden)
+        cell.updateSplitPane(favicon: nil, title: nil)
+        XCTAssertTrue(cell.leftPanePeekFaviconImageView.isHidden, "a single row has one badge, the trailing one")
+    }
+
+    func testASplitAgainDoesNotInheritTheOldLeftPanesBadge() {
+        let recorder = Recorder()
+        let cell = makeCell(recorder)
+        cell.updateSplitPane(favicon: badge, title: "Right")
+        cell.updateLeftPanePeekFavicon(badge)
+        cell.updateSplitPane(favicon: nil, title: nil)
+        cell.updateSplitPane(favicon: badge, title: "Right")
+        XCTAssertTrue(cell.leftPanePeekFaviconImageView.isHidden)
+        XCTAssertNil(cell.leftPanePeekFaviconImageView.image)
+        cell.mouseEntered(with: event(.mouseEntered, at: center(TabCellView.leftPanePeekBadgeHoverRect(in: bounds))))
+        XCTAssertEqual(recorder.reports.last?.overPeekBadge, false)
+    }
+}

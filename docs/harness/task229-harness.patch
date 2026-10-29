@@ -11,7 +11,8 @@ committed to Detour/. Apply, build, run, revert:
     DETOUR_DATA_DIR=DetourVerify229 DETOUR_VERIFY_DIR="$OUT" DETOUR_VERIFY_PHASE=1 \
         .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
     # wait for "done" in $OUT/verify-1.log (about 70 s), kill that pid, then the
-    # same with DETOUR_VERIFY_PHASE=2 (the relaunch, about 20 s).
+    # same with DETOUR_VERIFY_PHASE=2 (the relaunch, about 20 s). Phase 3
+    # (split rows, splitl/splitr.html and peek4/5.html) runs on a fresh data dir.
     git apply -R docs/harness/task229-harness.patch && xcodegen generate
 
 Phase 1 opens a Peek over a normal tab, a tab then pinned and a tab then
@@ -36,6 +37,16 @@ Peeks (normal and pinned) showed the URL alone in a 38 pt card. The favourite
 came back dormant after the relaunch (the harness favourited a tab that also
 stayed in the tab list), so its tile had no badge and showed the tile's card.
 
+Phase 3 (2026-10-29, split rows, screen locked): a Peek over each of two
+tabs, then the two split. Light and dark: each pane's title area showed its
+pane's card and each pane's badge its Peek's card, every move swapping at
+once (0.04-0.05 s), badge to badge included. Layout in a 188 pt cell: left
+title, left close button (hover), 4 pt, left badge, 14 pt, divider, 14 pt,
+right favicon, right title, close button, 4 pt, right badge, 4 pt; nothing
+overlapped. The left title had 32 pt at rest (52 pt without the badge).
+Clearing the left pane's Peek hid its badge, and its area then showed the
+pane's own card.
+
 diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
 index 334c0df..0dfdc05 100644
 --- a/Detour/App/AppDelegate.swift
@@ -52,10 +63,10 @@ index 334c0df..0dfdc05 100644
      func applicationWillTerminate(_ notification: Notification) {
 diff --git a/Detour/App/Task229Harness.swift b/Detour/App/Task229Harness.swift
 new file mode 100644
-index 0000000..8a297bd
+index 0000000..1530aff
 --- /dev/null
 +++ b/Detour/App/Task229Harness.swift
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,280 @@
 +// TEMP TASK-229 verify harness — DO NOT COMMIT
 +#if DEBUG
 +import AppKit
@@ -160,17 +171,6 @@ index 0000000..8a297bd
 +                try? rep.representation(using: .png, properties: [:])?
 +                    .write(to: URL(fileURLWithPath: outDir).appendingPathComponent("\(phase)-\(name)-inproc-card.png"))
 +            }
-+            if card.isShowing, let content = card.panelForTesting?.contentView, let layer = content.layer,
-+               let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(content.bounds.width) * 2,
-+                                          pixelsHigh: Int(content.bounds.height) * 2, bitsPerSample: 8,
-+                                          samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-+                                          colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
-+               let ctx = NSGraphicsContext(bitmapImageRep: rep) {
-+                ctx.cgContext.scaleBy(x: 2, y: 2)
-+                content.effectiveAppearance.performAsCurrentDrawingAppearance { layer.render(in: ctx.cgContext) }
-+                try? rep.representation(using: .png, properties: [:])?
-+                    .write(to: URL(fileURLWithPath: outDir).appendingPathComponent("\(phase)-\(name)-layer.png"))
-+            }
 +            let panelNumber = card.isShowing ? (card.panelForTesting?.windowNumber ?? 0) : 0
 +            log("SHOOT \(phase)-\(name) \(window.windowNumber) \(panelNumber)")
 +        }
@@ -219,7 +219,71 @@ index 0000000..8a297bd
 +            at(1.0) { leave(tile("Favourite Host"), "favourite") }
 +        }
 +
-+        if phase == "1" {
++        if phase == "3" {
++            // Split rows: a Peek on each pane, then the two joined.
++            var tabs: [String: BrowserTab] = [:]
++            func split() -> TabCellView? {
++                cells().first { !$0.cell.splitTitleLabel.isHidden && $0.cell.splitTitleLabel.stringValue.hasPrefix("Right") }?.cell
++            }
++            func leftBadge(_ v: NSView) -> NSPoint { NSPoint(x: v.bounds.midX - 14 - 8, y: v.bounds.midY) }
++            func leftBody(_ v: NSView) -> NSPoint { NSPoint(x: v.bounds.width * 0.15, y: v.bounds.midY) }
++            func rightBody(_ v: NSView) -> NSPoint { NSPoint(x: v.bounds.width * 0.65, y: v.bounds.midY) }
++            at(0) {
++                guard let spaceID = wc.activeSpaceID, let space = store.space(withID: spaceID) else { return log("no space") }
++                for name in ["splitl", "splitr", "other"] {
++                    tabs[name] = store.addTab(in: space, url: URL(string: "\(base)/\(name).html"))
++                }
++                log("seeded")
++            }
++            for (host, peek) in [("splitl", "peek4"), ("splitr", "peek5")] {
++                at(2.5) { tabs[host].map { wc.selectTab(id: $0.id) }; log("selected \(host)") }
++                at(2.5) { wc.showPeekOverlay(url: URL(string: "\(base)/\(peek).html")!); log("peek \(peek) over \(host)") }
++                at(3.0) { tabs["other"].map { wc.selectTab(id: $0.id) }; log("left \(host)") }
++            }
++            at(1.0) {
++                guard let space = wc.activeSpace, let l = tabs["splitl"], let r = tabs["splitr"] else { return }
++                store.createSplit(draggedTabID: r.id, targetTabID: l.id, edge: .right, in: space)
++                window.makeKeyAndOrderFront(nil)
++                log("split created")
++                logPeeks("split")
++            }
++            func layout(_ label: String) {
++                guard let c = split() else { return log("LAYOUT \(label): no split cell") }
++                let v = allSubviews(c)
++                func f(_ view: NSView) -> String { view.isHidden ? "hidden" : rect(view.frame) }
++                let buttons = v.compactMap { $0 as? HoverButton }.map(f)
++                let images = v.compactMap { $0 as? NSImageView }.filter { $0.image != nil && !$0.isHidden }.map { rect($0.frame) }
++                log("LAYOUT \(label): cell=\(rect(c.bounds)) title=\(f(c.titleLabel)) leftPeek=\(f(c.leftPanePeekFaviconImageView)) divider=\(f(c.splitDivider)) rightFavicon=\(f(c.splitFaviconImageView)) rightTitle=\(f(c.splitTitleLabel)) closeButtons=\(buttons) images=\(images)")
++            }
++            at(1.0) { layout("resting") }
++            for theme in ["light", "dark"] {
++                at(1.0) { NSApp.appearance = NSAppearance(named: theme == "light" ? .aqua : .darkAqua); log(theme.uppercased()) }
++                at(1.0) { enter(split(), leftBody, "split left body (\(theme))") }
++                at(0.8) { describeCard("split left body \(theme)"); layout("hover left") }
++                at(1.0) { move(split(), leftBadge, "split left badge") }
++                at(0.05) { describeCard("split left badge \(theme)") }
++                at(0.5) { shoot("split-left-peek-\(theme)") }
++                at(1.0) { move(split(), rightBody, "split right body") }
++                at(0.05) { describeCard("split right body \(theme)"); layout("hover right") }
++                at(1.0) { move(split(), rowBadge, "split right badge") }
++                at(0.05) { describeCard("split right badge \(theme)") }
++                at(0.5) { shoot("split-right-peek-\(theme)") }
++                at(1.0) { move(split(), leftBadge, "split right badge -> left badge") }
++                at(0.05) { describeCard("split left badge again \(theme)") }
++                at(1.0) { leave(split(), "split") }
++            }
++            // Closing the left pane's Peek takes its badge away.
++            at(1.0) {
++                NSApp.appearance = nil
++                tabs["splitl"]?.peekTab?.teardown()
++                tabs["splitl"]?.clearPeekState()
++                log("left pane's Peek cleared")
++            }
++            at(1.5) { layout("left Peek gone") }
++            at(0.5) { enter(split(), leftBadge, "split left badge without a Peek") }
++            at(0.8) { describeCard("left badge area without a Peek") }
++            at(1.0) { leave(split(), "split"); log("done") }
++        } else if phase == "1" {
 +            var tabs: [String: BrowserTab] = [:]
 +            at(0) {
 +                guard let spaceID = wc.activeSpaceID, let space = store.space(withID: spaceID) else { return log("no space") }

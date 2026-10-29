@@ -78,8 +78,11 @@ tooltip, which was slow and showed only the title.[^task-190]
   row swaps the card at once, placed as the row's card is. The badge is part
   of its row for dismissal: a card dismissed on the row stays away on the
   badge, and the reverse, until the pointer leaves the row. It works for
-  normal rows, pinned rows and favourite tiles. Split rows show no Peek
-  badge (`configureSplitCell` passes nil), so they have no Peek card.
+  normal rows, pinned rows, favourite tiles and both halves of a split row
+  (normal or pinned): each pane's Peek has its own badge, the right pane's
+  in the row's trailing slot and the left pane's just before the divider,
+  and each describes that pane's Peek. Split rows had no badge at all
+  before TASK-229 (the user asked for one).
   - A **live or parked** Peek shows its own title and URL (the URL the host
     saved for it when the Peek tab has none).
   - A Peek **restored after a relaunch** has no tab, only the host's
@@ -146,6 +149,9 @@ FavoriteTileView hover ───► FavoritesBarDelegate ─┼─► TabSidebar
 - **Badge hover.** The cell and the tile decide "over the badge" from fixed
   rects (`TabCellView.peekBadgeHoverRect(in:)`: the badge, its 4 pt inset
   to the row's edge and half the gap to the close button, full row height;
+  `leftPanePeekBadgeHoverRect(in:)` for a split's left pane: the badge,
+  half the gap to the left pane's close button and the 14 pt gap to the
+  divider, ending at the row's middle;
   `FavoriteTileView.peekBadgeHoverRect(in:)`: the chip and its inset to the
   tile's corner), computed from the layout constants rather than the
   badge's frame, which lags a badge that has just appeared. Both report the
@@ -295,7 +301,12 @@ survives a relaunch.
   level with its row; live Peeks (normal, pinned, favourite) showed their
   own title, URL and picture, a parked Peek kept both, the selected host's
   Peek had no picture, and after the relaunch restored Peeks showed the URL
-  alone in a 38 pt card.[^harness-229] No pixels were checked: a locked
+  alone in a 38 pt card. On 2026-10-29 a split row with a Peek on each pane:
+  each pane's badge showed its Peek's card and each title area its pane's
+  card, badge to badge included, swapping at once in light and dark; the
+  left badge sat 4 pt after the left close button and 14 pt before the
+  divider, nothing overlapping, the left title keeping 32 pt of a 188 pt
+  row.[^harness-229] No pixels were checked: a locked
   screen gives no window captures, and `cacheDisplay` or `layer.render` of
   the glass card come out blank; the card view is the one TASK-190 checked
   in both appearances.

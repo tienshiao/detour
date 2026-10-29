@@ -68,7 +68,7 @@ mute, rename and collapse.
 | Host line | the row is in [dev mode](../features/dev-mode.md) (single rows only) | 10 pt `secondaryLabelColor` label under the title, `hostLineLabel`; the title moves up so both lines are centred in the unchanged 36 pt row |
 | Hazard border | the row, or a split half, is in dev mode **and the row is the window's selected row** (`isRowSelected`, pushed by `TabRowView.isSelected`) | Orange/black dashed `HazardBorderView`, made on first use and only hidden on deselection, framed like the hover background (a split half's border matches its half highlight); over the progress bar, under the content |
 | Close button | hover only | Glyph says what it will do: xmark closes a normal tab; **minus** makes a live pinned entry dormant; xmark on a dormant entry removes the pin (`updatePinnedMode`) |
-| Peek favicon | the tab has a parked [Peek](../tabs/peek.md) | Trailing chip; never used for split rendering. Hovering it shows the Peek's [hover card](../features/tab-hover-card.md) (TASK-229) |
+| Peek favicon | the tab has a live or parked [Peek](../tabs/peek.md) | Trailing chip: a single tab's, or a split row's right pane's. A split's left pane has its own (`leftPanePeekFaviconImageView`) between its close button and the divider, shown only while the row is a split. Hovering either shows that Peek's [hover card](../features/tab-hover-card.md) (TASK-229) |
 | Split segment | the row is a split | See below |
 | Progress bar | a load is in flight | See below |
 | Hover background | pointer over the row | Extends 6 pt beyond the cell on each side; the drag image and the split-drop overlay mirror this rect |

@@ -3,11 +3,11 @@ id: TASK-229
 title: >-
   Hover card: show a tab's Peek (its title, URL and thumbnail), including from
   the Peek favicon in the sidebar row
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-29T04:25:00Z'
-updated_date: '2026-10-29T06:54:00Z'
+updated_date: '2026-10-29T07:14:00Z'
 labels:
   - sidebar
   - peek
@@ -36,7 +36,7 @@ Decide when planning, with the user's input on the product question:
 - [x] #1 Hovering the Peek favicon in a sidebar row shows a hover card for the Peek (its title and URL), for a live or a parked Peek; hovering the rest of the row still shows the host tab's card as before
 - [x] #2 Moving the pointer between the Peek favicon and the rest of the row swaps the card at once (no fresh show delay), and the card is placed beside the row as the host's card is
 - [x] #3 The Peek's thumbnail is shown when one exists, the card has a compact layout when none does, and no Peek or host is woken or shown to make one
-- [ ] #4 Pinned rows, favourite tiles and split panes that have a Peek behave the same as normal rows
+- [x] #4 Pinned rows, favourite tiles and split panes that have a Peek behave the same as normal rows
 - [x] #5 The rule changes are covered in TabHoverCardTests (live, parked and no-Peek cases), and the card is checked at runtime in light and dark mode
 <!-- AC:END -->
 
@@ -64,10 +64,17 @@ Implemented (Oct 28 2026):
 - /code-review --fix found 3, fixed 3: dismissal no longer lifted by crossing the badge (isSameRow + 2 tests), a stale split half in hoverRegionChanged after a row stops being a split, the close-button gap constant shared with the hit rect.
 - Tests: TabHoverCardTests + TabHoverCardControllerTests + FavoriteTileBadgeTests pass (TDD: the new content, badge-target and hit-rect tests failed first against empty stubs; the swap test passed at once because the controller's swap window already covered it). Full suite: 3349 tests, 18 skipped; failures were 10-20 s web-content timeouts under load average ~30 (HistoryDeletionIntegration, HistoryTitleUpdate, FaviconLinkBridge, InPageLinkRouting, ExtensionWindowsCreatePrivate, one ExtensionPolyfillIntegration test); rerun alone: 138 tests, 0 failures. SettingsPaneColumnsTests.testTheLinksPaneDoesNotNeedMoreThanTheListMinimum fails on main before this change too.
 - Runtime (docs/harness/task229-harness.patch, isolated profile, local fixture pages, two phases with a relaunch; screen locked): badge swap 0.04 s each way in light and dark; fresh badge hovers 0.46 s; cards 6 pt outside the sidebar, top level with the row; live Peek cards (normal, pinned, favourite) with own title, URL and picture; parked Peek kept both; selected host's Peek card had no picture; restored Peeks showed the URL alone (38 pt card). Not verified: pixels (locked screen: no window captures; cacheDisplay and layer.render of the glass card are blank), and a real pointer (hover was driven through the views' own mouse handlers).
+
+Oct 29 2026, split rows (the user asked for a badge on them):
+- TabCellView: the trailing badge is now the single tab's or the split's right pane's; the left pane has its own (leftPanePeekFaviconImageView) between its close button and the divider (4 pt / 14 pt), shown only while the row is a split, with its own hover rect (leftPanePeekBadgeHoverRect(in:), ending at the row's middle). configureSplitCell passes each half's displayPeekFavicon (pinned: entry.tab?.displayPeekFavicon). The hover card needed no rule change: the half's target goes through peekBadge(of:).
+- TDD: TabCellPeekBadgeHoverTests (single row's badge, each split pane's badge in its own half, a pane without a Peek, the left badge going with the split) failed first against stubs.
+- /code-review --fix: 6 found, 3 fixed (badges set before updateSplitPane so an animated reveal measures the final layout, and the left badge fades in with the reveal; a stale left badge cleared when the row stops being a split, with a test; the three favicon views set up in one loop). Skipped: a one-member split showing the same Peek twice (a fallback that should not occur), the left badge vanishing at once on an animated collapse, a few extra layout passes per split reconfigure.
+- Tests: 388 tests in the sidebar, split, Peek and hover card suites; 1 failure, BrowserWindowSidebarModeTests.testAutosaveRestoreArrivesAsExternalCollapse, which passes alone (8/8, twice) and was flaky in the Oct 28 full run before this change.
+- Runtime (harness phase 3, screen locked, light and dark): each pane's badge showed its Peek's card and each title area its pane's card, every move swapping at once; left title, close button, 4 pt, badge, 14 pt, divider, nothing overlapping; the left title keeps 32 pt of a 188 pt row with a badge (52 pt without); clearing the left pane's Peek hid its badge. Pinned split rows use the same rendering but were not run.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-The Peek badge in a sidebar row or favourite tile now shows its own hover card describing the Peek (title, URL, and its in-memory picture when it has one); the rest of the row keeps the host's card. Moving between the badge and the row swaps the card at once, a dismissal holds across the badge until the pointer leaves the row, and nothing is woken or shown to picture a Peek. A Peek restored after a relaunch gets a compact URL-only card. Covered by TabHoverCardTests / TabHoverCardControllerTests and a two-phase runtime harness in light and dark (behaviour and frames; no pixels, the screen was locked). Open: split rows have no Peek badge, so AC #4 holds for pinned rows and favourite tiles only.
+The Peek badge in a sidebar row, a favourite tile or either pane of a split row (normal or pinned) now shows its own hover card describing the Peek: title, URL, and its in-memory picture when it has one; the rest of the row keeps the host's or pane's card. Split rows, which had no Peek badge, now show one per pane (the right pane's in the trailing slot, the left pane's before the divider). Moving between a badge and the row swaps the card at once, a dismissal holds across the badge until the pointer leaves the row, and nothing is woken or shown to picture a Peek. A Peek restored after a relaunch gets a compact URL-only card (Peek pictures are not kept on disk). Covered by TabHoverCardTests, TabHoverCardControllerTests and TabCellPeekBadgeHoverTests, and a three-phase runtime harness in light and dark (behaviour and frames; no pixels, the screen was locked; pinned split rows not run).
 <!-- SECTION:FINAL_SUMMARY:END -->

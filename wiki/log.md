@@ -1,5 +1,8 @@
 # Wiki Update Log
 
+## 2026-10-29
+* **Update**: TASK-229 follow-up — split rows get a Peek badge for each pane (the user asked for one): the right pane's in the row's trailing slot, the left pane's (`leftPanePeekFaviconImageView`) between its close button and the divider, each with its own hover rect and Peek card. [Tab hover card](features/tab-hover-card.md), [tab cell](sidebar/tab-cell.md).
+
 ## 2026-10-28
 * **Update**: TASK-229 — [Tab hover card](features/tab-hover-card.md): the Peek badge (a row's trailing favicon, a favourite tile's chip) has its own card describing the Peek (the user's decision): `HoverCardTarget.peek(host:)` and `peekBadge(of:)`, content for live, parked and restored Peeks (URL only after a relaunch; the Peek's in-memory picture, none on disk), the badge hit rects from layout constants, the swap without ending the row's hover and dismissal holding across the badge (`isSameRow`), split rows having no badge; runtime results. Also [tab cell](sidebar/tab-cell.md), [Peek](tabs/peek.md), [favourites](tabs/favorites.md). Harness: `docs/harness/task229-harness.patch`.
 * **Ingest**: TASK-227 — a tab keeps its title through a dead web process or an untitled commit of the same page, and title changes save the session: [BrowserTab](architecture/browser-tab.md), [persistence](architecture/persistence.md), [unresponsive web process](platform/unresponsive-web-process.md) (process exit clears the web view's title; SIGKILL in tests).
