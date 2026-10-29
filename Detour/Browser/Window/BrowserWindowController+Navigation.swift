@@ -177,23 +177,42 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
-        // Intercept CRX extension downloads
-        if Self.isCRXResponse(navigationResponse) {
+        switch Self.responseHandling(for: navigationResponse) {
+        case .extensionPackage:
             DispatchQueue.main.async { [weak self] in
                 self?.handleCRXDownload(from: navigationResponse.response.url)
             }
+            // A tab opened on the package's link is left as empty as a
+            // download's (TASK-205).
+            DownloadOpenedTab.navigationBecameDownload(in: tab(owning: webView))
             return .cancel
-        }
-
-        if !navigationResponse.canShowMIMEType {
+        case .download:
             return .download
+        case .show:
+            return .allow
         }
+    }
+
+    /// What a main-frame or subframe response becomes, for a window's web
+    /// views and for a tab no window has claimed yet (`BrowserTab`'s own
+    /// delegate, TASK-205).
+    enum ResponseHandling: Equatable {
+        /// An extension package, offered for install instead (`handleCRXDownload`).
+        case extensionPackage
+        /// Not something to show: a type WebKit cannot display, or an attachment.
+        case download
+        case show
+    }
+
+    static func responseHandling(for navigationResponse: WKNavigationResponse) -> ResponseHandling {
+        if isCRXResponse(navigationResponse) { return .extensionPackage }
+        if !navigationResponse.canShowMIMEType { return .download }
         if let response = navigationResponse.response as? HTTPURLResponse,
            let disposition = response.value(forHTTPHeaderField: "Content-Disposition"),
            disposition.lowercased().hasPrefix("attachment") {
             return .download
         }
-        return .allow
+        return .show
     }
 
     /// Whether a response is an extension package, which is offered for
@@ -327,6 +346,7 @@ extension BrowserWindowController: WKNavigationDelegate {
         let item = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
         _ = item // suppress unused warning
         triggerDownloadAnimation()
+        DownloadOpenedTab.navigationBecameDownload(in: tab(owning: webView))
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
@@ -335,6 +355,7 @@ extension BrowserWindowController: WKNavigationDelegate {
         let item = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
         _ = item
         triggerDownloadAnimation()
+        DownloadOpenedTab.navigationBecameDownload(in: tab(owning: webView))
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {

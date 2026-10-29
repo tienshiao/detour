@@ -104,8 +104,8 @@ extension BrowserWindowController {
     /// (`openQuarantine` drops a Private one).
     func openRoutedLink(_ url: URL, _ decision: LinkRouteDecision) {
         let clickedIn = activeSpace
-        DispatchQueue.main.async {
-            (NSApp.delegate as? AppDelegate)?.openLink(url, routedTo: decision, from: clickedIn)
+        DispatchQueue.main.async { [weak self] in
+            (NSApp.delegate as? AppDelegate)?.openLink(url, routedTo: decision, from: clickedIn, sourceWindow: self)
         }
     }
 

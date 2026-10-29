@@ -42,6 +42,9 @@ sources:
   - id: close-policy
     resource: ../../Detour/Browser/Downloads/PrivateDownloadClosePolicy.swift
     title: PrivateDownloadClosePolicy.swift
+  - id: task-205
+    resource: backlog:TASK-205
+    title: Routed and new-tab clicks that turn into downloads leave an empty tab
   - id: task-156
     resource: backlog:TASK-156
     title: A Private window's download still running when the window closes is cancelled, after asking
@@ -80,10 +83,40 @@ All of it is in `BrowserWindowController`'s navigation delegate:
 | same | `Content-Disposition` starts with `attachment` | `.download` |
 | same | MIME type `application/x-chrome-extension`, or the URL's last path component ends in `.crx` | `.cancel`, then the CRX path below |
 
+The response rows are `BrowserWindowController.responseHandling(for:)`,
+shared since TASK-205 with `BrowserTab`'s own navigation delegate, the one a
+tab's web view has until a window claims it (a background tab). Before, that
+delegate had no response policy, WebKit's default showed what it could and
+dropped the rest, and a Cmd+click on a download link **downloaded nothing**:
+the background tab stayed with its URL as its title (measured 2026-10-28 with
+a loopback attachment).[^task-205]
+
 WebKit then calls `navigationAction(_:didBecome:)` or
 `navigationResponse(_:didBecome:)`. Both set the `WKDownload`'s delegate to
 `DownloadManager.shared`, call `handleNewDownload(_:sourceURL:scope:)` with
-the window's `downloadScope` and trigger the animation.
+the window's `downloadScope` and trigger the animation. In a tab no window
+has claimed the scope is its space's (a Private space's own list) and there
+is no animation.
+
+## A tab opened for a download closes
+
+A tab whose **first** navigation becomes a download is left empty: nothing
+committed, the URL as its title. That is a Cmd+click or `target=_blank` tab,
+a routed link's tab, a typed URL's new tab. Since TASK-205 it closes once the
+download has started (`DownloadOpenedTab`, the rule
+`DownloadOpenedTabPolicy.closesTab`):
+
+- only a **normal** tab, never a pinned entry's or favourite's backing tab
+  (a Quick Detour's or a Peek's is in no space's list either);
+- only a tab with **nothing in its back-forward list**: a tab showing a page
+  stays on it, and a restored tab has its session there;
+- a turn of the main queue later, with no closed-tab record or undo (there
+  is no page to reopen). The selection follows the usual close rule, so the
+  opener is selected again. The download goes on: `DownloadManager` holds the
+  `WKDownload`, and WebKit does not stop it with its web view.
+
+A routed link also puts back what it changed; see
+[Link Routes](./link-routing.md#links-from-other-apps).
 
 The order inside the action policy matters. An **Option-click** on a link is
 handled earlier (it opens the link in a split pane), and that branch must stay
@@ -323,3 +356,4 @@ the interception in `handleCRXDownload` does not.
 - [External apps](./external-apps.md) - the sibling branch of the same policy function, for non-web schemes.
 
 [^task-156]: A Private window's download still running when the window closes is cancelled, after asking
+[^task-205]: Routed and new-tab clicks that turn into downloads leave an empty tab

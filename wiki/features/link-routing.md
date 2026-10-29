@@ -28,6 +28,9 @@ sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
     title: TabStore.swift (deleteSpace, SpaceDeletionResult, linkRoutes, linkRouteContext)
+  - id: task-205
+    resource: backlog:TASK-205
+    title: Routed and new-tab clicks that turn into downloads leave an empty tab
   - id: task-193-3
     resource: backlog:TASK-193.3
     title: "Quick Detour: Open in <Space> moves the page into a tab of a space (Cmd+O)"
@@ -333,6 +336,30 @@ window announces the tab active. A new Private window made for a placement
 holds only the placed tab (no empty tab of its own). The placed tab never
 shows the collapsed sidebar's "Opened new tab in background" toast, since it
 is selected at once.[^task-193-3]
+
+**A routed link that is a download.** The route is decided at the click,
+before the response, so a link that turns out to be a download has already
+switched a window's space or brought a window forward. `openLink` records on
+the placed tab what the placement changed (`BrowserTab.routedOpen`: the
+window clicked in, the placed window, whether it was opened for the tab and
+whether it is Private, the space it showed before). When the tab closes
+because its first navigation became a download (see
+[Downloads](./downloads.md#a-tab-opened-for-a-download-closes)),
+`AppDelegate.restoreWindows(after:)` acts on
+`DownloadOpenedTabPolicy.restoration` (TASK-205):[^task-205]
+
+| Placement | Put back |
+|---|---|
+| A window switched to the routed space (the clicked one or another) | Switched back to the space it showed |
+| A window opened for the tab | Closed |
+| A Private window opened for the tab | Left open and in front: the download is listed only there, and closing it would cancel it (TASK-156) |
+| Any other window brought forward | The clicked window comes to the front again |
+
+Only while the placed window is still the key window (Detour's front window
+when none of Detour's is key: the user may have gone to another app) and
+still shows the routed space; a user who moved on is not pulled back. A link
+from another app has no clicked window, so only the placed window is put
+back.
 
 ## The sender
 
@@ -898,3 +925,4 @@ text).
 [^harness-3]: TASK-191.3 runtime harness
 [^task-212]: TASK-212: rename the feature to Link Routes
 [^task-193-3]: Quick Detour: Open in <Space> moves the page into a tab of a space (Cmd+O)
+[^task-205]: Routed and new-tab clicks that turn into downloads leave an empty tab

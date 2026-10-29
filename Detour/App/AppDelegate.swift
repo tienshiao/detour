@@ -371,7 +371,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// with `.stay`. `typed` marks the visit as typed in history, as a URL
     /// submitted in the palette is when it opens here. `sourceSpace` is the
     /// space a routed click came from, which a quarantine's Open in names.
-    func openLink(_ url: URL, routedTo decision: LinkRouteDecision, typed: Bool = false, from sourceSpace: Space? = nil) {
+    /// `sourceWindow` is the window a routed click came from, which comes to
+    /// the front again if the link turns out to be a download (TASK-205).
+    func openLink(_ url: URL, routedTo decision: LinkRouteDecision, typed: Bool = false, from sourceSpace: Space? = nil,
+                  sourceWindow: BrowserWindowController? = nil) {
         // Not a tab in a space, so not the placement's windows (TASK-193.5).
         // The resolver sends only links from other apps here.
         if decision == .quickDetour {
@@ -384,13 +387,60 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             openInQuarantine(url, from: sourceSpace)
             return
         }
+        let spacesBefore = Dictionary(uniqueKeysWithValues: browserWindowsByRecency.map {
+            (ObjectIdentifier($0), $0.activeSpaceID)
+        })
+        var placedTab: BrowserTab?
         let placed = placeTab(routedTo: decision) { space in
             let tab = TabStore.shared.addTab(in: space)
             tab.load(url, typed: typed)
+            placedTab = tab
             return tab
+        }
+        // What the placement changed, in case the link is a download: the
+        // response comes later, so recording it now is in time.
+        if let wc = placed, let tab = placedTab, let routedSpaceID = wc.activeSpaceID {
+            let id = ObjectIdentifier(wc)
+            let previousSpaceID = spacesBefore[id] ?? nil
+            tab.routedOpen = RoutedOpenRecord(
+                open: DownloadOpenedTabPolicy.RoutedOpen(
+                    sourceWindow: sourceWindow.map(ObjectIdentifier.init), placedWindow: id,
+                    placedWindowWasCreated: !spacesBefore.keys.contains(id), placedWindowIsPrivate: wc.isIncognito,
+                    placedWindowPreviousSpaceID: previousSpaceID == routedSpaceID ? nil : previousSpaceID,
+                    routedSpaceID: routedSpaceID),
+                sourceWindow: sourceWindow, placedWindow: wc)
         }
         // Never the most recent (normal) space for a link routed to Private.
         if placed == nil, decision != .privateWindow { openInMostRecentSpace(url) }
+    }
+
+    /// Puts the windows back after a routed tab closed because its link was a
+    /// download (TASK-205, `DownloadOpenedTabPolicy.restoration`).
+    func restoreWindows(after open: DownloadOpenedTabPolicy.RoutedOpen<ObjectIdentifier>) {
+        let windows = browserWindowsByRecency
+        func window(_ id: ObjectIdentifier) -> BrowserWindowController? {
+            windows.first { ObjectIdentifier($0) == id }
+        }
+        let now = DownloadOpenedTabPolicy.Windows(
+            open: Set(windows.map(ObjectIdentifier.init)),
+            // The key browser window, else Detour's front one (the order
+            // starts at the key window): the user may have gone to another app
+            // or to Settings, which leaves the browser windows as the placement
+            // left them.
+            key: windows.first.map(ObjectIdentifier.init),
+            activeSpaceID: Dictionary(uniqueKeysWithValues: windows.compactMap { wc in
+                wc.activeSpaceID.map { (ObjectIdentifier(wc), $0) }
+            }))
+        for step in DownloadOpenedTabPolicy.restoration(of: open, windows: now) {
+            switch step {
+            case .closeWindow(let id):
+                window(id)?.window?.close()
+            case .switchSpace(let id, let spaceID):
+                window(id)?.setActiveSpace(id: spaceID)
+            case .bringToFront(let id):
+                window(id)?.window?.makeKeyAndOrderFront(nil)
+            }
+        }
     }
 
     /// Puts a tab where `decision` sends it, by the pure `linkPlacement`, and

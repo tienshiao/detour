@@ -299,6 +299,14 @@ class BrowserTab: NSObject {
     /// another of the profile's (TASK-58).
     var spaceID: UUID?
     var parentID: UUID?
+    /// What a routed link changed to show this tab (TASK-205), until it shows
+    /// a page: if its first navigation becomes a download the tab closes and
+    /// the windows are put back (`DownloadOpenedTab`).
+    var routedOpen: RoutedOpenRecord?
+    /// The tab was restored or put to sleep: it stands for a page the user
+    /// kept, even when a wake without a saved session leaves its web view's
+    /// back-forward list empty, so a download never closes it (TASK-205).
+    private(set) var standsForSavedPage = false
     /// The profile whose `WKWebExtensionContext`s were told this tab is open
     /// (`ExtensionTabLifecycle.didOpen`); nil means the tab is not registered
     /// with any context. Weak: a removed profile must not be kept alive by a
@@ -581,6 +589,7 @@ class BrowserTab: NSObject {
         self.id = id
         self.webView = nil
         self.isSleeping = true
+        self.standsForSavedPage = true
         self.cachedInteractionState = cachedInteractionState
         self.spaceID = spaceID
         super.init()
@@ -1031,6 +1040,7 @@ class BrowserTab: NSObject {
         releaseWebView()
 
         isSleeping = true
+        standsForSavedPage = true
         isLoading = false
         estimatedProgress = 0
         canGoBack = false
@@ -1288,6 +1298,10 @@ class BrowserTab: NSObject {
     private func load(_ url: URL, typed: Bool = false, arming page: InternalPage?) {
         guard page != nil || !InternalPage.isInternal(url) else { return }
         nextVisitIsTyped = typed
+        // A later load is not the routed link's (TASK-205): `openLink` records
+        // it after its own load, and a load the user starts in a tab whose
+        // routed navigation was stopped must not put windows back.
+        routedOpen = nil
         if isSleeping { wake(supersededByLoad: true) }
         armedInternalPage = page
         // The user (or a caller acting for them) asked for this page: it
@@ -1491,6 +1505,7 @@ class BrowserTab: NSObject {
         // (`window.open('')`, `tabs.create({url: 'about:blank'})`) is the one
         // exception: its commit is the restore succeeding.
         if restoringSession, webView?.url == Self.blankURL, url != Self.blankURL { return }
+        routedOpen = nil
         navigationPending = false
         restoringSession = false
         resetBlockedCount()
@@ -1619,6 +1634,9 @@ extension BrowserTab: WKNavigationDelegate {
                  preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
         if navigationAction.targetFrame?.isMainFrame == true { didReceiveMainFrameNavigationPolicyRequest() }
         guard authorizesNavigation(navigationAction, in: webView) else { return (.cancel, preferences) }
+        // The window's rule (TASK-205): an `<a download>` downloads rather
+        // than navigating, through `navigationAction:didBecome:` below.
+        if navigationAction.shouldPerformDownload { return (.download, preferences) }
         if navigationAction.targetFrame?.isMainFrame == true, let profile = owningProfile {
             ContentBlockerManager.shared.configure(preferences,
                                                    forNavigationTo: navigationAction.request.url,
@@ -1646,6 +1664,49 @@ extension BrowserTab: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         didStartProvisionalNavigation()
+    }
+
+    /// The window's rule (TASK-205): without it WebKit's default shows what it
+    /// can and drops the rest, so a background tab opened on a download link
+    /// (Cmd+click) never downloaded and was left empty.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
+        switch BrowserWindowController.responseHandling(for: navigationResponse) {
+        case .extensionPackage:
+            let url = navigationResponse.response.url
+            let scope = downloadScope
+            DispatchQueue.main.async {
+                BrowserWindowController.downloadAndOfferCRX(from: url, scope: scope) {}
+            }
+            DownloadOpenedTab.navigationBecameDownload(in: self)
+            return .cancel
+        case .download:
+            return .download
+        case .show:
+            return .allow
+        }
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        startDownload(download, from: navigationResponse.response.url)
+    }
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        startDownload(download, from: navigationAction.request.url)
+    }
+
+    /// A download started in a web view no window has claimed: listed in the
+    /// windows of the tab's space (a Private space's own list), as a window
+    /// would list it, with no animation since no window shows the tab.
+    private func startDownload(_ download: WKDownload, from sourceURL: URL?) {
+        download.delegate = DownloadManager.shared
+        _ = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
+        DownloadOpenedTab.navigationBecameDownload(in: self)
+    }
+
+    /// The download list of the windows that show this tab's space.
+    private var downloadScope: DownloadScope {
+        guard let space = spaceID.flatMap({ TabStore.shared.space(withID: $0) }), space.isIncognito else { return .normal }
+        return .incognito(spaceID: space.id)
     }
 
     /// `WKNavigationDelegatePrivate`: WebKit's responsiveness timer, started by
