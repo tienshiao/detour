@@ -138,7 +138,7 @@ A tab whose page is a local development server is in **dev mode**, modelled
 on Arc's.[^task-186] Its sidebar row gets an "under construction" look: the
 page's host under the title (Arc shows `localhost:4000`)[^arc-row] and, while
 it is the window's selected row, an orange and black dashed border around it
-(the app icon's orange).[^task-197] Local URLs are in dev mode by
+(the [app icon](../decisions/app-icon-design.md)'s orange).[^task-197] Local URLs are in dev mode by
 default; the site settings popover turns it on for any site or off for a
 local one, per profile.[^task-186-5] Above the page of a dev-mode tab sits
 a striped toolbar with the URL ([below](#the-dev-toolbar)).[^task-186-2]
