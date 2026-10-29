@@ -49,6 +49,9 @@ sources:
   - id: task-141
     resource: backlog:TASK-141
     title: Does removePort drop a page's whole port entry when one port closes
+  - id: task-142
+    resource: backlog:TASK-142
+    title: The native-port keep-alive is defeated when any other port of the background closes
   - id: task-123
     resource: backlog:TASK-123
     title: Defer an update while the extension is busy
@@ -124,8 +127,62 @@ Detour, on the other hand, knows exactly when a real host is connected
    [relayed WebSockets](./websocket-relay.md). One-shot `sendNativeMessage`
    hosts never do.
 
-`keepalive-start` / `keepalive-stop` still travel on the port but only flip a
-diagnostic flag in the background; it answers every ping regardless.
+`keepalive-start` / `keepalive-stop` travel on the port too. The background
+answers every ping whether or not it thinks it is armed; its `armed` flag
+decides only the anchor below.
+
+## The anchor (TASK-142)
+
+WebKit forgets every open port of a page as soon as any one of them closes
+(see [service worker unload rules](../platform/service-worker-unload-rules.md#closing-one-port-makes-webkit-forget-the-others)),
+and only a port the page opens or receives puts the entry back. So an armed
+background holds a second native port, the **anchor**
+(`connectNative('detourKeepAliveAnchor')`, `.keepAliveAnchorHost`, held in
+`keepAliveAnchorPorts`, nothing spawned), and **re-anchors** after any of its
+ports ends: it closes the anchor and then opens a new one. Close first: the
+close is a removal and wipes the entry, the open re-creates it with the new
+anchor in it; a removal after the open would wipe the new entry.
+
+What makes it re-anchor:
+
+| Trigger | Who notices |
+|---|---|
+| A port from `runtime.connect` or `tabs.connect` ends, from either side | The polyfill: both are wrapped (`installPortWatch`) and the port gets an `onDisconnect` listener |
+| A port from `runtime.onConnect` / `onConnectExternal` ends | The polyfill: each of the extension's listeners is wrapped, and the wrapper watches the port that listener gets |
+| A native host or relayed socket of the extension closes while still armed, or a `connectNative` Detour refuses | Detour (`connectNative` cannot be wrapped): `requestReanchor` sends `{type: "keepalive-reanchor"}` on the keep-alive port on the next main-queue turn, after WebKit's disconnect |
+| `keepalive-start`, and every ping | The polyfill, as a backstop for a port that ended unseen |
+
+Each re-anchor waits for a task of its own (`setTimeout(…, 0)`, coalesced).
+WebKit sends a port's removal before it runs the port's `onDisconnect`
+listeners, and Detour's message follows the native disconnect, so the
+removal that wiped the entry has always gone out by then.
+
+**Disarming leaves the anchor open.** `keepalive-stop` stops the
+re-anchoring but does not close the anchor: closing it is a removal, and the
+unload WebKit then makes would report none of the background's ports closed
+(Detour would keep a dead keep-alive port registered). Left idle, it goes
+with the keep-alive port on WebKit's 2-minute inactive-ports unload, both
+reported. The next start replaces it; a keep-alive port arriving drops any
+anchor still registered (it belongs to an earlier start), and so do a
+context unload and a restart.
+
+**The anchor reports the unload.** After the first re-anchor WebKit's record
+of the page holds only the anchor, so when it unloads the background it
+reports the anchor closed and nothing else, the keep-alive port included.
+`checkForUnloadReportedByAnchor` therefore treats the last anchor closing
+while disarmed, with no new one a second later, as the unload: it drops and
+disconnects the keep-alive port and applies `portClosed`. If that is ever
+wrong (a re-anchor crossing a stop), the polyfill reconnects its port.
+
+Rejected: a listener of Detour's own on `runtime.onConnect`. WebKit gives
+every listener a port of its own and counts one open port per listener, so
+it added a port nobody held, which kept the channel open after the
+extension disconnected its own and was collected unpredictably (measured: the
+extension's listener saw the end, Detour's never did). Shadowing
+`port.disconnect` was unnecessary: WebKit runs a port's own `onDisconnect`
+listeners when the page closes it. A faster ping instead of detection: a wipe
+just before a tick would still unload the page, a chance of the ping gap
+over 60 s per close.
 
 ## A replaced background takes its hosts with it
 
@@ -201,21 +258,16 @@ once per background start through the [console bridge](./console-bridge.md).
   background has no keep-alive port, so the state reads `connectedHosts: 1,
   portOpen: false, armed: false` and no ping is sent. Pinned by
   `testWorkerWebSocketIsRelayedAndReleasedThroughTheProductionWiring`.
-- **Any other port of the background closing ends the hold.** WebKit drops
-  a page's whole port entry when one of its ports goes, so its open-ports
-  check fails and the next 30 s tick unloads the background while the
-  keep-alive is armed and answered. Measured on a background page: one of
-  two native ports disconnected at +10 s, unloaded at +29.7 s; a
-  `runtime.connect` port closed by the other end at +10.6 s, unloaded at
-  +30.2 s.[^task-141] WebKit reports no disconnect for the surviving ports,
-  so the host and the armed state linger until the missed-reply recovery
-  drops them (15 to 30 s) and reloads the background (about 60 s after the
-  unload); an extension that repeats the pattern cycles. A content script's
-  port ending with its tab, a second native port, or a relayed socket
-  closing are all enough. The mechanism and the measurements are on
-  [service worker unload rules](../platform/service-worker-unload-rules.md);
-  the fix is tracked as TASK-142. Not yet measured for a service worker or
-  in a signed build.
+- **A port that ends where nothing sees it** waits for the next ping to be
+  re-anchored, and the background is unloaded if WebKit's 30 s tick comes
+  first. Every way the background makes or receives a port is watched (see
+  "The anchor"); what is left is a port the extension does not hold, which
+  WebKit removes when it is collected without running its listeners, so
+  only the next ping re-anchors. Until TASK-142 any port
+  of the background closing ended the hold at the next tick (one of two
+  native ports at +10 s: unloaded at +29.7 s; a `runtime.connect` port closed
+  by the other end at +10.6 s: unloaded at +30.2 s).[^task-141] Not yet
+  checked in a signed build with 1Password.
 - **Registries are per extension, not per context.** A `connectNative` port
   held by a still-open popup or options page is torn down with the
   background's on a supersede or a restart; the page sees an ordinary
@@ -239,6 +291,7 @@ once per background start through the [console bridge](./console-bridge.md).
 | 2026-09-13 | Signed build, run 2 | Two workers answered replies #1–#33 over 16 min with no relayed socket open; the third was killed by the ITP purge 1 s after launch and recovered[^task-68] |
 | 2026-09-21 | Signed build, after TASK-67/68/73 | Three workers (one in Private) held 19–23 min, every ping answered (max 74 ms). With hosts at zero: unload 30.0 s after the disarm, clean restart on the next event, exactly three host processes[^task-21] |
 | 2026-10-03 | Tests, background page, another port closing | Unloaded at +29.7 s (second native port disconnected at +10 s, with and without the keep-alive armed) and at +30.2 s (runtime port closed at +10.6 s, keep-alive armed)[^task-141] |
+| 2026-10-28 | Tests, the anchor, pings every 15 s | Background page: one of two native ports closed at +10 s, a runtime port closed by the other end at +10.5 s, or one the background closed itself at +10.2 s: each still running at +150 s, one anchor held, one host and one host process, one background start (without the anchor: unloaded at +29.7 / +30.2 / +29.7 s). Service worker, runtime port closed at +10 s: every ping answered for 150 s (without: first unanswered ping noticed at +45 s)[^task-142] |
 
 The restart path is reproduced in tests with a worker that calls
 `registration.unregister()` on itself, which reaches WebKit's teardown from
@@ -254,6 +307,7 @@ remember info lines age out of the store within minutes.
 - `Keep-alive armed for <ext>: N native host(s) connected` / `disarmed`
 - `Keep-alive ping #n sent to <ext>` / `Keep-alive reply #n from <ext> (N ms)`
 - `Replaced background context of <ext>: tore down N stale native host(s) and M relayed WebSocket(s)`
+- `Keep-alive re-anchor requested for <ext>: one of its native ports closed`
 
 Traps: these lines carry **no profile name** (tell workers apart by the
 `connectNative … in profile X` lines); "native host(s)" counts relayed
@@ -272,6 +326,12 @@ in the 2026-09-21 run.[^task-21]
 - **Accept the port before arming it.** `completionHandler(nil)` is called
   before `portOpened` is applied, because arming may send on the port at
   once.
+- **Never close a background's port from Detour while it is armed.** Any
+  removal, the anchor's included, wipes WebKit's record of the page's ports.
+  `dropKeepAliveAnchors` is only for a background that is going away or
+  being restarted.
+- **Each `onConnect` listener gets its own port.** Never add a listener to
+  observe ports; wrap the extension's (see "The anchor").
 - **Each background start opens one port.** `keepAlivePortOpenCountForTesting`
   is therefore a native-side count of background starts (a reconnect after a
   dropped port counts too).
@@ -279,12 +339,18 @@ in the 2026-09-21 run.[^task-21]
 # Tests
 
 - `NativeHostKeepAliveTests` — the state machine, every ordering.
-- `ExtensionPolyfillTests` — the JS side against a fake `connectNative`.
+- `ExtensionPolyfillTests` — the JS side against a fake `connectNative`,
+  the anchor's included (close before open, the watched entry points, the
+  wrapped `onConnect` listeners, no anchor while disarmed).
 - `ExtensionPolyfillProfileWiringTests` — real `Profile` and worker:
   arm/disarm, `runtime.reload()` with one and two hosts, a superseded relay,
   a silent background restarted, one missed reply not restarting, and the
-  four install decisions. `__detourKeepAliveIgnorePings` lets a test play a
-  dead background.
+  four install decisions; the anchor held, a host or a refused connect
+  making the worker re-anchor, a runtime port's end doing the same, and a
+  worker without `onConnect` listeners still refusing connects.
+  `__detourKeepAliveIgnorePings` lets a test play a dead background, and
+  `__detourKeepAliveNoAnchor` the keep-alive without its anchor (the TASK-141
+  legs (e) and (f), and the controls of the TASK-142 legs).
 - Long measurement legs are skipped unless
   `TEST_RUNNER_DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1` or
   `TEST_RUNNER_DETOUR_MEASURE_WORKER_UNLOAD=1` is set; see
@@ -309,3 +375,4 @@ in the 2026-09-21 run.[^task-21]
 [^task-70]: Tracking prevention deletes an extension origin's script-written storage
 [^task-123]: Defer an update while the extension is busy
 [^task-141]: Does removePort drop a page's whole port entry when one port closes
+[^task-142]: The native-port keep-alive is defeated when any other port of the background closes

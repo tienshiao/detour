@@ -2436,7 +2436,9 @@ final class ExtensionPolyfillTests: XCTestCase {
             armedAfterRestart: status.armed,
             postedOnSecondAfterRestart: second ? second.posted.length : null,
             postedOnFirstAfterRestart: first.posted.length,
-            portCount: globalThis.__fakeNativePorts.length
+            // The armed port opens an anchor next to it (TASK-142); count only
+            // the keep-alive ports.
+            portCount: globalThis.__fakeNativePorts.filter(p => p.application === 'detourPolyfill').length
         });
         """)
 
@@ -2466,6 +2468,267 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["postedOnFirstAfterRestart"] as? Int, result["postedOnFirstAtDrop"] as? Int,
                        "the dropped port must never be posted on again")
         XCTAssertEqual(result["portCount"] as? Int, 2, "exactly one reconnect")
+    }
+
+    // MARK: - Keep-alive anchor (TASK-142)
+
+    /// A runtime with the port entry points the anchor watches: a fake
+    /// `runtime.onConnect`, `runtime.connect` and `tabs.connect`. Every fake port
+    /// ends with `__end()`, which runs its onDisconnect listeners the way WebKit
+    /// does for either side closing it.
+    private static let portWatchShim = """
+    globalThis.__fakeEvent = function() {
+        const listeners = [];
+        return {
+            listeners: listeners,
+            addListener(fn) { if (!listeners.includes(fn)) listeners.push(fn); },
+            removeListener(fn) { const i = listeners.indexOf(fn); if (i !== -1) listeners.splice(i, 1); },
+            hasListener(fn) { return listeners.includes(fn); }
+        };
+    };
+    globalThis.__fakePort = function(name) {
+        const ends = [];
+        return {
+            name: name,
+            onDisconnect: { addListener(fn) { ends.push(fn); } },
+            onMessage: { addListener() {} },
+            postMessage() {},
+            disconnect() {},
+            __end() { ends.slice().forEach(fn => fn()); }
+        };
+    };
+    globalThis.chrome.runtime.onConnect = __fakeEvent();
+    globalThis.chrome.runtime.onConnectExternal = __fakeEvent();
+    globalThis.chrome.runtime.connect = function(info) { return __fakePort(info && info.name); };
+    globalThis.chrome.tabs = { connect(tabId, info) { return __fakePort('tab ' + tabId); } };
+    globalThis.__shimOnConnect = globalThis.chrome.runtime.onConnect;
+    """
+
+    private static let anchorHelpersJS = """
+    const status = globalThis.__detourNativePortKeepAlive;
+    const keepAlive = globalThis.__fakeNativePorts[0];
+    const anchors = () => globalThis.__fakeNativePorts.filter(p => p.application === '\(ExtensionManager.keepAliveAnchorHostName)');
+    const settle = () => new Promise(r => setTimeout(r, 50));
+
+    """
+
+    private func evalAnchor(_ js: String, on target: WKWebView? = nil) async throws -> [String: Any] {
+        try await evalDictionary(Self.anchorHelpersJS + js, on: target)
+    }
+
+    private func makePortWatchWebView() async throws -> WKWebView {
+        try await makeWebView(manifestPermissions: ["nativeMessaging"], shimExtras: Self.portWatchShim)
+    }
+
+    /// An idle keep-alive holds no anchor and arming opens one. Disarming
+    /// leaves it open but stops re-anchoring: closing it would be a port
+    /// removal, and WebKit would then report none of the background's ports
+    /// when it unloads it.
+    func testKeepAliveOpensAnAnchorWhenArmedAndStopsReanchoringWhenDisarmed() async throws {
+        let result = try await evalAnchor("""
+        await settle();
+        const idle = anchors().length;
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
+        await settle();
+        const armed = { count: anchors().length, open: status.anchorOpen };
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-stop' });
+        const stopped = { closed: anchors()[0].disconnectedLocally, open: status.anchorOpen };
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-ping', seq: 1 });
+        await settle();
+        return JSON.stringify({ idle: idle, armed: armed, stopped: stopped, afterPing: anchors().length });
+        """)
+
+        XCTAssertEqual(result["idle"] as? Int, 0, "an idle keep-alive opens no anchor")
+        let armed = try XCTUnwrap(result["armed"] as? [String: Any])
+        XCTAssertEqual(armed["count"] as? Int, 1)
+        XCTAssertEqual(armed["open"] as? Bool, true)
+        let stopped = try XCTUnwrap(result["stopped"] as? [String: Any])
+        XCTAssertEqual(stopped["closed"] as? Bool, false, "a stop leaves the anchor open")
+        XCTAssertEqual(stopped["open"] as? Bool, true)
+        XCTAssertEqual(result["afterPing"] as? Int, 1, "a ping while disarmed opens no anchor")
+    }
+
+    /// Re-anchoring closes the old anchor before it opens the next one: a
+    /// removal after the open would wipe the entry the open re-created.
+    func testKeepAliveReanchorClosesTheOldAnchorBeforeOpeningTheNext() async throws {
+        let result = try await evalAnchor("""
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
+        await settle();
+        const events = [];
+        const first = anchors()[0];
+        first.disconnect = function() { events.push('close'); this.disconnectedLocally = true; };
+        const shimConnectNative = chrome.runtime.connectNative;
+        chrome.runtime.connectNative = function(application) {
+            events.push('open ' + application);
+            return shimConnectNative.apply(this, arguments);
+        };
+        keepAlive.__simulateNativeMessage({ type: '\(ExtensionManager.keepAliveReanchorType)' });
+        const beforeTask = events.length;
+        await settle();
+        chrome.runtime.connectNative = shimConnectNative;
+        return JSON.stringify({ events: events, beforeTask: beforeTask, anchorsOpened: status.anchorsOpened });
+        """)
+
+        XCTAssertEqual(result["beforeTask"] as? Int, 0, "the re-anchor waits for a task of its own")
+        XCTAssertEqual(result["events"] as? [String], ["close", "open \(ExtensionManager.keepAliveAnchorHostName)"])
+        XCTAssertEqual(result["anchorsOpened"] as? Int, 2)
+    }
+
+    /// Every ping re-anchors, for a port that ended where nothing saw it.
+    func testKeepAliveReanchorsOnEveryPing() async throws {
+        let result = try await evalAnchor("""
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
+        await settle();
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-ping', seq: 1 });
+        await settle();
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-ping', seq: 2 });
+        await settle();
+        return JSON.stringify({ opened: status.anchorsOpened, closed: anchors().filter(p => p.disconnectedLocally).length });
+        """)
+
+        XCTAssertEqual(result["opened"] as? Int, 3)
+        XCTAssertEqual(result["closed"] as? Int, 2, "every anchor but the newest is closed")
+    }
+
+    /// The keep-alive port dropping closes the anchor with it.
+    func testKeepAliveClosesTheAnchorWhenItsPortDrops() async throws {
+        let result = try await evalAnchor("""
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
+        await settle();
+        keepAlive.__simulateRemoteDisconnect();
+        return JSON.stringify({ closed: anchors()[0].disconnectedLocally, open: status.anchorOpen });
+        """)
+
+        XCTAssertEqual(result["closed"] as? Bool, true)
+        XCTAssertEqual(result["open"] as? Bool, false)
+    }
+
+    /// A port the background received from `runtime.onConnect` ending, from
+    /// either side, re-anchors. The extension's listener is wrapped rather than
+    /// joined by one of Detour's: WebKit gives every listener a port of its own,
+    /// so an extra listener would be an extra port.
+    func testKeepAliveReanchorsWhenAPortTheBackgroundReceivedEnds() async throws {
+        let wv = try await makePortWatchWebView()
+        let result = try await evalAnchor("""
+        const onConnect = globalThis.__shimOnConnect;
+        const atInstall = onConnect.listeners.length;
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
+        await settle();
+        let received = null;
+        const extensionListener = function(p) { received = p; return 'answered'; };
+        chrome.runtime.onConnect.addListener(extensionListener);
+        chrome.runtime.onConnect.addListener(extensionListener);
+        const afterAdd = onConnect.listeners.length;
+        const hasWhileAdded = chrome.runtime.onConnect.hasListener(extensionListener);
+        const incoming = __fakePort('from a content script');
+        const returned = onConnect.listeners[0](incoming);
+        const handedOver = received === incoming;
+        incoming.__end();
+        await settle();
+        const openedAfterEnd = status.anchorsOpened;
+        chrome.runtime.onConnect.removeListener(extensionListener);
+        return JSON.stringify({
+            atInstall: atInstall, afterAdd: afterAdd, hasWhileAdded: hasWhileAdded,
+            returned: returned, handedOver: handedOver, openedAfterEnd: openedAfterEnd,
+            afterRemove: onConnect.listeners.length,
+            hasAfterRemove: chrome.runtime.onConnect.hasListener(extensionListener),
+            watching: status.watching
+        });
+        """, on: wv)
+
+        XCTAssertEqual(result["atInstall"] as? Int, 0, "no listener of Detour's own")
+        XCTAssertEqual(result["afterAdd"] as? Int, 1, "one native listener per extension listener, added twice or not")
+        XCTAssertEqual(result["hasWhileAdded"] as? Bool, true)
+        XCTAssertEqual(result["returned"] as? String, "answered", "the wrapper returns the listener's result")
+        XCTAssertEqual(result["handedOver"] as? Bool, true, "the extension's listener gets the port as before")
+        XCTAssertEqual(result["openedAfterEnd"] as? Int, 2, "the port's end re-anchors")
+        XCTAssertEqual(result["afterRemove"] as? Int, 0)
+        XCTAssertEqual(result["hasAfterRemove"] as? Bool, false)
+        XCTAssertEqual(result["watching"] as? String,
+                       "runtime.connect,tabs.connect,runtime.onConnect,runtime.onConnectExternal")
+    }
+
+    /// Ports the background opens with `runtime.connect` and `tabs.connect`
+    /// come back to it unchanged and re-anchor when they end.
+    func testKeepAliveReanchorsWhenAPortTheBackgroundOpenedEnds() async throws {
+        let wv = try await makePortWatchWebView()
+        let result = try await evalAnchor("""
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
+        await settle();
+        const runtimePort = chrome.runtime.connect({ name: 'to a page' });
+        const tabPort = chrome.tabs.connect(7, { name: 'to a tab' });
+        const names = [runtimePort.name, tabPort.name];
+        runtimePort.__end();
+        await settle();
+        const afterRuntimePort = status.anchorsOpened;
+        tabPort.__end();
+        await settle();
+        return JSON.stringify({ names: names, afterRuntimePort: afterRuntimePort, afterTabPort: status.anchorsOpened });
+        """, on: wv)
+
+        XCTAssertEqual(result["names"] as? [String], ["to a page", "tab 7"])
+        XCTAssertEqual(result["afterRuntimePort"] as? Int, 2)
+        XCTAssertEqual(result["afterTabPort"] as? Int, 3)
+    }
+
+    /// Should WebKit ever vend `browser.runtime` / `browser.tabs` as objects of
+    /// their own, the ports made or received through them are watched too.
+    func testKeepAliveWatchesPortsOfADistinctBrowserNamespace() async throws {
+        let wv = try await makeWebView(manifestPermissions: ["nativeMessaging"], shimExtras: Self.portWatchShim + """
+
+        globalThis.browser = {
+            runtime: {
+                id: 'test-polyfill-extension',
+                onConnect: __fakeEvent(),
+                onConnectExternal: __fakeEvent(),
+                connect(info) { return __fakePort(info && info.name); }
+            },
+            tabs: { connect(tabId) { return __fakePort('browser tab ' + tabId); } }
+        };
+        globalThis.__shimBrowserOnConnect = globalThis.browser.runtime.onConnect;
+        """)
+        let result = try await evalAnchor("""
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
+        await settle();
+        const opened = browser.runtime.connect({ name: 'browser runtime' });
+        opened.__end();
+        await settle();
+        const afterConnect = status.anchorsOpened;
+        browser.tabs.connect(3).__end();
+        await settle();
+        const afterTabs = status.anchorsOpened;
+        browser.runtime.onConnect.addListener(function() {});
+        const incoming = __fakePort('into browser.runtime');
+        globalThis.__shimBrowserOnConnect.listeners[0](incoming);
+        incoming.__end();
+        await settle();
+        return JSON.stringify({
+            afterConnect: afterConnect, afterTabs: afterTabs, afterOnConnect: status.anchorsOpened,
+            watching: status.watching
+        });
+        """, on: wv)
+
+        XCTAssertEqual(result["afterConnect"] as? Int, 2, "browser.runtime.connect's port end re-anchors")
+        XCTAssertEqual(result["afterTabs"] as? Int, 3, "browser.tabs.connect's port end re-anchors")
+        XCTAssertEqual(result["afterOnConnect"] as? Int, 4, "a port browser.runtime.onConnect handed over re-anchors")
+        XCTAssertEqual(result["watching"] as? String,
+                       "runtime.connect,tabs.connect,runtime.onConnect,runtime.onConnectExternal",
+                       "each entry point is reported once")
+    }
+
+    /// A port ending while the keep-alive is disarmed opens nothing: an idle
+    /// background must stay free to unload.
+    func testKeepAliveDoesNotReanchorWhileDisarmed() async throws {
+        let wv = try await makePortWatchWebView()
+        let result = try await evalAnchor("""
+        const port = chrome.runtime.connect({ name: 'idle' });
+        port.__end();
+        keepAlive.__simulateNativeMessage({ type: '\(ExtensionManager.keepAliveReanchorType)' });
+        await settle();
+        return JSON.stringify({ anchors: anchors().length });
+        """, on: wv)
+
+        XCTAssertEqual(result["anchors"] as? Int, 0)
     }
 
     func testKeepAliveStatusIsReadOnly() async throws {

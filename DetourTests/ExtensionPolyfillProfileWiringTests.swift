@@ -992,8 +992,8 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// the worker opens its idle keep-alive port through the production path (the
     /// profile's own controller, with ExtensionManager as its delegate).
     /// `nativeMessaging` is what makes the keep-alive install at all (TASK-16).
-    private func makeKeepAliveTestExtension() async throws -> WebExtension {
-        let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+    private func makeKeepAliveTestExtension(extraBackgroundJS: String = "") async throws -> WebExtension {
+        let backgroundJS = ExtensionAPIPolyfill.polyfillJS + extraBackgroundJS + """
 
         chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             if (message && message.type === 'keepAliveStatus') {
@@ -1002,7 +1002,14 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
                     installMode: status.installMode,
                     installDetail: status.installDetail,
                     armed: status.armed,
-                    active: status.active
+                    active: status.active,
+                    anchorOpen: status.anchorOpen,
+                    anchorsOpened: status.anchorsOpened,
+                    watching: status.watching,
+                    portsWatched: status.portsWatched,
+                    portEndsSeen: status.portEndsSeen,
+                    extensionPorts: (globalThis.__task142Ports || []).length,
+                    extensionEnds: globalThis.__task142Ends
                 } : { installMode: 'missing' });
                 return true;
             }
@@ -1092,6 +1099,190 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertEqual(disarmedStatus?["installMode"] as? String, "port",
                        "the worker keeps its idle port after the pings stop")
         XCTAssertEqual(state()?.portOpen, true)
+    }
+
+    // MARK: - TASK-142: the armed background re-anchors after a port of its ends
+
+    /// Arming opens one anchor port, which Detour holds. Disarming stops the
+    /// re-anchoring and leaves that one anchor, idle, to go with the keep-alive
+    /// port when WebKit unloads the background.
+    func testAnArmedWorkerHoldsOneAnchorAndADisarmStopsReanchoring() async throws {
+        let ext = try await makeKeepAliveTestExtension()
+        let profile = makeProfile("Keep-alive Anchor Profile")
+        let controller = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let page = try await makeExtensionWebView(for: context)
+        let manager = ExtensionManager.shared
+        func anchors() -> (held: Int, opened: Int, requested: Int) {
+            manager.keepAliveAnchorsForTesting(controller: controller, extensionID: ext.id)
+        }
+
+        try await waitUntil("the worker's keep-alive port to reach ExtensionManager") {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.portOpen == true
+        }
+        XCTAssertEqual(anchors().opened, 0, "an idle background opens no anchor")
+
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        try await waitUntil("the armed worker's anchor to reach ExtensionManager") { anchors().held == 1 }
+
+        manager.simulateNativeHostForTesting(connected: false, controller: controller, extensionID: ext.id)
+        try await waitUntil("the worker to report itself disarmed") {
+            try await self.workerKeepAliveStatus(from: page)?["armed"] as? Bool == false
+        }
+        let openedAtDisarm = anchors().opened
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        manager.simulateNativeHostForTesting(connected: false, controller: controller, extensionID: ext.id)
+        manager.simulateNativeHostForTesting(connected: false, controller: controller, extensionID: ext.id)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(anchors().held, 1, "the idle anchor stays; nothing more is opened while disarmed")
+        XCTAssertLessThanOrEqual(anchors().opened, openedAtDisarm + 1,
+                                 "only the brief re-arm may have re-anchored once")
+        XCTAssertEqual(anchors().requested, 0, "the last host leaving disarms; nothing to re-anchor")
+    }
+
+    /// A native host of the extension closing while another keeps it armed: the
+    /// close took WebKit's record of the background's open ports, so Detour asks
+    /// for a re-anchor and the background opens a new anchor (closing the old).
+    func testANativeHostClosingWhileArmedMakesTheWorkerReanchor() async throws {
+        let ext = try await makeKeepAliveTestExtension()
+        let profile = makeProfile("Keep-alive Reanchor Profile")
+        let controller = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        _ = try await makeExtensionWebView(for: context)
+        let manager = ExtensionManager.shared
+        func anchors() -> (held: Int, opened: Int, requested: Int) {
+            manager.keepAliveAnchorsForTesting(controller: controller, extensionID: ext.id)
+        }
+
+        try await waitUntil("the worker's keep-alive port to reach ExtensionManager") {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.portOpen == true
+        }
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        try await waitUntil("the armed worker's anchor") { anchors().held == 1 }
+        // Pings re-anchor too; count from whatever the first ones did.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let before = anchors().opened
+
+        manager.simulateNativeHostForTesting(connected: false, controller: controller, extensionID: ext.id)
+        try await waitUntil("Detour's re-anchor request and the worker's new anchor") {
+            anchors().requested == 1 && anchors().opened > before
+        }
+        try await waitUntil("the old anchor to be closed") { anchors().held == 1 }
+        XCTAssertEqual(manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.armed, true)
+    }
+
+    /// A `connectNative` the armed worker makes that Detour cannot serve (no
+    /// such host installed): WebKit removes the refused port like a closed one,
+    /// which takes the background's entry with it, so Detour asks for a
+    /// re-anchor here too.
+    func testARefusedNativeConnectWhileArmedMakesTheWorkerReanchor() async throws {
+        let ext = try await makeKeepAliveTestExtension(extraBackgroundJS: """
+
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (!message || message.type !== 'connectMissingHost') return false;
+            const missing = chrome.runtime.connectNative('com.example.task142.missing');
+            missing.onDisconnect.addListener(() => sendResponse({ ended: true }));
+            return true;
+        });
+        """)
+        let profile = makeProfile("Keep-alive Refused Connect Profile")
+        let controller = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let page = try await makeExtensionWebView(for: context)
+        let manager = ExtensionManager.shared
+        func anchors() -> (held: Int, opened: Int, requested: Int) {
+            manager.keepAliveAnchorsForTesting(controller: controller, extensionID: ext.id)
+        }
+
+        try await waitUntil("the worker's keep-alive port to reach ExtensionManager") {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.portOpen == true
+        }
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        try await waitUntil("the armed worker's anchor") { anchors().held == 1 }
+        XCTAssertEqual(anchors().requested, 0)
+
+        let answer = try await askWorker(from: page, message: ["type": "connectMissingHost"], timeout: 10)
+        XCTAssertEqual((answer["reply"] as? [String: Any])?["ended"] as? Bool, true,
+                       "the refused port ends at the worker")
+        try await waitUntil("Detour's re-anchor request for the refused port") { anchors().requested == 1 }
+        try await waitUntil("the worker to settle on one anchor") { anchors().held == 1 }
+        XCTAssertEqual(manager.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 0)
+    }
+
+    /// A runtime port another context opened to the worker ends: the worker
+    /// re-anchors on its own, through the polyfill's wrapper of the extension's
+    /// onConnect listener (WebKit gives each listener its own port, so the
+    /// wrapper watches the one the extension holds).
+    func testARuntimePortEndingMakesTheArmedWorkerReanchor() async throws {
+        let ext = try await makeKeepAliveTestExtension(extraBackgroundJS: """
+
+        globalThis.__task142Ports = [];
+        globalThis.__task142Ends = 0;
+        chrome.runtime.onConnect.addListener((port) => {
+            globalThis.__task142Ports.push(port);
+            port.onDisconnect.addListener(() => { globalThis.__task142Ends += 1; });
+        });
+        """)
+        let profile = makeProfile("Keep-alive Runtime Port Profile")
+        let controller = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let page = try await makeExtensionWebView(for: context)
+        let manager = ExtensionManager.shared
+        func anchors() -> (held: Int, opened: Int, requested: Int) {
+            manager.keepAliveAnchorsForTesting(controller: controller, extensionID: ext.id)
+        }
+
+        try await waitUntil("the worker's keep-alive port to reach ExtensionManager") {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.portOpen == true
+        }
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        try await waitUntil("the armed worker's anchor") { anchors().held == 1 }
+        let status = try await workerKeepAliveStatus(from: page)
+        XCTAssertEqual(status?["watching"] as? String,
+                       "runtime.connect,tabs.connect,runtime.onConnect,runtime.onConnectExternal")
+
+        _ = try await page.callAsyncJavaScript(
+            "globalThis.__task142Port = chrome.runtime.connect({ name: 'task142' }); return true;",
+            arguments: [:], contentWorld: .page)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let before = anchors().opened
+        _ = try await page.callAsyncJavaScript(
+            "globalThis.__task142Port.disconnect(); return true;", arguments: [:], contentWorld: .page)
+        try await waitUntil("the worker to re-anchor after the port ended") { anchors().opened > before }
+        let afterEnd = try await workerKeepAliveStatus(from: page)
+        XCTAssertEqual(afterEnd?["extensionEnds"] as? Int, 1, "the extension's own port saw the end too")
+        XCTAssertEqual(afterEnd?["portEndsSeen"] as? Int, 1)
+        XCTAssertEqual(anchors().requested, 0, "a runtime port is the background's own to notice")
+    }
+
+    /// NEGATIVE: the polyfill adds no onConnect listener of its own, so a worker
+    /// with none still refuses a connect as WebKit does ("no runtime.onConnect
+    /// listeners found"), and the opener's port ends.
+    func testAConnectToAWorkerWithoutOnConnectListenersStillEnds() async throws {
+        let ext = try await makeKeepAliveTestExtension()
+        let profile = makeProfile("Keep-alive No Listener Profile")
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let page = try await makeExtensionWebView(for: context)
+        // A round trip first, so the worker has started and installed the polyfill.
+        _ = try await workerKeepAliveStatus(from: page)
+
+        _ = try await page.callAsyncJavaScript("""
+            globalThis.__task142Ended = false;
+            const port = chrome.runtime.connect({ name: 'nobody-listens' });
+            port.onDisconnect.addListener(() => { globalThis.__task142Ended = true; });
+            return true;
+            """, arguments: [:], contentWorld: .page)
+        try await waitUntil("the opener's port to end", timeout: 10) {
+            try await page.callAsyncJavaScript("return globalThis.__task142Ended;",
+                                               arguments: [:], contentWorld: .page) as? Bool == true
+        }
     }
 
     // MARK: - TASK-67: a background context replaced without its ports closing
@@ -1689,7 +1880,22 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         setInterval(beat, 500);
 
         chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-            if (!message || message.type !== 'report') return false;
+            if (!message) return false;
+            if (message.type === 'openOwnPort') {
+                // A port this background opens to an extension page and closes
+                // itself (TASK-142 leg g).
+                const own = chrome.runtime.connect({ name: 'task142-own' });
+                state.runtimePortsOpened += 1;
+                setTimeout(() => {
+                    own.disconnect();
+                    state.runtimePortsClosed += 1;
+                    state.runtimePortClosedAtMs = Date.now() - startedAt;
+                    beat();
+                }, message.closeAfterMs);
+                sendResponse({ ok: true });
+                return false;
+            }
+            if (message.type !== 'report') return false;
             sendResponse(status());
             return true;
         });
@@ -2008,6 +2214,10 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
                        "the surviving port gets no onDisconnect before the page is closed")
     }
 
+    /// Legs (e) and (f) play the keep-alive as it was before TASK-142, without
+    /// the anchor that re-creates WebKit's record of the background's open ports.
+    private static let withoutTheAnchor = "globalThis.__detourKeepAliveNoAnchor = true;"
+
     /// Leg (e): leg (c)'s page — the production keep-alive armed and pinging every
     /// 15 s — with two native ports, one disconnected 10 s after start. A host is
     /// still connected, so Detour keeps the keep-alive armed and the page keeps
@@ -2028,7 +2238,8 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
 
         ExtensionManager.shared.keepAlivePingInterval = 15
-        let started = try await startMeasurement(ext, profileName: "TASK-141 Armed Keep-alive")
+        let started = try await startMeasurement(
+            ext, profileName: "TASK-141 Armed Keep-alive", prepending: Self.withoutTheAnchor)
         let controller = started.profile.extensionController
         let manager = ExtensionManager.shared
 
@@ -2082,7 +2293,8 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
 
         ExtensionManager.shared.keepAlivePingInterval = 15
-        let started = try await startMeasurement(ext, profileName: "TASK-141 Runtime Port")
+        let started = try await startMeasurement(
+            ext, profileName: "TASK-141 Runtime Port", prepending: Self.withoutTheAnchor)
         let controller = started.profile.extensionController
         let manager = ExtensionManager.shared
 
@@ -2113,6 +2325,243 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertTrue(life.unloaded, "the armed keep-alive does not survive a runtime port closing")
         XCTAssertLessThan(life.lastAliveSeconds, 90, "the page goes at the next 30 s tick after the close")
         XCTAssertEqual(life.lastBeat["armed"] as? Bool, true, "the keep-alive was armed when the page went")
+    }
+
+    // MARK: - TASK-142: the anchor keeps the background through those closes
+
+    /// What every TASK-142 leg checks at the end besides the page's life: the
+    /// background holds exactly one anchor and Detour exactly the hosts it
+    /// should, so re-anchoring leaks nothing.
+    private func assertNothingLeaked(_ label: String, controller: WKWebExtensionController, extensionID: String,
+                                     hosts: Int, host: FakeNativeMessagingHost? = nil,
+                                     file: StaticString = #filePath, line: UInt = #line) {
+        let manager = ExtensionManager.shared
+        let anchors = manager.keepAliveAnchorsForTesting(controller: controller, extensionID: extensionID)
+        print("TASK-142 measurement [\(label)]: anchors held \(anchors.held), opened \(anchors.opened), re-anchors requested \(anchors.requested); keep-alive ports opened \(manager.keepAlivePortOpenCountForTesting(controller: controller, extensionID: extensionID)), replies \(manager.keepAlivePingCountForTesting(controller: controller, extensionID: extensionID)), live hosts \(manager.liveNativeHostCountForTesting(controller: controller, extensionID: extensionID)), host processes \(host.map { String($0.processCount()) } ?? "-")")
+        XCTAssertEqual(anchors.held, 1, "one anchor, however many re-anchors", file: file, line: line)
+        XCTAssertEqual(manager.liveNativeHostCountForTesting(controller: controller, extensionID: extensionID), hosts,
+                       file: file, line: line)
+        if let host {
+            XCTAssertEqual(host.processCount(), hosts, "no host process left over", file: file, line: line)
+        }
+        XCTAssertEqual(manager.keepAlivePortOpenCountForTesting(controller: controller, extensionID: extensionID), 1,
+                       "the background started once", file: file, line: line)
+    }
+
+    /// Leg (e) with the anchor: the background closes one of its two native
+    /// ports at +10 s and Detour, seeing a host go while another keeps the
+    /// keep-alive armed, asks for a re-anchor. The page must outlive leg (e)'s
+    /// +29.7 s by far.
+    func testMeasureBackgroundPageClosingOneOfTwoNativePortsIsKeptByTheAnchor() async throws {
+        try XCTSkipUnless(measuringBackgroundPageUnload,
+                          "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
+        let id = measurementExtensionID("task142-native")
+        let host = try FakeNativeMessagingHost(allowing: [id])
+        fakeNativeHosts.append(host)
+        let ext = try await makeMeasurementExtension(
+            id: id, nativeHost: host.name, closingSecondPortAfterMs: 10_000)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        ExtensionManager.shared.keepAlivePingInterval = 15
+        let started = try await startMeasurement(ext, profileName: "TASK-142 Native Port")
+        let controller = started.profile.extensionController
+        let manager = ExtensionManager.shared
+        try await waitUntil("both fake hosts to be spawned for the background page", timeout: 30) {
+            manager.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id) == 2
+        }
+
+        let life = try await watchBackgroundPage(
+            "e': anchor, one of two ports closed at +10 s", from: started.page, limit: 150)
+        XCTAssertGreaterThan(life.lastBeat["secondClosedAtMs"] as? Double ?? -1, 0,
+                             "the second port must have been closed during the watch")
+        XCTAssertFalse(life.unloaded, "the anchor must keep the page past the next 30 s tick (gone at +\(life.lastAliveSeconds) s)")
+        XCTAssertGreaterThanOrEqual(
+            manager.keepAliveAnchorsForTesting(controller: controller, extensionID: ext.id).requested, 1,
+            "Detour must have asked for a re-anchor when the host went")
+        assertNothingLeaked("e'", controller: controller, extensionID: ext.id, hosts: 1, host: host)
+    }
+
+    /// Leg (f) with the anchor: a runtime port an extension page opened to the
+    /// background ends at the page's side.
+    func testMeasureBackgroundPageWhoseRuntimePortClosesIsKeptByTheAnchor() async throws {
+        try XCTSkipUnless(measuringBackgroundPageUnload,
+                          "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
+        let id = measurementExtensionID("task142-runtime")
+        let host = try FakeNativeMessagingHost(allowing: [id])
+        fakeNativeHosts.append(host)
+        let ext = try await makeMeasurementExtension(id: id, nativeHost: host.name)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        ExtensionManager.shared.keepAlivePingInterval = 15
+        let started = try await startMeasurement(ext, profileName: "TASK-142 Runtime Port")
+        let controller = started.profile.extensionController
+        let manager = ExtensionManager.shared
+        try await waitUntil("Detour to arm the background page's keep-alive", timeout: 30) {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.armed == true
+        }
+
+        _ = try await started.page.callAsyncJavaScript(
+            "globalThis.__task141Port = chrome.runtime.connect({ name: 'task141' }); return true;",
+            arguments: [:], contentWorld: .page)
+        try await waitUntil("the background page to receive the runtime port", timeout: 15) {
+            try await self.backgroundHeartbeat(from: started.page)?["runtimePortsOpened"] as? Int == 1
+        }
+        try await Task.sleep(nanoseconds: 10_000_000_000)
+        _ = try await started.page.callAsyncJavaScript(
+            "globalThis.__task141Port.disconnect(); return true;", arguments: [:], contentWorld: .page)
+
+        let life = try await watchBackgroundPage(
+            "f': anchor, a runtime port closed", from: started.page, limit: 150)
+        XCTAssertEqual(life.lastBeat["runtimePortsClosed"] as? Int, 1)
+        XCTAssertFalse(life.unloaded, "the anchor must keep the page past the next 30 s tick (gone at +\(life.lastAliveSeconds) s)")
+        assertNothingLeaked("f'", controller: controller, extensionID: ext.id, hosts: 1, host: host)
+    }
+
+    /// Leg (g): the background opens a runtime port to an extension page and
+    /// closes it itself 10 s later. Without the anchor it goes at the next tick
+    /// like leg (f); with it, it stays.
+    private func measureBackgroundPageClosingItsOwnRuntimePort(withAnchor: Bool) async throws {
+        try XCTSkipUnless(measuringBackgroundPageUnload,
+                          "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
+        let label = withAnchor ? "g': anchor, the background closed its own port" : "g: no anchor, the background closed its own port"
+        let id = measurementExtensionID("task142-own")
+        let host = try FakeNativeMessagingHost(allowing: [id])
+        fakeNativeHosts.append(host)
+        let ext = try await makeMeasurementExtension(id: id, nativeHost: host.name)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        ExtensionManager.shared.keepAlivePingInterval = 15
+        let started = try await startMeasurement(
+            ext, profileName: "TASK-142 Own Port", prepending: withAnchor ? nil : Self.withoutTheAnchor)
+        let controller = started.profile.extensionController
+        let manager = ExtensionManager.shared
+        try await waitUntil("Detour to arm the background page's keep-alive", timeout: 30) {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.armed == true
+        }
+
+        let reply = try await started.page.callAsyncJavaScript("""
+            globalThis.__task142OwnPorts = [];
+            chrome.runtime.onConnect.addListener((port) => { globalThis.__task142OwnPorts.push(port); });
+            return await chrome.runtime.sendMessage({ type: 'openOwnPort', closeAfterMs: 10000 });
+            """, arguments: [:], contentWorld: .page) as? [String: Any]
+        XCTAssertEqual(reply?["ok"] as? Bool, true)
+
+        let life = try await watchBackgroundPage(label, from: started.page, limit: withAnchor ? 150 : 120)
+        print("TASK-142 measurement [\(label)]: unloaded=\(life.unloaded) at +\(life.lastAliveSeconds) s; own port closed at +\((life.lastBeat["runtimePortClosedAtMs"] as? Double ?? -1) / 1000) s")
+        XCTAssertEqual(life.lastBeat["runtimePortsClosed"] as? Int, 1, "the background must have closed its port")
+        if withAnchor {
+            XCTAssertFalse(life.unloaded, "the anchor must keep the page (gone at +\(life.lastAliveSeconds) s)")
+            assertNothingLeaked("g'", controller: controller, extensionID: ext.id, hosts: 1, host: host)
+        } else {
+            XCTAssertTrue(life.unloaded, "without the anchor the page goes at the next tick")
+            XCTAssertLessThan(life.lastAliveSeconds, 60)
+        }
+    }
+
+    func testMeasureBackgroundPageClosingItsOwnRuntimePortWithoutTheAnchor() async throws {
+        try await measureBackgroundPageClosingItsOwnRuntimePort(withAnchor: false)
+    }
+
+    func testMeasureBackgroundPageClosingItsOwnRuntimePortIsKeptByTheAnchor() async throws {
+        try await measureBackgroundPageClosingItsOwnRuntimePort(withAnchor: true)
+    }
+
+    /// Leg (h): leg (f) for a *service worker* background, armed with a
+    /// simulated host (it holds no native port but the keep-alive and the
+    /// anchor). A worker has no `localStorage`, and `chrome.storage` does not
+    /// work in the test host's workers, so its life is read from Detour's own
+    /// pings, every 15 s: a worker WebKit unloaded stops answering them, and
+    /// reports none of its ports closed (TASK-141).
+    private func measureWorkerWhoseRuntimePortCloses(withAnchor: Bool) async throws {
+        try XCTSkipUnless(measuringBackgroundPageUnload,
+                          "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
+        let label = withAnchor ? "h': worker, anchor, a runtime port closed" : "h: worker, no anchor, a runtime port closed"
+        let id = measurementExtensionID("task142-worker")
+        let ext = try await makeWorkerExtension(
+            id: id, permissions: ["nativeMessaging"],
+            backgroundJS: (withAnchor ? "" : Self.withoutTheAnchor + "\n") + ExtensionAPIPolyfill.polyfillJS + """
+
+            const task142 = { opened: 0, closed: 0 };
+            // Held, as an extension does with a port it uses: a port nobody holds
+            // is collected and removed without its listeners running.
+            const task142Ports = [];
+            chrome.runtime.onConnect.addListener((port) => {
+                task142Ports.push(port);
+                task142.opened += 1;
+                port.onDisconnect.addListener(() => { task142.closed += 1; });
+            });
+            chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+                if (!message || message.type !== 'task142Status') return false;
+                sendResponse(task142);
+                return false;
+            });
+            """)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+
+        let profile = makeProfile("TASK-142 Worker")
+        let controller = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let page = try await makeExtensionWebView(for: context)
+        let manager = ExtensionManager.shared
+        manager.keepAlivePingInterval = 15
+        // The leg watches the worker die; Detour's restart must not hide it.
+        manager.keepAliveMissedReplyLimit = 100
+        context.loadBackgroundContent { error in
+            if let error { print("TASK-142 measurement: loadBackgroundContent failed: \(error)") }
+        }
+        try await waitUntil("the worker's keep-alive port to reach ExtensionManager", timeout: 30) {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.portOpen == true
+        }
+        let startedAt = Date()
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        try await waitUntil("Detour to arm the worker", timeout: 10) {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.armed == true
+        }
+
+        _ = try await page.callAsyncJavaScript(
+            "globalThis.__task142Port = chrome.runtime.connect({ name: 'task142' }); return true;",
+            arguments: [:], contentWorld: .page)
+        let opened = try await askWorker(from: page, message: ["type": "task142Status"], timeout: 5)
+        XCTAssertEqual((opened["reply"] as? [String: Any])?["opened"] as? Int, 1, "the worker must hold the port: \(opened)")
+        try await Task.sleep(nanoseconds: 10_000_000_000)
+        _ = try await page.callAsyncJavaScript(
+            "globalThis.__task142Port.disconnect(); return true;", arguments: [:], contentWorld: .page)
+        let closedAt = Date().timeIntervalSince(startedAt)
+
+        // Unloaded = a ping still unanswered at the next tick.
+        var silentSince: TimeInterval?
+        let limit: TimeInterval = withAnchor ? 150 : 120
+        var lastReport = Date()
+        while Date().timeIntervalSince(startedAt) < limit {
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            if manager.keepAliveMissedRepliesForTesting(controller: controller, extensionID: ext.id).missed > 0 {
+                silentSince = Date().timeIntervalSince(startedAt)
+                break
+            }
+            if Date().timeIntervalSince(lastReport) >= 15 {
+                lastReport = Date()
+                print("TASK-142 measurement [\(label)]: +\(String(format: "%.1f", Date().timeIntervalSince(startedAt))) s, replies \(manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id))")
+            }
+        }
+        let replies = manager.keepAlivePingCountForTesting(controller: controller, extensionID: ext.id)
+        print("TASK-142 measurement [\(label)]: runtime port closed at +\(String(format: "%.1f", closedAt)) s; first unanswered ping noticed \(silentSince.map { String(format: "at +%.1f s", $0) } ?? "never") of \(limit) s; replies \(replies)")
+        if withAnchor {
+            XCTAssertNil(silentSince, "the anchor must keep the worker answering")
+            let status = try await askWorker(from: page, message: ["type": "task142Status"], timeout: 5)
+            XCTAssertEqual((status["reply"] as? [String: Any])?["closed"] as? Int, 1, "the worker saw the port close: \(status)")
+            assertNothingLeaked("h'", controller: controller, extensionID: ext.id, hosts: 0)
+        } else {
+            XCTAssertNotNil(silentSince, "without the anchor the worker goes at the next tick and stops answering")
+        }
+    }
+
+    func testMeasureWorkerWhoseRuntimePortClosesWithoutTheAnchor() async throws {
+        try await measureWorkerWhoseRuntimePortCloses(withAnchor: false)
+    }
+
+    func testMeasureWorkerWhoseRuntimePortClosesIsKeptByTheAnchor() async throws {
+        try await measureWorkerWhoseRuntimePortCloses(withAnchor: true)
     }
 
     /// The helper legs (b) and (c) depend on, run fast and on its own: the

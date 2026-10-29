@@ -436,6 +436,21 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertEqual(access, .denied)
     }
 
+    /// The keep-alive anchor (TASK-142) is Detour's own host: decided by name,
+    /// without the manifest permission, and never a real host to search for.
+    func testNativeHostAccessRecognisesTheKeepAliveAnchorHost() {
+        let access = ExtensionManager.nativeHostAccess(
+            hostName: ExtensionManager.keepAliveAnchorHostName, manifestPermissions: [], savedDecision: .denied)
+        XCTAssertEqual(access, .keepAliveAnchorHost)
+    }
+
+    /// NEGATIVE: only the exact name is the anchor host.
+    func testNativeHostAccessDeniesHostNameContainingTheAnchorHost() {
+        let name = "com.example." + ExtensionManager.keepAliveAnchorHostName
+        let access = ExtensionManager.nativeHostAccess(hostName: name, manifestPermissions: [], savedDecision: nil)
+        XCTAssertEqual(access, .denied)
+    }
+
     /// NEGATIVE: the relay is a port-only host. A one-shot `sendNativeMessage` to
     /// it must be refused rather than routed anywhere — `.webSocketRelayHost` is
     /// not `.allowed`, so the delegate's gate rejects it with its own error.

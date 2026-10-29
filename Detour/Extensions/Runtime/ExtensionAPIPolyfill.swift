@@ -1851,6 +1851,10 @@ struct ExtensionAPIPolyfill {
         // replaced (ExtensionManager.keepAliveSupersededMessage).
         const SUPERSEDED_TYPE = '\(ExtensionManager.keepAliveSupersededType)';
         const SUPERSEDED_MESSAGE = '\(ExtensionManager.keepAliveSupersededMessage)';
+        // The anchor port an armed background holds, and what Detour sends when
+        // one of the background's native ports closed (TASK-142).
+        const ANCHOR_HOST = '\(ExtensionManager.keepAliveAnchorHostName)';
+        const REANCHOR_TYPE = '\(ExtensionManager.keepAliveReanchorType)';
         const reconnectBaseMs = (typeof g.__detourKeepAliveReconnectBaseMs === 'number' && g.__detourKeepAliveReconnectBaseMs > 0)
             ? g.__detourKeepAliveReconnectBaseMs : DEFAULT_RECONNECT_BASE_MS;
 
@@ -1860,6 +1864,32 @@ struct ExtensionAPIPolyfill {
         let port = null;
         let armed = false;
         let repliesSent = 0;
+
+        // The anchor (TASK-142). WebKit keeps a page's open ports as counts per
+        // port, and the first port of the page whose count reaches zero takes the
+        // page's whole entry with it (`WebExtensionContext::removePort`). From
+        // then on WebKit believes the background holds no open port, so its next
+        // 30 s unload tick closes it, the keep-alive port and every answered ping
+        // notwithstanding (TASK-141). Only a port the page opens or receives puts
+        // the entry back. So while armed the background holds one more native
+        // port, the anchor, and after any of its ports ends it closes the anchor
+        // and opens a new one: the close takes the entry (if anything was left of
+        // it), the open re-creates it with the new anchor in it. Closed first,
+        // because a removal after the open would wipe the new entry too. The ends
+        // it reacts to: a port the background made or received closing, from
+        // either side (`watchPort`, below), and one of its native ports closing
+        // (Detour sends REANCHOR_TYPE, since `connectNative` cannot be wrapped).
+        // Every ping re-anchors as well, for a port that ended unseen.
+        let anchor = null;
+        let anchorsOpened = 0;
+        // Test-only: play the keep-alive as it was before TASK-142, so the
+        // measurement legs can still show what the anchor fixes. Nothing in
+        // production sets it.
+        const anchorDisabled = g.__detourKeepAliveNoAnchor === true;
+        let reanchorTimer = null;
+        let watchDetail = '';
+        let portsWatched = 0;
+        let portEndsSeen = 0;
         let reconnectTimer = null;
         let reconnectAttempts = 0;
         // 'port' (a port is open) | 'none'.
@@ -1915,6 +1945,153 @@ struct ExtensionAPIPolyfill {
             return '';
         }
 
+        function closeAnchor() {
+            const closing = anchor;
+            anchor = null;
+            if (!closing) return;
+            try { closing.disconnect(); } catch (e) {}
+        }
+
+        // Deferred to a task of its own and coalesced: WebKit sends a port's
+        // removal before it runs the port's onDisconnect listeners, and Detour's
+        // REANCHOR_TYPE is sent after the native port's disconnect, so by the
+        // time this runs the removal that wiped the entry has already gone out.
+        function reanchorSoon() {
+            if (!armed || reanchorTimer || anchorDisabled) return;
+            reanchorTimer = setTimeout(reanchorNow, 0);
+        }
+
+        function reanchorNow() {
+            reanchorTimer = null;
+            // Disarmed meanwhile: leave the anchor as it is (see keepalive-stop).
+            if (!armed || !port) return;
+            closeAnchor();
+            const resolved = g.__detourResolveNativeRuntime();
+            if (!resolved.runtime) return;
+            let opened = null;
+            try { opened = resolved.runtime.connectNative(ANCHOR_HOST); } catch (e) {}
+            if (!opened) return;
+            anchor = opened;
+            anchorsOpened += 1;
+            try {
+                // Fires for its own disconnect() too (WebKit runs a port's
+                // listeners when it is closed locally); nothing to re-open then.
+                opened.onDisconnect.addListener(function() {
+                    if (anchor === opened) anchor = null;
+                });
+            } catch (e) {}
+        }
+
+        // Re-anchor when this port ends. Nothing holds the port: a port the
+        // extension drops is collected as before, and WebKit's removal of a
+        // collected port runs its onDisconnect listeners too.
+        function watchPort(watched) {
+            if (!watched) return watched;
+            try {
+                watched.onDisconnect.addListener(function() {
+                    portEndsSeen += 1;
+                    reanchorSoon();
+                });
+                portsWatched += 1;
+            } catch (e) {}
+            return watched;
+        }
+
+        // Every way a background makes or receives a port other than
+        // `connectNative`: `runtime.connect` and `tabs.connect` are wrapped, and
+        // so is every listener the extension adds to `runtime.onConnect` /
+        // `onConnectExternal`. The wrappers patched are rooted
+        // (`__detourHoldWrapper`) so the next read returns them. WebKit vends one
+        // object under `chrome` and `browser` today; should the two ever differ,
+        // each is patched.
+        function installPortWatch() {
+            const details = [];
+            const note = function(label) {
+                if (details.indexOf(label) === -1) details.push(label);
+            };
+            const distinctNamespaces = function(name) {
+                const found = [];
+                ['chrome', 'browser'].forEach(function(rootName) {
+                    let namespace = null;
+                    try { namespace = g[rootName] && g[rootName][name]; } catch (e) {}
+                    if (namespace && found.indexOf(namespace) === -1) found.push(namespace);
+                });
+                return found;
+            };
+            const runtimes = distinctNamespaces('runtime');
+            if (!runtimes.length) {
+                watchDetail = 'no-runtime';
+                return;
+            }
+
+            const wrapConnect = function(namespace, label) {
+                try {
+                    const original = namespace && namespace.connect;
+                    if (typeof original !== 'function') return;
+                    namespace.connect = function() {
+                        return watchPort(original.apply(namespace, arguments));
+                    };
+                    if (namespace.connect !== original) note(label);
+                } catch (e) {}
+            };
+            runtimes.forEach(function(runtime, i) {
+                g.__detourHoldWrapper('keepAliveRuntime' + (i ? '.' + i : ''), runtime);
+                wrapConnect(runtime, 'runtime.connect');
+            });
+            distinctNamespaces('tabs').forEach(function(tabs, i) {
+                g.__detourHoldWrapper('keepAliveTabs' + (i ? '.' + i : ''), tabs);
+                wrapConnect(tabs, 'tabs.connect');
+            });
+
+            // WebKit hands every onConnect listener a port of its own (and
+            // counts one open port per listener), so a listener of Detour's
+            // would add a port nobody holds, and one that keeps the channel
+            // open after the extension disconnects its own. Each of the
+            // extension's listeners is wrapped instead, and the wrapper watches
+            // the very port that listener gets.
+            const wrappedEvents = [];
+            const wrapConnectEvent = function(event, name, holdName) {
+                if (!event || wrappedEvents.indexOf(event) !== -1 || typeof event.addListener !== 'function'
+                    || typeof event.removeListener !== 'function' || typeof event.hasListener !== 'function') return;
+                wrappedEvents.push(event);
+                g.__detourHoldWrapper(holdName, event);
+                const nativeAdd = event.addListener;
+                const nativeRemove = event.removeListener;
+                const nativeHas = event.hasListener;
+                const wrappers = new Map();
+                event.addListener = function(listener) {
+                    if (typeof listener !== 'function') return nativeAdd.apply(event, arguments);
+                    let wrapper = wrappers.get(listener);
+                    if (!wrapper) {
+                        wrapper = function(received) {
+                            watchPort(received);
+                            return listener.apply(this, arguments);
+                        };
+                        wrappers.set(listener, wrapper);
+                    }
+                    return nativeAdd.call(event, wrapper);
+                };
+                event.removeListener = function(listener) {
+                    const wrapper = wrappers.get(listener);
+                    if (!wrapper) return nativeRemove.apply(event, arguments);
+                    wrappers.delete(listener);
+                    return nativeRemove.call(event, wrapper);
+                };
+                event.hasListener = function(listener) {
+                    return nativeHas.call(event, wrappers.get(listener) || listener);
+                };
+                note('runtime.' + name);
+            };
+            runtimes.forEach(function(runtime, i) {
+                ['onConnect', 'onConnectExternal'].forEach(function(name) {
+                    let event = null;
+                    try { event = runtime[name]; } catch (e) {}
+                    wrapConnectEvent(event, name, 'keepAlive.' + name + (i ? '.' + i : ''));
+                });
+            });
+            watchDetail = details.join(',');
+        }
+
         function scheduleReconnect() {
             if (reconnectTimer) return;
             const delay = Math.min(reconnectBaseMs * Math.pow(2, reconnectAttempts), MAX_RECONNECT_MS);
@@ -1967,10 +2144,26 @@ struct ExtensionAPIPolyfill {
                     if (port !== opened || !message) return;
                     // Answered whether or not a start was seen: Detour pings only
                     // a port it has armed, and an extra reply is never wrong.
-                    if (message.type === 'keepalive-ping') reply(opened, message.seq);
-                    else if (message.type === 'keepalive-start') armed = true;
-                    else if (message.type === 'keepalive-stop') armed = false;
-                    else if (message.type === SUPERSEDED_TYPE) superseded = true;
+                    if (message.type === 'keepalive-ping') {
+                        reply(opened, message.seq);
+                        reanchorSoon();
+                    } else if (message.type === 'keepalive-start') {
+                        armed = true;
+                        reanchorSoon();
+                    } else if (message.type === 'keepalive-stop') {
+                        // The anchor stays open, idle: closing it is a port
+                        // removal, which would wipe WebKit's record of this
+                        // background's ports, and an unload WebKit then makes
+                        // reports none of them closed to Detour. Left open, it
+                        // goes with the keep-alive port on WebKit's 2-minute
+                        // inactive-ports unload, both reported. The next start
+                        // replaces it.
+                        armed = false;
+                    } else if (message.type === REANCHOR_TYPE) {
+                        reanchorSoon();
+                    } else if (message.type === SUPERSEDED_TYPE) {
+                        superseded = true;
+                    }
                 });
             } catch (e) {}
             try {
@@ -1978,6 +2171,7 @@ struct ExtensionAPIPolyfill {
                     if (port !== opened) return;
                     port = null;
                     armed = false;
+                    closeAnchor();
                     installMode = 'none';
                     // Another context of this extension (a tab navigated to the
                     // background document's path passes the gate below too) took
@@ -2039,6 +2233,7 @@ struct ExtensionAPIPolyfill {
             installDetail = 'persistent-background-page';
         } else {
             connect();
+            installPortWatch();
         }
         if (isWorker || isBackgroundPage) {
             // One line per background start, through the console bridge, so the
@@ -2053,7 +2248,12 @@ struct ExtensionAPIPolyfill {
             get armed() { return armed; },
             get active() { return armed && port !== null; },
             get repliesSent() { return repliesSent; },
-            get reconnectAttempts() { return reconnectAttempts; }
+            get reconnectAttempts() { return reconnectAttempts; },
+            get anchorOpen() { return anchor !== null; },
+            get anchorsOpened() { return anchorsOpened; },
+            get watching() { return watchDetail; },
+            get portsWatched() { return portsWatched; },
+            get portEndsSeen() { return portEndsSeen; }
         });
     })();
     """

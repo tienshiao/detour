@@ -19,6 +19,9 @@ sources:
   - id: webkit-countedset
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WTF/wtf/HashCountedSet.h
     title: WTF HashCountedSet.h (remove returns true when a value's count reaches zero)
+  - id: task-142
+    resource: backlog:TASK-142
+    title: The native-port keep-alive is defeated when any other port of the background closes
   - id: task-141
     resource: backlog:TASK-141
     title: Does removePort drop a page's whole port entry when one port closes
@@ -196,6 +199,28 @@ a candidate explanation for the worker cycling seen after a 1Password lock
 on 2026-09-13, which was attributed to the worker's own timers by
 elimination and never reproduced.[^task-68]
 
+Other facts about WebKit's port bookkeeping that matter for working around
+it (WebKit main, `WebExtensionAPIPort.cpp`, `WebExtensionAPIRuntime.cpp`,
+`WebExtensionContextAPIRuntimeCocoa.mm`, read 2026-10-28):[^task-142]
+
+- **Every `onConnect` listener gets its own port.** The web process creates
+  one `WebExtensionAPIPort` per listener and reports one open port per
+  listener for the page. A second listener therefore adds a second port to
+  the channel, which keeps it open after the first is disconnected.
+- **A port's removal goes out before its `onDisconnect` listeners run**
+  (`fireDisconnectEventIfNeeded` calls `remove()` first), and a page's own
+  `port.disconnect()` takes the same path, so its own listeners fire too
+  (Chrome does not fire them for the closing side). A port nobody holds is
+  removed when it is collected, and then its listeners do **not** run
+  (measured in a worker: the extension's own `onDisconnect` never fired, and
+  the other side's later close found nothing).
+- **`runtime.connectNative` adds the page's port before asking the
+  embedder** (`addPorts` first, then `connectUsingMessagePort`), so a refused
+  connect is added and then removed: a wipe like any other.
+- The open-ports rule uses 2 minutes in an app and 6 s under WebKit's own
+  test runner (`isNotRunningInTestRunner`); Detour's test host counts as an
+  app.
+
 A related gap: WebKit does not deliver the error an embedder disconnects a
 native port with to an *established* port. Neither `port.error` nor
 `runtime.lastError` carries it.[^manager]
@@ -251,7 +276,7 @@ state above.
 | Problem | What Detour does | Page |
 |---|---|---|
 | Unload while a native host or relayed socket is live | Pings the background on a built-in port every 30 s; the *reply* is the background post WebKit counts | [Native port keep-alive](../extensions/native-port-keep-alive.md) |
-| One port closing wipes the page's port entry | Nothing yet. The missed-reply recovery below notices 15 to 30 s after the unload and reloads the background about 60 s after it; a fix is tracked as TASK-142 | same |
+| One port closing wipes the page's port entry | While armed, the background holds an anchor port and closes and re-opens it after any of its ports ends, which re-creates the entry (TASK-142) | same |
 | No disconnect on a context reload | Treats a second keep-alive port for the same extension as a replaced background and tears down everything held for the old one | same |
 | Worker dead under a live page | Two unanswered pings: drop all ports so WebKit's next 30 s tick closes the page, then `loadBackgroundContent` 35 s later | same |
 | Stuck registration, code 6 | Unload and reload the context, which gets a fresh origin; at most 3 times per 10 minutes per extension | same |
@@ -279,6 +304,7 @@ the revision closest to the then-shipped macOS WebKit.[^notes-webkit]
 [^manager]: ExtensionManager.swift (keep-alive, supersede teardown, restart)
 [^task-2]: Service worker restart after idle termination
 [^task-16]: Keep the background worker alive while a native host is connected
+[^task-142]: The native-port keep-alive is defeated when any other port of the background closes
 [^task-141]: Does removePort drop a page's whole port entry when one port closes
 [^webkit-countedset]: WTF HashCountedSet.h
 [^task-21]: Signed-build verification of the keep-alive and the WebSocket relay

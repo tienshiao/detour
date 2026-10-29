@@ -92,6 +92,22 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     }
     private var keepAlivePorts: [KeepAlivePortKey: WKWebExtension.MessagePort] = [:]
 
+    /// The anchor ports an armed background holds next to its keep-alive port
+    /// (TASK-142), keyed by port identity. WebKit's `removePort` drops a page's
+    /// whole entry from its open-ports map when any one of its ports closes, so
+    /// the background re-creates the entry by closing its anchor and opening a
+    /// new one after every port of its that ends (`nativePortKeepAliveJS`).
+    /// Normally one per key; the old one is still registered for the moment
+    /// between the new one arriving and the old one's `disconnectHandler`. Never
+    /// disconnected from here while the background is armed: a native
+    /// disconnect after the new anchor was added would wipe the entry again.
+    private var keepAliveAnchorPorts: [KeepAlivePortKey: [ObjectIdentifier: WKWebExtension.MessagePort]] = [:]
+
+    /// Anchor ports accepted and re-anchor requests sent per key, for
+    /// diagnostics and tests. Dropped when the context unloads.
+    private var keepAliveAnchorOpenCounts: [KeepAlivePortKey: Int] = [:]
+    private var keepAliveReanchorRequestCounts: [KeepAlivePortKey: Int] = [:]
+
     /// Live relayed WebSockets per extension per controller (TASK-8). A worker may
     /// hold several at once, so each session is keyed by its own identity; entries
     /// are dropped when the port goes away or the context unloads
@@ -204,6 +220,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     enum NativeHostAccess: Equatable {
         /// Detour's own polyfill host: accepted without the manifest permission.
         case polyfillHost
+        /// The keep-alive's anchor port (TASK-142): Detour's own, accepted
+        /// without the manifest permission, and nothing is spawned for it.
+        case keepAliveAnchorHost
         /// Detour's WebSocket relay host (TASK-8): also accepted without the
         /// manifest permission — a worker may open a WebSocket whether or not it
         /// declares `nativeMessaging`, and this host is the only way it can.
@@ -233,6 +252,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     static func nativeHostAccess(hostName: String, manifestPermissions: [String],
                                  savedDecision: @autoclosure () -> ExtensionPermissionStatus?) -> NativeHostAccess {
         if hostName == ExtensionPolyfillHandler.handlerName { return .polyfillHost }
+        if hostName == keepAliveAnchorHostName { return .keepAliveAnchorHost }
         if hostName == WebSocketRelaySession.hostName { return .webSocketRelayHost }
         guard manifestPermissions.contains(ExtensionPermissionRecord.nativeMessagingKey) else { return .denied }
         return savedDecision() == .denied ? .deniedByUser : .allowed
@@ -325,6 +345,17 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// `runtime.lastError`; measured 2026-09-13), so this is how the polyfill
     /// learns the reason.
     static let keepAliveSupersededType = "keepalive-superseded"
+
+    /// The native host an armed background opens its anchor port to (TASK-142,
+    /// `keepAliveAnchorPorts`). `ExtensionAPIPolyfill.nativePortKeepAliveJS`
+    /// embeds the same string.
+    static let keepAliveAnchorHostName = "detourKeepAliveAnchor"
+
+    /// The message type Detour sends on the keep-alive port after one of the
+    /// background's native ports (a host, a relayed WebSocket) closed while it
+    /// is armed: the close took WebKit's record of the background's open ports
+    /// with it, and the polyfill answers by re-opening its anchor.
+    static let keepAliveReanchorType = "keepalive-reanchor"
 
     /// An error in Detour's extension domain with `message` as its description —
     /// the one shape every native-messaging failure takes.
@@ -694,6 +725,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             log.info("Tore down \(torn.relays) relayed WebSocket(s) for \(extensionID, privacy: .public) (context unloaded)")
         }
         keepAlivePortOpenCounts.removeValue(forKey: key)
+        dropKeepAliveAnchors(for: key)
+        keepAliveAnchorOpenCounts.removeValue(forKey: key)
+        keepAliveReanchorRequestCounts.removeValue(forKey: key)
         // A restart pending for a context that is being unloaded has nothing left
         // to load into — and must not fire later against whatever context the
         // same key resolves to by then (a reload, or a recycled controller
@@ -853,6 +887,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // or a control send that never arrived (`reconcile` starts them again).
         if !state.armed {
             stopKeepAlivePinging(for: key)
+        } else if event == .hostDisconnected {
+            requestReanchor(for: key)
         }
 
         let extID = key.extensionID
@@ -866,6 +902,64 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         case .sendStop:
             log.info("Keep-alive disarmed for \(extID, privacy: .public): no native host connected")
             sendKeepAliveControl("keepalive-stop", for: key)
+        }
+    }
+
+    /// One of the background's native ports (a host or a relayed WebSocket)
+    /// closed, or was refused, while it is still armed. WebKit's `removePort` dropped the
+    /// background page's whole open-ports entry with it, so the next 30 s unload
+    /// tick would close the page however many ports it still holds (TASK-141);
+    /// the polyfill re-creates the entry by re-opening its anchor port (TASK-142).
+    ///
+    /// Sent on the next turn of the main queue, not now: a host that exited
+    /// releases its keep-alive count *before* its WebKit port is disconnected,
+    /// and the background must hear of the disconnect (whose removal is the
+    /// wipe) before it re-anchors, or the anchor's entry is wiped in turn. Both
+    /// go to the background's process in the order they are sent.
+    private func requestReanchor(for key: KeepAlivePortKey) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.keepAliveStates[key]?.armed == true,
+                  let port = self.keepAlivePorts[key] else { return }
+            self.keepAliveReanchorRequestCounts[key, default: 0] += 1
+            port.sendMessage(["type": Self.keepAliveReanchorType], completionHandler: { _ in })
+            log.info("Keep-alive re-anchor requested for \(key.extensionID, privacy: .public): one of its native ports closed")
+        }
+    }
+
+    /// The last anchor closed while the keep-alive is disarmed. The polyfill
+    /// closes its anchor only to re-open one at once (a re-anchor, armed) or
+    /// when its keep-alive port drops (already gone here), so an anchor closing
+    /// with none to follow is WebKit unloading the background. And the anchor
+    /// may be the only port WebKit still reports: the first re-anchor's close
+    /// wiped the page's record of every other port, the keep-alive port
+    /// included, so the unload reports no other close (TASK-141). Without this
+    /// Detour would keep a dead keep-alive port registered until the next start
+    /// superseded it.
+    ///
+    /// Decided a second later, so a re-anchor that crossed a stop (its new
+    /// anchor follows its close in the same task) is not mistaken for one. If
+    /// it ever is, the keep-alive port is disconnected and the polyfill
+    /// reconnects it.
+    private func checkForUnloadReportedByAnchor(for key: KeepAlivePortKey) {
+        guard keepAliveAnchorPorts[key] == nil, keepAliveStates[key]?.armed != true,
+              let keepAlive = keepAlivePorts[key] else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self, weak keepAlive] in
+            guard let self, let keepAlive, self.keepAlivePorts[key] === keepAlive,
+                  self.keepAliveAnchorPorts[key] == nil, self.keepAliveStates[key]?.armed != true else { return }
+            self.keepAlivePorts.removeValue(forKey: key)
+            keepAlive.disconnect(throwing: nil)
+            self.applyKeepAlive(.portClosed, for: key)
+            log.info("Keep-alive port closed for \(key.extensionID, privacy: .public) (background unloaded; reported through its anchor)")
+        }
+    }
+
+    /// Disconnect every anchor port Detour holds for the key. Only for a
+    /// background that is going away or being restarted: its open ports must
+    /// not keep the page loaded any more.
+    private func dropKeepAliveAnchors(for key: KeepAlivePortKey) {
+        let anchors = keepAliveAnchorPorts.removeValue(forKey: key) ?? [:]
+        for anchor in anchors.values {
+            anchor.disconnect(throwing: nil)
         }
     }
 
@@ -1036,6 +1130,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         let error = Self.unresponsiveBackgroundError()
         let torn = tearDownNativeConnections(for: key, disconnectingPortsWith: error)
         ourPort?.disconnect(throwing: error)
+        // Its anchors too, or they would hold the zombie page open (TASK-142).
+        dropKeepAliveAnchors(for: key)
         log.info("Restarting the background of \(extID, privacy: .public): tore down \(torn.hosts) native host(s), \(torn.relays) relayed WebSocket(s) and its keep-alive port")
 
         // No restart can already be pending here: it would have removed the
@@ -1163,6 +1259,15 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Keep-alive ports accepted for the extension since its context loaded. Tests only.
     func keepAlivePortOpenCountForTesting(controller: WKWebExtensionController, extensionID: String) -> Int {
         keepAlivePortOpenCounts[KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)] ?? 0
+    }
+
+    /// Anchor ports Detour holds now, anchors accepted since the context loaded,
+    /// and re-anchor requests sent (TASK-142). Tests only.
+    func keepAliveAnchorsForTesting(controller: WKWebExtensionController,
+                                    extensionID: String) -> (held: Int, opened: Int, requested: Int) {
+        let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)
+        return (keepAliveAnchorPorts[key]?.count ?? 0, keepAliveAnchorOpenCounts[key] ?? 0,
+                keepAliveReanchorRequestCounts[key] ?? 0)
     }
 
     /// Real native messaging hosts currently registered as live for the extension.
@@ -2379,6 +2484,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             replyHandler(nil, NSError(domain: "DetourExtension", code: -1,
                                       userInfo: [NSLocalizedDescriptionKey: "\(WebSocketRelaySession.hostName) is a port-only host"]))
             return
+        case .keepAliveAnchorHost:
+            replyHandler(nil, Self.extensionError("\(Self.keepAliveAnchorHostName) is a port-only host"))
+            return
         case .denied:
             // A context the profile no longer lists (unloaded, or a message in
             // flight across a reload) has no manifest to consult; say so rather
@@ -2510,6 +2618,24 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             openWebSocketRelay(port: port, controller: controller, extensionID: relayID)
             completionHandler(nil)
             return
+        case .keepAliveAnchorHost:
+            guard let extID = verifiedExtensionID() else { return }
+            // An armed background's anchor (TASK-142, `keepAliveAnchorPorts`):
+            // held, never answered, nothing spawned. The background closes its
+            // previous anchor itself before opening this one.
+            let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extID)
+            let portKey = ObjectIdentifier(port)
+            keepAliveAnchorPorts[key, default: [:]][portKey] = port
+            keepAliveAnchorOpenCounts[key, default: 0] += 1
+            port.disconnectHandler = { [weak self] _ in
+                guard let self, self.keepAliveAnchorPorts[key]?.removeValue(forKey: portKey) != nil else { return }
+                if self.keepAliveAnchorPorts[key]?.isEmpty == true {
+                    self.keepAliveAnchorPorts.removeValue(forKey: key)
+                }
+                self.checkForUnloadReportedByAnchor(for: key)
+            }
+            completionHandler(nil)
+            return
         case .polyfillHost:
             guard let extID = verifiedExtensionID() else { return }
             // The polyfill's keep-alive port (see ExtensionAPIPolyfill.nativePortKeepAliveJS):
@@ -2582,6 +2708,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             }
             keepAlivePorts[key] = port
             keepAlivePortOpenCounts[key, default: 0] += 1
+            // Any anchor still registered belongs to an earlier start of the
+            // background: the polyfill closes its anchor whenever its keep-alive
+            // port drops and opens one only once armed, and WebKit's context
+            // unload drops native ports without reporting them (TASK-67).
+            dropKeepAliveAnchors(for: key)
             // A background context is back (TASK-68): whether an alarm, a message
             // or a reconnect started it, a restart still waiting to load
             // background content would only start a second one.
@@ -2633,6 +2764,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 extensionID: extID, hostName: hostName, profileName: profileName,
                 outcome: .refused, detail: "nativeMessaging denied by the user")
             completionHandler(Self.nativeHostForbiddenError())
+            // A relayed WebSocket can still hold the keep-alive armed; the
+            // refused port's removal wiped the background's entry (TASK-142).
+            requestReanchor(for: KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extID))
             return
         case .allowed:
             break
@@ -2687,6 +2821,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 extensionID: extID, hostName: hostName, profileName: profileName,
                 outcome: .failed, detail: error.localizedDescription)
             completionHandler(error)
+            // The refused port is removed like any closed one, and the removal
+            // takes the background's open-ports entry with it (TASK-142). The
+            // request runs on the next turn, after WebKit's disconnect has gone
+            // out; it is a no-op unless the keep-alive is armed.
+            requestReanchor(for: keepAliveKey)
             return
         }
         liveNativeHosts[keepAliveKey, default: [:]][hostKey] = LiveNativeHost(host: host, port: port)
