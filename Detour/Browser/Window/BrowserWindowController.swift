@@ -3763,6 +3763,8 @@ extension BrowserWindowController: TabHoverCardHost {
     func hoverCardIsOnScreen(_ tab: BrowserTab) -> Bool {
         guard let selected = selectedTab else { return false }
         if selected === tab { return true }
+        // A Peek is on screen only while presented, over the selected tab.
+        if selected.peekTab === tab { return peekOverlayView != nil }
         guard let space = activeSpace,
               let group = store.splitGroup(containing: selected.id, in: space) else { return false }
         return group.members.contains { $0 === tab }

@@ -442,6 +442,12 @@ class BrowserTab: NSObject {
         peekTab?.favicon ?? peekFavicon
     }
 
+    /// The page this tab's Peek shows: its live or parked tab's URL, else the
+    /// URL saved for it (a parked Peek that never loaded, or a restored one).
+    var peekPageURL: URL? {
+        peekTab?.url ?? peekURL
+    }
+
     /// Whether selecting this tab brings a Peek back over it: a live one is
     /// presented again, a parked or session-restored one is rebuilt from
     /// `peekURL` (`restorePeekOverlayIfNeeded`).

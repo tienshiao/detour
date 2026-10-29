@@ -8,7 +8,8 @@ protocol TabHoverCardHost: AnyObject {
     /// hidden. The card goes just outside its trailing edge.
     var hoverCardSidebarRectInWindow: NSRect? { get }
     /// Whether `tab` is on screen in this window (the selected tab or a pane
-    /// of the selected split): its card shows no thumbnail.
+    /// of the selected split, or the Peek presented over the selected tab):
+    /// its card shows no thumbnail.
     func hoverCardIsOnScreen(_ tab: BrowserTab) -> Bool
     /// `TabStore.thumbnailKey(for:)`.
     func hoverCardThumbnailKey(for tab: BrowserTab) -> UUID?

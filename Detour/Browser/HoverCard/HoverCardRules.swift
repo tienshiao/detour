@@ -187,7 +187,10 @@ struct HoverCardContent {
             text = favorite.tab.map { .make(title: $0.title, url: $0.url) }
                 ?? .make(title: favorite.title, url: favorite.url)
         case .peek(let host):
-            return peekContent(of: host, isOnScreen: isOnScreen(host))
+            // Shown only while presented over its host; a split's other pane
+            // is on screen without its Peek.
+            return peekContent(of: host, isOnScreen: host.peekTab.map(isOnScreen) ?? false,
+                               hostKey: thumbnailKey(host))
         }
         guard let tab = target.tab else {
             // Dormant: only the disk can have a picture, under the tile's id.
@@ -210,13 +213,15 @@ struct HoverCardContent {
     /// when its tab has none (parked before it ever loaded), or only that URL
     /// after a relaunch, when the host has no Peek tab and Peeks record no
     /// history to name it by. Its picture is the Peek's own in-memory one,
-    /// taken when its host was left; none is kept on disk, so a restored
-    /// Peek's card is text only.
-    private static func peekContent(of host: BrowserTab, isOnScreen: Bool) -> HoverCardContent {
-        let peek = host.peekTab
-        let text = HoverCardText.make(title: peek?.title ?? "", url: peek?.url ?? host.peekURL)
+    /// taken when its host was left, else the one on disk under the Peek's
+    /// key (TASK-230), derived from `hostKey` (nil for Private) and its page.
+    private static func peekContent(of host: BrowserTab, isOnScreen: Bool, hostKey: UUID?) -> HoverCardContent {
+        let text = HoverCardText.make(title: host.peekTab?.title ?? "", url: host.peekPageURL)
         // A host on screen has its Peek presented over it.
-        return HoverCardContent(text: text, preview: isOnScreen ? nil : peek?.switcherPreview, thumbnailKey: nil)
+        // A Peek presented over its host is in front of the user already.
+        if isOnScreen { return HoverCardContent(text: text, preview: nil, thumbnailKey: nil) }
+        let key = hostKey.flatMap { TabStore.peekThumbnailKey(of: host, hostKey: $0) }
+        return HoverCardContent(text: text, preview: host.peekTab?.switcherPreview, thumbnailKey: key)
     }
 }
 

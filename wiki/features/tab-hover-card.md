@@ -48,6 +48,9 @@ sources:
   - id: harness-229
     resource: ../../docs/harness/task229-harness.patch
     title: TASK-229 runtime harness
+  - id: task-230
+    resource: backlog:TASK-230
+    title: "Hover card: keep a Peek's picture on disk, so a restored Peek's card has one"
 ---
 
 Sidebar tab rows have no AppKit tooltip. Resting the pointer on a row (or a
@@ -89,9 +92,13 @@ tooltip, which was slow and showed only the title.[^task-190]
     `peekURL`, and Peeks record no history, so its card is the URL alone.
   - Its **picture** is the Peek's own in-memory `switcherPreview`, taken
     when its host is left with the Peek up, and kept while the Peek is
-    parked. None is written to disk, so a restored Peek's card is text only
-    until the Peek has been shown and left again. No picture while the host
-    is on screen: its Peek is then presented over it.
+    parked; else the one on disk under the Peek's own key, so a restored
+    Peek's card has the picture taken before the relaunch.[^task-230] Until
+    TASK-230 nothing was written for a Peek and a restored Peek's card was
+    text only. No picture while the Peek is presented (over the selected
+    tab); the other pane of the selected split is on screen without its
+    Peek, so its Peek card keeps its picture (`hoverCardIsOnScreen` answers
+    for the presented Peek itself).
   - A Peek page with no favicon gives the host no badge, so no Peek card.
 - **Thumbnail:** none for a tab on screen in this window (the selected tab,
   either pane of the selected split, a selected favourite). Otherwise the
@@ -222,15 +229,27 @@ survives a relaunch.
   `<data directory>/TabThumbnails/<key>.jpg`, on a serial utility queue.
 - **Key** (`TabStore.thumbnailKey(for:)`): the pinned entry's or
   favourite's own id when the tab backs one, so a dormant tile keeps its
-  picture across dormancy and relaunch; else the tab id. Nil, so nothing is
-  written, for a Private tab and for a tab no sidebar row lists (a Peek).
+  picture across dormancy and relaunch; else the tab id. For a Peek
+  (TASK-230), `TabStore.peekThumbnailKey(hostKey:peekURL:)`: the first 16
+  bytes of a SHA-256 of its host row's key and `peekURL`, the URL the
+  session saves for the Peek (set when it opens, following its navigations
+  while it is presented, the only time it is pictured). Not the Peek tab's
+  own `url`, which can differ (an error page keeps the failed URL): a
+  picture written under that would be read, and swept, under another key
+  after a relaunch (found by the TASK-230 review). It is the same on every launch, and because the URL is in it
+  a different Peek on the same host, or the same Peek after navigating, can
+  never be shown the old picture; no delete is needed when a Peek closes or
+  changes. Nil, so nothing is written, for a Private tab or a Private host's
+  Peek, and for a tab no row lists or hosts.
   Pinning reuses the tab's id as the entry's id, so pinning keeps the
   picture; unpinning or favouriting changes the key, and the next capture
   writes the new one.
 - **Deleted by sweep.** After a successful `saveNow()` whose live key set
   differs from the last sweep's (so not on navigations or title changes),
   the store sweeps the folder, keeping `liveThumbnailKeys` (every normal tab, every pinned
-  entry live or dormant, every profile's favourites). A file whose key is
+  entry live or dormant, every profile's favourites, and the current Peek
+  of each of their tabs, live, parked or restored). A Peek that closed or
+  navigated leaves the set, so its old picture goes with the next sweep. A file whose key is
   not live and was last modified before the sweep started is removed;
   anything that is not `<uuid>.jpg` is left alone. That one rule covers
   closing a tab, archiving, removing a pin or a favourite, and deleting a
@@ -259,9 +278,10 @@ survives a relaunch.
 - `TabHoverCardTests`, Peek (TASK-229): the badge target for normal,
   pinned and favourite hosts with a live or restored Peek, none for a
   dormant entry or tile, a host with no Peek or a Peek target; identity by
-  host; content for a live Peek (its own preview, never the host's or a
-  disk key), one without a preview, a parked Peek tab with no URL, a
-  restored Peek (URL only) and a host on screen; the two badge hit rects;
+  host; content for a live Peek (its own preview and disk key, never the
+  host's), one without a preview (its own disk key), a Private host's Peek
+  (no key), a parked Peek tab with no URL, a restored Peek (URL only, its
+  disk key) and a host on screen (neither); the two badge hit rects;
   `isSameRow` for a row and its badge.
 - `TabHoverCardControllerTests` (real borderless window, fake host): delay
   then show beside the sidebar, leave before the delay, swap on
@@ -270,8 +290,12 @@ survives a relaunch.
   dismissal while pending, no card with the sidebar hidden, monitor removed
   when idle.
 - `TabThumbnailTests`: the cache round trip and the sweep rule, keys for
-  each row kind, Private and Peeks, and a closed tab's key leaving the live
-  set.
+  each row kind and Private, and a closed tab's key leaving the live set;
+  Peeks (TASK-230): the derived key (stable, distinct from the host's, per
+  URL and per host), a normal, pinned and favourite host's Peek, a parked
+  Peek with no URL keyed by the host's saved one, a restored Peek's key
+  live, a closed or navigated Peek's key leaving the set, a Private host's
+  Peek having none.
 - Runtime: [docs/harness/task190-harness.patch](../../docs/harness/task190-harness.patch)
   seeds normal, pinned (live and dormant), favourite and split rows, drives
   hover through the cells' own `mouseEntered`/`mouseMoved`/`mouseExited`
@@ -306,7 +330,9 @@ survives a relaunch.
   card, badge to badge included, swapping at once in light and dark; the
   left badge sat 4 pt after the left close button and 14 pt before the
   divider, nothing overlapping, the left title keeping 32 pt of a 188 pt
-  row.[^harness-229] No pixels were checked: a locked
+  row. After TASK-230 the relaunch phase showed the restored normal and
+  pinned Peeks' pictures from disk (light and dark), their files written
+  under the derived keys before quitting and still live after.[^harness-229] No pixels were checked: a locked
   screen gives no window captures, and `cacheDisplay` or `layer.render` of
   the glass card come out blank; the card view is the one TASK-190 checked
   in both appearances.
@@ -322,3 +348,4 @@ survives a relaunch.
 [^harness]: TASK-190 runtime harness
 [^task-229]: TASK-229
 [^harness-229]: TASK-229 runtime harness
+[^task-230]: TASK-230

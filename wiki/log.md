@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-10-29
+* **Update**: TASK-230 — [Tab hover card](features/tab-hover-card.md): a Peek's picture is kept on disk, so a restored Peek's card has one: `TabStore.peekThumbnailKey(hostKey:peekURL:)` (SHA-256 of the host row's key and the URL the session saves for the Peek, not the Peek tab's own URL, which an error page leaves different), so another Peek on the same host never shows the old picture and nothing needs deleting when a Peek closes or navigates; `liveThumbnailKeys` keeps each host's current Peek; none for Private; a Peek card counts as on screen only while that Peek is presented, so the unfocused split pane's Peek card keeps its picture.
 * **Update**: TASK-229 follow-up — split rows get a Peek badge for each pane (the user asked for one): the right pane's in the row's trailing slot, the left pane's (`leftPanePeekFaviconImageView`) between its close button and the divider, each with its own hover rect and Peek card. [Tab hover card](features/tab-hover-card.md), [tab cell](sidebar/tab-cell.md).
 
 ## 2026-10-28

@@ -338,20 +338,35 @@ final class TabHoverCardTests: XCTestCase {
         let image = preview()
         peek.switcherPreview = image
         host.peekTab = peek
+        host.peekURL = peek.url
         let content = HoverCardContent.make(for: .peek(host: host), isOnScreen: { _ in false },
                                             thumbnailKey: { $0.id })
         XCTAssertEqual(content.text, HoverCardText(title: "Article", url: .init(host: "news.example", rest: "/story")))
         XCTAssertTrue(content.preview === image)
-        XCTAssertNil(content.thumbnailKey, "a Peek has no picture on disk, and never the host's")
+        XCTAssertEqual(content.thumbnailKey,
+                       TabStore.peekThumbnailKey(hostKey: host.id, peekURL: URL(string: "https://www.news.example/story")!),
+                       "the Peek's own disk key, never the host's")
     }
 
-    func testAPeekWithoutAPreviewIsTextOnly() {
+    /// TASK-230: with no picture in memory, the card reads the Peek's from
+    /// disk, never the host's.
+    func testAPeekWithoutAPreviewLooksOnDiskUnderItsOwnKey() {
         let host = makeTab()
         host.switcherPreview = preview()
         host.peekTab = makeTab("Article", url: "https://news.example/story")
+        host.peekURL = host.peekTab?.url
         let content = HoverCardContent.make(for: .peek(host: host), isOnScreen: { _ in false },
                                             thumbnailKey: { $0.id })
         XCTAssertNil(content.preview)
+        XCTAssertEqual(content.thumbnailKey,
+                       TabStore.peekThumbnailKey(hostKey: host.id, peekURL: URL(string: "https://news.example/story")!))
+    }
+
+    func testAPrivateHostsPeekHasNoDiskKey() {
+        let host = makeTab()
+        host.peekTab = makeTab("Article", url: "https://news.example/story")
+        let content = HoverCardContent.make(for: .peek(host: host), isOnScreen: { _ in false },
+                                            thumbnailKey: { _ in nil })
         XCTAssertNil(content.thumbnailKey)
     }
 
@@ -374,7 +389,8 @@ final class TabHoverCardTests: XCTestCase {
                                             thumbnailKey: { $0.id })
         XCTAssertEqual(content.text, HoverCardText(title: "news.example/story", url: nil))
         XCTAssertNil(content.preview)
-        XCTAssertNil(content.thumbnailKey)
+        XCTAssertEqual(content.thumbnailKey, TabStore.peekThumbnailKey(hostKey: host.id, peekURL: host.peekURL!),
+                       "the picture saved before the relaunch")
     }
 
     func testAPeekOverTheTabOnScreenShowsNoThumbnail() {
@@ -383,10 +399,39 @@ final class TabHoverCardTests: XCTestCase {
         let peek = makeTab("Article", url: "https://news.example/story")
         peek.switcherPreview = preview()
         host.peekTab = peek
-        let content = HoverCardContent.make(for: .peek(host: host), isOnScreen: { $0 === host },
+        let content = HoverCardContent.make(for: .peek(host: host), isOnScreen: { $0 === peek },
                                             thumbnailKey: { $0.id })
         XCTAssertNil(content.preview)
+        XCTAssertNil(content.thumbnailKey)
         XCTAssertEqual(content.text.title, "Article")
+    }
+
+    /// The unfocused pane of the selected split is on screen, but its Peek is
+    /// not: only the focused pane's Peek is presented.
+    func testAPeekOfAPaneOnScreenButNotPresentedKeepsItsPicture() {
+        let host = makeTab()
+        let peek = makeTab("Article", url: "https://news.example/story")
+        let image = preview()
+        peek.switcherPreview = image
+        host.peekTab = peek
+        host.peekURL = peek.url
+        let content = HoverCardContent.make(for: .peek(host: host), isOnScreen: { $0 === host },
+                                            thumbnailKey: { $0.id })
+        XCTAssertTrue(content.preview === image)
+        XCTAssertNotNil(content.thumbnailKey)
+    }
+
+    /// The text names the page the Peek tab is on; the disk key follows the
+    /// URL the session saves, which is what a relaunch reads it back under.
+    func testAPeeksDiskKeyFollowsTheSavedURLAndItsTextTheTabs() {
+        let host = makeTab()
+        host.peekTab = makeTab("Article", url: "https://news.example/failed")
+        host.peekURL = URL(string: "https://news.example/saved")
+        let content = HoverCardContent.make(for: .peek(host: host), isOnScreen: { _ in false },
+                                            thumbnailKey: { $0.id })
+        XCTAssertEqual(content.text.url, .init(host: "news.example", rest: "/failed"))
+        XCTAssertEqual(content.thumbnailKey,
+                       TabStore.peekThumbnailKey(hostKey: host.id, peekURL: URL(string: "https://news.example/saved")!))
     }
 
     // MARK: - Peek badge hit areas

@@ -142,9 +142,119 @@ final class TabThumbnailTests: XCTestCase {
         XCTAssertNil(store.thumbnailKey(for: tab), "never written for Private")
     }
 
-    func testATabNoRowListsHasNoKey() throws {
+    func testATabNoRowListsOrHostsHasNoKey() throws {
         let (store, space) = try makeStore()
-        XCTAssertNil(store.thumbnailKey(for: makeTab(in: space)), "a Peek, for one, is not a sidebar row")
+        XCTAssertNil(store.thumbnailKey(for: makeTab(in: space)))
+    }
+
+    // MARK: - Peeks (TASK-230)
+
+    private let articleURL = URL(string: "https://news.example/story")!
+    private let otherURL = URL(string: "https://news.example/other")!
+
+    private func peek(_ url: URL?) -> BrowserTab {
+        BrowserTab(id: UUID(), title: "Article", url: url, faviconURL: nil, cachedInteractionState: nil, spaceID: UUID())
+    }
+
+    func testAPeekKeyIsDerivedFromItsHostsKeyAndItsURL() {
+        let host = UUID(), other = UUID()
+        let key = TabStore.peekThumbnailKey(hostKey: host, peekURL: articleURL)
+        XCTAssertEqual(key, TabStore.peekThumbnailKey(hostKey: host, peekURL: articleURL), "the same on every launch")
+        XCTAssertNotEqual(key, host)
+        XCTAssertNotEqual(key, TabStore.peekThumbnailKey(hostKey: host, peekURL: otherURL),
+                          "another Peek on the same host never gets this picture")
+        XCTAssertNotEqual(key, TabStore.peekThumbnailKey(hostKey: other, peekURL: articleURL))
+    }
+
+    /// Keyed by the URL the session saves for the Peek (`peekURL`), not the
+    /// Peek tab's own `url`, which can differ (an error page keeps the
+    /// failed URL): otherwise a picture written while the app runs would be
+    /// looked up, and swept, under another key after a relaunch.
+    func testANormalTabsPeekIsKeyedByTheTabAndTheURLTheSessionSaves() throws {
+        let (store, space) = try makeStore()
+        let host = makeTab(in: space)
+        space.tabs.append(host)
+        let live = peek(articleURL)
+        host.peekTab = live
+        host.peekURL = otherURL
+
+        let key = TabStore.peekThumbnailKey(hostKey: host.id, peekURL: otherURL)
+        XCTAssertEqual(store.thumbnailKey(for: live), key)
+        XCTAssertTrue(store.liveThumbnailKeys.contains(key))
+    }
+
+    func testAPinnedOrFavouriteHostsPeekIsKeyedByTheTile() throws {
+        let (store, space) = try makeStore()
+        let profileID = try XCTUnwrap(space.profile?.id)
+        let pinned = makeTab(in: space)
+        space.tabs.append(pinned)
+        store.pinTab(id: pinned.id, in: space)
+        let entry = try XCTUnwrap(space.pinnedEntries.first)
+        let pinnedPeek = peek(articleURL)
+        pinned.peekTab = pinnedPeek
+        pinned.peekURL = articleURL
+
+        let favoured = makeTab(in: space)
+        store.addFavorite(from: favoured, profileID: profileID)
+        let favorite = try XCTUnwrap(space.profile?.favorites.first)
+        let favouritePeek = peek(otherURL)
+        favoured.peekTab = favouritePeek
+        favoured.peekURL = otherURL
+
+        XCTAssertEqual(store.thumbnailKey(for: pinnedPeek), TabStore.peekThumbnailKey(hostKey: entry.id, peekURL: articleURL))
+        XCTAssertEqual(store.thumbnailKey(for: favouritePeek), TabStore.peekThumbnailKey(hostKey: favorite.id, peekURL: otherURL))
+        XCTAssertTrue(store.liveThumbnailKeys.isSuperset(of: [
+            TabStore.peekThumbnailKey(hostKey: entry.id, peekURL: articleURL),
+            TabStore.peekThumbnailKey(hostKey: favorite.id, peekURL: otherURL),
+        ]))
+    }
+
+    func testAParkedPeekWithoutAURLIsKeyedByTheURLItsHostSaved() throws {
+        let (store, space) = try makeStore()
+        let host = makeTab(in: space)
+        space.tabs.append(host)
+        let parked = peek(nil)
+        host.peekTab = parked
+        host.peekURL = articleURL
+
+        XCTAssertEqual(store.thumbnailKey(for: parked), TabStore.peekThumbnailKey(hostKey: host.id, peekURL: articleURL))
+    }
+
+    func testARestoredPeeksKeyStaysLive() throws {
+        // After a relaunch the host has only its saved peek columns.
+        let (store, space) = try makeStore()
+        let host = makeTab(in: space)
+        space.tabs.append(host)
+        host.peekURL = articleURL
+
+        XCTAssertTrue(store.liveThumbnailKeys.contains(TabStore.peekThumbnailKey(hostKey: host.id, peekURL: articleURL)))
+    }
+
+    func testAClosedOrNavigatedPeeksPictureIsNoLongerLive() throws {
+        let (store, space) = try makeStore()
+        let host = makeTab(in: space)
+        space.tabs.append(host)
+        host.peekURL = articleURL
+        let first = TabStore.peekThumbnailKey(hostKey: host.id, peekURL: articleURL)
+
+        host.peekURL = otherURL
+        XCTAssertFalse(store.liveThumbnailKeys.contains(first), "the Peek navigated away")
+
+        host.clearPeekState()
+        XCTAssertFalse(store.liveThumbnailKeys.contains(TabStore.peekThumbnailKey(hostKey: host.id, peekURL: otherURL)),
+                       "the Peek was closed")
+    }
+
+    func testAPrivateHostsPeekHasNoKey() throws {
+        let (store, _) = try makeStore()
+        let privateSpace = store.addIncognitoSpace()
+        let host = makeTab(in: privateSpace)
+        privateSpace.tabs.append(host)
+        let live = peek(articleURL)
+        host.peekTab = live
+        host.peekURL = articleURL
+
+        XCTAssertNil(store.thumbnailKey(for: live), "never written for Private")
     }
 
     func testAClosedTabsKeyIsNoLongerLive() throws {

@@ -47,6 +47,15 @@ overlapped. The left title had 32 pt at rest (52 pt without the badge).
 Clearing the left pane's Peek hid its badge, and its area then showed the
 pane's own card.
 
+TASK-230 re-run (2026-10-29, phases 1 and 2, screen locked; logThumbnails
+lists, per host, whether the host's and its Peek's files exist): before
+quitting the normal and pinned hosts' Peeks had files under their derived
+keys; after the relaunch both keys were still live and hovering the
+restored badges showed the picture from disk (normal in light, pinned in
+dark) in a 208 pt card. The favourite's Peek had no file under the
+favourite's key because the harness favourited the tab after it was
+pictured (the next capture writes the new key, as for any re-keyed row).
+
 diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
 index 334c0df..0dfdc05 100644
 --- a/Detour/App/AppDelegate.swift
@@ -63,10 +72,10 @@ index 334c0df..0dfdc05 100644
      func applicationWillTerminate(_ notification: Notification) {
 diff --git a/Detour/App/Task229Harness.swift b/Detour/App/Task229Harness.swift
 new file mode 100644
-index 0000000..1530aff
+index 0000000..f6f983d
 --- /dev/null
 +++ b/Detour/App/Task229Harness.swift
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,291 @@
 +// TEMP TASK-229 verify harness — DO NOT COMMIT
 +#if DEBUG
 +import AppKit
@@ -197,6 +206,17 @@ index 0000000..1530aff
 +            }
 +        }
 +
++        func logThumbnails(_ label: String) {
++            let dir = detourDataDirectory().appendingPathComponent("TabThumbnails")
++            let files = Set(((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).map { String($0.prefix(36)) })
++            for (name, tab) in hosts() {
++                let hostKey = store.thumbnailKey(for: tab)
++                let peekKey = hostKey.flatMap { k in tab.peekPageURL.map { TabStore.peekThumbnailKey(hostKey: k, peekURL: $0) } }
++                log("FILES[\(label)] \(name): host=\(hostKey.map { files.contains($0.uuidString) } ?? false) peek=\(peekKey.map { files.contains($0.uuidString) } ?? false) peekURL=\(tab.peekPageURL?.absoluteString ?? "nil")")
++            }
++            log("FILES[\(label)] \(files.count) files")
++        }
++
 +        func scenario(_ theme: String) {
 +            // Normal row: the row's card, then the badge swaps to the Peek's at once, then back.
 +            at(1.0) { enter(cell("Host Page"), rowBody, "host row (\(theme))") }
@@ -325,10 +345,10 @@ index 0000000..1530aff
 +            at(0.8) { describeCard("selected host badge"); shoot("selected-peek-light") }
 +            at(1.0) { leave(cell("Host Page"), "selected") }
 +            at(0.5) { tabs["other"].map { wc.selectTab(id: $0.id) }; store.scheduleSave(); log("left host for the save") }
-+            at(4.0) { logPeeks("before quit"); store.saveNow(); log("done") }
++            at(4.0) { logPeeks("before quit"); store.saveNow(); logThumbnails("before quit"); log("done") }
 +        } else {
 +            // Relaunch: the hosts are restored asleep with only their peek columns.
-+            at(4.0) { window.makeKeyAndOrderFront(nil); logPeeks("restored") }
++            at(4.0) { window.makeKeyAndOrderFront(nil); logPeeks("restored"); logThumbnails("restored") }
 +            at(1.0) { NSApp.appearance = NSAppearance(named: .aqua); log("LIGHT") }
 +            at(1.0) { enter(cell("Host Page"), rowBadge, "restored badge") }
 +            at(0.8) { describeCard("restored badge light"); shoot("restored-peek-light") }

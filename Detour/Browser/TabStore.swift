@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CryptoKit
 import Combine
 import WebKit
 import os
@@ -5520,8 +5521,9 @@ enum SameDocumentVisitPolicy {
 extension TabStore {
     /// What `tab`'s hover-card thumbnail is stored under (`TabThumbnailCache`):
     /// the pinned entry's or favourite's own id when the tab backs one, so a
-    /// dormant tile keeps its picture, else the tab's id. Nil for a Private
-    /// tab (never written) and for a tab no sidebar row lists, such as a Peek.
+    /// dormant tile keeps its picture, else the tab's id; for a Peek, the key
+    /// derived from its host row's (`peekThumbnailKey`). Nil for a Private
+    /// tab or Peek (never written) and for a tab no sidebar row lists or hosts.
     func thumbnailKey(for tab: BrowserTab) -> UUID? {
         if let (profile, favorite) = favorite(backedBy: tab) {
             return profile.isIncognito ? nil : favorite.id
@@ -5534,19 +5536,52 @@ extension TabStore {
                 return space.isIncognito ? nil : tab.id
             }
         }
+        // A Peek: its host row's key and the page it shows (TASK-230).
+        if let host = self.tab(hostingPeek: tab), let hostKey = thumbnailKey(for: host) {
+            return Self.peekThumbnailKey(of: host, hostKey: hostKey)
+        }
         return nil
     }
 
+    /// The thumbnail key of a Peek (TASK-230): derived from its host row's
+    /// key and the page the Peek shows, so it is the same on every launch, and
+    /// a different Peek on the same host — or the same Peek after it navigated
+    /// — never shows this picture. The first 16 bytes of a SHA-256 of both.
+    static func peekThumbnailKey(hostKey: UUID, peekURL: URL) -> UUID {
+        var hash = SHA256()
+        withUnsafeBytes(of: hostKey.uuid) { hash.update(bufferPointer: $0) }
+        hash.update(data: Data(peekURL.absoluteString.utf8))
+        return hash.finalize().withUnsafeBytes { UUID(uuid: $0.loadUnaligned(as: uuid_t.self)) }
+    }
+
+    /// The thumbnail key of `host`'s current Peek (live, parked or restored),
+    /// given the host row's key; nil when it has none. Keyed by `peekURL`, the
+    /// URL the session saves for the Peek, so the key a picture is written
+    /// under while the app runs is the one it is read and swept under after a
+    /// relaunch. It is set when the Peek opens and follows its navigations
+    /// while it is presented, which is the only time it is pictured; the Peek
+    /// tab's own `url` can differ (an error page keeps the failed URL).
+    static func peekThumbnailKey(of host: BrowserTab, hostKey: UUID) -> UUID? {
+        host.peekURL.map { peekThumbnailKey(hostKey: hostKey, peekURL: $0) }
+    }
+
     /// Every key a thumbnail may still be shown for: the normal tabs, pinned
-    /// entries (live or dormant) and favourites of every profile.
+    /// entries (live or dormant) and favourites of every profile, and each
+    /// of their hosts' current Peek, live, parked or restored (TASK-230).
     var liveThumbnailKeys: Set<UUID> {
         var keys = Set<UUID>()
+        func insertPeek(of host: BrowserTab?, hostKey: UUID) {
+            if let key = host.flatMap({ Self.peekThumbnailKey(of: $0, hostKey: hostKey) }) { keys.insert(key) }
+        }
         for space in spaces {
             keys.formUnion(space.tabs.map(\.id))
             keys.formUnion(space.pinnedEntries.map(\.id))
+            for tab in space.tabs { insertPeek(of: tab, hostKey: tab.id) }
+            for entry in space.pinnedEntries { insertPeek(of: entry.tab, hostKey: entry.id) }
         }
         for profile in profiles {
             keys.formUnion(profile.favorites.map(\.id))
+            for favorite in profile.favorites { insertPeek(of: favorite.tab, hostKey: favorite.id) }
         }
         return keys
     }
