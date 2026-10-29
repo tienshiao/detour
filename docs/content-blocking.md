@@ -170,7 +170,13 @@ With a cap of 4, `b0 b1 x0 b2 b3 b4 b5 b6` (`x0` an exception) becomes
 Until TASK-155 chunks were slices of the list in order and an exception in a
 later chunk than its block rule did not apply. Since TASK-199 the parser puts
 every network exception after every block rule of its list, so a list within
-the cap applies an exception wherever it stood in the file too.
+the cap applies an exception wherever it stood in the file too. TASK-162
+confirmed in a web view that WebKit compiled in file order leaves the exempted
+URL blocked, and found the case in the shipped EasyList (27 Oct 2026 copy):
+ten `@@||thegay.com/...$domain=thegay.com` player exceptions above
+`||thegay.com^$script,domain=thegay.com`, so the site's video player was
+blocked until TASK-199. EasyPrivacy and EasyList Cookie had no exception a
+later block rule overrode.
 
 ### Exception Options
 

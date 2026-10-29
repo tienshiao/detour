@@ -99,6 +99,16 @@ final class ContentBlockerExceptionTests: XCTestCase {
         }
     }
 
+    /// A cosmetic exception above the hiding rules it turns off gives the
+    /// same output as one below them (TASK-162).
+    func testAHidingExceptionGivesTheSameRulesInEitherFileOrder() {
+        let lines = cosmeticList.components(separatedBy: "\n")
+        let exceptionsFirst = (lines.filter { $0.hasPrefix("@@") } + lines.filter { !$0.hasPrefix("@@") })
+            .joined(separator: "\n")
+
+        XCTAssertTrue(NSArray(array: rules(exceptionsFirst)).isEqual(to: rules(cosmeticList)))
+    }
+
     /// Patterns that are not a plain domain are applied to the page URL.
     func testANonDomainPatternIsMatchedAgainstThePageURL() {
         let evaluator = RuleListEvaluator(rules("""
@@ -384,13 +394,17 @@ final class ContentBlockerExceptionTests: XCTestCase {
     }
 
     private func compiledStore(_ text: String) async throws -> (store: ContentRuleStore, lists: [WKContentRuleList]) {
+        try await compiledStore(rules: rules(text))
+    }
+
+    private func compiledStore(rules: [[String: Any]]) async throws -> (store: ContentRuleStore, lists: [WKContentRuleList]) {
         let storage = ContentBlockerStorage(
             ruleListStore: WKContentRuleListStore(url: directory),
             filterListCacheDirectory: directory,
             defaults: try XCTUnwrap(UserDefaults(suiteName: defaultsSuiteName)))
         let store = ContentRuleStore(storage: storage)
         let lists = await withCheckedContinuation { continuation in
-            store.compile(identifier: "easylist", rules: rules(text)) { continuation.resume(returning: $0.lists) }
+            store.compile(identifier: "easylist", rules: rules) { continuation.resume(returning: $0.lists) }
         }
         XCTAssertEqual(lists.count, 1)
         return (store, lists)
@@ -481,6 +495,75 @@ final class ContentBlockerExceptionTests: XCTestCase {
         XCTAssertTrue(result.blocked.isEmpty, "blocked: \(result.blocked)")
         XCTAssertNotEqual(result.genericDisplay, "none")
         XCTAssertNotEqual(result.specificDisplay, "none")
+    }
+
+    // MARK: - An exception above its block rule in the file (TASK-162)
+
+    /// WebKit applies an `ignore-previous-rules` only to the rules before it
+    /// in its list: compiled in file order, an exception followed by the
+    /// block rule it exempts leaves the URL blocked. This is what a list kept
+    /// in file order (before TASK-199) did.
+    func testWebKitDoesNotApplyAnExceptionToALaterBlockRuleOfItsList() async throws {
+        let exception: [String: Any] = [
+            "trigger": ["url-filter": "^[^:]+://+([^:/]+\\.)?exempt\\.example/jquery\\.popunder\\.js"],
+            "action": ["type": "ignore-previous-rules"]]
+        let block: [String: Any] = ["trigger": ["url-filter": "jquery\\.popunder\\.js"], "action": ["type": "block"]]
+        let page = URL(string: "http://exempt.example/")!
+        let script = page.appendingPathComponent("jquery.popunder.js")
+
+        let fileOrder = try await compiledStore(rules: [exception, block]).lists
+        let fileOrderResult = try await load(page, lists: fileOrder, expectHidden: false)
+        XCTAssertTrue(fileOrderResult.blocked.contains(script), "blocked: \(fileOrderResult.blocked)")
+
+        let exceptionLast = try await compiledStore(rules: [block, exception]).lists
+        let exceptionLastResult = try await load(page, lists: exceptionLast, expectHidden: false)
+        XCTAssertFalse(exceptionLastResult.blocked.contains(script), "blocked: \(exceptionLastResult.blocked)")
+    }
+
+    /// EasyPrivacy and EasyList put exceptions ahead of later block rules;
+    /// the parser's output still exempts the URL.
+    func testAnExceptionAboveItsBlockRuleInTheFileExemptsTheURLInAWebView() async throws {
+        let lists = try await compiledLists("""
+        @@||exempt.example/jquery.popunder.js
+        /jquery.popunder.js
+        """)
+
+        let exempt = URL(string: "http://exempt.example/")!
+        let exemptResult = try await load(exempt, lists: lists, expectHidden: false)
+        XCTAssertFalse(exemptResult.blocked.contains(exempt.appendingPathComponent("jquery.popunder.js")),
+                       "blocked: \(exemptResult.blocked)")
+
+        let other = URL(string: "http://other.example/")!
+        let otherResult = try await load(other, lists: lists, expectHidden: false)
+        XCTAssertTrue(otherResult.blocked.contains(other.appendingPathComponent("jquery.popunder.js")),
+                      "blocked: \(otherResult.blocked)")
+    }
+
+    /// The cosmetic exceptions above the hiding rules they turn off, and
+    /// above the block rule they must not reach.
+    func testHidingExceptionsAboveTheirHidingRulesInTheFileApplyInAWebView() async throws {
+        let lists = try await compiledLists("""
+        @@://127.0.0.1$generichide
+        @@||site.example^$elemhide
+        ##.generic-ad
+        127.0.0.1##.specific-ad
+        site.example##.specific-ad
+        /jquery.popunder.js
+        """)
+
+        let local = URL(string: "http://127.0.0.1:61999/")!
+        let localResult = try await load(local, lists: lists, expectHidden: false)
+        XCTAssertNotEqual(localResult.genericDisplay, "none", "$generichide: generic hiding is off")
+        XCTAssertEqual(localResult.specificDisplay, "none", "the domain's own hiding rule still applies")
+        XCTAssertTrue(localResult.blocked.contains(local.appendingPathComponent("jquery.popunder.js")),
+                      "blocked: \(localResult.blocked)")
+
+        let site = URL(string: "http://site.example/")!
+        let siteResult = try await load(site, lists: lists, expectHidden: false)
+        XCTAssertNotEqual(siteResult.genericDisplay, "none")
+        XCTAssertNotEqual(siteResult.specificDisplay, "none")
+        XCTAssertTrue(siteResult.blocked.contains(site.appendingPathComponent("jquery.popunder.js")),
+                      "blocked: \(siteResult.blocked)")
     }
 
     // MARK: - Mixed included and excluded domains (TASK-201)

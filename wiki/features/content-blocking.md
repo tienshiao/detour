@@ -78,6 +78,9 @@ sources:
   - id: domain-list-tests
     resource: ../../DetourTests/ContentBlockerDomainListTests.swift
     title: ContentBlockerDomainListTests.swift
+  - id: task-162
+    resource: backlog:TASK-162
+    title: In a filter list, an exception rule does not undo the block rules that come after it
   - id: task-202
     resource: backlog:TASK-202
     title: Clear Cache & Redownload can be undone by a compile that was already running
@@ -491,6 +494,22 @@ sheet came back with the first third-party load). Seen at runtime: a page on
 127.0.0.1 or localhost ran `/jquery.popunder.js`, the same page on `lvh.me`
 did not.[^task-199]
 
+Network exceptions had the opposite problem in file order: one written above
+a block rule it exempts did not apply. WebKit applies an
+`ignore-previous-rules` only to the rules before it in its list, which
+TASK-162 confirmed in a web view (a raw exception-then-block rule list blocks
+the exempted script; block-then-exception does not). A scan of every network
+exception in the 27 Oct 2026 copies (a standalone tool built from
+`EasyListParser.swift` and the tests' `RuleListEvaluator`, comparing the file
+order with the parser's output for the URL each exception names) found one
+case: EasyList's ten `@@||thegay.com/...$domain=thegay.com` exceptions for the
+site's jwplayer and its own scripts (lines 63463–63472) sit above
+`||thegay.com^$script,domain=thegay.com` (line 63474), so the video player was
+blocked until TASK-199. EasyPrivacy (849 checked) and EasyList Cookie (420)
+had none. The scan approximates each exception's URL from its pattern
+(`*` and `^` filled in), so it can miss cases; it found no false
+ones.[^task-162]
+
 ### Options rejected
 
 - **`unless-domain` on every generic hiding rule** (the domains of the
@@ -833,6 +852,7 @@ EasyPrivacy cannot un-block something EasyList blocks.
 [^task-199]: $generichide / $elemhide exceptions compile to ignore-previous-rules and unblock all loads on those hosts
 [^task-200]: Serialise block-list rules to JSON and search for bad rules off the main thread
 [^task-201]: Cosmetic rules with both included and excluded domains compile to a trigger WebKit rejects
+[^task-162]: In a filter list, an exception rule does not undo the block rules that come after it
 [^task-202]: Clear Cache & Redownload can be undone by a compile that was already running
 [^webkit-parser]: WebKit ContentExtensionParser.cpp (one condition per trigger, if-domain to page URL regex, lower-case ASCII domains)
 [^webkit-rule-list-store]: WebKit APIContentRuleListStore.cpp (main-thread asserts, JSON parsed on main, work queue per store path)
