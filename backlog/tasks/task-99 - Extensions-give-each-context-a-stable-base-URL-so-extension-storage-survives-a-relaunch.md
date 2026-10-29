@@ -3,9 +3,11 @@ id: TASK-99
 title: >-
   Extensions: give each context a stable base URL so extension storage survives
   a relaunch
-status: To Do
-assignee: []
-created_date: '2026-09-20 18:51'
+status: Done
+assignee:
+  - '@claude'
+created_date: 2026-09-20 18:51
+updated_date: '2026-10-29T01:03:00Z'
 labels:
   - extensions
   - webkit
@@ -31,9 +33,26 @@ Design pass needed BEFORE implementing (invariant-heavy, Fable-level): code that
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every persistent profile's extension context loads with the same base URL across launches and across reload/recovery within a launch; a test asserts stability and per-(profile, extension) uniqueness
-- [ ] #2 A probe extension's IndexedDB and localStorage values written in one context load are readable after unload + load (test), and 1Password's item cache is warm on restart in the signed build
-- [ ] #3 Reload, background-load recovery, enable/disable and uninstall still work with a stable origin: open extension pages keep working or are retargeted as designed, the offscreen document, favicon permission, site-access grants and sender verification behave as before (existing suites plus new cases)
-- [ ] #4 The Private profile's extension storage does not persist across private sessions (decision recorded; coordinated with TASK-73)
-- [ ] #5 Extension-origin data orphaned by earlier launches is removed from the profile stores and the default store, and uninstall with removeData clears the stable origin's data
+- [x] #1 Whether origin-keyed extension storage (IndexedDB, localStorage) survives an unload + load and a relaunch is established with a test and the production stores
+- [x] #2 The cause of the 2026-09-20 orphaned origins is explained and whether they still accumulate is checked
+- [x] #3 The wiki pages that describe origin-keyed storage are corrected
+- [x] #4 The stable base URL is decided with the user
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-28 investigation: the premise does not hold since TASK-90 (extension pages on the profile's own store).
+- WebKit WebExtensionContext::load (WebExtensionContextCocoa.mm, main): reads LastSeenBaseURL from the context's State.plist, writes the new base URL, then moveLocalStorageIfNeeded(lastSeenBaseURL) calls -[WKWebsiteDataStore _renameOrigin:to:forDataOfTypes:] for IndexedDB + LocalStorage on webViewConfiguration().websiteDataStore before the background starts. Cache Storage and the service worker registration are not moved.
+- New test ExtensionOriginTrackingPreventionTests.testIndexedDBAndLocalStorageSurviveAnUnloadAndLoad: probe writes an IndexedDB marker and a localStorage value, unload, load (origin 93a13be9… → c6aa1939…), both read back. Passes on macOS 26.7 (25G229).
+- Production (2026-10-28): app launched 10-26 19:28; stores b0e91083 and ca8c2b61 each hold exactly one webkit-extension origin (81c12ef6 / 91e12e3e), created 10-26 19:28, 26 MB / 24 MB of IndexedDB (+ LocalStorage), and both 1Password State.plists name that origin as LastSeenBaseURL. 1Password uses no Cache Storage.
+- The 09-20 orphans: pages were on the default store until ccde7e1 (Sep 20), so the rename ran on another store than the profile store's origin. They are gone: WebKit's removeStaleExtensionWebsiteData removes webkit-extension origins no loaded context owns, once per controller (StaleExtensionOriginsCleared sentinel present in the controller directory).
+- 1Password's 'item cache has not been initialized yet' at start is therefore not storage loss.
+User decision 2026-10-28: close; no stable base URL. Wiki corrected (extensions/storage, data-store-and-itp, extension-pages).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed without a code change. Extension IndexedDB and localStorage already survive reloads and relaunches: WebKit renames the last-seen origin's data to each new base URL at load, and has since TASK-90 done so on the store the pages use. A new test proves it (write, unload, load under a new origin, read back), and the production stores show one carried 1Password origin each. The orphans that prompted the task predate TASK-90 and were swept by WebKit's one-time stale-origin cleanup. Cache Storage and worker registrations are not carried (1Password uses neither). The user chose not to implement a stable base URL. Wiki pages corrected.
+<!-- SECTION:FINAL_SUMMARY:END -->

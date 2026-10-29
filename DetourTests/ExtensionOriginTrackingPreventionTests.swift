@@ -257,6 +257,34 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
         return reply["value"] as? String
     }
 
+    // MARK: - Origin-keyed storage across context loads (TASK-99)
+
+    /// Every context load gets a fresh `webkit-extension://` origin, but
+    /// WebKit's `load()` renames the IndexedDB and localStorage of the origin
+    /// it last saw (`LastSeenBaseURL` in State.plist) to the new one
+    /// (`WebExtensionContext::moveLocalStorageIfNeeded`). A value written in
+    /// one load is read back in the next.
+    func testIndexedDBAndLocalStorageSurviveAnUnloadAndLoad() async throws {
+        let profile = makeProfile("TASK-99 storage \(UUID().uuidString.prefix(6))")
+        let ext = try await makeProbeExtension(idPrefix: "task99-storage")
+
+        let first = try await startProbe(ext, in: profile)
+        let written = try await askWorker(from: first.page, message: ["type": "writeMarker"], timeout: 15)
+        XCTAssertEqual((written["reply"] as? [String: Any])?["ok"] as? Bool, true, "\(written)")
+        _ = try await first.page.evaluateJavaScript("localStorage.setItem('probe', 'kept'); 1")
+        let firstBase = first.context.baseURL
+        first.page.loadHTMLString("", baseURL: nil)
+        _ = profile.unloadExtension(id: ext.id)
+
+        let second = try await startProbe(ext, in: profile)
+
+        XCTAssertNotEqual(second.context.baseURL, firstBase, "WebKit minted a new origin for the new load")
+        let marker = try await marker(from: second.page)
+        XCTAssertEqual(marker, "alive", "IndexedDB written under \(firstBase) is read under \(second.context.baseURL)")
+        let local = try await second.page.evaluateJavaScript("localStorage.getItem('probe')") as? String
+        XCTAssertEqual(local, "kept", "localStorage too")
+    }
+
     // MARK: - The keeper's own contract
 
     /// A non-persistent store has no statistics database and loses its storage
