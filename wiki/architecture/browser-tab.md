@@ -165,7 +165,7 @@ emissions according to four pieces of private state:
 | State | Meaning | Effect |
 |---|---|---|
 | `navigationPending` | `load(_:)` was called and nothing has committed | The title shows the scheme-stripped target URL. |
-| `lastAttemptedURL` | A navigation this tab asked for | Kept as `url` when WebKit reverts to nil after a cancel; the target of the error page and of Reload. |
+| `lastAttemptedURL` | The URL the tab is on or trying to reach: what `load(_:)` asked for, the observed web view URL, or the URL a provisional failure names (never an internal one; TASK-170) | Kept as `url` when WebKit reverts to nil after a cancel; the target of the error page and of Reload. |
 | `awaitingFirstURL` | A fresh web view from `wake()` has not reported a URL yet | The web view's initial nil does not wipe the restored `url`. |
 | `restoringSession` | `wake()` handed the web view cached interaction state and nothing has committed | A provisional failure shows no error page and keeps the persisted title. |
 

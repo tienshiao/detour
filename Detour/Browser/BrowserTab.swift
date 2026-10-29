@@ -488,11 +488,16 @@ class BrowserTab: NSObject {
     var switcherPreviewRequest = 0
 
     private var faviconCancellables = Set<AnyCancellable>()
+    /// The URL the tab is on or trying to reach: what `load(_:)` asked for, the
+    /// web view's URL as the observer records it, or the URL a provisional
+    /// failure names (TASK-170: a page-started navigation's target, a
+    /// redirect's). The target of the error page and of Reload.
     private var lastAttemptedURL: URL?
     /// Set from `wake()` until the fresh web view reports its first real URL.
     /// While it is set the URL observer ignores the web view's nil URL so `url`
     /// survives the wake; it is deliberately *not* `lastAttemptedURL`, which
-    /// means "a navigation this tab asked for" and drives the error page (TASK-45).
+    /// drives the error page: a failure then would have counted as one the user
+    /// asked for (TASK-45).
     private var awaitingFirstURL = false
     /// Set from `wake()` when the fresh web view is handed the tab's cached
     /// session state, until a navigation commits, a user `load()` replaces the
@@ -1290,7 +1295,8 @@ class BrowserTab: NSObject {
     /// of the favourite, pinned entry or closed tab it backs — keeping an
     /// internal page's `?q=` state. Never for a URL that came from anywhere
     /// else (a page, an extension, another app, an error page's query string):
-    /// for an internal URL this arms the tab.
+    /// for an internal URL this arms the tab. (`lastAttemptedURL` can name a
+    /// failed URL a page chose, TASK-170, but never an internal one.)
     func loadRecordedURL(_ url: URL) {
         load(url, arming: InternalPage(url: url))
     }
@@ -1543,12 +1549,22 @@ class BrowserTab: NSObject {
         // (TASK-45). `reload()` goes through `load(_:)`, so retrying it still
         // shows the error page on failure.
         guard !restoringSession else { return }
-        // A window a page opened has no URL of its own to blame: this tab
-        // never called `load`, and WebKit keeps a script-opened window at
-        // about:blank until its first load commits, so the URL observer never
-        // saw where it was going (TASK-167). The error names what failed.
-        if lastAttemptedURL == nil || lastAttemptedURL == Self.blankURL,
-           let failingURL = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL {
+        // The error page names, the tab shows and Reload retries the URL that
+        // failed, which only the error knows for certain (TASK-170):
+        // - a navigation the page started reached the tab only through the URL
+        //   observer, and WebKit sets the web view's URL back to the committed
+        //   page before it reports the failure, so `lastAttemptedURL` is that
+        //   page by now;
+        // - a load that redirected failed at the redirect's target, which the
+        //   error names, as Chrome and Safari do (the user's decision);
+        // - a window a page opened never had a URL of its own (TASK-167).
+        // Never an internal URL: Reload hands `lastAttemptedURL` to
+        // `loadRecordedURL`, which arms it, and a failing internal URL the tab
+        // did not load itself is one a page chose. An armed load that fails
+        // already set `lastAttemptedURL` to it.
+        if let failingURL = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL,
+           failingURL != Self.blankURL, failingURL.scheme != ErrorPage.scheme,
+           !InternalPage.isInternal(failingURL) {
             lastAttemptedURL = failingURL
         }
         guard let lastAttemptedURL else { return }

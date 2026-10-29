@@ -24,6 +24,9 @@ sources:
   - id: task-122
     resource: backlog:TASK-122
     title: A background (unowned) tab whose load fails never shows the error page
+  - id: task-170
+    resource: backlog:TASK-170
+    title: When a page-started navigation fails, the error page names the page the tab was on, and Reload goes back to it
   - id: task-178
     resource: backlog:TASK-178
     title: A load that fails after the page committed replaces the working page with the full error page
@@ -46,9 +49,9 @@ sources:
 When a navigation fails before anything committed, the tab's web view is sent to
 `browser-error://error?failedURL=…&message=…`, a static page that shows
 "Looks like you took a Detour.", the failed URL and the error's localised
-description. The sidebar and the faux address bar keep showing the URL the
-user asked for, and Reload retries it. A failure after commit shows nothing:
-the document that committed stays on screen.
+description. The sidebar and the faux address bar show the URL that failed,
+and Reload retries it. A failure after commit shows nothing: the document
+that committed stays on screen.
 
 # How it works
 
@@ -76,7 +79,25 @@ failure. Both delegates are pure forwarders:
 
 1. ignored error - return;
 2. `restoringSession` is set - return (the restored session is kept);
-3. otherwise `showErrorPage(for: lastAttemptedURL, error:)`.
+3. the error's `NSURLErrorFailingURLErrorKey`, when it has one (not
+   `about:blank`, the error scheme or an internal `detour://` URL), becomes
+   `lastAttemptedURL`. Not an internal URL because Reload passes
+   `lastAttemptedURL` to `loadRecordedURL`, which arms it: a failing internal
+   URL the tab did not load itself is one a page chose;
+4. `showErrorPage(for: lastAttemptedURL, error:)`.
+
+**The URL that failed** (TASK-170).[^task-170] Step 3 is what makes the
+error page, `tab.url` and Reload name the right URL:
+
+| Navigation | Without step 3 | With it |
+|---|---|---|
+| Started by the page (a script's `location` change, a clicked link) | The page the tab was on: such a navigation reaches the tab only through the `webView.url` observer, and WebKit sets the web view's URL back to the committed page *before* it reports the failure, so the observer had already overwritten `lastAttemptedURL` | The target |
+| Started by the tab (`load`) and redirected to a host that fails | What was asked for (the typed URL) | The redirect's target: the user's decision of 2026-10-28, as Chrome and Safari do; the error is about the host that is down, and Reload retries it directly |
+| A window a page opened (no URL of its own, TASK-167) | Nothing to name | The target, as before |
+| Started by the tab, not redirected | The URL asked for | The same URL |
+
+Rejected: using the failing URL only when the tab has no URL of its own
+(TASK-167's first version); it left the first two rows wrong.
 
 Neither delegate implements `webView(_:didFail:withError:)`, the failure of
 a navigation that already committed. See
@@ -220,6 +241,11 @@ loads the original URL again.
   `Content-Length` it never honours and then closes the connection; the tab
   stays on the page with its URL, title and favicon, both unowned and as a
   window's selected tab. Both fail without the fix.[^task-178]
+- `NavigationFailureURLTests` - against a just-freed loopback port: a
+  script's location change and a clicked link in a window's selected tab, a
+  location change in an unowned tab, a typed URL redirecting to the dead
+  host, a typed dead URL, and Reload after the failure; all but the last
+  typed case fail without step 3.[^task-170]
 - `BrowserTabWakeTests` - a failed wake keeps session, title and favicon;
   reload after it retries; a commit ends the protection; a failed *user* load
   still shows the error page.
@@ -240,3 +266,4 @@ loads the original URL again.
 [^task-121]: A tab showing a standalone video shows the error page with "Plug-in handled load"
 [^task-122]: A background (unowned) tab whose load fails never shows the error page
 [^task-178]: TASK-178, from the unified log of the affected process
+[^task-170]: When a page-started navigation fails, the error page names the page the tab was on, and Reload goes back to it
