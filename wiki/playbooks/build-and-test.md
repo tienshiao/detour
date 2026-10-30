@@ -8,7 +8,7 @@ generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:10:57Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
-    title: CLAUDE.md (build commands, TDD policy, commit checklist)
+    title: CLAUDE.md (build commands, testing policy, commit checklist)
   - id: project-yml
     resource: ../../project.yml
     title: project.yml (targets, schemes, test scheme environment)
@@ -39,7 +39,7 @@ sources:
 ---
 
 The commands are in [CLAUDE.md](../../CLAUDE.md), and so is the policy: what
-needs a test first, and what must pass before a commit. This page is the
+needs tests, and what must pass before a commit. This page is the
 part CLAUDE.md does not cover: which build directory to use, how to keep two
 builds or two test runs from corrupting each other, how to pass environment
 variables to the test host, and how to stop a test from eating the machine.

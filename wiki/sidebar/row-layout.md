@@ -216,7 +216,7 @@ model and calls `reloadData()`.
 All three import only Foundation. Tests: `SidebarLayoutTests` (row mapping,
 round trips, every diff case), `SplitTabTests` (items, conversions, gap
 moves), `PinnedTreeFlattenerTests` (collapse, exposure, drop-index helpers).
-Extend these suites first when changing row behaviour; the project's TDD
+Extend these suites when changing row behaviour; the project's testing
 rule for shared rules is in [CLAUDE.md](../../CLAUDE.md).
 
 # Related

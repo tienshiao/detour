@@ -8,7 +8,7 @@ generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:15:18Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
-    title: CLAUDE.md (Test-Driven Development, Reminders)
+    title: CLAUDE.md (Testing, Reminders)
   - id: support
     resource: ../../DetourTests/ExtensionTestSupport.swift
     title: ExtensionTestSupport.swift
@@ -59,7 +59,7 @@ Explorer update). This page explains the test kinds that policy refers to.
 
 1. Pick the lowest level that can fail for the right reason, using the table
    below. Most API work needs levels 2, 3 and 4.
-2. Write the failing test first, with the shared fixtures.
+2. Write the tests, with the shared fixtures.
 3. Add or update the API Explorer section.
 4. Run the affected suites; see [build and test](../playbooks/build-and-test.md).
 5. If the behaviour depends on WebKit's process model or timers, check it in
