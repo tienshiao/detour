@@ -5,8 +5,14 @@ description: How Detour runs Chrome native messaging hosts for extensions — ho
 resource: ../../Detour/Extensions/Runtime/NativeMessagingHost.swift
 tags: [extensions, native-messaging, security, logging]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:48:49Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T04:48:28Z }
 sources:
+  - id: task-231-8
+    resource: backlog:TASK-231.8
+    title: Memory safety audit of raw-pointer code and untrusted-byte parsing
+  - id: framing-tests
+    resource: ../../DetourTests/NativeMessagingFramingTests.swift
+    title: NativeMessagingFramingTests.swift
   - id: host
     resource: ../../Detour/Extensions/Runtime/NativeMessagingHost.swift
     title: NativeMessagingHost.swift
@@ -76,7 +82,13 @@ desktop-app channel is the main user (see
 
 Framing is a 4-byte little-endian length followed by UTF-8 JSON, capped at
 `maxMessageSize` (1 MB) **in both directions**. The read loop runs on a
-private serial queue and delivers to the main queue.
+private serial queue and delivers to the main queue. It reads the prefix
+(`Data.littleEndianUInt32()`, byte by byte, no raw-pointer load), refuses 0
+or anything above the cap ("Invalid message length: N"), then reads that
+many bytes; a short read (the host closed stdout early) disconnects with
+"Incomplete message read", and fewer than four prefix bytes is a plain EOF
+(`onDisconnect(nil)`). Frames read before a bad one are delivered first.
+See [Strict memory safety](../platform/strict-memory-safety.md).[^task-231-8]
 
 ## Two entry points
 
@@ -207,7 +219,14 @@ evidence for. There is no level between notice and error to use:
   table by that token. Because of the `exec`, `pgrep` for the script name
   finds nothing.
 - `NativeConnectLogLimiterTests`: the limiter with an injected clock.
-- Framing helpers (`encodeMessage`, `decodeMessage`) are covered in
+- `NativeMessagingFramingTests`: the wire bytes of the prefix, and the read
+  loop against a real host process — a prefix that claims more than the
+  host sends, frames before a truncated one, a zero or over-1 MB prefix, a
+  short prefix, and a round trip through an echoing host (a 200 KB body
+  spans several pipe reads). `FakeNativeMessagingHost`'s `Behavior` gives
+  the host fixed stdout bytes (then closes stdout and sleeps, so its exit
+  cannot race the read loop) or `exec cat`.[^framing-tests]
+- Framing helpers (`encodeMessage`, `decodeMessage`) are also covered in
   `ExtensionIDDerivationTests`. The log line *text* is not asserted anywhere.
 
 # Related
@@ -221,3 +240,5 @@ evidence for. There is no level between notice and error to use:
 [^plan]: 1Password integration plan (reference data, security note, TASK-25 and TASK-44 decisions)
 [^manager]: ExtensionManager.swift (nativeHostAccess, sendMessage and connectUsing delegate methods)
 [^task-90]: 1Password reconnect loop investigation (connect logging, unlisted-context refusal)
+[^task-231-8]: Memory safety audit of raw-pointer code and untrusted-byte parsing
+[^framing-tests]: NativeMessagingFramingTests.swift

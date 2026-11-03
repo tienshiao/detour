@@ -40,7 +40,10 @@ class NativeMessagingHost {
             "/Library/Google/Chrome/NativeMessagingHosts",
         ]
         #if DEBUG
-        if let raw = getenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR"), case let override = String(cString: raw), !override.isEmpty {
+        // `ProcessInfo` rather than `getenv`: it reads the live environment
+        // too (a `setenv` is seen by the next call), without handing out a
+        // C string pointer.
+        if let override = ProcessInfo.processInfo.environment["DETOUR_NATIVE_MESSAGING_HOSTS_DIR"], !override.isEmpty {
             directories.insert(override, at: 0)
         }
         #endif
@@ -287,14 +290,13 @@ class NativeMessagingHost {
             while let self, self.isConnected {
                 // Read 4-byte length prefix
                 let lengthData = stdout.readData(ofLength: 4)
-                guard lengthData.count == 4 else {
+                guard let length = lengthData.littleEndianUInt32() else {
                     // EOF or error — native host disconnected
                     log.notice("[1PW-DEBUG] ← NM EOF [\(self.hostName, privacy: .public)] (read \(lengthData.count) bytes instead of 4)")
                     self.handleDisconnect(nil)
                     return
                 }
 
-                let length = lengthData.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
                 guard length > 0, length <= Self.maxMessageSize else {
                     self.handleDisconnect("Invalid message length: \(length)")
                     return
@@ -357,20 +359,24 @@ class NativeMessagingHost {
 
     // MARK: - Encoding/Decoding Helpers
 
-    /// Encode a message into Chrome's length-prefixed format (for testing).
+    /// Encode a message into Chrome's length-prefixed format: the body's
+    /// byte count as a little-endian UInt32, then the body. `sendMessage`
+    /// caps the body at `maxMessageSize` before calling this, so the count
+    /// fits.
     static func encodeMessage(_ data: Data) -> Data {
-        var length = UInt32(data.count).littleEndian
-        var packet = Data(bytes: &length, count: 4)
+        var packet = Data(littleEndianBytesOf: UInt32(data.count))
         packet.append(data)
         return packet
     }
 
-    /// Decode a length-prefixed message. Returns (message data, bytes consumed) or nil.
+    /// Decode a length-prefixed message (for testing; the read loop reads
+    /// the prefix and the body straight off the pipe). Returns (message data,
+    /// bytes consumed), or nil when the prefix is short or claims more bytes
+    /// than `data` holds. Offsets count from `startIndex`.
     static func decodeMessage(from data: Data) -> (Data, Int)? {
-        guard data.count >= 4 else { return nil }
-        let length = data.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
+        guard let length = data.littleEndianUInt32() else { return nil }
         let totalLength = 4 + Int(length)
         guard data.count >= totalLength else { return nil }
-        return (data.subdata(in: 4..<totalLength), totalLength)
+        return (data.subdata(in: (data.startIndex + 4)..<(data.startIndex + totalLength)), totalLength)
     }
 }

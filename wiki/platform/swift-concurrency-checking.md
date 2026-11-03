@@ -208,6 +208,7 @@ without a failing build.
 - [WKWebView delegate call order](./wkwebview-delegate-order.md) — which of these delegate methods WebKit calls, and when.
 - [Build and test](../playbooks/build-and-test.md) — the build commands these settings apply to.
 - [AppKit gotchas](./appkit-gotchas.md) — other AppKit behaviour found the hard way.
+- [Strict memory safety](./strict-memory-safety.md) — the memory safety checking audited in the same epic, and why it is not left on.
 
 [^task-231]: TASK-231
 [^task-231-1]: TASK-231.1

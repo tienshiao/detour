@@ -234,14 +234,7 @@ nonisolated final class CRX3VerifierTests: XCTestCase {
     /// A CRX3 container around `header`, with one byte of "archive" so the
     /// container itself is well-formed.
     @MainActor private func container(header: Data) -> Data {
-        var crx = Data("Cr24".utf8)
-        var version = UInt32(3).littleEndian
-        crx.append(Data(bytes: &version, count: 4))
-        var headerLen = UInt32(header.count).littleEndian
-        crx.append(Data(bytes: &headerLen, count: 4))
-        crx.append(header)
-        crx.append(Data([0]))
-        return crx
+        container(declaredHeaderLength: UInt32(header.count), actualHeader: header)
     }
 
     private static let hostileLengths: [UInt64] = [.max, UInt64(Int.max) + 1, UInt64(Int.max), UInt64(Int.max) - 1, 1 << 32, 3]
@@ -304,6 +297,89 @@ nonisolated final class CRX3VerifierTests: XCTestCase {
                 return XCTFail("expected the archive to be refused, got \(error)")
             }
         }
+    }
+
+    // MARK: - Container header length (TASK-231.8)
+
+    /// A CRX3 container whose header length field says `declaredHeaderLength`
+    /// while `actualHeader` bytes and a one-byte "archive" follow.
+    @MainActor private func container(declaredHeaderLength: UInt32, actualHeader: Data) -> Data {
+        Data("Cr24".utf8) + Data(littleEndianBytesOf: 3) + Data(littleEndianBytesOf: declaredHeaderLength)
+            + actualHeader + Data([0])
+    }
+
+    /// The header length comes from the download. One that runs past the end
+    /// of the file, or exactly to it (no archive left), is refused by both
+    /// readers of the container before either slices the file.
+    @MainActor func testAHeaderLengthThatExceedsTheFileIsRefusedByBothReaders() {
+        let header = Data([0x0A, 0x01, 0x00])
+        // The file is 12 + 3 + 1 = 16 bytes: a header of 4 ends exactly at its
+        // end; anything above overruns it.
+        for declared: UInt32 in [4, 5, 64, 1 << 20, UInt32(Int32.max), .max - 12, .max] {
+            let crx = container(declaredHeaderLength: declared, actualHeader: header)
+            XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof),
+                           .failed(.malformed("header length exceeds file")), "declared \(declared)")
+            XCTAssertThrowsError(try CRXUnpacker.unpack(data: crx), "declared \(declared)") { error in
+                guard case CRXUnpacker.CRXError.headerOverflow = error else {
+                    return XCTFail("expected headerOverflow for \(declared), got \(error)")
+                }
+            }
+        }
+    }
+
+    /// Fewer than the 12 fixed bytes: the length fields are not there to
+    /// read, which is "too small", not a read past the end.
+    @MainActor func testAFileShorterThanTheFixedFieldsIsTooSmall() {
+        let full = container(declaredHeaderLength: 0, actualHeader: Data())
+        for length in 0..<12 {
+            let crx = full.prefix(length)
+            XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof),
+                           .failed(.malformed("too small")), "\(length) bytes")
+            XCTAssertThrowsError(try CRXUnpacker.unpack(data: crx)) { error in
+                guard case CRXUnpacker.CRXError.fileTooSmall = error else {
+                    return XCTFail("expected fileTooSmall for \(length) bytes, got \(error)")
+                }
+            }
+        }
+    }
+
+    /// The fixed fields are little-endian: a version of 3 written big-endian
+    /// is version 50331648, not 3.
+    @MainActor func testTheFixedFieldsAreReadLittleEndian() {
+        let crx = Data("Cr24".utf8) + Data([0, 0, 0, 3]) + Data(littleEndianBytesOf: 0) + Data([0])
+        XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .failed(.malformed("version 50331648")))
+        XCTAssertThrowsError(try CRXUnpacker.unpack(data: crx)) { error in
+            guard case CRXUnpacker.CRXError.unsupportedVersion(50_331_648) = error else {
+                return XCTFail("expected unsupportedVersion(50331648), got \(error)")
+            }
+        }
+    }
+
+    /// A file handed over as a slice of a larger buffer (its `startIndex` is
+    /// not 0) is read as its own bytes: it verifies and unpacks like a copy,
+    /// and a slice that cuts the archive off is refused, not read past.
+    @MainActor func testACRXInsideALargerBufferIsReadAsItsOwnBytes() throws {
+        let pair = try CRX3TestBuilder.RSAKeyPair.generate()
+        let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)])
+        let buffer = Data(repeating: 0xEE, count: 7) + crx + Data(repeating: 0xEE, count: 5)
+        let slice = buffer[7..<(7 + crx.count)]
+        XCTAssertEqual(slice.startIndex, 7)
+        XCTAssertEqual(CRX3Verifier.verify(crxData: slice, format: .developerProof), .verified(publicKey: pair.publicKeySPKI))
+        let directory = try CRXUnpacker.unpack(data: slice)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("manifest.json").path))
+
+        // Only the header and nothing after it: the length field is in bounds
+        // of the buffer but not of the slice.
+        guard let headerLength = crx.littleEndianUInt32(at: 8) else { return XCTFail("no header length") }
+        let headerOnly = buffer[7..<(7 + 12 + Int(headerLength))]
+        XCTAssertEqual(CRX3Verifier.verify(crxData: headerOnly, format: .developerProof),
+                       .failed(.malformed("header length exceeds file")))
+
+        // The protobuf readers take slices too.
+        let field = CRX3TestBuilder.Protobuf.bytesField(1, Data([1, 2, 3]))
+        let padded = (Data([0xFF, 0xFF]) + field)[2...]
+        XCTAssertEqual(CRXUnpacker.extractFieldBytes(from: padded, fieldNumber: 1), Data([1, 2, 3]))
     }
 
     // MARK: - DER

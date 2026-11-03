@@ -227,7 +227,8 @@ func runTool(_ path: String, _ arguments: [String]) -> (status: Int32, output: S
 
 /// A stand-in native messaging host: a shell script that `exec`s
 /// `sleep <token>` and reads nothing, so a test gets a real host process that
-/// stays connected and silent. `token` is unique per fixture, so a stray process
+/// stays connected and silent (`Behavior` has variants that write fixed bytes
+/// first, or echo). `token` is unique per fixture, so a stray process
 /// from another run — or another agent's — can never be counted, or killed, by
 /// this one.
 ///
@@ -237,6 +238,20 @@ func runTool(_ path: String, _ arguments: [String]) -> (status: Int32, output: S
 /// test's own tearDown: nothing this spawns may outlive the test.
 final class FakeNativeMessagingHost {
 
+    /// What the host process does once it is spawned.
+    enum Behavior {
+        /// Reads nothing and writes nothing: `exec sleep <token>`.
+        case silent
+        /// Writes these bytes to stdout, closes it, then sleeps as `.silent`
+        /// does, so the reader sees EOF while the process is still alive
+        /// (its exit cannot race the read loop's report).
+        case writesThenClosesStdout(Data)
+        /// `exec cat`: every byte written to it comes back on stdout. It
+        /// exits when its stdin closes, so it carries no sleep token and
+        /// `processCount()` does not see it.
+        case echoes
+    }
+
     /// The host name an extension passes to `connectNative` / `sendNativeMessage`.
     let name: String
     /// The `sleep` argument that identifies this fixture's processes.
@@ -245,7 +260,8 @@ final class FakeNativeMessagingHost {
     private let dir: URL
     private let previousHostsDir: String?
 
-    init(name: String = "com.detour.fake_host_test", allowing extensionIDs: [String]) throws {
+    init(name: String = "com.detour.fake_host_test", allowing extensionIDs: [String],
+         behavior: Behavior = .silent) throws {
         self.name = name
         self.sleepToken = String(Int.random(in: 300_000...899_999))
         self.previousHostsDir = ProcessInfo.processInfo.environment["DETOUR_NATIVE_MESSAGING_HOSTS_DIR"]
@@ -254,7 +270,18 @@ final class FakeNativeMessagingHost {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         let script = dir.appendingPathComponent("fake-host.sh")
-        try "#!/bin/sh\nexec sleep \(sleepToken)\n".write(to: script, atomically: true, encoding: .utf8)
+        let body: String
+        switch behavior {
+        case .silent:
+            body = "exec sleep \(sleepToken)\n"
+        case .writesThenClosesStdout(let output):
+            let outputFile = dir.appendingPathComponent("stdout.bin")
+            try output.write(to: outputFile)
+            body = "/bin/cat '\(outputFile.path)'\nexec 1>&-\nexec sleep \(sleepToken)\n"
+        case .echoes:
+            body = "exec /bin/cat\n"
+        }
+        try ("#!/bin/sh\n" + body).write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
 
         let manifest: [String: Any] = [

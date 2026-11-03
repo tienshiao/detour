@@ -24,6 +24,33 @@ struct CRXUnpacker {
         }
     }
 
+    /// The CRX container's magic number, "Cr24".
+    private static let magic = Data([0x43, 0x72, 0x32, 0x34])
+
+    /// Where a CRX3 container's protobuf header and ZIP payload lie, as
+    /// ranges of the indices of the `Data` it was read from.
+    struct Container {
+        let header: Range<Data.Index>
+        let zip: Range<Data.Index>
+    }
+
+    /// Read a CRX3 container's fixed fields:
+    /// [4 magic "Cr24"][4 version=3][4 header_len N][N header bytes][ZIP payload].
+    /// `CRX3Verifier` and `unpack` both go through this, so the archive the
+    /// signature is checked over is the archive that gets extracted. Offsets
+    /// count from `startIndex`, so a slice is read as its own bytes.
+    static func container(of data: Data) -> Result<Container, CRXError> {
+        guard let version = data.littleEndianUInt32(at: 4),
+              let headerLength = data.littleEndianUInt32(at: 8) else { return .failure(.fileTooSmall) }
+        guard data.prefix(4) == magic else { return .failure(.invalidMagic) }
+        guard version == 3 else { return .failure(.unsupportedVersion(version)) }
+        // At most 12 + UInt32.max, so no overflow in Int.
+        let zipStart = 12 + Int(headerLength)
+        guard zipStart < data.count else { return .failure(.headerOverflow) }
+        let start = data.startIndex
+        return .success(Container(header: (start + 12)..<(start + zipStart), zip: (start + zipStart)..<data.endIndex))
+    }
+
     /// Unpack a CRX3 file at `crxURL` to a temporary directory and return it.
     /// CRX3 layout: [4 magic "Cr24"][4 version=3][4 header_len N][N header bytes][ZIP payload]
     static func unpack(crxURL: URL) throws -> URL {
@@ -40,28 +67,11 @@ struct CRXUnpacker {
     /// (`extractPublicKey`); nothing may take an identity from unverified
     /// bytes, so the field and its parser are gone (TASK-158).
     static func unpack(data: Data) throws -> URL {
-        guard data.count >= 12 else { throw CRXError.fileTooSmall }
-
-        // Verify magic "Cr24"
-        let magic = data[0..<4]
-        guard magic == Data([0x43, 0x72, 0x32, 0x34]) else { throw CRXError.invalidMagic }
-
-        // Verify version 3
-        let version = data.subdata(in: 4..<8).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
-        guard version == 3 else { throw CRXError.unsupportedVersion(version) }
-
-        // Read header length
-        let headerLen = data.subdata(in: 8..<12).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
-        let zipStart = 12 + Int(headerLen)
-        guard zipStart < data.count else { throw CRXError.headerOverflow }
-
-        // Extract ZIP payload
-        let zipData = data.subdata(in: zipStart..<data.count)
-
-        // Write ZIP to temp file
+        // Skip the header; write the ZIP payload to a temp file.
+        let layout = try container(of: data).get()
         let tempDir = FileManager.default.temporaryDirectory
         let zipFile = tempDir.appendingPathComponent(UUID().uuidString + ".zip")
-        try zipData.write(to: zipFile)
+        try data[layout.zip].write(to: zipFile)
         defer { try? FileManager.default.removeItem(at: zipFile) }
 
         // Unzip to temp directory
@@ -98,7 +108,9 @@ struct CRXUnpacker {
     // (ECDSA) — each a public key (field 1) and a signature (field 2) — and
     // `signed_header_data` in field 10000, whose field 1 is the 16-byte crx_id.
 
-    /// Extract a bytes field from a protobuf message by field number.
+    /// Extract a bytes field from a protobuf message by field number. Offsets
+    /// here and in `readVarint` count from `startIndex`, so a slice is read as
+    /// its own bytes.
     static func extractFieldBytes(from data: Data, fieldNumber: UInt64) -> Data? {
         var offset = 0
         while offset < data.count {
@@ -126,7 +138,7 @@ struct CRXUnpacker {
             let end = offset + Int(length)
 
             if fNum == fieldNumber {
-                return data.subdata(in: offset..<end)
+                return data.subdata(in: (data.startIndex + offset)..<(data.startIndex + end))
             }
 
             offset = end
@@ -141,7 +153,7 @@ struct CRXUnpacker {
         var pos = offset
 
         while pos < data.count {
-            let byte = data[pos]
+            let byte = data[data.startIndex + pos]
             result |= UInt64(byte & 0x7F) << shift
             pos += 1
 
