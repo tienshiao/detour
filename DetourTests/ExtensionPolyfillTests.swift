@@ -351,6 +351,12 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
     }
 
     @MainActor func testNotificationsClear() async throws {
+        // A fake center that shows every add at once: clear answers whether the
+        // notification exists (TASK-240), and the system center would refuse
+        // the add, and so drop it, in a test host not allowed to notify.
+        let center = HeldNotificationCenter()
+        center.holdsAdds = false
+        handler.notificationManagerOverride = ExtensionNotificationManager(center: center)
         _ = try await eval("""
             await chrome.notifications.create('clear-test', {
                 type: 'basic', title: 'Test', message: 'Hello'
@@ -359,9 +365,12 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
 
         let result = try await evalJSON("""
             var cleared = await chrome.notifications.clear('clear-test');
-            return JSON.stringify({ cleared: cleared });
+            var again = await chrome.notifications.clear('clear-test');
+            return JSON.stringify({ cleared: cleared, again: again });
         """) as? [String: Any]
         XCTAssertEqual(result?["cleared"] as? Bool, true)
+        XCTAssertEqual(result?["again"] as? Bool, false, "already cleared")
+        XCTAssertTrue(center.shown.isEmpty)
     }
 
     @MainActor func testNotificationsEventEmitters() async throws {

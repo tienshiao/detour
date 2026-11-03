@@ -471,6 +471,21 @@ document.getElementById('btn-notif-clear').addEventListener('click', async () =>
   } catch (e) { showResult('res-notifications', e.message, true); }
 });
 
+// update() with only a message keeps the title (TASK-240).
+document.getElementById('btn-notif-update').addEventListener('click', async () => {
+  try {
+    showResult('res-notifications',
+      await sendBg({ type: 'updateNotificationMessage', notificationId: NOTIFICATION_ID }));
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
+// clear() answers whether the notification existed (TASK-240).
+document.getElementById('btn-notif-clear-answers').addEventListener('click', async () => {
+  try {
+    showResult('res-notifications', await sendBg({ type: 'notificationClearAnswers' }));
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
 // create() then clear() without awaiting the create (TASK-234): the clear must
 // win, so no banner stays up and getAll() does not list the id.
 document.getElementById('btn-notif-race-worker').addEventListener('click', async () => {

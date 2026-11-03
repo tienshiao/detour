@@ -76,6 +76,12 @@ sources:
   - id: task-239
     resource: backlog:TASK-239
     title: "Extensions: the notifications API is available without the notifications permission"
+  - id: task-240
+    resource: backlog:TASK-240
+    title: "Extensions: notifications.clear and notifications.update diverge from Chrome"
+  - id: chrome-notifications-api
+    resource: https://developer.chrome.com/docs/extensions/reference/api/notifications
+    title: chrome.notifications API reference
 ---
 
 `ExtensionAPIPolyfill` generates one JavaScript bundle (`polyfillJS`) that runs
@@ -354,7 +360,7 @@ also held.[^task-238]
 | What | Scoped how |
 |---|---|
 | `getAll` | lists only the calling owner's entries |
-| `clear`, `update` | find the owner's own notification; another profile's notification with the same id is untouched (`update` answers false, `clear` takes nothing away) |
+| `clear`, `update` | find the owner's own notification; another profile's notification with the same id is untouched (both answer false and take nothing away) |
 | The UNNotification identifier | opaque: `detour-ext-notification.v3\|<random UUID>`, one per notification, mapped back to (owner, id) by the manager only. Each owner's notification has its own, so one profile's `create` never replaces the other's banner and one profile's `clear` never takes it away. An `update` keeps the identifier (the center replaces the banner); a notification cleared and created again gets a new one |
 | A click or close | `handleResponse` resolves the identifier to its owner and id and returns it; a close drops only that entry |
 
@@ -395,6 +401,34 @@ there until dismissed; the next launch cannot map their identifiers back, so
 a click on one is ignored and `clear` or `create` with the same id no longer
 reaches it (before TASK-238 the fixed `<extensionID>:<id>` identifier did,
 by accident).
+
+### What clear and update answer, and what a notification shows
+
+As in Chrome, whose `clear` "resolves to indicate whether a matching
+notification existed"[^chrome-notifications-api] (Chromium's
+`NotificationsClearFunction` answers the display helper's `Close`), `clear`
+answers true only when the owner had the notification, one whose `create` is
+still in flight included, and false for a missing, already cleared or refused
+id and for another owner's. Before TASK-240 it always answered true.
+
+`update` merges the given options into the notification's, as Chromium's
+`NotificationsUpdateFunction` copies the existing notification and
+`UpdateNotification` applies only the fields passed: an update that sets only
+`message` keeps the title. The entry keeps the merged options, so updates
+compose, one made while the `create` is in flight included; a `null` field
+counts as not given. Before TASK-240 the update replaced the whole options
+object.[^task-240]
+
+The content follows Chrome's macOS bridge (`CreateMacNotificationContext`
+returns `context_message` for a notification that needs no origin attribution):
+
+| Option | Shown as |
+|---|---|
+| `title` | title |
+| `message` | body |
+| `contextMessage` | subtitle |
+| `iconUrl` | nothing: the banner shows Detour's icon. An attachment would need the extension-relative URL loaded into a file first. Before TASK-240 the URL itself was the subtitle |
+| `imageUrl`, `buttons`, `items`, `progress`, `priority`, `eventTime`, `requireInteraction`, `silent` | nothing (no sound is ever set, so `silent` holds by default) |
 
 `handleResponse` returns the resolved response, and nothing delivers it yet:
 `notifications.onClicked` and `onClosed` never fire (see Gotchas). Delivery
@@ -508,3 +542,5 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^notification-manager]: ExtensionNotificationManager.swift
 [^task-238]: Extensions: one profile's notifications are visible to and clearable by the same extension in another profile
 [^task-239]: Extensions: the notifications API is available without the notifications permission
+[^task-240]: Extensions: notifications.clear and notifications.update diverge from Chrome
+[^chrome-notifications-api]: chrome.notifications API reference

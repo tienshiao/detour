@@ -122,6 +122,13 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             const updated = chrome.notifications.update(id, options('After'));
             out.createdID = await created;
             out.updated = await updated;
+        } else if (mode === 'clearCallback') {
+            const created = chrome.notifications.create(id, options('Hello'));
+            out.cleared = await new Promise((resolve) => chrome.notifications.clear(id, (wasCleared) => {
+                out.lastError = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
+                resolve(wasCleared);
+            }));
+            out.createdID = await created;
         } else if (mode === 'clearThenCreate') {
             const first = chrome.notifications.create(id, options('First'));
             const cleared = chrome.notifications.clear(id);
@@ -153,6 +160,41 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     }
     """
 
+    /// What `clear` answers, and what `update` merges, in the promise and the
+    /// callback forms (TASK-240). Run the same way from the page and the
+    /// worker, with the center answering every add at once.
+    private static let answersJS = """
+    async function notificationAnswers(prefix) {
+        const options = { type: 'basic', title: 'Kept title', message: 'First', contextMessage: 'Context',
+                          iconUrl: 'icon.png' };
+        const viaCallback = (call) => new Promise((resolve) => call((answer) => resolve({
+            answer: answer,
+            lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null
+        })));
+        const out = {};
+        out.promiseMissing = await chrome.notifications.clear(prefix + 'missing');
+        await chrome.notifications.create(prefix + 'p', options);
+        out.promiseUpdated = await chrome.notifications.update(prefix + 'p', { message: 'Second' });
+        out.promiseExisting = await chrome.notifications.clear(prefix + 'p');
+        out.promiseAgain = await chrome.notifications.clear(prefix + 'p');
+        out.callbackMissing = await viaCallback((cb) => chrome.notifications.clear(prefix + 'missing', cb));
+        await chrome.notifications.create(prefix + 'c', options);
+        out.callbackUpdated = await viaCallback(
+            (cb) => chrome.notifications.update(prefix + 'c', { message: 'Third' }, cb));
+        out.callbackExisting = await viaCallback((cb) => chrome.notifications.clear(prefix + 'c', cb));
+        out.callbackAgain = await viaCallback((cb) => chrome.notifications.clear(prefix + 'c', cb));
+        const rejection = (promise) => promise.then(
+            (value) => ({ resolved: value === undefined ? null : value }),
+            (e) => ({ rejected: String(e && e.message ? e.message : e) }));
+        out.promiseClearNoID = await rejection(chrome.notifications.clear());
+        out.promiseUpdateNoID = await rejection(chrome.notifications.update(undefined, { message: 'x' }));
+        out.callbackClearNoID = await viaCallback((cb) => chrome.notifications.clear(undefined, cb));
+        out.callbackUpdateNoID = await viaCallback(
+            (cb) => chrome.notifications.update(undefined, { message: 'x' }, cb));
+        return out;
+    }
+    """
+
     /// What the extension can see of the API, and what a request made past
     /// the namespace — straight to the polyfill's transport — is answered, for
     /// the permission gate (TASK-239). Run the same way from the page and the
@@ -177,13 +219,19 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     }
     """
 
-    @MainActor private static let workerJS = ExtensionAPIPolyfill.polyfillJS + "\n" + raceJS + "\n" + opJS + "\n" + gateJS + """
+    @MainActor private static let workerJS = ExtensionAPIPolyfill.polyfillJS + "\n" + raceJS + "\n" + opJS + "\n" + gateJS + "\n" + answersJS + """
 
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!message) { return false; }
         if (message.type === 'ping') { sendResponse({ type: 'pong' }); return true; }
         if (message.type === 'notificationRace') {
             notificationRace(message.mode, message.id).then(
+                (outcome) => sendResponse(outcome),
+                (e) => sendResponse({ error: String(e && e.message ? e.message : e) }));
+            return true;
+        }
+        if (message.type === 'notificationAnswers') {
+            notificationAnswers(message.prefix).then(
                 (outcome) => sendResponse(outcome),
                 (e) => sendResponse({ error: String(e && e.message ? e.message : e) }));
             return true;
@@ -427,7 +475,10 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         XCTAssertEqual(center.shown[ownerOnlyID], "Owner only", "\(label): the update must not apply",
                        file: file, line: line)
 
-        _ = try await call("clear", ownerOnly, via: transport, in: other.page, file: file, line: line)
+        let clearedByOther = try await call("clear", ownerOnly, via: transport, in: other.page,
+                                            file: file, line: line)
+        XCTAssertEqual(clearedByOther as? Bool, false, "\(label): no such notification in this profile (TASK-240)",
+                       file: file, line: line)
         XCTAssertEqual(center.shown[ownerOnlyID], "Owner only", "\(label): the clear must not remove it",
                        file: file, line: line)
 
@@ -439,7 +490,9 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         otherListed = try await listed(prefix, via: transport, in: other.page, file: file, line: line)
         XCTAssertEqual(otherListed, [shared], label, file: file, line: line)
 
-        _ = try await call("clear", shared, via: transport, in: other.page, file: file, line: line)
+        let clearedOwnCopy = try await call("clear", shared, via: transport, in: other.page,
+                                            file: file, line: line)
+        XCTAssertEqual(clearedOwnCopy as? Bool, true, "\(label): its own copy existed", file: file, line: line)
         XCTAssertEqual(center.shown[ownerShared], "Owner", "\(label): clearing its own copy leaves the owner's",
                        file: file, line: line)
 
@@ -471,6 +524,92 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             XCTAssertEqual(outcome["cleared"] as? Bool, true, "\(transport)")
             XCTAssertEqual(listed(outcome), [], "\(transport): getAll must not list a cleared notification")
             XCTAssertTrue(center.shown.isEmpty, "\(transport): the notification must not stay on screen")
+        }
+    }
+
+    /// The callback form of `clear` answers true for a notification whose
+    /// create is still in flight, without a `runtime.lastError` (TASK-240).
+    @MainActor func testClearCallbackWhileCreateInFlightAnswersTrue() async throws {
+        let ext = try await makeExtension()
+        let (profile, center) = try makeProfile("Notification Ordering Clear Callback")
+        let page = try await loadPage(ext, in: profile)
+
+        for transport in [Transport.page, .worker] {
+            let id = "clear-cb-\(transport)"
+            let outcome = try await race("clearCallback", id: id, via: transport, in: page, center: center,
+                                         adds: 1, removals: 1)
+            XCTAssertNil(outcome["error"], "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["cleared"] as? Bool, true, "\(transport): in flight counts as existing")
+            XCTAssertTrue(outcome["lastError"] is NSNull, "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["createdID"] as? String, id, "\(transport)")
+            XCTAssertEqual(listed(outcome), [], "\(transport)")
+        }
+    }
+
+    /// `clear` answers whether the notification existed and `update` merges
+    /// into it, in the promise and the callback forms, from the page and the
+    /// worker (TASK-240).
+    @MainActor func testClearAnswersAndUpdateMergesFromBothTransports() async throws {
+        let ext = try await makeExtension()
+        let (profile, center) = try makeProfile("Notification Answers")
+        center.holdsAdds = false
+        let page = try await loadPage(ext, in: profile)
+
+        for transport in [Transport.page, .worker] {
+            let prefix = "answers-\(transport)-"
+            let requestsBefore = center.addedRequests.count
+            let object: [String: Any]
+            switch transport {
+            case .page:
+                let js = Self.answersJS + "\nreturn JSON.stringify(await notificationAnswers(prefix));"
+                let json = try await page.callAsyncJavaScript(js, arguments: ["prefix": prefix],
+                                                              contentWorld: .page) as? String
+                object = try XCTUnwrap(
+                    try JSONSerialization.jsonObject(with: Data(try XCTUnwrap(json).utf8)) as? [String: Any])
+            case .worker:
+                let envelope = try await askWorker(
+                    from: page, message: ["type": "notificationAnswers", "prefix": prefix], timeout: 20)
+                XCTAssertTrue(envelope["lastError"] is NSNull || envelope["lastError"] == nil, "\(envelope)")
+                object = try XCTUnwrap(envelope["reply"] as? [String: Any], "the worker must answer: \(envelope)")
+            }
+            let label = "\(transport)"
+            XCTAssertNil(object["error"], "\(label): \(object)")
+            XCTAssertEqual(object["promiseMissing"] as? Bool, false, "\(label): \(object)")
+            XCTAssertEqual(object["promiseUpdated"] as? Bool, true, label)
+            XCTAssertEqual(object["promiseExisting"] as? Bool, true, label)
+            XCTAssertEqual(object["promiseAgain"] as? Bool, false, "\(label): already cleared")
+            for key in ["callbackMissing", "callbackUpdated", "callbackExisting", "callbackAgain"] {
+                let answer = try XCTUnwrap(object[key] as? [String: Any], "\(label) \(key): \(object)")
+                XCTAssertTrue(answer["lastError"] is NSNull, "\(label) \(key): no lastError: \(answer)")
+            }
+            XCTAssertEqual((object["callbackMissing"] as? [String: Any])?["answer"] as? Bool, false, label)
+            XCTAssertEqual((object["callbackUpdated"] as? [String: Any])?["answer"] as? Bool, true, label)
+            XCTAssertEqual((object["callbackExisting"] as? [String: Any])?["answer"] as? Bool, true, label)
+            XCTAssertEqual((object["callbackAgain"] as? [String: Any])?["answer"] as? Bool, false, label)
+
+            // Without a notification id: the promise rejects and the callback
+            // gets runtime.lastError. WebKit prefixes a native error with
+            // "Invalid call to runtime.sendNativeMessage()." on some legs (twice
+            // on the worker's callback leg), so only the reason is matched.
+            for key in ["promiseClearNoID", "promiseUpdateNoID"] {
+                let outcome = try XCTUnwrap(object[key] as? [String: Any], "\(label) \(key): \(object)")
+                let message = try XCTUnwrap(outcome["rejected"] as? String, "\(label) \(key): \(outcome)")
+                XCTAssertTrue(message.lowercased().contains("notificationid required"), "\(label) \(key): \(message)")
+            }
+            for key in ["callbackClearNoID", "callbackUpdateNoID"] {
+                let outcome = try XCTUnwrap(object[key] as? [String: Any], "\(label) \(key): \(object)")
+                let message = try XCTUnwrap(outcome["lastError"] as? String, "\(label) \(key): \(outcome)")
+                XCTAssertTrue(message.lowercased().contains("notificationid required"), "\(label) \(key): \(message)")
+            }
+
+            // create p, update p, create c, update c: each update kept the
+            // title and context message and changed only the message.
+            let requests = Array(center.addedRequests.dropFirst(requestsBefore))
+            XCTAssertEqual(requests.map(\.content.body), ["First", "Second", "First", "Third"], label)
+            XCTAssertEqual(Set(requests.map(\.content.title)), ["Kept title"], label)
+            XCTAssertEqual(Set(requests.map(\.content.subtitle)), ["Context"],
+                           "\(label): contextMessage is the subtitle, never the icon URL")
+            XCTAssertTrue(center.shown.isEmpty, "\(label): every notification was cleared")
         }
     }
 
@@ -525,7 +664,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         try await waitUntil("A's add held", timeout: 10, pollInterval: 0.02) { center.heldCount == 1 }
         let clearedByB = try await pageB.callAsyncJavaScript(
             "return await chrome.notifications.clear('shared-id');", arguments: [:], contentWorld: .page)
-        XCTAssertEqual(clearedByB as? Bool, true)
+        XCTAssertEqual(clearedByB as? Bool, false, "B has no notification shared-id (TASK-240)")
         XCTAssertEqual(center.removals, [], "B has no such notification, so its clear takes nothing away")
 
         center.releaseAll()

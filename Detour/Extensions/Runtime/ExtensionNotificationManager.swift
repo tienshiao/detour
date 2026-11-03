@@ -102,6 +102,10 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         let notificationID: String
         /// Which `create` recorded the entry; see `addFinished`.
         let generation: Int
+        /// The options the notification shows (`shownOptionKeys` only): the
+        /// create's, with every later update's merged in (TASK-240). What the
+        /// next `update` merges into.
+        let options: [String: Any]
     }
 
     /// UNNotification identifier → the notification an owner has and has not
@@ -149,8 +153,43 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
-    /// Create or update a notification. `completion` runs once the center's
-    /// `add` has returned, with the notification id, whether or not it succeeded.
+    /// What a notification with these options shows (TASK-240). Chrome's
+    /// macOS bridge shows `title` as the title, `message` as the body and
+    /// `contextMessage` ("alternate notification content with a lower-weight
+    /// font") as the subtitle, so this does the same. Nothing is taken from
+    /// `iconUrl`: an attachment would mean loading the extension-relative URL
+    /// into a file first, so the banner shows Detour's app icon. `imageUrl`,
+    /// `buttons`, `items`, `progress`, `priority`, `eventTime`,
+    /// `requireInteraction` and `silent` are not shown either (see the
+    /// polyfill-layer wiki).
+    ///
+    /// Title, body and subtitle only: nothing that names the profile (no
+    /// threadIdentifier, no userInfo), for the same reason as the identifier.
+    static func content(for options: [String: Any]) -> UNNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = options["title"] as? String ?? ""
+        content.body = options["message"] as? String ?? ""
+        content.subtitle = options["contextMessage"] as? String ?? ""
+        return content
+    }
+
+    /// The option fields `content(for:)` reads: all an entry keeps for the
+    /// next `update` to merge into. Not the rest (an `iconUrl` or `imageUrl`
+    /// is often a large data: URL), since an entry lives until the extension
+    /// clears it, and a banner the user dismisses does not end it.
+    private static let shownOptionKeys: Set<String> = ["title", "message", "contextMessage"]
+
+    /// `existing` with every field `given` sets replaced, as Chrome's update
+    /// applies only the fields the extension passed (TASK-240). A `null` field
+    /// counts as not given.
+    static func merged(_ given: [String: Any], into existing: [String: Any]) -> [String: Any] {
+        existing.merging(given.filter { !($0.value is NSNull) }) { _, new in new }
+    }
+
+    /// Create a notification. A create for an id the owner already has
+    /// replaces that notification outright, as Chrome's does: unlike `update`,
+    /// nothing is merged. `completion` runs once the center's `add` has
+    /// returned, with the notification id, whether or not it succeeded.
     func create(owner: Owner, notificationID: String?, options: [String: Any], completion: @escaping (String) -> Void) {
         show(owner: owner, notificationID: notificationID, options: options) { id, _ in completion(id) }
     }
@@ -167,20 +206,12 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         let key = Key(owner: owner, notificationID: id)
         let identifier = identifiers[key] ?? Self.newIdentifier()
 
-        // Title, body and subtitle only: nothing that names the profile (no
-        // threadIdentifier, no userInfo), for the same reason as the identifier.
-        let content = UNMutableNotificationContent()
-        content.title = options["title"] as? String ?? ""
-        content.body = options["message"] as? String ?? ""
-        if let iconURL = options["iconUrl"] as? String {
-            content.subtitle = iconURL // Store for reference; attachment would require downloading
-        }
-
-        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+        let request = UNNotificationRequest(identifier: identifier, content: Self.content(for: options), trigger: nil)
 
         lastGeneration += 1
         let generation = lastGeneration
-        entries[identifier] = Entry(owner: owner, notificationID: id, generation: generation)
+        entries[identifier] = Entry(owner: owner, notificationID: id, generation: generation,
+                                    options: options.filter { Self.shownOptionKeys.contains($0.key) })
         identifiers[key] = identifier
 
         // Awaited from a main-actor task: the completion-handler form of `add`
@@ -222,28 +253,36 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     }
 
     /// Update an existing notification of `owner`'s, including one whose
-    /// `create` has not finished yet. Answers false when the owner has no such
-    /// notification, or when the center refuses the updated one.
+    /// `create` has not finished yet. The given options are merged into the
+    /// notification's, as Chrome does: an update that sets only `message`
+    /// keeps the title. Answers false when the owner has no such notification,
+    /// or when the center refuses the updated one.
     func update(owner: Owner, notificationID: String, options: [String: Any], completion: @escaping (Bool) -> Void) {
-        guard identifier(for: owner, notificationID: notificationID) != nil else {
+        guard let identifier = identifier(for: owner, notificationID: notificationID),
+              let entry = entries[identifier] else {
             completion(false)
             return
         }
-        // Re-create with updated content. A failed `add` drops the notification
-        // (see `addFinished`), so the update did not apply.
-        show(owner: owner, notificationID: notificationID, options: options) { _, succeeded in
+        // Re-create with the merged content. A failed `add` drops the
+        // notification (see `addFinished`), so the update did not apply.
+        let merged = Self.merged(options, into: entry.options)
+        show(owner: owner, notificationID: notificationID, options: merged) { _, succeeded in
             completion(succeeded)
         }
     }
 
     /// Clear a notification of `owner`'s, including one whose `create` has not
-    /// finished yet. Another owner's notification with the same id is a
-    /// different notification, so it is untouched.
+    /// finished yet. Answers whether the owner had such a notification, as
+    /// Chrome's `clear` does (TASK-240). Another owner's notification with the
+    /// same id is a different notification, so it is untouched and the answer
+    /// is false.
     func clear(owner: Owner, notificationID: String, completion: @escaping (Bool) -> Void) {
-        if let identifier = identifier(for: owner, notificationID: notificationID) {
-            removeEntry(identifier: identifier)
-            center.removeNotifications(withIdentifiers: [identifier])
+        guard let identifier = identifier(for: owner, notificationID: notificationID) else {
+            completion(false)
+            return
         }
+        removeEntry(identifier: identifier)
+        center.removeNotifications(withIdentifiers: [identifier])
         completion(true)
     }
 

@@ -567,9 +567,43 @@ async function handleMessage(message) {
         type: 'basic',
         title: message.title || 'Test Notification',
         message: message.message || 'This is a test notification from API Explorer',
+        contextMessage: message.contextMessage || 'API Explorer context message',
         iconUrl: message.iconUrl || chrome.runtime.getURL('icon.png')
       });
       return { notificationId: id };
+    }
+
+    // update() with only a message: the title and context message are kept,
+    // as Chrome merges the given fields (TASK-240).
+    case 'updateNotificationMessage': {
+      const wasUpdated = await chrome.notifications.update(message.notificationId, {
+        message: message.message || 'Updated message (title kept)'
+      });
+      return { wasUpdated };
+    }
+
+    // What clear() answers: false for a missing id, true for one that exists
+    // (also while its create is in flight), false once cleared; promise and
+    // callback forms (TASK-240).
+    case 'notificationClearAnswers': {
+      const base = 'api-explorer-clear-answers';
+      const options = { type: 'basic', title: 'Clear answers', message: 'Cleared at once',
+                        iconUrl: chrome.runtime.getURL('icon.png') };
+      const viaCallback = (id) => new Promise((resolve) => chrome.notifications.clear(id, (wasCleared) => {
+        resolve({ wasCleared, lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null });
+      }));
+      const out = { from: 'worker' };
+      out.missing = await chrome.notifications.clear(base + '-missing');
+      await chrome.notifications.create(base, options);
+      out.existing = await chrome.notifications.clear(base);
+      out.again = await chrome.notifications.clear(base);
+      const created = chrome.notifications.create(base + '-inflight', options);
+      out.inFlightCallback = await viaCallback(base + '-inflight');
+      await created;
+      out.missingCallback = await viaCallback(base + '-missing');
+      console.log('[API Explorer] notifications clear answers', JSON.stringify(out));
+      appendLog({ event: 'notifications.clearAnswers', ...out });
+      return out;
     }
 
     case 'clearNotification': {

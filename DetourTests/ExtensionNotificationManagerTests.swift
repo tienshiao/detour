@@ -314,6 +314,118 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         XCTAssertEqual(center.shown[identifier("seq")], "Second")
     }
 
+    // MARK: - What clear answers (TASK-240)
+
+    /// Chrome's clear "resolves to indicate whether a matching notification
+    /// existed": false for an id the owner never created or already cleared.
+    @MainActor func testClearOfAMissingNotificationAnswersFalse() async throws {
+        XCTAssertEqual(clear("never"), false)
+        XCTAssertTrue(center.removals.isEmpty, "nothing to take away")
+
+        let create = startCreate("once", title: "Hello")
+        try await waitForHeldAdds(1)
+        center.release()
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(clear("once"), true, "the notification existed")
+        XCTAssertEqual(clear("once"), false, "the second clear finds nothing")
+    }
+
+    /// A notification whose add the center refused no longer exists.
+    @MainActor func testClearAfterAFailedAddAnswersFalse() async throws {
+        let create = startCreate("refused", title: "Hello")
+        try await waitForHeldAdds(1)
+        center.release(failing: true)
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(clear("refused"), false)
+    }
+
+    /// The owner's clear answers true for its own in-flight notification while
+    /// another extension's and another profile's copy's clear of the same id
+    /// answer false.
+    @MainActor func testClearAnswersOnlyForTheOwnersNotification() async throws {
+        let create = startCreate("mine", title: "A's")
+        XCTAssertEqual(clear("mine", owner: Self.ownerB), false)
+        XCTAssertEqual(clear("mine", owner: Self.ownerA2), false)
+        XCTAssertEqual(clear("mine"), true, "in flight counts as existing")
+        try await waitForHeldAdds(1)
+        center.release()
+        await fulfillment(of: [create.done], timeout: 5)
+    }
+
+    // MARK: - Update merges (TASK-240)
+
+    /// An update that gives only some fields keeps the rest, as Chrome's
+    /// `UpdateNotification` applies only the fields passed.
+    @MainActor func testUpdateMergesTheGivenFieldsIntoTheNotification() async throws {
+        center.holdsAdds = false
+        let created = expectation(description: "create answers")
+        manager.create(owner: Self.ownerA, notificationID: "m",
+                       options: ["type": "basic", "title": "Title", "message": "First",
+                                 "contextMessage": "Context", "iconUrl": "icon.png"]) { _ in created.fulfill() }
+        await fulfillment(of: [created], timeout: 5)
+
+        let updated = expectation(description: "update answers")
+        var result: Bool?
+        manager.update(owner: Self.ownerA, notificationID: "m", options: ["message": "Second"]) {
+            result = $0
+            updated.fulfill()
+        }
+        await fulfillment(of: [updated], timeout: 5)
+        XCTAssertEqual(result, true)
+        let content = try XCTUnwrap(center.addedRequests.last?.content)
+        XCTAssertEqual(content.title, "Title", "a field the update did not give is kept")
+        XCTAssertEqual(content.body, "Second", "a field the update gave replaces the old one")
+        XCTAssertEqual(content.subtitle, "Context")
+
+        let again = expectation(description: "second update answers")
+        manager.update(owner: Self.ownerA, notificationID: "m",
+                       options: ["title": "New title", "contextMessage": NSNull()]) { _ in again.fulfill() }
+        await fulfillment(of: [again], timeout: 5)
+        let last = try XCTUnwrap(center.addedRequests.last?.content)
+        XCTAssertEqual(last.title, "New title")
+        XCTAssertEqual(last.body, "Second", "updates compose: the first update's message is kept")
+        XCTAssertEqual(last.subtitle, "Context", "a null field counts as not given")
+        let shownUnder = try XCTUnwrap(manager.identifier(for: Self.ownerA, notificationID: "m"))
+        XCTAssertEqual(Set(center.addedIdentifiers), [shownUnder], "every update replaces the same banner")
+    }
+
+    /// An update issued while the create is in flight merges into the
+    /// create's options, not into nothing.
+    @MainActor func testUpdateWhileCreateInFlightMergesIntoTheCreatesOptions() async throws {
+        let create = startCreate("inflight", title: "Kept")
+        let updated = expectation(description: "update answers")
+        manager.update(owner: Self.ownerA, notificationID: "inflight", options: ["message": "Changed"]) { _ in
+            updated.fulfill()
+        }
+        try await waitForHeldAdds(2)
+        center.releaseAll()
+        await fulfillment(of: [create.done, updated], timeout: 5)
+        let content = try XCTUnwrap(center.addedRequests.last?.content)
+        XCTAssertEqual(content.title, "Kept")
+        XCTAssertEqual(content.body, "Changed")
+    }
+
+    // MARK: - Content mapping (TASK-240)
+
+    /// title → title, message → body, contextMessage → subtitle (Chrome's
+    /// macOS bridge shows contextMessage there); iconUrl is not shown, and
+    /// in particular never as the subtitle.
+    @MainActor func testOptionsMapToTheNotificationContent() {
+        let full = ExtensionNotificationManager.content(for: [
+            "type": "basic", "title": "T", "message": "M", "contextMessage": "C", "iconUrl": "icons/48.png",
+        ])
+        XCTAssertEqual(full.title, "T")
+        XCTAssertEqual(full.body, "M")
+        XCTAssertEqual(full.subtitle, "C")
+        XCTAssertTrue(full.attachments.isEmpty)
+
+        let noContext = ExtensionNotificationManager.content(for: ["title": "T", "message": "M", "iconUrl": "icons/48.png"])
+        XCTAssertEqual(noContext.subtitle, "", "the icon URL is never shown as the subtitle")
+        XCTAssertNil(noContext.sound)
+        XCTAssertTrue(noContext.userInfo.isEmpty, "nothing that could name the profile")
+        XCTAssertEqual(noContext.threadIdentifier, "")
+    }
+
     // MARK: - Failures
 
     @MainActor func testFailedAddDropsTheEntry() async throws {
@@ -367,7 +479,8 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
     @MainActor func testAnotherExtensionsClearDoesNotCancelTheCreate() async throws {
         let create = startCreate("shared-id", title: "A's")
         try await waitForHeldAdds(1)
-        XCTAssertEqual(clear("shared-id", owner: Self.ownerB), true)
+        XCTAssertEqual(clear("shared-id", owner: Self.ownerB), false,
+                       "B has no notification shared-id, so its clear answers false (TASK-240)")
         XCTAssertEqual(manager.getAll(owner: Self.ownerB), [:])
 
         center.release()
@@ -416,7 +529,8 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
     @MainActor func testAnotherProfilesClearDoesNotCancelTheCreate() async throws {
         let create = startCreate("x", title: "A's")
         try await waitForHeldAdds(1)
-        XCTAssertEqual(clear("x", owner: Self.ownerA2), true)
+        XCTAssertEqual(clear("x", owner: Self.ownerA2), false,
+                       "A2 has no notification x, so its clear answers false (TASK-240)")
         XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["x": true])
 
         center.release()
