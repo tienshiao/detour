@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03T00:07:00Z'
-updated_date: '2026-11-03T04:58:00Z'
+updated_date: '2026-11-03T07:46:00Z'
 labels:
   - concurrency
 dependencies: []
@@ -43,6 +43,8 @@ Both targets build in Swift 5.10 language mode with minimal concurrency checking
 
 <!-- SECTION:NOTES:BEGIN -->
 HANDOVER (2026-11-02 ~20:20). Done and committed on main (not pushed): .1 b79b6c6, .2 b70cf8a, .3 54d1f79, .4 8514f54, .5 1657228, .6 1ba9021 (app target in Swift 6 mode, 0 concurrency warnings, full suite 3371/0). Follow-ups filed and committed as TASK-232..236 (53bbd2c). .7 implemented but uncommitted and unreviewed: see its handover note. .8 not started. Owed by the user: a signed-build check with 1Password (native messaging changed in .4). Epic AC #2 (CLAUDE.md + wiki describe the isolation model) is done for the app; the test-target part is in .7 step 4.
+
+Post-epic check (2026-11-02 23:59): after 231.8 and follow-ups TASK-232..237 (72be76a..1a3268d), two full DetourTests runs failed ~175 tests in ExtensionWindowsCreatePrivate/FaviconLinkBridge/HistoryDeletionIntegration. Cause: the screen was locked during both runs (pmset/loginwindow logs); the test host's GPU process stops accepting new web processes a few minutes into a lock, so new web views never load. Not a code regression: prefix bisection runs passed, and a full run under caffeinate -d -i on 1a3268d passed 3420 tests, 17 skipped, 0 failures (load 13-40). Trap recorded in wiki/playbooks/build-and-test.md (4567fc8).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
