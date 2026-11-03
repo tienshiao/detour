@@ -5,7 +5,7 @@ description: How Detour keeps an extension's background alive while it holds a n
 resource: ../../Detour/Extensions/Runtime/NativeHostKeepAlive.swift
 tags: [extensions, service-worker, native-messaging, webkit, 1password]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:10:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T06:30:00Z }
 sources:
   - id: state
     resource: ../../Detour/Extensions/Runtime/NativeHostKeepAlive.swift
@@ -55,6 +55,9 @@ sources:
   - id: task-123
     resource: backlog:TASK-123
     title: Defer an update while the extension is busy
+  - id: task-236
+    resource: backlog:TASK-236
+    title: testAnArmedWorkerHoldsOneAnchorAndADisarmStopsReanchoring is flaky under Thread Sanitizer
 ---
 
 # Role
@@ -332,6 +335,16 @@ in the 2026-09-21 run.[^task-21]
   being restarted.
 - **Each `onConnect` listener gets its own port.** Never add a listener to
   observe ports; wrap the extension's (see "The anchor").
+- **An arm re-anchors once or twice.** Every arm sends `keepalive-start`
+  and a ping back to back, and the background schedules a re-anchor for
+  each. They coalesce into one only when the ping arrives before the start's
+  `setTimeout(…, 0)` task has run; otherwise the second closes the first's
+  new anchor and opens another. Both happen while armed and leave one anchor
+  held, so this is harmless. A stop already queued behind them leaves the
+  scheduled re-anchor undone, so a brief re-arm opens none, one or two; a
+  test that counts anchors must allow two per arm, and it must wait for the worker to have handled the stop
+  (`armed` false with `repliesSent` past the arm's ping) rather than sleep.
+  Under ThreadSanitizer a brief re-arm opened two in 7 of 10 runs.[^task-236]
 - **Each background start opens one port.** `keepAlivePortOpenCountForTesting`
   is therefore a native-side count of background starts (a reconnect after a
   dropped port counts too).
@@ -376,3 +389,4 @@ in the 2026-09-21 run.[^task-21]
 [^task-123]: Defer an update while the extension is busy
 [^task-141]: Does removePort drop a page's whole port entry when one port closes
 [^task-142]: The native-port keep-alive is defeated when any other port of the background closes
+[^task-236]: testAnArmedWorkerHoldsOneAnchorAndADisarmStopsReanchoring is flaky under Thread Sanitizer

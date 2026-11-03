@@ -1004,6 +1004,7 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
                     active: status.active,
                     anchorOpen: status.anchorOpen,
                     anchorsOpened: status.anchorsOpened,
+                    repliesSent: status.repliesSent,
                     watching: status.watching,
                     portsWatched: status.portsWatched,
                     portEndsSeen: status.portEndsSeen,
@@ -1105,6 +1106,12 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// Arming opens one anchor port, which Detour holds. Disarming stops the
     /// re-anchoring and leaves that one anchor, idle, to go with the keep-alive
     /// port when WebKit unloads the background.
+    ///
+    /// Waits on the worker's own counts rather than a fixed sleep (TASK-236): a
+    /// brief re-arm re-anchors for its start and again for its ping unless the
+    /// ping arrives before the start's re-anchor task runs, and opens none when
+    /// the stop arrives first, so it opens zero to two anchors depending on
+    /// timing (two in 7 of 10 runs under ThreadSanitizer).
     @MainActor func testAnArmedWorkerHoldsOneAnchorAndADisarmStopsReanchoring() async throws {
         let ext = try await makeKeepAliveTestExtension()
         let profile = makeProfile("Keep-alive Anchor Profile")
@@ -1126,18 +1133,49 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         try await waitUntil("the armed worker's anchor to reach ExtensionManager") { anchors().held == 1 }
 
         manager.simulateNativeHostForTesting(connected: false, controller: controller, extensionID: ext.id)
+        var status: [String: Any]?
         try await waitUntil("the worker to report itself disarmed") {
-            try await self.workerKeepAliveStatus(from: page)?["armed"] as? Bool == false
+            status = try await self.workerKeepAliveStatus(from: page)
+            return status?["armed"] as? Bool == false
         }
-        let openedAtDisarm = anchors().opened
+        // The worker's count is final once it has handled the stop; an anchor
+        // it opened just before may still be on its way to Detour.
+        let openedAtDisarm = try XCTUnwrap(status?["anchorsOpened"] as? Int)
+        try await waitUntil("every anchor the worker opened to reach Detour") {
+            anchors().opened >= openedAtDisarm
+        }
+        XCTAssertEqual(anchors().opened, openedAtDisarm, "Detour accepts exactly the anchors the worker opened")
+        let repliesAtDisarm = try XCTUnwrap(status?["repliesSent"] as? Int)
+
+        // A brief re-arm: one start and the ping that goes with it, then a stop.
+        // The worker re-anchors on each of the two (the ping as the backstop for
+        // a port that ended unseen), and the two coalesce only when the ping
+        // arrives before the start's re-anchor task has run. The stop leaves
+        // anything still scheduled undone.
         manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
         manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
         manager.simulateNativeHostForTesting(connected: false, controller: controller, extensionID: ext.id)
         manager.simulateNativeHostForTesting(connected: false, controller: controller, extensionID: ext.id)
+        // Disarmed again with the re-arm's ping answered: the start, the ping
+        // and the stop have all been handled, in the order they were sent.
+        try await waitUntil("the worker to handle the re-arm's start, ping and stop") {
+            status = try await self.workerKeepAliveStatus(from: page)
+            return status?["armed"] as? Bool == false
+                && (status?["repliesSent"] as? Int ?? 0) > repliesAtDisarm
+        }
+        let openedAfterReArm = try XCTUnwrap(status?["anchorsOpened"] as? Int)
+        XCTAssertLessThanOrEqual(openedAfterReArm, openedAtDisarm + 2,
+                                 "the brief re-arm re-anchors at most once for its start and once for its ping")
+        try await waitUntil("every anchor the re-arm opened to reach Detour") {
+            anchors().opened >= openedAfterReArm
+        }
+
+        // Nothing more is opened while disarmed.
         try await Task.sleep(nanoseconds: 500_000_000)
-        XCTAssertEqual(anchors().held, 1, "the idle anchor stays; nothing more is opened while disarmed")
-        XCTAssertLessThanOrEqual(anchors().opened, openedAtDisarm + 1,
-                                 "only the brief re-arm may have re-anchored once")
+        status = try await workerKeepAliveStatus(from: page)
+        XCTAssertEqual(status?["anchorsOpened"] as? Int, openedAfterReArm, "the worker opens no anchor while disarmed")
+        XCTAssertEqual(anchors().opened, openedAfterReArm, "no anchor reaches Detour while disarmed")
+        XCTAssertEqual(anchors().held, 1, "the idle anchor stays open")
         XCTAssertEqual(anchors().requested, 0, "the last host leaving disarms; nothing to re-anchor")
     }
 
