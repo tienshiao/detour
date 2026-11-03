@@ -1,11 +1,11 @@
 ---
 id: TASK-231
 title: 'Epic: Swift 6 language mode and compiler-checked concurrency'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03T00:07:00Z'
-updated_date: '2026-11-03T04:11:00Z'
+updated_date: '2026-11-03T04:58:00Z'
 labels:
   - concurrency
 dependencies: []
@@ -35,8 +35,8 @@ Both targets build in Swift 5.10 language mode with minimal concurrency checking
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Both the Detour and DetourTests targets build in Swift 6 language mode with no concurrency warnings
-- [ ] #2 CLAUDE.md and the wiki describe the isolation model new code follows (main actor by default, where nonisolated code lives, how shared state crossing threads is guarded)
+- [x] #1 Both the Detour and DetourTests targets build in Swift 6 language mode with no concurrency warnings
+- [x] #2 CLAUDE.md and the wiki describe the isolation model new code follows (main actor by default, where nonisolated code lives, how shared state crossing threads is guarded)
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -44,3 +44,9 @@ Both targets build in Swift 5.10 language mode with minimal concurrency checking
 <!-- SECTION:NOTES:BEGIN -->
 HANDOVER (2026-11-02 ~20:20). Done and committed on main (not pushed): .1 b79b6c6, .2 b70cf8a, .3 54d1f79, .4 8514f54, .5 1657228, .6 1ba9021 (app target in Swift 6 mode, 0 concurrency warnings, full suite 3371/0). Follow-ups filed and committed as TASK-232..236 (53bbd2c). .7 implemented but uncommitted and unreviewed: see its handover note. .8 not started. Owed by the user: a signed-build check with 1Password (native messaging changed in .4). Epic AC #2 (CLAUDE.md + wiki describe the isolation model) is done for the app; the test-target part is in .7 step 4.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+All eight subtasks are Done on main: the app target (231.1–231.6, 1ba9021) and the test target (231.7, deb41aa) build in Swift 6 language mode with main-actor default isolation and complete checking, with no concurrency warnings left (the test target has 27 others: async-alternative hints, unused results, deprecations). The full suite passed (3371 tests, 0 failures), and the WebKit-driven suites passed 3 iterations. CLAUDE.md's Concurrency paragraph states the model: main actor by default, nonisolated off-main code with Sendable data, Mutex for shared state, MainActorCallbacks helpers, comments on every unchecked escape, the XCTest class shape, and WebKitDelegateReachabilityTests rows. wiki/platform/swift-concurrency-checking.md holds the background. 231.8 (72be76a) was a one-time strict-memory-safety audit: CRX and native-messaging parsing are bounds-checked, and the setting is not left on (wiki/platform/strict-memory-safety.md). Owed by the user: a signed-build 1Password check (native messaging changed in 231.4 and 231.8). Follow-ups: TASK-232..237.
+<!-- SECTION:FINAL_SUMMARY:END -->
