@@ -1,13 +1,14 @@
 import Foundation
 import GRDB
 import os
+import Synchronization
 
-private let log = Logger(subsystem: "com.detourbrowser.mac", category: "storage")
+nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", category: "storage")
 
 /// Returns the app's data directory inside Application Support.
 /// When the `DETOUR_DATA_DIR` environment variable is set (e.g. in the test scheme),
 /// that subdirectory name is used instead of "Detour", keeping test data isolated.
-func detourDataDirectory() -> URL {
+nonisolated func detourDataDirectory() -> URL {
     let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
     let subdir = detourDataDirectoryName()
     let dir = appSupport.appendingPathComponent(subdir, isDirectory: true)
@@ -16,16 +17,18 @@ func detourDataDirectory() -> URL {
 }
 
 /// The production data directory's name inside Application Support.
-let defaultDetourDataDirectoryName = "Detour"
+nonisolated let defaultDetourDataDirectoryName = "Detour"
 
 /// The data directory name in use: `DETOUR_DATA_DIR`, or "Detour" when unset.
-func detourDataDirectoryName(
+nonisolated func detourDataDirectoryName(
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> String {
     environment["DETOUR_DATA_DIR"] ?? defaultDetourDataDirectoryName
 }
 
-struct AppDatabase {
+/// Nonisolated and `Sendable`: all state is behind `dbQueue`, which
+/// serialises access, so it may be used from any thread.
+nonisolated struct AppDatabase: Sendable {
     static let shared = AppDatabase()
 
     let dbQueue: DatabaseQueue
@@ -81,28 +84,21 @@ struct AppDatabase {
     /// the last reset. Lets a test pin down a query count — e.g. TASK-46, one
     /// enabled-state read per profile at startup no matter how many extensions
     /// are installed — so per-row reads cannot creep back in unnoticed.
-    /// Reads happen off the main thread too, so the table is lock-guarded.
-    private static let readCountsLock = NSLock()
-    private static var readCounts: [String: Int] = [:]
+    /// Reads happen off the main thread too, so the table is behind a mutex.
+    private static let readCounts = Mutex<[String: Int]>([:])
 
     private static func countRead(_ label: String) {
-        readCountsLock.lock()
-        readCounts[label, default: 0] += 1
-        readCountsLock.unlock()
+        readCounts.withLock { $0[label, default: 0] += 1 }
     }
 
     static func resetReadCounts() {
-        readCountsLock.lock()
-        readCounts.removeAll()
-        readCountsLock.unlock()
+        readCounts.withLock { $0.removeAll() }
     }
 
     /// Reads run under `label` — the string `performRead` was called with — since
     /// the last `resetReadCounts()`.
     static func readCount(_ label: String) -> Int {
-        readCountsLock.lock()
-        defer { readCountsLock.unlock() }
-        return readCounts[label] ?? 0
+        readCounts.withLock { $0[label] ?? 0 }
     }
     #endif
 

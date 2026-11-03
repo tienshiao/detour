@@ -1,11 +1,13 @@
 import AppKit
 
-final class SuggestionProvider {
+/// Nonisolated: `localSuggestions` runs on the command palette's query queue
+/// (it reads SQLite), and its only state is the `Sendable` history database.
+/// The network and favicon entry points stay on the main actor.
+nonisolated final class SuggestionProvider: Sendable {
     static let maxSuggestions = 12
     static let maxSearchSuggestions = 4
 
     private let db: HistoryDatabase
-    private let searchService = SearchSuggestionsService.shared
 
     init(db: HistoryDatabase = .shared) {
         self.db = db
@@ -171,9 +173,10 @@ final class SuggestionProvider {
 
     /// Network search suggestions for the query. Deduplicate against the query
     /// itself, since the .searchInput row covers it.
+    @MainActor
     func searchSuggestions(for query: String, engine: SearchEngine) async -> [String] {
         let q = query.lowercased()
-        return await searchService.fetchSuggestions(for: query, engine: engine)
+        return await SearchSuggestionsService.shared.fetchSuggestions(for: query, engine: engine)
             .filter { $0.lowercased() != q }
     }
 
@@ -214,6 +217,7 @@ final class SuggestionProvider {
         return s
     }
 
+    @MainActor
     func loadFavicon(for urlString: String, completion: @escaping (NSImage?) -> Void) {
         guard let url = URL(string: urlString) else {
             completion(nil)

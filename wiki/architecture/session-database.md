@@ -5,8 +5,11 @@ description: The tables of browser.db, what each is for, the foreign keys that s
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T00:52:01Z }
 sources:
+  - id: task-231-2
+    resource: backlog:TASK-231.2
+    title: History and session database access is compiler-checked across threads
   - id: database
     resource: ../../Detour/Storage/Database.swift
     title: Database.swift
@@ -204,6 +207,12 @@ Records are plain `Codable` structs. The live model (`Profile`, `Space`,
   at launch (TASK-117).
 - `AppDatabase(dbQueue:)` builds an instance over an in-memory queue for
   tests and runs the same migrator.
+- `AppDatabase` is a `nonisolated struct … : Sendable` (TASK-231.2): all its
+  state is behind the `DatabaseQueue`, which serialises access, so it may be
+  used from any thread. The DEBUG read counters are a `Mutex`. The GRDB
+  record types are nonisolated through their GRDB conformances, so rows are
+  built and decoded on GRDB's queue; the one mapping that reads a live tab,
+  `TabRecord.init(tab:…)`, is `@MainActor`.
 
 # Related
 

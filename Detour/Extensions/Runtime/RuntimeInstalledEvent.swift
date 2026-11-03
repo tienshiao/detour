@@ -23,7 +23,7 @@ import WebKit
 /// browser-update notion to report). A profile where the extension was disabled
 /// during an update gets the `update` when it next runs there, the way Chrome
 /// defers a pending dispatch. The Private profile never gets the event.
-enum RuntimeInstalledEvent {
+nonisolated enum RuntimeInstalledEvent {
 
     enum Reason: String, Equatable {
         case install

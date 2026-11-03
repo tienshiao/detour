@@ -23,7 +23,7 @@ struct HistoryVisitEntry: Codable, FetchableRecord, Equatable {
 ///
 /// Keyset rather than OFFSET so visits recorded while the user is paging can't
 /// shift the window and make rows repeat or disappear.
-struct HistoryCursor: Equatable {
+nonisolated struct HistoryCursor: Equatable, Sendable {
     let visitTime: Double
     let visitID: Int64
 

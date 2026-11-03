@@ -663,10 +663,12 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         let provider = suggestionProvider
         let historySpaceIDs = historySpaceIDs
         let capturedTabID = currentTabID
+        let completedFromTab = appliedTabCompletion
         historyQueryQueue.async { [weak self] in
             // localSuggestions recomputes the open-tab matches too, but its two
-            // SQLite reads are what we moved off the main thread. It touches no
-            // shared mutable state, so it's safe to run here.
+            // SQLite reads are what we moved off the main thread. It is
+            // nonisolated and its inputs are Sendable, so the compiler checks
+            // that it touches no main-actor state.
             let local = provider.localSuggestions(
                 for: query, historySpaceIDs: historySpaceIDs, tabs: tabs,
                 allowAutocomplete: allowAutocomplete, currentTabID: capturedTabID)
@@ -682,7 +684,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
                 // fight their typing (which the staleness guard above prevents).
                 // Nor once the user has arrowed to a row: the field shows that
                 // row's text.
-                if !appliedTabCompletion, self.inlineCompletionSuffix == nil, !self.selectionMovedByUser {
+                if !completedFromTab, self.inlineCompletionSuffix == nil, !self.selectionMovedByUser {
                     self.applyInlineCompletion(local.inlineCompletion, for: query)
                 }
                 self.matchRows = local.items

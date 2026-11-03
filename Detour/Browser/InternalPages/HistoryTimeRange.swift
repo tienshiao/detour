@@ -16,7 +16,7 @@ import Foundation
 /// through `Calendar.date(byAdding: .day, …)` rather than a multiple of 86400:
 /// on the two days a year that are 23 or 25 hours long, "yesterday" and "the
 /// last 7 days" would otherwise start an hour off.
-enum HistoryTimeRange: Equatable {
+nonisolated enum HistoryTimeRange: Equatable {
     case today
     case yesterday
     /// The last 7 days: today and the six days before it.
@@ -160,7 +160,7 @@ enum HistoryTimeRange: Equatable {
     }
 }
 
-extension HistoryTimeRange.Parsed {
+nonisolated extension HistoryTimeRange.Parsed {
     /// The bounds to query with: `(nil, nil)` for all time. Malformed has no
     /// bounds — a caller must refuse it before asking.
     func bounds(now: Date = Date(), calendar: Calendar = .current) -> (from: Double?, until: Double?)? {
@@ -190,7 +190,7 @@ extension HistoryTimeRange.Parsed {
 /// which is always derived from the sending tab, and the direction — a window
 /// only ever *narrows*, a read or a fan-out. `HistoryPageBridge`'s doc comment
 /// has the argument in full.
-struct HistoryTimeWindow: Equatable {
+nonisolated struct HistoryTimeWindow: Equatable {
     let from: Double
     /// `nil` is "up to now and beyond": a period that is still running.
     let until: Double?
@@ -232,6 +232,6 @@ struct HistoryTimeWindow: Equatable {
     }
 }
 
-private extension Character {
+nonisolated private extension Character {
     var isASCIIDigit: Bool { isASCII && isNumber }
 }

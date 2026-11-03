@@ -26,6 +26,9 @@ extension TabRecord {
     /// the tab because a *pinned* split lives on the pinned entries, never on
     /// the backing tab (see the split-tabs design doc §12): only the normal-tab
     /// site has a group to persist here.
+    /// Main-actor isolated: it reads the live tab (TabRecord itself is not
+    /// isolated, so GRDB can build and decode rows on its own queue).
+    @MainActor
     init(tab: BrowserTab, spaceID: UUID, sortOrder: Int, profile: Profile?,
          splitGroupID: UUID? = nil, splitFraction: Double? = nil) {
         self.init(

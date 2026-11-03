@@ -7,7 +7,7 @@ import Foundation
 /// context is unloaded and reloaded mid-session, every page still open on the old
 /// origin is orphaned: its native `chrome.*` bindings died with the old context
 /// and the polyfill bridge no longer recognises the origin.
-enum ExtensionPageURL {
+nonisolated enum ExtensionPageURL {
     static let scheme = "webkit-extension"
 
     /// The extension id recorded for an extension page saved before Detour
@@ -25,7 +25,7 @@ enum ExtensionPageURL {
 /// lowercase UUID, but a URL that has been round-tripped through persistence or
 /// written by a page's own link can carry any case, and an origin check that
 /// misses would leave a page behind on a dead origin.
-func isExtensionPage(_ url: URL, ofOriginHost host: String) -> Bool {
+nonisolated func isExtensionPage(_ url: URL, ofOriginHost host: String) -> Bool {
     guard !host.isEmpty,
           url.scheme?.caseInsensitiveCompare(ExtensionPageURL.scheme) == .orderedSame,
           let urlHost = url.host, !urlHost.isEmpty
@@ -43,7 +43,7 @@ func isExtensionPage(_ url: URL, ofOriginHost host: String) -> Bool {
 /// Path, query and fragment are carried over in their already-encoded form so a
 /// percent-escape in the original cannot be decoded here and re-encoded
 /// differently (an extension page's query often carries a URL of its own).
-func rewriteExtensionPageURL(_ url: URL, from oldBase: URL, to newBase: URL) -> URL? {
+nonisolated func rewriteExtensionPageURL(_ url: URL, from oldBase: URL, to newBase: URL) -> URL? {
     guard let oldHost = oldBase.host, isExtensionPage(url, ofOriginHost: oldHost),
           var components = URLComponents(url: newBase, resolvingAgainstBaseURL: false),
           let source = URLComponents(url: url, resolvingAgainstBaseURL: false)
@@ -59,14 +59,14 @@ func rewriteExtensionPageURL(_ url: URL, from oldBase: URL, to newBase: URL) -> 
 
 /// Whether `url` is served from the extension scheme at all, whichever context's
 /// origin it names.
-func isExtensionPageURL(_ url: URL?) -> Bool {
+nonisolated func isExtensionPageURL(_ url: URL?) -> Bool {
     guard let url, let host = url.host, !host.isEmpty else { return false }
     return url.scheme?.caseInsensitiveCompare(ExtensionPageURL.scheme) == .orderedSame
 }
 
 /// The base URL of the context origin `host` names (`webkit-extension://<host>/`),
 /// e.g. to rewrite pages persisted on an origin that no longer exists.
-func extensionOriginBaseURL(host: String) -> URL? {
+nonisolated func extensionOriginBaseURL(host: String) -> URL? {
     guard !host.isEmpty else { return nil }
     return URL(string: "\(ExtensionPageURL.scheme)://\(host)/")
 }
@@ -81,7 +81,7 @@ func extensionOriginBaseURL(host: String) -> URL? {
 /// extension id saved alongside it (the URL still carries the page's path, query
 /// and fragment), and restore rewrites the page onto that extension's current
 /// context once it is loaded.
-enum PersistedExtensionPage: Equatable {
+nonisolated enum PersistedExtensionPage: Equatable {
     /// An ordinary URL (or none): restore it as it always was.
     case notExtensionPage
     /// An extension page of an extension installed and enabled in the profile.
@@ -110,7 +110,7 @@ enum PersistedExtensionPage: Equatable {
 /// extensions (`AppDatabase.installedExtensionIDs`) and those enabled in the
 /// profile it is restored into (`AppDatabase.enabledExtensionIDs`, the rule
 /// `ExtensionManager` loads contexts by).
-func classifyPersistedExtensionPage(
+nonisolated func classifyPersistedExtensionPage(
     url: URL?, extensionID: String?,
     installedExtensionIDs: Set<String>, enabledExtensionIDs: Set<String>
 ) -> PersistedExtensionPage {
@@ -130,7 +130,7 @@ func classifyPersistedExtensionPage(
         : .disabled(extensionID: extensionID, originHost: host.lowercased())
 }
 
-extension PersistedExtensionPage {
+nonisolated extension PersistedExtensionPage {
     /// The extension and dead origin of an installed extension's page — the
     /// pending origin to register when the page (or its tile) is kept.
     var pendingOrigin: (extensionID: String, originHost: String)? {

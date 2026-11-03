@@ -10,7 +10,7 @@ import Foundation
 // way never equals a host read the other. Rebuild URLs with `URLComponents`;
 // compare hosts through `authorityHost`.
 
-extension URL {
+nonisolated extension URL {
     /// `host` as it appears in the URL's authority: an IPv6 literal keeps its
     /// brackets (`[::1]`), as `WKSecurityOrigin.host` and `URLComponents.host`
     /// report it. Any other host is `host` unchanged (punycode for an IDN, like
@@ -40,7 +40,7 @@ extension URL {
 /// credentials dropped. The port is kept — a favicon belongs to the origin,
 /// and the server on `localhost:3000` is not the one on `localhost:80`. Nil
 /// when the URL has no scheme or no host (`about:blank`, `file:`, `data:`).
-func faviconFallbackURL(for pageURL: URL) -> URL? {
+nonisolated func faviconFallbackURL(for pageURL: URL) -> URL? {
     guard pageURL.scheme != nil, pageURL.authorityHost != nil,
           var components = URLComponents(url: pageURL, resolvingAgainstBaseURL: false) else { return nil }
     // Copied from the page's own components, so the host stays exactly as the
@@ -58,13 +58,13 @@ func faviconFallbackURL(for pageURL: URL) -> URL? {
 /// scheme's default — the same origin `faviconFallbackURL` fetches from, so
 /// moving from one local dev server to another on the same host fetches the
 /// new server's icon. Nil when the URL has no host.
-func faviconSiteKey(for url: URL?) -> String? {
+nonisolated func faviconSiteKey(for url: URL?) -> String? {
     guard let url, let host = url.authorityHost?.lowercased() else { return nil }
     return url.nonDefaultPort.map { "\(host):\($0)" } ?? host
 }
 
 /// Whether `originHost`, a `WKSecurityOrigin.host` (an IPv6 literal in
 /// brackets), names the host of `url`, without case.
-func securityOriginHost(_ originHost: String, isHostOf url: URL) -> Bool {
+nonisolated func securityOriginHost(_ originHost: String, isHostOf url: URL) -> Bool {
     url.authorityHost?.caseInsensitiveCompare(originHost) == .orderedSame
 }

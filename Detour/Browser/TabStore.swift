@@ -5,7 +5,7 @@ import Combine
 import WebKit
 import os
 
-private let log = Logger(subsystem: "com.detourbrowser.mac", category: "profiles")
+nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", category: "profiles")
 /// Session save failures, in the category `AppDatabase` logs its own under.
 private let storageLog = Logger(subsystem: "com.detourbrowser.mac", category: "storage")
 
@@ -430,7 +430,7 @@ class TabStore {
         store.linkRoutes = .shared
         return store
     }()
-    static let incognitoProfileID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    nonisolated static let incognitoProfileID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
 
     private let appDB: AppDatabase
     private let historyDB: HistoryDatabase
@@ -1858,15 +1858,20 @@ class TabStore {
             // below, `.receive(on: RunLoop.main)`) is scheduled on, rather than
             // the main dispatch queue. An idle run loop would otherwise service
             // the block only at its next timer, so wake it.
-            RunLoop.main.perform(inModes: [.common]) {
-                // The tab may have recorded again while the insert was in
-                // flight; that recording's id is the current one.
-                guard let tab, tab.historyRecordingGeneration == generation else { return }
-                tab.lastRecordedVisitID = visitID
-                // A title that settled before the id arrived was dropped by the
-                // policy and nothing would retry it — this is that retry, under
-                // the same guards (TASK-91).
-                self?.updateHistoryTitle(for: tab)
+            RunLoop.main.perform(inModes: [.common]) { [weak self, weak tab] in
+                // The main run loop runs its blocks on the main thread, so this
+                // is the main actor; the compiler cannot see that through
+                // `perform`'s `@Sendable` block.
+                MainActor.assumeIsolated {
+                    // The tab may have recorded again while the insert was in
+                    // flight; that recording's id is the current one.
+                    guard let tab, tab.historyRecordingGeneration == generation else { return }
+                    tab.lastRecordedVisitID = visitID
+                    // A title that settled before the id arrived was dropped by the
+                    // policy and nothing would retry it — this is that retry, under
+                    // the same guards (TASK-91).
+                    self?.updateHistoryTitle(for: tab)
+                }
             }
             CFRunLoopWakeUp(CFRunLoopGetMain())
         }

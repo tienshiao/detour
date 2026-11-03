@@ -64,7 +64,7 @@ enum HistoryPageBridge {
     /// into it — can confirm on the user's behalf or skip the question. Calls
     /// back with false when there is no window to ask in. A test seam, like
     /// `database`: production never assigns it.
-    static var confirmClear: (BrowserTab, ClearRange, @escaping (Bool) -> Void) -> Void = presentClearConfirmation
+    static var confirmClear: @MainActor (BrowserTab, ClearRange, @escaping (Bool) -> Void) -> Void = presentClearConfirmation
 
     /// The history database the page reads, as a test seam: the bridge is
     /// reached through a real web view, so an integration test has no call site
@@ -99,7 +99,7 @@ enum HistoryPageBridge {
 
     static func handle(method: String, params: [String: Any], from tab: BrowserTab,
                        database: HistoryDatabase = HistoryPageBridge.database,
-                       reply: @escaping (Any?, String?) -> Void) {
+                       reply: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         switch method {
         case "history.query":
             guard let spaceIDs = scope(for: tab) else {
@@ -117,6 +117,8 @@ enum HistoryPageBridge {
             // the whole listing agrees about where the period begins and ends
             // however long it stays open.
             guard let resolved = resolvedWindow(params) else { return reply(nil, "malformed") }
+            // The read runs off the main thread; the reply, a dictionary of
+            // non-Sendable values, is built back on it.
             DispatchQueue.global(qos: .userInitiated).async {
                 // One extra row tells the page whether there is more to load.
                 let rows = search.isEmpty
@@ -124,15 +126,17 @@ enum HistoryPageBridge {
                                       before: cursor, limit: limit + 1)
                     : database.searchVisits(query: search, spaceIDs: spaceIDs, from: resolved.from,
                                             until: resolved.until, before: cursor, limit: limit + 1)
-                let page = Array(rows.prefix(limit))
-                var result: [String: Any] = ["entries": page.map { payload(for: $0, profileID: profileID) },
-                                              "incognito": false]
-                // Absent for all of history: there is no window to page inside.
-                if let window = resolved.window { result["window"] = window.bridgeValue }
-                if rows.count > limit, let last = page.last {
-                    result["nextCursor"] = ["time": last.visitTime, "id": last.visitID]
+                DispatchQueue.main.async {
+                    let page = Array(rows.prefix(limit))
+                    var result: [String: Any] = ["entries": page.map { payload(for: $0, profileID: profileID) },
+                                                  "incognito": false]
+                    // Absent for all of history: there is no window to page inside.
+                    if let window = resolved.window { result["window"] = window.bridgeValue }
+                    if rows.count > limit, let last = page.last {
+                        result["nextCursor"] = ["time": last.visitTime, "id": last.visitID]
+                    }
+                    reply(result, nil)
                 }
-                DispatchQueue.main.async { reply(result, nil) }
             }
         case "history.delete":
             guard let spaceIDs = scope(for: tab) else { return reply(nil, "unavailable") }

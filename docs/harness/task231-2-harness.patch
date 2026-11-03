@@ -1,0 +1,93 @@
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 334c0df..1542326 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runVerifyHarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Harness2312.swift b/Detour/App/Harness2312.swift
+new file mode 100644
+index 0000000..34d3001
+--- /dev/null
++++ b/Detour/App/Harness2312.swift
+@@ -0,0 +1,73 @@
++// TEMP verify harness for TASK-231.2 — DO NOT COMMIT
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runVerifyHarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        func log(_ line: String) {
++            let data = Data((line + "\n").utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier)")
++        Task { @MainActor in
++            func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++            func poll<T>(_ timeout: Double = 10, _ f: () async -> T?) async -> T? {
++                let end = Date().addingTimeInterval(timeout)
++                while Date() < end { if let v = await f() { return v }; await sleep(0.1) }
++                return nil
++            }
++            func js(_ wv: WKWebView, _ s: String) async -> Any? {
++                await withCheckedContinuation { c in wv.evaluateJavaScript(s) { r, _ in c.resume(returning: r) } }
++            }
++            await sleep(2)
++            guard let space = wc.activeSpace else { log("no space"); log("done"); return }
++            let sid = space.id.uuidString
++            // Seed through the real write path, completions on GRDB's writer queue.
++            var ids: [Int64] = []
++            for (u, t) in [("https://alpha.test/", "Alpha fixture"), ("https://beta.test/", "Beta fixture"), ("https://gamma.test/", "Gamma other")] {
++                let id: Int64? = await withCheckedContinuation { c in
++                    HistoryDatabase.shared.recordVisit(url: u, title: t, faviconURL: nil, spaceID: sid) { c.resume(returning: $0) }
++                }
++                ids.append(id ?? -1)
++            }
++            log("seeded visit ids=\(ids)")
++
++            let tab = TabStore.shared.addTab(in: space, internalPage: .history)
++            wc.selectTab(id: tab.id)
++            guard let web = await poll(15, { wc.selectedTab?.webView }) else { log("FAIL no web view"); log("done"); return }
++            let n = await poll(15) { () -> Int? in
++                let c = (await js(web, "document.querySelectorAll('.item').length")) as? Int ?? 0
++                return c >= 3 ? c : nil }
++            log("history page rows=\(n.map(String.init) ?? "none") \(n != nil ? "PASS" : "FAIL")")
++            _ = await js(web, "const s=document.getElementById('search'); s.value='fixture'; s.dispatchEvent(new Event('input',{bubbles:true})); 1")
++            let m = await poll(10) { () -> Int? in
++                let c = (await js(web, "document.querySelectorAll('.item').length")) as? Int ?? -1
++                return c == 2 ? c : nil }
++            log("history page search 'fixture' rows=\(m.map(String.init) ?? "not 2") \(m != nil ? "PASS" : "FAIL")")
++
++            // The palette's background pass, on a background queue as CommandPaletteView runs it.
++            let provider = SuggestionProvider()
++            let local: SuggestionProvider.LocalSuggestions = await withCheckedContinuation { c in
++                DispatchQueue.global(qos: .userInitiated).async {
++                    c.resume(returning: provider.localSuggestions(for: "alpha", historySpaceIDs: [sid], tabs: [],
++                                                                  allowAutocomplete: true))
++                }
++            }
++            log("palette background pass items=\(local.items) inline=\(local.inlineCompletion ?? "nil") \(local.inlineCompletion == "alpha.test" ? "PASS" : "FAIL")")
++
++            // A delete through the async write path; completion off the main thread.
++            let result: Result<HistoryDeletionResult, Error> = await withCheckedContinuation { c in
++                HistoryDatabase.shared.deleteVisits(ids: [ids[2]], spaceIDs: [sid]) { r in
++                    log("delete completion onMain=\(Thread.isMainThread)")
++                    c.resume(returning: r)
++                }
++            }
++            if case .success(let r) = result { log("deleted=\(r.deletedVisitCount) removed=\(r.removedURLs) \(r.deletedVisitCount == 1 ? "PASS" : "FAIL")") } else { log("delete FAIL \(result)") }
++            log("done")
++        }
++    }
++}

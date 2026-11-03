@@ -1,8 +1,9 @@
 import Foundation
 import GRDB
 import os
+import Synchronization
 
-private let log = Logger(subsystem: "com.detourbrowser.mac", category: "storage")
+nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", category: "storage")
 
 /// What a history delete actually changed (TASK-87).
 ///
@@ -11,7 +12,7 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "storage"
 /// title correction (TASK-88) only for `removedURLs` — the subset whose
 /// `historyURL` row is gone entirely, i.e. the URLs that also vanished from FTS
 /// search and URL completion. An affected URL still has a row worth correcting.
-struct HistoryDeletionResult: Equatable {
+nonisolated struct HistoryDeletionResult: Equatable, Sendable {
     /// Number of `historyVisit` rows deleted. Only ever counts in-scope rows.
     var deletedVisitCount: Int = 0
     /// Every URL that lost at least one visit, ascending by `historyURL.id`.
@@ -23,7 +24,10 @@ struct HistoryDeletionResult: Equatable {
     static let empty = HistoryDeletionResult()
 }
 
-struct HistoryDatabase {
+/// Nonisolated and `Sendable`: every piece of state goes through `dbQueue`,
+/// which serialises access, so the history is read from the main thread, the
+/// command palette's query queue and the History page's background reads alike.
+nonisolated struct HistoryDatabase: Sendable {
     static let shared = HistoryDatabase()
 
     let dbQueue: DatabaseQueue
@@ -82,7 +86,7 @@ struct HistoryDatabase {
     ) { values in
         guard let title = String.fromDatabaseValue(values[0]), !title.isEmpty else { return false }
         let query = String.fromDatabaseValue(values[1]) ?? ""
-        return titleMatches(title, tokens: queryTokenCache.tokens(for: query))
+        return titleMatches(title, tokens: cachedTokens(for: query))
     }
 
     /// `history_fold(text)` — the folding every other part of history search
@@ -226,23 +230,16 @@ struct HistoryDatabase {
     /// Remembers the last query's tokens. Every row of one statement passes the
     /// same text, and `searchVisits` may call the function tens of thousands of
     /// times for a single keystroke.
-    private final class QueryTokenCache: @unchecked Sendable {
-        private let lock = NSLock()
-        private var query: String?
-        private var tokens = QueryTokens("")
+    private static let queryTokenCache = Mutex<(query: String?, tokens: QueryTokens)>((nil, QueryTokens("")))
 
-        func tokens(for query: String) -> QueryTokens {
-            lock.lock()
-            defer { lock.unlock() }
-            if self.query != query {
-                tokens = QueryTokens(query)
-                self.query = query
+    private static func cachedTokens(for query: String) -> QueryTokens {
+        queryTokenCache.withLock { last in
+            if last.query != query {
+                last = (query, QueryTokens(query))
             }
-            return tokens
+            return last.tokens
         }
     }
-
-    private static let queryTokenCache = QueryTokenCache()
 
     /// Folded, alphanumeric-only tokens — the split every history query already
     /// applies to the user's text, applied to both sides of a title comparison.
@@ -498,7 +495,7 @@ struct HistoryDatabase {
     /// It runs on GRDB's writer queue, not the caller's, so hop to main
     /// yourself; a failed write reports nil.
     func recordVisit(url: String, title: String, faviconURL: String?, spaceID: String,
-                     typed: Bool = false, completion: ((Int64?) -> Void)? = nil) {
+                     typed: Bool = false, completion: (@Sendable (Int64?) -> Void)? = nil) {
         // Fire-and-forget async write. Serialized on the writer queue, so visits
         // are committed in call order (FIFO); callers that read afterwards on the
         // same DatabaseQueue observe the write because their access is enqueued
@@ -1806,7 +1803,7 @@ struct HistoryDatabase {
     /// so the row the user clicked cannot survive its own deletion.
     func deleteVisits(ids: [Int64], spaceIDs: [String], allVisitsOfURL: Bool = false,
                       from: Double? = nil, until: Double? = nil,
-                      completion: @escaping (Result<HistoryDeletionResult, Error>) -> Void) {
+                      completion: @escaping @Sendable (Result<HistoryDeletionResult, Error>) -> Void) {
         let visitIDs = Array(Set(ids))
         guard !visitIDs.isEmpty, !spaceIDs.isEmpty else { return completion(.success(.empty)) }
 
@@ -1860,7 +1857,7 @@ struct HistoryDatabase {
     /// synchronously on the calling queue. A failed write is `.failure`, never an
     /// empty result.
     func deleteVisits(spaceIDs: [String], since: Double?,
-                      completion: @escaping (Result<HistoryDeletionResult, Error>) -> Void) {
+                      completion: @escaping @Sendable (Result<HistoryDeletionResult, Error>) -> Void) {
         guard !spaceIDs.isEmpty else { return completion(.success(.empty)) }
 
         dbQueue.asyncWrite({ db -> HistoryDeletionResult in
@@ -1912,7 +1909,7 @@ struct HistoryDatabase {
     /// profile id rather than restored with the session. Neither guard counts
     /// them, so a session that failed to restore still deletes nothing.
     func deleteVisits(notInSpaceIDs existingSpaceIDs: [String], alsoKeeping extraScopeIDs: [String] = [],
-                      completion: @escaping (Result<HistoryDeletionResult, Error>) -> Void) {
+                      completion: @escaping @Sendable (Result<HistoryDeletionResult, Error>) -> Void) {
         let spaceIDs = Array(Set(existingSpaceIDs))
         guard !spaceIDs.isEmpty else { return completion(.success(.empty)) }
         let keptIDs = Array(Set(existingSpaceIDs + extraScopeIDs))

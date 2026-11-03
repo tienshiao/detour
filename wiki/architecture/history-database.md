@@ -5,8 +5,11 @@ description: "history.db — one shared row per URL, one row per visit scoped to
 resource: ../../Detour/Storage/HistoryDatabase.swift
 tags: [architecture, storage, history, fts5, search]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T00:52:01Z }
 sources:
+  - id: task-231-2
+    resource: backlog:TASK-231.2
+    title: History and session database access is compiler-checked across threads
   - id: history-database
     resource: ../../Detour/Storage/HistoryDatabase.swift
     title: HistoryDatabase.swift
@@ -349,6 +352,13 @@ anti-join is off the launch path.
   matcher: it may only save work, never exclude a row the matcher accepts.
 - No profile-scoped read returns `historyURL.visitCount` or `lastVisitTime`
   as a value.
+- `HistoryDatabase` is a `nonisolated struct … : Sendable` (TASK-231.2): its
+  only state is the `DatabaseQueue`, which serialises access, so the compiler
+  allows it on the main thread, the palette's query queue and the History
+  page's and `chrome.history`'s background reads, and flags any main-actor
+  state it touches. Completions handed to `asyncWrite` (`recordVisit`,
+  `deleteVisits`, …) are `@Sendable` because they run on the writer queue.
+  The SQL functions' last-query token cache is a `Mutex`, not an `NSLock`.
 
 # Gotchas
 
