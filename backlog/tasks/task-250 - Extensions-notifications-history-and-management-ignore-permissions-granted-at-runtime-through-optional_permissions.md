@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-03T16:52:00Z'
+updated_date: '2026-11-03T20:26:00Z'
 labels:
   - extensions
   - permissions
@@ -28,3 +29,9 @@ Found in review during TASK-239. The polyfill namespace gates and the native has
 - [ ] #1 After a runtime grant of an optional notifications, history or management permission, the API works in the extension's contexts (newly created ones at least; existing ones if Chrome does so); after revocation it is refused
 - [ ] #2 Positive and negative tests in a real extension context for grant and revoke
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+From TASK-251: the history and management namespace gates (bundle) and hasPermission (handler) read only the manifest permissions; a runtime grant should install them. Also add management to the ExtensionPolyfillIntegrationTests fixture permissions so testAllPolyfillNamespacesExist checks the full namespace, not the getSelf-only stub.
+<!-- SECTION:NOTES:END -->
