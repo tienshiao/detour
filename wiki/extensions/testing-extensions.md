@@ -99,9 +99,13 @@ All in `ExtensionTestSupport.swift` unless noted.
 | `postRawPolyfillEnvelope` | Post to the bridge bypassing the polyfill, so a test can claim any extension id |
 | `callbackOutcomeJS`, `promiseOutcomeJS` | Record how a call settled in callback form (`runtime.lastError`) and promise form |
 | `FakeNativeMessagingHost` | A silent host process found through `DETOUR_NATIVE_MESSAGING_HOSTS_DIR` |
-| `LoopbackHTTPServer` | Real http documents for frame tests; a different port is a different origin |
+| `LoopbackHTTPServer` | Real http documents for frame tests; a different port is a different origin. A `pending`/`stalled`/`truncated` route's connection is held in the same critical section that records its path, so once a path shows up in `requestedPaths`, `release(_:)` finds its connection (before TASK-237 a release could slip in between and leave the load hanging) |
 | `LoopbackWebSocketServer` | An echo server for the [relay](./websocket-relay.md) |
 | `CRX3TestSupport.swift` | Builds signed CRX3 files in the test |
+
+The loopback servers run on their own dispatch queues and keep all their
+mutable state in one `Mutex`-guarded struct each, so they are plain
+`Sendable` (TASK-237).
 
 `TestEnvironmentSetup` wipes the extension table and the data directory's
 `Extensions/` folder at bundle start and turns off

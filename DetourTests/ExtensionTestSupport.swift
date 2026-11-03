@@ -523,16 +523,19 @@ nonisolated final class LockedFlag: Sendable {
 /// binary frame is echoed back unchanged and a close from the peer is answered
 /// with a close, so a relayed socket can be driven end to end against a real
 /// server (TASK-8, `WebSocketRelaySessionTests`).
-/// Nonisolated: it runs on its own dispatch queue, its state behind its lock.
-nonisolated final class LoopbackWebSocketServer: @unchecked Sendable {
+/// Nonisolated: it runs on its own dispatch queue, its state behind a Mutex.
+nonisolated final class LoopbackWebSocketServer: Sendable {
+
+    private struct State {
+        var openConnections: [ObjectIdentifier: NWConnection] = [:]
+        var accepted = 0
+        var ended = 0
+        var closeFrames = 0
+    }
 
     private let listener: NWListener
     private let queue = DispatchQueue(label: "detour-test-loopback-ws")
-    private let lock = NSLock()
-    private var openConnections: [ObjectIdentifier: NWConnection] = [:]
-    private var _accepted = 0
-    private var _ended = 0
-    private var _closeFrames = 0
+    private let state = Mutex(State())
 
     struct StartTimedOut: Error, CustomStringConvertible {
         var description: String { "loopback WebSocket server did not become ready" }
@@ -550,21 +553,18 @@ nonisolated final class LoopbackWebSocketServer: @unchecked Sendable {
 
     /// Connections the server has accepted so far.
     var acceptedConnections: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _accepted
+        state.withLock { $0.accepted }
     }
 
     /// Connections that have since ended (peer close, cancel, or failure) — this
     /// is how a test sees that the relay really tore its socket down.
     var endedConnections: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _ended
+        state.withLock { $0.ended }
     }
 
     /// Close frames received from clients.
     var closeFramesReceived: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _closeFrames
+        state.withLock { $0.closeFrames }
     }
 
     /// Start listening and return the port that was assigned.
@@ -597,9 +597,7 @@ nonisolated final class LoopbackWebSocketServer: @unchecked Sendable {
     /// Close every open connection with a normal-closure handshake, so a test can
     /// drive a server-initiated close.
     func closeAllConnections() {
-        lock.lock()
-        let connections = Array(openConnections.values)
-        lock.unlock()
+        let connections = state.withLock { Array($0.openConnections.values) }
         for connection in connections {
             sendClose(on: connection)
         }
@@ -613,10 +611,10 @@ nonisolated final class LoopbackWebSocketServer: @unchecked Sendable {
     // MARK: Connection handling
 
     private func accept(_ connection: NWConnection) {
-        lock.lock()
-        _accepted += 1
-        openConnections[ObjectIdentifier(connection)] = connection
-        lock.unlock()
+        state.withLock { state in
+            state.accepted += 1
+            state.openConnections[ObjectIdentifier(connection)] = connection
+        }
 
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
@@ -631,10 +629,11 @@ nonisolated final class LoopbackWebSocketServer: @unchecked Sendable {
     }
 
     private func forget(_ connection: NWConnection) {
-        lock.lock()
-        let removed = openConnections.removeValue(forKey: ObjectIdentifier(connection)) != nil
-        if removed { _ended += 1 }
-        lock.unlock()
+        state.withLock { state in
+            if state.openConnections.removeValue(forKey: ObjectIdentifier(connection)) != nil {
+                state.ended += 1
+            }
+        }
     }
 
     private func receive(on connection: NWConnection) {
@@ -649,7 +648,7 @@ nonisolated final class LoopbackWebSocketServer: @unchecked Sendable {
                 as? NWProtocolWebSocket.Metadata
             switch metadata?.opcode {
             case .close:
-                self.lock.lock(); self._closeFrames += 1; self.lock.unlock()
+                self.state.withLock { $0.closeFrames += 1 }
                 self.sendClose(on: connection)
                 return
             case .text:
@@ -696,14 +695,17 @@ nonisolated final class LoopbackWebSocketServer: @unchecked Sendable {
 /// sends, so the socket that opens is `LoopbackWebSocketServer`'s job and this
 /// one's is only to show what was asked for. The client sees the connection
 /// fail, which the relay reports as an error and a 1006 close.
-/// Nonisolated: it runs on its own dispatch queue, its state behind its lock.
-nonisolated final class LoopbackHandshakeCaptureServer: @unchecked Sendable {
+/// Nonisolated: it runs on its own dispatch queue, its state behind a Mutex.
+nonisolated final class LoopbackHandshakeCaptureServer: Sendable {
+
+    private struct State {
+        var requests: [[String: String]] = []
+        var connections: [NWConnection] = []
+    }
 
     private let listener: NWListener
     private let queue = DispatchQueue(label: "detour-test-ws-handshake")
-    private let lock = NSLock()
-    private var _requests: [[String: String]] = []
-    private var connections: [NWConnection] = []
+    private let state = Mutex(State())
 
     struct StartTimedOut: Error, CustomStringConvertible {
         var description: String { "loopback handshake server did not become ready" }
@@ -718,8 +720,7 @@ nonisolated final class LoopbackHandshakeCaptureServer: @unchecked Sendable {
 
     /// The headers of each handshake seen, in order, with lowercased names.
     var requests: [[String: String]] {
-        lock.lock(); defer { lock.unlock() }
-        return _requests
+        state.withLock { $0.requests }
     }
 
     func start(timeout: TimeInterval = 5) async throws -> UInt16 {
@@ -749,10 +750,10 @@ nonisolated final class LoopbackHandshakeCaptureServer: @unchecked Sendable {
     }
 
     func stop() {
-        lock.lock()
-        let open = connections
-        connections.removeAll()
-        lock.unlock()
+        let open = state.withLock { state in
+            defer { state.connections.removeAll() }
+            return state.connections
+        }
         for connection in open { connection.cancel() }
         listener.cancel()
     }
@@ -760,9 +761,7 @@ nonisolated final class LoopbackHandshakeCaptureServer: @unchecked Sendable {
     // MARK: Handshake
 
     private func accept(_ connection: NWConnection) {
-        lock.lock()
-        connections.append(connection)
-        lock.unlock()
+        state.withLock { $0.connections.append(connection) }
         connection.start(queue: queue)
         readRequest(on: connection, buffer: Data())
     }
@@ -792,9 +791,7 @@ nonisolated final class LoopbackHandshakeCaptureServer: @unchecked Sendable {
             let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespaces)
             headers[name] = value
         }
-        lock.lock()
-        _requests.append(headers)
-        lock.unlock()
+        state.withLock { $0.requests.append(headers) }
         connection.cancel()
     }
 }
@@ -909,8 +906,15 @@ func pageEval(_ js: String, in page: WKWebView) async throws -> [String: Any] {
 ///
 /// Every request's path is recorded in `requestedPaths` (a 404 counts too), so
 /// a page can also use the server as a beacon target to say "I loaded".
-/// Nonisolated: it runs on its own dispatch queue, its state behind its lock.
-nonisolated final class LoopbackHTTPServer: @unchecked Sendable {
+/// Nonisolated: it runs on its own dispatch queue, its state behind a Mutex.
+nonisolated final class LoopbackHTTPServer: Sendable {
+
+    private struct State {
+        var port: UInt16 = 0
+        var requestedPaths: [String] = []
+        var requests: [Request] = []
+        var held: [String: [NWConnection]] = [:]
+    }
 
     private let listener: NWListener
     private let queue = DispatchQueue(label: "detour-test-loopback-http")
@@ -920,20 +924,15 @@ nonisolated final class LoopbackHTTPServer: @unchecked Sendable {
     private let truncated: [String: String]
     private let redirects: [String: String]
     private let setCookies: [String: String]
-    private var port: UInt16 = 0
-    private let lock = NSLock()
-    private var _requestedPaths: [String] = []
-    private var _requests: [Request] = []
-    private var _held: [String: [NWConnection]] = [:]
+    private let state = Mutex(State())
 
     /// The request paths seen so far, in arrival order.
     var requestedPaths: [String] {
-        lock.lock(); defer { lock.unlock() }
-        return _requestedPaths
+        state.withLock { $0.requestedPaths }
     }
 
     /// One request as it arrived: its path and its `Cookie` header, if any.
-    struct Request: Equatable {
+    struct Request: Equatable, Sendable {
         var path: String
         var cookie: String?
     }
@@ -941,8 +940,7 @@ nonisolated final class LoopbackHTTPServer: @unchecked Sendable {
     /// The requests seen so far, in arrival order (TASK-194: which cookies a
     /// page sent).
     var requests: [Request] {
-        lock.lock(); defer { lock.unlock() }
-        return _requests
+        state.withLock { $0.requests }
     }
 
     struct StartTimedOut: Error, CustomStringConvertible {
@@ -994,7 +992,7 @@ nonisolated final class LoopbackHTTPServer: @unchecked Sendable {
                 case .ready:
                     guard resumed.claim() else { return }
                     let port = listener.port?.rawValue ?? 0
-                    if let self { self.lock.lock(); self.port = port; self.lock.unlock() }
+                    self?.state.withLock { $0.port = port }
                     continuation.resume(returning: port)
                 case .failed(let error):
                     guard resumed.claim() else { return }
@@ -1012,10 +1010,10 @@ nonisolated final class LoopbackHTTPServer: @unchecked Sendable {
     }
 
     func stop() {
-        lock.lock()
-        let held = _held.values.flatMap { $0 }
-        _held.removeAll()
-        lock.unlock()
+        let held = state.withLock { state in
+            defer { state.held.removeAll() }
+            return state.held.values.flatMap { $0 }
+        }
         for connection in held { connection.cancel() }
         listener.cancel()
     }
@@ -1025,9 +1023,7 @@ nonisolated final class LoopbackHTTPServer: @unchecked Sendable {
     /// ends the load. A `truncated` route has nothing left to send, so the
     /// close alone ends its load, short of the promised length.
     func release(_ path: String) {
-        lock.lock()
-        let connections = _held.removeValue(forKey: path) ?? []
-        lock.unlock()
+        let connections = state.withLock { $0.held.removeValue(forKey: path) ?? [] }
         var rest = Data()
         if truncated[path] != nil {
             // Nothing: the close is the response ending short.
@@ -1078,15 +1074,17 @@ nonisolated final class LoopbackHTTPServer: @unchecked Sendable {
         let cookie = request.components(separatedBy: "\r\n").lazy
             .first { $0.lowercased().hasPrefix("cookie:") }
             .map { String($0.dropFirst("cookie:".count)).trimmingCharacters(in: .whitespaces) }
-        lock.lock()
-        _requestedPaths.append(path)
-        _requests.append(Request(path: path, cookie: cookie))
-        lock.unlock()
+        // A held connection is recorded in the same critical section as its
+        // path, so a test that sees the path in `requestedPaths` and calls
+        // `release(_:)` always finds the connection to release.
+        let holds = pending[path] != nil || stalled[path] != nil || truncated[path] != nil
+        state.withLock { state in
+            state.requestedPaths.append(path)
+            state.requests.append(Request(path: path, cookie: cookie))
+            if holds { state.held[path, default: []].append(connection) }
+        }
 
-        if pending[path] != nil || stalled[path] != nil || truncated[path] != nil {
-            lock.lock()
-            _held[path, default: []].append(connection)
-            lock.unlock()
+        if holds {
             if let start = truncated[path] {
                 // More is promised than `release(_:)` will ever deliver.
                 let header = Self.head(contentLength: start.utf8.count + 4096)
@@ -1102,7 +1100,7 @@ nonisolated final class LoopbackHTTPServer: @unchecked Sendable {
         }
 
         if let location = redirects[path] {
-            lock.lock(); let port = self.port; lock.unlock()
+            let port = state.withLock { $0.port }
             let head = "HTTP/1.1 302 Found\r\nLocation: \(location.replacingOccurrences(of: "{port}", with: String(port)))\r\n"
                 + "Content-Length: 0\r\nConnection: close\r\n\r\n"
             connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in
