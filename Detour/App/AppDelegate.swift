@@ -17,6 +17,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("XCTest") }
     }
 
+    /// Whether another process with Detour's bundle id is running now.
+    static var anotherInstanceIsRunning: Bool {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return false }
+        let current = ProcessInfo.processInfo.processIdentifier
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .contains { $0.processIdentifier != current }
+    }
+
     /// Whether Sparkle's updater may run in this process (TASK-41).
     ///
     /// Sparkle keeps its schedule and check results in `SU*` keys of the bundle
@@ -66,6 +74,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // directory's leftovers are cleaned by the test bundle instead.
         if !Self.isRunningUnitTests {
             TabStore.shared.retryPendingProfileDataRemovals()
+        }
+
+        // Extension notifications an earlier launch left in Notification
+        // Center map to nothing any more (TASK-248). Not in the XCTest host:
+        // this runs before the bundle installs its fake center, and the real
+        // one is the developer's Detour's. Not while another Detour process
+        // runs either (the production app beside an isolated data directory
+        // run, or the reverse): they share the bundle id and so the center,
+        // and what this one would take for leftovers may be that process's
+        // live notifications.
+        if !Self.isRunningUnitTests && !Self.anotherInstanceIsRunning {
+            Task { await ExtensionNotificationManager.shared.removeLeftoverNotifications() }
+        } else if !Self.isRunningUnitTests {
+            log.notice("Not removing leftover extension notifications: another Detour process is running")
         }
 
         // Prune old history off the launch critical path. expireOldVisits() is

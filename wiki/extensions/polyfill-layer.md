@@ -85,6 +85,9 @@ sources:
   - id: task-253
     resource: backlog:TASK-253
     title: "Extensions: Detour never requests notification permission, so extension notifications may never be shown"
+  - id: task-248
+    resource: backlog:TASK-248
+    title: "Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared"
 ---
 
 `ExtensionAPIPolyfill` generates one JavaScript bundle (`polyfillJS`) that runs
@@ -342,9 +345,40 @@ calls apply in order, but it needs a queue per id, makes `clear` wait for the
 `add`, and still has to decide what `getAll` says in between.
 
 The manager talks to the center through `ExtensionNotificationCenter` (`add`,
-`removeNotifications`, `authorizationStatus`, `requestAuthorization`), a seam
+`removeNotifications`, `authorizationStatus`, `requestAuthorization`,
+`deliveredIdentifiers`, `pendingIdentifiers`), a seam
 for tests: `HeldNotificationCenter` holds every `add`, and optionally every
 authorization prompt, until the test releases it.[^notification-manager]
+
+## Notifications left by an earlier launch are removed at launch
+
+The manager's map from identifier to owner lives in memory only, so a
+notification still in Notification Center after a relaunch belongs to nobody:
+a click on it is ignored and the extension's `clear` cannot reach it. At
+launch `AppDelegate` calls `removeLeftoverNotifications()`, which lists
+delivered and pending identifiers and removes every one shaped like an
+extension notification of any build:[^task-248]
+
+| Form | Builds | Matched by |
+|---|---|---|
+| `detour-ext-notification.v3\|<UUID>` | since TASK-238's second pass | prefix |
+| `detour-ext-notification.v2\|<profile>\|<ext>\|<id>` | TASK-238's first pass | prefix |
+| `<extension id>:<id>` | before TASK-238 | the id must be 32 letters a–p (a CRX key's) or a UUID string (an unpacked extension with no key), anchored at the start |
+
+- Nothing else in Detour posts a UNNotification today (downloads and the
+  updater do not; Sparkle could only with gentle reminders, which Detour does
+  not enable), but the legacy form is still anchored on the extension id's
+  shape rather than "anything with a colon", so a later poster is safe unless
+  its identifiers start with such an id and a colon.
+- Identifiers this launch has an entry for are kept: the filter runs after the
+  listing returns, so a create made while it was in flight survives. No need
+  to run before the first extension loads.
+- Not gated on authorization: listing never prompts.
+- Skipped in the XCTest host (launch runs before the bundle installs its fake
+  center) and whenever another process with Detour's bundle id is running:
+  the production app and a `DETOUR_DATA_DIR` run share one Notification
+  Center, and one would take the other's live notifications for leftovers.
+  A run that skips it says so in a `notice` log line.
 
 ## chrome.notifications asks for authorization at the first create
 
@@ -579,4 +613,5 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-239]: Extensions: the notifications API is available without the notifications permission
 [^task-240]: Extensions: notifications.clear and notifications.update diverge from Chrome
 [^chrome-notifications-api]: chrome.notifications API reference
+[^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared
 [^task-253]: Extensions: Detour never requests notification permission, so extension notifications may never be shown

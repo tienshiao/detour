@@ -17,6 +17,12 @@ protocol ExtensionNotificationCenter: AnyObject {
     /// Asks the user (the system prompt) and answers whether they allowed it.
     /// Only called while the status is `.notDetermined`.
     func requestAuthorization() async -> Bool
+    /// The identifiers of every notification of Detour's on screen or in
+    /// Notification Center, whichever launch or build showed it. Listing never
+    /// prompts the user, whatever the authorization status (TASK-248).
+    func deliveredIdentifiers() async -> [String]
+    /// The identifiers of every request of Detour's not yet delivered.
+    func pendingIdentifiers() async -> [String]
 }
 
 /// The part of `UNAuthorizationStatus` the manager acts on (TASK-253).
@@ -58,6 +64,14 @@ final class SystemExtensionNotificationCenter: ExtensionNotificationCenter {
             log.error("Notification authorization request failed: \(error.localizedDescription)")
             return false
         }
+    }
+
+    func deliveredIdentifiers() async -> [String] {
+        await UNUserNotificationCenter.current().deliveredNotifications().map(\.request.identifier)
+    }
+
+    func pendingIdentifiers() async -> [String] {
+        await UNUserNotificationCenter.current().pendingNotificationRequests().map(\.identifier)
     }
 }
 
@@ -106,7 +120,9 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     private static var sharedInstance: ExtensionNotificationManager?
 
     /// The manager every profile's handler uses, and the system center's
-    /// delegate. Created at the first notification call.
+    /// delegate. Created at launch to remove the notifications earlier
+    /// launches left (`removeLeftoverNotifications`), or at the first
+    /// notification call when launch skips that.
     static var shared: ExtensionNotificationManager {
         if let sharedInstance { return sharedInstance }
         let manager = ExtensionNotificationManager(center: SystemExtensionNotificationCenter())
@@ -117,7 +133,9 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
 
     /// `shared` if anything has created it this launch, else nil: with no
     /// manager there is no notification to take away, so a profile or session
-    /// ending does not set up the system center.
+    /// ending does not set up the system center. Launch creates it to remove
+    /// leftovers, so it is nil only where launch skipped that (the XCTest
+    /// host, or another Detour process running).
     static var sharedIfCreated: ExtensionNotificationManager? { sharedInstance }
 
     #if DEBUG
@@ -198,8 +216,52 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// `<extensionID>:<notificationID>` before TASK-238, then
     /// `detour-ext-notification.v2|<profile UUID>|…` — match no entry, so a
     /// click or close on one still on screen is ignored. So is one of this
-    /// build's from an earlier launch: the map lives in memory only.
+    /// build's from an earlier launch: the map lives in memory only. Launch
+    /// removes all of them (`removeLeftoverNotifications`, TASK-248).
     static let identifierPrefix = "detour-ext-notification.v3|"
+
+    /// The prefix of the identifiers TASK-238's first build handed out:
+    /// `detour-ext-notification.v2|<profile UUID>|<extension id>|<id>`.
+    private static let v2IdentifierPrefix = "detour-ext-notification.v2|"
+
+    /// The identifiers builds before TASK-238 handed out:
+    /// `<extension id>:<notification id>`, where the extension id is the one
+    /// Detour keys its contexts by, a Chrome-style id (32 letters a–p, from
+    /// the CRX key) or, for an unpacked extension with no key, a UUID string.
+    /// Anchored on that id shape so an identifier of anything else that posts
+    /// as Detour (Sparkle's update reminder) is never taken for one.
+    private static let legacyIdentifier =
+        /^(?:[a-p]{32}|[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}):/
+
+    /// Whether `identifier` has the shape of an extension notification some
+    /// Detour build showed: v3 (this build's), v2 or legacy.
+    static func isExtensionNotificationIdentifier(_ identifier: String) -> Bool {
+        identifier.hasPrefix(identifierPrefix)
+            || identifier.hasPrefix(v2IdentifierPrefix)
+            || identifier.prefixMatch(of: legacyIdentifier) != nil
+    }
+
+    /// Takes away every extension notification, delivered or pending, that an
+    /// earlier launch showed (TASK-248). Nothing maps one back to its owner
+    /// any more, so a click on it would be ignored and the extension's `clear`
+    /// could not reach it. Called once at launch.
+    ///
+    /// An identifier this launch handed out and still has an entry for is
+    /// kept: the listing is awaited, so an extension may create a
+    /// notification before it answers, and the filter runs after. One this
+    /// launch handed out and has since dropped is removed again, which is
+    /// harmless. Not gated on authorization: listing never prompts, and a user
+    /// who turned notifications off may still have banners from before.
+    func removeLeftoverNotifications() async {
+        let delivered = await center.deliveredIdentifiers()
+        let pending = await center.pendingIdentifiers()
+        let leftovers = Set(delivered + pending).filter {
+            Self.isExtensionNotificationIdentifier($0) && entries[$0] == nil
+        }
+        guard !leftovers.isEmpty else { return }
+        log.info("Removing \(leftovers.count) extension notification(s) left by an earlier launch")
+        center.removeNotifications(withIdentifiers: leftovers.sorted())
+    }
 
     private static func newIdentifier() -> String {
         identifierPrefix + UUID().uuidString

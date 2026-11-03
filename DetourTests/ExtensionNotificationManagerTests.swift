@@ -51,7 +51,37 @@ final class HeldNotificationCenter: ExtensionNotificationCenter {
         removals.append(contentsOf: identifiers)
         for identifier in identifiers {
             shown.removeValue(forKey: identifier)
+            pending.remove(identifier)
         }
+    }
+
+    // MARK: Listing (TASK-248)
+
+    /// Requests not yet delivered, as an earlier launch left them.
+    private(set) var pending: Set<String> = []
+    /// Runs while `deliveredIdentifiers` is answering, before it answers, so
+    /// a test can act between the manager's listing and its filtering.
+    var whileListing: (@MainActor () -> Void)?
+
+    /// Puts a notification on screen as an earlier launch (or another app
+    /// component) left it, without an `add`.
+    func deliver(_ identifier: String, title: String = "left over") {
+        shown[identifier] = title
+    }
+
+    /// Leaves a request pending as an earlier launch might have.
+    func leavePending(_ identifier: String) {
+        pending.insert(identifier)
+    }
+
+    func deliveredIdentifiers() async -> [String] {
+        let identifiers = Array(shown.keys)
+        whileListing?()
+        return identifiers
+    }
+
+    func pendingIdentifiers() async -> [String] {
+        Array(pending)
     }
 
     /// Answers the held `add` at `index` (in call order among those still
@@ -224,6 +254,83 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         XCTAssertNotNil(TestHostNotificationCenter.shared.shown[identifier])
         shared.removeAll(for: owner)
         XCTAssertNil(TestHostNotificationCenter.shared.shown[identifier])
+    }
+
+    // MARK: - Leftovers of earlier launches (TASK-248)
+
+    private static let v3Leftover = "detour-ext-notification.v3|0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0"
+    private static let v2Leftover =
+        "detour-ext-notification.v2|11111111-1111-1111-1111-111111111111|aeblfdkhhhdcdjpifhhbdiojplfjncoa|price-alert"
+    private static let legacyStoreLeftover = "aeblfdkhhhdcdjpifhhbdiojplfjncoa:price-alert"
+    private static let legacyUnpackedLeftover = "6B1C3A2E-9F4D-4E8A-B2C7-1D5E8F3A9B60:sync:done"
+
+    /// Every form an earlier build used goes, delivered or pending.
+    @MainActor func testLaunchRemovesLeftoversOfEveryIdentifierForm() async {
+        center.deliver(Self.v3Leftover)
+        center.deliver(Self.v2Leftover)
+        center.deliver(Self.legacyStoreLeftover)
+        center.leavePending(Self.legacyUnpackedLeftover)
+        center.leavePending("detour-ext-notification.v3|pending")
+
+        await manager.removeLeftoverNotifications()
+
+        XCTAssertTrue(center.shown.isEmpty, "left on screen: \(center.shown.keys.sorted())")
+        XCTAssertTrue(center.pending.isEmpty, "left pending: \(center.pending.sorted())")
+        XCTAssertEqual(Set(center.removals), [Self.v3Leftover, Self.v2Leftover, Self.legacyStoreLeftover,
+                                              Self.legacyUnpackedLeftover, "detour-ext-notification.v3|pending"])
+    }
+
+    /// Identifiers that are not an extension notification's are untouched:
+    /// whatever else posts as Detour (Sparkle's update reminder) keeps its
+    /// notifications, including ones with a colon that the legacy form would
+    /// match without the extension-id anchor.
+    @MainActor func testLaunchKeepsNotificationsThatAreNotAnExtensions() async {
+        let others = [
+            "SUScheduledUpdateReminder",
+            "download:finished",
+            "notif-ext-a:probe",
+            "AEBLFDKHHHDCDJPIFHHBDIOJPLFJNCOA:upper-case-is-not-an-extension-id",
+            "aeblfdkhhhdcdjpifhhbdiojplfjnco:31-letters",
+            "aeblfdkhhhdcdjpifhhbdiojplfjncoq:q-is-past-p",
+            "x-aeblfdkhhhdcdjpifhhbdiojplfjncoa:not-anchored",
+            "detour-ext-notification.v1|older",
+            "detour-ext-notification.v3",
+        ]
+        for identifier in others { center.deliver(identifier) }
+        center.leavePending("download:pending")
+
+        await manager.removeLeftoverNotifications()
+
+        XCTAssertEqual(Set(center.shown.keys), Set(others))
+        XCTAssertEqual(center.pending, ["download:pending"])
+        XCTAssertTrue(center.removals.isEmpty, "removed: \(center.removals)")
+    }
+
+    /// A notification this launch created is kept, whether it was shown
+    /// before the cleanup listed, or created (and still in flight) while the
+    /// listing was answering.
+    @MainActor func testLaunchKeepsNotificationsThisLaunchCreated() async throws {
+        center.holdsAdds = false
+        let shown = startCreate("shown", title: "Shown")
+        await fulfillment(of: [shown.done], timeout: 5)
+        center.deliver(Self.v3Leftover)
+        center.holdsAdds = true
+        var inFlight: (done: XCTestExpectation, answeredID: () -> String?, identifier: String)?
+        center.whileListing = { [unowned self] in
+            inFlight = startCreate("in-flight", title: "In flight", owner: Self.ownerB)
+        }
+
+        await manager.removeLeftoverNotifications()
+
+        XCTAssertEqual(center.removals, [Self.v3Leftover])
+        XCTAssertEqual(center.shown[shown.identifier], "Shown")
+        let created = try XCTUnwrap(inFlight)
+        try await waitForHeldAdds(1)
+        center.releaseAll()
+        await fulfillment(of: [created.done], timeout: 5)
+        XCTAssertEqual(center.shown[created.identifier], "In flight")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerB), ["in-flight": true])
+        XCTAssertEqual(center.removals, [Self.v3Leftover])
     }
 
     // MARK: - Authorization (TASK-253)
