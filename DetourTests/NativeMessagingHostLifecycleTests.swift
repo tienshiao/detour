@@ -136,6 +136,25 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
         XCTAssertEqual(events, [])
     }
 
+    // MARK: - TASK-233: releasing a live host ends its process
+
+    /// A host that answers and then stays alive and silent: once its owner lets
+    /// go of the `NativeMessagingHost`, the process is terminated, without
+    /// anyone calling `disconnect()`.
+    @MainActor func testReleasingALiveSilentHostTerminatesItsProcess() async throws {
+        try connect(.answersThenStaysAlive(try frame(["n": 1])))
+        try host?.sendMessage(["request": 1])
+        try await waitUntil("the reply") { self.events == ["message:1"] }
+        let fixture = try XCTUnwrap(fixture)
+        try await waitUntil("the host process to be running") { fixture.processCount() == 1 }
+
+        weak var released = host
+        host = nil
+        XCTAssertNil(released, "the read loop must not keep the host alive while it waits on a silent pipe")
+        try await waitUntil("the host process to be terminated", timeout: 5) { fixture.processCount() == 0 }
+        XCTAssertEqual(events, ["message:1"], "letting go is not the host going away: no onDisconnect")
+    }
+
     // MARK: - The join, without a process
 
     @MainActor func testTheEndOfStreamWaitsForTheExitStatus() {

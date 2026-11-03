@@ -107,13 +107,17 @@ class NativeMessagingHost {
         self.endTiming = endTiming
     }
 
-    /// Isolated: the process and pipes are main-actor state. The read loop
-    /// holds a strong reference for each iteration, including while it is
-    /// blocked reading, so while the host process is alive and quiet this does
-    /// not run when the owner lets go: it runs once the loop's next read
-    /// returns (a message, EOF or an error). The loop's reference is then
-    /// usually the last one, released on the read queue, and the teardown hops
-    /// to the main actor. Owners that need the process gone call `disconnect()`.
+    /// Isolated: the process and pipes are main-actor state. Letting go of
+    /// the last reference ends the host process: the host's own machinery
+    /// (the read loop, the termination handler and the end-of-stream waits)
+    /// refers to it weakly, so only its owners keep it alive, and this runs
+    /// when they let go even while the process is alive and silent
+    /// (TASK-233). `disconnect()` then terminates it; the read loop, blocked
+    /// on stdout, sees the end of stream and exits, releasing the read handle
+    /// (unless a process the host started still holds its stdout, in which
+    /// case the loop stays blocked until that one exits). A reference taken
+    /// for a moment off the main actor (a report the loop is making) can be
+    /// the last one, in which case the teardown hops to the main actor.
     isolated deinit {
         disconnect()
     }
@@ -358,8 +362,14 @@ class NativeMessagingHost {
         // hold up the next connection's.
         let readQueue = DispatchQueue(label: "com.detour.native-messaging.read")
 
+        // The loop holds the host weakly (TASK-233): it spends most of its
+        // life blocked in `readData` on a host that has nothing to say, and a
+        // strong reference there would keep the host, and so its process,
+        // alive after the owner let go. Ending the connection, by
+        // `disconnect()` or by the owner's release running it, terminates the
+        // process, so the read returns the end of stream and the loop exits.
         readQueue.async { [weak self] in
-            while let self, connection.isOpen {
+            while connection.isOpen {
                 // Read 4-byte length prefix
                 let lengthData = stdout.readData(ofLength: 4)
                 guard let length = lengthData.littleEndianUInt32() else {
@@ -392,8 +402,8 @@ class NativeMessagingHost {
                     // value nothing here touches again, so it can be sent to
                     // the main actor; tasks reach it in the order they are
                     // made, as `record`'s reports do.
-                    Task { @MainActor in
-                        self.deliver(json, from: connection)
+                    Task { @MainActor [weak self] in
+                        self?.deliver(json, from: connection)
                     }
                 } else {
                     log.error("[1PW-DEBUG] ← NM RECV [\(hostName, privacy: .public)] (\(messageData.count) bytes): failed to parse as JSON")

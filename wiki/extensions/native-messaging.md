@@ -5,7 +5,7 @@ description: How Detour runs Chrome native messaging hosts for extensions — ho
 resource: ../../Detour/Extensions/Runtime/NativeMessagingHost.swift
 tags: [extensions, native-messaging, security, logging]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T06:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T06:20:00Z }
 sources:
   - id: task-232
     resource: backlog:TASK-232
@@ -16,6 +16,9 @@ sources:
   - id: lifecycle-tests
     resource: ../../DetourTests/NativeMessagingHostLifecycleTests.swift
     title: NativeMessagingHostLifecycleTests.swift
+  - id: task-233
+    resource: backlog:TASK-233
+    title: A quiet host process outlives the owner that released it
   - id: task-231-8
     resource: backlog:TASK-231.8
     title: Memory safety audit of raw-pointer code and untrusted-byte parsing
@@ -200,6 +203,24 @@ blocked on an earlier connection's pipe cannot hold up the next one. The disconn
 itself is only logged and tested: both owners ignore it (the one-shot path
 answers with Chrome's "Native host has exited.").
 
+### The owner letting go
+
+Nothing but its owners hold a `NativeMessagingHost`: the read loop, the
+termination handler and the end-of-stream waits all refer to it weakly, and
+the loop captures only the stdout handle, the `Connection` and the host
+name. Releasing the last reference runs the `isolated deinit`, which calls
+`disconnect()`: the process is terminated, the blocked read returns the end
+of stream, and the loop exits, letting go of the handle. Until TASK-233 the
+loop ran `while let self`, holding the host strongly across the blocking
+`readData`, so a host that was alive and silent kept its object, and its
+process, alive after the owner let go: a one-shot host that answered and then
+stayed running outlived the request that removed its `activeMessagingHosts`
+entry.[^task-233] The two owners rely on this differently. The one-shot path
+lets go once the request settles, which now ends the process. The port path
+keeps its host in `liveNativeHosts` and in the port's handlers for as long as
+the port is open, so the keep-alive's host is never released early; the port
+disconnecting, or a context teardown, calls `disconnect()` explicitly.
+
 # Logging
 
 Native hosts exchange secrets. `NativeMessagingHost` used to log 500-byte
@@ -293,6 +314,10 @@ evidence for. There is no level between notice and error to use:
   join's transitions are tested without a process.[^lifecycle-tests]
   `NativeMessagingEnforcementTests` repeats the reply-then-exit host through
   WebKit's `sendNativeMessage` (15 calls) and `connectNative` (8 ports).
+  Releasing a live, silent host ends its process, at the host level and end
+  to end through a one-shot `sendNativeMessage`, while a `connectNative`
+  port's host that stays alive keeps running until the page disconnects
+  (TASK-233).
 - Framing helpers (`encodeMessage`, `decodeMessage`) are also covered in
   `ExtensionIDDerivationTests`. The log line *text* is not asserted anywhere.
 
@@ -310,5 +335,6 @@ evidence for. There is no level between notice and error to use:
 [^task-231-8]: Memory safety audit of raw-pointer code and untrusted-byte parsing
 [^framing-tests]: NativeMessagingFramingTests.swift
 [^task-232]: TASK-232
+[^task-233]: A quiet host process outlives the owner that released it
 [^ending]: NativeHostEnding.swift (the join of end of stream and process exit)
 [^lifecycle-tests]: NativeMessagingHostLifecycleTests.swift

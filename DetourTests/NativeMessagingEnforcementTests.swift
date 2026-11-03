@@ -15,7 +15,7 @@ import GRDB
 /// was spawned is read off the process table by that unique argument, and every
 /// such process is killed in tearDown.
 ///
-/// The host lifecycle legs at the end (TASK-232) use the same
+/// The host lifecycle legs at the end (TASK-232, TASK-233) use the same
 /// production path with hosts that answer and then exit or stay alive.
 nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
 
@@ -589,5 +589,65 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
         try await waitUntil("the exited hosts to be released") {
             ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id) == 0
         }
+    }
+
+    // MARK: - A one-shot host that stays alive ends with its request (TASK-233)
+
+    /// A one-shot host that answers and then stays alive and silent: once the
+    /// reply settles the promise, the request lets go of the host and its
+    /// process is terminated. Before TASK-233 the read loop, blocked on the
+    /// silent pipe, kept the host object alive, so nothing ended the process.
+    @MainActor func testAOneShotHostThatStaysAliveIsTerminatedOnceItHasAnswered() async throws {
+        let ext = try await makeExtension()
+        let reply = try JSONSerialization.data(withJSONObject: ["pong": 1])
+        try installFakeHost(allowing: [ext.id], behavior: .answersThenStaysAlive(NativeMessagingHost.encodeMessage(reply)))
+        let loaded = try await load(ext, profileName: "NM Answer Then Stay Profile")
+
+        let result = try await sendNativeMessage(Self.hostName, ["ping": 1], in: loaded.webView)
+        XCTAssertEqual(result["outcome"] as? String, "reply", "\(result)")
+        XCTAssertEqual((result["reply"] as? [String: Any])?["pong"] as? Int, 1, "\(result)")
+        XCTAssertEqual(ExtensionManager.shared.pendingOneShotNativeMessageCountForTesting(extensionID: ext.id), 0)
+        try await waitUntil("the answered host's process to be terminated", timeout: 5) {
+            self.fakeHostProcessCount() == 0
+        }
+    }
+
+    /// The same host on a `connectNative` port is not let go: the port owns
+    /// it, so after the reply the process keeps running and the port stays
+    /// open (the keep-alive depends on it). The page's `disconnect()` ends it.
+    @MainActor func testAConnectNativePortKeepsAHostThatStaysAliveUntilThePageDisconnects() async throws {
+        let ext = try await makeExtension()
+        let reply = try JSONSerialization.data(withJSONObject: ["pong": 1])
+        try installFakeHost(allowing: [ext.id], behavior: .answersThenStaysAlive(NativeMessagingHost.encodeMessage(reply)))
+        let loaded = try await load(ext, profileName: "NM Port Answer Then Stay Profile")
+        let controller = loaded.profile.extensionController
+
+        let result = try await evalJSON("""
+            return await new Promise((resolve) => {
+                const timer = setTimeout(() => resolve({ timedOut: true }), 5000);
+                const port = chrome.runtime.connectNative(host);
+                window.__stayPort = { port, disconnected: false };
+                port.onDisconnect.addListener(() => { window.__stayPort.disconnected = true; });
+                port.onMessage.addListener((message) => { clearTimeout(timer); resolve({ pong: message.pong }); });
+                port.postMessage({ ping: 1 });
+            });
+            """, in: loaded.webView, arguments: ["host": Self.hostName])
+        XCTAssertEqual(result["pong"] as? Int, 1, "\(result)")
+
+        // Long enough for a host the port did not own to have been released
+        // and terminated (the one-shot leg above takes well under this).
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        XCTAssertEqual(fakeHostProcessCount(), 1, "the port's host must keep running while the port is open")
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 1)
+        let open = try await evalJSON("return { disconnected: window.__stayPort.disconnected };",
+                                      in: loaded.webView, arguments: [:])
+        XCTAssertEqual(open["disconnected"] as? Bool, false)
+
+        _ = try await evalJSON("window.__stayPort.port.disconnect(); return { ok: true };",
+                               in: loaded.webView, arguments: [:])
+        try await waitUntil("the disconnected port's host process to be terminated", timeout: 5) {
+            self.fakeHostProcessCount() == 0
+        }
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 0)
     }
 }
