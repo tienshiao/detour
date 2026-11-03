@@ -577,6 +577,24 @@ async function handleMessage(message) {
       return { wasCleared: cleared };
     }
 
+    // create() then clear() without awaiting the create (TASK-234).
+    case 'notificationCreateThenClear': {
+      const id = message.notificationId || 'api-explorer-race-worker';
+      const created = chrome.notifications.create(id, {
+        type: 'basic',
+        title: 'Create then clear',
+        message: 'Should never stay on screen',
+        iconUrl: chrome.runtime.getURL('icon.png')
+      });
+      const wasCleared = await chrome.notifications.clear(id);
+      const notificationId = await created;
+      const all = await chrome.notifications.getAll();
+      const listedAfterClear = Object.prototype.hasOwnProperty.call(all, id);
+      console.log('[API Explorer] notifications create-then-clear', notificationId, wasCleared, listedAfterClear);
+      appendLog({ event: 'notifications.createThenClear', notificationId, wasCleared, listedAfterClear });
+      return { from: 'worker', notificationId, wasCleared, listedAfterClear, notifications: all };
+    }
+
     case 'getAllNotifications': {
       const all = await chrome.notifications.getAll();
       return { notifications: all };

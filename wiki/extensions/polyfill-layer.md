@@ -64,6 +64,12 @@ sources:
   - id: favicon-scope-tests
     resource: ../../DetourTests/ExtensionFaviconScopeTests.swift
     title: ExtensionFaviconScopeTests
+  - id: task-234
+    resource: backlog:TASK-234
+    title: notifications.clear issued while notifications.create is still adding the notification is lost
+  - id: notification-manager
+    resource: ../../Detour/Extensions/Runtime/ExtensionNotificationManager.swift
+    title: ExtensionNotificationManager.swift
 ---
 
 `ExtensionAPIPolyfill` generates one JavaScript bundle (`polyfillJS`) that runs
@@ -287,6 +293,39 @@ rather than gated; both transports now get `Unknown polyfill message type`.
 A message type nothing sends is still reachable: every `case` in the
 handler's dispatch is API surface.
 
+## chrome.notifications applies calls in the order they were made
+
+`ExtensionNotificationManager` (one shared instance; the handler reaches it
+through `notificationManager`) records a notification when `create` is
+called, before `UNUserNotificationCenter.add` returns. An extension that does
+not await `create` before `clear` or `update` therefore gets what it asked
+for:[^task-234]
+
+| Calls, none awaited | Result |
+|---|---|
+| `create('x')`, `clear('x')` | The clear drops the entry at once and removes the notification; when the `add` returns, the manager removes it once more, because the clear's removal can reach the center before the notification does. `getAll` does not list it |
+| `create('x')`, `update('x')` | The update finds the entry and re-creates it; `wasUpdated` is `true` and the update's content shows |
+| `create('x')`, `clear('x')`, `create('x')` | Each `create` carries a generation. The first `add` returning finds a newer generation and does nothing (the newer `add` replaces what it showed), so the second notification stands |
+
+`getAll` lists a notification whose `add` is still in flight. A failed `add`
+drops the entry only if no later `create` has replaced it, and also removes
+any notification shown under that id, so `getAll` and the screen agree. Before
+TASK-234 the entry was recorded only after `add` returned, so a clear issued
+meanwhile found nothing and the notification came back.
+
+Rejected: serializing the operations per notification id. It would also make
+calls apply in order, but it needs a queue per id, makes `clear` wait for the
+`add`, and still has to decide what `getAll` says in between.
+
+The manager talks to the center through `ExtensionNotificationCenter` (`add`,
+`removeNotifications`), a seam for tests: `HeldNotificationCenter` holds every
+`add` until the test releases it. Nothing in Detour calls
+`requestPermission()`, so whether the system shows anything depends on an
+authorization the app never asks for. On the development machine the
+`com.detourbrowser.mac` bundle id is authorized (a Debug build's `add`
+succeeded in the TASK-234 `/verify` run); without that authorization every
+`add` would fail and `getAll` would stay empty.[^notification-manager]
+
 ## Callback form and `runtime.lastError`
 
 Every promise-backed polyfill API takes an optional trailing callback and
@@ -369,6 +408,8 @@ uncaught error rather than an unhandled rejection.
 | [ExtensionPolyfillIntegrationTests](../../DetourTests/ExtensionPolyfillIntegrationTests.swift) | A real `WKWebExtensionContext`: what WebKit's wrappers actually do, garbage-collection survival, real origins |
 | [ExtensionPolyfillProfileWiringTests](../../DetourTests/ExtensionPolyfillProfileWiringTests.swift) | The production wiring in `Profile.extensionController`, with no test-side setup: deleting the wiring fails it |
 | [ExtensionHistoryScopeTests](../../DetourTests/ExtensionHistoryScopeTests.swift) | `chrome.history.search` through the same production wiring, one extension in two profiles: isolation, the permission gate, bad arguments and the default range from an extension page and a worker, promise and callback form |
+| [ExtensionNotificationManagerTests](../../DetourTests/ExtensionNotificationManagerTests.swift) | The `notifications` call orderings above against `HeldNotificationCenter`: clear or update while the `add` is in flight, create–clear–create, an `add` answering out of order or failing, another extension's clear |
+| [ExtensionNotificationOrderingTests](../../DetourTests/ExtensionNotificationOrderingTests.swift) | The same orderings from an extension page and its worker through the production wiring, with the profile's handler on a held center |
 | [ExtensionFaviconScopeTests](../../DetourTests/ExtensionFaviconScopeTests.swift) | `_favicon` through the same wiring: one extension in two profiles, another profile's WebKit host, a tab's handler, the `favicon` permission, the Private profile, what a worker's `fetch` gets, and the removed `favicon.lookup` message from a page and a worker |
 
 A new or changed API needs all three kinds, from both transports; the policy is
@@ -389,3 +430,5 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-152]: favicon.lookup answers from every profile's history, without a permission check
 [^task-153]: chrome.history.search with empty text scans every visit of the profile
 [^chrome-history-api]: Chromium, history_api.cc (HistorySearchFunction)
+[^task-234]: notifications.clear issued while notifications.create is still adding the notification is lost
+[^notification-manager]: ExtensionNotificationManager.swift

@@ -102,6 +102,7 @@ All in `ExtensionTestSupport.swift` unless noted.
 | `LoopbackHTTPServer` | Real http documents for frame tests; a different port is a different origin. A `pending`/`stalled`/`truncated` route's connection is held in the same critical section that records its path, so once a path shows up in `requestedPaths`, `release(_:)` finds its connection (before TASK-237 a release could slip in between and leave the load hanging) |
 | `LoopbackWebSocketServer` | An echo server for the [relay](./websocket-relay.md) |
 | `CRX3TestSupport.swift` | Builds signed CRX3 files in the test |
+| `HeldNotificationCenter` (`ExtensionNotificationManagerTests.swift`) | A notification center that holds every `add` until `release`, for `ExtensionNotificationManager(center:)` or a profile handler's `notificationManager` |
 
 The loopback servers run on their own dispatch queues and keep all their
 mutable state in one `Mutex`-guarded struct each, so they are plain
@@ -188,6 +189,14 @@ API Explorer details that show up in logs and are easy to misread:
   See [profile data removal](../architecture/profile-data-removal.md).
 - **Log line text is not asserted anywhere.** After changing a log line that
   a playbook greps for, check it by eye.
+- **A worker's polyfill requests need a profile-owned controller.** They
+  reach Swift through `ExtensionManager`'s `sendMessage` delegate, which finds
+  the handler through `Profile.profile(owning:)`. The controller
+  `ExtensionPolyfillIntegrationTests` builds by hand has no owning profile, so
+  only its page transport reaches a handler; a test that needs both transports
+  goes through `Profile.extensionController` (level 4), as
+  `ExtensionHistoryScopeTests` and `ExtensionNotificationOrderingTests` do
+  (read from the code, TASK-234).
 - **Stale comments.** The class comment on `ExtensionPolyfillIntegrationTests`
   says service worker messaging cannot be tested in the test process; the
   same class contains real worker round trips.

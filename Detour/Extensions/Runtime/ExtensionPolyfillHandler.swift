@@ -46,6 +46,13 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// as a test seam for the same reason. Production never assigns it.
     var now: () -> Date = Date.init
 
+    /// The manager behind `notifications.*`, as a test seam for the same
+    /// reason: a test hands it a fake notification center (TASK-234).
+    /// Production never assigns it. Lazy, so the shared manager (and with it
+    /// the system center's delegate) is set up at the first notification call,
+    /// not when a profile builds its handler.
+    lazy var notificationManager: ExtensionNotificationManager = .shared
+
     /// Active offscreen document hosts, keyed by extensionID.
     var offscreenHosts: [String: OffscreenDocumentHost] = [:]
 
@@ -530,7 +537,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         case "notifications.create":
             let notificationId = params["notificationId"] as? String
             let options = params["options"] as? [String: Any] ?? [:]
-            ExtensionNotificationManager.shared.create(
+            notificationManager.create(
                 extensionID: extensionID, notificationID: notificationId, options: options
             ) { id in
                 replyHandler(["notificationId": id], nil)
@@ -542,7 +549,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 return
             }
             let options = params["options"] as? [String: Any] ?? [:]
-            ExtensionNotificationManager.shared.update(
+            notificationManager.update(
                 extensionID: extensionID, notificationID: notificationId, options: options
             ) { updated in
                 replyHandler(["wasUpdated": updated], nil)
@@ -553,14 +560,14 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler(nil, "notificationId required")
                 return
             }
-            ExtensionNotificationManager.shared.clear(
+            notificationManager.clear(
                 extensionID: extensionID, notificationID: notificationId
             ) { cleared in
                 replyHandler(["wasCleared": cleared], nil)
             }
 
         case "notifications.getAll":
-            let all = ExtensionNotificationManager.shared.getAll(extensionID: extensionID)
+            let all = notificationManager.getAll(extensionID: extensionID)
             replyHandler(all, nil)
 
         // MARK: - History

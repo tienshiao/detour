@@ -447,6 +447,55 @@ document.getElementById('btn-action-user-settings').addEventListener('click', as
   }
 });
 
+// --- Notifications ---
+
+const NOTIFICATION_ID = 'api-explorer-notification';
+
+document.getElementById('btn-notif-create').addEventListener('click', async () => {
+  try {
+    const result = await sendBg({ type: 'createNotification', notificationId: NOTIFICATION_ID });
+    showResult('res-notifications', result);
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
+document.getElementById('btn-notif-getall').addEventListener('click', async () => {
+  try {
+    showResult('res-notifications', await sendBg({ type: 'getAllNotifications' }));
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
+document.getElementById('btn-notif-clear').addEventListener('click', async () => {
+  try {
+    showResult('res-notifications',
+      await sendBg({ type: 'clearNotification', notificationId: NOTIFICATION_ID }));
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
+// create() then clear() without awaiting the create (TASK-234): the clear must
+// win, so no banner stays up and getAll() does not list the id.
+document.getElementById('btn-notif-race-worker').addEventListener('click', async () => {
+  try {
+    showResult('res-notifications', await sendBg({ type: 'notificationCreateThenClear' }));
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
+document.getElementById('btn-notif-race-popup').addEventListener('click', async () => {
+  try {
+    const id = 'api-explorer-race-popup';
+    const created = chrome.notifications.create(id, {
+      type: 'basic', title: 'Create then clear', message: 'Should never stay on screen',
+      iconUrl: chrome.runtime.getURL('icon.png')
+    });
+    const wasCleared = await chrome.notifications.clear(id);
+    const notificationId = await created;
+    const all = await chrome.notifications.getAll();
+    showResult('res-notifications', {
+      from: 'popup', notificationId, wasCleared,
+      listedAfterClear: Object.prototype.hasOwnProperty.call(all, id), notifications: all
+    });
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
 // --- Management ---
 
 document.getElementById('btn-mgmt-self').addEventListener('click', async () => {
