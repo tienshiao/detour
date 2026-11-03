@@ -58,23 +58,53 @@ class NativeMessagingHost {
     private var stdinPipe: Pipe?
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
-    private let readQueue = DispatchQueue(label: "com.detour.native-messaging.read")
 
     /// Called on the main queue when a message is received from the native host.
     var onMessage: (([String: Any]) -> Void)?
-    /// Called on the main queue when the native host disconnects (process exit or error).
+    /// Called on the main queue when the native host disconnects (process exit or error),
+    /// after every message it wrote before going away.
     var onDisconnect: ((String?) -> Void)?
 
-    /// Read by the stdout read loop off the main thread, so behind a mutex.
-    private let connected = Mutex(false)
-    nonisolated private(set) var isConnected: Bool {
-        get { connected.withLock { $0 } }
-        set { connected.withLock { $0 = newValue } }
+    /// One spawned host process's connection, shared by the main actor, the
+    /// read loop and the termination handler, so its state is behind mutexes.
+    /// One per `connect()`: a loop or handler left over from an earlier
+    /// connection only ever touches its own.
+    nonisolated private final class Connection: Sendable {
+        /// Cleared on the main actor, by `disconnect()` or by the reported
+        /// end; read by the loop and by message delivery.
+        private let open = Mutex(true)
+        /// The join of the end of stream and the process exit (TASK-232).
+        private let ending: Mutex<NativeHostEnding>
+
+        init(timing: NativeHostEnding.Timing) {
+            ending = Mutex(NativeHostEnding(timing: timing))
+        }
+
+        var isOpen: Bool { open.withLock { $0 } }
+
+        /// Marks the connection closed. True for the call that closed it.
+        func close() -> Bool {
+            open.withLock { isOpen in
+                defer { isOpen = false }
+                return isOpen
+            }
+        }
+
+        func handle(_ event: NativeHostEnding.Event) -> NativeHostEnding.Action {
+            ending.withLock { $0.handle(event) }
+        }
     }
 
-    init(hostName: String, extensionID: String) {
+    private let endTiming: NativeHostEnding.Timing
+    private var connection: Connection?
+
+    var isConnected: Bool { connection?.isOpen ?? false }
+
+    /// `endTiming` is for tests; see `NativeHostEnding.Timing`.
+    init(hostName: String, extensionID: String, endTiming: NativeHostEnding.Timing = .init()) {
         self.hostName = hostName
         self.extensionID = extensionID
+        self.endTiming = endTiming
     }
 
     /// Isolated: the process and pipes are main-actor state. The read loop
@@ -149,20 +179,23 @@ class NativeMessagingHost {
         self.stderrPipe = stderr
         self.process = proc
 
+        let connection = Connection(timing: endTiming)
         let hostNameCopy = hostName
+        // The exit is not the disconnect: it is joined with the read loop's
+        // end of stream, so a reply still in the pipe is delivered first.
         proc.terminationHandler = { [weak self] process in
             log.notice("[1PW-DEBUG] NM EXIT [\(hostNameCopy, privacy: .public)] status=\(process.terminationStatus) reason=\(process.terminationReason.rawValue)")
             stderr.fileHandleForReading.readabilityHandler = nil
-            let msg = process.terminationStatus == 0 ? nil : "Native host exited with status \(process.terminationStatus)"
-            self?.handleDisconnect(msg)
+            Self.record(.processExited(status: process.terminationStatus), on: connection,
+                        hostName: hostNameCopy, reportingTo: self)
         }
 
         try proc.run()
-        isConnected = true
+        self.connection = connection
         log.info("Connected to native host \(self.hostName, privacy: .public) at \(hostPath, privacy: .public) for extension \(self.extensionID, privacy: .public)")
 
         // Start reading stdout on a background queue
-        startReadLoop()
+        startReadLoop(on: connection)
     }
 
     /// Send a JSON message to the native host using the length-prefixed protocol.
@@ -172,7 +205,7 @@ class NativeMessagingHost {
     /// vault items and session tokens over this channel, and the unified log is
     /// readable by anything on the machine. Byte counts and the host name only.
     func sendMessage(_ message: [String: Any]) throws {
-        guard isConnected, let stdinPipe, process?.isRunning == true else {
+        guard let connection, connection.isOpen, let stdinPipe, process?.isRunning == true else {
             throw NativeMessagingError.notConnected
         }
 
@@ -193,13 +226,17 @@ class NativeMessagingHost {
         } catch {
             // Read end closed (native host exited): treat as a disconnect rather
             // than crashing. SIGPIPE is ignored process-wide, so this surfaces as
-            // an EPIPE error here instead of terminating the app. Tear down
-            // eagerly so the caller sees closed pipes as soon as it catches
-            // notConnected; handleDisconnect repeats the (idempotent) teardown
-            // for the paths that don't do it inline.
+            // an EPIPE error here instead of terminating the app. The failure
+            // is recorded first, so the exit the teardown causes cannot report
+            // a reason of their own; it is joined with the end of stream like
+            // an exit, since a reply the host wrote before going away may
+            // still be in the pipe. Then the teardown runs eagerly, so the
+            // caller sees closed pipes as soon as it catches notConnected
+            // (`connectionEnded` repeats it, harmlessly).
             log.notice("[1PW-DEBUG] NM WRITE FAILED [\(self.hostName, privacy: .public)]: \(error.localizedDescription, privacy: .public)")
+            Self.record(.writeFailed("Native host write failed: \(error.localizedDescription)"), on: connection,
+                        hostName: hostName, reportingTo: self)
             teardownProcess()
-            handleDisconnect("Native host write failed: \(error.localizedDescription)")
             throw NativeMessagingError.notConnected
         }
     }
@@ -208,9 +245,8 @@ class NativeMessagingHost {
     /// NOT fire onDisconnect: this is the port telling the host to go away,
     /// not the host going away.
     func disconnect() {
-        guard isConnected else { return }
+        guard let connection, connection.close() else { return }
         log.info("Disconnecting native host \(self.hostName, privacy: .public) for extension \(self.extensionID, privacy: .public)")
-        isConnected = false
         teardownProcess()
     }
 
@@ -227,24 +263,55 @@ class NativeMessagingHost {
         stderrPipe = nil
     }
 
-    /// Central disconnect bookkeeping: tears down the host process, flips
-    /// isConnected and notifies exactly once, on the main queue. Safe to call
-    /// from any queue and from multiple failure paths racing each other — the
-    /// first reason to arrive wins. Paths that already tore down (write
-    /// failure, disconnect()) are fine: teardownProcess is idempotent.
-    nonisolated private func handleDisconnect(_ message: String?) {
-        // A main-actor task, as the read loop's message deliveries are, so a
-        // disconnect the loop reports is delivered after the messages it read
-        // before it. The termination handler runs on its own thread and is not
-        // ordered against the loop: a host that writes and exits at once can
-        // have its exit reported before the loop has read (or delivered) its
-        // last message.
-        Task { @MainActor in
-            guard self.isConnected else { return }
-            self.isConnected = false
-            self.teardownProcess()
-            self.onDisconnect?(message)
+    /// Feeds one end-of-connection signal into `connection`'s join and acts
+    /// on the answer. Callable from any thread: the read loop, the
+    /// termination handler, a wait expiring, or the main actor.
+    ///
+    /// The report is a main-actor task, as the read loop's message deliveries
+    /// are, and tasks reach the main actor in the order they are made. The
+    /// join only reports once the loop has reached the end of stream (or a
+    /// framing error, which the loop itself reports), and the loop made its
+    /// delivery tasks before that, so every message it read comes first. A
+    /// report after `endOfStreamWait` without the end of stream comes after
+    /// whatever the loop had read by then; anything it reads later finds the
+    /// connection closed.
+    nonisolated private static func record(
+        _ event: NativeHostEnding.Event, on connection: Connection,
+        hostName: String, reportingTo host: NativeMessagingHost?
+    ) {
+        switch connection.handle(event) {
+        case .none:
+            break
+        case .report(let reason):
+            if event == .waitExpired {
+                log.notice("[1PW-DEBUG] NM END [\(hostName, privacy: .public)] after waiting: the host exited with stdout still open, or closed stdout and kept running")
+            }
+            Task { @MainActor [weak host] in
+                host?.connectionEnded(connection, reason: reason)
+            }
+        case .wait(let seconds):
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { [weak host] in
+                Self.record(.waitExpired, on: connection, hostName: hostName, reportingTo: host)
+            }
         }
+    }
+
+    /// The host went away: tears down the host process, closes the
+    /// connection and notifies, exactly once. Not after `disconnect()`, which
+    /// closed it already. Paths that already tore down (a write failure) are
+    /// fine: teardownProcess is idempotent.
+    private func connectionEnded(_ ended: Connection, reason: String?) {
+        guard ended === connection, ended.close() else { return }
+        teardownProcess()
+        onDisconnect?(reason)
+    }
+
+    /// A message the read loop read, unless the connection it came from has
+    /// been closed since: an owner that called `disconnect()`, or saw
+    /// `onDisconnect`, hears nothing more.
+    private func deliver(_ message: [String: Any], from source: Connection) {
+        guard source === connection, source.isOpen else { return }
+        onMessage?(message)
     }
 
     // MARK: - Private
@@ -283,29 +350,36 @@ class NativeMessagingHost {
         throw NativeMessagingError.manifestNotFound(hostName)
     }
 
-    private func startReadLoop() {
+    private func startReadLoop(on connection: Connection) {
         guard let stdout = stdoutPipe?.fileHandleForReading else { return }
+        let hostName = hostName
+        // A queue per connection: a loop left blocked on an earlier
+        // connection's stdout (a child of that host holding it open) must not
+        // hold up the next connection's.
+        let readQueue = DispatchQueue(label: "com.detour.native-messaging.read")
 
         readQueue.async { [weak self] in
-            while let self, self.isConnected {
+            while let self, connection.isOpen {
                 // Read 4-byte length prefix
                 let lengthData = stdout.readData(ofLength: 4)
                 guard let length = lengthData.littleEndianUInt32() else {
                     // EOF or error — native host disconnected
-                    log.notice("[1PW-DEBUG] ← NM EOF [\(self.hostName, privacy: .public)] (read \(lengthData.count) bytes instead of 4)")
-                    self.handleDisconnect(nil)
+                    log.notice("[1PW-DEBUG] ← NM EOF [\(hostName, privacy: .public)] (read \(lengthData.count) bytes instead of 4)")
+                    Self.record(.endOfStream, on: connection, hostName: hostName, reportingTo: self)
                     return
                 }
 
                 guard length > 0, length <= Self.maxMessageSize else {
-                    self.handleDisconnect("Invalid message length: \(length)")
+                    Self.record(.failed("Invalid message length: \(length)"), on: connection,
+                                hostName: hostName, reportingTo: self)
                     return
                 }
 
                 // Read the message body
                 let messageData = stdout.readData(ofLength: Int(length))
                 guard messageData.count == Int(length) else {
-                    self.handleDisconnect("Incomplete message read")
+                    Self.record(.failed("Incomplete message read"), on: connection,
+                                hostName: hostName, reportingTo: self)
                     return
                 }
 
@@ -313,16 +387,16 @@ class NativeMessagingHost {
                 if let json = Self.parsedMessage(messageData) {
                     // Payload contents are deliberately never logged: native hosts
                     // send secrets over this channel. Byte count only.
-                    log.notice("[1PW-DEBUG] ← NM RECV [\(self.hostName, privacy: .public)] (\(messageData.count) bytes)")
+                    log.notice("[1PW-DEBUG] ← NM RECV [\(hostName, privacy: .public)] (\(messageData.count) bytes)")
                     // A task rather than a dispatch block: `json` is a fresh
                     // value nothing here touches again, so it can be sent to
                     // the main actor; tasks reach it in the order they are
-                    // made, as `handleDisconnect`'s do.
+                    // made, as `record`'s reports do.
                     Task { @MainActor in
-                        self.onMessage?(json)
+                        self.deliver(json, from: connection)
                     }
                 } else {
-                    log.error("[1PW-DEBUG] ← NM RECV [\(self.hostName, privacy: .public)] (\(messageData.count) bytes): failed to parse as JSON")
+                    log.error("[1PW-DEBUG] ← NM RECV [\(hostName, privacy: .public)] (\(messageData.count) bytes): failed to parse as JSON")
                 }
             }
         }

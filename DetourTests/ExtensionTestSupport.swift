@@ -250,6 +250,19 @@ final class FakeNativeMessagingHost {
         /// exits when its stdin closes, so it carries no sleep token and
         /// `processCount()` does not see it.
         case echoes
+        /// Waits for the first byte of input (the request), writes these
+        /// bytes to stdout and exits with `status` straight away: a one-shot
+        /// `sendNativeMessage` host. The process is gone by the time the
+        /// read loop gets to the reply, so it carries no sleep token.
+        case answersThenExits(Data, status: Int32)
+        /// As `answersThenExits`, but the exiting host leaves a background
+        /// `sleep <token>` holding its stdout open: the read loop sees the
+        /// host exit and no EOF. `processCount()` sees the sleep.
+        case answersThenExitsLeavingStdoutOpen(Data)
+        /// Waits for the first byte of input, writes these bytes and then
+        /// `exec`s `sleep <token>` with stdout still open: a host that stays
+        /// alive and silent after answering.
+        case answersThenStaysAlive(Data)
     }
 
     /// The host name an extension passes to `connectNative` / `sendNativeMessage`.
@@ -280,6 +293,18 @@ final class FakeNativeMessagingHost {
             body = "/bin/cat '\(outputFile.path)'\nexec 1>&-\nexec sleep \(sleepToken)\n"
         case .echoes:
             body = "exec /bin/cat\n"
+        case .answersThenExits(let output, let status):
+            let outputFile = dir.appendingPathComponent("stdout.bin")
+            try output.write(to: outputFile)
+            body = "/usr/bin/head -c 1 >/dev/null\n/bin/cat '\(outputFile.path)'\nexit \(status)\n"
+        case .answersThenExitsLeavingStdoutOpen(let output):
+            let outputFile = dir.appendingPathComponent("stdout.bin")
+            try output.write(to: outputFile)
+            body = "/usr/bin/head -c 1 >/dev/null\n/bin/cat '\(outputFile.path)'\n/bin/sleep \(sleepToken) &\nexit 0\n"
+        case .answersThenStaysAlive(let output):
+            let outputFile = dir.appendingPathComponent("stdout.bin")
+            try output.write(to: outputFile)
+            body = "/usr/bin/head -c 1 >/dev/null\n/bin/cat '\(outputFile.path)'\nexec sleep \(sleepToken)\n"
         }
         try ("#!/bin/sh\n" + body).write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)

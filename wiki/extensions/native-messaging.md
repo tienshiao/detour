@@ -5,8 +5,17 @@ description: How Detour runs Chrome native messaging hosts for extensions — ho
 resource: ../../Detour/Extensions/Runtime/NativeMessagingHost.swift
 tags: [extensions, native-messaging, security, logging]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T04:48:28Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T06:10:00Z }
 sources:
+  - id: task-232
+    resource: backlog:TASK-232
+    title: A host that writes its reply and exits at once can have the exit handled before the reply
+  - id: ending
+    resource: ../../Detour/Extensions/Runtime/NativeHostEnding.swift
+    title: NativeHostEnding.swift (the join of end of stream and process exit)
+  - id: lifecycle-tests
+    resource: ../../DetourTests/NativeMessagingHostLifecycleTests.swift
+    title: NativeMessagingHostLifecycleTests.swift
   - id: task-231-8
     resource: backlog:TASK-231.8
     title: Memory safety audit of raw-pointer code and untrusted-byte parsing
@@ -86,8 +95,9 @@ private serial queue and delivers to the main queue. It reads the prefix
 (`Data.littleEndianUInt32()`, byte by byte, no raw-pointer load), refuses 0
 or anything above the cap ("Invalid message length: N"), then reads that
 many bytes; a short read (the host closed stdout early) disconnects with
-"Incomplete message read", and fewer than four prefix bytes is a plain EOF
-(`onDisconnect(nil)`). Frames read before a bad one are delivered first.
+"Incomplete message read", and fewer than four prefix bytes is the end of
+stream (see [the host going away](#the-host-going-away)). Frames read before
+a bad one are delivered first.
 See [Strict memory safety](../platform/strict-memory-safety.md).[^task-231-8]
 
 ## Two entry points
@@ -135,9 +145,9 @@ A connection can end from four directions: the host process exits, the
 extension disconnects the port, the context unloads, or a write fails.
 
 - `NativeMessagingHost.disconnect()` (the port telling the host to go away)
-  deliberately does **not** fire `onDisconnect`. `handleDisconnect` (the host
-  going away) fires it once, on the main queue; `teardownProcess` is
-  idempotent.
+  deliberately does **not** fire `onDisconnect`. `connectionEnded` (the host
+  going away, see below) fires it once, on the main queue; `teardownProcess`
+  is idempotent.
 - In `connectUsing`, both `host.onDisconnect` and `port.disconnectHandler`
   call one `releaseHost` closure whose token is *removal from the registry*.
   Only the first removal succeeds, so a host is released from the keep-alive
@@ -146,6 +156,49 @@ extension disconnects the port, the context unloads, or a write fails.
 - Paths that end a whole context take the registry entry away first
   (`tearDownNativeConnections`), then disconnect, so every callback that
   follows finds nothing left to release.
+- After `disconnect()`, or once `onDisconnect` has run, the owner hears
+  nothing more: a message the read loop read but had not yet delivered is
+  dropped. Each `connect()` makes its own `Connection` (open flag and join
+  state behind `Mutex`es), so a read loop or termination handler from an
+  earlier connection cannot touch a later one.
+
+## The host going away
+
+Two signals say a host has gone, and nothing orders them: the read loop
+reading the end of the host's stdout, and `Process.terminationHandler`
+reporting the exit on a thread of its own. Until TASK-232 the termination
+handler reported the disconnect itself, so a host that wrote its reply and
+exited at once could have the disconnect reach the owner before the reply
+the loop was still reading: `sendNativeMessage` settled with "Native host
+has exited." and a port got `onDisconnect` before `onMessage`. With a 256 KB
+reply that happened in 6 of 25 runs at the host level, and in 13 of 15
+`sendNativeMessage` calls and 7 of 8 ports end to end.[^task-232]
+
+The end of stream is what follows the last message, so the disconnect is now
+the join of the two (`NativeHostEnding`, pure, behind the connection's
+mutex):[^ending]
+
+| First | Then | Reported |
+|---|---|---|
+| End of stream | Exit within `exitStatusWait` (0.5 s) | The exit status: `nil` for 0, else "Native host exited with status N" |
+| End of stream | Nothing: stdout closed, process alive | `nil` after 0.5 s; the teardown then terminates the process |
+| Exit | End of stream within `endOfStreamWait` (5 s) | The exit status |
+| Exit | Nothing: a process the host started holds its stdout | The exit status after 5 s, logged as `NM END … after waiting` |
+| A failed write to stdin | End of stream within 5 s (or nothing) | The write failure |
+| A framing error | | That reason, at once; later signals are ignored |
+
+The report is a main-actor task, as message deliveries are, and the join
+reports only after the loop has made its delivery tasks, so every message
+the loop read comes first. The 5 s wait is long so that a read loop starved
+on a loaded machine still gets to the reply. A failed write is joined like
+an exit (the host may have written a reply before it went), and it records
+its reason in the join before tearing the process down, so the exit the
+teardown causes cannot replace it. A framing error reports at once: the
+loop has stopped reading and has already handed on everything it read.
+Each connection's read loop runs on a queue of its own, so a loop still
+blocked on an earlier connection's pipe cannot hold up the next one. The disconnect reason
+itself is only logged and tested: both owners ignore it (the one-shot path
+answers with Chrome's "Native host has exited.").
 
 # Logging
 
@@ -200,6 +253,11 @@ evidence for. There is no level between notice and error to use:
 - **One-shot hosts are not swept with a context.** `activeMessagingHosts`
   records no controller, so `tearDownNativeConnections` leaves them to end
   with their reply or exit.
+- **A host that exits leaving a child holding its stdout** is reported gone
+  5 s after the exit, and the read loop stays blocked on the pipe until the
+  child exits or writes; what it reads then is dropped. Chrome instead keeps
+  such a connection open until the end of stream. A wrapper script that
+  backgrounds the real host and exits therefore does not work in Detour.
 - **The spawning process is what a host can verify.** A host may refuse a
   build it does not trust even though Detour's side logs a successful
   connect; see the trust section of
@@ -226,6 +284,15 @@ evidence for. There is no level between notice and error to use:
   spans several pipe reads). `FakeNativeMessagingHost`'s `Behavior` gives
   the host fixed stdout bytes (then closes stdout and sleeps, so its exit
   cannot race the read loop) or `exec cat`.[^framing-tests]
+- `NativeMessagingHostLifecycleTests`: how a connection ends, against hosts
+  that read one byte of request, answer and then exit (`answersThenExits`),
+  exit leaving a `sleep` child on stdout (`answersThenExitsLeavingStdoutOpen`)
+  or stay alive (`answersThenStaysAlive`). The reply-then-exit leg runs 50
+  times with a 256 KB reply, the size that lost the race before the fix (a
+  small reply never did in 25 runs); `endTiming` shortens the waits. The
+  join's transitions are tested without a process.[^lifecycle-tests]
+  `NativeMessagingEnforcementTests` repeats the reply-then-exit host through
+  WebKit's `sendNativeMessage` (15 calls) and `connectNative` (8 ports).
 - Framing helpers (`encodeMessage`, `decodeMessage`) are also covered in
   `ExtensionIDDerivationTests`. The log line *text* is not asserted anywhere.
 
@@ -242,3 +309,6 @@ evidence for. There is no level between notice and error to use:
 [^task-90]: 1Password reconnect loop investigation (connect logging, unlisted-context refusal)
 [^task-231-8]: Memory safety audit of raw-pointer code and untrusted-byte parsing
 [^framing-tests]: NativeMessagingFramingTests.swift
+[^task-232]: TASK-232
+[^ending]: NativeHostEnding.swift (the join of end of stream and process exit)
+[^lifecycle-tests]: NativeMessagingHostLifecycleTests.swift

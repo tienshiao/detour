@@ -14,6 +14,9 @@ import GRDB
 /// is a shell script that `exec`s `sleep <unique seconds>`, so whether a process
 /// was spawned is read off the process table by that unique argument, and every
 /// such process is killed in tearDown.
+///
+/// The host lifecycle legs at the end (TASK-232) use the same
+/// production path with hosts that answer and then exit or stay alive.
 nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
 
     private static let hostName = "com.detour.task25_enforcement_test"
@@ -63,8 +66,9 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
 
     /// Install the silent fake host for `extensionIDs` (one manifest may list several
     /// origins) and point the host search at it. Torn down in this suite's tearDown.
-    @MainActor private func installFakeHost(allowing extensionIDs: [String]) throws {
-        let host = try FakeNativeMessagingHost(name: Self.hostName, allowing: extensionIDs)
+    @MainActor private func installFakeHost(allowing extensionIDs: [String],
+                                            behavior: FakeNativeMessagingHost.Behavior = .silent) throws {
+        let host = try FakeNativeMessagingHost(name: Self.hostName, allowing: extensionIDs, behavior: behavior)
         fakeHost = host
     }
 
@@ -531,5 +535,59 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
         XCTAssertEqual(db.permissionStatus(extensionID: first.id, key: "nativeMessaging", type: .apiPermission),
                        .denied, "an update must not resurrect the denial either")
         XCTAssertEqual(db.permissionStatus(extensionID: first.id, key: hostPattern, type: .matchPattern), .denied)
+    }
+
+    // MARK: - A reply written before the host exits arrives first (TASK-232)
+
+    /// A one-shot host that writes a large reply and exits at once: the
+    /// promise resolves with the reply, never with "Native host has exited."
+    /// Before the fix the exit could be handled while the read loop was still
+    /// parsing the reply.
+    @MainActor func testSendNativeMessageResolvesWithAReplyTheHostWroteBeforeExiting() async throws {
+        let ext = try await makeExtension()
+        let reply = try JSONSerialization.data(withJSONObject: ["pong": 1, "blob": String(repeating: "x", count: 256 * 1024)])
+        try installFakeHost(allowing: [ext.id], behavior: .answersThenExits(NativeMessagingHost.encodeMessage(reply), status: 0))
+        let loaded = try await load(ext, profileName: "NM Reply Then Exit Profile")
+
+        for iteration in 1...15 {
+            let result = try await evalJSON("""
+                const reply = await chrome.runtime.sendNativeMessage(host, { ping: iteration })
+                    .catch((error) => ({ error: String(error && error.message ? error.message : error) }));
+                return { pong: reply.pong ?? null, error: reply.error ?? null };
+                """, in: loaded.webView, arguments: ["host": Self.hostName, "iteration": iteration])
+            XCTAssertEqual(result["pong"] as? Int, 1, "iteration \(iteration): \(result)")
+        }
+        XCTAssertEqual(ExtensionManager.shared.pendingOneShotNativeMessageCountForTesting(extensionID: ext.id), 0)
+    }
+
+    /// The same host on a `connectNative` port: the page gets the reply, then
+    /// the disconnect.
+    @MainActor func testAConnectNativePortGetsAReplyTheHostWroteBeforeExitingBeforeTheDisconnect() async throws {
+        let ext = try await makeExtension()
+        let reply = try JSONSerialization.data(withJSONObject: ["pong": 1, "blob": String(repeating: "x", count: 256 * 1024)])
+        try installFakeHost(allowing: [ext.id], behavior: .answersThenExits(NativeMessagingHost.encodeMessage(reply), status: 0))
+        let loaded = try await load(ext, profileName: "NM Port Reply Then Exit Profile")
+        let controller = loaded.profile.extensionController
+
+        for iteration in 1...8 {
+            let result = try await evalJSON("""
+                return await new Promise((resolve) => {
+                    const events = [];
+                    const timer = setTimeout(() => resolve({ events, timedOut: true }), 5000);
+                    const port = chrome.runtime.connectNative(host);
+                    port.onMessage.addListener((message) => events.push('message:' + message.pong));
+                    port.onDisconnect.addListener(() => {
+                        events.push('disconnect');
+                        // Anything still on its way after the disconnect would land in this window.
+                        setTimeout(() => { clearTimeout(timer); resolve({ events }); }, 200);
+                    });
+                    port.postMessage({ ping: 1 });
+                });
+                """, in: loaded.webView, arguments: ["host": Self.hostName])
+            XCTAssertEqual(result["events"] as? [String], ["message:1", "disconnect"], "iteration \(iteration): \(result)")
+        }
+        try await waitUntil("the exited hosts to be released") {
+            ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id) == 0
+        }
     }
 }
