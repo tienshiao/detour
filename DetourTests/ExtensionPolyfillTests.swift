@@ -2078,7 +2078,8 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         handler.notificationManagerOverride = ExtensionNotificationManager(center: center)
 
         for extensionID in ["nonotif-ext", "unregistered-notif-ext"] {
-            for type in ["notifications.create", "notifications.update", "notifications.clear", "notifications.getAll"] {
+            for type in ["notifications.create", "notifications.update", "notifications.clear", "notifications.getAll",
+                         "notifications.awaitEvent"] {
                 let answered = expectation(description: "\(type) from \(extensionID) refused")
                 handler.handleNativeMessage(
                     ["type": type, "extensionID": extensionID,

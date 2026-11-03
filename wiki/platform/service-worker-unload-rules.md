@@ -55,6 +55,9 @@ sources:
   - id: notes-webkit
     resource: "Agent session notes, 2026-09-12 to 2026-09-14 (not in the repository)"
     title: Session notes on WebKit's unload source and log locations
+  - id: task-247
+    resource: backlog:TASK-247
+    title: "Extensions: notifications.onClicked and onClosed are never delivered to the extension"
 ---
 
 # Behavior
@@ -97,6 +100,7 @@ A persistent background (MV2 `persistent` not false) is never unloaded.
 | The background posts a message on any of its ports (runtime or native) | Yes, for 2 minutes |
 | The background opens a port | Yes, for 2 minutes |
 | A message *arrives* on a port, from a page, a content script or the native side | **No** |
+| A `runtime.sendNativeMessage` whose reply is pending (a parked polyfill request) | No |
 | A port merely stays open | No, beyond moving it from rule 1 to rule 2 |
 | Timers, fetches, storage writes, WebSocket frames | No |
 
@@ -108,6 +112,7 @@ the background answer.
 | Situation | Unloaded after |
 |---|---|
 | Idle, no open port | 29.7 s[^task-62] |
+| Idle, a `runtime.sendNativeMessage` reply pending (the polyfill's parked `notifications.awaitEvent`) | Unloaded within 45 s: a pending native-message reply is not activity[^task-247] |
 | One open, silent native port | 120.0 s after load (120.1 s on a re-run)[^task-62] |
 | Ports open, background's last post at T | T + 2 min, rounded up to the next 30 s tick: 149.4 s after the last post in a test; 151 s after load in production, where the last post was about a second after load[^task-68] |
 | Background posts at least every 30 s | Not unloaded: 300 s in tests, 23 min in the signed build[^task-21] |
@@ -313,3 +318,4 @@ the revision closest to the then-shipped macOS WebKit.[^notes-webkit]
 [^webkit-port]: WebKit WebExtensionContextAPIPortCocoa.mm (portPostMessage, addPorts, removePort; read 2026-10-04)
 [^task-68]: The armed keep-alive does not stop WebKit unloading a worker
 [^notes-webkit]: Session notes on WebKit's unload source and log locations
+[^task-247]: Extensions: notifications.onClicked and onClosed are never delivered to the extension

@@ -2459,8 +2459,80 @@ struct ExtensionAPIPolyfill {
         const _onButtonClickedListeners = [];
         const _onClosedListeners = [];
 
+        // onClicked / onClosed (TASK-247): no push channel reaches a context,
+        // so the first listener parks a notifications.awaitEvent request,
+        // answered with the events not yet acknowledged. They are dispatched
+        // in order and the request is parked again, acknowledging the last
+        // seq seen. Only the background context may park (the handler
+        // refuses others), and the pending request keeps nothing alive.
+        // `stopped` says why the wait ended, if it did: 'permission' when the
+        // handler refused it for a `notifications` permission not granted
+        // yet (an optional one), so the context's next notifications call
+        // parks again (`rearm`); 'final' when it was refused for good (not
+        // the background context, superseded by a newer incarnation, the
+        // extension or its profile gone).
+        let waiting = false;
+        let stopped = null;
+        let lastSeq = null;
+        const dispatchEvent = function(event) {
+            if (!event || typeof event.notificationId !== 'string') return;
+            if (event.kind === 'clicked') {
+                globalThis.__extensionDispatchNotificationClicked(event.notificationId);
+            } else if (event.kind === 'closed') {
+                globalThis.__extensionDispatchNotificationClosed(event.notificationId, event.byUser === true);
+            }
+        };
+        const waitForEvents = function() {
+            if (waiting || stopped !== null) return;
+            waiting = true;
+            const params = { instance: globalThis.__detourContextInstance };
+            if (lastSeq !== null) params.ack = lastSeq;
+            __detourPolyfillRequest('notifications.awaitEvent', params).then(function(reply) {
+                waiting = false;
+                const events = (reply && Array.isArray(reply.events)) ? reply.events : [];
+                for (let i = 0; i < events.length; i++) {
+                    const event = events[i];
+                    if (!event || typeof event.seq !== 'number') continue;
+                    // A redelivery after a lost answer repeats what this
+                    // context already dispatched; skip those.
+                    if (lastSeq !== null && event.seq <= lastSeq) continue;
+                    lastSeq = event.seq;
+                    dispatchEvent(event);
+                }
+                // Parked again even with no listener left: the park is the
+                // acknowledgement, and an unacknowledged event is delivered
+                // again to the next incarnation.
+                waitForEvents();
+            }, function(e) {
+                // Refused: stay quiet and stop waiting (see `stopped`).
+                waiting = false;
+                let message = '';
+                try { message = String(e && e.message ? e.message : e); } catch (e2) {}
+                stopped = /notifications permission not declared/i.test(message) ? 'permission' : 'final';
+            });
+        };
+        // A wait refused for the permission parks again once the context
+        // makes a notifications call (none can succeed before the grant),
+        // if it still has a listener.
+        const rearm = function() {
+            if (stopped !== 'permission') return;
+            if (_onClickedListeners.length === 0 && _onClosedListeners.length === 0) return;
+            stopped = null;
+            waitForEvents();
+        };
+        const parkingEmitter = function(listeners) {
+            const emitter = __detourMakeEventEmitter(listeners);
+            const nativeAddListener = emitter.addListener;
+            emitter.addListener = function(cb) {
+                nativeAddListener(cb);
+                waitForEvents();
+            };
+            return emitter;
+        };
+
         __detourDefine(chrome, 'notifications', {
             create: function(notificationId, options, callback) {
+                rearm();
                 // Chrome's signature is create(notificationId?, options, callback?).
                 // A null or undefined id counts as absent, so only a real
                 // options object in the first slot means the id was left out
@@ -2480,6 +2552,7 @@ struct ExtensionAPIPolyfill {
             },
 
             update: function(notificationId, options, callback) {
+                rearm();
                 const promise = __detourPolyfillRequest('notifications.update', {
                     notificationId: notificationId,
                     options: options || {}
@@ -2488,6 +2561,7 @@ struct ExtensionAPIPolyfill {
             },
 
             clear: function(notificationId, callback) {
+                rearm();
                 const promise = __detourPolyfillRequest('notifications.clear', {
                     notificationId: notificationId
                 }).then(function(r) { return r.wasCleared === true; });
@@ -2495,13 +2569,14 @@ struct ExtensionAPIPolyfill {
             },
 
             getAll: function(callback) {
+                rearm();
                 const promise = __detourPolyfillRequest('notifications.getAll', {});
                 return __detourSettle(promise, callback);
             },
 
-            onClicked: __detourMakeEventEmitter(_onClickedListeners),
+            onClicked: parkingEmitter(_onClickedListeners),
             onButtonClicked: __detourMakeEventEmitter(_onButtonClickedListeners),
-            onClosed: __detourMakeEventEmitter(_onClosedListeners)
+            onClosed: parkingEmitter(_onClosedListeners)
         });
 
         globalThis.__extensionDispatchNotificationClicked = function(notificationId) {

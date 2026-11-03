@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import WebKit
 import os
 
 private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extension-notifications")
@@ -38,6 +39,13 @@ enum ExtensionNotificationAuthorization: Equatable {
 
 /// The real center: `UNUserNotificationCenter.current()`.
 final class SystemExtensionNotificationCenter: ExtensionNotificationCenter {
+    /// `registerDismissCategory`'s registration. The authorization check
+    /// waits for it, and every `add` waits for that check (the manager's
+    /// `authorize()`, which keeps the adds in call order), so no notification
+    /// is shown before its category is registered (one that was might not
+    /// report a dismissal).
+    private var dismissCategoryRegistration: Task<Void, Never>?
+
     func add(_ request: UNNotificationRequest) async throws {
         try await UNUserNotificationCenter.current().add(request)
     }
@@ -49,6 +57,7 @@ final class SystemExtensionNotificationCenter: ExtensionNotificationCenter {
     }
 
     func authorizationStatus() async -> ExtensionNotificationAuthorization {
+        await dismissCategoryRegistration?.value
         switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
         case .authorized, .provisional: return .authorized
         case .notDetermined: return .notDetermined
@@ -72,6 +81,20 @@ final class SystemExtensionNotificationCenter: ExtensionNotificationCenter {
 
     func pendingIdentifiers() async -> [String] {
         await UNUserNotificationCenter.current().pendingNotificationRequests().map(\.identifier)
+    }
+
+    /// Registers `ExtensionNotificationManager.dismissCategory` (TASK-247),
+    /// keeping any category something else of Detour's registered:
+    /// `setNotificationCategories` replaces the whole set. Asynchronous; see
+    /// `dismissCategoryRegistration` for what waits for it.
+    func registerDismissCategory() {
+        let center = UNUserNotificationCenter.current()
+        let category = ExtensionNotificationManager.dismissCategory
+        dismissCategoryRegistration = Task {
+            let existing = await center.notificationCategories()
+            let others = existing.filter { $0.identifier != category.identifier }
+            center.setNotificationCategories(others.union([category]))
+        }
     }
 }
 
@@ -125,7 +148,9 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// notification call when launch skips that.
     static var shared: ExtensionNotificationManager {
         if let sharedInstance { return sharedInstance }
-        let manager = ExtensionNotificationManager(center: SystemExtensionNotificationCenter())
+        let system = SystemExtensionNotificationCenter()
+        system.registerDismissCategory()
+        let manager = ExtensionNotificationManager(center: system)
         UNUserNotificationCenter.current().delegate = manager
         sharedInstance = manager
         return manager
@@ -219,6 +244,16 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// build's from an earlier launch: the map lives in memory only. Launch
     /// removes all of them (`removeLeftoverNotifications`, TASK-248).
     static let identifierPrefix = "detour-ext-notification.v3|"
+
+    /// The category every extension notification carries (TASK-247). Its
+    /// `.customDismissAction` makes the center tell the delegate when the
+    /// user dismisses a banner (`UNNotificationDismissActionIdentifier`);
+    /// without it a dismissal is never reported, so the entry would outlive
+    /// the banner and `onClosed` could not fire. No actions: Chrome's
+    /// `buttons` are not shown. The identifier names no profile or extension.
+    static let dismissCategory = UNNotificationCategory(
+        identifier: "detour-ext-notification", actions: [], intentIdentifiers: [],
+        options: [.customDismissAction])
 
     /// The prefix of the identifiers TASK-238's first build handed out:
     /// `detour-ext-notification.v2|<profile UUID>|<extension id>|<id>`.
@@ -331,13 +366,15 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// `requireInteraction` and `silent` are not shown either (see the
     /// polyfill-layer wiki).
     ///
-    /// Title, body and subtitle only: nothing that names the profile (no
+    /// Title, body and subtitle only, and the one category every extension
+    /// notification shares: nothing that names the profile (no
     /// threadIdentifier, no userInfo), for the same reason as the identifier.
     static func content(for options: [String: Any]) -> UNNotificationContent {
         let content = UNMutableNotificationContent()
         content.title = options["title"] as? String ?? ""
         content.body = options["message"] as? String ?? ""
         content.subtitle = options["contextMessage"] as? String ?? ""
+        content.categoryIdentifier = dismissCategory.identifier
         return content
     }
 
@@ -481,7 +518,10 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// finished yet. Answers whether the owner had such a notification, as
     /// Chrome's `clear` does (TASK-240). Another owner's notification with the
     /// same id is a different notification, so it is untouched and the answer
-    /// is false.
+    /// is false. A clear that finds one fires `onClosed` with `byUser` false
+    /// (TASK-247), as Chrome's does: its `clear` closes the notification with
+    /// `by_user` false, and that close reaches the extension as `onClosed`
+    /// (see the polyfill-layer wiki).
     func clear(owner: Owner, notificationID: String, completion: @escaping (Bool) -> Void) {
         guard let identifier = identifier(for: owner, notificationID: notificationID) else {
             completion(false)
@@ -489,6 +529,7 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         }
         removeEntry(identifier: identifier)
         center.removeNotifications(withIdentifiers: [identifier])
+        deliver(.closed, notificationID: notificationID, byUser: false, to: owner)
         completion(true)
     }
 
@@ -498,12 +539,14 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// unloaded from a profile.
     func removeAll(for owner: Owner) {
         removeAll { $0.owner == owner }
+        dropEventChannels { $0 == owner }
     }
 
     /// `removeAll(for:)` for every extension's notifications in the profile.
     /// For a deleted profile and for the end of the Private session.
     func removeAll(profileID: UUID) {
         removeAll { $0.owner.profileID == profileID }
+        dropEventChannels { $0.profileID == profileID }
     }
 
     private func removeAll(where matches: (Entry) -> Bool) {
@@ -524,6 +567,170 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         return result
     }
 
+    // MARK: - onClicked / onClosed (TASK-247)
+
+    /// One `onClicked` or `onClosed` for an owner, numbered so the context
+    /// can acknowledge it.
+    struct Event: Equatable {
+        /// Increases with every event the manager delivers, to any owner.
+        let seq: Int
+        let kind: Response.Kind
+        let notificationID: String
+        /// For a close: whether the user dismissed it, rather than the
+        /// extension clearing it.
+        let byUser: Bool
+
+        /// What the polyfill dispatches: `{seq, kind, notificationId, byUser?}`.
+        var reply: [String: Any] {
+            var reply: [String: Any] = ["seq": seq, "notificationId": notificationID]
+            switch kind {
+            case .clicked:
+                reply["kind"] = "clicked"
+            case .closed:
+                reply["kind"] = "closed"
+                reply["byUser"] = byUser
+            }
+            return reply
+        }
+    }
+
+    /// How an owner's background context hears about its notifications.
+    /// There is no push channel into a context, so the background polyfill
+    /// parks a `notifications.awaitEvent` request, answered with the events
+    /// it has not acknowledged; it dispatches them and parks again, carrying
+    /// the last `seq` it saw as the acknowledgement.
+    ///
+    /// An event stays in `backlog` until it is acknowledged, not just until
+    /// it is answered: a parked reply whose worker WebKit has since unloaded
+    /// goes nowhere and nothing says so, and the parked request does not keep
+    /// the worker alive (it is a native message, not a port; see the
+    /// service-worker-unload-rules wiki). The next incarnation's first park,
+    /// which acknowledges nothing, receives it again.
+    private struct EventChannel {
+        struct Parked {
+            let reply: (Any?, String?) -> Void
+            let instance: String?
+        }
+        var parked: Parked?
+        /// Events not yet acknowledged, oldest first, at most `eventBacklogLimit`.
+        var backlog: [Event] = []
+        /// The incarnation tokens that have parked, oldest first, at most
+        /// `instanceHistoryLimit`. The last is the current incarnation: one
+        /// seen before it is older and may not park again.
+        var instances: [String] = []
+        /// Whether a background context of the owner has ever parked this
+        /// launch, i.e. listens: only then does an event wake it.
+        var listens = false
+    }
+
+    private var eventChannels: [Owner: EventChannel] = [:]
+    private var lastEventSeq = 0
+
+    /// How many unacknowledged events an owner keeps; past it the oldest go.
+    static let eventBacklogLimit = 32
+    /// How many incarnations of an owner's background are remembered as
+    /// superseded.
+    static let instanceHistoryLimit = 8
+
+    /// The answer to a park from an incarnation a newer one has superseded.
+    static let supersededWaitError = "notifications: superseded by a newer wait"
+
+    /// Starts the owner's background content, so an event reaches a worker
+    /// WebKit unloaded: its listeners are added again as its script runs, and
+    /// the park that follows drains the backlog. A no-op while it is loaded.
+    /// A seam: a test records the wakes instead.
+    var wakeBackground: @MainActor (Owner) -> Void = ExtensionNotificationManager.loadBackgroundContent(of:)
+
+    /// The production `wakeBackground`.
+    static func loadBackgroundContent(of owner: Owner) {
+        guard let profile = TabStore.shared.profiles.first(where: { $0.id == owner.profileID }),
+              let context = profile.extensionContext(for: owner.extensionID),
+              context.webExtension.hasBackgroundContent else { return }
+        let extensionID = owner.extensionID
+        context.loadBackgroundContent { error in
+            if let error {
+                log.error("Waking \(extensionID, privacy: .public) for a notification event failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Parks `reply` for the next events of `owner`'s, or answers at once
+    /// with those not yet acknowledged. `ack` is the last `seq` the context
+    /// dispatched: it and every earlier one are dropped first. `instance` is
+    /// the context's incarnation token (`__detourContextInstance`): a new one
+    /// supersedes the park in place, which is answered with
+    /// `supersededWaitError`, and from then on an older one is refused the
+    /// same way, so an old worker still running alongside its replacement
+    /// cannot take the events back. The handler lets only the background
+    /// context call this.
+    func awaitEvent(owner: Owner, instance: String?, ack: Int?, reply: @escaping (Any?, String?) -> Void) {
+        var channel = eventChannels[owner] ?? EventChannel()
+        if let instance {
+            if let index = channel.instances.firstIndex(of: instance) {
+                guard index == channel.instances.count - 1 else {
+                    reply(nil, Self.supersededWaitError)
+                    return
+                }
+            } else {
+                channel.instances.append(instance)
+                if channel.instances.count > Self.instanceHistoryLimit {
+                    channel.instances.removeFirst(channel.instances.count - Self.instanceHistoryLimit)
+                }
+            }
+        }
+        channel.listens = true
+        if let ack { channel.backlog.removeAll { $0.seq <= ack } }
+        let previous = channel.parked
+        channel.parked = nil
+        if channel.backlog.isEmpty {
+            channel.parked = EventChannel.Parked(reply: reply, instance: instance)
+        }
+        let events = channel.backlog
+        eventChannels[owner] = channel
+        previous?.reply(nil, Self.supersededWaitError)
+        if !events.isEmpty { reply(["events": events.map(\.reply)], nil) }
+    }
+
+    /// Queues the event for `owner` and answers the park, if there is one;
+    /// once the owner listens, also wakes its background, in case that park
+    /// belongs to a worker WebKit has unloaded.
+    private func deliver(_ kind: Response.Kind, notificationID: String, byUser: Bool, to owner: Owner) {
+        lastEventSeq += 1
+        var channel = eventChannels[owner] ?? EventChannel()
+        channel.backlog.append(Event(seq: lastEventSeq, kind: kind, notificationID: notificationID, byUser: byUser))
+        if channel.backlog.count > Self.eventBacklogLimit {
+            let dropped = channel.backlog.count - Self.eventBacklogLimit
+            channel.backlog.removeFirst(dropped)
+            log.info("Dropped \(dropped) unacknowledged notification event(s) for extension \(owner.extensionID, privacy: .public)")
+        }
+        let parked = channel.parked
+        channel.parked = nil
+        let events = channel.backlog
+        let listens = channel.listens
+        eventChannels[owner] = channel
+        parked?.reply(["events": events.map(\.reply)], nil)
+        if listens { wakeBackground(owner) }
+    }
+
+    /// Forgets the event channels of the matching owners, answering any park
+    /// so its context stops waiting: the extension was unloaded from the
+    /// profile, or the profile went away.
+    private func dropEventChannels(where matches: (Owner) -> Bool) {
+        let dropped = eventChannels.filter { matches($0.key) }
+        for (owner, channel) in dropped {
+            eventChannels[owner] = nil
+            channel.parked?.reply(nil, "notifications: the extension was unloaded")
+        }
+    }
+
+    #if DEBUG
+    /// The owner's unacknowledged events and the instance parked, if any.
+    func eventChannelForTesting(_ owner: Owner) -> (backlog: [Event], parkedInstance: String??, listens: Bool) {
+        let channel = eventChannels[owner]
+        return (channel?.backlog ?? [], channel?.parked.map(\.instance), channel?.listens ?? false)
+    }
+    #endif
+
     // MARK: - UNUserNotificationCenterDelegate
 
     // Nonisolated: UserNotifications does not say which thread it calls the
@@ -543,15 +750,14 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     }
 
     /// Resolves a click or close to the one owner and notification it is for,
-    /// by the exact identifier, and drops the entry on a close. Nothing else
-    /// is touched: the same id in another profile or extension is a different
-    /// identifier. An identifier with no entry — another launch's, an earlier
-    /// build's, or one already cleared — resolves to nil and changes nothing.
-    ///
-    /// Nothing delivers the response to the extension yet:
-    /// `notifications.onClicked` / `onClosed` never fire (no push channel into
-    /// a context; see the polyfill-layer wiki). Delivery belongs here, sent to
-    /// the returned owner's profile only.
+    /// by the exact identifier, drops the entry on a close, and delivers the
+    /// event to that owner (TASK-247): `onClicked`, or `onClosed` with
+    /// `byUser` true, as a dismissal is the user's (the category's
+    /// `.customDismissAction` is what makes the center report one). Nothing
+    /// else is touched: the same id in another profile or extension is a
+    /// different identifier. An identifier with no entry — another launch's,
+    /// an earlier build's, or one already cleared — resolves to nil and
+    /// changes nothing.
     @discardableResult
     func handleResponse(identifier: String, action: String) -> Response? {
         guard let entry = entries[identifier] else { return nil }
@@ -566,6 +772,7 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         } else {
             return nil
         }
+        deliver(kind, notificationID: entry.notificationID, byUser: kind == .closed, to: entry.owner)
         return Response(owner: entry.owner, notificationID: entry.notificationID, kind: kind)
     }
 }

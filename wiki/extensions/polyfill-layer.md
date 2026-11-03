@@ -100,6 +100,12 @@ sources:
   - id: task-253
     resource: backlog:TASK-253
     title: "Extensions: Detour never requests notification permission, so extension notifications may never be shown"
+  - id: task-247
+    resource: backlog:TASK-247
+    title: "Extensions: notifications.onClicked and onClosed are never delivered to the extension"
+  - id: chromium-notifications-clear
+    resource: https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/extensions/api/notifications/
+    title: "Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)"
   - id: task-248
     resource: backlog:TASK-248
     title: "Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared"
@@ -456,6 +462,76 @@ nothing appeared.[^task-253]
   A Debug build shares `com.detourbrowser.mac` with the installed app, so
   answering a Debug build's prompt sets the installed app's permission too.
 
+## chrome.notifications events reach the background through a parked request
+
+`notifications.onClicked` and `onClosed` fire in the background context of the
+owner (profile and extension) whose notification it was, and nowhere
+else.[^task-247] There is no push channel into a context (see Gotchas), so the
+first `addListener` on either parks a `notifications.awaitEvent` request,
+which the manager answers with the owner's unacknowledged events
+`{events: [{seq, kind, notificationId, byUser?}]}`. The polyfill dispatches
+them in order and parks again with `ack` = the last `seq`.
+
+| Event | Fires |
+|---|---|
+| Click on the banner (`UNNotificationDefaultActionIdentifier`) | `onClicked(id)`; the entry stays |
+| User dismisses it (`UNNotificationDismissActionIdentifier`) | `onClosed(id, true)`; the entry goes, so `clear`/`update` answer false and `getAll` leaves it out |
+| The extension's `clear` finds it | `onClosed(id, false)` |
+| Unload of the extension, end of the profile or Private session, not-allowed or failed add | nothing |
+
+- **Dismissals need a category.** Every notification carries the
+  `detour-ext-notification` category with `.customDismissAction`
+  (`ExtensionNotificationManager.dismissCategory`); without it macOS never
+  reports a dismissal. The system center registers it alongside any other
+  category (`setNotificationCategories` replaces the set). The registration
+  is awaited before the first authorization check, so no banner is shown
+  before its category exists.
+- **Chrome's clear fires `onClosed(byUser false)`.** `notifications.clear` →
+  `ExtensionNotificationDisplayHelper::Close` → the display service →
+  `NotificationUIManagerImpl::CancelById` → `MessageCenter::RemoveNotification(id,
+  /* by_user */ false)` → `ExtensionNotificationHandler::OnClose`, which sends
+  `onClosed` with `by_user`.[^chromium-notifications-clear] That is the
+  message-center path; Chrome's native macOS bridge was not traced.
+- **Acknowledged, not answered.** An event stays in the per-owner backlog
+  (at most 32, oldest dropped) until a park acknowledges it. A parked reply
+  whose worker WebKit has unloaded goes nowhere and nothing says so; the next
+  incarnation's first park acknowledges nothing and receives the events again.
+  The polyfill skips a `seq` it has already dispatched.
+- **The park keeps nothing alive.** It is a pending `runtime.sendNativeMessage`,
+  not a port or a permission request, so WebKit's idle unload ignores it.
+  Measured: a worker parked and left alone was replaced by a new incarnation
+  within 45 s (the gated leg `testAClickAfterTheWorkerUnloadsWakesItAndIsDelivered`,
+  `TEST_RUNNER_NOTIFICATION_UNLOAD_LEG=1`). So parking for every listening
+  extension is safe, and parking only while it has live notifications was
+  not needed.
+- **An event wakes the background.** Once an owner has parked this launch, each
+  event calls `loadBackgroundContent` on its context (a no-op while it is
+  loaded), as Chrome starts a worker for an event it listens to. The new
+  worker's top-level `addListener` parks and drains the backlog. An owner
+  that never parked is never woken; its events wait in the backlog.
+- **A newer incarnation supersedes.** The park carries `__detourContextInstance`.
+  A token not seen before settles the parked request with "superseded" and
+  takes its place; from then on an older token is refused, so an old worker
+  still running beside its replacement (`runtime.reload()`) cannot take the
+  park back and ping-pong.
+- **Background only.** The handler refuses `awaitEvent` from any sender that
+  fails `senderIsBackgroundContext`. Chrome fires these events in every
+  context with a listener; Detour does not deliver them to popups, options
+  pages or extension tabs. A page's park would need its own slot per page
+  instance and nothing tells the manager a page closed, so dead pages'
+  replies would pile up; extensions handle clicks in the background in
+  practice. Rejected for now, not ruled out.
+- **A refused wait stops, with one exception.** A refusal for "not the
+  background", "superseded", "unloaded" or "profile gone" is final for that
+  context. A refusal for the permission (an optional `notifications` not yet
+  granted) is retried at the next `create`/`update`/`clear`/`getAll` while a
+  listener exists, so the grant does not leave the worker deaf until restart.
+- `onButtonClicked` still never fires: buttons are not shown.
+
+The manager-level behaviour is in `ExtensionNotificationEventManagerTests`, the
+real-worker behaviour (profile isolation, byUser, backlog before the park,
+`runtime.reload()` superseding) in `ExtensionNotificationEventDeliveryTests`.
+
 ## chrome.notifications is scoped by profile
 
 The system center has one delegate, so one manager serves every profile, and
@@ -634,11 +710,13 @@ uncaught error rather than an unhandled rejection.
 - **There is no push channel into a context.** WebKit offers the host no way
   to call into a worker. Events Detour originates are delivered by one of:
   a claim at context start (`onInstalled`), a parked request that is answered
-  later (`onUpdateAvailable`), a relayed message from a content script
+  later (`onUpdateAvailable`, `notifications.onClicked` / `onClosed` in the
+  background), a relayed message from a content script
   (`webNavigation` history events), or the keep-alive native port. The other
-  polyfill event objects — `idle.onStateChanged`, `notifications.onClicked`
-  and friends, `history.onVisited`, `management.on*` — accept listeners and
-  never fire: nothing calls their `__extensionDispatch…` hooks.
+  polyfill event objects — `idle.onStateChanged`,
+  `notifications.onButtonClicked`, `history.onVisited`, `management.on*` —
+  accept listeners and never fire: nothing calls their `__extensionDispatch…`
+  hooks.
 - `sessions.restore` answers with `tab.id.hashValue`, not the id WebKit uses
   for that tab.
 - Worker `console` output is invisible in Web Inspector for these contexts; it
@@ -686,5 +764,7 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-240]: Extensions: notifications.clear and notifications.update diverge from Chrome
 [^task-254]: Extensions: notifications.create(null, options) is treated as create(options) with empty options
 [^chrome-notifications-api]: chrome.notifications API reference
+[^task-247]: Extensions: notifications.onClicked and onClosed are never delivered to the extension
+[^chromium-notifications-clear]: Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)
 [^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared
 [^task-253]: Extensions: Detour never requests notification permission, so extension notifications may never be shown

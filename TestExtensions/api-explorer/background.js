@@ -4,7 +4,8 @@
 //            chrome.runtime.onInstalled, chrome.runtime.onStartup, chrome.runtime.onUpdateAvailable, chrome.runtime.connect/onConnect,
 //            chrome.storage.onChanged, chrome.extension.getBackgroundPage,
 //            chrome.alarms, chrome.action, chrome.commands, chrome.windows,
-//            chrome.fontSettings, chrome.permissions
+//            chrome.fontSettings, chrome.permissions,
+//            chrome.notifications.onClicked/onClosed (logged to the event log; TASK-247)
 
 const MAX_LOG_ENTRIES = 50;
 
@@ -135,6 +136,9 @@ if (chrome.idle) {
 }
 
 // --- Notifications ---
+// onClicked fires when the banner is clicked; onClosed with byUser true when the
+// user dismisses it and false when this extension clears it (TASK-247). Both
+// arrive in the background only, even while it was unloaded: the event wakes it.
 
 if (chrome.notifications) {
   chrome.notifications.onClicked.addListener((notificationId) => {

@@ -941,8 +941,8 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     }
 
     /// A click or close on a notification resolves to the profile that created
-    /// it, and a close drops only that profile's entry. (Nothing delivers it to
-    /// `onClicked` / `onClosed` yet; see `handleResponse`.)
+    /// it, and a close drops only that profile's entry. (Delivery to
+    /// `onClicked` / `onClosed` is `ExtensionNotificationEventTests`'.)
     @MainActor func testResponsesResolveOnlyToTheCreatingProfile() async throws {
         let ext = try await makeExtension()
         let (manager, center) = makeManager()
@@ -1124,7 +1124,8 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         profile = nil
         XCTAssertNil(handler.profile, "precondition: nothing else holds the profile")
 
-        for type in ["notifications.create", "notifications.update", "notifications.clear", "notifications.getAll"] {
+        for type in ["notifications.create", "notifications.update", "notifications.clear", "notifications.getAll",
+                     "notifications.awaitEvent"] {
             let answered = expectation(description: "\(type) answers")
             var reply: (result: Any?, error: (any Error)?) = (nil, nil)
             let params: [String: Any] = ["notificationId": "gone", "options": ["title": "t"]]

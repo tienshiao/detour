@@ -661,6 +661,22 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             guard let owner = notificationOwner(extensionID, orRefuse: replyHandler) else { return }
             replyHandler(notificationManager.getAll(owner: owner), nil)
 
+        case "notifications.awaitEvent":
+            // The background polyfill parks this for `onClicked` / `onClosed`
+            // (TASK-247); the manager answers it with the owner's events. Only
+            // the background context may wait: a page's park would supersede
+            // the worker's and take its events (pages do not get them; see the
+            // polyfill-layer wiki).
+            guard notificationsPermitted(extensionID, orRefuse: replyHandler) else { return }
+            let registered = ExtensionManager.shared.extension(withID: extensionID)
+            guard Self.senderIsBackgroundContext(sender, background: registered?.manifest.background) else {
+                replyHandler(nil, "notifications events: only the background context receives them")
+                return
+            }
+            guard let owner = notificationOwner(extensionID, orRefuse: replyHandler) else { return }
+            notificationManager.awaitEvent(owner: owner, instance: params["instance"] as? String,
+                                           ack: (params["ack"] as? NSNumber)?.intValue, reply: replyHandler)
+
         // MARK: - History
         case "history.search":
             guard hasPermission("history", extensionID: extensionID) else {
