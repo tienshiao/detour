@@ -14,16 +14,15 @@ import WebKit
 /// nothing and is dropped; an exclusion under an included domain makes the
 /// condition `if-top-url`, with patterns for the included domains less the
 /// excluded subtrees.
-@MainActor
-final class ContentBlockerDomainListTests: XCTestCase {
+nonisolated final class ContentBlockerDomainListTests: XCTestCase {
 
     private let parser = EasyListParser()
 
-    private func condition(_ included: [String], _ excluded: [String]) -> EasyListParser.DomainCondition {
+    @MainActor private func condition(_ included: [String], _ excluded: [String]) -> EasyListParser.DomainCondition {
         EasyListParser.domainCondition(included: included, excluded: excluded)
     }
 
-    private func topURLPatterns(_ included: [String], _ excluded: [String],
+    @MainActor private func topURLPatterns(_ included: [String], _ excluded: [String],
                                 file: StaticString = #filePath, line: UInt = #line) -> [NSRegularExpression] {
         guard case .ifTopURL(let patterns) = condition(included, excluded) else {
             XCTFail("expected if-top-url, got \(condition(included, excluded))", file: file, line: line)
@@ -36,11 +35,11 @@ final class ContentBlockerDomainListTests: XCTestCase {
         }
     }
 
-    private func matches(_ patterns: [NSRegularExpression], _ url: String) -> Bool {
+    @MainActor private func matches(_ patterns: [NSRegularExpression], _ url: String) -> Bool {
         patterns.contains { $0.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil }
     }
 
-    private func trigger(_ rule: [String: Any]) -> [String: Any] {
+    @MainActor private func trigger(_ rule: [String: Any]) -> [String: Any] {
         rule["trigger"] as? [String: Any] ?? [:]
     }
 
@@ -49,7 +48,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
 
     // MARK: - The condition
 
-    func testOnlyIncludedOrOnlyExcludedDomainsKeepTheirCondition() {
+    @MainActor func testOnlyIncludedOrOnlyExcludedDomainsKeepTheirCondition() {
         XCTAssertEqual(condition([], []), .everyPage)
         XCTAssertEqual(condition(["a.example", "b.example"], []), .ifDomain(["*a.example", "*b.example"]))
         XCTAssertEqual(condition([], ["a.example"]), .unlessDomain(["*a.example"]))
@@ -57,7 +56,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
 
     /// `a.example,~b.example`: b.example is no page of a.example, so the
     /// exclusion changes nothing.
-    func testAnExclusionOutsideEveryIncludedDomainIsDropped() {
+    @MainActor func testAnExclusionOutsideEveryIncludedDomainIsDropped() {
         XCTAssertEqual(condition(["a.example"], ["b.example"]), .ifDomain(["*a.example"]))
         // Excluding a parent: the included domain is more specific and wins.
         XCTAssertEqual(condition(["sub.a.example"], ["a.example"]), .ifDomain(["*sub.a.example"]))
@@ -65,12 +64,12 @@ final class ContentBlockerDomainListTests: XCTestCase {
         XCTAssertEqual(condition(["a.example"], ["notua.example"]), .ifDomain(["*a.example"]))
     }
 
-    func testAnIncludedDomainThatIsAlsoExcludedIsDropped() {
+    @MainActor func testAnIncludedDomainThatIsAlsoExcludedIsDropped() {
         XCTAssertEqual(condition(["a.example", "b.example"], ["a.example"]), .ifDomain(["*b.example"]))
         XCTAssertEqual(condition(["a.example"], ["a.example"]), .noPage)
     }
 
-    func testASubdomainExclusionLeavesTheRestOfTheDomain() {
+    @MainActor func testASubdomainExclusionLeavesTheRestOfTheDomain() {
         let patterns = topURLPatterns(["a.example"], ["sub.a.example"])
         for url in ["http://a.example/", "https://a.example:8443/x", "https://www.a.example/",
                     "https://deep.www.a.example/p?q", "http://s.a.example/", "http://su.a.example/",
@@ -89,7 +88,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
         }
     }
 
-    func testSeveralExclusionsAndIncludedDomains() {
+    @MainActor func testSeveralExclusionsAndIncludedDomains() {
         let patterns = topURLPatterns(["example.com", "other.org"], ["sub.example.com", "ads.example.com", "s.example.com"])
         for url in ["https://example.com/", "https://www.example.com/", "https://su.example.com/",
                     "https://ad.example.com/", "https://adsx.example.com/", "https://other.org/",
@@ -102,7 +101,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
         }
     }
 
-    func testAnExclusionDeeperDownLeavesItsParent() {
+    @MainActor func testAnExclusionDeeperDownLeavesItsParent() {
         let patterns = topURLPatterns(["a.example"], ["x.sub.a.example"])
         for url in ["https://a.example/", "https://sub.a.example/", "https://y.sub.a.example/",
                     "https://x.a.example/", "https://xx.sub.a.example/"] {
@@ -115,7 +114,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
 
     /// `a.example,~sub.a.example,in.sub.a.example`: the most specific listed
     /// domain decides, so in.sub.a.example is back in.
-    func testAnIncludedDomainUnderAnExclusionIsIncludedAgain() {
+    @MainActor func testAnIncludedDomainUnderAnExclusionIsIncludedAgain() {
         let patterns = topURLPatterns(["a.example", "in.sub.a.example"], ["sub.a.example"])
         for url in ["https://a.example/", "https://in.sub.a.example/", "https://x.in.sub.a.example/"] {
             XCTAssertTrue(matches(patterns, url), url)
@@ -127,7 +126,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
 
     // MARK: - Parser output
 
-    func testAMixedElementHidingRuleHasOneCondition() {
+    @MainActor func testAMixedElementHidingRuleHasOneCondition() {
         let dropped = parser.parse(text: "a.example,~b.example##.sel\n").rules
         XCTAssertEqual(dropped.count, 1)
         XCTAssertEqual(trigger(dropped[0])["if-domain"] as? [String], ["*a.example"])
@@ -139,7 +138,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
         XCTAssertEqual(Set(trigger(excluded[0]).keys).intersection(Self.conditionKeys), ["if-top-url"])
     }
 
-    func testAMixedDomainOptionHasOneCondition() {
+    @MainActor func testAMixedDomainOptionHasOneCondition() {
         let dropped = parser.parse(text: "||ads.example^$script,domain=a.example|~b.example\n").rules
         XCTAssertEqual(dropped.count, 1)
         XCTAssertEqual(trigger(dropped[0])["if-domain"] as? [String], ["*a.example"])
@@ -152,7 +151,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
         }
     }
 
-    func testARuleWhoseOnlyDomainIsExcludedAgainIsSkipped() {
+    @MainActor func testARuleWhoseOnlyDomainIsExcludedAgainIsSkipped() {
         let result = parser.parse(text: "a.example,~a.example##.sel\n||ads.example^$domain=a.example|~a.example\n")
         XCTAssertTrue(result.rules.isEmpty, "\(result.rules)")
         XCTAssertEqual(result.skippedCount, 2)
@@ -160,7 +159,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
 
     /// The rules hide, block and except on the included domain and not on
     /// the excluded subdomain, evaluated the way WebKit evaluates a list.
-    func testMixedRulesApplyOnTheIncludedDomainOnly() {
+    @MainActor func testMixedRulesApplyOnTheIncludedDomainOnly() {
         let evaluator = RuleListEvaluator(parser.parse(text: """
         a.example,~sub.a.example##.sel
         /ad.js$domain=a.example|~sub.a.example
@@ -182,7 +181,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
 
     /// A pattern-less cosmetic exception names its pages with `domain=`;
     /// an exclusion under them makes it an `if-top-url` page-wide exception.
-    func testAPatternlessCosmeticExceptionWithAnExcludedSubdomain() {
+    @MainActor func testAPatternlessCosmeticExceptionWithAnExcludedSubdomain() {
         let rules = parser.parse(text: """
         ##.generic-ad
         @@$generichide,domain=a.example|~sub.a.example
@@ -196,7 +195,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
 
     /// A mixed element-hiding rule is domain-specific: it goes after the
     /// `$generichide` exceptions, which must not undo it.
-    func testAMixedElementHidingRuleIsInTheDomainSpecificSection() {
+    @MainActor func testAMixedElementHidingRuleIsInTheDomainSpecificSection() {
         let rules = parser.parse(text: """
         a.example,~sub.a.example##.specific
         ##.generic
@@ -214,7 +213,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
     /// domain lists held `przesył-energii.pl` and `wanderwege-graubünden.ch`,
     /// which became `przesy%C5%82-energii.pl` (percent-encoded, upper-case
     /// hex) where WebKit needs lower-case ASCII, i.e. punycode.
-    func testAnInternationalisedDomainBecomesPunycode() {
+    @MainActor func testAnInternationalisedDomainBecomesPunycode() {
         let hiding = parser.parse(text: "przesył-energii.pl,wanderwege-graubünden.ch##.cookie\n").rules
         XCTAssertEqual(trigger(hiding[0])["if-domain"] as? [String],
                        ["*xn--przesy-energii-lnc.pl", "*xn--wanderwege-graubnden-4ec.ch"])
@@ -226,7 +225,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
     /// it (upper-case hex, which WebKit rejects), so it is left out. A list
     /// whose every included domain is left out applies on no page, not on
     /// every page.
-    func testAnIncludedDomainThatDoesNotEncodeIsLeftOut() {
+    @MainActor func testAnIncludedDomainThatDoesNotEncodeIsLeftOut() {
         let kept = parser.parse(text: "bücher.de,xn--ü.de##.cookie\n").rules
         XCTAssertEqual(trigger(kept[0])["if-domain"] as? [String], ["*xn--bcher-kva.de"])
 
@@ -242,7 +241,7 @@ final class ContentBlockerDomainListTests: XCTestCase {
 
     // MARK: - WebKit accepts the output
 
-    func testWebKitCompilesEveryMixedRule() async throws {
+    @MainActor func testWebKitCompilesEveryMixedRule() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("TASK201-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }

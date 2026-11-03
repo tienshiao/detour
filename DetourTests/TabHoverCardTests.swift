@@ -4,11 +4,11 @@ import XCTest
 /// TASK-190: the rules behind the sidebar's tab hover card — when it shows,
 /// what its text says, which tab a hovered row (or split half) describes, and
 /// where its thumbnail comes from.
-final class TabHoverCardTests: XCTestCase {
+nonisolated final class TabHoverCardTests: XCTestCase {
 
     // MARK: - Timing
 
-    func testFreshHoverWaitsTheShowDelay() {
+    @MainActor func testFreshHoverWaitsTheShowDelay() {
         let now = Date(timeIntervalSinceReferenceDate: 1000)
         XCTAssertEqual(HoverCardTiming.delay(isShowing: false, lastHiddenAt: nil, now: now),
                        HoverCardTiming.showDelay)
@@ -16,19 +16,19 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertLessThan(HoverCardTiming.showDelay, 0.6)
     }
 
-    func testHoverWhileACardIsShowingSwapsImmediately() {
+    @MainActor func testHoverWhileACardIsShowingSwapsImmediately() {
         let now = Date(timeIntervalSinceReferenceDate: 1000)
         XCTAssertEqual(HoverCardTiming.delay(isShowing: true, lastHiddenAt: nil, now: now), 0)
         XCTAssertEqual(HoverCardTiming.delay(isShowing: true, lastHiddenAt: now.addingTimeInterval(-60), now: now), 0)
     }
 
-    func testHoverJustAfterACardHidSwapsImmediately() {
+    @MainActor func testHoverJustAfterACardHidSwapsImmediately() {
         let now = Date(timeIntervalSinceReferenceDate: 1000)
         XCTAssertEqual(HoverCardTiming.delay(isShowing: false, lastHiddenAt: now.addingTimeInterval(-0.1), now: now), 0)
         XCTAssertEqual(HoverCardTiming.delay(isShowing: false, lastHiddenAt: now, now: now), 0)
     }
 
-    func testHoverLongAfterACardHidWaitsAgain() {
+    @MainActor func testHoverLongAfterACardHidWaitsAgain() {
         let now = Date(timeIntervalSinceReferenceDate: 1000)
         let hidden = now.addingTimeInterval(-HoverCardTiming.swapWindow - 0.01)
         XCTAssertEqual(HoverCardTiming.delay(isShowing: false, lastHiddenAt: hidden, now: now),
@@ -37,7 +37,7 @@ final class TabHoverCardTests: XCTestCase {
                        HoverCardTiming.showDelay)
     }
 
-    func testAHideStampInTheFutureDoesNotSwap() {
+    @MainActor func testAHideStampInTheFutureDoesNotSwap() {
         // A clock that went backwards must not make every hover instant.
         let now = Date(timeIntervalSinceReferenceDate: 1000)
         XCTAssertEqual(HoverCardTiming.delay(isShowing: false, lastHiddenAt: now.addingTimeInterval(10), now: now),
@@ -46,12 +46,12 @@ final class TabHoverCardTests: XCTestCase {
 
     // MARK: - URL line
 
-    func testURLLineDropsSchemeAndWWWAndSplitsAtTheHost() {
+    @MainActor func testURLLineDropsSchemeAndWWWAndSplitsAtTheHost() {
         let line = HoverCardText.urlLine(for: URL(string: "https://www.example.com/a/b?q=1#top"))
         XCTAssertEqual(line, .init(host: "example.com", rest: "/a/b?q=1#top"))
     }
 
-    func testURLLineKeepsOtherSubdomainsAndThePort() {
+    @MainActor func testURLLineKeepsOtherSubdomainsAndThePort() {
         XCTAssertEqual(HoverCardText.urlLine(for: URL(string: "http://docs.example.com:8080/x")),
                        .init(host: "docs.example.com:8080", rest: "/x"))
         // Only a leading "www." goes.
@@ -61,31 +61,31 @@ final class TabHoverCardTests: XCTestCase {
                        .init(host: "example.www.com", rest: ""))
     }
 
-    func testURLLineDropsABareRootPathAndUserInfo() {
+    @MainActor func testURLLineDropsABareRootPathAndUserInfo() {
         XCTAssertEqual(HoverCardText.urlLine(for: URL(string: "https://www.example.com/")),
                        .init(host: "example.com", rest: ""))
         XCTAssertEqual(HoverCardText.urlLine(for: URL(string: "https://user:pw@example.com/p")),
                        .init(host: "example.com", rest: "/p"))
     }
 
-    func testURLLineKeepsAQueryOnTheRoot() {
+    @MainActor func testURLLineKeepsAQueryOnTheRoot() {
         XCTAssertEqual(HoverCardText.urlLine(for: URL(string: "https://www.google.com/?q=detour")),
                        .init(host: "google.com", rest: "/?q=detour"))
     }
 
-    func testURLLineDecodesThePath() {
+    @MainActor func testURLLineDecodesThePath() {
         XCTAssertEqual(HoverCardText.urlLine(for: URL(string: "https://example.com/caf%C3%A9%20menu")),
                        .init(host: "example.com", rest: "/café menu"))
     }
 
-    func testURLLineKeepsAPathEncodedWhenDecodingWouldAddControlOrBidiCharacters() {
+    @MainActor func testURLLineKeepsAPathEncodedWhenDecodingWouldAddControlOrBidiCharacters() {
         XCTAssertEqual(HoverCardText.urlLine(for: URL(string: "https://example.com/a%E2%80%AEmoc.elgoog")),
                        .init(host: "example.com", rest: "/a%E2%80%AEmoc.elgoog"))
         XCTAssertEqual(HoverCardText.urlLine(for: URL(string: "https://example.com/a%0Ab")),
                        .init(host: "example.com", rest: "/a%0Ab"))
     }
 
-    func testURLLineForNonWebSchemes() {
+    @MainActor func testURLLineForNonWebSchemes() {
         XCTAssertEqual(HoverCardText.urlLine(for: URL(string: "file:///Users/me/page.html")),
                        .init(host: "", rest: "/Users/me/page.html"))
         XCTAssertEqual(HoverCardText.urlLine(for: URL(string: "about:blank")),
@@ -94,37 +94,37 @@ final class TabHoverCardTests: XCTestCase {
                        .init(host: "detour://history", rest: ""))
     }
 
-    func testURLLineIsNilWithoutAURL() {
+    @MainActor func testURLLineIsNilWithoutAURL() {
         XCTAssertNil(HoverCardText.urlLine(for: nil))
     }
 
     // MARK: - Text
 
-    func testTextKeepsTheFullTitleAndTheURLLine() {
+    @MainActor func testTextKeepsTheFullTitleAndTheURLLine() {
         let long = Array(repeating: "A long page title", count: 10).joined(separator: " ")
         let text = HoverCardText.make(title: long, url: URL(string: "https://www.example.com/a"))
         XCTAssertEqual(text.title, long)
         XCTAssertEqual(text.url, .init(host: "example.com", rest: "/a"))
     }
 
-    func testTextTrimsTheTitle() {
+    @MainActor func testTextTrimsTheTitle() {
         let text = HoverCardText.make(title: "  Hello \n", url: URL(string: "https://example.com"))
         XCTAssertEqual(text.title, "Hello")
     }
 
-    func testBlankTitleFallsBackToTheURLAndDropsTheURLLine() {
+    @MainActor func testBlankTitleFallsBackToTheURLAndDropsTheURLLine() {
         let text = HoverCardText.make(title: "  ", url: URL(string: "https://www.example.com/a"))
         XCTAssertEqual(text.title, "example.com/a")
         XCTAssertNil(text.url)
     }
 
-    func testBlankTitleWithoutURL() {
+    @MainActor func testBlankTitleWithoutURL() {
         let text = HoverCardText.make(title: "", url: nil)
         XCTAssertEqual(text.title, "Untitled")
         XCTAssertNil(text.url)
     }
 
-    func testTitleWithoutURLHasNoURLLine() {
+    @MainActor func testTitleWithoutURLHasNoURLLine() {
         let text = HoverCardText.make(title: "New Tab", url: nil)
         XCTAssertEqual(text.title, "New Tab")
         XCTAssertNil(text.url)
@@ -132,27 +132,27 @@ final class TabHoverCardTests: XCTestCase {
 
     // MARK: - Targets
 
-    private func makeTab(_ title: String = "Tab", url: String = "https://example.com") -> BrowserTab {
+    @MainActor private func makeTab(_ title: String = "Tab", url: String = "https://example.com") -> BrowserTab {
         BrowserTab(id: UUID(), title: title, url: URL(string: url), faviconURL: nil,
                    cachedInteractionState: nil, spaceID: UUID())
     }
 
-    private func tabOf(_ target: HoverCardTarget?) -> BrowserTab? {
+    @MainActor private func tabOf(_ target: HoverCardTarget?) -> BrowserTab? {
         guard case .tab(let tab) = target else { return nil }
         return tab
     }
 
-    private func entryOf(_ target: HoverCardTarget?) -> PinnedEntry? {
+    @MainActor private func entryOf(_ target: HoverCardTarget?) -> PinnedEntry? {
         guard case .pinned(let entry) = target else { return nil }
         return entry
     }
 
-    func testSingleTabRowTargetsItsTab() {
+    @MainActor func testSingleTabRowTargetsItsTab() {
         let tab = makeTab()
         XCTAssertTrue(tabOf(HoverCardTarget.forTabItem(.single(tab), splitSide: nil)) === tab)
     }
 
-    func testSplitRowTargetsOnlyTheHoveredHalf() {
+    @MainActor func testSplitRowTargetsOnlyTheHoveredHalf() {
         let left = makeTab("Left"), right = makeTab("Right")
         let item = TabListItem.split(groupID: UUID(), members: [left, right])
         XCTAssertTrue(tabOf(HoverCardTarget.forTabItem(item, splitSide: 0)) === left)
@@ -162,7 +162,7 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertNil(HoverCardTarget.forTabItem(item, splitSide: 2))
     }
 
-    func testPinnedRowsTargetTheEntryOrTheHoveredHalf() {
+    @MainActor func testPinnedRowsTargetTheEntryOrTheHoveredHalf() {
         let a = PinnedEntry(pinnedURL: URL(string: "https://a.example")!, pinnedTitle: "A")
         let b = PinnedEntry(pinnedURL: URL(string: "https://b.example")!, pinnedTitle: "B")
         XCTAssertTrue(entryOf(HoverCardTarget.forPinnedItem(.entry(a, depth: 1), splitSide: nil)) === a)
@@ -172,12 +172,12 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertNil(HoverCardTarget.forPinnedItem(split, splitSide: nil))
     }
 
-    func testFolderRowsGetNoCard() {
+    @MainActor func testFolderRowsGetNoCard() {
         let folder = PinnedFolder(name: "Folder")
         XCTAssertNil(HoverCardTarget.forPinnedItem(.folder(folder, depth: 0), splitSide: nil))
     }
 
-    func testTargetsCompareByIdentity() {
+    @MainActor func testTargetsCompareByIdentity() {
         let tab = makeTab()
         let entry = PinnedEntry(pinnedURL: URL(string: "https://a.example")!, pinnedTitle: "A", tab: tab)
         XCTAssertTrue(HoverCardTarget.tab(tab).isSame(as: .tab(tab)))
@@ -190,9 +190,9 @@ final class TabHoverCardTests: XCTestCase {
 
     // MARK: - Content
 
-    private func preview() -> NSImage { NSImage(size: NSSize(width: 480, height: 300)) }
+    @MainActor private func preview() -> NSImage { NSImage(size: NSSize(width: 480, height: 300)) }
 
-    func testNormalTabShowsItsTitleURLAndPreview() {
+    @MainActor func testNormalTabShowsItsTitleURLAndPreview() {
         let tab = makeTab("Docs", url: "https://www.example.com/docs")
         let image = preview()
         tab.switcherPreview = image
@@ -203,20 +203,20 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertEqual(content.thumbnailKey, tab.id)
     }
 
-    func testTabWithoutPreviewFallsBackToTheDiskKey() {
+    @MainActor func testTabWithoutPreviewFallsBackToTheDiskKey() {
         let tab = makeTab()
         let content = HoverCardContent.make(for: .tab(tab), isOnScreen: { _ in false }, thumbnailKey: { $0.id })
         XCTAssertNil(content.preview)
         XCTAssertEqual(content.thumbnailKey, tab.id)
     }
 
-    func testPrivateTabHasNoDiskKey() {
+    @MainActor func testPrivateTabHasNoDiskKey() {
         let tab = makeTab()
         let content = HoverCardContent.make(for: .tab(tab), isOnScreen: { _ in false }, thumbnailKey: { _ in nil })
         XCTAssertNil(content.thumbnailKey)
     }
 
-    func testOnScreenTabShowsNoThumbnail() {
+    @MainActor func testOnScreenTabShowsNoThumbnail() {
         let tab = makeTab()
         tab.switcherPreview = preview()
         let content = HoverCardContent.make(for: .tab(tab), isOnScreen: { $0 === tab }, thumbnailKey: { $0.id })
@@ -225,7 +225,7 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertEqual(content.text.title, "Tab")
     }
 
-    func testLivePinnedEntryShowsTheTabsCurrentPage() {
+    @MainActor func testLivePinnedEntryShowsTheTabsCurrentPage() {
         let tab = makeTab("Inbox (3)", url: "https://mail.example.com/inbox/42")
         let image = preview()
         tab.switcherPreview = image
@@ -238,7 +238,7 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertEqual(content.thumbnailKey, entry.id)
     }
 
-    func testDormantPinnedEntryShowsItsOwnPageAndItsDiskThumbnail() {
+    @MainActor func testDormantPinnedEntryShowsItsOwnPageAndItsDiskThumbnail() {
         let entry = PinnedEntry(pinnedURL: URL(string: "https://www.mail.example.com/")!, pinnedTitle: "Mail")
         let content = HoverCardContent.make(for: .pinned(entry), isOnScreen: { _ in false },
                                             thumbnailKey: { _ in XCTFail("no tab to ask about"); return nil })
@@ -247,7 +247,7 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertEqual(content.thumbnailKey, entry.id)
     }
 
-    func testLiveFavoriteShowsTheTabsCurrentPage() {
+    @MainActor func testLiveFavoriteShowsTheTabsCurrentPage() {
         let tab = makeTab("Video", url: "https://www.youtube.com/watch?v=1")
         let favorite = Favorite(url: URL(string: "https://youtube.com")!, title: "YouTube", tab: tab)
         let content = HoverCardContent.make(for: .favorite(favorite), isOnScreen: { _ in false },
@@ -257,7 +257,7 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertEqual(content.thumbnailKey, favorite.id)
     }
 
-    func testDormantFavoriteShowsItsOwnPage() {
+    @MainActor func testDormantFavoriteShowsItsOwnPage() {
         let favorite = Favorite(url: URL(string: "https://youtube.com")!, title: "YouTube")
         let content = HoverCardContent.make(for: .favorite(favorite), isOnScreen: { _ in false },
                                             thumbnailKey: { _ in nil })
@@ -265,7 +265,7 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertEqual(content.thumbnailKey, favorite.id)
     }
 
-    func testSelectedFavoriteShowsNoThumbnail() {
+    @MainActor func testSelectedFavoriteShowsNoThumbnail() {
         let tab = makeTab()
         tab.switcherPreview = preview()
         let favorite = Favorite(url: URL(string: "https://example.com")!, title: "Ex", tab: tab)
@@ -277,12 +277,12 @@ final class TabHoverCardTests: XCTestCase {
 
     // MARK: - Peek (TASK-229)
 
-    private func peekOf(_ target: HoverCardTarget?) -> BrowserTab? {
+    @MainActor private func peekOf(_ target: HoverCardTarget?) -> BrowserTab? {
         guard case .peek(let host) = target else { return nil }
         return host
     }
 
-    func testThePeekBadgeOfARowTargetsItsHost() {
+    @MainActor func testThePeekBadgeOfARowTargetsItsHost() {
         let host = makeTab("Host")
         host.peekTab = makeTab("Peek", url: "https://peek.example/a")
         XCTAssertTrue(peekOf(HoverCardTarget.peekBadge(of: .tab(host))) === host)
@@ -292,13 +292,13 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertTrue(peekOf(HoverCardTarget.peekBadge(of: .favorite(favorite))) === host)
     }
 
-    func testAParkedOrRestoredPeekHasABadgeCard() {
+    @MainActor func testAParkedOrRestoredPeekHasABadgeCard() {
         let restored = makeTab("Host")
         restored.peekURL = URL(string: "https://peek.example/a")
         XCTAssertTrue(peekOf(HoverCardTarget.peekBadge(of: .tab(restored))) === restored)
     }
 
-    func testNoPeekBadgeCardWithoutAPeekOrALiveHost() {
+    @MainActor func testNoPeekBadgeCardWithoutAPeekOrALiveHost() {
         XCTAssertNil(HoverCardTarget.peekBadge(of: .tab(makeTab())))
         let dormant = PinnedEntry(pinnedURL: URL(string: "https://a.example")!, pinnedTitle: "A")
         XCTAssertNil(HoverCardTarget.peekBadge(of: .pinned(dormant)))
@@ -308,7 +308,7 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertNil(HoverCardTarget.peekBadge(of: .peek(host: host)), "a Peek has no Peek of its own")
     }
 
-    func testAPeekBadgeIsInItsHostsRow() {
+    @MainActor func testAPeekBadgeIsInItsHostsRow() {
         let host = makeTab()
         let entry = PinnedEntry(pinnedURL: URL(string: "https://a.example")!, pinnedTitle: "A", tab: host)
         let favorite = Favorite(url: URL(string: "https://a.example")!, title: "A", tab: host)
@@ -322,7 +322,7 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertFalse(HoverCardTarget.tab(other).isSameRow(as: .tab(host)))
     }
 
-    func testPeekTargetsCompareByHost() {
+    @MainActor func testPeekTargetsCompareByHost() {
         let host = makeTab()
         XCTAssertTrue(HoverCardTarget.peek(host: host).isSame(as: .peek(host: host)))
         XCTAssertFalse(HoverCardTarget.peek(host: host).isSame(as: .peek(host: makeTab())))
@@ -331,7 +331,7 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertFalse(HoverCardTarget.tab(host).isSame(as: .peek(host: host)))
     }
 
-    func testALivePeekShowsItsOwnTitleURLAndPreview() {
+    @MainActor func testALivePeekShowsItsOwnTitleURLAndPreview() {
         let host = makeTab("Host", url: "https://host.example/")
         host.switcherPreview = preview()
         let peek = makeTab("Article", url: "https://www.news.example/story")
@@ -350,7 +350,7 @@ final class TabHoverCardTests: XCTestCase {
 
     /// TASK-230: with no picture in memory, the card reads the Peek's from
     /// disk, never the host's.
-    func testAPeekWithoutAPreviewLooksOnDiskUnderItsOwnKey() {
+    @MainActor func testAPeekWithoutAPreviewLooksOnDiskUnderItsOwnKey() {
         let host = makeTab()
         host.switcherPreview = preview()
         host.peekTab = makeTab("Article", url: "https://news.example/story")
@@ -362,7 +362,7 @@ final class TabHoverCardTests: XCTestCase {
                        TabStore.peekThumbnailKey(hostKey: host.id, peekURL: URL(string: "https://news.example/story")!))
     }
 
-    func testAPrivateHostsPeekHasNoDiskKey() {
+    @MainActor func testAPrivateHostsPeekHasNoDiskKey() {
         let host = makeTab()
         host.peekTab = makeTab("Article", url: "https://news.example/story")
         let content = HoverCardContent.make(for: .peek(host: host), isOnScreen: { _ in false },
@@ -370,7 +370,7 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertNil(content.thumbnailKey)
     }
 
-    func testAParkedPeekShowsTheSavedURLWhenItsTabHasNone() {
+    @MainActor func testAParkedPeekShowsTheSavedURLWhenItsTabHasNone() {
         let host = makeTab()
         host.peekTab = BrowserTab(id: UUID(), title: "Article", url: nil, faviconURL: nil,
                                   cachedInteractionState: nil, spaceID: UUID())
@@ -380,7 +380,7 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertEqual(content.text, HoverCardText(title: "Article", url: .init(host: "news.example", rest: "/story")))
     }
 
-    func testARestoredPeekIsNamedByItsURL() {
+    @MainActor func testARestoredPeekIsNamedByItsURL() {
         // After a relaunch only the host's peek columns are left: no title,
         // and Peeks record no history to look one up in.
         let host = makeTab()
@@ -393,7 +393,7 @@ final class TabHoverCardTests: XCTestCase {
                        "the picture saved before the relaunch")
     }
 
-    func testAPeekOverTheTabOnScreenShowsNoThumbnail() {
+    @MainActor func testAPeekOverTheTabOnScreenShowsNoThumbnail() {
         // A host on screen has its Peek presented over it.
         let host = makeTab()
         let peek = makeTab("Article", url: "https://news.example/story")
@@ -408,7 +408,7 @@ final class TabHoverCardTests: XCTestCase {
 
     /// The unfocused pane of the selected split is on screen, but its Peek is
     /// not: only the focused pane's Peek is presented.
-    func testAPeekOfAPaneOnScreenButNotPresentedKeepsItsPicture() {
+    @MainActor func testAPeekOfAPaneOnScreenButNotPresentedKeepsItsPicture() {
         let host = makeTab()
         let peek = makeTab("Article", url: "https://news.example/story")
         let image = preview()
@@ -423,7 +423,7 @@ final class TabHoverCardTests: XCTestCase {
 
     /// The text names the page the Peek tab is on; the disk key follows the
     /// URL the session saves, which is what a relaunch reads it back under.
-    func testAPeeksDiskKeyFollowsTheSavedURLAndItsTextTheTabs() {
+    @MainActor func testAPeeksDiskKeyFollowsTheSavedURLAndItsTextTheTabs() {
         let host = makeTab()
         host.peekTab = makeTab("Article", url: "https://news.example/failed")
         host.peekURL = URL(string: "https://news.example/saved")
@@ -436,7 +436,7 @@ final class TabHoverCardTests: XCTestCase {
 
     // MARK: - Peek badge hit areas
 
-    func testTheRowsPeekBadgeAreaIsItsTrailingEnd() {
+    @MainActor func testTheRowsPeekBadgeAreaIsItsTrailingEnd() {
         let bounds = NSRect(x: 0, y: 0, width: 224, height: 32)
         let area = TabCellView.peekBadgeHoverRect(in: bounds)
         XCTAssertEqual(area.maxX, bounds.maxX, "the inset to the row's edge belongs to the badge")
@@ -445,7 +445,7 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertFalse(area.contains(NSPoint(x: 224 - 4 - 16 - 4 - 8, y: 16)), "the close button beside it")
     }
 
-    func testTheTilesPeekBadgeAreaIsItsChip() {
+    @MainActor func testTheTilesPeekBadgeAreaIsItsChip() {
         let bounds = NSRect(x: 0, y: 0, width: 44, height: 32)
         let area = FavoriteTileView.peekBadgeHoverRect(in: bounds)
         XCTAssertTrue(area.contains(NSPoint(x: 44 - 2 - 7, y: 32 - 2 - 7)), "the chip's centre (top right)")
@@ -456,14 +456,14 @@ final class TabHoverCardTests: XCTestCase {
 
     // MARK: - Placement
 
-    func testCardSitsBesideTheSidebarTopAlignedWithTheRow() {
+    @MainActor func testCardSitsBesideTheSidebarTopAlignedWithTheRow() {
         let screen = NSRect(x: 0, y: 0, width: 1440, height: 875)
         let frame = HoverCardPlacement.frame(cardSize: NSSize(width: 260, height: 200),
                                              sidebarMaxX: 280, rowTop: 700, visibleFrame: screen)
         XCTAssertEqual(frame, NSRect(x: 286, y: 500, width: 260, height: 200))
     }
 
-    func testCardStaysOnScreenNearTheBottomAndTop() {
+    @MainActor func testCardStaysOnScreenNearTheBottomAndTop() {
         let screen = NSRect(x: 0, y: 25, width: 1440, height: 850)
         let low = HoverCardPlacement.frame(cardSize: NSSize(width: 260, height: 200),
                                            sidebarMaxX: 280, rowTop: 100, visibleFrame: screen)
@@ -474,7 +474,7 @@ final class TabHoverCardTests: XCTestCase {
         XCTAssertEqual(high.maxY, 875)
     }
 
-    func testCardStaysOnScreenAtTheRightEdge() {
+    @MainActor func testCardStaysOnScreenAtTheRightEdge() {
         // A window pushed off the right of the screen.
         let screen = NSRect(x: 0, y: 0, width: 1440, height: 875)
         let frame = HoverCardPlacement.frame(cardSize: NSSize(width: 260, height: 100),
@@ -486,9 +486,9 @@ final class TabHoverCardTests: XCTestCase {
 /// The controller's state machine against a real (borderless) window: the
 /// show delay, the immediate swap, dismissal with suppression until the
 /// pointer leaves, and the event monitor's lifetime.
-final class TabHoverCardControllerTests: XCTestCase {
+nonisolated final class TabHoverCardControllerTests: XCTestCase {
 
-    private final class FakeHost: TabHoverCardHost {
+    @MainActor private final class FakeHost: TabHoverCardHost {
         let window: NSWindow
         var onScreen: Set<ObjectIdentifier> = []
         init(window: NSWindow) { self.window = window }
@@ -502,7 +502,7 @@ final class TabHoverCardControllerTests: XCTestCase {
     private var host: FakeHost!
     private var controller: TabHoverCardController!
 
-    override func setUp() {
+    @MainActor override func setUp() async throws {
         window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 800, height: 600),
                           styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -513,27 +513,27 @@ final class TabHoverCardControllerTests: XCTestCase {
         controller.pressedMouseButtons = { 0 }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         controller.dismiss()
         controller = nil
         window.orderOut(nil)
         window = nil
     }
 
-    private func makeTab(_ title: String) -> BrowserTab {
+    @MainActor private func makeTab(_ title: String) -> BrowserTab {
         BrowserTab(id: UUID(), title: title, url: URL(string: "https://example.com"), faviconURL: nil,
                    cachedInteractionState: nil, spaceID: UUID())
     }
 
     private let row = NSRect(x: 8, y: 400, width: 224, height: 32)
 
-    private func waitUntilShowing(file: StaticString = #filePath, line: UInt = #line) {
+    @MainActor private func waitUntilShowing(file: StaticString = #filePath, line: UInt = #line) {
         let shown = expectation(for: NSPredicate { [weak self] _, _ in self?.controller.isShowing == true },
                                 evaluatedWith: nil)
         wait(for: [shown], timeout: 2)
     }
 
-    func testFreshHoverIsPendingThenShowsBesideTheSidebar() {
+    @MainActor func testFreshHoverIsPendingThenShowsBesideTheSidebar() {
         let tab = makeTab("A")
         controller.hoverBegan(.tab(tab), rowRectInWindow: row)
         XCTAssertFalse(controller.isShowing)
@@ -548,7 +548,7 @@ final class TabHoverCardControllerTests: XCTestCase {
         XCTAssertEqual(panel.frame.maxY, window.convertToScreen(row).maxY, accuracy: 0.5)
     }
 
-    func testLeavingBeforeTheDelayShowsNothingAndRemovesTheMonitor() {
+    @MainActor func testLeavingBeforeTheDelayShowsNothingAndRemovesTheMonitor() {
         let tab = makeTab("A")
         controller.hoverBegan(.tab(tab), rowRectInWindow: row)
         controller.hoverEnded(.tab(tab))
@@ -557,7 +557,7 @@ final class TabHoverCardControllerTests: XCTestCase {
         XCTAssertFalse(controller.isShowing)
     }
 
-    func testMovingToTheNextRowSwapsImmediately() {
+    @MainActor func testMovingToTheNextRowSwapsImmediately() {
         let a = makeTab("A"), b = makeTab("B")
         controller.hoverBegan(.tab(a), rowRectInWindow: row)
         waitUntilShowing()
@@ -568,7 +568,7 @@ final class TabHoverCardControllerTests: XCTestCase {
         XCTAssertFalse(controller.isPendingForTesting)
     }
 
-    func testEnterBeforeExitAlsoSwaps() {
+    @MainActor func testEnterBeforeExitAlsoSwaps() {
         let a = makeTab("A"), b = makeTab("B")
         controller.hoverBegan(.tab(a), rowRectInWindow: row)
         waitUntilShowing()
@@ -580,7 +580,7 @@ final class TabHoverCardControllerTests: XCTestCase {
     /// TASK-229: as the pointer crosses into the Peek badge the sidebar
     /// begins the badge's target over the row's (or the reverse), without
     /// ending the row's: the pointer has not left the row.
-    func testMovingBetweenTheRowAndItsPeekBadgeSwapsImmediately() {
+    @MainActor func testMovingBetweenTheRowAndItsPeekBadgeSwapsImmediately() {
         let host = makeTab("Host")
         host.peekTab = makeTab("Peek")
         controller.hoverBegan(.tab(host), rowRectInWindow: row)
@@ -599,7 +599,7 @@ final class TabHoverCardControllerTests: XCTestCase {
 
     /// TASK-229: a dismissal keeps the card away until the pointer leaves the
     /// row, not until it crosses onto or off the row's Peek badge.
-    func testDismissSuppressesAcrossThePeekBadgeUntilThePointerLeavesTheRow() {
+    @MainActor func testDismissSuppressesAcrossThePeekBadgeUntilThePointerLeavesTheRow() {
         let host = makeTab("Host")
         host.peekTab = makeTab("Peek")
         controller.hoverBegan(.tab(host), rowRectInWindow: row)
@@ -619,7 +619,7 @@ final class TabHoverCardControllerTests: XCTestCase {
         XCTAssertTrue(controller.isPendingForTesting)
     }
 
-    func testDismissSuppressesUntilThePointerLeavesTheRow() {
+    @MainActor func testDismissSuppressesUntilThePointerLeavesTheRow() {
         let a = makeTab("A")
         controller.hoverBegan(.tab(a), rowRectInWindow: row)
         waitUntilShowing()
@@ -636,7 +636,7 @@ final class TabHoverCardControllerTests: XCTestCase {
         XCTAssertTrue(controller.isPendingForTesting)
     }
 
-    func testDismissWhilePendingCancelsTheShow() {
+    @MainActor func testDismissWhilePendingCancelsTheShow() {
         let a = makeTab("A"), b = makeTab("B")
         controller.hoverBegan(.tab(a), rowRectInWindow: row)
         controller.dismiss()
@@ -647,7 +647,7 @@ final class TabHoverCardControllerTests: XCTestCase {
         XCTAssertTrue(controller.isPendingForTesting)
     }
 
-    func testNoCardWhileTheSidebarIsHidden() {
+    @MainActor func testNoCardWhileTheSidebarIsHidden() {
         final class HiddenSidebarHost: TabHoverCardHost {
             let window: NSWindow
             init(window: NSWindow) { self.window = window }
@@ -674,9 +674,9 @@ final class TabHoverCardControllerTests: XCTestCase {
 /// TASK-229: a row reports when the pointer is over a Peek badge — the
 /// trailing one of a single row or a split's right pane, and the left pane's
 /// before the divider — so the hover card can be the Peek's.
-final class TabCellPeekBadgeHoverTests: XCTestCase {
+nonisolated final class TabCellPeekBadgeHoverTests: XCTestCase {
 
-    private final class Recorder: TabCellHoverDelegate {
+    @MainActor private final class Recorder: TabCellHoverDelegate {
         var reports: [(hovering: Bool, side: Int?, overPeekBadge: Bool)] = []
         func tabCell(_ cell: TabCellView, hoverChanged hovering: Bool, splitSide: Int?, overPeekBadge: Bool) {
             reports.append((hovering, splitSide, overPeekBadge))
@@ -686,13 +686,13 @@ final class TabCellPeekBadgeHoverTests: XCTestCase {
     private let bounds = NSRect(x: 0, y: 0, width: 240, height: 32)
     private let badge = NSImage(size: NSSize(width: 16, height: 16))
 
-    private func makeCell(_ recorder: Recorder) -> TabCellView {
+    @MainActor private func makeCell(_ recorder: Recorder) -> TabCellView {
         let cell = TabCellView(frame: bounds)
         cell.hoverDelegate = recorder
         return cell
     }
 
-    private func event(_ type: NSEvent.EventType, at point: NSPoint) -> NSEvent {
+    @MainActor private func event(_ type: NSEvent.EventType, at point: NSPoint) -> NSEvent {
         if type == .mouseMoved {
             return NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [], timestamp: 0,
                                       windowNumber: 0, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
@@ -702,9 +702,9 @@ final class TabCellPeekBadgeHoverTests: XCTestCase {
                                       userData: nil)!
     }
 
-    private func center(_ rect: NSRect) -> NSPoint { NSPoint(x: rect.midX, y: rect.midY) }
+    @MainActor private func center(_ rect: NSRect) -> NSPoint { NSPoint(x: rect.midX, y: rect.midY) }
 
-    func testASingleRowReportsItsTrailingBadge() {
+    @MainActor func testASingleRowReportsItsTrailingBadge() {
         let recorder = Recorder()
         let cell = makeCell(recorder)
         cell.updatePeekFavicon(badge)
@@ -716,7 +716,7 @@ final class TabCellPeekBadgeHoverTests: XCTestCase {
         XCTAssertEqual(recorder.reports.last?.hovering, true)
     }
 
-    func testTheLeftPanesBadgeSitsInTheLeftHalfBeforeTheDivider() {
+    @MainActor func testTheLeftPanesBadgeSitsInTheLeftHalfBeforeTheDivider() {
         let area = TabCellView.leftPanePeekBadgeHoverRect(in: bounds)
         XCTAssertFalse(area.isEmpty)
         XCTAssertLessThanOrEqual(area.maxX, bounds.midX, "inside the left half")
@@ -725,7 +725,7 @@ final class TabCellPeekBadgeHoverTests: XCTestCase {
         XCTAssertFalse(area.intersects(TabCellView.peekBadgeHoverRect(in: bounds)))
     }
 
-    func testASplitRowReportsEachPanesBadgeInItsOwnHalf() {
+    @MainActor func testASplitRowReportsEachPanesBadgeInItsOwnHalf() {
         let recorder = Recorder()
         let cell = makeCell(recorder)
         cell.updateSplitPane(favicon: badge, title: "Right")
@@ -745,7 +745,7 @@ final class TabCellPeekBadgeHoverTests: XCTestCase {
         XCTAssertEqual(recorder.reports.last?.overPeekBadge, true, "the right pane's badge")
     }
 
-    func testAPaneWithoutAPeekHasNoBadgeArea() {
+    @MainActor func testAPaneWithoutAPeekHasNoBadgeArea() {
         let recorder = Recorder()
         let cell = makeCell(recorder)
         cell.updateSplitPane(favicon: badge, title: "Right")
@@ -757,7 +757,7 @@ final class TabCellPeekBadgeHoverTests: XCTestCase {
         XCTAssertTrue(cell.leftPanePeekFaviconImageView.isHidden)
     }
 
-    func testTheLeftPanesBadgeGoesWithTheSplit() {
+    @MainActor func testTheLeftPanesBadgeGoesWithTheSplit() {
         let cell = makeCell(Recorder())
         cell.updateSplitPane(favicon: badge, title: "Right")
         cell.updateLeftPanePeekFavicon(badge)
@@ -766,7 +766,7 @@ final class TabCellPeekBadgeHoverTests: XCTestCase {
         XCTAssertTrue(cell.leftPanePeekFaviconImageView.isHidden, "a single row has one badge, the trailing one")
     }
 
-    func testASplitAgainDoesNotInheritTheOldLeftPanesBadge() {
+    @MainActor func testASplitAgainDoesNotInheritTheOldLeftPanesBadge() {
         let recorder = Recorder()
         let cell = makeCell(recorder)
         cell.updateSplitPane(favicon: badge, title: "Right")

@@ -5,21 +5,20 @@ import WebKit
 /// TASK-78: dismissing the command palette — by committing or by Esc — hands
 /// first responder back to the page's web view, so the page takes keys without
 /// a click. In a split that is the focused pane (`selectedTabID`).
-@MainActor
-final class CommandPaletteFocusTests: XCTestCase {
+nonisolated final class CommandPaletteFocusTests: XCTestCase {
 
     private var controller: BrowserWindowController?
     private var createdTabs: [BrowserTab] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         controller?.window?.close()
         controller = nil
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func makeController() throws -> (BrowserWindowController, Space) {
+    @MainActor private func makeController() throws -> (BrowserWindowController, Space) {
         let wc = BrowserWindowController(incognito: true)
         controller = wc
         // Never let this never-shown window's split view touch the autosaved
@@ -28,7 +27,7 @@ final class CommandPaletteFocusTests: XCTestCase {
         return (wc, try XCTUnwrap(wc.activeSpace))
     }
 
-    private func addTab(_ url: String, to wc: BrowserWindowController, in space: Space) -> BrowserTab {
+    @MainActor private func addTab(_ url: String, to wc: BrowserWindowController, in space: Space) -> BrowserTab {
         let tab = wc.store.addTab(in: space, url: URL(string: url))
         createdTabs.append(tab)
         return tab
@@ -36,7 +35,7 @@ final class CommandPaletteFocusTests: XCTestCase {
 
     /// Opens the palette as Cmd+L does and checks it took first responder, so
     /// each test starts from the state the bug left behind.
-    private func openPalette(_ wc: BrowserWindowController) throws -> CommandPaletteView {
+    @MainActor private func openPalette(_ wc: BrowserWindowController) throws -> CommandPaletteView {
         wc.focusAddressBar(nil)
         let palette = try XCTUnwrap(wc.commandPaletteView)
         let webView = wc.selectedTab?.webView
@@ -44,7 +43,7 @@ final class CommandPaletteFocusTests: XCTestCase {
         return palette
     }
 
-    func testCommitInPlaceFocusesTheSelectedWebView() throws {
+    @MainActor func testCommitInPlaceFocusesTheSelectedWebView() throws {
         let (wc, space) = try makeController()
         let tab = addTab("https://a.example.com/", to: wc, in: space)
         wc.selectTab(id: tab.id)
@@ -57,7 +56,7 @@ final class CommandPaletteFocusTests: XCTestCase {
         XCTAssertTrue(wc.window?.firstResponder === tab.webView)
     }
 
-    func testCommitIntoNewTabFocusesTheNewWebView() throws {
+    @MainActor func testCommitIntoNewTabFocusesTheNewWebView() throws {
         let (wc, space) = try makeController()
         let tab = addTab("https://a.example.com/", to: wc, in: space)
         wc.selectTab(id: tab.id)
@@ -73,7 +72,7 @@ final class CommandPaletteFocusTests: XCTestCase {
         XCTAssertTrue(wc.window?.firstResponder === newTab.webView)
     }
 
-    func testEscFocusesThePageThatWasShowing() throws {
+    @MainActor func testEscFocusesThePageThatWasShowing() throws {
         let (wc, space) = try makeController()
         let tab = addTab("https://a.example.com/", to: wc, in: space)
         wc.selectTab(id: tab.id)
@@ -85,7 +84,7 @@ final class CommandPaletteFocusTests: XCTestCase {
         XCTAssertTrue(wc.window?.firstResponder === tab.webView)
     }
 
-    func testEscInASplitFocusesTheFocusedPane() throws {
+    @MainActor func testEscInASplitFocusesTheFocusedPane() throws {
         let (wc, space) = try makeController()
         let left = addTab("https://left.example.com/", to: wc, in: space)
         let right = addTab("https://right.example.com/", to: wc, in: space)

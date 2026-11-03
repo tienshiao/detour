@@ -5,7 +5,7 @@ import CryptoKit
 /// TASK-151: a CRX is installed only when its CRX3 signatures verify, and its
 /// id comes from the verified key. Every refusal happens in the gate, which
 /// runs before any prompt.
-final class CRXInstallGateTests: XCTestCase {
+nonisolated final class CRXInstallGateTests: XCTestCase {
 
     private var pair: CRX3TestBuilder.RSAKeyPair!
     private var zip: Data!
@@ -13,7 +13,7 @@ final class CRXInstallGateTests: XCTestCase {
     /// A stand-in for the Web Store's publisher key (TASK-157): tests cannot
     /// sign with the real one, so the gate is told to expect this one.
     private let storeKey = P256.Signing.PrivateKey()
-    private var storeFormat: CRX3Verifier.Format { .publisherProof(keyHash: CRX3TestBuilder.keyHash(storeKey)) }
+    @MainActor private var storeFormat: CRX3Verifier.Format { .publisherProof(keyHash: CRX3TestBuilder.keyHash(storeKey)) }
 
     private static let siteURL = URL(string: "https://example.test/ext.crx")!
     private static let storeURLs = [
@@ -22,13 +22,13 @@ final class CRXInstallGateTests: XCTestCase {
         "https://chromewebstore.google.com/detail/x.crx",
     ].map { URL(string: $0)! }
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         pair = try CRX3TestBuilder.RSAKeyPair.generate()
         zip = try Self.zip(manifestExtras: "")
     }
 
-    private static func zip(manifestExtras: String) throws -> Data {
+    @MainActor private static func zip(manifestExtras: String) throws -> Data {
         try CRX3TestBuilder.zip(files: [
             "manifest.json": #"{"manifest_version":3,"name":"Gate","version":"1.2"\#(manifestExtras)}"#,
         ])
@@ -36,7 +36,7 @@ final class CRXInstallGateTests: XCTestCase {
 
     /// Through the whole gate, downloaded from `url` — a site that is not the
     /// store unless a test says otherwise.
-    private func admit(_ crx: Data, from url: URL = CRXInstallGateTests.siteURL,
+    @MainActor private func admit(_ crx: Data, from url: URL = CRXInstallGateTests.siteURL,
                        installed: CRXInstallGate.Installed? = nil,
                        file: StaticString = #filePath, line: UInt = #line) throws -> CRXInstallGate.Candidate {
         let candidate = try CRXInstallGate.admit(crxData: crx, downloadURL: url, storeFormat: storeFormat) { _ in installed }
@@ -44,7 +44,7 @@ final class CRXInstallGateTests: XCTestCase {
         return candidate
     }
 
-    private func assertRefused(_ crx: Data, from url: URL = CRXInstallGateTests.siteURL,
+    @MainActor private func assertRefused(_ crx: Data, from url: URL = CRXInstallGateTests.siteURL,
                                _ expected: CRXInstallGate.Refusal,
                                installed: CRXInstallGate.Installed? = nil,
                                file: StaticString = #filePath, line: UInt = #line) {
@@ -57,7 +57,7 @@ final class CRXInstallGateTests: XCTestCase {
 
     // MARK: - Admission
 
-    func testAVerifiedFileIsAdmittedUnderTheIDOfItsSigningKey() throws {
+    @MainActor func testAVerifiedFileIsAdmittedUnderTheIDOfItsSigningKey() throws {
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)])
         let candidate = try admit(crx)
         XCTAssertEqual(candidate.publicKey, pair.publicKeySPKI)
@@ -69,7 +69,7 @@ final class CRXInstallGateTests: XCTestCase {
 
     /// A store CRX carries the store's proof and the developer's; the id is the
     /// one `crx_id` names.
-    func testTwoProofsAdmitUnderTheDeclaredKey() throws {
+    @MainActor func testTwoProofsAdmitUnderTheDeclaredKey() throws {
         let store = P256.Signing.PrivateKey()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.ecdsa(store), .rsa(pair)],
                                             declaredKey: pair.publicKeySPKI)
@@ -80,7 +80,7 @@ final class CRXInstallGateTests: XCTestCase {
 
     /// The attack: a file signed by one key that carries another extension's
     /// public key in its header, to be installed under that extension's id.
-    func testAHeaderKeyThatDidNotSignTheFileIsRefused() throws {
+    @MainActor func testAHeaderKeyThatDidNotSignTheFileIsRefused() throws {
         let victim = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(
             zip: zip, signers: [.rsaDeclaring(publicKey: victim.publicKeySPKI, signingWith: pair)])
@@ -89,7 +89,7 @@ final class CRXInstallGateTests: XCTestCase {
 
     /// The same aim with a valid proof of the attacker's own beside the forged
     /// one: every proof must verify.
-    func testAForgedProofBesideAValidOneIsRefused() throws {
+    @MainActor func testAForgedProofBesideAValidOneIsRefused() throws {
         let victim = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(
             zip: zip,
@@ -99,24 +99,24 @@ final class CRXInstallGateTests: XCTestCase {
     }
 
     /// `crx_id` names a key that signed nothing.
-    func testACRXIDForAKeyWithoutAProofIsRefused() throws {
+    @MainActor func testACRXIDForAKeyWithoutAProofIsRefused() throws {
         let victim = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)], declaredKey: victim.publicKeySPKI)
         assertRefused(crx, .notVerified(.noProofMatchesCRXID))
     }
 
-    func testATamperedArchiveIsRefused() throws {
+    @MainActor func testATamperedArchiveIsRefused() throws {
         var crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)])
         crx[crx.count - 5] ^= 0xFF
         assertRefused(crx, .notVerified(.badSignature))
     }
 
-    func testAnUnsignedFileIsRefused() throws {
+    @MainActor func testAnUnsignedFileIsRefused() throws {
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [], declaredKey: pair.publicKeySPKI)
         assertRefused(crx, .notVerified(.noProofs))
     }
 
-    func testACRX2FileIsRefused() {
+    @MainActor func testACRX2FileIsRefused() {
         var crx = Data("Cr24".utf8)
         var version = UInt32(2).littleEndian
         crx.append(Data(bytes: &version, count: 4))
@@ -125,7 +125,7 @@ final class CRXInstallGateTests: XCTestCase {
         assertRefused(crx, .notVerified(.malformed("version 2")))
     }
 
-    func testATruncatedHeaderIsRefused() throws {
+    @MainActor func testATruncatedHeaderIsRefused() throws {
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)])
         // Cut inside the header: its declared length now runs past the file.
         assertRefused(crx.prefix(40), .notVerified(.malformed("header length exceeds file")))
@@ -134,7 +134,7 @@ final class CRXInstallGateTests: XCTestCase {
 
     /// A header cut short with its length field rewritten to match is a
     /// well-formed container whose protobuf ends mid-field.
-    func testAHeaderEndingMidFieldIsRefused() throws {
+    @MainActor func testAHeaderEndingMidFieldIsRefused() throws {
         let full = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)])
         var crx = full.prefix(12)
         var headerLen = UInt32(20).littleEndian
@@ -146,7 +146,7 @@ final class CRXInstallGateTests: XCTestCase {
 
     /// Verification comes before unpacking: a refused file's payload is never
     /// handed to unzip, so what is reported is the signature, not the archive.
-    func testAnUnverifiedFileIsNotUnpacked() throws {
+    @MainActor func testAnUnverifiedFileIsNotUnpacked() throws {
         let garbage = Data("not a zip".utf8)
         var crx = try CRX3TestBuilder.build(zip: garbage, signers: [.rsa(pair)])
         crx[crx.count - 1] ^= 0xFF
@@ -155,7 +155,7 @@ final class CRXInstallGateTests: XCTestCase {
 
     // MARK: - Refusals: an installed extension
 
-    func testAFileWhoseIDIsInstalledIsRefused() throws {
+    @MainActor func testAFileWhoseIDIsInstalledIsRefused() throws {
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)])
         let existing = CRXInstallGate.Installed(name: "Gate", version: "1.0")
         var asked: [String] = []
@@ -171,7 +171,7 @@ final class CRXInstallGateTests: XCTestCase {
     }
 
     /// Whatever its version: a newer one is the updater's to install.
-    func testANewerVersionOfAnInstalledExtensionIsStillRefused() throws {
+    @MainActor func testANewerVersionOfAnInstalledExtensionIsStillRefused() throws {
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)])
         let existing = CRXInstallGate.Installed(name: "Gate", version: "0.1")
         assertRefused(crx, .alreadyInstalled(existing), installed: existing)
@@ -179,7 +179,7 @@ final class CRXInstallGateTests: XCTestCase {
 
     /// An unverified file never reaches the collision check, so it cannot learn
     /// or disturb what is installed.
-    func testAnUnverifiedFileIsRefusedBeforeTheInstalledLookup() throws {
+    @MainActor func testAnUnverifiedFileIsRefusedBeforeTheInstalledLookup() throws {
         var crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)])
         crx[crx.count - 5] ^= 0xFF
         XCTAssertThrowsError(try CRXInstallGate.admit(crxData: crx, downloadURL: Self.siteURL) { _ in
@@ -190,26 +190,26 @@ final class CRXInstallGateTests: XCTestCase {
 
     // MARK: - Refusals: the manifest key
 
-    func testAManifestKeyOtherThanTheSigningKeyIsRefused() throws {
+    @MainActor func testAManifestKeyOtherThanTheSigningKeyIsRefused() throws {
         let victim = try CRX3TestBuilder.RSAKeyPair.generate()
         let keyed = try Self.zip(manifestExtras: #","key":"\#(victim.publicKeySPKI.base64EncodedString())""#)
         let crx = try CRX3TestBuilder.build(zip: keyed, signers: [.rsa(pair)])
         assertRefused(crx, .manifestKeyMismatch)
     }
 
-    func testAManifestKeyThatIsNotBase64IsRefused() throws {
+    @MainActor func testAManifestKeyThatIsNotBase64IsRefused() throws {
         let keyed = try Self.zip(manifestExtras: #","key":"***""#)
         let crx = try CRX3TestBuilder.build(zip: keyed, signers: [.rsa(pair)])
         assertRefused(crx, .manifestKeyMismatch)
     }
 
-    func testAManifestKeyEqualToTheSigningKeyIsAdmitted() throws {
+    @MainActor func testAManifestKeyEqualToTheSigningKeyIsAdmitted() throws {
         let keyed = try Self.zip(manifestExtras: #","key":"\#(pair.publicKeySPKI.base64EncodedString())""#)
         let crx = try CRX3TestBuilder.build(zip: keyed, signers: [.rsa(pair)])
         XCTAssertEqual(try admit(crx).extensionID, ExtensionInstaller.deriveExtensionID(from: pair.publicKeySPKI))
     }
 
-    func testARefusedManifestKeyLeavesNoUnpackedDirectory() throws {
+    @MainActor func testARefusedManifestKeyLeavesNoUnpackedDirectory() throws {
         let victim = try CRX3TestBuilder.RSAKeyPair.generate()
         let keyed = try Self.zip(manifestExtras: #","key":"\#(victim.publicKeySPKI.base64EncodedString())""#)
         let crx = try CRX3TestBuilder.build(zip: keyed, signers: [.rsa(pair)])
@@ -218,7 +218,7 @@ final class CRXInstallGateTests: XCTestCase {
         XCTAssertEqual(try unpackedDirectories(), before)
     }
 
-    private func unpackedDirectories() throws -> Set<String> {
+    @MainActor private func unpackedDirectories() throws -> Set<String> {
         Set(try FileManager.default.contentsOfDirectory(atPath: FileManager.default.temporaryDirectory.path)
             .filter { $0.hasPrefix("crx_") })
     }
@@ -227,13 +227,13 @@ final class CRXInstallGateTests: XCTestCase {
 
     /// A store file as the store serves it: the developer's proof and the
     /// store's own.
-    private func storeSignedCRX() throws -> Data {
+    @MainActor private func storeSignedCRX() throws -> Data {
         try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair), .ecdsa(storeKey)], declaredKey: pair.publicKeySPKI)
     }
 
     /// "From the Chrome Web Store" takes both: a store host served the file and
     /// the store signed it.
-    func testAStoreHostFileWithTheStoresProofIsAStoreFile() throws {
+    @MainActor func testAStoreHostFileWithTheStoresProofIsAStoreFile() throws {
         let crx = try storeSignedCRX()
         for url in Self.storeURLs {
             let candidate = try admit(crx, from: url)
@@ -247,7 +247,7 @@ final class CRXInstallGateTests: XCTestCase {
     /// is refused. It is correctly signed by its developer — the same bytes are
     /// admitted from any other site — so the only thing wrong with it is that
     /// the store did not sign it.
-    func testAStoreHostFileWithoutTheStoresProofIsRefused() throws {
+    @MainActor func testAStoreHostFileWithoutTheStoresProofIsRefused() throws {
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)])
         XCTAssertEqual(try admit(crx).origin, .site("example.test"), "the same file from a site is an ordinary CRX")
 
@@ -266,7 +266,7 @@ final class CRXInstallGateTests: XCTestCase {
     }
 
     /// A second proof by some other key is not the store's.
-    func testAStoreHostFileWithAnotherKeysSecondProofIsRefused() throws {
+    @MainActor func testAStoreHostFileWithAnotherKeysSecondProofIsRefused() throws {
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair), .ecdsa(P256.Signing.PrivateKey())],
                                             declaredKey: pair.publicKeySPKI)
         assertRefused(crx, from: Self.storeURLs[0], .notVerified(.noPublisherProof))
@@ -274,7 +274,7 @@ final class CRXInstallGateTests: XCTestCase {
 
     /// The real key is the default: a stand-in store proof means nothing to the
     /// production gate.
-    func testTheDefaultStoreKeyIsTheRealOne() throws {
+    @MainActor func testTheDefaultStoreKeyIsTheRealOne() throws {
         let crx = try storeSignedCRX()
         XCTAssertThrowsError(try CRXInstallGate.verify(crxData: crx, downloadURL: Self.storeURLs[0])) { error in
             XCTAssertEqual(error as? CRXInstallGate.Refusal, .notVerified(.noPublisherProof))
@@ -284,7 +284,7 @@ final class CRXInstallGateTests: XCTestCase {
     /// The store's proof does not make a file "from the store" on its own: a
     /// store file re-hosted on a site, or saved to disk, is a CRX from there.
     /// (It is admitted — the developer's proof is all a non-store file needs.)
-    func testAStoreSignedFileFromElsewhereIsNotAStoreFile() throws {
+    @MainActor func testAStoreSignedFileFromElsewhereIsNotAStoreFile() throws {
         let crx = try storeSignedCRX()
         XCTAssertEqual(try admit(crx).origin, .site("example.test"))
         XCTAssertEqual(try admit(crx, from: URL(fileURLWithPath: "/Users/me/Downloads/ext.crx")).origin,
@@ -293,7 +293,7 @@ final class CRXInstallGateTests: XCTestCase {
 
     /// The verdict is known as soon as the signatures pass, so a later refusal
     /// (here: already installed) can still say truthfully where the file is from.
-    func testTheOriginIsKnownBeforeTheRestOfTheGate() throws {
+    @MainActor func testTheOriginIsKnownBeforeTheRestOfTheGate() throws {
         let crx = try storeSignedCRX()
         let verified = try CRXInstallGate.verify(crxData: crx, downloadURL: Self.storeURLs[0], storeFormat: storeFormat)
         XCTAssertEqual(verified.origin, .webStore)
@@ -308,7 +308,7 @@ final class CRXInstallGateTests: XCTestCase {
 
     /// Before the signatures pass — and for a file that fails them — a store
     /// host is only a host: the line names it and does not claim the store.
-    func testAStoreHostAloneIsNotCalledTheStore() throws {
+    @MainActor func testAStoreHostAloneIsNotCalledTheStore() throws {
         let cases = [
             "https://clients2.googleusercontent.com/crx/blobs/abc/x.crx": "clients2.googleusercontent.com",
             "https://clients2.google.com/service/update2/crx?response=redirect": "clients2.google.com",
@@ -322,7 +322,7 @@ final class CRXInstallGateTests: XCTestCase {
         XCTAssertEqual(CRXInstallGate.Origin.webStore.description, "From the Chrome Web Store.")
     }
 
-    func testOriginNamesAnyOtherHostAndSaysItIsNotTheStore() throws {
+    @MainActor func testOriginNamesAnyOtherHostAndSaysItIsNotTheStore() throws {
         let cases = [
             "https://example.com/ext.crx": "From example.com, not from the Chrome Web Store.",
             // A look-alike is named in full, not mistaken for the store.
@@ -342,7 +342,7 @@ final class CRXInstallGateTests: XCTestCase {
     /// `<expected id>=<path to a downloaded .crx>`. Each file must pass the
     /// production gate as a store download — so it carries a verified proof by
     /// the real publisher key — under its store id.
-    func testRealStoreFilesAreAdmittedUnderTheirStoreIDs() throws {
+    @MainActor func testRealStoreFilesAreAdmittedUnderTheirStoreIDs() throws {
         guard let list = ProcessInfo.processInfo.environment["DETOUR_REAL_CRX_FILES"], !list.isEmpty else {
             throw XCTSkip("DETOUR_REAL_CRX_FILES not set")
         }

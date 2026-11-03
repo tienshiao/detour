@@ -2,25 +2,25 @@ import XCTest
 import CryptoKit
 @testable import Detour
 
-final class ExtensionIDDerivationTests: XCTestCase {
+nonisolated final class ExtensionIDDerivationTests: XCTestCase {
 
     // MARK: - Chrome ID Derivation
 
-    func testDeriveExtensionIDProduces32CharApString() {
+    @MainActor func testDeriveExtensionIDProduces32CharApString() {
         let publicKey = Data(repeating: 0xAB, count: 256) // fake public key
         let id = ExtensionInstaller.deriveExtensionID(from: publicKey)
         XCTAssertEqual(id.count, 32)
         XCTAssertTrue(id.allSatisfy { $0 >= "a" && $0 <= "p" })
     }
 
-    func testDeriveExtensionIDDeterministic() {
+    @MainActor func testDeriveExtensionIDDeterministic() {
         let publicKey = Data([0x01, 0x02, 0x03, 0x04, 0x05])
         let id1 = ExtensionInstaller.deriveExtensionID(from: publicKey)
         let id2 = ExtensionInstaller.deriveExtensionID(from: publicKey)
         XCTAssertEqual(id1, id2)
     }
 
-    func testDeriveExtensionIDDifferentKeysProduceDifferentIDs() {
+    @MainActor func testDeriveExtensionIDDifferentKeysProduceDifferentIDs() {
         let key1 = Data([0x01, 0x02, 0x03])
         let key2 = Data([0x04, 0x05, 0x06])
         let id1 = ExtensionInstaller.deriveExtensionID(from: key1)
@@ -28,13 +28,13 @@ final class ExtensionIDDerivationTests: XCTestCase {
         XCTAssertNotEqual(id1, id2)
     }
 
-    func testDeriveExtensionIDEmptyKeyDoesNotCrash() {
+    @MainActor func testDeriveExtensionIDEmptyKeyDoesNotCrash() {
         let id = ExtensionInstaller.deriveExtensionID(from: Data())
         XCTAssertEqual(id.count, 32)
         XCTAssertTrue(id.allSatisfy { $0 >= "a" && $0 <= "p" })
     }
 
-    func testDeriveExtensionIDKnownValue() {
+    @MainActor func testDeriveExtensionIDKnownValue() {
         // Verify against Chrome's algorithm: SHA256 of the key → first 16 bytes → a-p encoding
         let key = Data([0x30, 0x82])
         let hash = SHA256.hash(data: key)
@@ -54,7 +54,7 @@ final class ExtensionIDDerivationTests: XCTestCase {
 
     // MARK: - NativeMessaging Protocol Encoding/Decoding
 
-    func testNativeMessageEncoding() {
+    @MainActor func testNativeMessageEncoding() {
         let message = Data([0x48, 0x65, 0x6C, 0x6C, 0x6F]) // "Hello"
         let encoded = NativeMessagingHost.encodeMessage(message)
         XCTAssertEqual(encoded.count, 9) // 4 bytes length + 5 bytes data
@@ -63,7 +63,7 @@ final class ExtensionIDDerivationTests: XCTestCase {
         XCTAssertEqual(length, 5)
     }
 
-    func testNativeMessageDecoding() {
+    @MainActor func testNativeMessageDecoding() {
         let message = Data([0x48, 0x65, 0x6C, 0x6C, 0x6F])
         let encoded = NativeMessagingHost.encodeMessage(message)
         let decoded = NativeMessagingHost.decodeMessage(from: encoded)
@@ -72,12 +72,12 @@ final class ExtensionIDDerivationTests: XCTestCase {
         XCTAssertEqual(decoded?.1, 9)
     }
 
-    func testNativeMessageDecodingTooShort() {
+    @MainActor func testNativeMessageDecodingTooShort() {
         let result = NativeMessagingHost.decodeMessage(from: Data([0x01, 0x00]))
         XCTAssertNil(result)
     }
 
-    func testNativeMessageDecodingIncompleteBody() {
+    @MainActor func testNativeMessageDecodingIncompleteBody() {
         // Length says 10 but only 3 bytes follow
         var data = Data()
         var length: UInt32 = 10
@@ -89,7 +89,7 @@ final class ExtensionIDDerivationTests: XCTestCase {
 
     // MARK: - Manifest key field
 
-    func testManifestKeyFieldParsed() throws {
+    @MainActor func testManifestKeyFieldParsed() throws {
         let data = """
         {"manifest_version": 3, "name": "Test", "version": "1.0", "key": "MIIBIjANBg=="}
         """.data(using: .utf8)!
@@ -97,7 +97,7 @@ final class ExtensionIDDerivationTests: XCTestCase {
         XCTAssertEqual(manifest.key, "MIIBIjANBg==")
     }
 
-    func testManifestKeyFieldNilWhenAbsent() throws {
+    @MainActor func testManifestKeyFieldNilWhenAbsent() throws {
         let data = """
         {"manifest_version": 3, "name": "Test", "version": "1.0"}
         """.data(using: .utf8)!

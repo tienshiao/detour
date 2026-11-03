@@ -5,12 +5,12 @@ import GRDB
 /// TASK-187: per-site settings live in one table (`siteSetting`), read through
 /// `SiteSettingsStore`'s per-profile cache. Content blocking's site list moved
 /// into it from `contentBlockerWhitelist`.
-final class SiteSettingsStoreTests: XCTestCase {
+nonisolated final class SiteSettingsStoreTests: XCTestCase {
 
     private let profileA = UUID()
     private let profileB = UUID()
 
-    private func makeProfile(_ id: UUID) -> ProfileRecord {
+    @MainActor private func makeProfile(_ id: UUID) -> ProfileRecord {
         ProfileRecord(id: id.uuidString, name: "P", userAgentMode: 0, customUserAgent: nil,
                       archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0,
                       searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true,
@@ -18,7 +18,7 @@ final class SiteSettingsStoreTests: XCTestCase {
                       isMalwareFilterEnabled: true)
     }
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         db.saveProfile(makeProfile(profileA))
         db.saveProfile(makeProfile(profileB))
@@ -27,13 +27,13 @@ final class SiteSettingsStoreTests: XCTestCase {
 
     // MARK: - Set, clear, query
 
-    func testASiteWithNoRowHasNoOverride() throws {
+    @MainActor func testASiteWithNoRowHasNoOverride() throws {
         let store = SiteSettingsStore(database: try makeDatabase())
         XCTAssertNil(store.override(.contentBlocking, forSite: "example.com", profileID: profileA))
         XCTAssertTrue(store.overrides(.contentBlocking, profileID: profileA).isEmpty)
     }
 
-    func testASetValueIsReadBackAndSurvivesANewStore() throws {
+    @MainActor func testASetValueIsReadBackAndSurvivesANewStore() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileA)
@@ -46,7 +46,7 @@ final class SiteSettingsStoreTests: XCTestCase {
         XCTAssertEqual(db.loadSiteSettings().map(\.setting), ["contentBlocking"])
     }
 
-    func testSettingAgainReplacesTheValue() throws {
+    @MainActor func testSettingAgainReplacesTheValue() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileA)
@@ -57,7 +57,7 @@ final class SiteSettingsStoreTests: XCTestCase {
         XCTAssertEqual(db.loadSiteSettings().count, 1)
     }
 
-    func testSitesAreStoredLowercased() throws {
+    @MainActor func testSitesAreStoredLowercased() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         store.set(.contentBlocking, site: "Example.COM", to: false, profileID: profileA)
@@ -66,7 +66,7 @@ final class SiteSettingsStoreTests: XCTestCase {
         XCTAssertEqual(db.loadSiteSettings().map(\.site), ["example.com"])
     }
 
-    func testClearingRemovesTheRowsAndTheOverride() throws {
+    @MainActor func testClearingRemovesTheRowsAndTheOverride() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileA)
@@ -80,7 +80,7 @@ final class SiteSettingsStoreTests: XCTestCase {
                        ["other.test": false])
     }
 
-    func testProfilesDoNotSeeEachOthersSettings() throws {
+    @MainActor func testProfilesDoNotSeeEachOthersSettings() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileA)
@@ -93,7 +93,7 @@ final class SiteSettingsStoreTests: XCTestCase {
 
     /// A row written by a newer build for a setting this build does not know
     /// is ignored, not deleted.
-    func testAnUnknownSettingIsIgnoredAndKept() throws {
+    @MainActor func testAnUnknownSettingIsIgnoredAndKept() throws {
         let db = try makeDatabase()
         try db.dbQueue.write { d in
             try d.execute(sql: "INSERT INTO siteSetting (profileID, site, setting, value) VALUES (?, 'example.com', 'futureSetting', 1)",
@@ -107,7 +107,7 @@ final class SiteSettingsStoreTests: XCTestCase {
 
     // MARK: - Matching
 
-    func testContentBlockingMatchesTheHostAndItsSubdomains() throws {
+    @MainActor func testContentBlockingMatchesTheHostAndItsSubdomains() throws {
         let store = SiteSettingsStore(database: try makeDatabase())
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileA)
 
@@ -117,7 +117,7 @@ final class SiteSettingsStoreTests: XCTestCase {
         XCTAssertNil(store.override(.contentBlocking, forSite: "", profileID: profileA))
     }
 
-    func testTheMostSpecificSiteWins() throws {
+    @MainActor func testTheMostSpecificSiteWins() throws {
         let store = SiteSettingsStore(database: try makeDatabase())
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileA)
         store.set(.contentBlocking, site: "www.example.com", to: true, profileID: profileA)
@@ -133,7 +133,7 @@ final class SiteSettingsStoreTests: XCTestCase {
     /// `contentBlocking = false` and drops the old table. Hosts are lowercased
     /// (the old loader lowercased them too), so two spellings of one host
     /// become one row; a row whose profile no longer exists is dropped.
-    func testMigrationV18MovesTheContentBlockerWhitelistIntoSiteSettings() throws {
+    @MainActor func testMigrationV18MovesTheContentBlockerWhitelistIntoSiteSettings() throws {
         let dbQueue = try DatabaseQueue()
         try AppDatabase.migrator.migrate(dbQueue, upTo: "v17")
         try dbQueue.write { d in
@@ -177,7 +177,7 @@ final class SiteSettingsStoreTests: XCTestCase {
     /// Private profile (TASK-195: a Private window's switch is kept in memory
     /// only). Other profiles' rows, and the Private profile's rows of other
     /// settings, stay.
-    func testMigrationV19DeletesThePrivateProfilesContentBlockingRows() throws {
+    @MainActor func testMigrationV19DeletesThePrivateProfilesContentBlockingRows() throws {
         let privateID = TabStore.incognitoProfileID
         let dbQueue = try DatabaseQueue()
         try AppDatabase.migrator.migrate(dbQueue, upTo: "v18")

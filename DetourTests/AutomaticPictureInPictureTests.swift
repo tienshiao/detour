@@ -6,44 +6,44 @@ import GRDB
 /// itself when the user switches away from a playing tab. Stored as the
 /// `pictureInPicture` site setting (default on); a page's own PiP request is
 /// not affected.
-final class AutomaticPictureInPictureTests: XCTestCase {
+nonisolated final class AutomaticPictureInPictureTests: XCTestCase {
 
     // MARK: - The rule
 
-    func testAPlayingTabEntersPiPWhenTheSiteHasNoSetting() {
+    @MainActor func testAPlayingTabEntersPiPWhenTheSiteHasNoSetting() {
         XCTAssertTrue(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, isMuted: false, leavesClosingTab: false,
                                                             siteOverride: nil))
     }
 
-    func testATabThatIsNotPlayingDoesNotEnterPiP() {
+    @MainActor func testATabThatIsNotPlayingDoesNotEnterPiP() {
         XCTAssertFalse(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: false, isMuted: false, leavesClosingTab: false,
                                                              siteOverride: nil))
     }
 
     /// TASK-192: page mute keeps `_isPlayingAudio` true, where the old script
     /// mute turned it off. A muted tab still does not go into PiP when left.
-    func testAMutedPlayingTabDoesNotEnterPiP() {
+    @MainActor func testAMutedPlayingTabDoesNotEnterPiP() {
         XCTAssertFalse(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, isMuted: true,
                                                              leavesClosingTab: false, siteOverride: nil))
     }
 
-    func testAnUnmutedPlayingTabStillEntersPiP() {
+    @MainActor func testAnUnmutedPlayingTabStillEntersPiP() {
         XCTAssertTrue(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, isMuted: false,
                                                             leavesClosingTab: false, siteOverride: nil))
     }
 
-    func testAClosingTabDoesNotEnterPiP() {
+    @MainActor func testAClosingTabDoesNotEnterPiP() {
         XCTAssertFalse(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, isMuted: false, leavesClosingTab: true,
                                                              siteOverride: nil),
                        "TASK-79: the close path never starts PiP")
     }
 
-    func testASiteWithTheSwitchOffDoesNotEnterPiP() {
+    @MainActor func testASiteWithTheSwitchOffDoesNotEnterPiP() {
         XCTAssertFalse(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, isMuted: false, leavesClosingTab: false,
                                                              siteOverride: false))
     }
 
-    func testASiteWithTheSwitchExplicitlyOnEntersPiP() {
+    @MainActor func testASiteWithTheSwitchExplicitlyOnEntersPiP() {
         XCTAssertTrue(AutomaticPictureInPicture.shouldEnter(isPlayingAudio: true, isMuted: false, leavesClosingTab: false,
                                                             siteOverride: true))
     }
@@ -52,7 +52,7 @@ final class AutomaticPictureInPictureTests: XCTestCase {
 
     private let profileID = UUID()
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         for id in [profileID, TabStore.incognitoProfileID] {
             db.saveProfile(ProfileRecord(id: id.uuidString, name: "P", userAgentMode: 0, customUserAgent: nil,
@@ -65,7 +65,7 @@ final class AutomaticPictureInPictureTests: XCTestCase {
         return db
     }
 
-    func testTheSwitchCoversTheHostAndItsSubdomains() throws {
+    @MainActor func testTheSwitchCoversTheHostAndItsSubdomains() throws {
         let store = SiteSettingsStore(database: try makeDatabase())
         store.set(.pictureInPicture, site: "youtube.com", to: false, profileID: profileID)
 
@@ -75,7 +75,7 @@ final class AutomaticPictureInPictureTests: XCTestCase {
                      "settings are independent")
     }
 
-    func testTurningTheSwitchBackOnClearsEveryRowCoveringTheHost() throws {
+    @MainActor func testTurningTheSwitchBackOnClearsEveryRowCoveringTheHost() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         store.set(.pictureInPicture, site: "youtube.com", to: false, profileID: profileID)
@@ -91,7 +91,7 @@ final class AutomaticPictureInPictureTests: XCTestCase {
                        ["other.test": false])
     }
 
-    func testAPrivateWindowsSwitchIsKeptInMemoryOnly() throws {
+    @MainActor func testAPrivateWindowsSwitchIsKeptInMemoryOnly() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         store.set(.pictureInPicture, site: "youtube.com", to: false, profileID: TabStore.incognitoProfileID)
@@ -101,7 +101,7 @@ final class AutomaticPictureInPictureTests: XCTestCase {
         XCTAssertTrue(db.loadSiteSettings().isEmpty, "the site a Private window visited is not written to disk")
     }
 
-    func testEndingThePrivateSessionForgetsItsSwitches() throws {
+    @MainActor func testEndingThePrivateSessionForgetsItsSwitches() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         store.set(.pictureInPicture, site: "youtube.com", to: false, profileID: TabStore.incognitoProfileID)
@@ -116,7 +116,7 @@ final class AutomaticPictureInPictureTests: XCTestCase {
 
     /// Content blocking's Private switch is kept in memory too (TASK-195):
     /// nothing reaches the database and the session's end drops it.
-    func testContentBlockingKeepsPrivateRowsInMemoryToo() throws {
+    @MainActor func testContentBlockingKeepsPrivateRowsInMemoryToo() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         store.set(.contentBlocking, site: "example.com", to: false, profileID: TabStore.incognitoProfileID)
@@ -130,7 +130,7 @@ final class AutomaticPictureInPictureTests: XCTestCase {
                                     profileID: TabStore.incognitoProfileID))
     }
 
-    func testClosingTheLastPrivateSpaceEndsThePrivateSession() throws {
+    @MainActor func testClosingTheLastPrivateSpaceEndsThePrivateSession() throws {
         let db = try makeDatabase()
         let settings = SiteSettingsStore(database: db)
         let store = TabStore(appDB: db)

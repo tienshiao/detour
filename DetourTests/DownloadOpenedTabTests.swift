@@ -5,10 +5,9 @@ import WebKit
 /// A tab opened for a link whose response is a download (TASK-205), against a
 /// loopback server whose `/file` is an attachment: the download starts, the
 /// empty tab closes, and a routed open puts the window back.
-@MainActor
-final class DownloadOpenedTabTests: XCTestCase {
+nonisolated final class DownloadOpenedTabTests: XCTestCase {
 
-    private var store: TabStore { .shared }
+    @MainActor private var store: TabStore { .shared }
     private var server: SlowDownloadServer!
     private var directory: URL!
     private var previousDownloadsDirectory: URL!
@@ -17,9 +16,9 @@ final class DownloadOpenedTabTests: XCTestCase {
     private var itemsBefore: Set<ObjectIdentifier> = []
     private var createdProfiles: [Profile] = []
     private var createdSpaceIDs: [UUID] = []
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         appDelegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         windowsBefore = Set(browserWindows().map(ObjectIdentifier.init))
@@ -34,7 +33,7 @@ final class DownloadOpenedTabTests: XCTestCase {
         try await server.start()
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for item in newDownloads() {
             if item.state == .downloading { DownloadManager.shared.cancelDownload(item) }
             DownloadManager.shared.removeDownload(item)
@@ -66,16 +65,16 @@ final class DownloadOpenedTabTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func browserWindows() -> [BrowserWindowController] {
+    @MainActor private func browserWindows() -> [BrowserWindowController] {
         NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
             .filter { $0.window?.isVisible == true }
     }
 
-    private func newDownloads() -> [DownloadItem] {
+    @MainActor private func newDownloads() -> [DownloadItem] {
         DownloadManager.shared.items.filter { !itemsBefore.contains(ObjectIdentifier($0)) }
     }
 
-    private func makeSpace(_ name: String) -> Space {
+    @MainActor private func makeSpace(_ name: String) -> Space {
         let profile = createdProfiles.first ?? {
             let profile = store.addProfile(name: "TASK-205 \(UUID().uuidString.prefix(4))")
             createdProfiles.append(profile)
@@ -86,7 +85,7 @@ final class DownloadOpenedTabTests: XCTestCase {
         return space
     }
 
-    private func makeWindow(showing space: Space) -> BrowserWindowController {
+    @MainActor private func makeWindow(showing space: Space) -> BrowserWindowController {
         let wc = BrowserWindowController(incognito: false)
         wc.sidebarSplitView.autosaveName = nil
         wc.setActiveSpace(id: space.id, selectTab: false)
@@ -96,13 +95,13 @@ final class DownloadOpenedTabTests: XCTestCase {
     }
 
     /// A tab showing a page of the fixture server.
-    private func pageTab(in space: Space) async throws -> BrowserTab {
+    @MainActor private func pageTab(in space: Space) async throws -> BrowserTab {
         let tab = store.addTab(in: space, url: server.url("/page"))
         try await waitUntil("the page to commit") { tab.webView?.backForwardList.currentItem != nil }
         return tab
     }
 
-    private func waitForTheDownload() async throws -> DownloadItem {
+    @MainActor private func waitForTheDownload() async throws -> DownloadItem {
         try await waitUntil("the attachment to become a download") { !self.newDownloads().isEmpty }
         let item = try XCTUnwrap(newDownloads().first)
         XCTAssertEqual(item.state, .downloading)
@@ -114,7 +113,7 @@ final class DownloadOpenedTabTests: XCTestCase {
     /// The Cmd+click shape, in a space no window shows: the web view's
     /// delegate is the tab's own. Before TASK-205 no download started at all
     /// and the tab stayed with its URL as its title.
-    func testABackgroundTabOpenedOnADownloadDownloadsAndCloses() async throws {
+    @MainActor func testABackgroundTabOpenedOnADownloadDownloadsAndCloses() async throws {
         let space = makeSpace("Background")
         let opener = try await pageTab(in: space)
 
@@ -128,7 +127,7 @@ final class DownloadOpenedTabTests: XCTestCase {
 
     /// A tab selected in a window (a `target=_blank` link, or a Cmd+click
     /// tab once shown): the download goes on and the opener is selected again.
-    func testASelectedTabOpenedOnADownloadClosesAndTheOpenerIsSelectedAgain() async throws {
+    @MainActor func testASelectedTabOpenedOnADownloadClosesAndTheOpenerIsSelectedAgain() async throws {
         let space = makeSpace("Selected")
         let wc = makeWindow(showing: space)
         let opener = try await pageTab(in: space)
@@ -145,7 +144,7 @@ final class DownloadOpenedTabTests: XCTestCase {
 
     /// The selection leaves the closed tab by the close order — its opener —
     /// not by the removal observer's plain neighbour.
-    func testAClosedDownloadTabSelectsItsOpenerOverItsNeighbour() async throws {
+    @MainActor func testAClosedDownloadTabSelectsItsOpenerOverItsNeighbour() async throws {
         let space = makeSpace("Opener")
         let wc = makeWindow(showing: space)
         // A new tab without an opener goes to the top: the neighbour first.
@@ -164,7 +163,7 @@ final class DownloadOpenedTabTests: XCTestCase {
     }
 
     /// A tab that already shows a page stays on it when a link in it downloads.
-    func testATabShowingAPageStaysWhenItsLinkDownloads() async throws {
+    @MainActor func testATabShowingAPageStaysWhenItsLinkDownloads() async throws {
         let space = makeSpace("Page")
         let wc = makeWindow(showing: space)
         let tab = try await pageTab(in: space)
@@ -181,7 +180,7 @@ final class DownloadOpenedTabTests: XCTestCase {
     /// A tab restored or put to sleep stands for a page the user kept: woken
     /// onto a download, it stays, whatever its web view's back-forward list
     /// holds after the wake.
-    func testASleptTabWokenOntoADownloadStays() async throws {
+    @MainActor func testASleptTabWokenOntoADownloadStays() async throws {
         let space = makeSpace("Slept")
         let opener = try await pageTab(in: space)
         let tab = try await pageTab(in: space)
@@ -202,7 +201,7 @@ final class DownloadOpenedTabTests: XCTestCase {
     /// A route sends the clicked link to another space, which the clicked
     /// window switches to: once the link turns out to be a download, the tab
     /// closes and the window is back on the space it was clicked in.
-    func testARoutedLinkThatDownloadsSwitchesTheWindowBack() async throws {
+    @MainActor func testARoutedLinkThatDownloadsSwitchesTheWindowBack() async throws {
         let clickedIn = makeSpace("Clicked")
         let routedTo = makeSpace("Routed")
         let wc = makeWindow(showing: clickedIn)

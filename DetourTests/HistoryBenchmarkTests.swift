@@ -19,11 +19,11 @@ import GRDB
 ///
 /// The fixture deliberately uses only API that existed before TASK-96, so the
 /// same file can be run on the pre-index code to produce the "before" column.
-final class HistoryBenchmarkTests: XCTestCase {
+nonisolated final class HistoryBenchmarkTests: XCTestCase {
 
     /// Median of five, in milliseconds — median rather than mean so one
     /// scheduling hiccup does not decide the number.
-    private func measure(_ label: String, runs: Int = 5, _ body: () -> Void) {
+    @MainActor private func measure(_ label: String, runs: Int = 5, _ body: () -> Void) {
         var samples: [Double] = []
         for _ in 0 ..< runs {
             let start = CFAbsoluteTimeGetCurrent()
@@ -43,14 +43,14 @@ final class HistoryBenchmarkTests: XCTestCase {
     private static let profileSpaces = ["P1", "P2"]
     private static let otherSpace = "OTHER"
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let db: HistoryDatabase
         let directory: URL
         let path: String
     }
 
     /// Deterministic, so the before/after columns describe the same corpus.
-    private struct Rng {
+    @MainActor private struct Rng {
         private var state: UInt64
         init(seed: UInt64) { state = seed }
         mutating func next() -> UInt64 {
@@ -90,7 +90,7 @@ final class HistoryBenchmarkTests: XCTestCase {
     /// visits, so a query for it makes the pre-TASK-96 palette walk all 5,000.
     private static let heavyToken = "heavyshared"
 
-    private func makeFixture(nonASCII: Bool) throws -> Fixture {
+    @MainActor private func makeFixture(nonASCII: Bool) throws -> Fixture {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("history-bench-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -203,7 +203,7 @@ final class HistoryBenchmarkTests: XCTestCase {
         return Fixture(db: db, directory: directory, path: path)
     }
 
-    private func fileSize(_ fixture: Fixture) -> Int64 {
+    @MainActor private func fileSize(_ fixture: Fixture) -> Int64 {
         var total: Int64 = 0
         for suffix in ["", "-wal", "-shm"] {
             let attrs = try? FileManager.default.attributesOfItem(atPath: fixture.path + suffix)
@@ -214,14 +214,14 @@ final class HistoryBenchmarkTests: XCTestCase {
 
     // MARK: - The run
 
-    func testHistoryBenchmarks() throws {
+    @MainActor func testHistoryBenchmarks() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["HISTORY_BENCH"] == "1",
                           "history benchmarks are env-gated: TEST_RUNNER_HISTORY_BENCH=1")
         try runBenchmarks(nonASCII: false)
         try runBenchmarks(nonASCII: true)
     }
 
-    private func runBenchmarks(nonASCII: Bool) throws {
+    @MainActor private func runBenchmarks(nonASCII: Bool) throws {
         let tag = nonASCII ? "nonascii" : "ascii"
         let buildStart = CFAbsoluteTimeGetCurrent()
         let fixture = try makeFixture(nonASCII: nonASCII)

@@ -10,17 +10,16 @@ import WebKit
 /// The shared store with profiles of the test's own; pages from a loopback
 /// server. The bar button gets its events from the application's queue, as
 /// its tracking loop reads them.
-@MainActor
-final class QuickDetourTitleBarTests: XCTestCase {
+nonisolated final class QuickDetourTitleBarTests: XCTestCase {
 
-    private var store: TabStore { .shared }
+    @MainActor private var store: TabStore { .shared }
     private var quickDetours: [QuickDetourWindowController] = []
     private var createdProfiles: [Profile] = []
     private var servers: [LoopbackHTTPServer] = []
     private var windows: [NSWindow] = []
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for controller in quickDetours { controller.close() }
         quickDetours.removeAll()
         for window in windows { window.close() }
@@ -41,13 +40,13 @@ final class QuickDetourTitleBarTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func makeProfile(_ name: String) -> Profile {
+    @MainActor private func makeProfile(_ name: String) -> Profile {
         let profile = store.addProfile(name: "\(name) \(UUID().uuidString.prefix(4))")
         createdProfiles.append(profile)
         return profile
     }
 
-    private func serve() async throws -> URL {
+    @MainActor private func serve() async throws -> URL {
         let server = try LoopbackHTTPServer(routes: [
             "/": "<html><head><title>Looked Up</title></head><body>a quick lookup</body></html>",
         ])
@@ -56,7 +55,7 @@ final class QuickDetourTitleBarTests: XCTestCase {
         return URL(string: "http://127.0.0.1:\(port)/")!
     }
 
-    private func openQuickDetour(on profile: Profile, loading url: URL) async throws -> QuickDetourWindowController {
+    @MainActor private func openQuickDetour(on profile: Profile, loading url: URL) async throws -> QuickDetourWindowController {
         let controller = QuickDetourWindowController.open(profile: profile, url: url)
         quickDetours.append(controller)
         let tab = try XCTUnwrap(controller.tab)
@@ -68,7 +67,7 @@ final class QuickDetourTitleBarTests: XCTestCase {
 
     // MARK: - Page settings
 
-    func testThePageSettingsAreForThePageAndItsProfile() async throws {
+    @MainActor func testThePageSettingsAreForThePageAndItsProfile() async throws {
         let profile = makeProfile("Title Bar Settings")
         let url = try await serve()
         let controller = try await openQuickDetour(on: profile, loading: url)
@@ -82,14 +81,14 @@ final class QuickDetourTitleBarTests: XCTestCase {
         XCTAssertNotNil(settings.onOpenExtensionSettings)
     }
 
-    private func switchLabels(in view: NSView) -> [String] {
+    @MainActor private func switchLabels(in view: NSView) -> [String] {
         if let control = view as? NSSwitch { return [control.accessibilityLabel() ?? ""] }
         return view.subviews.flatMap(switchLabels(in:))
     }
 
     /// TASK-213: picture in picture acts on tab switching and dev mode on the
     /// sidebar; a Quick Detour has neither, so it offers only content blocking.
-    func testThePageSettingsHaveNoTabSwitches() async throws {
+    @MainActor func testThePageSettingsHaveNoTabSwitches() async throws {
         let profile = makeProfile("Title Bar Switches")
         let url = try await serve()
         let controller = try await openQuickDetour(on: profile, loading: url)
@@ -102,7 +101,7 @@ final class QuickDetourTitleBarTests: XCTestCase {
         XCTAssertNil(settings.onDevModeToggle)
     }
 
-    func testTheMainWindowsPageSettingsKeepTheTabSwitches() {
+    @MainActor func testTheMainWindowsPageSettingsKeepTheTabSwitches() {
         let profile = makeProfile("Title Bar Main Switches")
         let settings = SettingsPopoverViewController.forPage(
             url: URL(string: "https://example.com/"), blockedCount: 0, profileID: profile.id,
@@ -116,7 +115,7 @@ final class QuickDetourTitleBarTests: XCTestCase {
 
     /// AC #1, #2: the switch whitelists the site in the Quick Detour's profile
     /// only, and the page loads again for it to take effect.
-    func testTurningContentBlockingOffActsOnTheProfileAndReloadsThePage() async throws {
+    @MainActor func testTurningContentBlockingOffActsOnTheProfileAndReloadsThePage() async throws {
         let profile = makeProfile("Title Bar Blocking")
         let other = makeProfile("Title Bar Blocking Other")
         let url = try await serve()
@@ -140,7 +139,7 @@ final class QuickDetourTitleBarTests: XCTestCase {
 
     // MARK: - The palette
 
-    func testThePaletteAsksForASearchOrAURL() async throws {
+    @MainActor func testThePaletteAsksForASearchOrAURL() async throws {
         let profile = makeProfile("Title Bar Palette")
         let url = try await serve()
         let controller = try await openQuickDetour(on: profile, loading: url)
@@ -154,13 +153,13 @@ final class QuickDetourTitleBarTests: XCTestCase {
 
     // MARK: - The bar's buttons drag the window
 
-    private final class Clicks: NSObject {
+    @MainActor private final class Clicks: NSObject {
         var count = 0
         @objc func clicked(_ sender: Any?) { count += 1 }
     }
 
     /// A bar button in a window of its own, at (20, 20, 100, 24).
-    private func makeButton(_ clicks: Clicks) -> (QuickDetourBarButton, NSWindow) {
+    @MainActor private func makeButton(_ clicks: Clicks) -> (QuickDetourBarButton, NSWindow) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -171,7 +170,7 @@ final class QuickDetourTitleBarTests: XCTestCase {
         return (button, window)
     }
 
-    private func mouse(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow) -> NSEvent {
+    @MainActor private func mouse(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow) -> NSEvent {
         NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
                            timestamp: ProcessInfo.processInfo.systemUptime,
                            windowNumber: window.windowNumber, context: nil,
@@ -181,7 +180,7 @@ final class QuickDetourTitleBarTests: XCTestCase {
     /// Presses at `start`, then hands `rest` to the button's tracking loop
     /// one by one. Not through the application's queue: posted mouse events
     /// come back with their locations moved through screen coordinates.
-    private func press(_ button: QuickDetourBarButton, in window: NSWindow, at start: NSPoint,
+    @MainActor private func press(_ button: QuickDetourBarButton, in window: NSWindow, at start: NSPoint,
                        then rest: [(NSEvent.EventType, NSPoint)]) -> NSEvent {
         let down = mouse(.leftMouseDown, at: start, in: window)
         var queue = rest.map { mouse($0.0, at: $0.1, in: window) }
@@ -193,14 +192,14 @@ final class QuickDetourTitleBarTests: XCTestCase {
     }
 
     /// Hands `down` to the button, then `rest` to its tracking loop.
-    private func press(_ button: QuickDetourBarButton, _ down: NSEvent, then rest: [(NSEvent.EventType, NSPoint)]) {
+    @MainActor private func press(_ button: QuickDetourBarButton, _ down: NSEvent, then rest: [(NSEvent.EventType, NSPoint)]) {
         guard let window = button.window else { return XCTFail("no window") }
         var queue = rest.map { mouse($0.0, at: $0.1, in: window) }
         button.nextPressEvent = { _ in queue.isEmpty ? nil : queue.removeFirst() }
         button.mouseDown(with: down)
     }
 
-    func testAPressReleasedInPlaceIsAClick() {
+    @MainActor func testAPressReleasedInPlaceIsAClick() {
         let clicks = Clicks()
         let (button, window) = makeButton(clicks)
         var dragged = false
@@ -213,7 +212,7 @@ final class QuickDetourTitleBarTests: XCTestCase {
         XCTAssertFalse(dragged, "a wobble under the threshold is still a click")
     }
 
-    func testAPressThatMovesDragsTheWindowInstead() {
+    @MainActor func testAPressThatMovesDragsTheWindowInstead() {
         let clicks = Clicks()
         let (button, window) = makeButton(clicks)
         var drag: (NSWindow, NSEvent)?
@@ -230,7 +229,7 @@ final class QuickDetourTitleBarTests: XCTestCase {
 
     /// The first press on a window in the background only brings it forward
     /// (AppKit asks `acceptsFirstMouse` for it); moving, it drags.
-    func testAFirstPressOnABackgroundWindowIsNoClickButStillDrags() {
+    @MainActor func testAFirstPressOnABackgroundWindowIsNoClickButStillDrags() {
         let clicks = Clicks()
         let (button, window) = makeButton(clicks)
         var dragged = 0
@@ -252,7 +251,7 @@ final class QuickDetourTitleBarTests: XCTestCase {
         XCTAssertEqual(clicks.count, 1, "another press, not the one asked about, clicks")
     }
 
-    func testAPressReleasedOutsideTheButtonIsNoClick() {
+    @MainActor func testAPressReleasedOutsideTheButtonIsNoClick() {
         let clicks = Clicks()
         let (button, window) = makeButton(clicks)
         button.beginWindowDrag = { _, _ in XCTFail("under the threshold") }

@@ -7,16 +7,15 @@ import Carbon.HIToolbox
 /// ways (Carbon, the menu's key equivalent, the recorder's label), persisted
 /// in defaults, validated against Detour's menus and macOS's shortcuts, and
 /// what each key press does while the recorder records.
-@MainActor
-final class HotKeyShortcutTests: XCTestCase {
+nonisolated final class HotKeyShortcutTests: XCTestCase {
 
-    private func shortcut(_ keyCode: Int, _ modifiers: NSEvent.ModifierFlags, _ character: String = "") -> HotKeyShortcut {
+    @MainActor private func shortcut(_ keyCode: Int, _ modifiers: NSEvent.ModifierFlags, _ character: String = "") -> HotKeyShortcut {
         HotKeyShortcut(keyCode: UInt16(keyCode), modifiers: modifiers, character: character)
     }
 
     // MARK: - The value
 
-    func testTheDefaultIsOptionCommandN() {
+    @MainActor func testTheDefaultIsOptionCommandN() {
         let shortcut = HotKeyShortcut.quickDetourDefault
         XCTAssertEqual(shortcut.keyCode, UInt16(kVK_ANSI_N))
         XCTAssertEqual(shortcut.modifiers, [.command, .option])
@@ -24,14 +23,14 @@ final class HotKeyShortcutTests: XCTestCase {
         XCTAssertEqual(shortcut.displayString, "⌥⌘N")
     }
 
-    func testModifiersAreNarrowedAndTheCharacterLowercased() {
+    @MainActor func testModifiersAreNarrowedAndTheCharacterLowercased() {
         let recorded = shortcut(kVK_ANSI_K, [.command, .shift, .capsLock, .function, .numericPad], "K")
         XCTAssertEqual(recorded.modifiers, [.command, .shift])
         XCTAssertEqual(recorded.character, "k")
         XCTAssertEqual(recorded, shortcut(kVK_ANSI_K, [.command, .shift], "k"))
     }
 
-    func testShortcutsDifferByKeyAndByModifiers() {
+    @MainActor func testShortcutsDifferByKeyAndByModifiers() {
         let base = shortcut(kVK_ANSI_N, [.command, .option], "n")
         XCTAssertEqual(base, HotKeyShortcut.quickDetourDefault)
         XCTAssertNotEqual(base, shortcut(kVK_ANSI_M, [.command, .option], "m"))
@@ -41,7 +40,7 @@ final class HotKeyShortcutTests: XCTestCase {
 
     // MARK: - Carbon
 
-    func testCarbonModifierBits() {
+    @MainActor func testCarbonModifierBits() {
         XCTAssertEqual(shortcut(kVK_ANSI_N, [.command]).carbonModifiers, UInt32(cmdKey))
         XCTAssertEqual(shortcut(kVK_ANSI_N, [.option]).carbonModifiers, UInt32(optionKey))
         XCTAssertEqual(shortcut(kVK_ANSI_N, [.control]).carbonModifiers, UInt32(controlKey))
@@ -50,7 +49,7 @@ final class HotKeyShortcutTests: XCTestCase {
         XCTAssertEqual(shortcut(kVK_F12, [.control, .option, .command]).carbonModifiers, 6400)
     }
 
-    func testCarbonModifiersRoundTripForEveryCombination() {
+    @MainActor func testCarbonModifiersRoundTripForEveryCombination() {
         let all: [NSEvent.ModifierFlags] = [.command, .option, .control, .shift]
         for mask in 0..<16 {
             var flags: NSEvent.ModifierFlags = []
@@ -60,7 +59,7 @@ final class HotKeyShortcutTests: XCTestCase {
         }
     }
 
-    func testCarbonStateBitsAreIgnored() {
+    @MainActor func testCarbonStateBitsAreIgnored() {
         // Fn (bit 17, on every symbolic hotkey of an F-key or arrow) and Caps Lock.
         let carbon = UInt32(cmdKey) | (1 << 17) | UInt32(alphaLock)
         XCTAssertEqual(HotKeyShortcut.modifiers(fromCarbon: carbon), [.command])
@@ -68,7 +67,7 @@ final class HotKeyShortcutTests: XCTestCase {
 
     // MARK: - Menu key equivalent
 
-    func testKeyEquivalents() {
+    @MainActor func testKeyEquivalents() {
         XCTAssertEqual(HotKeyShortcut.quickDetourDefault.keyEquivalent, "n")
         XCTAssertEqual(shortcut(kVK_F12, [.command]).keyEquivalent, String(UnicodeScalar(UInt16(NSF12FunctionKey))!))
         XCTAssertEqual(shortcut(kVK_F1, [.command]).keyEquivalent, String(UnicodeScalar(UInt16(NSF1FunctionKey))!))
@@ -85,13 +84,13 @@ final class HotKeyShortcutTests: XCTestCase {
 
     // MARK: - Display
 
-    func testDisplayStringPutsModifiersInApplesOrder() {
+    @MainActor func testDisplayStringPutsModifiersInApplesOrder() {
         XCTAssertEqual(shortcut(kVK_F12, [.command, .shift, .option, .control]).displayString, "⌃⌥⇧⌘F12")
         XCTAssertEqual(shortcut(kVK_ANSI_K, [.control, .command], "k").displayString, "⌃⌘K")
         XCTAssertEqual(shortcut(kVK_ANSI_1, [.option], "1").displayString, "⌥1")
     }
 
-    func testKeyNamesOfKeysWithoutACharacter() {
+    @MainActor func testKeyNamesOfKeysWithoutACharacter() {
         XCTAssertEqual(shortcut(kVK_F12, [.command]).keyName, "F12")
         XCTAssertEqual(shortcut(kVK_F5, [.command]).keyName, "F5")
         XCTAssertEqual(shortcut(kVK_F20, [.command]).keyName, "F20")
@@ -104,13 +103,13 @@ final class HotKeyShortcutTests: XCTestCase {
         XCTAssertEqual(shortcut(kVK_ANSI_Slash, [.command], "/").keyName, "/")
     }
 
-    func testAKeyWithNoCharacterAndNoNameHasAnEmptyName() {
+    @MainActor func testAKeyWithNoCharacterAndNoNameHasAnEmptyName() {
         XCTAssertEqual(shortcut(kVK_ANSI_A, [.command], "").keyName, "")
     }
 
     // MARK: - Persistence
 
-    func testPropertyListRoundTrip() {
+    @MainActor func testPropertyListRoundTrip() {
         let shortcuts = [
             HotKeyShortcut.quickDetourDefault,
             shortcut(kVK_F12, [.control, .option, .command]),
@@ -127,14 +126,14 @@ final class HotKeyShortcutTests: XCTestCase {
         }
     }
 
-    func testThePropertyListHoldsCarbonModifiers() {
+    @MainActor func testThePropertyListHoldsCarbonModifiers() {
         let plist = shortcut(kVK_F12, [.control, .option, .command]).propertyList
         XCTAssertEqual(plist["keyCode"] as? Int, kVK_F12)
         XCTAssertEqual(plist["modifiers"] as? Int, 6400)
         XCTAssertEqual(plist["character"] as? String, "")
     }
 
-    func testMalformedPropertyListsAreRefused() {
+    @MainActor func testMalformedPropertyListsAreRefused() {
         XCTAssertNil(HotKeyShortcut(propertyList: nil))
         XCTAssertNil(HotKeyShortcut(propertyList: "⌥⌘N"))
         XCTAssertNil(HotKeyShortcut(propertyList: [String: Any]()))
@@ -149,13 +148,13 @@ final class HotKeyShortcutTests: XCTestCase {
 
     // MARK: - Validation
 
-    private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenu {
+    @MainActor private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenu {
         let menu = NSMenu(title: title)
         for item in items { menu.addItem(item) }
         return menu
     }
 
-    private func item(_ title: String, _ key: String, _ mask: NSEvent.ModifierFlags = .command,
+    @MainActor private func item(_ title: String, _ key: String, _ mask: NSEvent.ModifierFlags = .command,
                       action: Selector? = #selector(NSResponder.selectAll(_:))) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
         item.keyEquivalentModifierMask = mask
@@ -164,7 +163,7 @@ final class HotKeyShortcutTests: XCTestCase {
 
     /// A main menu: File (New Tab ⌘T, the Quick Detour item ⌥⌘N), View > Zoom
     /// (Actual Size ⌘0), Edit (Redo ⇧⌘Z spelled "Z"), Navigate (Next Tab ⌥⌘↓).
-    private func mainMenu() -> NSMenu {
+    @MainActor private func mainMenu() -> NSMenu {
         let main = NSMenu(title: "Main")
         let file = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
         file.submenu = menu("File", [
@@ -184,14 +183,14 @@ final class HotKeyShortcutTests: XCTestCase {
         return main
     }
 
-    private func problem(_ shortcut: HotKeyShortcut, menu: NSMenu? = nil,
+    @MainActor private func problem(_ shortcut: HotKeyShortcut, menu: NSMenu? = nil,
                          system: [SystemHotKey] = []) -> HotKeyShortcutProblem? {
         HotKeyShortcutValidation.problem(for: shortcut, menu: menu ?? mainMenu(),
                                          ownAction: #selector(AppDelegate.newQuickDetourWindow(_:)),
                                          systemHotKeys: system)
     }
 
-    func testAShortcutNeedsCommandOptionOrControl() {
+    @MainActor func testAShortcutNeedsCommandOptionOrControl() {
         XCTAssertEqual(problem(shortcut(kVK_ANSI_K, [], "k")), .needsModifier)
         XCTAssertEqual(problem(shortcut(kVK_ANSI_K, [.shift], "k")), .needsModifier)
         XCTAssertEqual(problem(shortcut(kVK_F12, [])), .needsModifier, "even a function key")
@@ -201,11 +200,11 @@ final class HotKeyShortcutTests: XCTestCase {
         XCTAssertNil(problem(shortcut(kVK_ANSI_K, [.command, .shift], "k")))
     }
 
-    func testAKeyWithoutANameIsRefused() {
+    @MainActor func testAKeyWithoutANameIsRefused() {
         XCTAssertEqual(problem(shortcut(kVK_ANSI_K, [.command], "")), .unnamedKey)
     }
 
-    func testDetoursOwnMenuShortcutsAreRefusedWithTheItemsPath() {
+    @MainActor func testDetoursOwnMenuShortcutsAreRefusedWithTheItemsPath() {
         XCTAssertEqual(problem(shortcut(kVK_ANSI_T, [.command], "t")), .usedByMenu("File > New Tab"))
         XCTAssertEqual(problem(shortcut(kVK_ANSI_0, [.command], "0")), .usedByMenu("View > Zoom > Actual Size"))
         XCTAssertEqual(problem(shortcut(kVK_DownArrow, [.command, .option])), .usedByMenu("Navigate > Next Tab"),
@@ -215,7 +214,7 @@ final class HotKeyShortcutTests: XCTestCase {
 
     /// Control-Tab is the recent-tab switcher's (an event monitor, no menu
     /// item): a Carbon hotkey on it would take it from the switcher.
-    func testDetoursNonMenuShortcutsAreRefused() {
+    @MainActor func testDetoursNonMenuShortcutsAreRefused() {
         XCTAssertEqual(problem(shortcut(kVK_Tab, [.control])), .usedByDetour("switching to a recent tab"))
         XCTAssertEqual(problem(shortcut(kVK_Tab, [.control, .shift])), .usedByDetour("switching to a recent tab"))
         XCTAssertNil(problem(shortcut(kVK_Tab, [.control, .option])))
@@ -224,16 +223,16 @@ final class HotKeyShortcutTests: XCTestCase {
                        "⌃⇥ is Detour's shortcut for switching to a recent tab.")
     }
 
-    func testAnUppercaseKeyEquivalentMeansShift() {
+    @MainActor func testAnUppercaseKeyEquivalentMeansShift() {
         XCTAssertEqual(problem(shortcut(kVK_ANSI_Z, [.command, .shift], "z")), .usedByMenu("Edit > Redo"))
         XCTAssertNil(problem(shortcut(kVK_ANSI_Z, [.command], "z")))
     }
 
-    func testTheQuickDetourItemItselfIsNoConflict() {
+    @MainActor func testTheQuickDetourItemItselfIsNoConflict() {
         XCTAssertNil(problem(.quickDetourDefault))
     }
 
-    func testMacOSShortcutsAreRefused() {
+    @MainActor func testMacOSShortcutsAreRefused() {
         let spotlight = SystemHotKey(keyCode: UInt16(kVK_Space), carbonModifiers: UInt32(cmdKey))
         XCTAssertEqual(problem(shortcut(kVK_Space, [.command], " "), system: [spotlight]), .usedBySystem)
         XCTAssertNil(problem(shortcut(kVK_Space, [.control, .command], " "), system: [spotlight]))
@@ -242,7 +241,7 @@ final class HotKeyShortcutTests: XCTestCase {
         XCTAssertEqual(problem(shortcut(kVK_F12, [.control]), system: [withFn]), .usedBySystem)
     }
 
-    func testAModifierIsCheckedBeforeTheMenus() {
+    @MainActor func testAModifierIsCheckedBeforeTheMenus() {
         let item = menu("File", [item("Plain K", "k", [])])
         let main = NSMenu(title: "Main")
         let top = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
@@ -254,7 +253,7 @@ final class HotKeyShortcutTests: XCTestCase {
     /// Against the menus that ship (the test host runs
     /// `applicationDidFinishLaunching`): Cmd-T and Shift-Cmd-N are taken, the
     /// Quick Detour item's own shortcut is not.
-    func testTheRealMainMenu() {
+    @MainActor func testTheRealMainMenu() {
         let real = NSApp.mainMenu
         let own = #selector(AppDelegate.newQuickDetourWindow(_:))
         XCTAssertEqual(HotKeyShortcutValidation.problem(for: shortcut(kVK_ANSI_T, [.command], "t"), menu: real,
@@ -269,7 +268,7 @@ final class HotKeyShortcutTests: XCTestCase {
                                                       ownAction: own, systemHotKeys: []))
     }
 
-    func testMessagesNameTheConflict() {
+    @MainActor func testMessagesNameTheConflict() {
         let commandT = shortcut(kVK_ANSI_T, [.command], "t")
         XCTAssertEqual(HotKeyShortcutValidation.message(for: .usedByMenu("File > New Tab"), shortcut: commandT),
                        "⌘T is the shortcut of File > New Tab.")
@@ -282,27 +281,27 @@ final class HotKeyShortcutTests: XCTestCase {
 
     // MARK: - Recording
 
-    private func outcome(_ shortcut: HotKeyShortcut, problem: HotKeyShortcutProblem? = nil) -> HotKeyRecordingOutcome {
+    @MainActor private func outcome(_ shortcut: HotKeyShortcut, problem: HotKeyShortcutProblem? = nil) -> HotKeyRecordingOutcome {
         HotKeyRecordingOutcome.outcome(for: shortcut) { _ in problem }
     }
 
-    func testEscapeCancels() {
+    @MainActor func testEscapeCancels() {
         XCTAssertEqual(outcome(shortcut(kVK_Escape, [], "\u{1b}")), .cancel)
     }
 
-    func testDeleteClears() {
+    @MainActor func testDeleteClears() {
         XCTAssertEqual(outcome(shortcut(kVK_Delete, [], "\u{7f}")), .clear)
         XCTAssertEqual(outcome(shortcut(kVK_ForwardDelete, [])), .clear)
     }
 
-    func testEscapeOrDeleteWithAModifierIsAShortcut() {
+    @MainActor func testEscapeOrDeleteWithAModifierIsAShortcut() {
         let commandEscape = shortcut(kVK_Escape, [.command, .option])
         XCTAssertEqual(outcome(commandEscape), .record(commandEscape))
         let commandDelete = shortcut(kVK_Delete, [.control])
         XCTAssertEqual(outcome(commandDelete), .record(commandDelete))
     }
 
-    func testAValidShortcutIsRecordedAndAProblemRefused() {
+    @MainActor func testAValidShortcutIsRecordedAndAProblemRefused() {
         let valid = shortcut(kVK_ANSI_K, [.control, .command], "k")
         XCTAssertEqual(outcome(valid), .record(valid))
         XCTAssertEqual(outcome(valid, problem: .usedBySystem), .refuse(.usedBySystem))

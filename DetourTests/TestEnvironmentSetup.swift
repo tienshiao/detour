@@ -24,7 +24,7 @@ final class TestEnvironmentSetup: NSObject {
 /// domain — the host is Detour.app — so these are the keys the real app
 /// restores its window and sidebar from, plus Sparkle's state. Shared by the
 /// bundle-wide net below and by `ProductionDefaultsIsolationTests`.
-enum ProductionDefaultsWatch {
+nonisolated enum ProductionDefaultsWatch {
 
     /// The unscoped autosave keys: what the default data directory writes.
     static let autosaveKeys = [
@@ -93,10 +93,12 @@ private final class TestObserver: NSObject, XCTestObservation {
     /// `UserDefaults.didChangeNotification`, which a process receives only for
     /// its *own* writes — a production Detour writing the same domain during the
     /// run never posts it here — so the restore can tell the run's writes from
-    /// someone else's. The notification arrives on the writing thread, hence
-    /// the lock.
-    private var changesMadeHere: [String: NSObject?] = [:]
-    private var lastSeen: [String: NSObject] = [:]
+    /// someone else's. The notification arrives on the writing thread, so
+    /// every access takes `changesLock`. `nonisolated(unsafe)` because the
+    /// values are property-list objects (`NSObject`, not `Sendable`), which a
+    /// `Mutex` cannot take in and hand out.
+    nonisolated(unsafe) private var changesMadeHere: [String: NSObject?] = [:]
+    nonisolated(unsafe) private var lastSeen: [String: NSObject] = [:]
     private let changesLock = NSLock()
     private var defaultsObservation: NSObjectProtocol?
 
@@ -166,7 +168,7 @@ private final class TestObserver: NSObject, XCTestObservation {
         guard !WebKitStorageScope.currentIsDefaultDataDirectory, productionDefaults == nil else { return }
         let snapshot = ProductionDefaultsWatch.snapshot()
         productionDefaults = snapshot
-        lastSeen = snapshot
+        changesLock.withLock { lastSeen = snapshot }
         defaultsObservation = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: UserDefaults.standard, queue: nil
         ) { [weak self] _ in
@@ -176,15 +178,15 @@ private final class TestObserver: NSObject, XCTestObservation {
 
     /// One of this process's writes went through: attribute whatever watched
     /// key differs from the last look to this run.
-    private func recordOwnChanges() {
+    nonisolated private func recordOwnChanges() {
         let current = ProductionDefaultsWatch.snapshot()
-        changesLock.lock()
-        defer { changesLock.unlock() }
-        for key in Set(current.keys).union(lastSeen.keys)
-        where !ProductionDefaultsWatch.valuesEqual(current[key], lastSeen[key]) {
-            changesMadeHere[key] = .some(current[key])
+        changesLock.withLock {
+            for key in Set(current.keys).union(lastSeen.keys)
+            where !ProductionDefaultsWatch.valuesEqual(current[key], lastSeen[key]) {
+                changesMadeHere[key] = .some(current[key])
+            }
+            lastSeen = current
         }
-        lastSeen = current
     }
 
     /// Reports and undoes the changes this run made to the watched production
@@ -199,9 +201,7 @@ private final class TestObserver: NSObject, XCTestObservation {
             NotificationCenter.default.removeObserver(observation)
             defaultsObservation = nil
         }
-        changesLock.lock()
-        let changes = changesMadeHere
-        changesLock.unlock()
+        let changes = changesLock.withLock { changesMadeHere }
 
         let defaults = UserDefaults.standard
         var restored: [String] = []

@@ -7,13 +7,12 @@ import WebKit
 ///
 /// Uses a shared one-time setup per test class to avoid recreating the extension
 /// controller for each test.
-@MainActor
-final class WKExtensionIntegrationTests: XCTestCase {
+nonisolated final class WKExtensionIntegrationTests: XCTestCase {
 
     private static let extensionID = "test-wk-integration"
     private static let testHTMLPage = "<html><head><title>Test Page</title></head><body>test content</body></html>"
 
-    private struct SharedState {
+    @MainActor private struct SharedState {
         let tempDir: URL
         let ext: WebExtension
         let wkExtension: WKWebExtension
@@ -23,20 +22,20 @@ final class WKExtensionIntegrationTests: XCTestCase {
         let testProfile: Profile
     }
 
-    private nonisolated(unsafe) static var shared: SharedState?
+    @MainActor private static var shared: SharedState?
 
-    private var state: SharedState { Self.shared! }
+    @MainActor private var state: SharedState { Self.shared! }
 
     // MARK: - Setup
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         if Self.shared == nil {
             try await createSharedState()
         }
     }
 
-    private func createSharedState() async throws {
+    @MainActor private func createSharedState() async throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-test-wk-integration-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -209,7 +208,7 @@ final class WKExtensionIntegrationTests: XCTestCase {
     /// count them).
     private var registeredProbes: [(window: ProbeExtensionWindow, tab: ProbeExtensionTab)] = []
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for probe in registeredProbes.reversed() {
             unregisterProbeTab(probe, in: state.context)
         }
@@ -218,14 +217,17 @@ final class WKExtensionIntegrationTests: XCTestCase {
     }
 
     override class func tearDown() {
-        if let state = shared {
-            try? state.controller.unload(state.context)
-            ExtensionManager.shared.extensions.removeAll { $0.id == extensionID }
-            state.testProfile.extensionContexts.removeValue(forKey: extensionID)
-            try? FileManager.default.removeItem(at: state.tempDir)
+        // XCTest calls this on the main thread; the test state is main-actor.
+        MainActor.assumeIsolated {
+            if let state = shared {
+                try? state.controller.unload(state.context)
+                ExtensionManager.shared.extensions.removeAll { $0.id == extensionID }
+                state.testProfile.extensionContexts.removeValue(forKey: extensionID)
+                try? FileManager.default.removeItem(at: state.tempDir)
+            }
+            shared = nil
+            super.tearDown()
         }
-        shared = nil
-        super.tearDown()
     }
 
     // MARK: - Helpers
@@ -238,7 +240,7 @@ final class WKExtensionIntegrationTests: XCTestCase {
     /// `chrome.tabs.query` only sees anything, once the web view is a tab the
     /// context knows about (established in TASK-4 Phase A). It has to happen
     /// before the load, and it is undone in `tearDown`.
-    private func makeWebView(html: String = testHTMLPage, baseURL: String = "https://test.example.com") async throws -> WKWebView {
+    @MainActor private func makeWebView(html: String = testHTMLPage, baseURL: String = "https://test.example.com") async throws -> WKWebView {
         let config = WKWebViewConfiguration()
         config.webExtensionController = state.controller
         let wv = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
@@ -260,7 +262,7 @@ final class WKExtensionIntegrationTests: XCTestCase {
     ///
     /// The page is a plain https page, so the round trip goes through the content
     /// script's relay (`askWorker(via: .contentScriptRelay)`).
-    private func sendMessageToBackground(_ message: [String: Any], via webView: WKWebView) async throws -> Any? {
+    @MainActor private func sendMessageToBackground(_ message: [String: Any], via webView: WKWebView) async throws -> Any? {
         try? await state.context.loadBackgroundContent()
         var envelope = try await askWorker(from: webView, message: message, via: .contentScriptRelay)
         if workerReplyIsEmpty(envelope) {
@@ -286,38 +288,38 @@ final class WKExtensionIntegrationTests: XCTestCase {
 
     // MARK: - Extension Loading
 
-    func testExtensionLoaded() {
+    @MainActor func testExtensionLoaded() {
         XCTAssertNotNil(state.context)
         XCTAssertTrue(state.context.errors.isEmpty, "Context should have no errors: \(state.context.errors)")
     }
 
-    func testExtensionDisplayName() {
+    @MainActor func testExtensionDisplayName() {
         XCTAssertEqual(state.wkExtension.displayName, "WK Integration Test")
     }
 
-    func testExtensionVersion() {
+    @MainActor func testExtensionVersion() {
         XCTAssertEqual(state.wkExtension.displayVersion, "1.0.0")
     }
 
-    func testExtensionHasBackgroundContent() {
+    @MainActor func testExtensionHasBackgroundContent() {
         XCTAssertTrue(state.wkExtension.hasBackgroundContent)
     }
 
-    func testExtensionHasInjectedContent() {
+    @MainActor func testExtensionHasInjectedContent() {
         XCTAssertTrue(state.wkExtension.hasInjectedContent)
     }
 
-    func testExtensionHasAction() {
+    @MainActor func testExtensionHasAction() {
         XCTAssertNotNil(state.wkExtension.displayActionLabel)
     }
 
-    func testExtensionBaseURL() {
+    @MainActor func testExtensionBaseURL() {
         XCTAssertTrue(state.context.baseURL.scheme == "webkit-extension")
     }
 
     // MARK: - Content Script Injection
 
-    func testContentScriptInjectsMarker() async throws {
+    @MainActor func testContentScriptInjectsMarker() async throws {
         let wv = try await makeWebView()
         let marker = try await wv.evaluateJavaScript(
             "document.documentElement.getAttribute('data-extension-loaded')")
@@ -329,13 +331,13 @@ final class WKExtensionIntegrationTests: XCTestCase {
     // which `makeWebView` does — a content script in an unregistered web view
     // cannot reach the background worker at all.
 
-    func testRuntimeSendMessagePing() async throws {
+    @MainActor func testRuntimeSendMessagePing() async throws {
         let wv = try await makeWebView()
         let response = try await sendMessageToBackground(["type": "ping"], via: wv) as? [String: Any]
         XCTAssertEqual(response?["type"] as? String, "pong")
     }
 
-    func testRuntimeSendMessageSender() async throws {
+    @MainActor func testRuntimeSendMessageSender() async throws {
         let wv = try await makeWebView()
         let response = try await sendMessageToBackground(["type": "get-sender"], via: wv) as? [String: Any]
         // Sender should include tab info
@@ -344,7 +346,7 @@ final class WKExtensionIntegrationTests: XCTestCase {
 
     // MARK: - Storage
 
-    func testStorageLocalSetAndGet() async throws {
+    @MainActor func testStorageLocalSetAndGet() async throws {
         let wv = try await makeWebView()
 
         // Set a value
@@ -390,7 +392,7 @@ final class WKExtensionIntegrationTests: XCTestCase {
     /// If this starts failing, WebKit changed its install-reason rule: re-measure
     /// the app scenarios before trusting either WebKit's event or Detour's
     /// suppression of it.
-    func testRuntimeOnInstalledIsNotDelivered() async throws {
+    @MainActor func testRuntimeOnInstalledIsNotDelivered() async throws {
         let wv = try await makeWebView()
 
         // Positive control: write a marker through the same message path the
@@ -415,7 +417,7 @@ final class WKExtensionIntegrationTests: XCTestCase {
 
     // MARK: - Tabs
 
-    func testTabsQueryReturnsResults() async throws {
+    @MainActor func testTabsQueryReturnsResults() async throws {
         let wv = try await makeWebView()
         let response = try await sendMessageToBackground(
             ["type": "tabs-query"], via: wv) as? [String: Any]
@@ -426,7 +428,7 @@ final class WKExtensionIntegrationTests: XCTestCase {
 
     // MARK: - Alarms
 
-    func testAlarmsCreateAndGetAll() async throws {
+    @MainActor func testAlarmsCreateAndGetAll() async throws {
         let wv = try await makeWebView()
 
         // Create an alarm
@@ -448,33 +450,33 @@ final class WKExtensionIntegrationTests: XCTestCase {
 
     // MARK: - Action / Popup
 
-    func testActionExists() {
+    @MainActor func testActionExists() {
         let action = state.context.action(for: nil)
         XCTAssertNotNil(action, "Extension should have a default action")
     }
 
-    func testActionLabel() {
+    @MainActor func testActionLabel() {
         let action = state.context.action(for: nil)
         XCTAssertEqual(action?.label, "Test Action")
     }
 
     // MARK: - Permissions
 
-    func testPermissionGranted() {
+    @MainActor func testPermissionGranted() {
         XCTAssertTrue(state.context.hasPermission(.storage))
         XCTAssertTrue(state.context.hasPermission(.tabs))
         XCTAssertTrue(state.context.hasPermission(.scripting))
         XCTAssertTrue(state.context.hasPermission(.alarms))
     }
 
-    func testURLAccessGranted() {
+    @MainActor func testURLAccessGranted() {
         let url = URL(string: "https://example.com")!
         XCTAssertTrue(state.context.hasAccess(to: url))
     }
 
     // MARK: - WKWebExtensionTab Conformance
 
-    func testBrowserTabConformance() async throws {
+    @MainActor func testBrowserTabConformance() async throws {
         let config = WKWebViewConfiguration()
         config.webExtensionController = state.controller
         let wv = WKWebView(frame: .zero, configuration: config)
@@ -485,7 +487,7 @@ final class WKExtensionIntegrationTests: XCTestCase {
         XCTAssertFalse(tab.isMuted(for: state.context))
     }
 
-    func testBrowserTabLoadingState() async throws {
+    @MainActor func testBrowserTabLoadingState() async throws {
         let wv = try await makeWebView()
         let tab = BrowserTab(webView: wv)
 

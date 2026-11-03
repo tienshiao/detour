@@ -577,9 +577,9 @@ class TabStore {
         let references: LinkRouteReferences
     }
 
-    private static let spaceDeletionBlockKey = "spaceDeletionBlock"
+    nonisolated private static let spaceDeletionBlockKey = "spaceDeletionBlock"
 
-    static func spaceDeletionBlock(from notification: Notification) -> SpaceDeletionBlock? {
+    nonisolated static func spaceDeletionBlock(from notification: Notification) -> SpaceDeletionBlock? {
         notification.userInfo?[spaceDeletionBlockKey] as? SpaceDeletionBlock
     }
 

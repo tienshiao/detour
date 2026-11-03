@@ -12,12 +12,11 @@ import GRDB
 /// These exercise the `ExtensionTabLifecycle` seam with a recording notifier, so
 /// no real extension has to be installed: the assertions are about *which*
 /// events the store and the window model produce, for which tab and profile.
-@MainActor
-final class ExtensionTabLifecycleTests: XCTestCase {
+nonisolated final class ExtensionTabLifecycleTests: XCTestCase {
 
     // MARK: - Recording notifier
 
-    private struct Record: Equatable, CustomStringConvertible {
+    @MainActor private struct Record: Equatable, CustomStringConvertible {
         enum Event: String { case open, close, activate, change, move }
         let event: Event
         let tabID: UUID
@@ -40,7 +39,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         var description: String { "\(event.rawValue)(\(tabID.uuidString.prefix(4)))" }
     }
 
-    private final class RecordingNotifier: ExtensionTabLifecycleNotifying {
+    @MainActor private final class RecordingNotifier: ExtensionTabLifecycleNotifying {
         var records: [Record] = []
         /// The store whose lists decide `Record.listed`; set by the fixture.
         weak var store: TabStore?
@@ -84,7 +83,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// A window stand-in for the move hooks: the suite has no real
     /// `BrowserWindowController`s, and `didMove` only ever passes the window
     /// straight through to WebKit.
-    private final class StubWindow: NSObject, WKWebExtensionWindow {}
+    @MainActor private final class StubWindow: NSObject, WKWebExtensionWindow {}
 
     private var notifier = RecordingNotifier()
     private var previousNotifier: (any ExtensionTabLifecycleNotifying)!
@@ -100,8 +99,8 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     private var previousWindowShowingTab: ((BrowserTab) -> (any WKWebExtensionWindow)?)!
     private var previousWindowListing: ((BrowserTab) -> (any WKWebExtensionWindow)?)!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         notifier = RecordingNotifier()
         previousNotifier = ExtensionTabLifecycle.notifier
         ExtensionTabLifecycle.notifier = notifier
@@ -112,7 +111,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         ExtensionTabLifecycle.windowListing = { _ in nil }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
         for id in sharedSpaceIDs {
@@ -131,20 +130,20 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         ExtensionTabLifecycle.notifier = previousNotifier
         ExtensionTabLifecycle.windowShowingTab = previousWindowShowingTab
         ExtensionTabLifecycle.windowListing = previousWindowListing
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Installs `window` as the window every tab on `spaceID` is in (and as the
     /// window listing any tab), the way a real `BrowserWindowController` on that
     /// space would answer both hooks. The move asks before it mutates anything,
     /// so the tab's `spaceID` still names the space it is leaving.
-    private func showSpace(_ spaceID: UUID, in window: StubWindow) {
+    @MainActor private func showSpace(_ spaceID: UUID, in window: StubWindow) {
         ExtensionTabLifecycle.windowShowingTab = { tab in tab.spaceID == spaceID ? window : nil }
         ExtensionTabLifecycle.windowListing = { _ in window }
     }
 
     /// The `.move` events recorded for `tab`, as (fromIndex, oldWindowIsNil).
-    private func moves(for tab: BrowserTab) -> [(fromIndex: Int, oldWindowIsNil: Bool)] {
+    @MainActor private func moves(for tab: BrowserTab) -> [(fromIndex: Int, oldWindowIsNil: Bool)] {
         notifier.records
             .filter { $0.tabID == tab.id && $0.event == .move }
             .map { (fromIndex: $0.fromIndex ?? -1, oldWindowIsNil: $0.oldWindowIsNil ?? true) }
@@ -152,34 +151,34 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// Only the events for `tab` — the notifier is a process-wide seam, so a
     /// stray event from another store must not fail an assertion here.
-    private func events(for tab: BrowserTab) -> [Record.Event] {
+    @MainActor private func events(for tab: BrowserTab) -> [Record.Event] {
         notifier.records.filter { $0.tabID == tab.id }.map(\.event)
     }
 
-    private func profileIDs(for tab: BrowserTab) -> [UUID] {
+    @MainActor private func profileIDs(for tab: BrowserTab) -> [UUID] {
         notifier.records.filter { $0.tabID == tab.id }.map(\.profileID)
     }
 
     /// Whether the tab was enumerable at each of its open events — one entry per
     /// open, so "reported exactly once, and only once listed" is one assertion.
-    private func listedAtOpen(_ tab: BrowserTab) -> [Bool] {
+    @MainActor private func listedAtOpen(_ tab: BrowserTab) -> [Bool] {
         notifier.records.filter { $0.tabID == tab.id && $0.event == .open }.map(\.listed)
     }
 
     /// The properties each `.change` event named, in order (TASK-59).
-    private func changedProperties(for tab: BrowserTab) -> [WKWebExtension.TabChangedProperties] {
+    @MainActor private func changedProperties(for tab: BrowserTab) -> [WKWebExtension.TabChangedProperties] {
         notifier.records.filter { $0.tabID == tab.id && $0.event == .change }.map(\.properties)
     }
 
     /// Whether the tab was enumerable at each of its change events — a property
     /// change resolves the tab's window and index just like an open does.
-    private func listedAtChange(_ tab: BrowserTab) -> [Bool] {
+    @MainActor private func listedAtChange(_ tab: BrowserTab) -> [Bool] {
         notifier.records.filter { $0.tabID == tab.id && $0.event == .change }.map(\.listed)
     }
 
     // MARK: - Fixture
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let store: TabStore
         let profile: Profile
         let space: Space
@@ -189,7 +188,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// A private store (its own in-memory database) with one profile, one space
     /// and an `ExtensionTabObserver` bound to it, so store mutations produce the
     /// same notifications they do in the app.
-    private func makeFixture() throws -> Fixture {
+    @MainActor private func makeFixture() throws -> Fixture {
         let db = try AppDatabase(dbQueue: try DatabaseQueue())
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Lifecycle")
@@ -204,7 +203,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     private let favoriteURL = URL(string: "https://calendar.example.com/r")!
 
     /// Adds a dormant favourite tile and returns it.
-    private func dormantFavorite(in f: Fixture) throws -> Favorite {
+    @MainActor private func dormantFavorite(in f: Fixture) throws -> Favorite {
         XCTAssertTrue(f.store.addFavoriteFromEntry(url: favoriteURL, title: "Calendar", faviconURL: nil,
                                                    favicon: nil, profileID: f.profile.id,
                                                    at: f.profile.favorites.count))
@@ -213,7 +212,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// Adds a dormant favourite and clicks it (`activateFavorite`), returning the
     /// favourite and its new live backing tab.
-    private func liveFavorite(in f: Fixture) throws -> (Favorite, BrowserTab) {
+    @MainActor private func liveFavorite(in f: Fixture) throws -> (Favorite, BrowserTab) {
         let favorite = try dormantFavorite(in: f)
         f.store.activateFavorite(id: favorite.id, profileID: f.profile.id, in: f.space)
         let tab = try XCTUnwrap(favorite.tab, "the favourite should have a live backing tab")
@@ -223,7 +222,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// Spins the main run loop until `tab` has `count` recorded events or the
     /// deadline passes — the seam's observers deliver on RunLoop.main.
-    private func waitForEvents(of tab: BrowserTab, count: Int, timeout: TimeInterval = 2) {
+    @MainActor private func waitForEvents(of tab: BrowserTab, count: Int, timeout: TimeInterval = 2) {
         let deadline = Date().addingTimeInterval(timeout)
         while events(for: tab).count < count, Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
@@ -232,7 +231,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     // MARK: - Favourite activation
 
-    func testActivateFavoriteReportsTheBackingTabOpen() throws {
+    @MainActor func testActivateFavoriteReportsTheBackingTabOpen() throws {
         let f = try makeFixture()
         let (_, tab) = try liveFavorite(in: f)
 
@@ -244,7 +243,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
                       "the tab remembers who was told, so teardown can close it")
     }
 
-    func testDeactivateFavoriteReportsTheBackingTabClosedExactlyOnce() throws {
+    @MainActor func testDeactivateFavoriteReportsTheBackingTabClosedExactlyOnce() throws {
         let f = try makeFixture()
         let (favorite, tab) = try liveFavorite(in: f)
 
@@ -259,7 +258,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         XCTAssertEqual(events(for: tab), [.open, .close], "close is idempotent")
     }
 
-    func testRemoveFavoriteReportsTheBackingTabClosed() throws {
+    @MainActor func testRemoveFavoriteReportsTheBackingTabClosed() throws {
         let f = try makeFixture()
         let (favorite, tab) = try liveFavorite(in: f)
 
@@ -273,7 +272,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// live tab under the favourite. Same profile, same web view, and the pinned
     /// flag was false on both sides — so the contexts hear nothing at all
     /// (TASK-59); the tab they already know is simply still open.
-    func testDetachThenAddFavoriteKeepsTheTabOpenSilently() throws {
+    @MainActor func testDetachThenAddFavoriteKeepsTheTabOpenSilently() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
@@ -296,7 +295,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// re-open (which made extensions drop every per-tab port and frame map,
     /// TASK-61): it is announced as a move, carrying the index the tab held in
     /// the window it left.
-    func testMoveTabToAnotherSpaceReportsAMoveNotACloseAndOpen() throws {
+    @MainActor func testMoveTabToAnotherSpaceReportsAMoveNotACloseAndOpen() throws {
         let f = try makeFixture()
         let destination = f.store.addSpace(name: "Lifecycle B", emoji: "🅱️",
                                            colorHex: "FF9500", profileID: f.profile.id)
@@ -327,7 +326,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// The pinned half of the same rule: the entry moves as it is, so the
     /// backing tab is announced moved rather than closed and re-opened.
-    func testMovePinnedEntryToAnotherSpaceReportsAMoveNotACloseAndOpen() throws {
+    @MainActor func testMovePinnedEntryToAnotherSpaceReportsAMoveNotACloseAndOpen() throws {
         let f = try makeFixture()
         let destination = f.store.addSpace(name: "Lifecycle Pinned B", emoji: "🅱️",
                                            colorHex: "FF9500", profileID: f.profile.id)
@@ -356,7 +355,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// Across profiles the destination's contexts are different objects and the
     /// web view has to be rebuilt from their configuration, so the move stays a
     /// close — and the tab re-opens under the *new* profile when it wakes there.
-    func testCrossProfileMoveStillClosesAndReopensUnderTheNewProfile() throws {
+    @MainActor func testCrossProfileMoveStillClosesAndReopensUnderTheNewProfile() throws {
         // On the shared store: `BrowserTab.wake()` resolves its space through
         // `TabStore.shared`, and the re-open only lands on the wake that rebuilds
         // the web view from the destination profile's configuration.
@@ -387,7 +386,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// No window on either space: `onMoved`/`onDetached`/`onAttached` all name a
     /// window, so there is nothing either half could describe and the move says
     /// nothing at all. The tab is already reported open wherever it is.
-    func testMoveBetweenUnshownSpacesAnnouncesNothing() throws {
+    @MainActor func testMoveBetweenUnshownSpacesAnnouncesNothing() throws {
         let f = try makeFixture()
         let destination = f.store.addSpace(name: "Lifecycle Unshown B", emoji: "🅱️",
                                            colorHex: "FF9500", profileID: f.profile.id)
@@ -404,7 +403,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// the attach half is real, so the move is announced with a nil old window
     /// (WebKit reads that as a tab moving from no open window: `tabs.onAttached`
     /// to its current window, and no `onDetached` or `onMoved`).
-    func testMoveIntoAShownSpaceAnnouncesAMoveWithNoOldWindow() throws {
+    @MainActor func testMoveIntoAShownSpaceAnnouncesAMoveWithNoOldWindow() throws {
         let f = try makeFixture()
         let destination = f.store.addSpace(name: "Lifecycle Shown B", emoji: "🅱️",
                                            colorHex: "FF9500", profileID: f.profile.id)
@@ -430,7 +429,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// one. This suite has no real windows to exercise that rule, so it pins the
     /// inputs instead: both moves hand the hook the tab itself, still in the
     /// space it is leaving, and pass its answer on as the old window.
-    func testMovesAskTheMovedTabForItsOldWindowBeforeMoving() throws {
+    @MainActor func testMovesAskTheMovedTabForItsOldWindowBeforeMoving() throws {
         let f = try makeFixture()
         let destination = f.store.addSpace(name: "Lifecycle Asked B", emoji: "🅱️",
                                            colorHex: "FF9500", profileID: f.profile.id)
@@ -461,7 +460,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     // MARK: - Favourite property changes
 
-    func testFavoriteTabPropertyChangeReachesTheContexts() throws {
+    @MainActor func testFavoriteTabPropertyChangeReachesTheContexts() throws {
         let f = try makeFixture()
         let (_, tab) = try liveFavorite(in: f)
 
@@ -475,7 +474,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// A Peek is held only by its host, so no store list ever names it — the
     /// seam's own observers are what carry its changes.
-    func testPeekTabPropertyChangeReachesTheContexts() throws {
+    @MainActor func testPeekTabPropertyChangeReachesTheContexts() throws {
         let f = try makeFixture()
         let peek = makeLiveTab()
         ExtensionTabLifecycle.didOpen(peek, in: f.profile)
@@ -488,7 +487,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// A pinned tab's updates ride `tabStoreDidUpdatePinnedEntry`, which nothing
     /// mapped to the contexts; the seam observes the tab directly instead.
-    func testPinnedTabPropertyChangeReachesTheContexts() throws {
+    @MainActor func testPinnedTabPropertyChangeReachesTheContexts() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
@@ -503,7 +502,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     }
 
     /// `didClose` removes the observers, so a tab nobody has open stops talking.
-    func testPropertyChangesStopAfterClose() throws {
+    @MainActor func testPropertyChangesStopAfterClose() throws {
         let f = try makeFixture()
         let tab = makeLiveTab()
         ExtensionTabLifecycle.didOpen(tab, in: f.profile)
@@ -517,7 +516,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     // MARK: - Negative cases
 
-    func testTeardownOfANeverOpenedTabReportsNothing() {
+    @MainActor func testTeardownOfANeverOpenedTabReportsNothing() {
         let tab = BrowserTab(configuration: WKWebViewConfiguration())
         XCTAssertNil(tab.extensionRegisteredProfile)
 
@@ -529,18 +528,18 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     // MARK: - Window tab list
 
-    private func makeLiveTab() -> BrowserTab {
+    @MainActor private func makeLiveTab() -> BrowserTab {
         let tab = BrowserTab(configuration: WKWebViewConfiguration())
         createdTabs.append(tab)
         return tab
     }
 
-    private func makeSleepingTab() -> BrowserTab {
+    @MainActor private func makeSleepingTab() -> BrowserTab {
         BrowserTab(id: UUID(), title: "Parked", url: URL(string: "https://example.com/parked"),
                    faviconURL: nil, cachedInteractionState: nil, spaceID: UUID())
     }
 
-    func testExtensionWindowTabsOrdersPinnedNormalFavoritesWithLivePeeksInline() {
+    @MainActor func testExtensionWindowTabsOrdersPinnedNormalFavoritesWithLivePeeksInline() {
         let pinned = makeLiveTab()
         let normal = makeLiveTab()
         let favorite = makeLiveTab()
@@ -553,7 +552,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
                        "a live peek follows the tab hosting it")
     }
 
-    func testExtensionWindowTabsOmitsAParkedPeek() {
+    @MainActor func testExtensionWindowTabsOmitsAParkedPeek() {
         let host = makeLiveTab()
         host.peekTab = makeSleepingTab()
 
@@ -563,7 +562,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
                        "a peek with no web view has nothing for WebKit to map")
     }
 
-    func testExtensionWindowTabsIncludesAFavoritesLivePeek() {
+    @MainActor func testExtensionWindowTabsIncludesAFavoritesLivePeek() {
         let favorite = makeLiveTab()
         let peek = makeLiveTab()
         favorite.peekTab = peek
@@ -578,7 +577,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// Editing a space onto another profile sleeps its live tabs. Sleeping is not
     /// closing, so without an explicit close the old profile would keep a phantom
     /// open tab that nothing can ever close.
-    func testProfileSwapClosesSpaceTabsInTheOldProfile() throws {
+    @MainActor func testProfileSwapClosesSpaceTabsInTheOldProfile() throws {
         let f = try makeFixture()
         let other = f.store.addProfile(name: "Other")
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
@@ -598,7 +597,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// The contexts resolve a tab's window and index when it is reported, so a
     /// favourite must already be listed by then.
-    func testAddFavoriteReportsOpenOnlyOnceListed() throws {
+    @MainActor func testAddFavoriteReportsOpenOnlyOnceListed() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
@@ -610,7 +609,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
                        "the one open names a tab the window already enumerates")
     }
 
-    func testFavoriteBackedByAndPeekHostLookups() throws {
+    @MainActor func testFavoriteBackedByAndPeekHostLookups() throws {
         let f = try makeFixture()
         let (favorite, favoriteTab) = try liveFavorite(in: f)
         let normal = f.store.addTab(in: f.space, url: favoriteURL)
@@ -635,7 +634,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     // MARK: - Parked peeks (TASK-57)
 
     /// A host tab with a live, registered Peek.
-    private func hostWithLivePeek(in f: Fixture) -> (host: BrowserTab, peek: BrowserTab) {
+    @MainActor private func hostWithLivePeek(in f: Fixture) -> (host: BrowserTab, peek: BrowserTab) {
         let host = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(host)
         let peek = BrowserTab(configuration: f.space.makeWebViewConfiguration())
@@ -647,7 +646,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// Parking a Peek is closing it: it is never woken as the same object, so a
     /// registered parked peek would be a phantom open tab with no web view.
-    func testHostSleepClosesItsParkedPeek() throws {
+    @MainActor func testHostSleepClosesItsParkedPeek() throws {
         let f = try makeFixture()
         let (host, peek) = hostWithLivePeek(in: f)
 
@@ -664,7 +663,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         XCTAssertEqual(events(for: peek), [.open, .close], "close is idempotent")
     }
 
-    func testHostRetargetClosesItsParkedPeek() throws {
+    @MainActor func testHostRetargetClosesItsParkedPeek() throws {
         let f = try makeFixture()
         let (host, peek) = hostWithLivePeek(in: f)
 
@@ -680,7 +679,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// origin — `retargetExtensionPages` calls `retarget` on the *peek*, not on
     /// its host — which releases the peek's web view. That parks it just as the
     /// host's own sleep does, so the contexts must hear the close there too.
-    func testExtensionRehostClosesARetargetedPeek() throws {
+    @MainActor func testExtensionRehostClosesARetargetedPeek() throws {
         let f = try makeFixture()
         let (host, peek) = hostWithLivePeek(in: f)
         // The peek's test web view never loaded anything, so `showsExtensionPage`
@@ -702,7 +701,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// The gate: a non-forced sleep spares a peek that is playing audio, and a
     /// peek that kept its web view is still a reachable page.
-    func testHostSleepKeepsAPeekThatKeptItsWebView() throws {
+    @MainActor func testHostSleepKeepsAPeekThatKeptItsWebView() throws {
         let f = try makeFixture()
         let (host, peek) = hostWithLivePeek(in: f)
         peek.isPlayingAudio = true
@@ -716,7 +715,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// A peek parked by the previous session (`peekURL` restored, no peek tab) has
     /// nothing to close and must stay that way.
-    func testHostSleepWithASessionRestoredParkedPeekReportsNothing() throws {
+    @MainActor func testHostSleepWithASessionRestoredParkedPeekReportsNothing() throws {
         let f = try makeFixture()
         let host = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(host)
@@ -739,7 +738,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// contexts hear exactly one `.pinned` change when the flag flips — nothing
     /// when it does not. Six moves, all of them below.
 
-    func testPinningATabAnnouncesThePinnedFlagAndKeepsTheRegistration() throws {
+    @MainActor func testPinningATabAnnouncesThePinnedFlagAndKeepsTheRegistration() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
@@ -755,7 +754,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
         XCTAssertTrue(tab.extensionRegisteredProfile === f.profile)
     }
 
-    func testUnpinningATabAnnouncesThePinnedFlag() throws {
+    @MainActor func testUnpinningATabAnnouncesThePinnedFlag() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
@@ -771,7 +770,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     }
 
     /// Pin's undo is `unpinTab`, so it announces through the same function.
-    func testPinUndoAnnouncesTheFlipBack() throws {
+    @MainActor func testPinUndoAnnouncesTheFlipBack() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
@@ -787,7 +786,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// Unpin's undo re-pins inline instead of calling `pinTab`, so it has to
     /// announce for itself.
-    func testUnpinUndoAnnouncesTheFlipBack() throws {
+    @MainActor func testUnpinUndoAnnouncesTheFlipBack() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
@@ -804,7 +803,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// A move that cannot happen announces nothing: `unpinTab` on a tab that is
     /// not pinned changes no flag.
-    func testRefusedUnpinAnnouncesNothing() throws {
+    @MainActor func testRefusedUnpinAnnouncesNothing() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
@@ -816,7 +815,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// Tab list <-> favourites: the flag is false on both sides, so neither
     /// direction announces anything.
-    func testTabListToFavoritesAndBackAnnounceNothing() throws {
+    @MainActor func testTabListToFavoritesAndBackAnnounceNothing() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
@@ -836,7 +835,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// Pinned entry -> favourites, as the sidebar drop does it: the store moves
     /// the entry's live tab under a favourite and announces the flip itself.
-    func testPinnedEntryToFavoritesAnnouncesThePinnedFlag() throws {
+    @MainActor func testPinnedEntryToFavoritesAnnouncesThePinnedFlag() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
@@ -857,7 +856,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// Favourites -> pinned section: the live backing tab becomes the new
     /// entry's, so the flag flips on.
-    func testFavoriteToPinnedAnnouncesThePinnedFlag() throws {
+    @MainActor func testFavoriteToPinnedAnnouncesThePinnedFlag() throws {
         let f = try makeFixture()
         let (favorite, tab) = try liveFavorite(in: f)
         XCTAssertFalse(f.store.isPinned(tab))
@@ -873,7 +872,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     }
 
     /// A pinned split moves as a block, and both members' flags flip (§12).
-    func testPinningAndUnpinningASplitAnnouncesBothMembers() throws {
+    @MainActor func testPinningAndUnpinningASplitAnnouncesBothMembers() throws {
         let f = try makeFixture()
         let left = f.store.addTab(in: f.space, url: favoriteURL)
         let right = f.store.addTab(in: f.space, url: favoriteURL)
@@ -904,7 +903,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// context is a real one so the signature is exercised as WebKit uses it;
     /// it is never loaded into a controller, because `isPinned(for:)` answers
     /// from the store and ignores which context is asking.
-    func testIsPinnedForContextFollowsTheSection() async throws {
+    @MainActor func testIsPinnedForContextFollowsTheSection() async throws {
         let (space, _) = sharedStoreSpace()
         let context = try await makeUnloadedContext()
         let tab = TabStore.shared.addTab(in: space, url: favoriteURL)
@@ -928,7 +927,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// A `WKWebExtensionContext` over a throwaway fixture, for conformance
     /// methods that take a context and don't consult it. Never loaded into a
     /// profile's controller — the fixture's bundle is removed in tearDown.
-    private func makeUnloadedContext() async throws -> WKWebExtensionContext {
+    @MainActor private func makeUnloadedContext() async throws -> WKWebExtensionContext {
         let ext = try await makeOptionsPageTestExtension(idPrefix: "lifecycle-pinned",
                                                          name: "Pinned Flag")
         tempDirs.append(ext.basePath)
@@ -940,7 +939,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// The rule: a tab is reported the moment it enters a container the window
     /// enumeration reads — `space.tabs` for a normal tab, and nothing else
     /// reports it, so the count is exactly one.
-    func testInsertingANormalTabReportsItOpenOnceAndListed() throws {
+    @MainActor func testInsertingANormalTabReportsItOpenOnceAndListed() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(tab)
@@ -952,7 +951,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// A dormant pinned tile has no tab to report; clicking it (`entry.tab = …`)
     /// is the placement.
-    func testActivatingAPinnedEntryReportsItsBackingTabOnceAndListed() throws {
+    @MainActor func testActivatingAPinnedEntryReportsItsBackingTabOnceAndListed() throws {
         let f = try makeFixture()
         let entry = PinnedEntry(pinnedURL: favoriteURL, pinnedTitle: "Calendar")
         f.space.pinnedEntries.append(entry)
@@ -969,7 +968,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// A Peek belongs to no list at all — it is enumerated behind its host, so
     /// pointing the host at it is what reports it.
-    func testAssigningAPeekReportsItOpenAndListed() throws {
+    @MainActor func testAssigningAPeekReportsItOpenAndListed() throws {
         let f = try makeFixture()
         let host = f.store.addTab(in: f.space, url: favoriteURL)
         createdTabs.append(host)
@@ -991,7 +990,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// there, so a private fixture store cannot produce a woken web view built
     /// from a profile's configuration. The space and profile are handed back in
     /// tearDown.
-    func testWakingAPlacedSleepingTabReportsTheNewWebView() throws {
+    @MainActor func testWakingAPlacedSleepingTabReportsTheNewWebView() throws {
         let (space, profile) = sharedStoreSpace()
         let tab = sleepingTab(favoriteURL, in: space)
         createdTabs.append(tab)
@@ -1012,7 +1011,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// The rule's other half: a configuration with no extension controller runs
     /// no extension code, so placing such a tab reports nothing — incognito and
     /// test web views must stay invisible to the contexts.
-    func testPlacingATabWithNoExtensionControllerReportsNothing() throws {
+    @MainActor func testPlacingATabWithNoExtensionControllerReportsNothing() throws {
         let f = try makeFixture()
         let tab = BrowserTab(configuration: WKWebViewConfiguration())
         createdTabs.append(tab)
@@ -1029,7 +1028,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
     /// notification, so nothing closes the tab. The arrival must not re-open it
     /// either: it is still registered, and its web view is the one WebKit
     /// already maps. This is the placement rule's guard, not a supported move.
-    func testMovingATabBetweenSpacesOfOneProfileReportsNothingNew() throws {
+    @MainActor func testMovingATabBetweenSpacesOfOneProfileReportsNothingNew() throws {
         let f = try makeFixture()
         let other = f.store.addSpace(name: "Other", emoji: "🧪", colorHex: "007AFF",
                                      profileID: f.profile.id)
@@ -1046,7 +1045,7 @@ final class ExtensionTabLifecycleTests: XCTestCase {
 
     /// A space and profile in `TabStore.shared`, for the one path that resolves
     /// itself through the singleton (`BrowserTab.wake()`).
-    private func sharedStoreSpace() -> (Space, Profile) {
+    @MainActor private func sharedStoreSpace() -> (Space, Profile) {
         let profile = TabStore.shared.addProfile(name: "Lifecycle Wake")
         sharedProfiles.append(profile)
         let space = TabStore.shared.addSpace(name: "Lifecycle Wake", emoji: "🧪",

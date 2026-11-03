@@ -1,42 +1,42 @@
 import XCTest
 @testable import Detour
 
-final class SidebarLayoutTests: XCTestCase {
+nonisolated final class SidebarLayoutTests: XCTestCase {
 
     // MARK: - sidebarRow
 
-    func testRow0IsTopSpacer() {
+    @MainActor func testRow0IsTopSpacer() {
         XCTAssertEqual(sidebarRow(for: 0, pinnedItemCount: 3), .topSpacer)
         XCTAssertEqual(sidebarRow(for: 0, pinnedItemCount: 0), .topSpacer)
     }
 
-    func testPinnedItemRows() {
+    @MainActor func testPinnedItemRows() {
         // With 3 pinned items: rows 1, 2, 3
         XCTAssertEqual(sidebarRow(for: 1, pinnedItemCount: 3), .pinnedItem(index: 0))
         XCTAssertEqual(sidebarRow(for: 2, pinnedItemCount: 3), .pinnedItem(index: 1))
         XCTAssertEqual(sidebarRow(for: 3, pinnedItemCount: 3), .pinnedItem(index: 2))
     }
 
-    func testSeparatorRow() {
+    @MainActor func testSeparatorRow() {
         // Separator comes right after pinned items
         XCTAssertEqual(sidebarRow(for: 4, pinnedItemCount: 3), .separator)
         XCTAssertEqual(sidebarRow(for: 1, pinnedItemCount: 0), .separator)
     }
 
-    func testNewTabRow() {
+    @MainActor func testNewTabRow() {
         // New tab comes right after separator
         XCTAssertEqual(sidebarRow(for: 5, pinnedItemCount: 3), .newTab)
         XCTAssertEqual(sidebarRow(for: 2, pinnedItemCount: 0), .newTab)
     }
 
-    func testNormalTabRows() {
+    @MainActor func testNormalTabRows() {
         // Normal tabs start after new tab row
         XCTAssertEqual(sidebarRow(for: 6, pinnedItemCount: 3), .normalTab(index: 0))
         XCTAssertEqual(sidebarRow(for: 7, pinnedItemCount: 3), .normalTab(index: 1))
         XCTAssertEqual(sidebarRow(for: 3, pinnedItemCount: 0), .normalTab(index: 0))
     }
 
-    func testZeroPinnedLayout() {
+    @MainActor func testZeroPinnedLayout() {
         // row 0: topSpacer, 1: separator, 2: newTab, 3+: normalTab
         XCTAssertEqual(sidebarRow(for: 0, pinnedItemCount: 0), .topSpacer)
         XCTAssertEqual(sidebarRow(for: 1, pinnedItemCount: 0), .separator)
@@ -47,21 +47,21 @@ final class SidebarLayoutTests: XCTestCase {
 
     // MARK: - rowForNormalTab / rowForPinnedItem
 
-    func testRowForNormalTab() {
+    @MainActor func testRowForNormalTab() {
         // 1 (topSpacer) + pinnedItemCount + 1 (separator) + 1 (newTab) + tabIndex
         XCTAssertEqual(rowForNormalTab(at: 0, pinnedItemCount: 3), 6)
         XCTAssertEqual(rowForNormalTab(at: 2, pinnedItemCount: 3), 8)
         XCTAssertEqual(rowForNormalTab(at: 0, pinnedItemCount: 0), 3)
     }
 
-    func testRowForPinnedItem() {
+    @MainActor func testRowForPinnedItem() {
         XCTAssertEqual(rowForPinnedItem(at: 0), 1)
         XCTAssertEqual(rowForPinnedItem(at: 2), 3)
     }
 
     // MARK: - totalSidebarRowCount
 
-    func testTotalSidebarRowCount() {
+    @MainActor func testTotalSidebarRowCount() {
         // 1 (topSpacer) + pinnedItemCount + 1 (separator) + 1 (newTab) + itemCount
         XCTAssertEqual(totalSidebarRowCount(pinnedItemCount: 3, itemCount: 5), 11)
         XCTAssertEqual(totalSidebarRowCount(pinnedItemCount: 0, itemCount: 2), 5)
@@ -70,7 +70,7 @@ final class SidebarLayoutTests: XCTestCase {
 
     // MARK: - Round-trip
 
-    func testRoundTripNormalTab() {
+    @MainActor func testRoundTripNormalTab() {
         for pinnedItemCount in 0...3 {
             for tabIndex in 0..<5 {
                 let row = rowForNormalTab(at: tabIndex, pinnedItemCount: pinnedItemCount)
@@ -81,7 +81,7 @@ final class SidebarLayoutTests: XCTestCase {
         }
     }
 
-    func testRoundTripPinnedItem() {
+    @MainActor func testRoundTripPinnedItem() {
         for index in 0..<3 {
             let row = rowForPinnedItem(at: index)
             let result = sidebarRow(for: row, pinnedItemCount: 3)
@@ -91,29 +91,29 @@ final class SidebarLayoutTests: XCTestCase {
 
     // MARK: - diffSidebarState
 
-    private func makeEntry(id: UUID = UUID(), title: String = "Entry", folderID: UUID? = nil, sortOrder: Int = 0) -> PinnedEntry {
+    @MainActor private func makeEntry(id: UUID = UUID(), title: String = "Entry", folderID: UUID? = nil, sortOrder: Int = 0) -> PinnedEntry {
         PinnedEntry(id: id, pinnedURL: URL(string: "https://example.com")!, pinnedTitle: title, folderID: folderID, sortOrder: sortOrder)
     }
 
-    private func makeTab(id: UUID = UUID()) -> BrowserTab {
+    @MainActor private func makeTab(id: UUID = UUID()) -> BrowserTab {
         BrowserTab(id: id, title: "Tab", url: URL(string: "https://example.com"), faviconURL: nil, cachedInteractionState: nil, spaceID: UUID())
     }
 
 
-    private func singles(_ tabs: BrowserTab...) -> [TabListItem] {
+    @MainActor private func singles(_ tabs: BrowserTab...) -> [TabListItem] {
         tabs.map { .single($0) }
     }
 
-    private func makeFolder(id: UUID = UUID(), name: String = "Folder", parentID: UUID? = nil, isCollapsed: Bool = false, sortOrder: Int = 0) -> PinnedFolder {
+    @MainActor private func makeFolder(id: UUID = UUID(), name: String = "Folder", parentID: UUID? = nil, isCollapsed: Bool = false, sortOrder: Int = 0) -> PinnedFolder {
         PinnedFolder(id: id, name: name, parentFolderID: parentID, isCollapsed: isCollapsed, sortOrder: sortOrder)
     }
 
-    private func flatItems(_ entries: [PinnedEntry] = [], folders: [PinnedFolder] = [],
+    @MainActor private func flatItems(_ entries: [PinnedEntry] = [], folders: [PinnedFolder] = [],
                            collapsed: Set<UUID> = [], selectedTabID: UUID? = nil) -> [PinnedItem] {
         flattenPinnedTree(entries: entries, folders: folders, collapsedFolderIDs: collapsed, selectedTabID: selectedTabID)
     }
 
-    func testDiffNoChanges() {
+    @MainActor func testDiffNoChanges() {
         let e1 = makeEntry(title: "A", sortOrder: 0)
         let e2 = makeEntry(title: "B", sortOrder: 1)
         let t1 = makeTab()
@@ -123,7 +123,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertFalse(diff.hasChanges)
     }
 
-    func testDiffNormalTabInserted() {
+    @MainActor func testDiffNormalTabInserted() {
         let t1 = makeTab()
         let t2 = makeTab()
         let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
@@ -133,7 +133,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(diff.insertedRows, IndexSet(integer: rowForNormalTab(at: 1, pinnedItemCount: 0)))
     }
 
-    func testDiffNormalTabRemoved() {
+    @MainActor func testDiffNormalTabRemoved() {
         let t1 = makeTab()
         let t2 = makeTab()
         let diff = diffSidebarState(oldPinnedItems: [], newPinnedItems: [],
@@ -143,7 +143,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(diff.removedRows, IndexSet(integer: rowForNormalTab(at: 1, pinnedItemCount: 0)))
     }
 
-    func testDiffExpandFolder() {
+    @MainActor func testDiffExpandFolder() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", sortOrder: 0)
         let child1 = makeEntry(title: "A", folderID: folderID, sortOrder: 1)
@@ -159,7 +159,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(diff.insertedRows.count, 2)
     }
 
-    func testDiffCollapseFolder() {
+    @MainActor func testDiffCollapseFolder() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", sortOrder: 0)
         let child1 = makeEntry(title: "A", folderID: folderID, sortOrder: 1)
@@ -175,7 +175,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertTrue(diff.insertedRows.isEmpty)
     }
 
-    func testDiffCollapseWithExposedTab() {
+    @MainActor func testDiffCollapseWithExposedTab() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", sortOrder: 0)
         let child1 = makeEntry(title: "A", folderID: folderID, sortOrder: 1)
@@ -194,7 +194,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertTrue(diff.insertedRows.isEmpty)
     }
 
-    func testDiffTabPinned() {
+    @MainActor func testDiffTabPinned() {
         let entry = makeEntry()
         let tab = makeTab()
         let pinnedItem: [PinnedItem] = [.entry(entry, depth: 0)]
@@ -206,7 +206,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(diff.insertedRows.count, 1)
     }
 
-    func testDiffTabUnpinned() {
+    @MainActor func testDiffTabUnpinned() {
         let entry = makeEntry()
         let tab = makeTab()
         let pinnedItem: [PinnedItem] = [.entry(entry, depth: 0)]
@@ -218,7 +218,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(diff.insertedRows.count, 1)
     }
 
-    func testDiffPureReorderProducesMoves() {
+    @MainActor func testDiffPureReorderProducesMoves() {
         let t1 = makeTab()
         let t2 = makeTab()
         // Same IDs, different order → move (not insert/remove)
@@ -230,7 +230,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertTrue(diff.hasChanges)
     }
 
-    func testDiffPinnedReorderProducesMoves() {
+    @MainActor func testDiffPinnedReorderProducesMoves() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", sortOrder: 1)
         let entry = makeEntry(title: "A", sortOrder: 0)
@@ -248,7 +248,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(diff.movedRows.count, 1, "Swapping 2 pinned items requires 1 move")
     }
 
-    func testDiffSwapPrefersMoveUpward() {
+    @MainActor func testDiffSwapPrefersMoveUpward() {
         let t1 = makeTab()
         let t2 = makeTab()
 
@@ -261,7 +261,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(move.to, rowForNormalTab(at: 0, pinnedItemCount: 0))
     }
 
-    func testDiffBlockMoveMinimal() {
+    @MainActor func testDiffBlockMoveMinimal() {
         let folderID = UUID()
         let entryA = makeEntry(title: "A", sortOrder: 0)
         let folderB = makeFolder(id: folderID, name: "Folder", sortOrder: 1)
@@ -283,7 +283,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(diff.movedRows[0].to, rowForPinnedItem(at: 2))
     }
 
-    func testDiffEqualBlockSwapMovesUpward() {
+    @MainActor func testDiffEqualBlockSwapMovesUpward() {
         let e1 = makeEntry(title: "A", sortOrder: 0)
         let e2 = makeEntry(title: "B", sortOrder: 1)
         let e3 = makeEntry(title: "C", sortOrder: 2)
@@ -305,7 +305,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertLessThanOrEqual(diff.movedRows[0].to, diff.movedRows[1].to)
     }
 
-    func testDiffMovesAreSortedByDestination() {
+    @MainActor func testDiffMovesAreSortedByDestination() {
         let t1 = makeTab()
         let t2 = makeTab()
         let t3 = makeTab()
@@ -321,7 +321,7 @@ final class SidebarLayoutTests: XCTestCase {
         }
     }
 
-    func testDiffSequentialMoveCorrectness() {
+    @MainActor func testDiffSequentialMoveCorrectness() {
         let t1 = makeTab()
         let t2 = makeTab()
         let t3 = makeTab()
@@ -345,7 +345,7 @@ final class SidebarLayoutTests: XCTestCase {
                        "Sequential processing of moves should produce the correct final order")
     }
 
-    func testDiffNoChangesNoMoves() {
+    @MainActor func testDiffNoChangesNoMoves() {
         let e1 = makeEntry(title: "A", sortOrder: 0)
         let e2 = makeEntry(title: "B", sortOrder: 1)
         let t1 = makeTab()
@@ -356,7 +356,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertTrue(diff.movedRows.isEmpty)
     }
 
-    func testDiffInsertDoesNotProduceSpuriousMoves() {
+    @MainActor func testDiffInsertDoesNotProduceSpuriousMoves() {
         let t1 = makeTab()
         let t2 = makeTab()
         let t3 = makeTab()
@@ -368,7 +368,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertTrue(diff.movedRows.isEmpty, "Shift from insert should not produce moves")
     }
 
-    func testDiffEmptyToPopulated() {
+    @MainActor func testDiffEmptyToPopulated() {
         let e1 = makeEntry()
         let t2 = makeTab()
         let pinnedItem: [PinnedItem] = [.entry(e1, depth: 0)]
@@ -379,7 +379,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(diff.insertedRows.count, 2) // 1 pinned + 1 normal
     }
 
-    func testDiffPopulatedToEmpty() {
+    @MainActor func testDiffPopulatedToEmpty() {
         let e1 = makeEntry()
         let t2 = makeTab()
         let pinnedItem: [PinnedItem] = [.entry(e1, depth: 0)]
@@ -390,7 +390,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertTrue(diff.insertedRows.isEmpty)
     }
 
-    func testDiffMultipleSimultaneousChanges() {
+    @MainActor func testDiffMultipleSimultaneousChanges() {
         let e1 = makeEntry()
         let t2 = makeTab()
         let e3 = makeEntry()
@@ -407,7 +407,7 @@ final class SidebarLayoutTests: XCTestCase {
 
     // MARK: - Split formation/dissolution continuations
 
-    func testDiffSplitFormationKeepsTargetRowAndRemovesDraggedRow() {
+    @MainActor func testDiffSplitFormationKeepsTargetRowAndRemovesDraggedRow() {
         let a = makeTab(), b = makeTab(), c = makeTab(), d = makeTab()
         // [A, B, C, D] — drag D onto B → [A, split(B,D), C]
         let new: [TabListItem] = [.single(a), .split(groupID: UUID(), members: [b, d]), .single(c)]
@@ -419,7 +419,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertTrue(diff.movedRows.isEmpty)
     }
 
-    func testDiffAdjacentSplitFormationKeepsStationaryRow() {
+    @MainActor func testDiffAdjacentSplitFormationKeepsStationaryRow() {
         let x = makeTab(), a = makeTab(), b = makeTab()
         // [X, A, B] — A and B merge in place → [X, split(A,B)] at A's old row
         let new: [TabListItem] = [.single(x), .split(groupID: UUID(), members: [a, b])]
@@ -431,7 +431,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertTrue(diff.movedRows.isEmpty)
     }
 
-    func testDiffSplitDissolveByMemberCloseIsNoChange() {
+    @MainActor func testDiffSplitDissolveByMemberCloseIsNoChange() {
         let x = makeTab(), a = makeTab(), b = makeTab()
         // [X, split(A,B)] — B closes, group dissolves → [X, A]: the row morphs in place
         let old: [TabListItem] = [.single(x), .split(groupID: UUID(), members: [a, b])]
@@ -440,7 +440,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertFalse(diff.hasChanges)
     }
 
-    func testDiffRemoveFromSplitInsertsOnlyDepartingMember() {
+    @MainActor func testDiffRemoveFromSplitInsertsOnlyDepartingMember() {
         let x = makeTab(), a = makeTab(), b = makeTab(), y = makeTab()
         // [X, split(A,B), Y] — drag B out to the end → [X, A, Y, B]
         let old: [TabListItem] = [.single(x), .split(groupID: UUID(), members: [a, b]), .single(y)]
@@ -451,7 +451,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertTrue(diff.movedRows.isEmpty)
     }
 
-    func testDiffPinnedSplitMemberBreakoutContinuesPinnedRow() {
+    @MainActor func testDiffPinnedSplitMemberBreakoutContinuesPinnedRow() {
         let groupID = UUID()
         let e1 = makeEntry(title: "A", sortOrder: 0)
         let e2 = makeEntry(title: "B", sortOrder: 1)
@@ -467,7 +467,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertTrue(diff.movedRows.isEmpty)
     }
 
-    func testDiffPinWholeSplitGroupStillMovesAcrossSections() {
+    @MainActor func testDiffPinWholeSplitGroupStillMovesAcrossSections() {
         let groupID = UUID()
         let a = makeTab(), b = makeTab(), x = makeTab()
         let e1 = makeEntry(id: a.id, title: "A", sortOrder: 0)
@@ -488,7 +488,7 @@ final class SidebarLayoutTests: XCTestCase {
 
     // MARK: - Folder collapse/expand preserves folder row (chevron update scenario)
 
-    func testDiffCollapseFolderKeepsFolderRow() {
+    @MainActor func testDiffCollapseFolderKeepsFolderRow() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", sortOrder: 0)
         let child = makeEntry(title: "A", folderID: folderID, sortOrder: 1)
@@ -506,7 +506,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(diff.removedRows.count, 1)
     }
 
-    func testDiffExpandFolderKeepsFolderRow() {
+    @MainActor func testDiffExpandFolderKeepsFolderRow() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", sortOrder: 0)
         let child1 = makeEntry(title: "A", folderID: folderID, sortOrder: 1)
@@ -527,7 +527,7 @@ final class SidebarLayoutTests: XCTestCase {
 
     // MARK: - Normal tab pinned into folder (drag-to-folder scenario)
 
-    func testDiffNormalTabPinnedIntoFolder() {
+    @MainActor func testDiffNormalTabPinnedIntoFolder() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", sortOrder: 0)
         let existingChild = makeEntry(title: "A", folderID: folderID, sortOrder: 1)
@@ -550,7 +550,7 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertTrue(diff.insertedRows.isEmpty)
     }
 
-    func testDiffNormalTabPinnedIntoCollapsedFolder() {
+    @MainActor func testDiffNormalTabPinnedIntoCollapsedFolder() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", sortOrder: 0)
         let existingChild = makeEntry(title: "A", folderID: folderID, sortOrder: 1)

@@ -15,12 +15,11 @@ import WebKit
 ///
 /// The pure tests evaluate the parser's output the way WebKit evaluates a rule
 /// list (`RuleListEvaluator`); the web view tests compile it for real.
-@MainActor
-final class ContentBlockerExceptionTests: XCTestCase {
+nonisolated final class ContentBlockerExceptionTests: XCTestCase {
 
     private let parser = EasyListParser()
 
-    private func rules(_ text: String) -> [[String: Any]] {
+    @MainActor private func rules(_ text: String) -> [ContentRule] {
         parser.parse(text: text).rules
     }
 
@@ -28,7 +27,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
 
     /// The task's case: a generic network block rule plus EasyList's
     /// webcompat lines for 127.0.0.1 and an `$elemhide` exception.
-    func testAGenericHideOrElemHideExceptionDoesNotCancelANetworkBlockRule() {
+    @MainActor func testAGenericHideOrElemHideExceptionDoesNotCancelANetworkBlockRule() {
         let evaluator = RuleListEvaluator(rules("""
         /jquery.popunder.js
         @@://127.0.0.1$generichide
@@ -45,7 +44,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
 
     /// No `ignore-previous-rules` that could match a load follows a block
     /// rule, unless it is a network exception or a `$document` allowlist.
-    func testNoCosmeticExceptionFollowsABlockRule() throws {
+    @MainActor func testNoCosmeticExceptionFollowsABlockRule() throws {
         let compiled = rules("""
         ||ads.example^
         @@://127.0.0.1$generichide
@@ -77,7 +76,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
     @@||example.com^$elemhide
     """
 
-    func testGenericHideTurnsOffOnlyGenericHidingOnItsPages() {
+    @MainActor func testGenericHideTurnsOffOnlyGenericHidingOnItsPages() {
         let evaluator = RuleListEvaluator(rules(cosmeticList))
 
         // The document load and a third-party subresource load of the page:
@@ -90,7 +89,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
                        [".generic-ad", ".specific-ad"], "a page without the exception keeps both")
     }
 
-    func testElemHideTurnsOffGenericAndSpecificHiding() {
+    @MainActor func testElemHideTurnsOffGenericAndSpecificHiding() {
         let evaluator = RuleListEvaluator(rules(cosmeticList))
 
         for page in ["http://example.com/", "http://www.example.com/a"] {
@@ -101,7 +100,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
 
     /// A cosmetic exception above the hiding rules it turns off gives the
     /// same output as one below them (TASK-162).
-    func testAHidingExceptionGivesTheSameRulesInEitherFileOrder() {
+    @MainActor func testAHidingExceptionGivesTheSameRulesInEitherFileOrder() {
         let lines = cosmeticList.components(separatedBy: "\n")
         let exceptionsFirst = (lines.filter { $0.hasPrefix("@@") } + lines.filter { !$0.hasPrefix("@@") })
             .joined(separator: "\n")
@@ -110,7 +109,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
     }
 
     /// Patterns that are not a plain domain are applied to the page URL.
-    func testANonDomainPatternIsMatchedAgainstThePageURL() {
+    @MainActor func testANonDomainPatternIsMatchedAgainstThePageURL() {
         let evaluator = RuleListEvaluator(rules("""
         ##.generic-ad
         /jquery.popunder.js
@@ -127,7 +126,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
     }
 
     /// `@@$generichide,domain=a|b`: no pattern, the pages are the domains.
-    func testADomainOptionWithoutAPatternNamesThePages() {
+    @MainActor func testADomainOptionWithoutAPatternNamesThePages() {
         let evaluator = RuleListEvaluator(rules("""
         ##.generic-ad
         @@$generichide,domain=a.example|b.example
@@ -141,7 +140,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
 
     /// Exceptions WebKit cannot express without also cancelling rules they do
     /// not mean are left out; they must never unblock the network.
-    func testGenericBlockAndSpecificHideExceptionsCancelNothing() {
+    @MainActor func testGenericBlockAndSpecificHideExceptionsCancelNothing() {
         let evaluator = RuleListEvaluator(rules("""
         ##.generic-ad
         site.example##.specific-ad
@@ -160,7 +159,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
     /// `$popup` maps to no resource type: kept, the exception would undo
     /// every block rule for its URLs. Block rules with these options are
     /// skipped, so there is nothing for it to undo.
-    func testAnExceptionOnlyForTypesWithoutBlockRulesIsLeftOut() {
+    @MainActor func testAnExceptionOnlyForTypesWithoutBlockRulesIsLeftOut() {
         let evaluator = RuleListEvaluator(rules("""
         /jquery.popunder.js
         ||ads.example^
@@ -177,7 +176,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
         XCTAssertTrue(evaluator.blocks("https://ads.example/beacon", on: "https://site.example/", type: "script"))
     }
 
-    func testADocumentExceptionAllowlistsThePage() {
+    @MainActor func testADocumentExceptionAllowlistsThePage() {
         let evaluator = RuleListEvaluator(rules("""
         ##.generic-ad
         allowed.example##.specific-ad
@@ -196,7 +195,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
 
     /// A network exception now follows every block rule of its list, also one
     /// written after it in the file.
-    func testANetworkExceptionAppliesToABlockRuleLaterInTheFile() {
+    @MainActor func testANetworkExceptionAppliesToABlockRuleLaterInTheFile() {
         let evaluator = RuleListEvaluator(rules("""
         @@||ads.example/ok.js
         ||ads.example^
@@ -209,7 +208,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
     /// `$important` block rules win over every exception, wherever they stand
     /// in the file (EasyPrivacy's `||googletagmanager.com/gtm.js$important,…`
     /// against its later `@@||googletagmanager.com/gtm.js$domain=…`).
-    func testAnImportantBlockRuleWinsOverExceptions() {
+    @MainActor func testAnImportantBlockRuleWinsOverExceptions() {
         let evaluator = RuleListEvaluator(rules("""
         ||tags.example/gtm.js$important,domain=site.example
         @@||tags.example/gtm.js$domain=site.example|other.example
@@ -226,7 +225,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
 
     /// `$badfilter` disables the rule it repeats and compiles to nothing;
     /// an exception with it must not unblock anything.
-    func testABadFilterRuleDisablesItsTargetAndCompilesToNothing() {
+    @MainActor func testABadFilterRuleDisablesItsTargetAndCompilesToNothing() {
         let evaluator = RuleListEvaluator(rules("""
         ||ads.example^$script
         ||ads.example^$script,badfilter
@@ -239,7 +238,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
     }
 
     /// `$elemhide` covers `$generichide`; a rule with both turns all hiding off.
-    func testElemHideWinsOverGenericHideOnTheSameRule() {
+    @MainActor func testElemHideWinsOverGenericHideOnTheSameRule() {
         let evaluator = RuleListEvaluator(rules("""
         ##.generic-ad
         site.example##.specific-ad
@@ -251,7 +250,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
 
     /// An exception that only lifts a redirect or CSP rule (none is compiled)
     /// must not undo the block rules for its URLs.
-    func testARedirectOrCSPExceptionIsLeftOut() {
+    @MainActor func testARedirectOrCSPExceptionIsLeftOut() {
         let evaluator = RuleListEvaluator(rules("""
         ||ads.example^
         @@||ads.example^$csp=script-src 'none'
@@ -265,7 +264,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
 
     /// EasyList as downloaded: a generically blocked script stays blocked on
     /// the hosts its `$generichide` lines name, and generic hiding is off there.
-    func testTheRealEasyListBlocksOnItsGenericHideHosts() throws {
+    @MainActor func testTheRealEasyListBlocksOnItsGenericHideHosts() throws {
         let file = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("\(defaultDetourDataDirectoryName)/ContentBlocker/easylist.txt")
         guard let text = try? String(contentsOf: file, encoding: .utf8) else {
@@ -288,7 +287,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
     /// The cosmetic section is compiled together at the start of the first
     /// chunk; network exceptions and `$document` allowlists follow the block
     /// rules of every chunk; a cosmetic exception never follows a block rule.
-    func testASplitListKeepsTheCosmeticSectionTogetherAndCarriesTheNetworkExceptions() {
+    @MainActor func testASplitListKeepsTheCosmeticSectionTogetherAndCarriesTheNetworkExceptions() {
         let compiled = rules("""
         ##.generic-ad
         @@://127.0.0.1$generichide
@@ -330,27 +329,27 @@ final class ContentBlockerExceptionTests: XCTestCase {
     }
 
     /// A list within the cap is compiled exactly as parsed.
-    func testAListWithinTheCapIsOneChunkAsParsed() {
+    @MainActor func testAListWithinTheCapIsOneChunkAsParsed() {
         let compiled = rules(cosmeticList + "\n/jquery.popunder.js\n")
         let chunks = ContentRuleListChunks.chunks(ofCompiledRules: compiled, maxRulesPerList: 100)
         XCTAssertEqual(chunks.count, 1)
         XCTAssertEqual(NSArray(array: chunks[0].rules), NSArray(array: compiled))
     }
 
-    func testWhichRulesArePageWideExceptions() {
+    @MainActor func testWhichRulesArePageWideExceptions() {
         XCTAssertTrue(ContentRuleListChunks.isPageWideException(
-            ["trigger": ["url-filter": ".*", "if-domain": ["*a.example"]], "action": ["type": "ignore-previous-rules"]]))
+            ["trigger": ["url-filter": ".*", "if-domain": ["*a.example"]] as ContentRule, "action": ["type": "ignore-previous-rules"]]))
         XCTAssertTrue(ContentRuleListChunks.isPageWideException(
-            ["trigger": ["url-filter": ".*", "if-top-url": ["://127"]], "action": ["type": "ignore-previous-rules"]]))
+            ["trigger": ["url-filter": ".*", "if-top-url": ["://127"]] as ContentRule, "action": ["type": "ignore-previous-rules"]]))
         XCTAssertFalse(ContentRuleListChunks.isPageWideException(
             ["trigger": ["url-filter": "ads\\.example"], "action": ["type": "ignore-previous-rules"]]))
         XCTAssertFalse(ContentRuleListChunks.isPageWideException(
-            ["trigger": ["url-filter": ".*", "if-domain": ["*a.example"]], "action": ["type": "block"]]))
+            ["trigger": ["url-filter": ".*", "if-domain": ["*a.example"]] as ContentRule, "action": ["type": "block"]]))
     }
 
     // MARK: - Compiled lists from an older parser are recompiled
 
-    func testACompiledListIsReusedOnlyWhenItsFormatIsCurrent() {
+    @MainActor func testACompiledListIsReusedOnlyWhenItsFormatIsCurrent() {
         XCTAssertGreaterThanOrEqual(EasyListParser.rulesFormatVersion, 2, "TASK-199 changed the compiled output")
         XCTAssertGreaterThanOrEqual(EasyListParser.rulesFormatVersion, 3,
                                     "TASK-201 changed mixed domain lists and internationalised domains")
@@ -365,7 +364,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
     private var directory: URL!
     private var defaultsSuiteName: String!
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ContentBlockerExceptionTests-\(UUID().uuidString)", isDirectory: true)
@@ -373,7 +372,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
         defaultsSuiteName = "ContentBlockerExceptionTests.\(UUID().uuidString)"
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         UserDefaults().removePersistentDomain(forName: defaultsSuiteName)
         try? FileManager.default.removeItem(at: directory)
         try await super.tearDown()
@@ -389,15 +388,15 @@ final class ContentBlockerExceptionTests: XCTestCase {
     @@||allowed.example^$document
     """
 
-    private func compiledLists(_ text: String) async throws -> [WKContentRuleList] {
+    @MainActor private func compiledLists(_ text: String) async throws -> [WKContentRuleList] {
         try await compiledStore(text).lists
     }
 
-    private func compiledStore(_ text: String) async throws -> (store: ContentRuleStore, lists: [WKContentRuleList]) {
+    @MainActor private func compiledStore(_ text: String) async throws -> (store: ContentRuleStore, lists: [WKContentRuleList]) {
         try await compiledStore(rules: rules(text))
     }
 
-    private func compiledStore(rules: [[String: Any]]) async throws -> (store: ContentRuleStore, lists: [WKContentRuleList]) {
+    @MainActor private func compiledStore(rules: [ContentRule]) async throws -> (store: ContentRuleStore, lists: [WKContentRuleList]) {
         let storage = ContentBlockerStorage(
             ruleListStore: WKContentRuleListStore(url: directory),
             filterListCacheDirectory: directory,
@@ -410,7 +409,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
         return (store, lists)
     }
 
-    private struct PageResult {
+    @MainActor private struct PageResult {
         let blocked: [URL]
         let genericDisplay: String
         let specificDisplay: String
@@ -419,7 +418,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
     /// Loads a page on `pageURL` with a generic and a specific ad element, the
     /// generically blocked script on the page's own host, and an image from
     /// another host (a load the cosmetic exception must cover as well).
-    private func load(_ pageURL: URL, lists: [WKContentRuleList], expectHidden: Bool) async throws -> PageResult {
+    @MainActor private func load(_ pageURL: URL, lists: [WKContentRuleList], expectHidden: Bool) async throws -> PageResult {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         lists.forEach(configuration.userContentController.add)
@@ -448,7 +447,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
                           specificDisplay: try await display(".specific-ad"))
     }
 
-    func testOn127001TheScriptIsBlockedAndOnlyGenericHidingIsOff() async throws {
+    @MainActor func testOn127001TheScriptIsBlockedAndOnlyGenericHidingIsOff() async throws {
         let lists = try await compiledLists(webViewList)
         // Not a port WebKit refuses outright (9 is one): nothing listens, the
         // loads fail after the content blocker has seen them.
@@ -462,7 +461,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
         XCTAssertEqual(result.specificDisplay, "none", "the domain's own hiding rule still applies")
     }
 
-    func testOnAnotherHostBothHidingRulesApplyAndTheScriptIsBlocked() async throws {
+    @MainActor func testOnAnotherHostBothHidingRulesApplyAndTheScriptIsBlocked() async throws {
         let lists = try await compiledLists(webViewList + "\nother.example##.specific-ad\n")
         let page = URL(string: "http://other.example/")!
 
@@ -474,7 +473,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
         XCTAssertEqual(result.specificDisplay, "none")
     }
 
-    func testElemHideTurnsAllHidingOffButKeepsTheScriptBlocked() async throws {
+    @MainActor func testElemHideTurnsAllHidingOffButKeepsTheScriptBlocked() async throws {
         let lists = try await compiledLists(webViewList)
         let page = URL(string: "http://site.example/")!
 
@@ -486,7 +485,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
         XCTAssertNotEqual(result.specificDisplay, "none")
     }
 
-    func testADocumentExceptionAllowlistsThePageInAWebView() async throws {
+    @MainActor func testADocumentExceptionAllowlistsThePageInAWebView() async throws {
         let lists = try await compiledLists(webViewList + "\nallowed.example##.specific-ad\n")
         let page = URL(string: "http://allowed.example/")!
 
@@ -503,11 +502,11 @@ final class ContentBlockerExceptionTests: XCTestCase {
     /// in its list: compiled in file order, an exception followed by the
     /// block rule it exempts leaves the URL blocked. This is what a list kept
     /// in file order (before TASK-199) did.
-    func testWebKitDoesNotApplyAnExceptionToALaterBlockRuleOfItsList() async throws {
-        let exception: [String: Any] = [
+    @MainActor func testWebKitDoesNotApplyAnExceptionToALaterBlockRuleOfItsList() async throws {
+        let exception: ContentRule = [
             "trigger": ["url-filter": "^[^:]+://+([^:/]+\\.)?exempt\\.example/jquery\\.popunder\\.js"],
             "action": ["type": "ignore-previous-rules"]]
-        let block: [String: Any] = ["trigger": ["url-filter": "jquery\\.popunder\\.js"], "action": ["type": "block"]]
+        let block: ContentRule = ["trigger": ["url-filter": "jquery\\.popunder\\.js"], "action": ["type": "block"]]
         let page = URL(string: "http://exempt.example/")!
         let script = page.appendingPathComponent("jquery.popunder.js")
 
@@ -522,7 +521,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
 
     /// EasyPrivacy and EasyList put exceptions ahead of later block rules;
     /// the parser's output still exempts the URL.
-    func testAnExceptionAboveItsBlockRuleInTheFileExemptsTheURLInAWebView() async throws {
+    @MainActor func testAnExceptionAboveItsBlockRuleInTheFileExemptsTheURLInAWebView() async throws {
         let lists = try await compiledLists("""
         @@||exempt.example/jquery.popunder.js
         /jquery.popunder.js
@@ -541,7 +540,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
 
     /// The cosmetic exceptions above the hiding rules they turn off, and
     /// above the block rule they must not reach.
-    func testHidingExceptionsAboveTheirHidingRulesInTheFileApplyInAWebView() async throws {
+    @MainActor func testHidingExceptionsAboveTheirHidingRulesInTheFileApplyInAWebView() async throws {
         let lists = try await compiledLists("""
         @@://127.0.0.1$generichide
         @@||site.example^$elemhide
@@ -578,7 +577,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
     /jquery.popunder.js$domain=a.example|~sub.a.example|~b.example
     """
 
-    func testAMixedDomainListAppliesOnTheIncludedDomainInAWebView() async throws {
+    @MainActor func testAMixedDomainListAppliesOnTheIncludedDomainInAWebView() async throws {
         let (store, lists) = try await compiledStore(mixedDomainList)
         XCTAssertEqual(store.compiledRuleCount(forList: "easylist"), 3, "no rule stripped as bad")
 
@@ -590,7 +589,7 @@ final class ContentBlockerExceptionTests: XCTestCase {
         }
     }
 
-    func testAMixedDomainListDoesNotApplyOnTheExcludedSubdomainInAWebView() async throws {
+    @MainActor func testAMixedDomainListDoesNotApplyOnTheExcludedSubdomainInAWebView() async throws {
         let lists = try await compiledLists(mixedDomainList)
 
         for page in [URL(string: "http://sub.a.example/")!, URL(string: "http://x.sub.a.example/")!] {
@@ -604,20 +603,20 @@ final class ContentBlockerExceptionTests: XCTestCase {
 
     /// `/jquery.popunder.js` on the page's own scheme, host and port: a
     /// script EasyList blocks with a generic rule.
-    private func popunderScript(onPageOf page: String) -> String {
+    @MainActor private func popunderScript(onPageOf page: String) -> String {
         var components = URLComponents(string: page)!
         components.path = "/jquery.popunder.js"
         components.query = nil
         return components.string!
     }
 
-    private func actionType(_ rule: [String: Any]) -> String? {
+    @MainActor private func actionType(_ rule: ContentRule) -> String? {
         (rule["action"] as? [String: Any])?["type"] as? String
     }
 
     /// A page-wide exception of the parser's cosmetic section (they come
     /// before the list's first block rule).
-    private func isCosmeticException(_ rule: [String: Any], in list: [[String: Any]]) -> Bool {
+    @MainActor private func isCosmeticException(_ rule: ContentRule, in list: [ContentRule]) -> Bool {
         guard ContentRuleListChunks.isPageWideException(rule) else { return false }
         let firstBlock = list.firstIndex { actionType($0) == "block" } ?? list.endIndex
         return list[..<firstBlock].contains { NSDictionary(dictionary: $0).isEqual(to: rule) }
@@ -647,7 +646,7 @@ struct RuleListEvaluator {
 
     private let rules: [Rule]
 
-    init(_ json: [[String: Any]]) {
+    init(_ json: [ContentRule]) {
         func regex(_ pattern: String, caseSensitive: Bool) -> NSRegularExpression? {
             try? NSRegularExpression(pattern: pattern, options: caseSensitive ? [] : [.caseInsensitive])
         }

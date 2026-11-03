@@ -14,12 +14,11 @@ import WebKit
 /// own timer has no gesture. Cmd+click cannot be made this way (a script's
 /// event carries no modifiers to the navigation action) and is checked at
 /// runtime only. Typed URLs use `.test` hosts, which never resolve.
-@MainActor
-final class InPageLinkRoutingTests: XCTestCase {
+nonisolated final class InPageLinkRoutingTests: XCTestCase {
 
     private var appDelegate: AppDelegate!
-    private var store: TabStore { .shared }
-    private var routes: LinkRouteStore { TabStore.shared.linkRoutes }
+    @MainActor private var store: TabStore { .shared }
+    @MainActor private var routes: LinkRouteStore { TabStore.shared.linkRoutes }
 
     private var windowsBefore: Set<ObjectIdentifier> = []
     private var quickDetoursBefore: Set<ObjectIdentifier> = []
@@ -28,15 +27,15 @@ final class InPageLinkRoutingTests: XCTestCase {
     private var previousDefault: LinkRouteTarget = .mostRecentSpace
     private var previousLastActiveSpaceID: UUID?
     private var previousExtensionLastActiveSpaceID: UUID?
-    private var defaultFaviconFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
     private var servers: [LoopbackHTTPServer] = []
 
     private var personal: Space!
     private var work: Space!
     private var localhostRouteID: UUID?
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         appDelegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         windowsBefore = Set(browserWindows().map(ObjectIdentifier.init))
         quickDetoursBefore = Set(QuickDetourWindowController.openControllers.map(ObjectIdentifier.init))
@@ -57,7 +56,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         route(.domainIs, "work.test", to: .space(work.id))
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for controller in newQuickDetours() {
             controller.closeDisposition = .discard
             controller.close()
@@ -82,10 +81,10 @@ final class InPageLinkRoutingTests: XCTestCase {
         ExtensionManager.shared.lastActiveSpaceID = previousExtensionLastActiveSpaceID
         FaviconLoader.shared.fetch = defaultFaviconFetch
         FaviconLoader.shared.resetForTesting()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private static func isFixtureURL(_ url: URL?) -> Bool {
+    @MainActor private static func isFixtureURL(_ url: URL?) -> Bool {
         guard let host = url?.host else { return false }
         return host.hasSuffix(".test") || host == "localhost" || host == "127.0.0.1"
     }
@@ -115,7 +114,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         <html><head><title>Popup</title></head><body><script>window.hadOpener = !!window.opener;</script></body></html>
         """
 
-    private func makeServer() async throws -> String {
+    @MainActor private func makeServer() async throws -> String {
         var routes = ["/links": Self.linksPage, "/links?auto": Self.linksPage, "/popup": Self.popupPage]
         for path in ["/target", "/target?cross", "/target?blank", "/target?secret", "/target?scriptnav",
                      "/target?open", "/target?redirected", "/target?quarantined"] {
@@ -128,30 +127,30 @@ final class InPageLinkRoutingTests: XCTestCase {
         return "http://127.0.0.1:\(port)"
     }
 
-    private func addSpace(_ name: String, _ profileID: UUID) -> Space {
+    @MainActor private func addSpace(_ name: String, _ profileID: UUID) -> Space {
         let space = store.addSpace(name: name, emoji: "🛬", colorHex: "007AFF", profileID: profileID)
         createdSpaceIDs.append(space.id)
         return space
     }
 
     @discardableResult
-    private func route(_ kind: LinkRouteMatchKind, _ pattern: String, to target: LinkRouteTarget) -> UUID? {
+    @MainActor private func route(_ kind: LinkRouteMatchKind, _ pattern: String, to target: LinkRouteTarget) -> UUID? {
         let added = routes.add(LinkRoute(match: LinkRouteMatch(kind: kind, pattern: pattern), target: target))
         if let added { addedRouteIDs.append(added.id) }
         return added?.id
     }
 
-    private func browserWindows() -> [BrowserWindowController] {
+    @MainActor private func browserWindows() -> [BrowserWindowController] {
         NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }.filter { $0.window?.isVisible == true }
     }
 
-    private func newPrivateWindows() -> [BrowserWindowController] {
+    @MainActor private func newPrivateWindows() -> [BrowserWindowController] {
         browserWindows().filter { !windowsBefore.contains(ObjectIdentifier($0)) && $0.isIncognito }
     }
 
     /// A window on `space`, in front of the others.
     @discardableResult
-    private func makeWindow(showing space: Space) -> BrowserWindowController {
+    @MainActor private func makeWindow(showing space: Space) -> BrowserWindowController {
         let wc = BrowserWindowController(incognito: false)
         wc.sidebarSplitView.autosaveName = nil
         wc.setActiveSpace(id: space.id, selectTab: false)
@@ -160,18 +159,18 @@ final class InPageLinkRoutingTests: XCTestCase {
         return wc
     }
 
-    private func newQuickDetours() -> [QuickDetourWindowController] {
+    @MainActor private func newQuickDetours() -> [QuickDetourWindowController] {
         QuickDetourWindowController.openControllers.filter { !quickDetoursBefore.contains(ObjectIdentifier($0)) }
     }
 
     /// A route sending links that contain "quarantined" to Quarantine, tried
     /// before the others.
-    private func routeQuarantinedLinksFirst() throws {
+    @MainActor private func routeQuarantinedLinksFirst() throws {
         let id = try XCTUnwrap(route(.contains, "quarantined", to: .quarantine))
         routes.moveRoute(id: id, to: 0)
     }
 
-    private func makePrivateWindow() -> BrowserWindowController {
+    @MainActor private func makePrivateWindow() -> BrowserWindowController {
         let wc = BrowserWindowController(incognito: true)
         wc.sidebarSplitView.autosaveName = nil
         wc.showWindow(nil)
@@ -180,7 +179,7 @@ final class InPageLinkRoutingTests: XCTestCase {
     }
 
     /// A selected tab in `wc` showing `url`, loaded.
-    private func openPage(_ url: String, in wc: BrowserWindowController) async throws -> BrowserTab {
+    @MainActor private func openPage(_ url: String, in wc: BrowserWindowController) async throws -> BrowserTab {
         let space = try XCTUnwrap(wc.activeSpace)
         let tab = store.addTab(in: space, url: URL(string: url)!)
         wc.selectTab(id: tab.id)
@@ -189,20 +188,20 @@ final class InPageLinkRoutingTests: XCTestCase {
     }
 
     @discardableResult
-    private func run(_ script: String, in webView: WKWebView?) async throws -> Any? {
+    @MainActor private func run(_ script: String, in webView: WKWebView?) async throws -> Any? {
         try await XCTUnwrap(webView).evaluateJavaScript(script + "; true")
     }
 
-    private func tabs(in space: Space, query: String) -> [BrowserTab] {
+    @MainActor private func tabs(in space: Space, query: String) -> [BrowserTab] {
         space.tabs.filter { $0.url?.host == "localhost" && $0.url?.query == query }
     }
 
     /// Time for a navigation that should not route to have done anything else.
-    private func settle() async throws { try await Task.sleep(nanoseconds: 700_000_000) }
+    @MainActor private func settle() async throws { try await Task.sleep(nanoseconds: 700_000_000) }
 
     // MARK: - Clicks that route
 
-    func testACrossHostClickOpensInTheRoutedSpaceAndTheTabStays() async throws {
+    @MainActor func testACrossHostClickOpensInTheRoutedSpaceAndTheTabStays() async throws {
         let base = try await makeServer()
         let workWindow = makeWindow(showing: work)
         let wc = makeWindow(showing: personal)
@@ -220,7 +219,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertTrue(NSApp.browserWindowControllersFrontToBack.first === workWindow, "that window comes forward")
     }
 
-    func testWithNoWindowOnTheRoutedSpaceTheClickingWindowSwitchesToIt() async throws {
+    @MainActor func testWithNoWindowOnTheRoutedSpaceTheClickingWindowSwitchesToIt() async throws {
         let base = try await makeServer()
         let wc = makeWindow(showing: personal)
         let tab = try await openPage(base + "/links", in: wc)
@@ -234,7 +233,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertTrue(personal.tabs.contains { $0 === tab })
     }
 
-    func testABlankTargetLinkOpensInTheRoutedSpaceInsteadOfANewTabHere() async throws {
+    @MainActor func testABlankTargetLinkOpensInTheRoutedSpaceInsteadOfANewTabHere() async throws {
         let base = try await makeServer()
         makeWindow(showing: work)
         let wc = makeWindow(showing: personal)
@@ -248,7 +247,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertEqual(tab.webView?.url?.path, "/links")
     }
 
-    func testATabStyleWindowOpenOpensInTheRoutedSpace() async throws {
+    @MainActor func testATabStyleWindowOpenOpensInTheRoutedSpace() async throws {
         let base = try await makeServer()
         makeWindow(showing: work)
         let wc = makeWindow(showing: personal)
@@ -262,7 +261,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertEqual(personal.tabs.count, 1)
     }
 
-    func testAPrivateRouteFromANormalWindowOpensAPrivateWindow() async throws {
+    @MainActor func testAPrivateRouteFromANormalWindowOpensAPrivateWindow() async throws {
         let base = try await makeServer()
         let wc = makeWindow(showing: personal)
         let tab = try await openPage(base + "/links", in: wc)
@@ -277,7 +276,7 @@ final class InPageLinkRoutingTests: XCTestCase {
 
     // MARK: - Quarantine (TASK-194)
 
-    func testAClickMatchingAQuarantineRouteOpensAQuarantineWindowAndTheTabStays() async throws {
+    @MainActor func testAClickMatchingAQuarantineRouteOpensAQuarantineWindowAndTheTabStays() async throws {
         let base = try await makeServer()
         try routeQuarantinedLinksFirst()
         makeWindow(showing: work)
@@ -298,7 +297,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertTrue(tabs(in: work, query: "quarantined").isEmpty, "the route below it is not reached")
     }
 
-    func testAClickInAPrivateWindowIsNeverQuarantined() async throws {
+    @MainActor func testAClickInAPrivateWindowIsNeverQuarantined() async throws {
         // A quarantine's Open in reaches normal spaces: nothing leaves a
         // Private window, so the link navigates there as before.
         let base = try await makeServer()
@@ -312,7 +311,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertTrue(newQuickDetours().isEmpty)
     }
 
-    func testATypedURLMatchingAQuarantineRouteIsNeverQuarantined() throws {
+    @MainActor func testATypedURLMatchingAQuarantineRouteIsNeverQuarantined() throws {
         try routeQuarantinedLinksFirst()
         let wc = makeWindow(showing: personal)
 
@@ -324,7 +323,7 @@ final class InPageLinkRoutingTests: XCTestCase {
 
     // MARK: - Links that do not route
 
-    func testASameHostClickNavigatesInPlace() async throws {
+    @MainActor func testASameHostClickNavigatesInPlace() async throws {
         let base = try await makeServer()
         route(.domainIs, "127.0.0.1", to: .space(work.id))
         let wc = makeWindow(showing: personal)
@@ -336,7 +335,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertEqual(wc.activeSpaceID, personal.id)
     }
 
-    func testAServerRedirectToARoutedHostIsNotRouted() async throws {
+    @MainActor func testAServerRedirectToARoutedHostIsNotRouted() async throws {
         let base = try await makeServer()
         let wc = makeWindow(showing: personal)
         let tab = try await openPage(base + "/links", in: wc)
@@ -348,7 +347,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertTrue(work.tabs.isEmpty)
     }
 
-    func testAScriptNavigationToARoutedHostIsNotRouted() async throws {
+    @MainActor func testAScriptNavigationToARoutedHostIsNotRouted() async throws {
         let base = try await makeServer()
         let wc = makeWindow(showing: personal)
         let tab = try await openPage(base + "/links", in: wc)
@@ -360,7 +359,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertTrue(work.tabs.isEmpty)
     }
 
-    func testAPagesOwnClickWithoutAUserGestureIsNotRouted() async throws {
+    @MainActor func testAPagesOwnClickWithoutAUserGestureIsNotRouted() async throws {
         let base = try await makeServer()
         let wc = makeWindow(showing: personal)
         let space = try XCTUnwrap(wc.activeSpace)
@@ -373,7 +372,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertTrue(work.tabs.isEmpty)
     }
 
-    func testAPopupKeepsItsOpenerAndIsNotRouted() async throws {
+    @MainActor func testAPopupKeepsItsOpenerAndIsNotRouted() async throws {
         let base = try await makeServer()
         let wc = makeWindow(showing: personal)
         let tab = try await openPage(base + "/links", in: wc)
@@ -389,7 +388,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertTrue(work.tabs.isEmpty)
     }
 
-    func testAClickInsideAPeekIsNotRouted() async throws {
+    @MainActor func testAClickInsideAPeekIsNotRouted() async throws {
         let base = try await makeServer()
         let wc = makeWindow(showing: personal)
         _ = try await openPage(base + "/links", in: wc)
@@ -403,7 +402,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertNotNil(wc.peekOverlayView, "the Peek stays up")
     }
 
-    func testFromAPrivateWindowARouteToANormalSpaceIsIgnored() async throws {
+    @MainActor func testFromAPrivateWindowARouteToANormalSpaceIsIgnored() async throws {
         let base = try await makeServer()
         let wc = makePrivateWindow()
         let tab = try await openPage(base + "/links", in: wc)
@@ -416,7 +415,7 @@ final class InPageLinkRoutingTests: XCTestCase {
 
     // MARK: - The anchor intercept
 
-    func testOnAPinnedTabARouteElsewhereWinsOverThePeek() async throws {
+    @MainActor func testOnAPinnedTabARouteElsewhereWinsOverThePeek() async throws {
         let base = try await makeServer()
         makeWindow(showing: work)
         let wc = makeWindow(showing: personal)
@@ -432,7 +431,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertEqual(tab.webView?.url?.path, "/links")
     }
 
-    func testOnAPinnedTabWithNoRouteTheCrossHostClickStillPeeks() async throws {
+    @MainActor func testOnAPinnedTabWithNoRouteTheCrossHostClickStillPeeks() async throws {
         let base = try await makeServer()
         if let id = localhostRouteID { routes.removeRoute(id: id) }
         let wc = makeWindow(showing: personal)
@@ -447,12 +446,12 @@ final class InPageLinkRoutingTests: XCTestCase {
 
     // MARK: - Typed URLs
 
-    private func submit(_ input: String, in wc: BrowserWindowController, inPlace: Bool) {
+    @MainActor private func submit(_ input: String, in wc: BrowserWindowController, inPlace: Bool) {
         wc.commandPaletteNavigatesInPlace = inPlace
         wc.commandPalette(CommandPaletteView(), didSubmitInput: input)
     }
 
-    func testATypedURLInTheNewTabPaletteOpensInTheRoutedSpace() async throws {
+    @MainActor func testATypedURLInTheNewTabPaletteOpensInTheRoutedSpace() async throws {
         let workWindow = makeWindow(showing: work)
         let wc = makeWindow(showing: personal)
 
@@ -465,7 +464,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertEqual(wc.activeSpaceID, personal.id)
     }
 
-    func testATypedURLNavigatingInPlaceIsNeverRouted() async throws {
+    @MainActor func testATypedURLNavigatingInPlaceIsNeverRouted() async throws {
         let base = try await makeServer()
         let wc = makeWindow(showing: personal)
         let tab = try await openPage(base + "/links", in: wc)
@@ -476,7 +475,7 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertTrue(work.tabs.isEmpty)
     }
 
-    func testASearchIsNeverRouted() throws {
+    @MainActor func testASearchIsNeverRouted() throws {
         let wc = makeWindow(showing: personal)
         let engine = personal.profile?.searchEngine ?? .google
         let searchHost = try XCTUnwrap(engine.searchURL(for: "anything")?.host)
@@ -488,28 +487,28 @@ final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertTrue(work.tabs.isEmpty)
     }
 
-    func testATypedURLWithNoRouteOpensHereAsBefore() throws {
+    @MainActor func testATypedURLWithNoRouteOpensHereAsBefore() throws {
         let wc = makeWindow(showing: personal)
         submit("https://unrouted.test/", in: wc, inPlace: false)
         XCTAssertEqual(personal.tabs.first?.url?.host, "unrouted.test")
         XCTAssertEqual(wc.selectedTabID, personal.tabs.first?.id)
     }
 
-    func testATypedURLRoutedToTheCurrentSpaceOpensHere() throws {
+    @MainActor func testATypedURLRoutedToTheCurrentSpaceOpensHere() throws {
         let wc = makeWindow(showing: work)
         submit("https://app.work.test/", in: wc, inPlace: false)
         XCTAssertEqual(work.tabs.count, 1)
         XCTAssertEqual(wc.selectedTabID, work.tabs.first?.id)
     }
 
-    func testATypedURLInAPrivateWindowIgnoresRoutesToNormalSpaces() throws {
+    @MainActor func testATypedURLInAPrivateWindowIgnoresRoutesToNormalSpaces() throws {
         let wc = makePrivateWindow()
         submit("https://app.work.test/", in: wc, inPlace: false)
         XCTAssertEqual(wc.activeSpace?.tabs.first?.url?.host, "app.work.test", "opens in the Private window")
         XCTAssertTrue(work.tabs.isEmpty)
     }
 
-    func testATypedURLRoutedToPrivateOpensAPrivateWindow() throws {
+    @MainActor func testATypedURLRoutedToPrivateOpensAPrivateWindow() throws {
         let wc = makeWindow(showing: personal)
         submit("https://secret.test/x", in: wc, inPlace: false)
         XCTAssertTrue(newPrivateWindows().contains { $0.activeSpace?.tabs.contains { $0.url?.host == "secret.test" } == true })

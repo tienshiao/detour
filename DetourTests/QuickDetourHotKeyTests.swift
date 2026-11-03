@@ -6,10 +6,9 @@ import Carbon.HIToolbox
 /// TASK-193.2: the hotkey wired up — settings to registration and to the
 /// File menu item's key equivalent, the Settings message, the hotkey's
 /// toggle, and that the test host never registers anything system-wide.
-@MainActor
-final class QuickDetourHotKeyTests: XCTestCase {
+nonisolated final class QuickDetourHotKeyTests: XCTestCase {
 
-    private final class FakeRegistrar: HotKeyRegistrar {
+    @MainActor private final class FakeRegistrar: HotKeyRegistrar {
         var onPress: (() -> Void)?
         var refused: Set<HotKeyShortcut> = []
         private(set) var held: [Int: HotKeyShortcut] = [:]
@@ -23,9 +22,9 @@ final class QuickDetourHotKeyTests: XCTestCase {
         func unregister(_ token: Int) { held[token] = nil }
     }
 
-    private let hyperF12 = HotKeyShortcut(keyCode: UInt16(kVK_F12), modifiers: [.control, .option, .command], character: "")
+    @MainActor private var hyperF12: HotKeyShortcut { HotKeyShortcut(keyCode: UInt16(kVK_F12), modifiers: [.control, .option, .command], character: "") }
 
-    private func makeHotKey(enabledByDefault: Bool = true) -> (QuickDetourHotKey, FakeRegistrar, NSMenuItem) {
+    @MainActor private func makeHotKey(enabledByDefault: Bool = true) -> (QuickDetourHotKey, FakeRegistrar, NSMenuItem) {
         let suite = "QuickDetourHotKeyTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
@@ -38,14 +37,14 @@ final class QuickDetourHotKeyTests: XCTestCase {
         return (hotKey, registrar, item)
     }
 
-    func testTheTestHostNeverRegistersTheHotKey() {
+    @MainActor func testTheTestHostNeverRegistersTheHotKey() {
         XCTAssertFalse(QuickDetourHotKey.shared.isStarted)
         XCTAssertEqual(QuickDetourHotKey.shared.state, .off)
         XCTAssertFalse(QuickDetourHotKey.shared.settings.isEnabled,
                        "an isolated data directory (the test host's) starts with it off")
     }
 
-    func testStartingRegistersTheSettingAndFollowsIt() {
+    @MainActor func testStartingRegistersTheSettingAndFollowsIt() {
         let (hotKey, registrar, _) = makeHotKey()
         hotKey.start {}
         XCTAssertEqual(hotKey.state, .registered(.quickDetourDefault))
@@ -61,7 +60,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
     }
 
     /// The press callback reaches the registrar, whichever registrar it is.
-    func testStartingHandsThePressCallbackToTheRegistrar() {
+    @MainActor func testStartingHandsThePressCallbackToTheRegistrar() {
         let (hotKey, registrar, _) = makeHotKey()
         var presses = 0
         hotKey.start { presses += 1 }
@@ -69,7 +68,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
         XCTAssertEqual(presses, 1)
     }
 
-    func testTheMenuItemMirrorsTheShortcutEvenWhenOff() {
+    @MainActor func testTheMenuItemMirrorsTheShortcutEvenWhenOff() {
         let (hotKey, _, item) = makeHotKey(enabledByDefault: false)
         XCTAssertEqual(item.keyEquivalent, "n", "set as soon as the item is attached")
         XCTAssertEqual(item.keyEquivalentModifierMask, [.command, .option])
@@ -84,7 +83,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
         XCTAssertEqual(item.keyEquivalent, "", "cleared: no key equivalent")
     }
 
-    func testRecordingSuspendsTheRegistration() {
+    @MainActor func testRecordingSuspendsTheRegistration() {
         let (hotKey, registrar, _) = makeHotKey()
         hotKey.start {}
         hotKey.setRecording(true)
@@ -95,7 +94,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
         XCTAssertEqual(hotKey.state, .registered(hyperF12))
     }
 
-    func testARefusalIsReportedAndRetried() {
+    @MainActor func testARefusalIsReportedAndRetried() {
         let (hotKey, registrar, _) = makeHotKey()
         registrar.refused = [.quickDetourDefault]
         hotKey.start {}
@@ -109,7 +108,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
         XCTAssertNil(QuickDetourHotKey.message(for: hotKey.state))
     }
 
-    func testBecomingActiveRetriesARefusedShortcut() {
+    @MainActor func testBecomingActiveRetriesARefusedShortcut() {
         let (hotKey, registrar, _) = makeHotKey()
         registrar.refused = [.quickDetourDefault]
         hotKey.start {}
@@ -118,7 +117,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
         XCTAssertEqual(hotKey.state, .registered(.quickDetourDefault))
     }
 
-    func testOtherErrorsAreReportedWithTheirStatus() {
+    @MainActor func testOtherErrorsAreReportedWithTheirStatus() {
         let state = HotKeyRegistrationState.failed(hyperF12, HotKeyRegistrationError(status: OSStatus(eventHotKeyInvalidErr)))
         XCTAssertEqual(QuickDetourHotKey.message(for: state),
                        "⌃⌥⌘F12 could not be set up as a shortcut for every app (error -9879).")
@@ -127,7 +126,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
     }
 
     /// The hotkey toggles the launcher, as Spotlight's does.
-    func testTheHotKeyTogglesTheLauncher() throws {
+    @MainActor func testTheHotKeyTogglesTheLauncher() throws {
         let appDelegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         let launcher = QuickDetourLauncher.shared
         addTeardownBlock { launcher.close() }
@@ -139,7 +138,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
     }
 
     /// Choosing the menu item (not a key press) while the panel is up keeps it up.
-    func testTheMenuItemShowsTheLauncherWithoutToggling() throws {
+    @MainActor func testTheMenuItemShowsTheLauncherWithoutToggling() throws {
         let appDelegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         let launcher = QuickDetourLauncher.shared
         addTeardownBlock { launcher.close() }
@@ -150,7 +149,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
     }
 
     /// The real File menu item is the hotkey's menu item.
-    func testTheFileMenuItemIsAttached() throws {
+    @MainActor func testTheFileMenuItemIsAttached() throws {
         let appDelegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         let item = try XCTUnwrap(appDelegate.quickDetourMenuItem)
         XCTAssertTrue(QuickDetourHotKey.shared.menuItem === item)
@@ -161,14 +160,14 @@ final class QuickDetourHotKeyTests: XCTestCase {
 
     // MARK: - The recorder
 
-    private func keyEvent(_ keyCode: Int, _ modifiers: NSEvent.ModifierFlags, _ characters: String,
+    @MainActor private func keyEvent(_ keyCode: Int, _ modifiers: NSEvent.ModifierFlags, _ characters: String,
                           window: NSWindow) -> NSEvent {
         NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
                          windowNumber: window.windowNumber, context: nil, characters: characters,
                          charactersIgnoringModifiers: characters, isARepeat: false, keyCode: UInt16(keyCode))!
     }
 
-    private func makeRecorder() -> (ShortcutRecorderView, NSWindow) {
+    @MainActor private func makeRecorder() -> (ShortcutRecorderView, NSWindow) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 100),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -178,7 +177,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
         return (recorder, window)
     }
 
-    func testTheRecorderRecordsCancelsClearsAndRefuses() {
+    @MainActor func testTheRecorderRecordsCancelsClearsAndRefuses() {
         let (recorder, window) = makeRecorder()
         var changes: [HotKeyShortcut?] = []
         var recording: [Bool] = []
@@ -214,7 +213,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
         XCTAssertEqual(recording, [true, false, true, false, true, false])
     }
 
-    func testTheRecorderStopsWhenItsWindowResignsKey() {
+    @MainActor func testTheRecorderStopsWhenItsWindowResignsKey() {
         let (recorder, window) = makeRecorder()
         recorder.beginRecording()
         XCTAssertTrue(recorder.isRecording)
@@ -222,7 +221,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
         XCTAssertFalse(recorder.isRecording, "the hotkey must not stay suspended while the user is elsewhere")
     }
 
-    func testTheRecorderSavesBeforeItStopsRecording() {
+    @MainActor func testTheRecorderSavesBeforeItStopsRecording() {
         let (recorder, window) = makeRecorder()
         var order: [String] = []
         recorder.onChange = { _ in order.append("change") }
@@ -235,7 +234,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
 
     // MARK: - Where it may register (review follow-up)
 
-    func testTheTestHostNeverRegistersEvenWhenAsked() {
+    @MainActor func testTheTestHostNeverRegistersEvenWhenAsked() {
         XCTAssertEqual(QuickDetourHotKeyAvailability.decide(isDebugBuild: true, isTestHost: true,
                                                             environment: ["DETOUR_GLOBAL_HOTKEY": "1"]), .testHost)
         XCTAssertEqual(QuickDetourHotKeyAvailability.decide(isDebugBuild: false, isTestHost: true, environment: [:]),
@@ -243,7 +242,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
         XCTAssertEqual(QuickDetourHotKeyAvailability.current, .testHost)
     }
 
-    func testADebugBuildRegistersOnlyWhenAsked() {
+    @MainActor func testADebugBuildRegistersOnlyWhenAsked() {
         XCTAssertEqual(QuickDetourHotKeyAvailability.decide(isDebugBuild: true, isTestHost: false, environment: [:]),
                        .debugBuild, "launched from Xcode: no DETOUR_DATA_DIR, so the default data directory")
         XCTAssertEqual(QuickDetourHotKeyAvailability.decide(isDebugBuild: true, isTestHost: false,
@@ -258,7 +257,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
                                                             environment: ["DETOUR_GLOBAL_HOTKEY": "1"]), .available)
     }
 
-    func testAReleaseBuildRegisters() {
+    @MainActor func testAReleaseBuildRegisters() {
         XCTAssertEqual(QuickDetourHotKeyAvailability.decide(isDebugBuild: false, isTestHost: false, environment: [:]),
                        .available)
         XCTAssertEqual(QuickDetourHotKeyAvailability.decide(isDebugBuild: false, isTestHost: false,
@@ -266,7 +265,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
                        "the variable only opts a Debug build in")
     }
 
-    func testSettingsSaysWhyItIsInactive() {
+    @MainActor func testSettingsSaysWhyItIsInactive() {
         XCTAssertNil(QuickDetourHotKeyAvailability.available.settingsMessage)
         XCTAssertEqual(QuickDetourHotKeyAvailability.debugBuild.settingsMessage,
                        "Debug builds don't register the global shortcut (DETOUR_GLOBAL_HOTKEY=1 turns it on).")
@@ -276,7 +275,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
     /// Found at runtime: in a Debug build without the opt-in the menu item
     /// kept ⌥⌘N after the shortcut changed, because only `start` followed the
     /// settings.
-    func testTheMenuItemFollowsTheSettingWhereNothingRegisters() {
+    @MainActor func testTheMenuItemFollowsTheSettingWhereNothingRegisters() {
         let suite = "QuickDetourHotKeyTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
@@ -295,13 +294,13 @@ final class QuickDetourHotKeyTests: XCTestCase {
         XCTAssertTrue(registrar.held.isEmpty, "a Debug build without the opt-in registers nothing")
     }
 
-    func testTheSharedHotKeyIsNotAvailableInTheTestHost() {
+    @MainActor func testTheSharedHotKeyIsNotAvailableInTheTestHost() {
         XCTAssertEqual(QuickDetourHotKey.shared.availability, .testHost)
     }
 
     // MARK: - The recorder: a click elsewhere (review follow-up)
 
-    func testAMouseDownOutsideTheRecorderEndsRecording() {
+    @MainActor func testAMouseDownOutsideTheRecorderEndsRecording() {
         let bounds = NSRect(x: 0, y: 0, width: 132, height: 22)
         XCTAssertFalse(ShortcutRecorderView.mouseDownEndsRecording(inRecorderWindow: true,
                                                                    pointInRecorder: NSPoint(x: 60, y: 10),
@@ -320,7 +319,7 @@ final class QuickDetourHotKeyTests: XCTestCase {
 
     /// Through the event loop: a mouse-down elsewhere in the window, taken
     /// from the queue and sent as AppKit does, ends recording.
-    func testAClickElsewhereInTheWindowEndsRecordingThroughTheMonitor() throws {
+    @MainActor func testAClickElsewhereInTheWindowEndsRecordingThroughTheMonitor() throws {
         let (recorder, window) = makeRecorder()
         recorder.frame = NSRect(x: 10, y: 10, width: 132, height: 22)
         window.makeKeyAndOrderFront(nil)

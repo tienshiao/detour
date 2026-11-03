@@ -1,3 +1,4 @@
+import Synchronization
 import XCTest
 import AppKit
 @testable import Detour
@@ -6,42 +7,42 @@ import AppKit
 /// idle auto-close — the settings, the Opt-Cmd click, a sidebar tab's copy,
 /// the profile a link from another app opens on, the idle rule and its
 /// intervals, the archive label.
-final class QuickDetourEntryPointsTests: XCTestCase {
+nonisolated final class QuickDetourEntryPointsTests: XCTestCase {
 
     private var suiteName: String!
     private var defaults: UserDefaults!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         suiteName = "QuickDetourEntryPointsTests-\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suiteName)
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         defaults.removePersistentDomain(forName: suiteName)
         defaults = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Settings
 
-    func testTheSettingsDefaultToOptionCommandOnAndSixHours() {
+    @MainActor func testTheSettingsDefaultToOptionCommandOnAndSixHours() {
         let settings = QuickDetourSettings(defaults: defaults)
         XCTAssertTrue(settings.isOptionCommandClickEnabled)
         XCTAssertEqual(settings.idleTimeout, .sixHours)
         XCTAssertEqual(QuickDetourIdleTimeout.default, .sixHours)
     }
 
-    func testTheSettingsPersistAndNotify() {
+    @MainActor func testTheSettingsPersistAndNotify() {
         let settings = QuickDetourSettings(defaults: defaults)
-        var notified = 0
+        let notified = Mutex<Int>(0)
         let observer = NotificationCenter.default.addObserver(
-            forName: QuickDetourSettings.didChangeNotification, object: settings, queue: nil) { _ in notified += 1 }
+            forName: QuickDetourSettings.didChangeNotification, object: settings, queue: nil) { _ in notified.withLock { $0 += 1 } }
         defer { NotificationCenter.default.removeObserver(observer) }
 
         settings.isOptionCommandClickEnabled = false
         settings.idleTimeout = .never
-        XCTAssertEqual(notified, 2)
+        XCTAssertEqual(notified.withLock { $0 }, 2)
 
         let reread = QuickDetourSettings(defaults: defaults)
         XCTAssertFalse(reread.isOptionCommandClickEnabled)
@@ -50,14 +51,14 @@ final class QuickDetourEntryPointsTests: XCTestCase {
         XCTAssertEqual(QuickDetourSettings(defaults: defaults).idleTimeout, .oneDay)
     }
 
-    func testAnUnreadableTimeoutIsTheDefault() {
+    @MainActor func testAnUnreadableTimeoutIsTheDefault() {
         defaults.set("fortnight", forKey: QuickDetourSettings.idleTimeoutKey)
         XCTAssertEqual(QuickDetourSettings(defaults: defaults).idleTimeout, .sixHours)
         defaults.set(42, forKey: QuickDetourSettings.idleTimeoutKey)
         XCTAssertEqual(QuickDetourSettings(defaults: defaults).idleTimeout, .sixHours)
     }
 
-    func testTheTimeoutsTheirIntervalsAndTitles() {
+    @MainActor func testTheTimeoutsTheirIntervalsAndTitles() {
         XCTAssertEqual(QuickDetourIdleTimeout.allCases, [.never, .oneHour, .sixHours, .twelveHours, .oneDay],
                        "the pop-up's order")
         XCTAssertNil(QuickDetourIdleTimeout.never.interval)
@@ -70,7 +71,7 @@ final class QuickDetourEntryPointsTests: XCTestCase {
 
     // MARK: - Opt-Cmd-click
 
-    func testTheQuickDetourClickIsCommandAndOption() {
+    @MainActor func testTheQuickDetourClickIsCommandAndOption() {
         XCTAssertTrue(QuickDetour.isQuickDetourClick([.command, .option], enabled: true))
         XCTAssertTrue(QuickDetour.isQuickDetourClick([.command, .option, .shift], enabled: true))
         XCTAssertTrue(QuickDetour.isQuickDetourClick([.command, .option, .capsLock], enabled: true))
@@ -80,14 +81,14 @@ final class QuickDetourEntryPointsTests: XCTestCase {
         XCTAssertFalse(QuickDetour.isQuickDetourClick([.command, .option], enabled: false), "the setting off")
     }
 
-    func testASplitRowsPaneIsTheHalfClicked() {
+    @MainActor func testASplitRowsPaneIsTheHalfClicked() {
         XCTAssertEqual(QuickDetour.splitRowPane(forX: 10, rowWidth: 200), .left)
         XCTAssertEqual(QuickDetour.splitRowPane(forX: 99, rowWidth: 200), .left)
         XCTAssertEqual(QuickDetour.splitRowPane(forX: 100, rowWidth: 200), .right)
         XCTAssertEqual(QuickDetour.splitRowPane(forX: 190, rowWidth: 200), .right)
     }
 
-    func testASidebarTabsCopyIsItsPageElseItsSavedAddress() {
+    @MainActor func testASidebarTabsCopyIsItsPageElseItsSavedAddress() {
         let page = URL(string: "https://example.com/now")!
         let saved = URL(string: "https://example.com/")!
         XCTAssertEqual(QuickDetour.sidebarCopyURL(liveURL: page, storedURL: saved), page,
@@ -98,13 +99,13 @@ final class QuickDetourEntryPointsTests: XCTestCase {
 
     // MARK: - Links from other apps
 
-    func testARoutedLinkOpensOnTheFrontmostWindowsProfile() {
+    @MainActor func testARoutedLinkOpensOnTheFrontmostWindowsProfile() {
         let first = Profile(name: "Default")
         let work = Profile(name: "Work")
         XCTAssertTrue(QuickDetour.profileForRoutedLink(windowProfiles: [work, first], profiles: [first, work]) === work)
     }
 
-    func testARoutedLinkNeverOpensInPrivate() {
+    @MainActor func testARoutedLinkNeverOpensInPrivate() {
         let privateProfile = Profile(id: TabStore.incognitoProfileID, name: "Private", isIncognito: true)
         let first = Profile(name: "Default")
         let work = Profile(name: "Work")
@@ -115,7 +116,7 @@ final class QuickDetourEntryPointsTests: XCTestCase {
                                                        profiles: [privateProfile, first, work]) === first)
     }
 
-    func testARoutedLinkWithNoWindowUsesTheFirstNormalProfile() {
+    @MainActor func testARoutedLinkWithNoWindowUsesTheFirstNormalProfile() {
         let privateProfile = Profile(id: TabStore.incognitoProfileID, name: "Private", isIncognito: true)
         let first = Profile(name: "Default")
         let gone = Profile(name: "Gone")
@@ -129,7 +130,7 @@ final class QuickDetourEntryPointsTests: XCTestCase {
 
     private let start = Date(timeIntervalSince1970: 1_900_000_000)
 
-    private func idle(_ unusedFor: TimeInterval, frontmost: Bool = false, audible: Bool = false,
+    @MainActor private func idle(_ unusedFor: TimeInterval, frontmost: Bool = false, audible: Bool = false,
                       isPrivate: Bool = false, sheet: Bool = false, interval: TimeInterval? = 3600) -> Bool {
         QuickDetour.shouldAutoClose(
             QuickDetourIdleState(lastUsedAt: start, isFrontmost: frontmost, isAudible: audible,
@@ -137,44 +138,44 @@ final class QuickDetourEntryPointsTests: XCTestCase {
             now: start.addingTimeInterval(unusedFor), interval: interval)
     }
 
-    func testItClosesOnceUnusedForTheInterval() {
+    @MainActor func testItClosesOnceUnusedForTheInterval() {
         XCTAssertFalse(idle(0))
         XCTAssertFalse(idle(3599))
         XCTAssertTrue(idle(3600))
         XCTAssertTrue(idle(10 * 3600))
     }
 
-    func testNeverMeansNever() {
+    @MainActor func testNeverMeansNever() {
         XCTAssertFalse(idle(365 * 24 * 3600, interval: nil))
     }
 
-    func testTheFrontmostWindowNeverCloses() {
+    @MainActor func testTheFrontmostWindowNeverCloses() {
         XCTAssertFalse(idle(10 * 3600, frontmost: true))
     }
 
-    func testPlayingSoundCountsAsUse() {
+    @MainActor func testPlayingSoundCountsAsUse() {
         XCTAssertFalse(idle(10 * 3600, audible: true))
     }
 
-    func testAPrivateQuickDetourNeverAutoCloses() {
+    @MainActor func testAPrivateQuickDetourNeverAutoCloses() {
         // Nothing would be archived, so the timer would simply lose it.
         XCTAssertFalse(idle(10 * 3600, isPrivate: true))
     }
 
-    func testNotWhileASheetIsUp() {
+    @MainActor func testNotWhileASheetIsUp() {
         XCTAssertFalse(idle(10 * 3600, sheet: true))
     }
 
-    func testTimeAsleepCountsAsUnused() {
+    @MainActor func testTimeAsleepCountsAsUnused() {
         // A wall-clock rule: the Mac slept 8 hours since the last use.
         XCTAssertTrue(idle(8 * 3600, interval: 6 * 3600))
     }
 
-    func testAClockSetBackDoesNotClose() {
+    @MainActor func testAClockSetBackDoesNotClose() {
         XCTAssertFalse(idle(-5 * 3600))
     }
 
-    func testTheTestOverrideReplacesEveryIntervalButNever() {
+    @MainActor func testTheTestOverrideReplacesEveryIntervalButNever() {
         XCTAssertEqual(QuickDetour.idleInterval(for: .sixHours, overrideSeconds: nil), 6 * 3600)
         XCTAssertNil(QuickDetour.idleInterval(for: .never, overrideSeconds: nil))
         XCTAssertEqual(QuickDetour.idleInterval(for: .sixHours, overrideSeconds: 5), 5)
@@ -182,7 +183,7 @@ final class QuickDetourEntryPointsTests: XCTestCase {
         XCTAssertNil(QuickDetour.idleInterval(for: .never, overrideSeconds: 5), "Never stays never")
     }
 
-    func testTheCheckRunsEveryMinuteOrFasterWithAnOverride() {
+    @MainActor func testTheCheckRunsEveryMinuteOrFasterWithAnOverride() {
         XCTAssertEqual(QuickDetour.idleCheckInterval(overrideSeconds: nil), 60)
         XCTAssertEqual(QuickDetour.idleCheckInterval(overrideSeconds: 8), 2)
         XCTAssertEqual(QuickDetour.idleCheckInterval(overrideSeconds: 2), 1, "at least a second")
@@ -191,7 +192,7 @@ final class QuickDetourEntryPointsTests: XCTestCase {
 
     // MARK: - The archive
 
-    func testTheArchiveLabel() {
+    @MainActor func testTheArchiveLabel() {
         XCTAssertEqual(QuickDetour.archiveLabel(autoClosed: false), "Quick Detour")
         XCTAssertEqual(QuickDetour.archiveLabel(autoClosed: true), "Quick Detour · auto-closed")
     }

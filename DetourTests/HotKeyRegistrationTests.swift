@@ -5,10 +5,10 @@ import Carbon.HIToolbox
 
 /// TASK-193.2: the global hotkey's register/unregister state machine, against
 /// a fake registrar, and its two settings in a defaults suite of their own.
-final class HotKeyRegistrationTests: XCTestCase {
+nonisolated final class HotKeyRegistrationTests: XCTestCase {
 
     /// Records every call; refuses the shortcuts in `refused`.
-    private final class FakeRegistrar: HotKeyRegistrar {
+    @MainActor private final class FakeRegistrar: HotKeyRegistrar {
         enum Call: Equatable {
             case register(HotKeyShortcut)
             case unregister(Int)
@@ -38,27 +38,27 @@ final class HotKeyRegistrationTests: XCTestCase {
     private var registration: HotKeyRegistration!
     private var states: [HotKeyRegistrationState] = []
 
-    private let optionCommandN = HotKeyShortcut.quickDetourDefault
-    private let hyperF12 = HotKeyShortcut(keyCode: UInt16(kVK_F12), modifiers: [.control, .option, .command], character: "")
+    @MainActor private var optionCommandN: HotKeyShortcut { .quickDetourDefault }
+    @MainActor private var hyperF12: HotKeyShortcut { HotKeyShortcut(keyCode: UInt16(kVK_F12), modifiers: [.control, .option, .command], character: "") }
     private let conflict = HotKeyRegistrationError(status: OSStatus(eventHotKeyExistsErr))
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         registrar = FakeRegistrar()
         registration = HotKeyRegistration(registrar: registrar)
         registration.onStateChange = { [unowned self] in self.states.append($0) }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         registration = nil
         registrar = nil
         states.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - On, off
 
-    func testItStartsOffAndOffRegistersNothing() {
+    @MainActor func testItStartsOffAndOffRegistersNothing() {
         XCTAssertEqual(registration.state, .off)
         registration.apply(enabled: false, shortcut: optionCommandN)
         XCTAssertEqual(registration.state, .off)
@@ -66,21 +66,21 @@ final class HotKeyRegistrationTests: XCTestCase {
         XCTAssertEqual(states, [], "no change, no callback")
     }
 
-    func testTurningItOnRegistersTheShortcut() {
+    @MainActor func testTurningItOnRegistersTheShortcut() {
         registration.apply(enabled: true, shortcut: optionCommandN)
         XCTAssertEqual(registration.state, .registered(optionCommandN))
         XCTAssertEqual(registrar.calls, [.register(optionCommandN)])
         XCTAssertEqual(states, [.registered(optionCommandN)])
     }
 
-    func testApplyingTheSameSettingAgainDoesNothing() {
+    @MainActor func testApplyingTheSameSettingAgainDoesNothing() {
         registration.apply(enabled: true, shortcut: optionCommandN)
         registration.apply(enabled: true, shortcut: optionCommandN)
         XCTAssertEqual(registrar.calls, [.register(optionCommandN)])
         XCTAssertEqual(states.count, 1)
     }
 
-    func testTurningItOffUnregisters() {
+    @MainActor func testTurningItOffUnregisters() {
         registration.apply(enabled: true, shortcut: optionCommandN)
         registration.apply(enabled: false, shortcut: optionCommandN)
         XCTAssertEqual(registration.state, .off)
@@ -91,7 +91,7 @@ final class HotKeyRegistrationTests: XCTestCase {
 
     // MARK: - Changing the shortcut
 
-    func testChangingTheShortcutUnregistersTheOldOneFirst() {
+    @MainActor func testChangingTheShortcutUnregistersTheOldOneFirst() {
         registration.apply(enabled: true, shortcut: optionCommandN)
         registration.apply(enabled: true, shortcut: hyperF12)
         XCTAssertEqual(registration.state, .registered(hyperF12))
@@ -101,14 +101,14 @@ final class HotKeyRegistrationTests: XCTestCase {
         XCTAssertEqual(Array(registrar.held.values), [hyperF12], "one registration at a time")
     }
 
-    func testClearingTheShortcutUnregisters() {
+    @MainActor func testClearingTheShortcutUnregisters() {
         registration.apply(enabled: true, shortcut: optionCommandN)
         registration.apply(enabled: true, shortcut: nil)
         XCTAssertEqual(registration.state, .noShortcut)
         XCTAssertEqual(registrar.calls, [.register(optionCommandN), .unregister(1)])
     }
 
-    func testOnWithNoShortcutRegistersNothing() {
+    @MainActor func testOnWithNoShortcutRegistersNothing() {
         registration.apply(enabled: true, shortcut: nil)
         XCTAssertEqual(registration.state, .noShortcut)
         XCTAssertEqual(registrar.calls, [])
@@ -116,7 +116,7 @@ final class HotKeyRegistrationTests: XCTestCase {
 
     // MARK: - Failure
 
-    func testARefusedShortcutKeepsTheChoiceAndHoldsNothing() {
+    @MainActor func testARefusedShortcutKeepsTheChoiceAndHoldsNothing() {
         registrar.refused[hyperF12] = OSStatus(eventHotKeyExistsErr)
         registration.apply(enabled: true, shortcut: hyperF12)
         XCTAssertEqual(registration.state, .failed(hyperF12, conflict))
@@ -127,7 +127,7 @@ final class HotKeyRegistrationTests: XCTestCase {
         XCTAssertEqual(registrar.calls, [.register(hyperF12)], "nothing held, nothing to unregister")
     }
 
-    func testChangingAwayFromARefusedShortcutLetsGoOfTheOldRegistration() {
+    @MainActor func testChangingAwayFromARefusedShortcutLetsGoOfTheOldRegistration() {
         registration.apply(enabled: true, shortcut: optionCommandN)
         registrar.refused[hyperF12] = OSStatus(eventHotKeyExistsErr)
         registration.apply(enabled: true, shortcut: hyperF12)
@@ -138,7 +138,7 @@ final class HotKeyRegistrationTests: XCTestCase {
         XCTAssertEqual(registration.state, .registered(optionCommandN))
     }
 
-    func testRetryRegistersOnceTheOtherAppLetsGo() {
+    @MainActor func testRetryRegistersOnceTheOtherAppLetsGo() {
         registrar.refused[hyperF12] = OSStatus(eventHotKeyExistsErr)
         registration.apply(enabled: true, shortcut: hyperF12)
         registration.retryIfFailed()
@@ -150,7 +150,7 @@ final class HotKeyRegistrationTests: XCTestCase {
         XCTAssertEqual(registrar.calls, [.register(hyperF12), .register(hyperF12), .register(hyperF12)])
     }
 
-    func testApplyingARefusedSettingAgainRetries() {
+    @MainActor func testApplyingARefusedSettingAgainRetries() {
         registrar.refused[hyperF12] = OSStatus(eventHotKeyExistsErr)
         registration.apply(enabled: true, shortcut: hyperF12)
         registrar.refused[hyperF12] = nil
@@ -158,7 +158,7 @@ final class HotKeyRegistrationTests: XCTestCase {
         XCTAssertEqual(registration.state, .registered(hyperF12))
     }
 
-    func testRetryDoesNothingUnlessRefused() {
+    @MainActor func testRetryDoesNothingUnlessRefused() {
         registration.retryIfFailed()
         registration.apply(enabled: true, shortcut: optionCommandN)
         registration.retryIfFailed()
@@ -166,7 +166,7 @@ final class HotKeyRegistrationTests: XCTestCase {
         XCTAssertEqual(registration.state, .registered(optionCommandN))
     }
 
-    func testOnlyExistsErrIsAConflict() {
+    @MainActor func testOnlyExistsErrIsAConflict() {
         XCTAssertTrue(HotKeyRegistrationError(status: OSStatus(eventHotKeyExistsErr)).isConflict)
         XCTAssertFalse(HotKeyRegistrationError(status: OSStatus(eventHotKeyInvalidErr)).isConflict)
         XCTAssertFalse(HotKeyRegistrationError(status: OSStatus(paramErr)).isConflict)
@@ -174,7 +174,7 @@ final class HotKeyRegistrationTests: XCTestCase {
 
     // MARK: - Suspended while recording
 
-    func testSuspendingLetsGoAndResumingRegistersTheLatestSetting() {
+    @MainActor func testSuspendingLetsGoAndResumingRegistersTheLatestSetting() {
         registration.apply(enabled: true, shortcut: optionCommandN)
         registration.setSuspended(true)
         XCTAssertEqual(registration.state, .suspended)
@@ -189,7 +189,7 @@ final class HotKeyRegistrationTests: XCTestCase {
         XCTAssertEqual(registrar.calls.last, .register(hyperF12))
     }
 
-    func testResumingWhenOffStaysOff() {
+    @MainActor func testResumingWhenOffStaysOff() {
         registration.setSuspended(true)
         registration.apply(enabled: false, shortcut: optionCommandN)
         registration.setSuspended(false)
@@ -197,7 +197,7 @@ final class HotKeyRegistrationTests: XCTestCase {
         XCTAssertEqual(registrar.calls, [])
     }
 
-    func testRetryWaitsWhileSuspended() {
+    @MainActor func testRetryWaitsWhileSuspended() {
         registrar.refused[hyperF12] = OSStatus(eventHotKeyExistsErr)
         registration.apply(enabled: true, shortcut: hyperF12)
         registration.setSuspended(true)
@@ -210,14 +210,14 @@ final class HotKeyRegistrationTests: XCTestCase {
 
     // MARK: - Settings
 
-    private func makeDefaults() -> (UserDefaults, String) {
+    @MainActor private func makeDefaults() -> (UserDefaults, String) {
         let suite = "HotKeyRegistrationTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         return (defaults, suite)
     }
 
-    func testSettingsDefaults() {
+    @MainActor func testSettingsDefaults() {
         let (defaults, _) = makeDefaults()
         let on = QuickDetourHotKeySettings(defaults: defaults, enabledByDefault: true)
         XCTAssertTrue(on.isEnabled)
@@ -227,7 +227,7 @@ final class HotKeyRegistrationTests: XCTestCase {
         XCTAssertEqual(off.shortcut, .quickDetourDefault)
     }
 
-    func testSettingsPersistAndNotify() {
+    @MainActor func testSettingsPersistAndNotify() {
         let (defaults, _) = makeDefaults()
         let settings = QuickDetourHotKeySettings(defaults: defaults, enabledByDefault: true)
         let notified = expectation(forNotification: QuickDetourHotKeySettings.didChangeNotification, object: settings)
@@ -241,7 +241,7 @@ final class HotKeyRegistrationTests: XCTestCase {
         XCTAssertEqual(reloaded.shortcut, hyperF12)
     }
 
-    func testAClearedShortcutStaysCleared() {
+    @MainActor func testAClearedShortcutStaysCleared() {
         let (defaults, _) = makeDefaults()
         let settings = QuickDetourHotKeySettings(defaults: defaults, enabledByDefault: true)
         settings.shortcut = nil
@@ -250,7 +250,7 @@ final class HotKeyRegistrationTests: XCTestCase {
                      "cleared is not the same as never set")
     }
 
-    func testAMalformedStoredShortcutFallsBackToTheDefault() {
+    @MainActor func testAMalformedStoredShortcutFallsBackToTheDefault() {
         let (defaults, _) = makeDefaults()
         defaults.set("garbage", forKey: QuickDetourHotKeySettings.shortcutKey)
         XCTAssertEqual(QuickDetourHotKeySettings(defaults: defaults, enabledByDefault: true).shortcut,

@@ -12,13 +12,12 @@ import WebKit
 ///
 /// Private `TabStore`s on in-memory databases; pages that must really load
 /// come from a loopback server.
-@MainActor
-final class QuickDetourOpenInTests: XCTestCase {
+nonisolated final class QuickDetourOpenInTests: XCTestCase {
 
     private var openedTabs: [(store: TabStore, tab: BrowserTab)] = []
     private var servers: [LoopbackHTTPServer] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for (store, tab) in openedTabs {
             store.closeQuickDetourTab(tab)
             for space in store.spaces where space.tabs.contains(where: { $0 === tab }) {
@@ -29,7 +28,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         openedTabs.removeAll()
         for server in servers { server.stop() }
         servers.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Snapshot fixtures for the pure rules
@@ -39,14 +38,14 @@ final class QuickDetourOpenInTests: XCTestCase {
     private let privateProfile = QuickDetourProfileSnapshot(id: TabStore.incognitoProfileID, name: "Private",
                                                             isPrivate: true, isDeleted: false)
 
-    private func space(_ name: String, _ emoji: String, _ profile: QuickDetourProfileSnapshot,
+    @MainActor private func space(_ name: String, _ emoji: String, _ profile: QuickDetourProfileSnapshot,
                        isPrivate: Bool = false) -> QuickDetourSpaceSnapshot {
         QuickDetourSpaceSnapshot(id: UUID(), name: name, emoji: emoji, profileID: profile.id, isPrivate: isPrivate)
     }
 
     // MARK: - A profile's most recently used space
 
-    func testTheMostRecentlyUsedSpaceIsTheFirstOfTheProfileInUseOrder() {
+    @MainActor func testTheMostRecentlyUsedSpaceIsTheFirstOfTheProfileInUseOrder() {
         let inbox = space("Inbox", "📥", work)
         let build = space("Build", "🔨", work)
         let fun = space("Fun", "🎉", home)
@@ -59,7 +58,7 @@ final class QuickDetourOpenInTests: XCTestCase {
                                                          useOrder: [fun.id, build.id]), fun.id)
     }
 
-    func testTheMostRecentlyUsedSpaceSkipsDeletedAndPrivateSpaces() {
+    @MainActor func testTheMostRecentlyUsedSpaceSkipsDeletedAndPrivateSpaces() {
         let inbox = space("Inbox", "📥", work)
         let build = space("Build", "🔨", work)
         let gone = UUID()
@@ -69,7 +68,7 @@ final class QuickDetourOpenInTests: XCTestCase {
                                                          useOrder: [gone, privateSpace.id, build.id]), build.id)
     }
 
-    func testWithNothingUsedTheProfilesFirstSpaceInSidebarOrder() {
+    @MainActor func testWithNothingUsedTheProfilesFirstSpaceInSidebarOrder() {
         let inbox = space("Inbox", "📥", work)
         let build = space("Build", "🔨", work)
         let fun = space("Fun", "🎉", home)
@@ -84,7 +83,7 @@ final class QuickDetourOpenInTests: XCTestCase {
 
     // MARK: - The default target (decision 1)
 
-    func testTheDefaultIsTheSourceSpaceWhenItIsTheSameProfiles() {
+    @MainActor func testTheDefaultIsTheSourceSpaceWhenItIsTheSameProfiles() {
         let inbox = space("Inbox", "📥", work)
         let build = space("Build", "🔨", work)
 
@@ -93,7 +92,7 @@ final class QuickDetourOpenInTests: XCTestCase {
                        "the space in front when it was opened, even if another was used since")
     }
 
-    func testAnotherProfilesSourceSpaceFallsBackToTheProfilesMostRecent() {
+    @MainActor func testAnotherProfilesSourceSpaceFallsBackToTheProfilesMostRecent() {
         let inbox = space("Inbox", "📥", work)
         let build = space("Build", "🔨", work)
         let fun = space("Fun", "🎉", home)
@@ -103,7 +102,7 @@ final class QuickDetourOpenInTests: XCTestCase {
                        build.id)
     }
 
-    func testADeletedSourceSpaceFallsBackToTheProfilesMostRecent() {
+    @MainActor func testADeletedSourceSpaceFallsBackToTheProfilesMostRecent() {
         let inbox = space("Inbox", "📥", work)
         let build = space("Build", "🔨", work)
 
@@ -114,7 +113,7 @@ final class QuickDetourOpenInTests: XCTestCase {
                        "no source and nothing used: the profile's first space")
     }
 
-    func testAPrivateSourceSpaceIsNeverTheDefault() {
+    @MainActor func testAPrivateSourceSpaceIsNeverTheDefault() {
         let inbox = space("Inbox", "📥", work)
         let privateSpace = space("Private", "🕶", work, isPrivate: true)
 
@@ -122,7 +121,7 @@ final class QuickDetourOpenInTests: XCTestCase {
                                                       spaces: [privateSpace, inbox], useOrder: []), inbox.id)
     }
 
-    func testAProfileWithNoSpaceHasNoDefaultOfItsOwn() {
+    @MainActor func testAProfileWithNoSpaceHasNoDefaultOfItsOwn() {
         let fun = space("Fun", "🎉", home)
         XCTAssertNil(QuickDetour.openInDefaultSpace(profileID: work.id, sourceSpaceID: fun.id, spaces: [fun],
                                                     useOrder: [fun.id]))
@@ -130,7 +129,7 @@ final class QuickDetourOpenInTests: XCTestCase {
 
     // MARK: - The menu (decision 2)
 
-    func testTheMenuGroupsSpacesByProfileTheWindowsFirst() throws {
+    @MainActor func testTheMenuGroupsSpacesByProfileTheWindowsFirst() throws {
         let fun = space("Fun", "🎉", home)
         let inbox = space("Inbox", "📥", work)
         let reading = space("Reading", "📚", home)
@@ -151,7 +150,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertTrue(menu.hasDropdown)
     }
 
-    func testOnlyAnotherProfilesSpacesReload() {
+    @MainActor func testOnlyAnotherProfilesSpacesReload() {
         let inbox = space("Inbox", "📥", work)
         let fun = space("Fun", "🎉", home)
 
@@ -161,7 +160,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertEqual(menu.sections.flatMap(\.items).map(\.reloads), [false, true])
     }
 
-    func testTheDefaultItemIsMarkedAndNamesTheButton() {
+    @MainActor func testTheDefaultItemIsMarkedAndNamesTheButton() {
         let inbox = space("Inbox", "📥", work)
         let build = space("Build", "🔨", work)
         let fun = space("Fun", "🎉", home)
@@ -176,7 +175,7 @@ final class QuickDetourOpenInTests: XCTestCase {
                        "exactly one item is the button's")
     }
 
-    func testOneProfileNeedsNoHeader() {
+    @MainActor func testOneProfileNeedsNoHeader() {
         let inbox = space("Inbox", "📥", work)
         let build = space("Build", "🔨", work)
 
@@ -187,7 +186,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertFalse(menu.showsSectionHeaders)
     }
 
-    func testPrivateAndDeletedProfilesSpacesAreNeverListed() {
+    @MainActor func testPrivateAndDeletedProfilesSpacesAreNeverListed() {
         let inbox = space("Inbox", "📥", work)
         let privateSpace = space("Private", "🕶", privateProfile, isPrivate: true)
         let deleted = QuickDetourProfileSnapshot(id: UUID(), name: "Gone", isPrivate: false, isDeleted: true)
@@ -202,7 +201,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertEqual(menu.sections.flatMap(\.items).map(\.spaceID), [inbox.id])
     }
 
-    func testAProfileWithNoSpaceDefaultsToTheMostRecentSpaceAndReloads() {
+    @MainActor func testAProfileWithNoSpaceDefaultsToTheMostRecentSpaceAndReloads() {
         let fun = space("Fun", "🎉", home)
         let reading = space("Reading", "📚", home)
 
@@ -214,7 +213,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertEqual(menu.sections.map(\.title), ["Home"])
     }
 
-    func testWithNoNormalSpaceAtAllThereIsNoTarget() {
+    @MainActor func testWithNoNormalSpaceAtAllThereIsNoTarget() {
         let menu = QuickDetour.openInMenu(windowProfile: work, sourceSpaceID: nil, spaces: [], profiles: [work],
                                           useOrder: [])
         XCTAssertNil(menu.defaultTarget)
@@ -224,7 +223,7 @@ final class QuickDetourOpenInTests: XCTestCase {
 
     // MARK: - Private (decision 3)
 
-    func testAPrivateQuickDetourOpensInAPrivateWindowWithNoDropdown() {
+    @MainActor func testAPrivateQuickDetourOpensInAPrivateWindowWithNoDropdown() {
         let inbox = space("Inbox", "📥", work)
         let privateSpace = space("Private", "🕶", privateProfile, isPrivate: true)
 
@@ -241,7 +240,7 @@ final class QuickDetourOpenInTests: XCTestCase {
 
     // MARK: - The store's use order
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let store: TabStore
         let appDB: AppDatabase
         let historyDB: HistoryDatabase
@@ -249,7 +248,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         let space: Space
     }
 
-    private func makeFixture(debounce: TimeInterval = 0.2) throws -> Fixture {
+    @MainActor private func makeFixture(debounce: TimeInterval = 0.2) throws -> Fixture {
         var config = Configuration()
         config.foreignKeysEnabled = true
         let historyDB = try HistoryDatabase(dbQueue: try DatabaseQueue(configuration: config))
@@ -260,7 +259,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         return Fixture(store: store, appDB: appDB, historyDB: historyDB, profile: profile, space: space)
     }
 
-    func testNoteSpaceUsedKeepsTheMostRecentFirstOnce() throws {
+    @MainActor func testNoteSpaceUsedKeepsTheMostRecentFirstOnce() throws {
         let f = try makeFixture()
         let build = f.store.addSpace(name: "Build", emoji: "🔨", colorHex: "007AFF", profileID: f.profile.id)
 
@@ -271,7 +270,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertEqual(f.store.spaceUseOrder, [f.space.id, build.id])
     }
 
-    func testNoteSpaceUsedIgnoresPrivateAndUnknownSpaces() throws {
+    @MainActor func testNoteSpaceUsedIgnoresPrivateAndUnknownSpaces() throws {
         let f = try makeFixture()
         let privateSpace = f.store.addIncognitoSpace()
 
@@ -282,7 +281,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertEqual(f.store.spaceUseOrder, [f.space.id])
     }
 
-    func testTheStoresMenuUsesItsUseOrder() throws {
+    @MainActor func testTheStoresMenuUsesItsUseOrder() throws {
         let f = try makeFixture()
         let build = f.store.addSpace(name: "Build", emoji: "🔨", colorHex: "007AFF", profileID: f.profile.id)
         f.store.noteSpaceUsed(build.id)
@@ -295,13 +294,13 @@ final class QuickDetourOpenInTests: XCTestCase {
 
     // MARK: - The hand-over
 
-    private func open(in store: TabStore, profile: Profile) -> BrowserTab {
+    @MainActor private func open(in store: TabStore, profile: Profile) -> BrowserTab {
         let tab = store.openQuickDetourTab(profile: profile)
         openedTabs.append((store, tab))
         return tab
     }
 
-    private final class Observer: TabStoreObserver {
+    @MainActor private final class Observer: TabStoreObserver {
         var inserted: [(tab: BrowserTab, index: Int, space: Space)] = []
         var moved: [(tab: BrowserTab, space: Space)] = []
         var closed: [BrowserTab] = []
@@ -316,7 +315,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         }
     }
 
-    func testTheMoveHandsTheSameTabAndWebViewToTheSpace() throws {
+    @MainActor func testTheMoveHandsTheSameTabAndWebViewToTheSpace() throws {
         let f = try makeFixture()
         let existing = f.store.addTab(in: f.space, url: URL(string: "https://existing.invalid/"))
         let quick = open(in: f.store, profile: f.profile)
@@ -343,7 +342,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertTrue(observer.closed.isEmpty, "a move, not a close")
     }
 
-    func testTheMovedTabIsSavedWithTheSession() throws {
+    @MainActor func testTheMovedTabIsSavedWithTheSession() throws {
         let f = try makeFixture()
         let quick = open(in: f.store, profile: f.profile)
         quick.load(URL(string: "https://moved.invalid/")!)
@@ -354,7 +353,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertEqual(savedTabIDs, [quick.id.uuidString], "a space's tab now")
     }
 
-    func testTheMoveRefusesAnotherProfilesSpace() throws {
+    @MainActor func testTheMoveRefusesAnotherProfilesSpace() throws {
         let f = try makeFixture()
         let other = f.store.addProfile(name: "Home")
         let otherSpace = f.store.addSpace(name: "Fun", emoji: "🎉", colorHex: "007AFF", profileID: other.id)
@@ -367,7 +366,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertTrue(quick.quickDetourProfile === f.profile)
     }
 
-    func testTheMoveRefusesTheIncognitoBoundary() throws {
+    @MainActor func testTheMoveRefusesTheIncognitoBoundary() throws {
         let f = try makeFixture()
         let privateProfile = f.store.ensureIncognitoProfile()
         let privateSpace = f.store.addIncognitoSpace()
@@ -380,7 +379,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertTrue(f.store.isQuickDetourTab(privateQuick))
     }
 
-    func testTheMoveRefusesATabThatIsNoQuickDetoursAndASpaceThatIsGone() throws {
+    @MainActor func testTheMoveRefusesATabThatIsNoQuickDetoursAndASpaceThatIsGone() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.space)
         let quick = open(in: f.store, profile: f.profile)
@@ -393,7 +392,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertTrue(f.store.isQuickDetourTab(quick))
     }
 
-    func testAPrivateQuickDetourMovesIntoAPrivateSpaceKeepingTheSession() throws {
+    @MainActor func testAPrivateQuickDetourMovesIntoAPrivateSpaceKeepingTheSession() throws {
         let f = try makeFixture()
         let privateProfile = f.store.ensureIncognitoProfile()
         let privateSpace = f.store.addIncognitoSpace()
@@ -408,7 +407,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertTrue(f.store.hasLivePrivateSession)
     }
 
-    func testTheMoveIsAnnouncedAsAMoveFromTheQuickDetoursWindowNotAClose() throws {
+    @MainActor func testTheMoveIsAnnouncedAsAMoveFromTheQuickDetoursWindowNotAClose() throws {
         let f = try makeFixture()
         let recorder = RecordingNotifier()
         let previousNotifier = ExtensionTabLifecycle.notifier
@@ -435,7 +434,7 @@ final class QuickDetourOpenInTests: XCTestCase {
     /// Open in selects the tab in its new window before announcing the move
     /// (WebKit lists a window's tabs only while one is selected), so it asks
     /// the store not to announce it.
-    func testAMoveTheCallerAnnouncesIsNotAnnouncedByTheStore() throws {
+    @MainActor func testAMoveTheCallerAnnouncesIsNotAnnouncedByTheStore() throws {
         let f = try makeFixture()
         let recorder = RecordingNotifier()
         let previousNotifier = ExtensionTabLifecycle.notifier
@@ -456,21 +455,21 @@ final class QuickDetourOpenInTests: XCTestCase {
         "/after": "<html><head><title>After</title></head><body>after</body></html>",
     ]
 
-    private func serve(_ routes: [String: String]) async throws -> URL {
+    @MainActor private func serve(_ routes: [String: String]) async throws -> URL {
         let server = try LoopbackHTTPServer(routes: routes)
         servers.append(server)
         let port = try await server.start()
         return URL(string: "http://127.0.0.1:\(port)/")!
     }
 
-    private func pump(_ seconds: TimeInterval) {
+    @MainActor private func pump(_ seconds: TimeInterval) {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }
     }
 
-    func testVisitsBeforeTheMoveStayUnderTheQuickDetourScopeAndLaterOnesGoToTheSpace() async throws {
+    @MainActor func testVisitsBeforeTheMoveStayUnderTheQuickDetourScopeAndLaterOnesGoToTheSpace() async throws {
         let f = try makeFixture()
         let base = try await serve(Self.pages)
         let quick = open(in: f.store, profile: f.profile)
@@ -502,7 +501,7 @@ final class QuickDetourOpenInTests: XCTestCase {
 
     // MARK: - Downloads: a Private Quick Detour's move with its page
 
-    func testAPrivateQuickDetoursDownloadsMoveWithItsPage() throws {
+    @MainActor func testAPrivateQuickDetoursDownloadsMoveWithItsPage() throws {
         let db = try AppDatabase(dbQueue: try DatabaseQueue())
         let store = TabStore(appDB: db)
         let manager = DownloadManager(database: db)
@@ -530,7 +529,7 @@ final class QuickDetourOpenInTests: XCTestCase {
         XCTAssertTrue(manager.items(in: .incognito(spaceID: privateSpace.id)).isEmpty)
     }
 
-    func testANormalQuickDetoursDownloadsStayNormal() throws {
+    @MainActor func testANormalQuickDetoursDownloadsStayNormal() throws {
         let db = try AppDatabase(dbQueue: try DatabaseQueue())
         let store = TabStore(appDB: db)
         let manager = DownloadManager(database: db)

@@ -10,23 +10,22 @@ import WebKit
 /// Every store here is a private `TabStore` on in-memory databases; pages that
 /// must really load come from a loopback HTTP server, as in
 /// `SameDocumentVisitTests` (only http(s) is recorded).
-@MainActor
-final class QuickDetourTests: XCTestCase {
+nonisolated final class QuickDetourTests: XCTestCase {
 
     private var openedTabs: [(store: TabStore, tab: BrowserTab)] = []
     private var servers: [LoopbackHTTPServer] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for (store, tab) in openedTabs { store.closeQuickDetourTab(tab) }
         openedTabs.removeAll()
         for server in servers { server.stop() }
         servers.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let store: TabStore
         let appDB: AppDatabase
         let historyDB: HistoryDatabase
@@ -34,7 +33,7 @@ final class QuickDetourTests: XCTestCase {
         let space: Space
     }
 
-    private func makeFixture(debounce: TimeInterval = 0.2) throws -> Fixture {
+    @MainActor private func makeFixture(debounce: TimeInterval = 0.2) throws -> Fixture {
         var config = Configuration()
         config.foreignKeysEnabled = true
         let historyDB = try HistoryDatabase(dbQueue: try DatabaseQueue(configuration: config))
@@ -45,20 +44,20 @@ final class QuickDetourTests: XCTestCase {
         return Fixture(store: store, appDB: appDB, historyDB: historyDB, profile: profile, space: space)
     }
 
-    private func open(in store: TabStore, profile: Profile) -> BrowserTab {
+    @MainActor private func open(in store: TabStore, profile: Profile) -> BrowserTab {
         let tab = store.openQuickDetourTab(profile: profile)
         openedTabs.append((store, tab))
         return tab
     }
 
-    private func serve(_ routes: [String: String]) async throws -> URL {
+    @MainActor private func serve(_ routes: [String: String]) async throws -> URL {
         let server = try LoopbackHTTPServer(routes: routes)
         servers.append(server)
         let port = try await server.start()
         return URL(string: "http://127.0.0.1:\(port)/")!
     }
 
-    private func pump(_ seconds: TimeInterval) {
+    @MainActor private func pump(_ seconds: TimeInterval) {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
@@ -69,7 +68,7 @@ final class QuickDetourTests: XCTestCase {
 
     // MARK: - The history scope
 
-    func testTheHistoryScopeIsDeterministicPerProfileAndNotTheProfilesOwnID() {
+    @MainActor func testTheHistoryScopeIsDeterministicPerProfileAndNotTheProfilesOwnID() {
         let a = UUID()
         let b = UUID()
         XCTAssertEqual(QuickDetour.historySpaceID(forProfileID: a), QuickDetour.historySpaceID(forProfileID: a),
@@ -80,7 +79,7 @@ final class QuickDetourTests: XCTestCase {
                        QuickDetour.historySpaceID(forProfileID: a).uuidString)
     }
 
-    func testTheHistoryScopeIsRecognisedOnlyForItsProfile() {
+    @MainActor func testTheHistoryScopeIsRecognisedOnlyForItsProfile() {
         let a = UUID()
         let b = UUID()
         let scope = QuickDetour.historySpaceIDString(forProfileID: a)
@@ -97,7 +96,7 @@ final class QuickDetourTests: XCTestCase {
     /// with a store of its own) only from the user: a link activation the
     /// page's own script makes never opens windows (code review, TASK-194
     /// follow-up), as Link Routes treat a click without a gesture.
-    func testOnlyTheUsersCmdClickOpensAWindow() {
+    @MainActor func testOnlyTheUsersCmdClickOpensAWindow() {
         XCTAssertTrue(QuickDetour.linkClickOpensWindow(isLinkActivation: true, modifiers: .command, isUserGesture: true))
         XCTAssertTrue(QuickDetour.linkClickOpensWindow(isLinkActivation: true, modifiers: [.command, .shift],
                                                        isUserGesture: true))
@@ -110,20 +109,20 @@ final class QuickDetourTests: XCTestCase {
 
     // MARK: - Which profile a new window uses
 
-    func testANewWindowUsesTheFrontmostWindowsProfile() {
+    @MainActor func testANewWindowUsesTheFrontmostWindowsProfile() {
         let first = Profile(name: "Default")
         let work = Profile(name: "Work")
         XCTAssertTrue(QuickDetour.profileForNewWindow(frontmostSpaceProfile: work, profiles: [first, work]) === work)
     }
 
-    func testANewWindowFromAPrivateWindowIsPrivate() {
+    @MainActor func testANewWindowFromAPrivateWindowIsPrivate() {
         let first = Profile(name: "Default")
         let privateProfile = Profile(id: TabStore.incognitoProfileID, name: "Private", isIncognito: true)
         XCTAssertTrue(QuickDetour.profileForNewWindow(frontmostSpaceProfile: privateProfile,
                                                       profiles: [privateProfile, first]) === privateProfile)
     }
 
-    func testWithNoFrontmostWindowTheFirstNormalProfileIsUsed() {
+    @MainActor func testWithNoFrontmostWindowTheFirstNormalProfileIsUsed() {
         let privateProfile = Profile(id: TabStore.incognitoProfileID, name: "Private", isIncognito: true)
         let first = Profile(name: "Default")
         let work = Profile(name: "Work")
@@ -133,7 +132,7 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertNil(QuickDetour.profileForNewWindow(frontmostSpaceProfile: nil, profiles: [privateProfile]))
     }
 
-    func testADeletedFrontmostProfileFallsBack() {
+    @MainActor func testADeletedFrontmostProfileFallsBack() {
         let first = Profile(name: "Default")
         let gone = Profile(name: "Gone")
         gone.isDeleted = true
@@ -142,7 +141,7 @@ final class QuickDetourTests: XCTestCase {
 
     // MARK: - The tab in no space
 
-    func testOpeningPlacesTheTabInNoSpace() throws {
+    @MainActor func testOpeningPlacesTheTabInNoSpace() throws {
         let f = try makeFixture()
         let tab = open(in: f.store, profile: f.profile)
 
@@ -156,7 +155,7 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertTrue(tab.owningProfile === f.profile)
     }
 
-    func testTheTabIsBuiltFromItsProfilesDataStoreAndController() throws {
+    @MainActor func testTheTabIsBuiltFromItsProfilesDataStoreAndController() throws {
         let f = try makeFixture()
         let tab = open(in: f.store, profile: f.profile)
         let webView = try XCTUnwrap(tab.webView)
@@ -166,7 +165,7 @@ final class QuickDetourTests: XCTestCase {
                       "content scripts and the extension button work in the window")
     }
 
-    func testAdoptingAWebViewKeepsIt() throws {
+    @MainActor func testAdoptingAWebViewKeepsIt() throws {
         let f = try makeFixture()
         let config = f.space.makeWebViewConfiguration()
         let webView = WKWebView(frame: .zero, configuration: config)
@@ -176,7 +175,7 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertTrue(f.store.isQuickDetourTab(tab))
     }
 
-    func testClosingReleasesTheWebViewAndIsIdempotent() throws {
+    @MainActor func testClosingReleasesTheWebViewAndIsIdempotent() throws {
         let f = try makeFixture()
         let tab = open(in: f.store, profile: f.profile)
         XCTAssertNotNil(tab.webView)
@@ -190,12 +189,12 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertTrue(f.store.quickDetourTabs.isEmpty)
     }
 
-    private final class CloseSpy: TabStoreObserver {
+    @MainActor private final class CloseSpy: TabStoreObserver {
         var closed: [UUID] = []
         func tabStoreDidCloseQuickDetour(_ tab: BrowserTab) { closed.append(tab.id) }
     }
 
-    func testClosingTellsTheObserversOnce() throws {
+    @MainActor func testClosingTellsTheObserversOnce() throws {
         let f = try makeFixture()
         let spy = CloseSpy()
         f.store.addObserver(spy)
@@ -207,7 +206,7 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertEqual(spy.closed, [tab.id])
     }
 
-    func testSeveralQuickDetoursAreIndependent() throws {
+    @MainActor func testSeveralQuickDetoursAreIndependent() throws {
         let f = try makeFixture()
         let first = open(in: f.store, profile: f.profile)
         let second = open(in: f.store, profile: f.profile)
@@ -220,7 +219,7 @@ final class QuickDetourTests: XCTestCase {
     }
 
     /// What each lookup that walks the spaces does with a tab that is in none.
-    func testTheSpaceWalkingLookups() throws {
+    @MainActor func testTheSpaceWalkingLookups() throws {
         let f = try makeFixture()
         let tab = open(in: f.store, profile: f.profile)
         let webView = try XCTUnwrap(tab.webView)
@@ -234,7 +233,7 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertTrue(f.store.allLiveTabs.contains { $0 === tab }, "its media holds the GPU recycler back")
     }
 
-    func testNeverSleptOrArchived() throws {
+    @MainActor func testNeverSleptOrArchived() throws {
         let f = try makeFixture()
         let tab = open(in: f.store, profile: f.profile)
         tab.lastDeselectedAt = Date(timeIntervalSince1970: 0)
@@ -248,7 +247,7 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertTrue(f.store.isQuickDetourTab(tab))
     }
 
-    func testNeverSavedWithTheSession() throws {
+    @MainActor func testNeverSavedWithTheSession() throws {
         let f = try makeFixture()
         let tab = open(in: f.store, profile: f.profile)
         _ = f.store.addTab(in: f.space, url: URL(string: "https://kept.example/"))
@@ -259,7 +258,7 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertFalse(savedTabIDs.contains(tab.id.uuidString), "not restored at launch")
     }
 
-    func testDeletingAProfileClosesItsQuickDetours() throws {
+    @MainActor func testDeletingAProfileClosesItsQuickDetours() throws {
         let f = try makeFixture()
         let spare = f.store.addProfile(name: "Spare")
         let spy = CloseSpy()
@@ -276,11 +275,11 @@ final class QuickDetourTests: XCTestCase {
 
     // MARK: - History
 
-    private func visits(_ db: HistoryDatabase, in scope: [String]) -> [HistoryVisitEntry] {
+    @MainActor private func visits(_ db: HistoryDatabase, in scope: [String]) -> [HistoryVisitEntry] {
         db.visits(spaceIDs: scope, limit: 50)
     }
 
-    func testAVisitIsRecordedUnderTheProfilesQuickDetourScope() async throws {
+    @MainActor func testAVisitIsRecordedUnderTheProfilesQuickDetourScope() async throws {
         let f = try makeFixture()
         let base = try await serve(["/": Self.page])
         let tab = open(in: f.store, profile: f.profile)
@@ -298,7 +297,7 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertTrue(visits(f.historyDB, in: [f.space.id.uuidString]).isEmpty, "no space's history is touched")
     }
 
-    func testAPrivateQuickDetourRecordsNothing() async throws {
+    @MainActor func testAPrivateQuickDetourRecordsNothing() async throws {
         let f = try makeFixture()
         let base = try await serve(["/": Self.page])
         let privateProfile = f.store.ensureIncognitoProfile()
@@ -317,7 +316,7 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertEqual(everything, 0)
     }
 
-    func testTheProfilesHistoryScopeIncludesItsQuickDetourVisits() throws {
+    @MainActor func testTheProfilesHistoryScopeIncludesItsQuickDetourVisits() throws {
         let f = try makeFixture()
         let scope = try XCTUnwrap(HistoryPageBridge.scope(forProfile: f.profile, in: f.store))
         XCTAssertTrue(scope.contains(f.space.id.uuidString))
@@ -331,7 +330,7 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertNil(HistoryPageBridge.scope(forProfile: f.store.ensureIncognitoProfile(), in: f.store))
     }
 
-    func testTheLaunchSweepKeepsQuickDetourVisits() throws {
+    @MainActor func testTheLaunchSweepKeepsQuickDetourVisits() throws {
         let f = try makeFixture()
         let scope = QuickDetour.historySpaceIDString(forProfileID: f.profile.id)
         let goneProfileScope = QuickDetour.historySpaceIDString(forProfileID: UUID())
@@ -351,7 +350,7 @@ final class QuickDetourTests: XCTestCase {
                       "a deleted profile's go with it, like its spaces'")
     }
 
-    func testTheHistoryPageLabelsQuickDetourVisits() {
+    @MainActor func testTheHistoryPageLabelsQuickDetourVisits() {
         let profileID = UUID()
         let quick = HistoryVisitEntry(visitID: 1, url: "https://a.example/", title: "A", faviconURL: nil,
                                       visitTime: 1, spaceID: QuickDetour.historySpaceIDString(forProfileID: profileID))
@@ -364,7 +363,7 @@ final class QuickDetourTests: XCTestCase {
                      "only the page's own profile's scope is labelled")
     }
 
-    func testListedAndSearchedVisitsCarryTheirScope() throws {
+    @MainActor func testListedAndSearchedVisitsCarryTheirScope() throws {
         let f = try makeFixture()
         let scope = QuickDetour.historySpaceIDString(forProfileID: f.profile.id)
         let expectation = expectation(description: "recorded")
@@ -378,7 +377,7 @@ final class QuickDetourTests: XCTestCase {
 
     // MARK: - The Private session
 
-    private func privateSessionFixture() throws -> (store: TabStore, settings: SiteSettingsStore, privateProfile: Profile) {
+    @MainActor private func privateSessionFixture() throws -> (store: TabStore, settings: SiteSettingsStore, privateProfile: Profile) {
         let db = try AppDatabase(dbQueue: try DatabaseQueue())
         let settings = SiteSettingsStore(database: db)
         let store = TabStore(appDB: db)
@@ -388,11 +387,11 @@ final class QuickDetourTests: XCTestCase {
         return (store, settings, privateProfile)
     }
 
-    private func privateOverride(_ settings: SiteSettingsStore) -> Bool? {
+    @MainActor private func privateOverride(_ settings: SiteSettingsStore) -> Bool? {
         settings.override(.pictureInPicture, forSite: "youtube.com", profileID: TabStore.incognitoProfileID)
     }
 
-    func testClosingTheLastPrivateWindowKeepsTheSessionForAPrivateQuickDetour() throws {
+    @MainActor func testClosingTheLastPrivateWindowKeepsTheSessionForAPrivateQuickDetour() throws {
         let (store, settings, privateProfile) = try privateSessionFixture()
         let space = store.addIncognitoSpace()
         let quick = open(in: store, profile: privateProfile)
@@ -410,7 +409,7 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertNil(privateOverride(settings), "the last Private page closed")
     }
 
-    func testClosingThePrivateQuickDetourKeepsTheSessionForAPrivateWindow() throws {
+    @MainActor func testClosingThePrivateQuickDetourKeepsTheSessionForAPrivateWindow() throws {
         let (store, settings, privateProfile) = try privateSessionFixture()
         let space = store.addIncognitoSpace()
         let quick = open(in: store, profile: privateProfile)
@@ -423,7 +422,7 @@ final class QuickDetourTests: XCTestCase {
         XCTAssertNil(privateOverride(settings))
     }
 
-    func testANormalQuickDetourDoesNotKeepThePrivateSession() throws {
+    @MainActor func testANormalQuickDetourDoesNotKeepThePrivateSession() throws {
         let (store, settings, _) = try privateSessionFixture()
         let normal = store.addProfile(name: "Default")
         let space = store.addIncognitoSpace()
@@ -437,7 +436,7 @@ final class QuickDetourTests: XCTestCase {
 
     // MARK: - Downloads
 
-    func testAPrivateQuickDetoursDownloadsLiveAsLongAsItsWindow() throws {
+    @MainActor func testAPrivateQuickDetoursDownloadsLiveAsLongAsItsWindow() throws {
         let db = try AppDatabase(dbQueue: try DatabaseQueue())
         let store = TabStore(appDB: db)
         let manager = DownloadManager(database: db)

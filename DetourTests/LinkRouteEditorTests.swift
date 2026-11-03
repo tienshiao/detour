@@ -1,15 +1,16 @@
+import Synchronization
 import XCTest
 import GRDB
 @testable import Detour
 
 /// TASK-191.3: the Links pane's rules: target pop-ups, drag destinations,
 /// row warnings, and the rows over the store (drafts and refused edits).
-final class LinkRouteEditorTests: XCTestCase {
+nonisolated final class LinkRouteEditorTests: XCTestCase {
 
     private let work = LinkRouteSpaceOption(id: UUID(), name: "Work", emoji: "💼")
     private let home = LinkRouteSpaceOption(id: UUID(), name: "Home", emoji: "🏠")
 
-    private func makeEditor() throws -> (LinkRouteEditor, LinkRouteStore, AppDatabase) {
+    @MainActor private func makeEditor() throws -> (LinkRouteEditor, LinkRouteStore, AppDatabase) {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         let store = LinkRouteStore(database: db)
         let ids: Set<UUID> = [work.id, home.id]
@@ -18,13 +19,13 @@ final class LinkRouteEditorTests: XCTestCase {
     }
 
     /// The first row, failing (not crashing the test host) when there is none.
-    private func firstRow(_ editor: LinkRouteEditor) throws -> LinkRouteEditor.Row {
+    @MainActor private func firstRow(_ editor: LinkRouteEditor) throws -> LinkRouteEditor.Row {
         try XCTUnwrap(editor.rows.first)
     }
 
     // MARK: - Target pop-up
 
-    func testTheTargetMenuListsTheSpacesThenMostRecentSpacePrivateWindowQuickDetourAndQuarantine() {
+    @MainActor func testTheTargetMenuListsTheSpacesThenMostRecentSpacePrivateWindowQuickDetourAndQuarantine() {
         XCTAssertEqual(linkRouteTargetMenu(spaces: [work, home], current: .mostRecentSpace),
                        [.space(work), .space(home), .separator, .mostRecentSpace, .privateWindow, .quickDetour,
                         .quarantine])
@@ -34,7 +35,7 @@ final class LinkRouteEditorTests: XCTestCase {
         XCTAssertEqual(LinkRouteSpaceOption(id: UUID(), name: "Bare", emoji: "").title, "Bare")
     }
 
-    func testQuarantineIsAlwaysOfferedOnce() {
+    @MainActor func testQuarantineIsAlwaysOfferedOnce() {
         // TASK-194: a visible target, for routes and the Default.
         for current: LinkRouteTarget? in [.quarantine, nil, .quickDetour] {
             XCTAssertEqual(linkRouteTargetMenu(spaces: [work], current: current),
@@ -44,7 +45,7 @@ final class LinkRouteEditorTests: XCTestCase {
         XCTAssertEqual(LinkRouteTargetMenuItem.quarantine.target, .quarantine)
     }
 
-    func testQuickDetourIsAlwaysOfferedOnceAndChoosingItIsSaved() throws {
+    @MainActor func testQuickDetourIsAlwaysOfferedOnceAndChoosingItIsSaved() throws {
         // TASK-193.5: a visible target, for routes and the Default.
         let menu = linkRouteTargetMenu(spaces: [work], current: .quickDetour)
         XCTAssertEqual(menu, [.space(work), .separator, .mostRecentSpace, .privateWindow, .quickDetour, .quarantine])
@@ -60,7 +61,7 @@ final class LinkRouteEditorTests: XCTestCase {
         XCTAssertEqual(store.routes.first?.target, .quickDetour)
     }
 
-    func testAnUnavailableSpaceIsShownFirstWhenItIsTheCurrentTarget() {
+    @MainActor func testAnUnavailableSpaceIsShownFirstWhenItIsTheCurrentTarget() {
         let gone = UUID()
         XCTAssertEqual(linkRouteTargetMenu(spaces: [work], current: .space(gone)),
                        [.unavailableSpace(gone), .separator, .space(work), .separator, .mostRecentSpace, .privateWindow,
@@ -73,7 +74,7 @@ final class LinkRouteEditorTests: XCTestCase {
 
     // MARK: - Dragging
 
-    func testADraggedRouteLandsAmongTheSavedRoutes() {
+    @MainActor func testADraggedRouteLandsAmongTheSavedRoutes() {
         // Rows 0..2 saved, 3..4 drafts.
         XCTAssertEqual(linkRouteMoveIndex(from: 2, dropRow: 0, savedCount: 3), 0)
         XCTAssertEqual(linkRouteMoveIndex(from: 0, dropRow: 2, savedCount: 3), 1, "above row 2 is after row 1 once 0 is out")
@@ -87,7 +88,7 @@ final class LinkRouteEditorTests: XCTestCase {
 
     // MARK: - Warnings
 
-    func testTheWarningSaysWhatToDo() {
+    @MainActor func testTheWarningSaysWhatToDo() {
         XCTAssertNil(linkRouteProblemMessage([], kind: .domainIs, isSaved: true, hasUnsavedChanges: false))
         XCTAssertEqual(linkRouteProblemMessage([.emptyPattern], kind: .domainIs, isSaved: false, hasUnsavedChanges: false),
                        "Enter a domain, such as example.com. Not saved yet.")
@@ -105,7 +106,7 @@ final class LinkRouteEditorTests: XCTestCase {
 
     // MARK: - Rows
 
-    func testANewRouteIsADraftUntilItIsComplete() throws {
+    @MainActor func testANewRouteIsADraftUntilItIsComplete() throws {
         let (editor, store, db) = try makeEditor()
         let id = editor.addDraft()
         XCTAssertEqual(editor.rows.count, 1)
@@ -127,23 +128,25 @@ final class LinkRouteEditorTests: XCTestCase {
 
     /// A pane reloads on the store's notification: by then the saved draft is
     /// one saved row, not a saved row and a draft with the same id.
-    func testASavedDraftIsOneRowWhenTheStorePostsItsChange() throws {
+    @MainActor func testASavedDraftIsOneRowWhenTheStorePostsItsChange() throws {
         let (editor, store, _) = try makeEditor()
         let first = editor.addDraft()
         let second = editor.addDraft()
-        var rowsSeen: [[UUID]] = []
+        let rowsSeen = Mutex<[[UUID]]>([])
         let token = NotificationCenter.default.addObserver(forName: LinkRouteStore.didChangeNotification,
                                                            object: store, queue: nil) { _ in
-            rowsSeen.append(editor.rows.map(\.route.id))
+            // Posted synchronously by the main-actor store, so on the main thread.
+            let ids = MainActor.assumeIsolated { editor.rows.map { $0.route.id } }
+            rowsSeen.withLock { $0.append(ids) }
         }
         defer { NotificationCenter.default.removeObserver(token) }
         XCTAssertTrue(editor.edit(second) { $0.match?.pattern = "b.test" })
-        XCTAssertEqual(rowsSeen, [[second, first]])
+        XCTAssertEqual(rowsSeen.withLock { $0 }, [[second, first]])
         XCTAssertFalse(editor.edit(first) { $0.target = .space(UUID()) })
         XCTAssertEqual(editor.rows.map(\.route.id), [second, first], "a refused draft keeps its place")
     }
 
-    func testAnAppOnlyDraftIsSavedOnceAnAppIsChosen() throws {
+    @MainActor func testAnAppOnlyDraftIsSavedOnceAnAppIsChosen() throws {
         let (editor, store, _) = try makeEditor()
         let id = editor.addDraft()
         XCTAssertFalse(editor.edit(id) { $0.match = nil })
@@ -153,7 +156,7 @@ final class LinkRouteEditorTests: XCTestCase {
         XCTAssertNil(store.routes.first?.match)
     }
 
-    func testARefusedEditStaysOnItsRowAndTheStoreKeepsTheSavedRoute() throws {
+    @MainActor func testARefusedEditStaysOnItsRowAndTheStoreKeepsTheSavedRoute() throws {
         let (editor, store, _) = try makeEditor()
         let saved = try XCTUnwrap(store.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "a.test"),
                                                       target: .space(work.id))))
@@ -169,7 +172,7 @@ final class LinkRouteEditorTests: XCTestCase {
         XCTAssertFalse(try firstRow(editor).hasUnsavedChanges)
     }
 
-    func testPreviewingAnEditSavesNothing() throws {
+    @MainActor func testPreviewingAnEditSavesNothing() throws {
         let (editor, store, _) = try makeEditor()
         let saved = try XCTUnwrap(store.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "a.test"),
                                                       target: .space(work.id))))
@@ -179,7 +182,7 @@ final class LinkRouteEditorTests: XCTestCase {
         XCTAssertFalse(try firstRow(editor).hasUnsavedChanges)
     }
 
-    func testABrokenSavedRouteReportsItsSpace() throws {
+    @MainActor func testABrokenSavedRouteReportsItsSpace() throws {
         let (editor, store, _) = try makeEditor()
         store.spaceContext = nil
         let gone = UUID()
@@ -194,7 +197,7 @@ final class LinkRouteEditorTests: XCTestCase {
         XCTAssertEqual(try firstRow(editor).problems, [])
     }
 
-    func testRemovingADraftOrASavedRoute() throws {
+    @MainActor func testRemovingADraftOrASavedRoute() throws {
         let (editor, store, _) = try makeEditor()
         let saved = try XCTUnwrap(store.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "a.test"),
                                                       target: .space(work.id))))
@@ -208,7 +211,7 @@ final class LinkRouteEditorTests: XCTestCase {
         XCTAssertEqual(store.routes, [])
     }
 
-    func testSavedRoutesMoveThroughTheStoreAndDraftsStayLast() throws {
+    @MainActor func testSavedRoutesMoveThroughTheStoreAndDraftsStayLast() throws {
         let (editor, store, db) = try makeEditor()
         var ids: [UUID] = []
         for host in ["a.test", "b.test", "c.test"] {
@@ -225,7 +228,7 @@ final class LinkRouteEditorTests: XCTestCase {
         XCTAssertEqual(editor.rows.map(\.route.id), [ids[0], ids[1], ids[2], draft], "never below a draft")
     }
 
-    func testRowsFollowChangesMadeElsewhere() throws {
+    @MainActor func testRowsFollowChangesMadeElsewhere() throws {
         let (editor, store, _) = try makeEditor()
         let a = try XCTUnwrap(store.add(LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "a.test"),
                                                   target: .space(work.id))))

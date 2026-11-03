@@ -6,16 +6,16 @@ import WebKit
 /// Opening a split from a link or a Peek (TASK-185): which tabs can, the Peek
 /// hand-off variant of `addTabInSplit`, and the normal-section split a
 /// favourite or a lone pinned tab opens.
-final class SplitOpeningTests: XCTestCase {
+nonisolated final class SplitOpeningTests: XCTestCase {
 
-    private func makeStore() throws -> (TabStore, Space) {
+    @MainActor private func makeStore() throws -> (TabStore, Space) {
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()))
         let profile = store.addProfile(name: "Test")
         let space = store.addSpace(name: "Test", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
         return (store, space)
     }
 
-    private func makeSleepingTab(spaceID: UUID, url: String = "https://example.com",
+    @MainActor private func makeSleepingTab(spaceID: UUID, url: String = "https://example.com",
                                  parentID: UUID? = nil) -> BrowserTab {
         let tab = BrowserTab(id: UUID(), title: "Tab", url: URL(string: url), faviconURL: nil,
                              cachedInteractionState: nil, spaceID: spaceID)
@@ -24,7 +24,7 @@ final class SplitOpeningTests: XCTestCase {
     }
 
     /// A lone pinned entry whose backing tab is live (asleep, with a URL).
-    private func makePinnedTab(_ store: TabStore, _ space: Space,
+    @MainActor private func makePinnedTab(_ store: TabStore, _ space: Space,
                                url: String = "https://pinned.example/home") -> (PinnedEntry, BrowserTab) {
         let tab = makeSleepingTab(spaceID: space.id, url: url)
         space.tabs.append(tab)
@@ -33,27 +33,27 @@ final class SplitOpeningTests: XCTestCase {
     }
 
     /// A favourite of the space's profile, live on a sleeping backing tab.
-    private func makeFavoriteTab(_ store: TabStore, _ space: Space,
+    @MainActor private func makeFavoriteTab(_ store: TabStore, _ space: Space,
                                  url: String = "https://fav.example/") -> (Favorite, BrowserTab) {
         let tab = makeSleepingTab(spaceID: space.id, url: url)
         store.addFavorite(from: tab, profileID: space.profileID)
         return (space.profile!.favorites.first { $0.tab === tab }!, tab)
     }
 
-    private func makeWebView(for space: Space) -> WKWebView {
+    @MainActor private func makeWebView(for space: Space) -> WKWebView {
         WKWebView(frame: .zero, configuration: space.makeWebViewConfiguration())
     }
 
     private let linkURL = URL(string: "https://link.example/page")!
 
     /// The groups that form exactly one adjacent run of two (the sanitizer's test).
-    private func validGroups(_ tabs: [BrowserTab]) -> Set<UUID> {
+    @MainActor private func validGroups(_ tabs: [BrowserTab]) -> Set<UUID> {
         validSplitGroupIDs(in: splitRuns(of: tabs, groupID: \.splitGroupID))
     }
 
     // MARK: - splitOpening
 
-    func testSplitOpeningClassifiesEachKindOfTab() throws {
+    @MainActor func testSplitOpeningClassifiesEachKindOfTab() throws {
         let (store, space) = try makeStore()
         let lone = makeSleepingTab(spaceID: space.id)
         let left = makeSleepingTab(spaceID: space.id)
@@ -70,7 +70,7 @@ final class SplitOpeningTests: XCTestCase {
         XCTAssertNil(store.splitOpening(from: UUID(), in: space))
     }
 
-    func testSplitOpeningRefusesPinnedSplitMemberEvenWithDormantPartner() throws {
+    @MainActor func testSplitOpeningRefusesPinnedSplitMemberEvenWithDormantPartner() throws {
         let (store, space) = try makeStore()
         let tabs = (0..<2).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -88,7 +88,7 @@ final class SplitOpeningTests: XCTestCase {
         XCTAssertTrue(space.tabs.isEmpty)
     }
 
-    func testSplitOpeningRefusesAPeek() throws {
+    @MainActor func testSplitOpeningRefusesAPeek() throws {
         let (store, space) = try makeStore()
         let host = makeSleepingTab(spaceID: space.id)
         space.tabs.append(host)
@@ -102,7 +102,7 @@ final class SplitOpeningTests: XCTestCase {
 
     /// A page of an extension cannot be copied into a tab built from the
     /// space's configuration, which cannot load the scheme.
-    func testSplitOpeningRefusesAnExtensionPagePinnedTab() throws {
+    @MainActor func testSplitOpeningRefusesAnExtensionPagePinnedTab() throws {
         let (store, space) = try makeStore()
         let (_, pinned) = makePinnedTab(store, space, url: "webkit-extension://abcdef/page.html")
 
@@ -113,7 +113,7 @@ final class SplitOpeningTests: XCTestCase {
 
     // MARK: - addTabInSplit(with:webView:in:)
 
-    func testAddTabInSplitWithWebViewAdoptsTheSameWebView() throws {
+    @MainActor func testAddTabInSplitWithWebViewAdoptsTheSameWebView() throws {
         let (store, space) = try makeStore()
         let anchor = makeSleepingTab(spaceID: space.id)
         let other = makeSleepingTab(spaceID: space.id)
@@ -131,7 +131,7 @@ final class SplitOpeningTests: XCTestCase {
         XCTAssertEqual(pane.spaceID, space.id)
     }
 
-    func testAddTabInSplitWithWebViewRefusesGroupedPinnedAndFavoriteAnchors() throws {
+    @MainActor func testAddTabInSplitWithWebViewRefusesGroupedPinnedAndFavoriteAnchors() throws {
         let (store, space) = try makeStore()
         let tabs = (0..<2).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -145,7 +145,7 @@ final class SplitOpeningTests: XCTestCase {
         XCTAssertEqual(space.tabs.map(\.id), tabs.map(\.id))
     }
 
-    func testAddTabInSplitWithWebViewUndoRemovesThePaneWithoutArchiving() throws {
+    @MainActor func testAddTabInSplitWithWebViewUndoRemovesThePaneWithoutArchiving() throws {
         let (store, space) = try makeStore()
         let anchor = makeSleepingTab(spaceID: space.id)
         space.tabs.append(anchor)
@@ -160,7 +160,7 @@ final class SplitOpeningTests: XCTestCase {
 
     // MARK: - addSplitInNormalSection
 
-    func testSplitFromPinnedTabOpensInNormalSectionWithACopyOnTheLeft() throws {
+    @MainActor func testSplitFromPinnedTabOpensInNormalSectionWithACopyOnTheLeft() throws {
         let (store, space) = try makeStore()
         let others = (0..<2).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: others)
@@ -193,7 +193,7 @@ final class SplitOpeningTests: XCTestCase {
         XCTAssertFalse(space.tabs.contains { $0 === pinned })
     }
 
-    func testSplitFromFavoriteOpensInNormalSectionAndLeavesTheFavorite() throws {
+    @MainActor func testSplitFromFavoriteOpensInNormalSectionAndLeavesTheFavorite() throws {
         let (store, space) = try makeStore()
         let other = makeSleepingTab(spaceID: space.id)
         space.tabs.append(other)
@@ -215,7 +215,7 @@ final class SplitOpeningTests: XCTestCase {
         XCTAssertNil(favoriteTab.splitGroupID)
     }
 
-    func testSplitCopiesTheParentsCurrentURLNotItsPinnedHome() throws {
+    @MainActor func testSplitCopiesTheParentsCurrentURLNotItsPinnedHome() throws {
         let (store, space) = try makeStore()
         let (entry, pinned) = makePinnedTab(store, space, url: "https://pinned.example/home")
         pinned.url = URL(string: "https://pinned.example/inbox/42")
@@ -228,7 +228,7 @@ final class SplitOpeningTests: XCTestCase {
 
     /// The `TabInsertion` rule for a pinned or favourite parent: the top of the
     /// normal section, after the run of tabs that parent already opened.
-    func testSplitLandsAfterTheParentsExistingChildren() throws {
+    @MainActor func testSplitLandsAfterTheParentsExistingChildren() throws {
         let (store, space) = try makeStore()
         let (_, pinned) = makePinnedTab(store, space)
         let children = (0..<2).map { _ in makeSleepingTab(spaceID: space.id, parentID: pinned.id) }
@@ -245,7 +245,7 @@ final class SplitOpeningTests: XCTestCase {
 
     /// The insertion point falls between the two panes of an existing split
     /// (its left pane is the parent's last child): the new pair snaps past it.
-    func testSplitSnapsPastAnExistingSplitAtTheInsertionPoint() throws {
+    @MainActor func testSplitSnapsPastAnExistingSplitAtTheInsertionPoint() throws {
         let (store, space) = try makeStore()
         let (_, favoriteTab) = makeFavoriteTab(store, space)
         let child = makeSleepingTab(spaceID: space.id, parentID: favoriteTab.id)
@@ -268,7 +268,7 @@ final class SplitOpeningTests: XCTestCase {
 
     /// With no children of the parent, the pair goes to index 0 — before a
     /// split that already starts the section, never inside it.
-    func testSplitLandsBeforeASplitThatStartsTheSection() throws {
+    @MainActor func testSplitLandsBeforeASplitThatStartsTheSection() throws {
         let (store, space) = try makeStore()
         let (_, pinned) = makePinnedTab(store, space)
         let pair = (0..<2).map { _ in makeSleepingTab(spaceID: space.id) }
@@ -284,7 +284,7 @@ final class SplitOpeningTests: XCTestCase {
 
     /// Both panes count as the parent's children, so a second split from the
     /// same parent stacks after the first rather than splitting it.
-    func testSecondSplitFromTheSameParentLandsAfterTheFirst() throws {
+    @MainActor func testSecondSplitFromTheSameParentLandsAfterTheFirst() throws {
         let (store, space) = try makeStore()
         let (_, pinned) = makePinnedTab(store, space)
 
@@ -299,7 +299,7 @@ final class SplitOpeningTests: XCTestCase {
         XCTAssertEqual(validGroups(space.tabs).count, 2)
     }
 
-    func testSplitWithWebViewAdoptsTheSameWebView() throws {
+    @MainActor func testSplitWithWebViewAdoptsTheSameWebView() throws {
         let (store, space) = try makeStore()
         let (_, favoriteTab) = makeFavoriteTab(store, space)
         let webView = makeWebView(for: space)
@@ -313,7 +313,7 @@ final class SplitOpeningTests: XCTestCase {
         XCTAssertEqual(space.tabs.first?.splitGroupID, right.splitGroupID)
     }
 
-    func testSplitInNormalSectionRefusesNormalTabs() throws {
+    @MainActor func testSplitInNormalSectionRefusesNormalTabs() throws {
         let (store, space) = try makeStore()
         let lone = makeSleepingTab(spaceID: space.id)
         space.tabs.append(lone)
@@ -323,7 +323,7 @@ final class SplitOpeningTests: XCTestCase {
         XCTAssertNil(lone.splitGroupID)
     }
 
-    func testSplitInNormalSectionUndoRemovesBothWithoutArchivingAndLeavesTheEntry() throws {
+    @MainActor func testSplitInNormalSectionUndoRemovesBothWithoutArchivingAndLeavesTheEntry() throws {
         let (store, space) = try makeStore()
         let other = makeSleepingTab(spaceID: space.id)
         space.tabs.append(other)
@@ -350,7 +350,7 @@ final class SplitOpeningTests: XCTestCase {
         XCTAssertFalse(store.undoManager.canUndo, "one gesture, one undo")
     }
 
-    func testSplitInNormalSectionUndoFromAFavoriteLeavesTheFavorite() throws {
+    @MainActor func testSplitInNormalSectionUndoFromAFavoriteLeavesTheFavorite() throws {
         let (store, space) = try makeStore()
         let (favorite, favoriteTab) = makeFavoriteTab(store, space)
         store.undoManager.removeAllActions()
@@ -365,7 +365,7 @@ final class SplitOpeningTests: XCTestCase {
         XCTAssertTrue(favorite.tab === favoriteTab)
     }
 
-    private final class RemovalRecorder: TabStoreObserver {
+    @MainActor private final class RemovalRecorder: TabStoreObserver {
         var removals: [(id: UUID, index: Int)] = []
         func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space) {
             removals.append((tab.id, index))
@@ -375,7 +375,7 @@ final class SplitOpeningTests: XCTestCase {
     /// Both panes are gone before either removal is reported, so each index is
     /// given in the final list: `tabs[index]` is the tab that followed the pair,
     /// where a window settles its selection — not the one after that.
-    func testSplitInNormalSectionUndoReportsIndicesInTheFinalList() throws {
+    @MainActor func testSplitInNormalSectionUndoReportsIndicesInTheFinalList() throws {
         let (store, space) = try makeStore()
         let (_, pinned) = makePinnedTab(store, space)
         let followers = (0..<2).map { _ in makeSleepingTab(spaceID: space.id) }
@@ -397,7 +397,7 @@ final class SplitOpeningTests: XCTestCase {
 
     /// Undo finds the panes by id: Undo Delete Space rebuilds a space's tabs as
     /// fresh objects of the same ids (TASK-40).
-    func testSplitInNormalSectionUndoSkipsPanesThatAreGone() throws {
+    @MainActor func testSplitInNormalSectionUndoSkipsPanesThatAreGone() throws {
         let (store, space) = try makeStore()
         let (_, pinned) = makePinnedTab(store, space)
         store.undoManager.removeAllActions()

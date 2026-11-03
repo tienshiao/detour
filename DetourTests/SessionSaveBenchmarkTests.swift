@@ -20,7 +20,7 @@ import GRDB
 /// column. The database is a file, not in memory: what the change removes is
 /// one commit (and its sync) per space and per profile, which an in-memory
 /// database does not pay for.
-final class SessionSaveBenchmarkTests: XCTestCase {
+nonisolated final class SessionSaveBenchmarkTests: XCTestCase {
 
     private static let profileCount = 4
     private static let spacesPerProfile = 5          // 20 spaces
@@ -30,7 +30,7 @@ final class SessionSaveBenchmarkTests: XCTestCase {
     private static let favoritesPerProfile = 50      // 200 favourites, a fifth of them live
     private static let interactionStateBytes = 4096
 
-    private final class CommitCounter: TransactionObserver {
+    @MainActor private final class CommitCounter: TransactionObserver {
         private(set) var commits = 0
         func observes(eventsOfKind eventKind: DatabaseEventKind) -> Bool { true }
         func databaseDidChange(with event: DatabaseEvent) {}
@@ -40,7 +40,7 @@ final class SessionSaveBenchmarkTests: XCTestCase {
 
     /// Median of `runs`, in milliseconds — median rather than mean so one
     /// scheduling hiccup does not decide the number.
-    private func measure(_ label: String, runs: Int = 9, _ body: () -> Void) {
+    @MainActor private func measure(_ label: String, runs: Int = 9, _ body: () -> Void) {
         var samples: [Double] = []
         for _ in 0 ..< runs {
             let start = CFAbsoluteTimeGetCurrent()
@@ -52,13 +52,13 @@ final class SessionSaveBenchmarkTests: XCTestCase {
                      label, samples[samples.count / 2], samples[0], samples[samples.count - 1]))
     }
 
-    private func makeSleepingTab(spaceID: UUID, url: String, seed: Int) -> BrowserTab {
+    @MainActor private func makeSleepingTab(spaceID: UUID, url: String, seed: Int) -> BrowserTab {
         BrowserTab(id: UUID(), title: "Tab \(seed)", url: URL(string: url), faviconURL: nil,
                    cachedInteractionState: Data(repeating: UInt8(truncatingIfNeeded: seed), count: Self.interactionStateBytes),
                    spaceID: spaceID)
     }
 
-    func testSessionSaveBenchmark() throws {
+    @MainActor func testSessionSaveBenchmark() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["SESSION_SAVE_BENCH"] == "1",
                           "session save benchmarks are env-gated: TEST_RUNNER_SESSION_SAVE_BENCH=1")
 

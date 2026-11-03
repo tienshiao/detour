@@ -12,15 +12,14 @@ import GRDB
 /// `ExtensionManager.setEnabled` overloads — applies that one rule. These tests
 /// drive the real toggles against real Profiles in the shared `TabStore` and
 /// `AppDatabase` (the test scheme isolates the data directory).
-@MainActor
-final class ExtensionEnabledStateTests: XCTestCase {
+nonisolated final class ExtensionEnabledStateTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
     private var createdProfiles: [Profile] = []
     private var createdSpaceIDs: [UUID] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for spaceID in createdSpaceIDs {
             guard let space = TabStore.shared.space(withID: spaceID) else { continue }
             for tab in space.tabs + space.pinnedTabs { tab.teardown() }
@@ -34,7 +33,7 @@ final class ExtensionEnabledStateTests: XCTestCase {
                 profile.unloadExtension(id: id)
             }
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
-            try? AppDatabase.shared.dbQueue.write { db in
+            try? await AppDatabase.shared.dbQueue.write { db in
                 _ = try ProfileExtensionRecord
                     .filter(Column("extensionID") == id)
                     .deleteAll(db)
@@ -52,14 +51,14 @@ final class ExtensionEnabledStateTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
     /// A minimal MV3 extension with an options page and no background content,
     /// installed (DB row) as globally enabled.
-    private func makeTestExtension(named name: String) async throws -> WebExtension {
+    @MainActor private func makeTestExtension(named name: String) async throws -> WebExtension {
         let ext = try await makeOptionsPageTestExtension(idPrefix: "enabled-state-\(name)",
                                                          name: "Enabled State Test \(name)")
         tempDirs.append(ext.basePath)
@@ -70,21 +69,21 @@ final class ExtensionEnabledStateTests: XCTestCase {
         return ext
     }
 
-    private func makeProfile(_ name: String) -> Profile {
+    @MainActor private func makeProfile(_ name: String) -> Profile {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         _ = profile.extensionController
         return profile
     }
 
-    private func makeSpace(_ name: String, in profile: Profile) -> Space {
+    @MainActor private func makeSpace(_ name: String, in profile: Profile) -> Space {
         let space = TabStore.shared.addSpace(name: name, emoji: "🧪", colorHex: "007AFF",
                                              profileID: profile.id)
         createdSpaceIDs.append(space.id)
         return space
     }
 
-    private func openOptionsPage(_ ext: WebExtension, in profile: Profile, space: Space) throws -> BrowserTab {
+    @MainActor private func openOptionsPage(_ ext: WebExtension, in profile: Profile, space: Space) throws -> BrowserTab {
         let context = try XCTUnwrap(profile.extensionContexts[ext.id],
                                     "precondition: the context should be loaded in \(profile.name)")
         let pageURL = try XCTUnwrap(URL(string: "options.html", relativeTo: context.baseURL)?.absoluteURL)
@@ -94,11 +93,11 @@ final class ExtensionEnabledStateTests: XCTestCase {
         return tab
     }
 
-    private func isLoaded(_ ext: WebExtension, in profile: Profile) -> Bool {
+    @MainActor private func isLoaded(_ ext: WebExtension, in profile: Profile) -> Bool {
         profile.extensionContexts[ext.id] != nil
     }
 
-    private func assertLoaded(_ ext: WebExtension, in profile: Profile, _ expected: Bool,
+    @MainActor private func assertLoaded(_ ext: WebExtension, in profile: Profile, _ expected: Bool,
                               _ message: String, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(isLoaded(ext, in: profile), expected, "\(profile.name): \(message)",
                        file: file, line: line)
@@ -111,13 +110,13 @@ final class ExtensionEnabledStateTests: XCTestCase {
                        file: file, line: line)
     }
 
-    private func profileRow(_ ext: WebExtension, _ profile: Profile) -> Bool {
+    @MainActor private func profileRow(_ ext: WebExtension, _ profile: Profile) -> Bool {
         AppDatabase.shared.isExtensionEnabledByProfile(extensionID: ext.id, profileID: profile.id.uuidString)
     }
 
     // MARK: - AC #1: global enable respects per-profile rows
 
-    func testGlobalReEnableSkipsAProfileThatTurnedTheExtensionOff() async throws {
+    @MainActor func testGlobalReEnableSkipsAProfileThatTurnedTheExtensionOff() async throws {
         let ext = try await makeTestExtension(named: "global-reenable")
         let a = makeProfile("Enabled State A")
         let b = makeProfile("Enabled State B")
@@ -141,7 +140,7 @@ final class ExtensionEnabledStateTests: XCTestCase {
         assertLoaded(ext, in: b, false, "a global enable must not load it where the profile turned it off")
     }
 
-    func testGlobalEnableLoadsWhereTheProfileRowIsExplicitlyOn() async throws {
+    @MainActor func testGlobalEnableLoadsWhereTheProfileRowIsExplicitlyOn() async throws {
         let ext = try await makeTestExtension(named: "explicit-on")
         let a = makeProfile("Enabled State Explicit A")
         let b = makeProfile("Enabled State Explicit B")
@@ -156,7 +155,7 @@ final class ExtensionEnabledStateTests: XCTestCase {
 
     // MARK: - AC #2: per-profile toggles while globally disabled
 
-    func testPerProfileEnableWhileGloballyDisabledDoesNotLoad() async throws {
+    @MainActor func testPerProfileEnableWhileGloballyDisabledDoesNotLoad() async throws {
         let ext = try await makeTestExtension(named: "profile-enable-while-off")
         let a = makeProfile("Enabled State Off A")
         let b = makeProfile("Enabled State Off B")
@@ -173,7 +172,7 @@ final class ExtensionEnabledStateTests: XCTestCase {
         assertLoaded(ext, in: b, true, "the saved choice takes effect on global enable")
     }
 
-    func testPerProfileDisableWhileGloballyDisabledIsHonouredOnReEnable() async throws {
+    @MainActor func testPerProfileDisableWhileGloballyDisabledIsHonouredOnReEnable() async throws {
         let ext = try await makeTestExtension(named: "profile-disable-while-off")
         let a = makeProfile("Enabled State Off Disable A")
         let b = makeProfile("Enabled State Off Disable B")
@@ -188,7 +187,7 @@ final class ExtensionEnabledStateTests: XCTestCase {
         assertLoaded(ext, in: b, true, "an untouched profile loads it")
     }
 
-    func testRepeatedTogglesAreIdempotent() async throws {
+    @MainActor func testRepeatedTogglesAreIdempotent() async throws {
         let ext = try await makeTestExtension(named: "idempotent")
         let a = makeProfile("Enabled State Idempotent")
         ExtensionManager.shared.loadExtensionsIntoProfile(a)
@@ -202,7 +201,7 @@ final class ExtensionEnabledStateTests: XCTestCase {
 
     // MARK: - Launch path uses the same rule
 
-    func testLaunchLoadAppliesBothFlags() async throws {
+    @MainActor func testLaunchLoadAppliesBothFlags() async throws {
         let ext = try await makeTestExtension(named: "launch")
         let a = makeProfile("Enabled State Launch A")
         let b = makeProfile("Enabled State Launch B")
@@ -228,7 +227,7 @@ final class ExtensionEnabledStateTests: XCTestCase {
 
     // MARK: - Pages close only in the profile that unloaded
 
-    func testDisablingInOneProfileClosesOnlyThatProfilesPages() async throws {
+    @MainActor func testDisablingInOneProfileClosesOnlyThatProfilesPages() async throws {
         let ext = try await makeTestExtension(named: "pages")
         let a = makeProfile("Enabled State Pages A")
         let b = makeProfile("Enabled State Pages B")
@@ -258,7 +257,7 @@ final class ExtensionEnabledStateTests: XCTestCase {
 
     // MARK: - Pinned toolbar icons follow the rule
 
-    func testPinnedExtensionsHideWhereTheExtensionIsDisabled() async throws {
+    @MainActor func testPinnedExtensionsHideWhereTheExtensionIsDisabled() async throws {
         let ext = try await makeTestExtension(named: "pinned")
         let a = makeProfile("Enabled State Pinned")
         AppDatabase.shared.toggleExtensionPinned(extensionID: ext.id, profileID: a.id.uuidString)

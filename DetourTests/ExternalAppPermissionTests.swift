@@ -4,12 +4,12 @@ import GRDB
 
 /// Confirming external application URLs (TASK-84): the remembered-decision
 /// store and the prompt-or-not policy.
-final class ExternalAppPermissionStoreTests: XCTestCase {
+nonisolated final class ExternalAppPermissionStoreTests: XCTestCase {
 
     private let profileA = UUID()
     private let profileB = UUID()
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         for id in [profileA, profileB] {
             db.saveProfile(ProfileRecord(id: id.uuidString, name: "P", userAgentMode: 0, customUserAgent: nil,
@@ -22,7 +22,7 @@ final class ExternalAppPermissionStoreTests: XCTestCase {
         return db
     }
 
-    func testAllowIsRememberedForThatOriginAndScheme() throws {
+    @MainActor func testAllowIsRememberedForThatOriginAndScheme() throws {
         let store = ExternalAppPermissionStore(database: try makeDatabase())
         XCTAssertFalse(store.isAllowed(origin: "https://zoom.us", scheme: "zoommtg", profileID: profileA))
 
@@ -33,7 +33,7 @@ final class ExternalAppPermissionStoreTests: XCTestCase {
                       "origin and scheme compare case-insensitively")
     }
 
-    func testDecisionIsIsolatedPerOriginSchemeAndProfile() throws {
+    @MainActor func testDecisionIsIsolatedPerOriginSchemeAndProfile() throws {
         let store = ExternalAppPermissionStore(database: try makeDatabase())
         store.allow(origin: "https://zoom.us", scheme: "zoommtg", profileID: profileA, isPrivateProfile: false)
 
@@ -44,7 +44,7 @@ final class ExternalAppPermissionStoreTests: XCTestCase {
         XCTAssertFalse(store.isAllowed(origin: "https://zoom.us", scheme: "zoommtg", profileID: profileB))
     }
 
-    func testDecisionsPersistAcrossReload() throws {
+    @MainActor func testDecisionsPersistAcrossReload() throws {
         let db = try makeDatabase()
         ExternalAppPermissionStore(database: db)
             .allow(origin: "https://zoom.us", scheme: "zoommtg", profileID: profileA, isPrivateProfile: false)
@@ -55,7 +55,7 @@ final class ExternalAppPermissionStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.count(for: profileB), 0)
     }
 
-    func testPrivateProfileDecisionIsSessionOnlyAndNeverWritten() throws {
+    @MainActor func testPrivateProfileDecisionIsSessionOnlyAndNeverWritten() throws {
         let db = try makeDatabase()
         let privateID = TabStore.incognitoProfileID
         let store = ExternalAppPermissionStore(database: db)
@@ -68,7 +68,7 @@ final class ExternalAppPermissionStoreTests: XCTestCase {
             .isAllowed(origin: "https://zoom.us", scheme: "zoommtg", profileID: privateID))
     }
 
-    func testClearAllRemovesOnlyThatProfilesDecisions() throws {
+    @MainActor func testClearAllRemovesOnlyThatProfilesDecisions() throws {
         let db = try makeDatabase()
         let store = ExternalAppPermissionStore(database: db)
         store.allow(origin: "https://zoom.us", scheme: "zoommtg", profileID: profileA, isPrivateProfile: false)
@@ -85,9 +85,9 @@ final class ExternalAppPermissionStoreTests: XCTestCase {
     }
 }
 
-final class ExternalAppLaunchPolicyTests: XCTestCase {
+nonisolated final class ExternalAppLaunchPolicyTests: XCTestCase {
 
-    private func decide(hasHandler: Bool = true, isAllowed: Bool = false, isHostedInWindow: Bool = true,
+    @MainActor private func decide(hasHandler: Bool = true, isAllowed: Bool = false, isHostedInWindow: Bool = true,
                         isMainFrameRequest: Bool = true,
                         isSheetShowing: Bool = false, origin: String? = "https://zoom.us",
                         isPrivateProfile: Bool = false) -> ExternalAppLaunchDecision {
@@ -97,17 +97,17 @@ final class ExternalAppLaunchPolicyTests: XCTestCase {
                                        origin: origin, isPrivateProfile: isPrivateProfile)
     }
 
-    func testUnrememberedRequestPromptsWithAlwaysAllow() {
+    @MainActor func testUnrememberedRequestPromptsWithAlwaysAllow() {
         XCTAssertEqual(decide(), .prompt(canRemember: true))
     }
 
-    func testRememberedOriginOpensWithoutPrompt() {
+    @MainActor func testRememberedOriginOpensWithoutPrompt() {
         XCTAssertEqual(decide(isAllowed: true), .open)
         XCTAssertEqual(decide(isAllowed: true, isHostedInWindow: false), .open)
         XCTAssertEqual(decide(isAllowed: true, isSheetShowing: true), .open)
     }
 
-    func testMissingHandlerReportsInsteadOfPrompting() {
+    @MainActor func testMissingHandlerReportsInsteadOfPrompting() {
         XCTAssertEqual(decide(hasHandler: false), .reportNoHandler)
         XCTAssertEqual(decide(hasHandler: false, isAllowed: true), .reportNoHandler)
         XCTAssertEqual(decide(hasHandler: false, isHostedInWindow: false), .ignore,
@@ -116,30 +116,30 @@ final class ExternalAppLaunchPolicyTests: XCTestCase {
                        "a subframe (an app probe) does not toast on page load")
     }
 
-    func testSubframeRequestWithHandlerStillPrompts() {
+    @MainActor func testSubframeRequestWithHandlerStillPrompts() {
         XCTAssertEqual(decide(isMainFrameRequest: false), .prompt(canRemember: true))
     }
 
-    func testBackgroundRequestIsDropped() {
+    @MainActor func testBackgroundRequestIsDropped() {
         XCTAssertEqual(decide(isHostedInWindow: false), .ignore)
     }
 
-    func testRequestWhileASheetIsUpIsDropped() {
+    @MainActor func testRequestWhileASheetIsUpIsDropped() {
         XCTAssertEqual(decide(isSheetShowing: true), .ignore)
     }
 
-    func testPrivateProfileCannotRemember() {
+    @MainActor func testPrivateProfileCannotRemember() {
         XCTAssertEqual(decide(isPrivateProfile: true), .prompt(canRemember: false))
     }
 
-    func testOriginlessRequestPromptsWithoutRememberingAndIsNeverAutoOpened() {
+    @MainActor func testOriginlessRequestPromptsWithoutRememberingAndIsNeverAutoOpened() {
         XCTAssertEqual(decide(origin: nil), .prompt(canRemember: false))
         XCTAssertEqual(decide(isAllowed: true, origin: nil), .prompt(canRemember: false))
     }
 
     // MARK: - Which schemes are an application's (TASK-159)
 
-    func testSchemesAWebViewLoadsItselfAreNotAnApplications() {
+    @MainActor func testSchemesAWebViewLoadsItselfAreNotAnApplications() {
         for scheme in ["http", "https", "about", "blob", "data", "webkit-extension", ErrorPage.scheme] {
             XCTAssertFalse(ExternalAppLaunchPolicy.isForExternalApp(scheme: scheme), scheme)
         }
@@ -147,18 +147,18 @@ final class ExternalAppLaunchPolicyTests: XCTestCase {
 
     /// A `data:` URL is a document. Treated as an application's, a tab on
     /// screen never loaded one and a `data:` frame was dropped.
-    func testADataURLIsLoadedNotHandedToAnApplication() {
+    @MainActor func testADataURLIsLoadedNotHandedToAnApplication() {
         XCTAssertFalse(ExternalAppLaunchPolicy.isForExternalApp(scheme: "data"))
         XCTAssertFalse(ExternalAppLaunchPolicy.isForExternalApp(scheme: "DATA"))
     }
 
-    func testOtherSchemesAreAnApplications() {
+    @MainActor func testOtherSchemesAreAnApplications() {
         for scheme in ["mailto", "zoommtg", "itms-apps", "slack", "tel"] {
             XCTAssertTrue(ExternalAppLaunchPolicy.isForExternalApp(scheme: scheme), scheme)
         }
     }
 
-    func testOriginKey() {
+    @MainActor func testOriginKey() {
         XCTAssertEqual(ExternalAppLaunchPolicy.origin(protocol: "https", host: "Zoom.US", port: 0), "https://zoom.us")
         XCTAssertEqual(ExternalAppLaunchPolicy.origin(protocol: "http", host: "localhost", port: 3000),
                        "http://localhost:3000")

@@ -22,8 +22,7 @@ import GRDB
 ///  3. real extension contexts — an extension page (`webkit.messageHandlers`)
 ///     and a service worker (`runtime.sendNativeMessage`), promise and callback
 ///     form, in both profiles.
-@MainActor
-final class ExtensionHistoryScopeTests: XCTestCase {
+nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
 
     // MARK: - Fixture bookkeeping
 
@@ -38,14 +37,14 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     /// the rest of the test process: releasing one takes its process pool down
     /// with it, and WebKit traps when that happens inside an IPC dispatch (see
     /// `ExtensionPrivateStoreTests`).
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         previousLastActiveSpaceID = ExtensionManager.shared.lastActiveSpaceID
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for webView in openWebViews {
             webView.stopLoading()
             webView.loadHTMLString("", baseURL: nil)
@@ -82,7 +81,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     /// in the promise form or the callback form and reports how it settled.
     /// `message.query` travels as JSON; a message with no `query` key calls
     /// `search(undefined)`.
-    private static let workerJS = ExtensionAPIPolyfill.polyfillJS + """
+    @MainActor private static let workerJS = ExtensionAPIPolyfill.polyfillJS + """
 
     const unhandled = [];
     self.addEventListener('unhandledrejection', (event) => {
@@ -123,7 +122,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     /// An MV3 extension with a module service worker and one page, registered
     /// in `ExtensionManager` the way an installed extension is (the handler's
     /// permission gate reads the manifest from there).
-    private func makeExtension(permissions: [String]) async throws -> WebExtension {
+    @MainActor private func makeExtension(permissions: [String]) async throws -> WebExtension {
         let id = "history-scope-\(UUID().uuidString.prefix(8))"
         let permissionsJSON = String(decoding: try JSONSerialization.data(withJSONObject: permissions),
                                      as: UTF8.self)
@@ -148,7 +147,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
         return ext
     }
 
-    private func makeDatabase() throws -> HistoryDatabase {
+    @MainActor private func makeDatabase() throws -> HistoryDatabase {
         var config = Configuration()
         config.foreignKeysEnabled = true
         return try HistoryDatabase(dbQueue: try DatabaseQueue(configuration: config)) // in-memory
@@ -156,7 +155,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
 
     /// A persistent profile with one space, its extension controller built and
     /// its handler reading `database`.
-    private func makeProfile(_ name: String, database: HistoryDatabase) throws -> (profile: Profile, space: Space) {
+    @MainActor private func makeProfile(_ name: String, database: HistoryDatabase) throws -> (profile: Profile, space: Space) {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         let space = addSpace(for: profile, name: "\(name) Space")
@@ -164,7 +163,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
         return (profile, space)
     }
 
-    private func addSpace(for profile: Profile, name: String) -> Space {
+    @MainActor private func addSpace(for profile: Profile, name: String) -> Space {
         let space = TabStore.shared.addSpace(name: name, emoji: "H", colorHex: "#000000", profileID: profile.id)
         createdSpaceIDs.append(space.id)
         return space
@@ -172,14 +171,14 @@ final class ExtensionHistoryScopeTests: XCTestCase {
 
     /// A Private profile of its own (a random id, never the built-in one whose
     /// rows other suites share), with the same `isIncognito` wiring.
-    private func makePrivateProfile(_ name: String, database: HistoryDatabase) throws -> Profile {
+    @MainActor private func makePrivateProfile(_ name: String, database: HistoryDatabase) throws -> Profile {
         let profile = Profile(name: name, isIncognito: true)
         createdProfiles.append(profile)
         try useDatabase(database, in: profile)
         return profile
     }
 
-    private func useDatabase(_ database: HistoryDatabase, in profile: Profile) throws {
+    @MainActor private func useDatabase(_ database: HistoryDatabase, in profile: Profile) throws {
         // Force the lazy controller, and with it the polyfill handler.
         _ = profile.extensionController
         try XCTUnwrap(profile.polyfillHandler, "extensionController must build a polyfill handler")
@@ -189,7 +188,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     /// Inserts a visit with a caller-chosen time, as `HistoryDatabaseTests`
     /// does: the shared `historyURL` row moves with every visit from anywhere,
     /// like the real upsert, so the aggregate and a profile's own values differ.
-    private func seedVisit(_ db: HistoryDatabase, url: String, title: String, space: String,
+    @MainActor private func seedVisit(_ db: HistoryDatabase, url: String, title: String, space: String,
                            visitTime: Double, typed: Bool = false) throws {
         try db.dbQueue.write { conn in
             let urlID = try Int64.fetchOne(conn, sql: """
@@ -222,7 +221,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     ///
     /// The shared `historyURL` row for `shared` therefore says: 5 visits, last
     /// at base-50, titled "Inbox (9) - work" — what profile A must never see.
-    private func seedTwoProfiles(_ db: HistoryDatabase, spaceA: Space, spaceB: Space, base: Double) throws {
+    @MainActor private func seedTwoProfiles(_ db: HistoryDatabase, spaceA: Space, spaceB: Space, base: Double) throws {
         let a = spaceA.id.uuidString
         let b = spaceB.id.uuidString
         try seedVisit(db, url: Self.onlyA, title: "Only A notes", space: a, visitTime: base - 500)
@@ -234,12 +233,12 @@ final class ExtensionHistoryScopeTests: XCTestCase {
         try seedVisit(db, url: Self.shared, title: "Inbox (9) - work", space: b, visitTime: base - 50)
     }
 
-    private static func wholeSecondBase() -> Double {
+    @MainActor private static func wholeSecondBase() -> Double {
         Date().timeIntervalSince1970.rounded(.down)
     }
 
     /// One history item as an extension receives it.
-    private struct Item: Equatable {
+    @MainActor private struct Item: Equatable {
         var url: String
         var title: String
         var visitCount: Int
@@ -270,21 +269,21 @@ final class ExtensionHistoryScopeTests: XCTestCase {
         }
     }
 
-    private func items(_ value: Any?, file: StaticString = #filePath, line: UInt = #line) throws -> [Item] {
+    @MainActor private func items(_ value: Any?, file: StaticString = #filePath, line: UInt = #line) throws -> [Item] {
         let array = try XCTUnwrap(value as? [Any], "expected an array of history items, got \(String(describing: value))",
                                   file: file, line: line)
         return try array.map { try XCTUnwrap(Item($0), "not a history item: \($0)", file: file, line: line) }
     }
 
     /// What profile A must get for `{ text: '' }`, newest of its own visits first.
-    private func expectedForA(base: Double) -> [Item] {
+    @MainActor private func expectedForA(base: Double) -> [Item] {
         [Item(url: Self.shared, title: "Inbox (2) - home", visitCount: 2, typedCount: 1,
               lastVisitTime: (base - 200) * 1000),
          Item(url: Self.onlyA, title: "Only A notes", visitCount: 1, typedCount: 0,
               lastVisitTime: (base - 500) * 1000)]
     }
 
-    private func expectedForB(base: Double) -> [Item] {
+    @MainActor private func expectedForB(base: Double) -> [Item] {
         [Item(url: Self.shared, title: "Inbox (9) - work", visitCount: 3, typedCount: 0,
               lastVisitTime: (base - 50) * 1000),
          Item(url: Self.onlyB, title: "Payroll secrets", visitCount: 1, typedCount: 0,
@@ -294,19 +293,20 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     // MARK: Handler round trips
 
     /// Await one `handleNativeMessage` round trip for `history.search`.
-    private func search(_ handler: ExtensionPolyfillHandler, extensionID: String,
+    @MainActor private func search(_ handler: ExtensionPolyfillHandler, extensionID: String,
                         params: [String: Any]) async -> (result: Any?, error: String?) {
-        await withCheckedContinuation { continuation in
+        let reply = await withCheckedContinuation { (continuation: CheckedContinuation<BridgeReply, Never>) in
             handler.handleNativeMessage(
                 ["type": "history.search", "extensionID": extensionID, "params": params],
                 verifiedExtensionID: extensionID
             ) { result, error in
-                continuation.resume(returning: (result, error?.localizedDescription))
+                continuation.resume(returning: BridgeReply(result: result, error: error?.localizedDescription))
             }
         }
+        return (reply.result, reply.error)
     }
 
-    private func results(_ reply: (result: Any?, error: String?),
+    @MainActor private func results(_ reply: (result: Any?, error: String?),
                          file: StaticString = #filePath, line: UInt = #line) throws -> [Item] {
         XCTAssertNil(reply.error, "history.search failed: \(reply.error ?? "")", file: file, line: line)
         return try items((reply.result as? [String: Any])?["results"], file: file, line: line)
@@ -314,7 +314,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
 
     // MARK: Real-context round trips
 
-    private func makePage(for context: WKWebExtensionContext) async throws -> WKWebView {
+    @MainActor private func makePage(for context: WKWebExtensionContext) async throws -> WKWebView {
         let config = try XCTUnwrap(context.webViewConfiguration,
                                    "webViewConfiguration is nil — context not loaded in a controller")
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
@@ -325,7 +325,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
 
     /// The extension loaded into `profile`, an extension page of it, and its
     /// worker awake.
-    private func loadPage(_ ext: WebExtension, in profile: Profile) async throws -> WKWebView {
+    @MainActor private func loadPage(_ ext: WebExtension, in profile: Profile) async throws -> WKWebView {
         let context = try loadTestContext(ext, in: profile)
         let page = try await makePage(for: context)
         context.loadBackgroundContent { error in
@@ -338,7 +338,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
         return page
     }
 
-    private func evalObject(_ js: String, in webView: WKWebView) async throws -> [String: Any] {
+    @MainActor private func evalObject(_ js: String, in webView: WKWebView) async throws -> [String: Any] {
         let raw = try await webView.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
         let json = try XCTUnwrap(raw as? String, "expected a JSON string, got \(String(describing: raw))")
         return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
@@ -346,18 +346,18 @@ final class ExtensionHistoryScopeTests: XCTestCase {
 
     /// `chrome.history.search(<arguments>)` from the page itself, promise form.
     /// `arguments` is JS source, so a test can pass nothing at all.
-    private func pagePromise(_ arguments: String, in page: WKWebView) async throws -> [String: Any] {
+    @MainActor private func pagePromise(_ arguments: String, in page: WKWebView) async throws -> [String: Any] {
         try await evalObject(promiseOutcomeJS("chrome.history.search(\(arguments))"), in: page)
     }
 
     /// The callback form from the page: `search(<arguments>, cb)`.
-    private func pageCallback(_ arguments: String, in page: WKWebView) async throws -> [String: Any] {
+    @MainActor private func pageCallback(_ arguments: String, in page: WKWebView) async throws -> [String: Any] {
         try await evalObject(callbackOutcomeJS(call: "return chrome.history.search(\(arguments), cb);"), in: page)
     }
 
     /// One history call made by the worker, reported back through
     /// `runtime.sendMessage`. `query` nil sends no `query` key.
-    private func workerOutcome(_ form: String, query: Any?, via page: WKWebView,
+    @MainActor private func workerOutcome(_ form: String, query: Any?, via page: WKWebView,
                                file: StaticString = #filePath, line: UInt = #line) async throws -> [String: Any] {
         var message: [String: Any] = ["type": form]
         if let query { message["query"] = query }
@@ -368,7 +368,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     }
 
     /// The items a successful callback-form call from the page handed its callback.
-    private func callbackItems(_ outcome: [String: Any],
+    @MainActor private func callbackItems(_ outcome: [String: Any],
                                file: StaticString = #filePath, line: UInt = #line) throws -> [Item] {
         XCTAssertEqual(outcome["timedOut"] as? Bool, false, "the callback must run: \(outcome)", file: file, line: line)
         XCTAssertEqual(outcome["argc"] as? Int, 1, file: file, line: line)
@@ -386,13 +386,13 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     /// back as `Invalid call to runtime.sendNativeMessage(). <Text>.`, with
     /// the first letter capitalised and a full stop added (seen 2026-10-04:
     /// "History permission not declared.").
-    private func carries(_ message: String, _ expected: String) -> Bool {
+    @MainActor private func carries(_ message: String, _ expected: String) -> Bool {
         message.range(of: expected, options: .caseInsensitive) != nil
     }
 
     /// A callback-form call that must have failed: the callback ran with no
     /// arguments and `runtime.lastError` carried `expected`.
-    private func assertCallbackFailed(_ outcome: [String: Any], containing expected: String, _ what: String,
+    @MainActor private func assertCallbackFailed(_ outcome: [String: Any], containing expected: String, _ what: String,
                                       file: StaticString = #filePath, line: UInt = #line) {
         if let timedOut = outcome["timedOut"] as? Bool {
             XCTAssertFalse(timedOut, "\(what): the callback must run on failure", file: file, line: line)
@@ -405,7 +405,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
         XCTAssertEqual(outcome["unhandled"] as? [String], [], "\(what): no stray rejection", file: file, line: line)
     }
 
-    private func assertRejected(_ outcome: [String: Any], containing expected: String, _ what: String,
+    @MainActor private func assertRejected(_ outcome: [String: Any], containing expected: String, _ what: String,
                                 file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(outcome["settled"] as? String, "rejected", "\(what): \(outcome)", file: file, line: line)
         let message = outcome["message"] as? String ?? ""
@@ -420,13 +420,13 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     private static let parserNow = 1_900_000_000.0
     private static let dayBeforeParserNow = parserNow - 86_400
 
-    private func parse(_ params: [String: Any]) -> Result<ExtensionPolyfillHandler.HistorySearchQuery,
+    @MainActor private func parse(_ params: [String: Any]) -> Result<ExtensionPolyfillHandler.HistorySearchQuery,
                                                           ExtensionPolyfillHandler.PolyfillArgumentError> {
         ExtensionPolyfillHandler.historySearchQuery(from: params,
                                                     now: Date(timeIntervalSince1970: Self.parserNow))
     }
 
-    func testQueryParserAcceptsAChromeQuery() throws {
+    @MainActor func testQueryParserAcceptsAChromeQuery() throws {
         let parsed = try parse([
             "query": ["text": "inbox", "maxResults": 25, "startTime": 1_000_000.0, "endTime": 2_500_000] as [String: Any],
         ]).get()
@@ -434,7 +434,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
                        "times arrive in milliseconds and are stored in seconds")
     }
 
-    func testQueryParserAppliesChromesDefaults() throws {
+    @MainActor func testQueryParserAppliesChromesDefaults() throws {
         let parsed = try parse(["query": ["text": ""]]).get()
         XCTAssertEqual(parsed, .init(text: "", maxResults: 100, startTime: Self.dayBeforeParserNow, endTime: nil),
                        "100 results, from 24 hours before now, no upper bound")
@@ -454,7 +454,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     /// before now, whatever else the query says; given, it is taken as given,
     /// and 0 — how an extension asks for all of the history — is no lower
     /// bound at all.
-    func testQueryParserReadsAnOmittedStartTimeAsTheLastDay() throws {
+    @MainActor func testQueryParserReadsAnOmittedStartTimeAsTheLastDay() throws {
         func startTime(_ query: [String: Any]) throws -> Double? {
             try parse(["query": query]).get().startTime
         }
@@ -473,7 +473,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
         XCTAssertNil(try startTime(["text": "", "startTime": -1]), "nothing was visited before 1970 either")
     }
 
-    func testQueryParserRefusesBadArguments() {
+    @MainActor func testQueryParserRefusesBadArguments() {
         let cases: [(params: [String: Any], expected: String)] = [
             ([:], "query must be an object"),
             (["query": "inbox"], "query must be an object"),
@@ -503,7 +503,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
 
     /// AC #1 at the handler: profile A's request returns A's URLs with A's own
     /// count, last-visit time and title; profile B's the mirror image.
-    func testHandlerAnswersFromItsOwnProfileOnly() async throws {
+    @MainActor func testHandlerAnswersFromItsOwnProfileOnly() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["history"])
         let a = try makeProfile("History Scope A", database: db)
@@ -534,7 +534,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     }
 
     /// A profile is every space that currently uses it.
-    func testHandlerScopeIsEverySpaceOfTheProfile() async throws {
+    @MainActor func testHandlerScopeIsEverySpaceOfTheProfile() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["history"])
         let a = try makeProfile("History Scope Two Spaces", database: db)
@@ -553,7 +553,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
 
     /// `startTime` / `endTime` are milliseconds, select by the profile's own
     /// visits, and `maxResults` caps the list.
-    func testHandlerAppliesTheTimeRangeAndTheLimitInScope() async throws {
+    @MainActor func testHandlerAppliesTheTimeRangeAndTheLimitInScope() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["history"])
         let a = try makeProfile("History Scope Range A", database: db)
@@ -585,7 +585,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     /// TASK-153: a query without `startTime` covers the 24 hours before now,
     /// as Chrome's does, with the handler's clock injected so the edge is
     /// exact. `startTime: 0` is how an extension asks for everything.
-    func testHandlerReadsAnOmittedStartTimeAsTheLastDay() async throws {
+    @MainActor func testHandlerReadsAnOmittedStartTimeAsTheLastDay() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["history"])
         let a = try makeProfile("History Scope Default Range", database: db)
@@ -632,7 +632,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
 
     /// The Private profile records no history, so its extensions get none —
     /// and never another profile's, whatever the database holds.
-    func testHandlerInThePrivateProfileGetsNothing() async throws {
+    @MainActor func testHandlerInThePrivateProfileGetsNothing() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["history"])
         let a = try makeProfile("History Scope Regular", database: db)
@@ -655,7 +655,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
 
     /// A profile no space uses has no history; the handler must not fall
     /// through to the last-active space's profile.
-    func testHandlerInAProfileWithoutSpacesGetsNothing() async throws {
+    @MainActor func testHandlerInAProfileWithoutSpacesGetsNothing() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["history"])
         let a = try makeProfile("History Scope Populated", database: db)
@@ -673,7 +673,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
 
     /// Permission gate, both ways: without `history` in the manifest the
     /// request is refused before anything is read.
-    func testHandlerRefusesAnExtensionWithoutTheHistoryPermission() async throws {
+    @MainActor func testHandlerRefusesAnExtensionWithoutTheHistoryPermission() async throws {
         let db = try makeDatabase()
         let without = try await makeExtension(permissions: ["storage"])
         let with = try await makeExtension(permissions: ["history"])
@@ -690,7 +690,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
         XCTAssertEqual(allowed.map(\.url), [Self.onlyA])
     }
 
-    func testHandlerRejectsBadArguments() async throws {
+    @MainActor func testHandlerRejectsBadArguments() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["history"])
         let a = try makeProfile("History Scope Arguments", database: db)
@@ -718,7 +718,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     /// extension page and from its service worker, in the promise and the
     /// callback form. Each profile gets its own URLs with its own counts,
     /// times and titles, and nothing of the other's.
-    func testBothTransportsReturnOnlyTheCallingProfilesHistory() async throws {
+    @MainActor func testBothTransportsReturnOnlyTheCallingProfilesHistory() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["history"])
         let a = try makeProfile("History Scope Live A", database: db)
@@ -769,7 +769,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     /// 24 hours, `startTime: 0` with everything, from an extension page and
     /// from the worker, in both forms. The clock is the real one here, so the
     /// two visits sit hours away from the edge.
-    func testAnOmittedStartTimeCoversTheLastDayFromBothTransports() async throws {
+    @MainActor func testAnOmittedStartTimeCoversTheLastDayFromBothTransports() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["history"])
         let a = try makeProfile("History Scope Live Range", database: db)
@@ -816,7 +816,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     /// AC #3, permission gating: an extension that does not declare `history`
     /// is refused from both transports and in both forms, in a profile whose
     /// history has something to leak. The positive half is the test above.
-    func testAnExtensionWithoutTheHistoryPermissionIsRefusedFromBothTransports() async throws {
+    @MainActor func testAnExtensionWithoutTheHistoryPermissionIsRefusedFromBothTransports() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["storage"])
         let a = try makeProfile("History Scope Ungranted", database: db)
@@ -836,7 +836,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
     /// AC #3, bad arguments: rejected in the promise form, `runtime.lastError`
     /// in the callback form, from both transports — never answered with the
     /// whole history, which is what a lenient parse of `{}` used to do.
-    func testBadArgumentsAreRefusedFromBothTransportsInBothForms() async throws {
+    @MainActor func testBadArgumentsAreRefusedFromBothTransportsInBothForms() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["history"])
         let a = try makeProfile("History Scope Bad Arguments", database: db)
@@ -879,7 +879,7 @@ final class ExtensionHistoryScopeTests: XCTestCase {
 
     /// An extension running in the Private profile gets an empty list from
     /// both transports while a regular profile has history to leak.
-    func testAnExtensionInThePrivateProfileGetsNoHistoryFromEitherTransport() async throws {
+    @MainActor func testAnExtensionInThePrivateProfileGetsNoHistoryFromEitherTransport() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["history"])
         let a = try makeProfile("History Scope Beside Private", database: db)

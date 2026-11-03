@@ -6,40 +6,39 @@ import WebKit
 /// The per-site content blocker switch (TASK-69): the host decision, its
 /// persistence, and that turning it off for a navigation really stops WebKit
 /// blocking — plus the blocked-load counter WebKit itself reports.
-@MainActor
-final class ContentBlockerWhitelistTests: XCTestCase {
+nonisolated final class ContentBlockerWhitelistTests: XCTestCase {
 
     // MARK: - The decision
 
-    func testCoversMatchesTheExactHost() {
+    @MainActor func testCoversMatchesTheExactHost() {
         XCTAssertTrue(ContentBlockerWhitelist.covers(host: "example.com", whitelistedHosts: ["example.com"]))
     }
 
-    func testCoversMatchesASubdomainOfAStoredHost() {
+    @MainActor func testCoversMatchesASubdomainOfAStoredHost() {
         XCTAssertTrue(ContentBlockerWhitelist.covers(host: "www.example.com", whitelistedHosts: ["example.com"]))
         XCTAssertTrue(ContentBlockerWhitelist.covers(host: "a.b.example.com", whitelistedHosts: ["example.com"]))
     }
 
-    func testCoversDoesNotMatchAParentOfAStoredHost() {
+    @MainActor func testCoversDoesNotMatchAParentOfAStoredHost() {
         // Whitelisting www.example.com must not whitelist example.com itself.
         XCTAssertFalse(ContentBlockerWhitelist.covers(host: "example.com", whitelistedHosts: ["www.example.com"]))
     }
 
-    func testCoversDoesNotMatchASiblingSharingTheSuffix() {
+    @MainActor func testCoversDoesNotMatchASiblingSharingTheSuffix() {
         XCTAssertFalse(ContentBlockerWhitelist.covers(host: "notexample.com", whitelistedHosts: ["example.com"]))
         XCTAssertFalse(ContentBlockerWhitelist.covers(host: "evilexample.com", whitelistedHosts: ["example.com"]))
     }
 
-    func testCoversDoesNotMatchAnUnrelatedHost() {
+    @MainActor func testCoversDoesNotMatchAnUnrelatedHost() {
         XCTAssertFalse(ContentBlockerWhitelist.covers(host: "other.test", whitelistedHosts: ["example.com", "a.example"]))
     }
 
-    func testCoversIsCaseInsensitive() {
+    @MainActor func testCoversIsCaseInsensitive() {
         XCTAssertTrue(ContentBlockerWhitelist.covers(host: "WWW.Example.COM", whitelistedHosts: ["example.com"]))
         XCTAssertTrue(ContentBlockerWhitelist.covers(host: "www.example.com", whitelistedHosts: ["EXAMPLE.com"]))
     }
 
-    func testCoversRejectsAnEmptyHostAndEmptyEntries() {
+    @MainActor func testCoversRejectsAnEmptyHostAndEmptyEntries() {
         XCTAssertFalse(ContentBlockerWhitelist.covers(host: "", whitelistedHosts: ["example.com"]))
         XCTAssertFalse(ContentBlockerWhitelist.covers(host: "example.com", whitelistedHosts: []))
         XCTAssertFalse(ContentBlockerWhitelist.covers(host: "example.com", whitelistedHosts: [""]))
@@ -50,7 +49,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
     /// An in-memory database holding a row for `profileID` (and for each of
     /// `otherProfileIDs`), so the whitelist's foreign key holds without
     /// touching the shared test database.
-    private func makeDatabase(profileID: UUID, alsoSaving otherProfileIDs: [UUID] = []) throws -> AppDatabase {
+    @MainActor private func makeDatabase(profileID: UUID, alsoSaving otherProfileIDs: [UUID] = []) throws -> AppDatabase {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         for id in [profileID] + otherProfileIDs {
             db.saveProfile(ProfileRecord(
@@ -63,13 +62,13 @@ final class ContentBlockerWhitelistTests: XCTestCase {
         return db
     }
 
-    private func makeWhitelist() throws -> (ContentBlockerWhitelist, UUID, AppDatabase) {
+    @MainActor private func makeWhitelist() throws -> (ContentBlockerWhitelist, UUID, AppDatabase) {
         let profileID = UUID()
         let db = try makeDatabase(profileID: profileID)
         return (ContentBlockerWhitelist(store: SiteSettingsStore(database: db)), profileID, db)
     }
 
-    func testTogglingAHostStoresItAndSurvivesAReload() throws {
+    @MainActor func testTogglingAHostStoresItAndSurvivesAReload() throws {
         let (whitelist, profileID, database) = try makeWhitelist()
         XCTAssertFalse(whitelist.isWhitelisted(host: "example.com", profileID: profileID))
 
@@ -83,7 +82,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
                       "a stored host covers its subdomains after a reload too")
     }
 
-    func testTogglingAHostOffRemovesTheStoredEntry() throws {
+    @MainActor func testTogglingAHostOffRemovesTheStoredEntry() throws {
         let (whitelist, profileID, database) = try makeWhitelist()
         whitelist.toggleHost("example.com", profileID: profileID)
         whitelist.toggleHost("example.com", profileID: profileID)
@@ -95,7 +94,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
 
     /// Turning the switch back on for a subdomain has to drop the parent entry
     /// that covers it, or blocking would stay off and the switch would not take.
-    func testTogglingASubdomainOffAlsoRemovesTheParentEntryCoveringIt() throws {
+    @MainActor func testTogglingASubdomainOffAlsoRemovesTheParentEntryCoveringIt() throws {
         let (whitelist, profileID, database) = try makeWhitelist()
         whitelist.toggleHost("example.com", profileID: profileID)
         whitelist.toggleHost("www.example.com", profileID: profileID)  // already covered: turns it back on
@@ -109,7 +108,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
     /// A more specific `contentBlocking = true` row under a whitelisted parent
     /// means blocking is on for that host, so the switch has to turn it off
     /// there — not clear the parent and leave blocking on.
-    func testTogglingAHostWithAMoreSpecificBlockingOnOverrideTurnsBlockingOff() throws {
+    @MainActor func testTogglingAHostWithAMoreSpecificBlockingOnOverrideTurnsBlockingOff() throws {
         let profileID = UUID()
         let database = try makeDatabase(profileID: profileID)
         let store = SiteSettingsStore(database: database)
@@ -125,7 +124,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
                       "the parent entry is left alone")
     }
 
-    func testTogglingOneHostLeavesUnrelatedEntriesAlone() throws {
+    @MainActor func testTogglingOneHostLeavesUnrelatedEntriesAlone() throws {
         let (whitelist, profileID, _) = try makeWhitelist()
         whitelist.toggleHost("example.com", profileID: profileID)
         whitelist.toggleHost("other.test", profileID: profileID)
@@ -134,7 +133,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
         XCTAssertEqual(whitelist.hostsForProfile(profileID), ["other.test"])
     }
 
-    func testWhitelistEntriesAreScopedToTheProfile() throws {
+    @MainActor func testWhitelistEntriesAreScopedToTheProfile() throws {
         let (whitelist, profileID, _) = try makeWhitelist()
         whitelist.toggleHost("example.com", profileID: profileID)
         XCTAssertFalse(whitelist.isWhitelisted(host: "example.com", profileID: UUID()))
@@ -144,14 +143,14 @@ final class ContentBlockerWhitelistTests: XCTestCase {
 
     /// A database holding a normal profile and the Private profile's row (the
     /// app saves it under its fixed id), the whitelist and the store under it.
-    private func makePrivateFixture() throws -> (ContentBlockerWhitelist, SiteSettingsStore, UUID, AppDatabase) {
+    @MainActor private func makePrivateFixture() throws -> (ContentBlockerWhitelist, SiteSettingsStore, UUID, AppDatabase) {
         let profileID = UUID()
         let db = try makeDatabase(profileID: profileID, alsoSaving: [TabStore.incognitoProfileID])
         let store = SiteSettingsStore(database: db)
         return (ContentBlockerWhitelist(store: store), store, profileID, db)
     }
 
-    func testAPrivateWindowsSwitchWritesNothingToDisk() throws {
+    @MainActor func testAPrivateWindowsSwitchWritesNothingToDisk() throws {
         let (whitelist, _, _, db) = try makePrivateFixture()
         let privateID = TabStore.incognitoProfileID
 
@@ -166,7 +165,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
             .isWhitelisted(host: "example.com", profileID: privateID), "nothing survives a relaunch")
     }
 
-    func testTurningAPrivateWindowsSwitchBackOnClearsTheOverride() throws {
+    @MainActor func testTurningAPrivateWindowsSwitchBackOnClearsTheOverride() throws {
         let (whitelist, store, _, db) = try makePrivateFixture()
         let privateID = TabStore.incognitoProfileID
 
@@ -181,7 +180,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
 
     /// The navigation decision reads the store live, so ending the Private
     /// session is all it takes for the next Private window to block again.
-    func testClosingTheLastPrivateWindowTurnsBlockingBackOn() throws {
+    @MainActor func testClosingTheLastPrivateWindowTurnsBlockingBackOn() throws {
         let (whitelist, settings, profileID, db) = try makePrivateFixture()
         let privateID = TabStore.incognitoProfileID
         let tabStore = TabStore(appDB: db)
@@ -218,7 +217,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
 
     /// A rule list blocking anything under `blocked.example`, compiled in the
     /// test data directory's own store (TASK-36).
-    private func compileBlockingRuleList() async throws -> WKContentRuleList {
+    @MainActor private func compileBlockingRuleList() async throws -> WKContentRuleList {
         let identifier = "task69-block-\(UUID().uuidString.prefix(8))"
         let store = ContentBlockerStorage.current.ruleListStore
         let list: WKContentRuleList = try await withCheckedThrowingContinuation { continuation in
@@ -237,7 +236,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
         return list
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         if let identifier = compiledRuleListIdentifier {
             compiledRuleListIdentifier = nil
             let store = ContentBlockerStorage.current.ruleListStore
@@ -248,7 +247,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func makeWebView(with list: WKContentRuleList) -> WKWebView {
+    @MainActor private func makeWebView(with list: WKContentRuleList) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController.add(list)
@@ -257,11 +256,11 @@ final class ContentBlockerWhitelistTests: XCTestCase {
 
     /// The page HTML: one image WebKit must block, one it may try (and fail) to
     /// load — no network is needed, the block happens before the request.
-    private var pageHTML: String { "<html><body><img src='\(blockedImageURL.absoluteString)'></body></html>" }
+    @MainActor private var pageHTML: String { "<html><body><img src='\(blockedImageURL.absoluteString)'></body></html>" }
 
     /// WebKit reports a blocked subresource load through the private navigation
     /// delegate callback — exactly one blockedLoad for the image.
-    func testWebKitReportsTheBlockedSubresourceLoad() async throws {
+    @MainActor func testWebKitReportsTheBlockedSubresourceLoad() async throws {
         let list = try await compileBlockingRuleList()
         let delegate = RecordingNavigationDelegate()
         let webView = makeWebView(with: list)
@@ -281,7 +280,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
 
     /// With the host whitelisted, the production helper disables the content
     /// rule lists for that navigation and nothing is blocked at all.
-    func testDisablingContentBlockersForAWhitelistedHostStopsTheBlocking() async throws {
+    @MainActor func testDisablingContentBlockersForAWhitelistedHostStopsTheBlocking() async throws {
         let list = try await compileBlockingRuleList()
         let (whitelist, profileID, _) = try makeWhitelist()
         whitelist.toggleHost(pageURL.host!, profileID: profileID)
@@ -309,7 +308,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
     }
 
     /// The SPI both halves of the fix depend on is really there on this OS.
-    func testTheContentBlockerPreferencesSPIExists() {
+    @MainActor func testTheContentBlockerPreferencesSPIExists() {
         XCTAssertTrue(WKWebpagePreferences().responds(to: NSSelectorFromString("_setContentBlockersEnabled:")))
     }
 
@@ -317,7 +316,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
 
     /// WebKit reports a blocked load once per rule list that acted on it, and
     /// the filter lists overlap: a resource counts once.
-    func testABlockedLoadCountsOncePerResource() {
+    @MainActor func testABlockedLoadCountsOncePerResource() {
         let tab = BrowserTab(id: UUID(), configuration: WKWebViewConfiguration())
         defer { tab.teardown() }
         tab.recordBlockedLoad(of: blockedImageURL)
@@ -326,7 +325,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
         XCTAssertEqual(tab.blockedCount, 2)
     }
 
-    func testCommittingANavigationResetsTheBlockedCount() {
+    @MainActor func testCommittingANavigationResetsTheBlockedCount() {
         let tab = BrowserTab(id: UUID(), configuration: WKWebViewConfiguration())
         defer { tab.teardown() }
         tab.recordBlockedLoad(of: blockedImageURL)
@@ -342,7 +341,7 @@ final class ContentBlockerWhitelistTests: XCTestCase {
     /// as navigation delegate; without one WebKit would use the configuration's
     /// default preferences and the switch would never be consulted. The tab is
     /// the delegate of record until a window claims the web view.
-    func testAnUnclaimedTabIsItsWebViewsNavigationDelegate() {
+    @MainActor func testAnUnclaimedTabIsItsWebViewsNavigationDelegate() {
         let tab = BrowserTab(id: UUID(), configuration: WKWebViewConfiguration())
         defer { tab.teardown() }
         XCTAssertTrue(tab.webView?.navigationDelegate === tab)
@@ -369,7 +368,7 @@ private final class RecordingNavigationDelegate: NSObject, WKNavigationDelegate 
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences,
-                 decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
         if navigationAction.targetFrame?.isMainFrame == true {
             sawPolicyDecision = true
             configurePreferences?(preferences, navigationAction.request.url)

@@ -9,15 +9,14 @@ import WebKit
 ///
 /// Real windows on `TabStore.shared`, with a profile of the test's own; pages
 /// from a loopback server.
-@MainActor
-final class QuickDetourWindowTests: XCTestCase {
+nonisolated final class QuickDetourWindowTests: XCTestCase {
 
     private var controllers: [QuickDetourWindowController] = []
     private var createdProfiles: [Profile] = []
     private var servers: [LoopbackHTTPServer] = []
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for controller in controllers { controller.close() }
         controllers.removeAll()
         for profile in createdProfiles {
@@ -31,7 +30,7 @@ final class QuickDetourWindowTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func makeProfile() -> Profile {
+    @MainActor private func makeProfile() -> Profile {
         let profile = TabStore.shared.addProfile(name: "Quick Detour Window \(UUID().uuidString.prefix(4))")
         createdProfiles.append(profile)
         return profile
@@ -39,14 +38,14 @@ final class QuickDetourWindowTests: XCTestCase {
 
     /// A Quick Detour opened as the launcher opens one: already on a page
     /// (an `.invalid` host by default, which never reaches the network).
-    private func open(_ profile: Profile,
+    @MainActor private func open(_ profile: Profile,
                       url: URL = URL(string: "https://quick-detour.invalid/")!) -> QuickDetourWindowController {
         let controller = QuickDetourWindowController.open(profile: profile, url: url)
         controllers.append(controller)
         return controller
     }
 
-    private func serve(_ routes: [String: String] = [:]) async throws -> URL {
+    @MainActor private func serve(_ routes: [String: String] = [:]) async throws -> URL {
         let server = try LoopbackHTTPServer(routes: [
             "/": "<html><head><title>First</title></head><body><a id=next href=/next>next</a></body></html>",
             "/next": "<html><head><title>Second</title></head><body>second</body></html>",
@@ -56,18 +55,18 @@ final class QuickDetourWindowTests: XCTestCase {
         return URL(string: "http://127.0.0.1:\(port)/")!
     }
 
-    private func waitForTitle(_ title: String, in controller: QuickDetourWindowController) async throws {
+    @MainActor private func waitForTitle(_ title: String, in controller: QuickDetourWindowController) async throws {
         let tab = try XCTUnwrap(controller.tab)
         try await waitUntil("the page titled \(title)") { tab.title == title && !tab.isLoading }
     }
 
-    private func spin(_ seconds: TimeInterval = 0.05) {
+    @MainActor private func spin(_ seconds: TimeInterval = 0.05) {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 
     // MARK: - Opening
 
-    func testItOpensOnThePageWithNoPalette() throws {
+    @MainActor func testItOpensOnThePageWithNoPalette() throws {
         let profile = makeProfile()
         let url = URL(string: "https://quick-detour.invalid/start")!
         let controller = open(profile, url: url)
@@ -81,7 +80,7 @@ final class QuickDetourWindowTests: XCTestCase {
         XCTAssertEqual(controller.window?.level, .normal, "a normal window, like Little Arc")
     }
 
-    func testTheWindowLoadsInItsOneWebView() async throws {
+    @MainActor func testTheWindowLoadsInItsOneWebView() async throws {
         let url = try await serve()
         let controller = open(makeProfile(), url: url)
         let webView = controller.tab?.webView
@@ -94,7 +93,7 @@ final class QuickDetourWindowTests: XCTestCase {
 
     /// The host's palette, as the launcher's: no open tabs, the profile's
     /// history (TASK-209).
-    func testTheHostPaletteIsTheProfiles() throws {
+    @MainActor func testTheHostPaletteIsTheProfiles() throws {
         let profile = makeProfile()
         let controller = open(profile)
 
@@ -108,7 +107,7 @@ final class QuickDetourWindowTests: XCTestCase {
         XCTAssertTrue(palette.historySpaceIDs.contains(QuickDetour.historySpaceIDString(forProfileID: profile.id)))
     }
 
-    func testDismissingTheHostPaletteKeepsTheWindow() async throws {
+    @MainActor func testDismissingTheHostPaletteKeepsTheWindow() async throws {
         let url = try await serve()
         let controller = open(makeProfile(), url: url)
         try await waitForTitle("First", in: controller)
@@ -122,7 +121,7 @@ final class QuickDetourWindowTests: XCTestCase {
         XCTAssertNotNil(controller.tab)
     }
 
-    func testASearchFromTheHostPaletteUsesTheProfilesEngine() throws {
+    @MainActor func testASearchFromTheHostPaletteUsesTheProfilesEngine() throws {
         let profile = makeProfile()
         let controller = open(profile)
         controller.titleBar.hostButton.performClick(nil)
@@ -135,7 +134,7 @@ final class QuickDetourWindowTests: XCTestCase {
 
     /// Clicking the host reopens the palette with the page's URL, and what is
     /// submitted navigates the same page in place.
-    func testTheHostReopensThePaletteNavigatingInPlace() async throws {
+    @MainActor func testTheHostReopensThePaletteNavigatingInPlace() async throws {
         let url = try await serve()
         let controller = open(makeProfile(), url: url)
         try await waitForTitle("First", in: controller)
@@ -154,7 +153,7 @@ final class QuickDetourWindowTests: XCTestCase {
 
     // MARK: - Actions
 
-    func testBackForwardReloadZoomAndFind() async throws {
+    @MainActor func testBackForwardReloadZoomAndFind() async throws {
         let controller = open(makeProfile())
         let url = try await serve()
         controller.load(url, typed: true)
@@ -185,7 +184,7 @@ final class QuickDetourWindowTests: XCTestCase {
     /// Cmd+Z in the page is the page's: the browser undo stack belongs to the
     /// browser windows, and undoing a tab close from here would act on a
     /// window the user is not looking at.
-    func testCmdZDoesNotUndoABrowserAction() throws {
+    @MainActor func testCmdZDoesNotUndoABrowserAction() throws {
         let controller = open(makeProfile())
         let webView = try XCTUnwrap(controller.tab?.webView as? BrowserWebView)
         let undoManager = TabStore.shared.undoManager
@@ -204,7 +203,7 @@ final class QuickDetourWindowTests: XCTestCase {
         XCTAssertTrue(undoManager.canUndo)
     }
 
-    func testCopyLinkCopiesThePageURL() async throws {
+    @MainActor func testCopyLinkCopiesThePageURL() async throws {
         let controller = open(makeProfile())
         let url = try await serve()
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("quick-detour-test-\(UUID().uuidString)"))
@@ -218,7 +217,7 @@ final class QuickDetourWindowTests: XCTestCase {
         pasteboard.releaseGlobally()
     }
 
-    func testCloseTabClosesTheWindow() throws {
+    @MainActor func testCloseTabClosesTheWindow() throws {
         let controller = open(makeProfile())
         let tabID = controller.tabID
 
@@ -230,7 +229,7 @@ final class QuickDetourWindowTests: XCTestCase {
 
     // MARK: - Several windows, and closing from outside
 
-    func testTwoWindowsAreIndependent() async throws {
+    @MainActor func testTwoWindowsAreIndependent() async throws {
         let profile = makeProfile()
         let first = open(profile)
         let second = open(profile)
@@ -247,7 +246,7 @@ final class QuickDetourWindowTests: XCTestCase {
 
     /// An extension's `tabs.remove`, or the profile being deleted, closes the
     /// page from the store: the window goes with it.
-    func testClosingThePageFromTheStoreClosesTheWindow() throws {
+    @MainActor func testClosingThePageFromTheStoreClosesTheWindow() throws {
         let controller = open(makeProfile())
         let tab = try XCTUnwrap(controller.tab)
 
@@ -259,7 +258,7 @@ final class QuickDetourWindowTests: XCTestCase {
 
     /// A window the page opens is another Quick Detour, holding the very web
     /// view WebKit asked for, on the same profile.
-    func testAWindowThePageOpensIsAnotherQuickDetour() throws {
+    @MainActor func testAWindowThePageOpensIsAnotherQuickDetour() throws {
         let profile = makeProfile()
         let controller = open(profile)
         let opener = try XCTUnwrap(controller.tab?.webView)
@@ -280,7 +279,7 @@ final class QuickDetourWindowTests: XCTestCase {
 
     // MARK: - Extensions and the space-walking lookups
 
-    func testExtensionsFindTheWindowThroughItsTab() throws {
+    @MainActor func testExtensionsFindTheWindowThroughItsTab() throws {
         let controller = open(makeProfile())
         let tab = try XCTUnwrap(controller.tab)
 
@@ -293,7 +292,7 @@ final class QuickDetourWindowTests: XCTestCase {
     }
 
     /// Nothing is left holding a closed window or its page.
-    func testClosingLeavesNothingBehind() throws {
+    @MainActor func testClosingLeavesNothingBehind() throws {
         weak var weakController: QuickDetourWindowController?
         weak var weakTab: BrowserTab?
         weak var weakWebView: WKWebView?

@@ -11,19 +11,18 @@ import WebKit
 /// Real windows on `TabStore.shared`, with a profile of the test's own whose
 /// records are deleted afterwards; the monitor runs on an injected clock and
 /// settings of the test's own.
-@MainActor
-final class QuickDetourArchiveWindowTests: XCTestCase {
+nonisolated final class QuickDetourArchiveWindowTests: XCTestCase {
 
     private var controllers: [QuickDetourWindowController] = []
     private var createdProfiles: [Profile] = []
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
     private var suiteName: String!
-    private var monitor: QuickDetourIdleMonitor { .shared }
+    @MainActor private var monitor: QuickDetourIdleMonitor { .shared }
     private var savedClock: (() -> Date)!
     private var savedSettings: QuickDetourSettings!
     private var clock = Date(timeIntervalSince1970: 1_900_000_000)
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         suiteName = "QuickDetourArchiveWindowTests-\(UUID().uuidString)"
         savedClock = monitor.now
@@ -32,7 +31,7 @@ final class QuickDetourArchiveWindowTests: XCTestCase {
         monitor.now = { [unowned self] in self.clock }
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for controller in QuickDetourWindowController.openControllers where controllers.contains(where: { $0 === controller })
             || createdProfiles.contains(where: { $0 === controller.profile }) {
             controller.closeDisposition = .discard
@@ -52,34 +51,34 @@ final class QuickDetourArchiveWindowTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func makeProfile() -> Profile {
+    @MainActor private func makeProfile() -> Profile {
         let profile = TabStore.shared.addProfile(name: "Quick Detour Archive \(UUID().uuidString.prefix(4))")
         createdProfiles.append(profile)
         return profile
     }
 
-    private func open(_ profile: Profile, _ path: String = "a") -> QuickDetourWindowController {
+    @MainActor private func open(_ profile: Profile, _ path: String = "a") -> QuickDetourWindowController {
         let controller = QuickDetourWindowController.open(
             profile: profile, url: URL(string: "https://quick-detour-archive.invalid/\(path)")!)
         controllers.append(controller)
         return controller
     }
 
-    private func records(of profile: Profile) -> [ClosedTabSummary] {
+    @MainActor private func records(of profile: Profile) -> [ClosedTabSummary] {
         AppDatabase.shared.closedTabSummaries(spaceID: QuickDetour.historySpaceIDString(forProfileID: profile.id))
     }
 
-    private func isOpen(_ controller: QuickDetourWindowController) -> Bool {
+    @MainActor private func isOpen(_ controller: QuickDetourWindowController) -> Bool {
         QuickDetourWindowController.openControllers.contains { $0 === controller }
     }
 
-    private func spin(_ seconds: TimeInterval = 0.05) {
+    @MainActor private func spin(_ seconds: TimeInterval = 0.05) {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 
     // MARK: - Closing
 
-    func testClosingTheWindowArchivesItsPage() throws {
+    @MainActor func testClosingTheWindowArchivesItsPage() throws {
         let profile = makeProfile()
         let controller = open(profile, "closed")
         controller.tab?.title = "Closed page"
@@ -95,7 +94,7 @@ final class QuickDetourArchiveWindowTests: XCTestCase {
         XCTAssertEqual(entry.kind, .quickDetour(profileID: profile.id, autoClosed: false))
     }
 
-    func testAPrivateQuickDetourIsNotArchived() throws {
+    @MainActor func testAPrivateQuickDetourIsNotArchived() throws {
         let privateProfile = TabStore.shared.ensureIncognitoProfile()
         let before = records(of: privateProfile).count
         let controller = open(privateProfile, "private")
@@ -106,7 +105,7 @@ final class QuickDetourArchiveWindowTests: XCTestCase {
         XCTAssertEqual(records(of: privateProfile).count, before)
     }
 
-    func testMovingThePageWithOpenInIsNotAClose() throws {
+    @MainActor func testMovingThePageWithOpenInIsNotAClose() throws {
         // The profile pill's replacement is a switch, not a close either.
         let profile = makeProfile()
         let other = makeProfile()
@@ -117,7 +116,7 @@ final class QuickDetourArchiveWindowTests: XCTestCase {
 
     // MARK: - Restoring
 
-    func testRestoringReopensAQuickDetourOnItsProfile() throws {
+    @MainActor func testRestoringReopensAQuickDetourOnItsProfile() throws {
         let profile = makeProfile()
         let closing = open(profile, "restore-me")
         closing.tab?.title = "Restore me"
@@ -136,7 +135,7 @@ final class QuickDetourArchiveWindowTests: XCTestCase {
         XCTAssertNil(QuickDetourWindowController.restore(recordID: recordID), "only once")
     }
 
-    func testRestoringASpacesRecordOpensNoQuickDetour() throws {
+    @MainActor func testRestoringASpacesRecordOpensNoQuickDetour() throws {
         let space = try XCTUnwrap(TabStore.shared.nonIncognitoSpaces.first)
         let tab = TabStore.shared.addTab(in: space, url: URL(string: "https://quick-detour-archive.invalid/tab"))
         TabStore.shared.closeTab(id: tab.id, in: space, undoable: true, registersUndo: false)
@@ -151,7 +150,7 @@ final class QuickDetourArchiveWindowTests: XCTestCase {
 
     // MARK: - Idle auto-close
 
-    func testAnUnusedQuickDetourClosesIntoTheArchiveAsAutoClosed() throws {
+    @MainActor func testAnUnusedQuickDetourClosesIntoTheArchiveAsAutoClosed() throws {
         let profile = makeProfile()
         let idle = open(profile, "idle")
         let front = open(profile, "front")
@@ -174,7 +173,7 @@ final class QuickDetourArchiveWindowTests: XCTestCase {
         XCTAssertEqual(entry.kind, .quickDetour(profileID: profile.id, autoClosed: true))
     }
 
-    func testNeverKeepsThemOpen() {
+    @MainActor func testNeverKeepsThemOpen() {
         let profile = makeProfile()
         let idle = open(profile, "never")
         _ = open(profile, "front")
@@ -185,7 +184,7 @@ final class QuickDetourArchiveWindowTests: XCTestCase {
         XCTAssertTrue(isOpen(idle))
     }
 
-    func testTheSettingIsReadAtEachCheck() {
+    @MainActor func testTheSettingIsReadAtEachCheck() {
         let profile = makeProfile()
         let idle = open(profile, "one-hour")
         _ = open(profile, "front")
@@ -196,7 +195,7 @@ final class QuickDetourArchiveWindowTests: XCTestCase {
         XCTAssertFalse(isOpen(idle))
     }
 
-    func testInputAndBecomingKeyCountAsUse() throws {
+    @MainActor func testInputAndBecomingKeyCountAsUse() throws {
         let profile = makeProfile()
         let idle = open(profile, "used")
         _ = open(profile, "front")
@@ -219,7 +218,7 @@ final class QuickDetourArchiveWindowTests: XCTestCase {
         XCTAssertEqual(idle.lastUsedAt, clock)
     }
 
-    func testNotWhileASheetIsUp() throws {
+    @MainActor func testNotWhileASheetIsUp() throws {
         let profile = makeProfile()
         let idle = open(profile, "sheet")
         _ = open(profile, "front")
@@ -237,7 +236,7 @@ final class QuickDetourArchiveWindowTests: XCTestCase {
         XCTAssertTrue(isOpen(idle), "its sheet's completion would outlive the window")
     }
 
-    func testAPrivateQuickDetourIsNeverClosedByTheTimer() {
+    @MainActor func testAPrivateQuickDetourIsNeverClosedByTheTimer() {
         let privateProfile = TabStore.shared.ensureIncognitoProfile()
         let idle = open(privateProfile, "private-idle")
         _ = open(makeProfile(), "front")

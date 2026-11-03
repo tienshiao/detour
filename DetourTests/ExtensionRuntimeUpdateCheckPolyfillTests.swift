@@ -11,14 +11,13 @@ import WebKit
 /// `no_update` without touching the network, and a second one inside the
 /// throttle window answers `throttled`. Each test uses a fresh extension id, so
 /// the updater's per-extension throttle never carries over between tests.
-@MainActor
-final class ExtensionRuntimeUpdateCheckPolyfillTests: XCTestCase {
+nonisolated final class ExtensionRuntimeUpdateCheckPolyfillTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
     private var createdProfiles: [Profile] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for profile in createdProfiles {
             profile.unloadAllExtensions()
             TabStore.shared.forceRemoveProfile(id: profile.id)
@@ -32,14 +31,14 @@ final class ExtensionRuntimeUpdateCheckPolyfillTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
     /// An unpacked extension page, registered in ExtensionManager and loaded in
     /// a fresh profile, ready for `evalObject`.
-    private func makeExtensionPage() async throws -> (ext: WebExtension, webView: WKWebView) {
+    @MainActor private func makeExtensionPage() async throws -> (ext: WebExtension, webView: WKWebView) {
         let id = "update-check-\(UUID().uuidString.prefix(8))"
         let ext = try await makeTestExtension(id: id, manifestJSON: """
             {
@@ -63,7 +62,7 @@ final class ExtensionRuntimeUpdateCheckPolyfillTests: XCTestCase {
         return (ext, webView)
     }
 
-    private func evalObject(_ js: String, in webView: WKWebView) async throws -> [String: Any] {
+    @MainActor private func evalObject(_ js: String, in webView: WKWebView) async throws -> [String: Any] {
         let raw = try await webView.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
         let json = try XCTUnwrap(raw as? String, "expected a JSON string, got \(String(describing: raw))")
         return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
@@ -73,7 +72,7 @@ final class ExtensionRuntimeUpdateCheckPolyfillTests: XCTestCase {
 
     /// Promise form: an unpacked extension resolves `{status: 'no_update'}` with
     /// no version; asking again inside the throttle window resolves `throttled`.
-    func testRequestUpdateCheckPromiseResolvesNoUpdateThenThrottled() async throws {
+    @MainActor func testRequestUpdateCheckPromiseResolvesNoUpdateThenThrottled() async throws {
         let (_, webView) = try await makeExtensionPage()
 
         let shape = try await evalObject("""
@@ -95,7 +94,7 @@ final class ExtensionRuntimeUpdateCheckPolyfillTests: XCTestCase {
     /// Callback form: Chrome's current `callback(result)` with one
     /// `{status, version?}` object — here `{status: 'no_update'}` — no lastError,
     /// and nothing returned.
-    func testRequestUpdateCheckCallbackReceivesStatus() async throws {
+    @MainActor func testRequestUpdateCheckCallbackReceivesStatus() async throws {
         let (_, webView) = try await makeExtensionPage()
 
         let outcome = try await evalObject(callbackOutcomeJS(call: """
@@ -111,7 +110,7 @@ final class ExtensionRuntimeUpdateCheckPolyfillTests: XCTestCase {
 
     // MARK: - Native reply mapping
 
-    func testRequestUpdateCheckReplyMapping() {
+    @MainActor func testRequestUpdateCheckReplyMapping() {
         func status(_ outcome: ExtensionUpdateOutcome) -> String? {
             ExtensionPolyfillHandler.requestUpdateCheckReply(for: outcome)["status"] as? String
         }
@@ -134,7 +133,7 @@ final class ExtensionRuntimeUpdateCheckPolyfillTests: XCTestCase {
     // MARK: - onUpdateAvailable
 
     /// The event exists and its listener bookkeeping works (delivery: ExtensionRuntimeUpdateAvailablePolyfillTests).
-    func testOnUpdateAvailableIsAnEventObject() async throws {
+    @MainActor func testOnUpdateAvailableIsAnEventObject() async throws {
         let (_, webView) = try await makeExtensionPage()
 
         let result = try await evalObject("""

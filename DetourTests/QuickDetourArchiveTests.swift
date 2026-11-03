@@ -12,23 +12,22 @@ import WebKit
 ///
 /// Private stores on in-memory databases; the pages never load (`.invalid`
 /// hosts), their address is set the moment `load` is called.
-@MainActor
-final class QuickDetourArchiveTests: XCTestCase {
+nonisolated final class QuickDetourArchiveTests: XCTestCase {
 
     private var openedTabs: [(store: TabStore, tab: BrowserTab)] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for (store, tab) in openedTabs { store.closeQuickDetourTab(tab, disposition: .discard) }
         openedTabs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private final class RecordsObserver: TabStoreObserver {
+    @MainActor private final class RecordsObserver: TabStoreObserver {
         var updates = 0
         func tabStoreDidUpdateClosedTabRecords() { updates += 1 }
     }
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let db: AppDatabase
         let store: TabStore
         let profile: Profile
@@ -37,7 +36,7 @@ final class QuickDetourArchiveTests: XCTestCase {
         var scope: String { QuickDetour.historySpaceIDString(forProfileID: profile.id) }
     }
 
-    private func makeFixture() throws -> Fixture {
+    @MainActor private func makeFixture() throws -> Fixture {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Work")
@@ -47,7 +46,7 @@ final class QuickDetourArchiveTests: XCTestCase {
         return Fixture(db: db, store: store, profile: profile, space: space, observer: observer)
     }
 
-    private func open(_ url: String, in store: TabStore, profile: Profile, title: String = "Lookup") -> BrowserTab {
+    @MainActor private func open(_ url: String, in store: TabStore, profile: Profile, title: String = "Lookup") -> BrowserTab {
         let tab = store.openQuickDetourTab(profile: profile)
         tab.load(URL(string: url)!)
         tab.title = title
@@ -55,11 +54,11 @@ final class QuickDetourArchiveTests: XCTestCase {
         return tab
     }
 
-    private func records(_ db: AppDatabase) -> [ClosedTabSummary] { db.closedTabSummaries() }
+    @MainActor private func records(_ db: AppDatabase) -> [ClosedTabSummary] { db.closedTabSummaries() }
 
     // MARK: - Closing archives
 
-    func testClosingArchivesUnderTheProfilesQuickDetourScope() throws {
+    @MainActor func testClosingArchivesUnderTheProfilesQuickDetourScope() throws {
         let f = try makeFixture()
         let tab = open("https://lookup.invalid/a", in: f.store, profile: f.profile)
         let before = f.observer.updates
@@ -78,7 +77,7 @@ final class QuickDetourArchiveTests: XCTestCase {
         XCTAssertTrue(f.store.quickDetourTabs.isEmpty)
     }
 
-    func testAnAutoCloseIsMarkedArchived() throws {
+    @MainActor func testAnAutoCloseIsMarkedArchived() throws {
         let f = try makeFixture()
         let tab = open("https://lookup.invalid/idle", in: f.store, profile: f.profile)
 
@@ -89,7 +88,7 @@ final class QuickDetourArchiveTests: XCTestCase {
         XCTAssertEqual(record.archivedAt, record.closedAt)
     }
 
-    func testAPrivateQuickDetourIsNeverArchived() throws {
+    @MainActor func testAPrivateQuickDetourIsNeverArchived() throws {
         let f = try makeFixture()
         let privateProfile = f.store.ensureIncognitoProfile()
         let tab = open("https://secret.invalid/", in: f.store, profile: privateProfile)
@@ -102,7 +101,7 @@ final class QuickDetourArchiveTests: XCTestCase {
         XCTAssertTrue(records(f.db).isEmpty)
     }
 
-    func testAPageWithNoAddressIsNotArchived() throws {
+    @MainActor func testAPageWithNoAddressIsNotArchived() throws {
         let f = try makeFixture()
         let tab = f.store.openQuickDetourTab(profile: f.profile)
         openedTabs.append((f.store, tab))
@@ -110,14 +109,14 @@ final class QuickDetourArchiveTests: XCTestCase {
         XCTAssertTrue(records(f.db).isEmpty)
     }
 
-    func testDiscardingWritesNothing() throws {
+    @MainActor func testDiscardingWritesNothing() throws {
         let f = try makeFixture()
         f.store.closeQuickDetourTab(open("https://lookup.invalid/", in: f.store, profile: f.profile),
                                     disposition: .discard)
         XCTAssertTrue(records(f.db).isEmpty)
     }
 
-    func testTheRecordKeepsTheBackForwardList() async throws {
+    @MainActor func testTheRecordKeepsTheBackForwardList() async throws {
         let f = try makeFixture()
         let tab = open("about:blank", in: f.store, profile: f.profile)
         try await waitUntil("the blank page loaded") { tab.webView?.isLoading == false }
@@ -130,7 +129,7 @@ final class QuickDetourArchiveTests: XCTestCase {
 
     // MARK: - Quit
 
-    func testQuittingArchivesEveryOpenNormalQuickDetourOnce() throws {
+    @MainActor func testQuittingArchivesEveryOpenNormalQuickDetourOnce() throws {
         let f = try makeFixture()
         let privateProfile = f.store.ensureIncognitoProfile()
         let a = open("https://a.invalid/", in: f.store, profile: f.profile)
@@ -152,7 +151,7 @@ final class QuickDetourArchiveTests: XCTestCase {
 
     // MARK: - Listing
 
-    func testTheArchivePageListsThemLabelled() throws {
+    @MainActor func testTheArchivePageListsThemLabelled() throws {
         let f = try makeFixture()
         let spaceTab = BrowserTab(id: UUID(), title: "Tab", url: URL(string: "https://tab.invalid/"), faviconURL: nil,
                                   cachedInteractionState: nil, spaceID: f.space.id)
@@ -176,13 +175,13 @@ final class QuickDetourArchiveTests: XCTestCase {
         XCTAssertTrue(f.store.hasClosedTabRecords())
     }
 
-    func testAQuickDetourAloneMakesTheArchiveNonEmpty() throws {
+    @MainActor func testAQuickDetourAloneMakesTheArchiveNonEmpty() throws {
         let f = try makeFixture()
         f.store.closeQuickDetourTab(open("https://closed.invalid/", in: f.store, profile: f.profile))
         XCTAssertTrue(f.store.hasClosedTabRecords(), "Clear Archived Tabs… is enabled")
     }
 
-    func testRecordsOfAProfileNoLongerThereAreNotListed() throws {
+    @MainActor func testRecordsOfAProfileNoLongerThereAreNotListed() throws {
         let f = try makeFixture()
         f.db.pushClosedTab(ClosedTabRecord(
             id: nil, tabID: UUID().uuidString, spaceID: QuickDetour.historySpaceIDString(forProfileID: UUID()),
@@ -191,7 +190,7 @@ final class QuickDetourArchiveTests: XCTestCase {
         XCTAssertTrue(f.store.archiveEntries().isEmpty)
     }
 
-    func testReopenClosedTabNeverReopensAQuickDetour() throws {
+    @MainActor func testReopenClosedTabNeverReopensAQuickDetour() throws {
         let f = try makeFixture()
         f.store.closeQuickDetourTab(open("https://closed.invalid/", in: f.store, profile: f.profile))
 
@@ -200,7 +199,7 @@ final class QuickDetourArchiveTests: XCTestCase {
         XCTAssertEqual(records(f.db).count, 1, "left for the archive page")
     }
 
-    func testTheRecordsSurviveASessionSave() throws {
+    @MainActor func testTheRecordsSurviveASessionSave() throws {
         let f = try makeFixture()
         f.store.closeQuickDetourTab(open("https://closed.invalid/", in: f.store, profile: f.profile))
         f.store.saveNow()
@@ -210,7 +209,7 @@ final class QuickDetourArchiveTests: XCTestCase {
 
     // MARK: - Restoring
 
-    func testTakingARecordGivesItsPageAndConsumesIt() throws {
+    @MainActor func testTakingARecordGivesItsPageAndConsumesIt() throws {
         let f = try makeFixture()
         f.store.closeQuickDetourTab(open("https://closed.invalid/x", in: f.store, profile: f.profile, title: "X"))
         let id = try XCTUnwrap(records(f.db).first?.id)
@@ -228,7 +227,7 @@ final class QuickDetourArchiveTests: XCTestCase {
         XCTAssertNil(f.store.takeQuickDetourArchiveRecord(id: id))
     }
 
-    func testASpacesRecordIsNotAQuickDetour() throws {
+    @MainActor func testASpacesRecordIsNotAQuickDetour() throws {
         let f = try makeFixture()
         let tab = BrowserTab(id: UUID(), title: "Tab", url: URL(string: "https://tab.invalid/"), faviconURL: nil,
                              cachedInteractionState: nil, spaceID: f.space.id)
@@ -241,7 +240,7 @@ final class QuickDetourArchiveTests: XCTestCase {
         XCTAssertEqual(records(f.db).count, 1, "left alone")
     }
 
-    func testARestoredPageOpensOnItsProfileWithItsAddressAndTitle() throws {
+    @MainActor func testARestoredPageOpensOnItsProfileWithItsAddressAndTitle() throws {
         let f = try makeFixture()
         f.store.closeQuickDetourTab(open("https://closed.invalid/r", in: f.store, profile: f.profile, title: "R"))
         let id = try XCTUnwrap(records(f.db).first?.id)
@@ -259,7 +258,7 @@ final class QuickDetourArchiveTests: XCTestCase {
 
     // MARK: - Clearing and profile deletion
 
-    func testClearingEveryRecordCoversTheQuickDetourScopes() throws {
+    @MainActor func testClearingEveryRecordCoversTheQuickDetourScopes() throws {
         let f = try makeFixture()
         let privateProfile = f.store.ensureIncognitoProfile()
         f.store.closeQuickDetourTab(open("https://closed.invalid/", in: f.store, profile: f.profile))
@@ -272,7 +271,7 @@ final class QuickDetourArchiveTests: XCTestCase {
         XCTAssertTrue(records(f.db).isEmpty)
     }
 
-    func testDeletingAProfileDeletesItsArchivedQuickDetoursOnly() throws {
+    @MainActor func testDeletingAProfileDeletesItsArchivedQuickDetoursOnly() throws {
         let f = try makeFixture()
         let spare = f.store.addProfile(name: "Spare")
         f.store.closeQuickDetourTab(open("https://kept.invalid/", in: f.store, profile: f.profile))

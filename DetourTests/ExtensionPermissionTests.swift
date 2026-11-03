@@ -3,14 +3,14 @@ import GRDB
 import WebKit
 @testable import Detour
 
-final class ExtensionPermissionTests: XCTestCase {
+nonisolated final class ExtensionPermissionTests: XCTestCase {
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         let dbQueue = try DatabaseQueue(configuration: Configuration()) // in-memory
         return try AppDatabase(dbQueue: dbQueue)
     }
 
-    private func sampleExtension(id: String = "ext-1") -> ExtensionRecord {
+    @MainActor private func sampleExtension(id: String = "ext-1") -> ExtensionRecord {
         ExtensionRecord(
             id: id,
             name: "Test Extension",
@@ -22,7 +22,7 @@ final class ExtensionPermissionTests: XCTestCase {
         )
     }
 
-    private func samplePermission(
+    @MainActor private func samplePermission(
         extensionID: String = "ext-1",
         key: String = "tabs",
         type: ExtensionPermissionType = .apiPermission,
@@ -39,7 +39,7 @@ final class ExtensionPermissionTests: XCTestCase {
 
     // MARK: - Positive Cases
 
-    func testSaveAndLoadPermission() throws {
+    @MainActor func testSaveAndLoadPermission() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission())
@@ -50,7 +50,7 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertEqual(loaded.first?.status, ExtensionPermissionStatus.granted.rawValue)
     }
 
-    func testPermissionStatusQuery() throws {
+    @MainActor func testPermissionStatusQuery() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission(key: "storage", status: .granted))
@@ -59,7 +59,7 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertEqual(status, .granted)
     }
 
-    func testDeleteExtensionCascadesPermissions() throws {
+    @MainActor func testDeleteExtensionCascadesPermissions() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission(key: "tabs"))
@@ -70,7 +70,7 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertTrue(loaded.isEmpty)
     }
 
-    func testRevokePermission() throws {
+    @MainActor func testRevokePermission() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission(key: "tabs"))
@@ -80,7 +80,7 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertNil(status)
     }
 
-    func testMultiplePermissionsForExtension() throws {
+    @MainActor func testMultiplePermissionsForExtension() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermissions([
@@ -93,7 +93,7 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertEqual(loaded.count, 3)
     }
 
-    func testSavePermissionsUpserts() throws {
+    @MainActor func testSavePermissionsUpserts() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission(key: "tabs", status: .granted))
@@ -106,7 +106,7 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertEqual(loaded.count, 1)
     }
 
-    func testMatchPatternPermission() throws {
+    @MainActor func testMatchPatternPermission() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission(key: "https://*.google.com/*", type: .matchPattern))
@@ -120,7 +120,7 @@ final class ExtensionPermissionTests: XCTestCase {
     /// Install and update record the manifest's permissions through
     /// `recordDeclaredPermissions`, which must never overwrite a decision the
     /// user already made — a denial turned off in Settings above all.
-    func testRecordDeclaredPermissionsKeepsASavedAPIDenial() throws {
+    @MainActor func testRecordDeclaredPermissionsKeepsASavedAPIDenial() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission(key: "nativeMessaging", status: .denied))
@@ -134,7 +134,7 @@ final class ExtensionPermissionTests: XCTestCase {
 
     /// The same for a host pattern: a denied match-pattern row survives the
     /// manifest re-declaring it.
-    func testRecordDeclaredPermissionsKeepsASavedMatchPatternDenial() throws {
+    @MainActor func testRecordDeclaredPermissionsKeepsASavedMatchPatternDenial() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission(key: "https://example.com/*", type: .matchPattern, status: .denied))
@@ -149,7 +149,7 @@ final class ExtensionPermissionTests: XCTestCase {
 
     /// A permission an update newly declares has no saved decision, so it is
     /// still recorded as granted — alongside the keys that keep theirs.
-    func testRecordDeclaredPermissionsInsertsKeysWithNoSavedDecision() throws {
+    @MainActor func testRecordDeclaredPermissionsInsertsKeysWithNoSavedDecision() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission(key: "nativeMessaging", status: .denied))
@@ -171,7 +171,7 @@ final class ExtensionPermissionTests: XCTestCase {
 
     /// An existing grant is left exactly as it was — the row is not rewritten,
     /// so its `grantedAt` still dates the decision rather than the last install.
-    func testRecordDeclaredPermissionsLeavesAnExistingGrantUntouched() throws {
+    @MainActor func testRecordDeclaredPermissionsLeavesAnExistingGrantUntouched() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         var original = samplePermission(key: "tabs", status: .granted)
@@ -190,7 +190,7 @@ final class ExtensionPermissionTests: XCTestCase {
 
     /// The prompt and Settings path keeps overwriting: only install/update go
     /// through `recordDeclaredPermissions`.
-    func testSavePermissionsStillOverwritesASavedDecision() throws {
+    @MainActor func testSavePermissionsStillOverwritesASavedDecision() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission(key: "nativeMessaging", status: .denied))
@@ -206,7 +206,7 @@ final class ExtensionPermissionTests: XCTestCase {
     /// A decision recorded by the site-access prompt for one specific URL is a
     /// third kind of row: it must not be confused with a manifest match pattern,
     /// even when the key strings collide.
-    func testURLPermissionTypeIsDistinct() throws {
+    @MainActor func testURLPermissionTypeIsDistinct() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermissions([
@@ -234,7 +234,7 @@ final class ExtensionPermissionTests: XCTestCase {
     /// A single fetch must be partitioned by type: merging every row into one
     /// dictionary lets a site-access URL row shadow a manifest pattern whose
     /// string happens to be identical.
-    func testStatusByKeyDoesNotMergeTypes() throws {
+    @MainActor func testStatusByKeyDoesNotMergeTypes() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermissions([
@@ -256,7 +256,7 @@ final class ExtensionPermissionTests: XCTestCase {
     /// "optional" marker. That is why `Profile.loadExtensionContext` has to look
     /// each key up in *both* manifest sets: the DB cannot tell it which list the
     /// key came from.
-    func testOptionalPermissionDecisionsAreStoredLikeRequiredOnes() throws {
+    @MainActor func testOptionalPermissionDecisionsAreStoredLikeRequiredOnes() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermissions([
@@ -284,7 +284,7 @@ final class ExtensionPermissionTests: XCTestCase {
     /// The all-sites decision is an ordinary match-pattern row keyed by the
     /// literal string WebKit reports for the pattern, and both statuses are
     /// persisted — the restore applies either one.
-    func testAllURLsRowIsAnOrdinaryMatchPatternRow() throws {
+    @MainActor func testAllURLsRowIsAnOrdinaryMatchPatternRow() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission(key: "<all_urls>", type: .matchPattern, status: .denied))
@@ -302,7 +302,7 @@ final class ExtensionPermissionTests: XCTestCase {
     /// The restore turns a status into `.grantedExplicitly` / `.deniedExplicitly`,
     /// so an unrecognised raw value (a downgrade, a hand-edited DB) must read as
     /// denied rather than as a grant.
-    func testUnknownStatusRawValueReadsAsDenied() throws {
+    @MainActor func testUnknownStatusRawValueReadsAsDenied() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         var bogus = samplePermission(key: "cookies", type: .apiPermission, status: .granted)
@@ -322,13 +322,13 @@ final class ExtensionPermissionTests: XCTestCase {
 
     /// Detour's own polyfill host is the transport for the polyfill bridge and the
     /// service-worker keep-alive, so it is accepted without any manifest permission.
-    func testNativeHostAccessAllowsPolyfillHostWithoutPermission() {
+    @MainActor func testNativeHostAccessAllowsPolyfillHostWithoutPermission() {
         let access = ExtensionManager.nativeHostAccess(
             hostName: ExtensionPolyfillHandler.handlerName, manifestPermissions: [], savedDecision: nil)
         XCTAssertEqual(access, .polyfillHost)
     }
 
-    func testNativeHostAccessAllowsRealHostWithNativeMessagingPermission() {
+    @MainActor func testNativeHostAccessAllowsRealHostWithNativeMessagingPermission() {
         let access = ExtensionManager.nativeHostAccess(
             hostName: "com.1password.browser-support", manifestPermissions: ["nativeMessaging"], savedDecision: nil)
         XCTAssertEqual(access, .allowed)
@@ -338,7 +338,7 @@ final class ExtensionPermissionTests: XCTestCase {
     /// (TASK-8), and a worker may open one whether or not its manifest declares
     /// `nativeMessaging` — so, like the polyfill host, it is accepted without the
     /// manifest gate. It spawns no process: the port drives a URLSession socket.
-    func testNativeHostAccessAllowsWebSocketRelayHostWithoutPermission() {
+    @MainActor func testNativeHostAccessAllowsWebSocketRelayHostWithoutPermission() {
         let access = ExtensionManager.nativeHostAccess(
             hostName: WebSocketRelaySession.hostName, manifestPermissions: [], savedDecision: nil)
         XCTAssertEqual(access, .webSocketRelayHost)
@@ -346,7 +346,7 @@ final class ExtensionPermissionTests: XCTestCase {
 
     /// Declaring the permission changes nothing: the relay is still the relay, not
     /// a real host to spawn.
-    func testNativeHostAccessKeepsRelayHostDistinctWithNativeMessaging() {
+    @MainActor func testNativeHostAccessKeepsRelayHostDistinctWithNativeMessaging() {
         let access = ExtensionManager.nativeHostAccess(
             hostName: WebSocketRelaySession.hostName, manifestPermissions: ["nativeMessaging"], savedDecision: nil)
         XCTAssertEqual(access, .webSocketRelayHost)
@@ -354,13 +354,13 @@ final class ExtensionPermissionTests: XCTestCase {
 
     // MARK: - Negative Cases
 
-    func testPermissionStatusForUnknownExtension() throws {
+    @MainActor func testPermissionStatusForUnknownExtension() throws {
         let db = try makeDatabase()
         let status = db.permissionStatus(extensionID: "nonexistent", key: "tabs", type: .apiPermission)
         XCTAssertNil(status)
     }
 
-    func testPermissionStatusForUnknownKey() throws {
+    @MainActor func testPermissionStatusForUnknownKey() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission(key: "tabs"))
@@ -369,7 +369,7 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertNil(status)
     }
 
-    func testDeniedPermissionPersists() throws {
+    @MainActor func testDeniedPermissionPersists() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission(key: "history", status: .denied))
@@ -381,7 +381,7 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertEqual(loaded.first?.status, ExtensionPermissionStatus.denied.rawValue)
     }
 
-    func testRevokedPermissionNotReturned() throws {
+    @MainActor func testRevokedPermissionNotReturned() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         db.savePermission(samplePermission(key: "tabs"))
@@ -394,7 +394,7 @@ final class ExtensionPermissionTests: XCTestCase {
         XCTAssertNil(status)
     }
 
-    func testPermissionTypesAreIsolated() throws {
+    @MainActor func testPermissionTypesAreIsolated() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleExtension())
         // Same key, different types
@@ -409,13 +409,13 @@ final class ExtensionPermissionTests: XCTestCase {
 
     // MARK: - Native Messaging Host Gate (negative)
 
-    func testNativeHostAccessDeniesRealHostWithoutPermissions() {
+    @MainActor func testNativeHostAccessDeniesRealHostWithoutPermissions() {
         let access = ExtensionManager.nativeHostAccess(
             hostName: "com.1password.browser-support", manifestPermissions: [], savedDecision: nil)
         XCTAssertEqual(access, .denied)
     }
 
-    func testNativeHostAccessDeniesRealHostWithUnrelatedPermissions() {
+    @MainActor func testNativeHostAccessDeniesRealHostWithUnrelatedPermissions() {
         let access = ExtensionManager.nativeHostAccess(
             hostName: "com.1password.browser-support", manifestPermissions: ["storage", "tabs"], savedDecision: nil)
         XCTAssertEqual(access, .denied)
@@ -423,14 +423,14 @@ final class ExtensionPermissionTests: XCTestCase {
 
     /// The polyfill exemption is an exact-match on the host name: a host that
     /// merely contains or suffixes it must not inherit the free pass.
-    func testNativeHostAccessDeniesHostNameContainingPolyfillHost() {
+    @MainActor func testNativeHostAccessDeniesHostNameContainingPolyfillHost() {
         let name = "com.example." + ExtensionPolyfillHandler.handlerName
         let access = ExtensionManager.nativeHostAccess(hostName: name, manifestPermissions: [], savedDecision: nil)
         XCTAssertEqual(access, .denied)
     }
 
     /// Same exact-match rule for the relay host.
-    func testNativeHostAccessDeniesHostNameContainingRelayHost() {
+    @MainActor func testNativeHostAccessDeniesHostNameContainingRelayHost() {
         let name = "com.example." + WebSocketRelaySession.hostName
         let access = ExtensionManager.nativeHostAccess(hostName: name, manifestPermissions: [], savedDecision: nil)
         XCTAssertEqual(access, .denied)
@@ -438,14 +438,14 @@ final class ExtensionPermissionTests: XCTestCase {
 
     /// The keep-alive anchor (TASK-142) is Detour's own host: decided by name,
     /// without the manifest permission, and never a real host to search for.
-    func testNativeHostAccessRecognisesTheKeepAliveAnchorHost() {
+    @MainActor func testNativeHostAccessRecognisesTheKeepAliveAnchorHost() {
         let access = ExtensionManager.nativeHostAccess(
             hostName: ExtensionManager.keepAliveAnchorHostName, manifestPermissions: [], savedDecision: .denied)
         XCTAssertEqual(access, .keepAliveAnchorHost)
     }
 
     /// NEGATIVE: only the exact name is the anchor host.
-    func testNativeHostAccessDeniesHostNameContainingTheAnchorHost() {
+    @MainActor func testNativeHostAccessDeniesHostNameContainingTheAnchorHost() {
         let name = "com.example." + ExtensionManager.keepAliveAnchorHostName
         let access = ExtensionManager.nativeHostAccess(hostName: name, manifestPermissions: [], savedDecision: nil)
         XCTAssertEqual(access, .denied)
@@ -454,7 +454,7 @@ final class ExtensionPermissionTests: XCTestCase {
     /// NEGATIVE: the relay is a port-only host. A one-shot `sendNativeMessage` to
     /// it must be refused rather than routed anywhere — `.webSocketRelayHost` is
     /// not `.allowed`, so the delegate's gate rejects it with its own error.
-    func testNativeHostAccessForRelayHostIsNotAllowedForSendNativeMessage() {
+    @MainActor func testNativeHostAccessForRelayHostIsNotAllowedForSendNativeMessage() {
         let access = ExtensionManager.nativeHostAccess(
             hostName: WebSocketRelaySession.hostName, manifestPermissions: ["nativeMessaging"], savedDecision: nil)
         XCTAssertNotEqual(access, .allowed,
@@ -466,7 +466,7 @@ final class ExtensionPermissionTests: XCTestCase {
 
 // MARK: - TASK-25: the user's saved nativeMessaging decision
 
-extension ExtensionPermissionTests {
+@MainActor extension ExtensionPermissionTests {
 
     private static let realHost = "com.1password.browser-support"
 
@@ -540,7 +540,7 @@ extension ExtensionPermissionTests {
 
 // MARK: - TASK-75: match patterns with a port, on the storage side
 
-extension ExtensionPermissionTests {
+@MainActor extension ExtensionPermissionTests {
 
     /// Can a `.matchPattern` row keyed by a pattern *with a port* ever mean
     /// anything? No — and this pins why, so the polyfill's port stripping stays

@@ -2,16 +2,16 @@ import XCTest
 import WebKit
 @testable import Detour
 
-final class ContentBlockerTests: XCTestCase {
+nonisolated final class ContentBlockerTests: XCTestCase {
 
     private let parser = EasyListParser()
     /// The test data directory's own rule list store, never the production
     /// app's `~/Library/WebKit/<bundle id>/ContentRuleLists/` (TASK-36).
-    private let ruleListStore = ContentBlockerStorage.current.ruleListStore
+    @MainActor private lazy var ruleListStore = ContentBlockerStorage.current.ruleListStore
 
     /// Downloaded filter list text, read only: the test data directory's cache,
     /// or else the production app's.
-    private func cachedFilterListFile(_ identifier: String) -> URL {
+    @MainActor private func cachedFilterListFile(_ identifier: String) -> URL {
         let own = ContentBlockerStorage.current.filterListCacheDirectory.appendingPathComponent("\(identifier).txt")
         if FileManager.default.fileExists(atPath: own.path) { return own }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -22,7 +22,7 @@ final class ContentBlockerTests: XCTestCase {
 
     /// The default data directory keeps WebKit's default rule list store, the
     /// standard defaults and Detour/ContentBlocker, exactly as before.
-    func testTheDefaultDataDirectoryKeepsTheSharedContentBlockerStorage() {
+    @MainActor func testTheDefaultDataDirectoryKeepsTheSharedContentBlockerStorage() {
         let storage = ContentBlockerStorage.forDataDirectory(named: defaultDetourDataDirectoryName)
         XCTAssertTrue(storage.ruleListStore === WKContentRuleListStore.default())
         XCTAssertTrue(storage.defaults === UserDefaults.standard)
@@ -33,7 +33,7 @@ final class ContentBlockerTests: XCTestCase {
 
     /// Any other data directory, like the test host's, gets its own rule list
     /// store, defaults suite and filter list cache inside the data directory.
-    func testAnIsolatedDataDirectoryGetsItsOwnContentBlockerStorage() throws {
+    @MainActor func testAnIsolatedDataDirectoryGetsItsOwnContentBlockerStorage() throws {
         let name = WebKitStorageScope.currentDataDirectoryName
         guard name != defaultDetourDataDirectoryName else {
             throw XCTSkip("DETOUR_DATA_DIR is unset or \"Detour\"")
@@ -70,7 +70,7 @@ final class ContentBlockerTests: XCTestCase {
 
     // MARK: - Parser unit tests
 
-    func testEscapeDollarSign() {
+    @MainActor func testEscapeDollarSign() {
         // $ in a URL pattern should not produce an invalid regex
         let result = parser.parse(text: "example.com/hit$value\n")
         XCTAssertFalse(result.rules.isEmpty)
@@ -78,7 +78,7 @@ final class ContentBlockerTests: XCTestCase {
         XCTAssertTrue(urlFilter.contains("\\$"), "Dollar sign should be escaped: \(urlFilter)")
     }
 
-    func testBackslashEscaped() {
+    @MainActor func testBackslashEscaped() {
         // A literal backslash in a pattern must be escaped to \\ so the regex stays
         // valid and matches the backslash literally (interior + trailing cases).
 
@@ -105,7 +105,7 @@ final class ContentBlockerTests: XCTestCase {
         XCTAssertNotNil(try? NSRegularExpression(pattern: trailingFilter), "Produced regex must be valid: \(trailingFilter)")
     }
 
-    func testCaretSeparatorNoBackslashW() {
+    @MainActor func testCaretSeparatorNoBackslashW() {
         // ^ separator should expand without \w which WebKit doesn't support in character classes
         let result = parser.parse(text: "||example.com^\n")
         XCTAssertFalse(result.rules.isEmpty)
@@ -114,14 +114,14 @@ final class ContentBlockerTests: XCTestCase {
         XCTAssertTrue(urlFilter.contains("a-zA-Z0-9_"), "Should use expanded character class: \(urlFilter)")
     }
 
-    func testPingOptionRecognized() {
+    @MainActor func testPingOptionRecognized() {
         // $ping should be recognized as an option and the rule skipped (unsupported)
         let result = parser.parse(text: "||example.com^$ping\n")
         XCTAssertTrue(result.rules.isEmpty, "Rules with $ping should be skipped")
         XCTAssertEqual(result.skippedCount, 1)
     }
 
-    func testAllOptionRecognized() {
+    @MainActor func testAllOptionRecognized() {
         // $all should be recognized as an option (not become part of the URL pattern)
         let result = parser.parse(text: "||malware.com^$all\n")
         XCTAssertFalse(result.rules.isEmpty, "Rules with $all should compile")
@@ -132,25 +132,25 @@ final class ContentBlockerTests: XCTestCase {
     // MARK: - Compile real filter lists
 
     /// Parses and compiles each cached filter list through WebKit to verify all generated rules are valid.
-    func testCompileEasyList() throws {
+    @MainActor func testCompileEasyList() throws {
         try compileFilterList(identifier: "easylist", name: "EasyList")
     }
 
-    func testCompileEasyPrivacy() throws {
+    @MainActor func testCompileEasyPrivacy() throws {
         try compileFilterList(identifier: "easyprivacy", name: "EasyPrivacy")
     }
 
-    func testCompileEasyListCookie() throws {
+    @MainActor func testCompileEasyListCookie() throws {
         try compileFilterList(identifier: "easylist-cookie", name: "EasyList Cookie")
     }
 
-    func testCompileUrlhausFilter() throws {
+    @MainActor func testCompileUrlhausFilter() throws {
         try compileFilterList(identifier: "urlhaus-filter", name: "URLhaus Filter")
     }
 
     // MARK: - Helpers
 
-    private func compileFilterList(identifier: String, name: String) throws {
+    @MainActor private func compileFilterList(identifier: String, name: String) throws {
         let textFile = cachedFilterListFile(identifier)
         guard FileManager.default.fileExists(atPath: textFile.path) else {
             throw XCTSkip("\(name) not cached at \(textFile.path) — run the app first to download it")
@@ -190,7 +190,7 @@ final class ContentBlockerTests: XCTestCase {
         }
     }
 
-    private func tryCompile(rules: [[String: Any]], identifier: String) -> Error? {
+    @MainActor private func tryCompile(rules: [ContentRule], identifier: String) -> Error? {
         let jsonData = try! JSONSerialization.data(withJSONObject: rules)
         let jsonString = String(data: jsonData, encoding: .utf8)!
 

@@ -12,8 +12,7 @@ import WebKit
 /// go through `Profile.extensionController` / `Profile.loadExtensionContext`
 /// with no test-side origin wiring at all, so deleting the wiring in
 /// `Profile.extensionController` fails them.
-@MainActor
-final class ExtensionPolyfillProfileWiringTests: XCTestCase {
+nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
@@ -31,7 +30,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// env var restored, every spawned process killed — after every test.
     private var fakeNativeHosts: [FakeNativeMessagingHost] = []
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         previousLastActiveSpaceID = ExtensionManager.shared.lastActiveSpaceID
         previousKeepAlivePingInterval = ExtensionManager.shared.keepAlivePingInterval
@@ -39,7 +38,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         previousKeepAliveRestartDelay = ExtensionManager.shared.keepAliveRestartDelay
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for profile in createdProfiles {
             profile.unloadAllExtensions()
             TabStore.shared.forceRemoveProfile(id: profile.id)
@@ -75,7 +74,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
@@ -88,7 +87,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// page and one offscreen page; `manifest` and `extraFiles` (written next to
     /// them, e.g. a `background.js`) replace and extend that for tests that need a
     /// different shape.
-    private func makeTestExtension(idPrefix: String = "polyfill-wiring",
+    @MainActor private func makeTestExtension(idPrefix: String = "polyfill-wiring",
                                    manifest: String? = nil,
                                    extraFiles: [String: String] = [:]) async throws -> WebExtension {
         let id = "\(idPrefix)-\(UUID().uuidString.prefix(8))"
@@ -124,13 +123,13 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         return ext
     }
 
-    private func makeProfile(_ name: String) -> Profile {
+    @MainActor private func makeProfile(_ name: String) -> Profile {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         return profile
     }
 
-    private func addSpace(for profile: Profile, name: String) -> Space {
+    @MainActor private func addSpace(for profile: Profile, name: String) -> Space {
         let space = TabStore.shared.addSpace(
             name: name, emoji: "W", colorHex: "#000000", profileID: profile.id)
         createdSpaceIDs.append(space.id)
@@ -140,7 +139,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// Load an extension page from the profile's loaded context, exactly as a
     /// popup or options page is loaded (the configuration carries the polyfill
     /// handler registered by `Profile.extensionController`).
-    private func makeExtensionWebView(for context: WKWebExtensionContext) async throws -> WKWebView {
+    @MainActor private func makeExtensionWebView(for context: WKWebExtensionContext) async throws -> WKWebView {
         let config = try XCTUnwrap(context.webViewConfiguration,
                                    "webViewConfiguration is nil — context not loaded in a controller")
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
@@ -154,7 +153,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// `loadExtensionContext` are enough on their own: the page's
     /// `webkit-extension://<UUID>/` origin is attributed to the extension with
     /// no test-side resolver.
-    func testProductionWiringAttributesContextOriginToExtension() async throws {
+    @MainActor func testProductionWiringAttributesContextOriginToExtension() async throws {
         let ext = try await makeTestExtension()
         let profile = makeProfile("Wiring Profile")
         // Force the lazy controller (and with it the polyfill handler) before use.
@@ -187,7 +186,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// points at profile A, so `ExtensionManager.context(for:)` would answer with
     /// A's context. The document must still be built from B's context (B's
     /// controller, B's data store), because B's handler received the request.
-    func testOffscreenDocumentIsCreatedInSendersProfile() async throws {
+    @MainActor func testOffscreenDocumentIsCreatedInSendersProfile() async throws {
         let ext = try await makeTestExtension()
         let profileA = makeProfile("Wiring Profile A")
         let profileB = makeProfile("Wiring Profile B")
@@ -245,7 +244,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// another (last-active) profile does. Without the old
     /// `ExtensionManager.context(for:)` fallback this must fail rather than
     /// silently borrow the other profile's context.
-    func testOffscreenDocumentFailsWhenContextNotLoadedInHandlersProfile() async throws {
+    @MainActor func testOffscreenDocumentFailsWhenContextNotLoadedInHandlersProfile() async throws {
         let ext = try await makeTestExtension()
         let profileA = makeProfile("Wiring Loaded Profile")
         let profileB = makeProfile("Wiring Empty Profile")
@@ -287,7 +286,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// unregistered: otherwise the promise pends forever, `hasDocument` claims a
     /// document that never loaded, and every later `createDocument`
     /// short-circuits with success against the corpse.
-    func testOffscreenCreateDocumentFailsAndUnregistersWhenPageIsMissing() async throws {
+    @MainActor func testOffscreenCreateDocumentFailsAndUnregistersWhenPageIsMissing() async throws {
         let ext = try await makeTestExtension()
         let profile = makeProfile("Offscreen Failure Profile")
         _ = profile.extensionController
@@ -354,7 +353,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// If a future WebKit makes lastError writable, `mode` turns 'js' and the
     /// message loses WebKit's prefix; the callback contract assertions hold
     /// either way.
-    func testOffscreenCreateDocumentCallbackGetsLastErrorInARealExtensionPage() async throws {
+    @MainActor func testOffscreenCreateDocumentCallbackGetsLastErrorInARealExtensionPage() async throws {
         let ext = try await makeTestExtension()
         let profile = makeProfile("Offscreen lastError Profile")
         _ = profile.extensionController
@@ -411,7 +410,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// The same contract from a background service worker, where the polyfill
     /// request itself travels over the promise-form sendNativeMessage bridge
     /// and its rejection is relayed back through the callback form.
-    func testOffscreenCreateDocumentCallbackGetsLastErrorInARealServiceWorker() async throws {
+    @MainActor func testOffscreenCreateDocumentCallbackGetsLastErrorInARealServiceWorker() async throws {
         let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
 
         const unhandled = [];
@@ -495,7 +494,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// genuinely late reply; the guard is what keeps that true. The reply
     /// reports the failure it actually waited on, not the closed case: the load
     /// it was waiting for did fail, it just must not touch the newer host.
-    func testLateOffscreenLoadFailureDoesNotUnregisterANewerHost() async throws {
+    @MainActor func testLateOffscreenLoadFailureDoesNotUnregisterANewerHost() async throws {
         let ext = try await makeTestExtension()
         let profile = makeProfile("Offscreen Late Failure Profile")
         _ = profile.extensionController
@@ -543,7 +542,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// unload through `Profile.unloadExtension`) runs while the create is still
     /// loading. The worker's promise must reject rather than hang, and no
     /// document may be left behind.
-    func testPendingOffscreenCreateDocumentFailsWhenTheDocumentIsClosed() async throws {
+    @MainActor func testPendingOffscreenCreateDocumentFailsWhenTheDocumentIsClosed() async throws {
         let ext = try await makeTestExtension()
         let profile = makeProfile("Offscreen Close Race Profile")
         _ = profile.extensionController
@@ -606,7 +605,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// would hand the worker a resolved promise for a page it cannot talk to.
     /// Both requests settle with the one outcome of the one load, and only one
     /// host is ever built.
-    func testConcurrentOffscreenCreateDocumentJoinsTheLoadInFlight() async throws {
+    @MainActor func testConcurrentOffscreenCreateDocumentJoinsTheLoadInFlight() async throws {
         let ext = try await makeTestExtension()
         let profile = makeProfile("Offscreen Concurrent Create Profile")
         _ = profile.extensionController
@@ -682,7 +681,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// joined waiter runs after the first completion has already unregistered
     /// the dead host, so it lands on the identity guard and must still report
     /// the failure. Nothing may be left registered to fake a document.
-    func testConcurrentOffscreenCreateDocumentBothFailWhenPageIsMissing() async throws {
+    @MainActor func testConcurrentOffscreenCreateDocumentBothFailWhenPageIsMissing() async throws {
         let ext = try await makeTestExtension()
         let profile = makeProfile("Offscreen Concurrent Failure Profile")
         _ = profile.extensionController
@@ -747,7 +746,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// that replaced it. A cancellation must therefore leave the load pending:
     /// settling it would reject a `createDocument` whose document does in fact
     /// arrive, and tearing the host down would kill the load in progress.
-    func testCancelledOffscreenNavigationKeepsTheCreateDocumentPending() async throws {
+    @MainActor func testCancelledOffscreenNavigationKeepsTheCreateDocumentPending() async throws {
         let ext = try await makeTestExtension()
         let profile = makeProfile("Offscreen Cancelled Navigation Profile")
         _ = profile.extensionController
@@ -795,7 +794,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     // MARK: - Profile-scoped tab actions (search.query / sessions.restore)
 
     /// Await one `handleNativeMessage` round trip.
-    private func nativeReply(
+    @MainActor private func nativeReply(
         _ handler: ExtensionPolyfillHandler, _ body: [String: Any],
         verifiedExtensionID: String, description: String = "native bridge reply"
     ) async -> (result: Any?, error: (any Error)?) {
@@ -814,7 +813,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// A search from an extension page in profile B must open its tab in one of
     /// B's spaces with B's search engine, even though the last-active space (and
     /// therefore the global lookup) belongs to profile A.
-    func testSearchQueryOpensTabInHandlersProfileSpace() async throws {
+    @MainActor func testSearchQueryOpensTabInHandlersProfileSpace() async throws {
         let ext = try await makeTestExtension()
         let profileA = makeProfile("Search Wiring Profile A")
         let profileB = makeProfile("Search Wiring Profile B")
@@ -856,7 +855,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// last (`TabStore.mostRecentlyUsedSpace(ofProfile:)`, the rule
     /// `tabs.create` and `windows.create` use), not its first one, and never
     /// to the global last active space of another profile.
-    func testSearchQueryOpensTabInTheProfilesMostRecentlyUsedSpace() async throws {
+    @MainActor func testSearchQueryOpensTabInTheProfilesMostRecentlyUsedSpace() async throws {
         let ext = try await makeTestExtension()
         let profileA = makeProfile("Search MRU Profile A")
         let profileB = makeProfile("Search MRU Profile B")
@@ -888,7 +887,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// NEGATIVE: the handler's profile has no space at all. Falling back to the
     /// last-active space would leak the search into another profile, so the
     /// request must fail instead.
-    func testSearchQueryFailsWhenProfileHasNoSpace() async throws {
+    @MainActor func testSearchQueryFailsWhenProfileHasNoSpace() async throws {
         let ext = try await makeTestExtension()
         let profileA = makeProfile("Search Wiring Only Profile")
         let profileB = makeProfile("Search Wiring Spaceless Profile")
@@ -915,7 +914,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     /// sessions.restore reopens the tab the sending profile closed, not whatever
     /// the last-active (other-profile) space has on its closed-tab stack.
-    func testSessionsRestoreReopensInHandlersProfileSpace() async throws {
+    @MainActor func testSessionsRestoreReopensInHandlersProfileSpace() async throws {
         let ext = try await makeTestExtension()
         let profileA = makeProfile("Restore Wiring Profile A")
         let profileB = makeProfile("Restore Wiring Profile B")
@@ -953,7 +952,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// NEGATIVE: only the other (last-active) profile has a closed tab, so the
     /// sending profile has nothing to restore and must be told so rather than
     /// reopening the other profile's tab.
-    func testSessionsRestoreFailsWhenSendersProfileHasNoClosedTab() async throws {
+    @MainActor func testSessionsRestoreFailsWhenSendersProfileHasNoClosedTab() async throws {
         let ext = try await makeTestExtension()
         let profileA = makeProfile("Restore Wiring Stocked Profile")
         let profileB = makeProfile("Restore Wiring Empty Profile")
@@ -992,7 +991,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// the worker opens its idle keep-alive port through the production path (the
     /// profile's own controller, with ExtensionManager as its delegate).
     /// `nativeMessaging` is what makes the keep-alive install at all (TASK-16).
-    private func makeKeepAliveTestExtension(extraBackgroundJS: String = "") async throws -> WebExtension {
+    @MainActor private func makeKeepAliveTestExtension(extraBackgroundJS: String = "") async throws -> WebExtension {
         let backgroundJS = ExtensionAPIPolyfill.polyfillJS + extraBackgroundJS + """
 
         chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1033,7 +1032,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// One round trip to the background worker, asking it what its keep-alive is
     /// doing. Fails the test if the message never reached the worker; returns nil
     /// when the worker answered nothing.
-    private func workerKeepAliveStatus(from webView: WKWebView,
+    @MainActor private func workerKeepAliveStatus(from webView: WKWebView,
                                        file: StaticString = #filePath,
                                        line: UInt = #line) async throws -> [String: Any]? {
         let answer = try await askWorker(from: webView, message: ["type": "keepAliveStatus"], timeout: 5)
@@ -1046,7 +1045,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// Detour arms it when a real native messaging host connects for that
     /// extension and disarms it when the last one goes away, and the worker's
     /// pings arrive back on the same port.
-    func testDetourArmsAndDisarmsTheWorkerKeepAlivePort() async throws {
+    @MainActor func testDetourArmsAndDisarmsTheWorkerKeepAlivePort() async throws {
         let ext = try await makeKeepAliveTestExtension()
         let profile = makeProfile("Keep-alive Wiring Profile")
         let controller = profile.extensionController
@@ -1106,7 +1105,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// Arming opens one anchor port, which Detour holds. Disarming stops the
     /// re-anchoring and leaves that one anchor, idle, to go with the keep-alive
     /// port when WebKit unloads the background.
-    func testAnArmedWorkerHoldsOneAnchorAndADisarmStopsReanchoring() async throws {
+    @MainActor func testAnArmedWorkerHoldsOneAnchorAndADisarmStopsReanchoring() async throws {
         let ext = try await makeKeepAliveTestExtension()
         let profile = makeProfile("Keep-alive Anchor Profile")
         let controller = profile.extensionController
@@ -1145,7 +1144,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// A native host of the extension closing while another keeps it armed: the
     /// close took WebKit's record of the background's open ports, so Detour asks
     /// for a re-anchor and the background opens a new anchor (closing the old).
-    func testANativeHostClosingWhileArmedMakesTheWorkerReanchor() async throws {
+    @MainActor func testANativeHostClosingWhileArmedMakesTheWorkerReanchor() async throws {
         let ext = try await makeKeepAliveTestExtension()
         let profile = makeProfile("Keep-alive Reanchor Profile")
         let controller = profile.extensionController
@@ -1179,7 +1178,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// such host installed): WebKit removes the refused port like a closed one,
     /// which takes the background's entry with it, so Detour asks for a
     /// re-anchor here too.
-    func testARefusedNativeConnectWhileArmedMakesTheWorkerReanchor() async throws {
+    @MainActor func testARefusedNativeConnectWhileArmedMakesTheWorkerReanchor() async throws {
         let ext = try await makeKeepAliveTestExtension(extraBackgroundJS: """
 
         chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1218,7 +1217,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// re-anchors on its own, through the polyfill's wrapper of the extension's
     /// onConnect listener (WebKit gives each listener its own port, so the
     /// wrapper watches the one the extension holds).
-    func testARuntimePortEndingMakesTheArmedWorkerReanchor() async throws {
+    @MainActor func testARuntimePortEndingMakesTheArmedWorkerReanchor() async throws {
         let ext = try await makeKeepAliveTestExtension(extraBackgroundJS: """
 
         globalThis.__task142Ports = [];
@@ -1264,7 +1263,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// NEGATIVE: the polyfill adds no onConnect listener of its own, so a worker
     /// with none still refuses a connect as WebKit does ("no runtime.onConnect
     /// listeners found"), and the opener's port ends.
-    func testAConnectToAWorkerWithoutOnConnectListenersStillEnds() async throws {
+    @MainActor func testAConnectToAWorkerWithoutOnConnectListenersStillEnds() async throws {
         let ext = try await makeKeepAliveTestExtension()
         let profile = makeProfile("Keep-alive No Listener Profile")
         _ = profile.loadExtensionContext(ext)
@@ -1291,7 +1290,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// a given id so a `FakeNativeMessagingHost` can allow that id before the
     /// extension exists. The worker carries the polyfill itself: the user script
     /// `Profile.extensionController` installs reaches web views, not workers.
-    private func makeWorkerExtension(id: String, permissions: [String],
+    @MainActor private func makeWorkerExtension(id: String, permissions: [String],
                                      backgroundJS: String,
                                      extraFiles: [String: String] = [:]) async throws -> WebExtension {
         try await makeBackgroundPageExtension(
@@ -1305,7 +1304,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// is how a background context is replaced with none of its native ports ever
     /// reporting a disconnect (`WebExtensionContext::unload()` clears
     /// `m_nativePortMap` without calling `reportDisconnection`).
-    private func makeNativeHostProbeWorkerExtension(
+    @MainActor private func makeNativeHostProbeWorkerExtension(
         id: String, hostName: String, portCount: Int
     ) async throws -> WebExtension {
         let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
@@ -1377,7 +1376,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     /// Start the probe's context in a fresh profile and wait until its worker has
     /// connected `portCount` hosts and Detour has armed its keep-alive.
-    private func startNativeHostProbe(
+    @MainActor private func startNativeHostProbe(
         _ ext: WebExtension, host: FakeNativeMessagingHost, portCount: Int, profileName: String
     ) async throws -> (profile: Profile, context: WKWebExtensionContext, page: WKWebView) {
         let started = try await startMeasurement(ext, profileName: profileName)
@@ -1398,7 +1397,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// replacement context has opened its own keep-alive port (the moment Detour
     /// learns a new background context exists). WebKit does not always start the
     /// replacement on its own, so the wake is nudged while waiting.
-    private func reloadProbeContext(
+    @MainActor private func reloadProbeContext(
         _ context: WKWebExtensionContext, page: WKWebView, controller: WKWebExtensionController,
         extensionID: String
     ) async throws {
@@ -1428,18 +1427,18 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// signal Detour does get is the new context's keep-alive port superseding the
     /// old one, and that is where the replaced context's connections are torn down
     /// (TASK-67).
-    func testRuntimeReloadTearsDownTheReplacedContextsNativeHost() async throws {
+    @MainActor func testRuntimeReloadTearsDownTheReplacedContextsNativeHost() async throws {
         try await assertRuntimeReloadReleasesTheReplacedContextsHosts(portCount: 1)
     }
 
     /// The same with two hosts, the shape production showed (1Password's workers
     /// hold several BrowserSupport helpers, and the leaked count climbed to 2 and
     /// then 3 for one profile).
-    func testRuntimeReloadTearsDownEveryNativeHostOfTheReplacedContext() async throws {
+    @MainActor func testRuntimeReloadTearsDownEveryNativeHostOfTheReplacedContext() async throws {
         try await assertRuntimeReloadReleasesTheReplacedContextsHosts(portCount: 2)
     }
 
-    private func assertRuntimeReloadReleasesTheReplacedContextsHosts(
+    @MainActor private func assertRuntimeReloadReleasesTheReplacedContextsHosts(
         portCount: Int, file: StaticString = #filePath, line: UInt = #line
     ) async throws {
         let id = measurementExtensionID("task67-reload-\(portCount)")
@@ -1488,7 +1487,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// A relayed WebSocket (TASK-8) is a native port too, so WebKit drops it in
     /// the same silence — and it holds the keep-alive up exactly as a host does.
     /// The supersede teardown must end its session as well.
-    func testASupersededKeepAlivePortTearsDownTheReplacedContextsRelayedSocket() async throws {
+    @MainActor func testASupersededKeepAlivePortTearsDownTheReplacedContextsRelayedSocket() async throws {
         let server = try LoopbackWebSocketServer()
         defer { server.stop() }
         let serverPort = try await server.start()
@@ -1536,7 +1535,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// it declares `nativeMessaging`, and the relay host is accepted without the
     /// manifest gate. With `nativeMessaging` the worker also holds a keep-alive
     /// port, which is what makes the arming observable.
-    private func makeWebSocketTestExtension(permissions: [String] = []) async throws -> WebExtension {
+    @MainActor private func makeWebSocketTestExtension(permissions: [String] = []) async throws -> WebExtension {
         let permissionsJSON = String(
             decoding: try JSONSerialization.data(withJSONObject: permissions), as: UTF8.self)
         let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
@@ -1643,7 +1642,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// controller, ExtensionManager as delegate): the worker's `new WebSocket()`
     /// becomes a relay port and a real socket, Detour holds one session while it
     /// is open, and the session is released when the socket closes.
-    func testWorkerWebSocketIsRelayedAndReleasedThroughTheProductionWiring() async throws {
+    @MainActor func testWorkerWebSocketIsRelayedAndReleasedThroughTheProductionWiring() async throws {
         let server = try LoopbackWebSocketServer()
         defer { server.stop() }
         let serverPort = try await server.start()
@@ -1710,7 +1709,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// does (TASK-16). Without this a quiet long-lived socket — 1Password's
     /// notifier — dies with the worker WebKit unloads after ~2.5 minutes idle,
     /// and the extension sees an error and a 1006 every few minutes.
-    func testARelayedSocketKeepsTheWorkerAlive() async throws {
+    @MainActor func testARelayedSocketKeepsTheWorkerAlive() async throws {
         let server = try LoopbackWebSocketServer()
         defer { server.stop() }
         let serverPort = try await server.start()
@@ -1769,7 +1768,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// The long legs run for minutes each, so they only run when asked for:
     /// `DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1`. The install-decision tests below
     /// them are fast and always run.
-    private var measuringBackgroundPageUnload: Bool {
+    @MainActor private var measuringBackgroundPageUnload: Bool {
         ProcessInfo.processInfo.environment["DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD"] == "1"
     }
 
@@ -1788,7 +1787,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     ///
     /// `closingSecondPortAfterMs` makes it open a *second* port to the same host
     /// and disconnect that one after the delay, leaving the first open (TASK-141).
-    private static func measurementBackgroundJS(
+    @MainActor private static func measurementBackgroundJS(
         nativeHost: String? = nil, closingSecondPortAfterMs: Int? = nil
     ) -> String {
         let host = nativeHost.map { "'\($0)'" } ?? "null"
@@ -1905,12 +1904,12 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// An id for a measurement extension, minted before the extension exists so a
     /// fake native host can be installed for it first (its manifest lists the
     /// allowed origin by extension id).
-    private func measurementExtensionID(_ prefix: String) -> String {
+    @MainActor private func measurementExtensionID(_ prefix: String) -> String {
         "\(prefix)-\(UUID().uuidString.prefix(8).lowercased())"
     }
 
     /// An extension whose background content is the measurement script above.
-    private func makeMeasurementExtension(
+    @MainActor private func makeMeasurementExtension(
         id: String,
         permissions: [String] = ["nativeMessaging"],
         manifestVersion: Int = 3,
@@ -1940,7 +1939,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// mutated: `userScripts` bridges to a live view of the controller's scripts,
     /// so iterating it while adding grew the very array being iterated and the
     /// loop never ended (a test host went from 337 MB to 36 GB in 90 s).
-    private func prependUserScript(_ source: String, to profile: Profile) {
+    @MainActor private func prependUserScript(_ source: String, to profile: Profile) {
         let ucc = profile.extensionController.configuration.webViewConfiguration.userContentController
         let existing: [(source: String, injectionTime: WKUserScriptInjectionTime, mainFrameOnly: Bool)] =
             ucc.userScripts.map { ($0.source, $0.injectionTime, $0.isForMainFrameOnly) }
@@ -1968,7 +1967,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// The background context's last heartbeat, read out of the extension
     /// origin's `localStorage` through an ordinary extension page — the same
     /// origin, so nothing here touches (or wakes) the background context.
-    private func backgroundHeartbeat(from webView: WKWebView) async throws -> [String: Any]? {
+    @MainActor private func backgroundHeartbeat(from webView: WKWebView) async throws -> [String: Any]? {
         let raw = try await webView.callAsyncJavaScript(
             "return localStorage.getItem('__detourHeartbeat');", arguments: [:], contentWorld: .page)
         guard let json = raw as? String,
@@ -1977,7 +1976,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         return beat
     }
 
-    private struct BackgroundPageLifetime {
+    @MainActor private struct BackgroundPageLifetime {
         /// The heartbeat stopped advancing: WebKit unloaded the page.
         let unloaded: Bool
         /// Seconds from the page's own start to the last heartbeat it wrote.
@@ -1988,7 +1987,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     /// Watch the background context's heartbeat until it stops advancing for
     /// `stallFor` seconds (WebKit unloaded the page) or `limit` elapses.
-    private func watchBackgroundPage(
+    @MainActor private func watchBackgroundPage(
         _ label: String, from webView: WKWebView, limit: TimeInterval, stallFor: TimeInterval = 6
     ) async throws -> BackgroundPageLifetime {
         try await waitUntil("\(label): the background page's first heartbeat", timeout: 30) {
@@ -2023,7 +2022,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     /// Profile + loaded context + an ordinary extension page to observe from, with
     /// the background content started through the production wake.
-    private func startMeasurement(
+    @MainActor private func startMeasurement(
         _ ext: WebExtension, profileName: String, prepending source: String? = nil
     ) async throws -> (profile: Profile, context: WKWebExtensionContext, page: WKWebView) {
         let profile = makeProfile(profileName)
@@ -2043,7 +2042,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// and the page holds nothing open. WebKit's 30 s idle unload, and the control
     /// that says the heartbeat's own `localStorage` writes are not what keeps a
     /// page alive.
-    func testMeasureIdleBackgroundPageUnload() async throws {
+    @MainActor func testMeasureIdleBackgroundPageUnload() async throws {
         try XCTSkipUnless(measuringBackgroundPageUnload,
                           "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
         let ext = try await makeMeasurementExtension(
@@ -2069,7 +2068,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// is kept out of the way by pre-defining the shared native-runtime resolver
     /// to report none — the one seam that stops the keep-alive opening a port
     /// without touching production code — so this leg measures WebKit alone.
-    func testMeasureBackgroundPageUnloadHoldingASilentNativePort() async throws {
+    @MainActor func testMeasureBackgroundPageUnloadHoldingASilentNativePort() async throws {
         try XCTSkipUnless(measuringBackgroundPageUnload,
                           "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
         let id = measurementExtensionID("task62-port")
@@ -2119,7 +2118,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// worker's, this page outlives leg (b). Measured 2026-09-13 (with the pings
     /// still worker-driven): still running at +300.9 s, host connected, 21 replies
     /// received.
-    func testMeasureBackgroundPageWithTheKeepAliveArmed() async throws {
+    @MainActor func testMeasureBackgroundPageWithTheKeepAliveArmed() async throws {
         try XCTSkipUnless(measuringBackgroundPageUnload,
                           "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
         let id = measurementExtensionID("task62-keepalive")
@@ -2173,7 +2172,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// instead. Measured 2026-10-03: unloaded at +29.7 s, the first port still
     /// reading 'open' in the last heartbeat (no `onDisconnect`), and Detour still
     /// holding that port's host 10 s later because WebKit reported no disconnect.
-    func testMeasureBackgroundPageUnloadAfterClosingOneOfTwoSilentNativePorts() async throws {
+    @MainActor func testMeasureBackgroundPageUnloadAfterClosingOneOfTwoSilentNativePorts() async throws {
         try XCTSkipUnless(measuringBackgroundPageUnload,
                           "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
         let id = measurementExtensionID("task141-silent")
@@ -2227,7 +2226,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// for 15 to 30 s more, until the missed-reply recovery dropped it, restarted
     /// the page about 60 s after the unload, and the restarted page (which runs
     /// the same script) was unloaded at +29.7 s again.
-    func testMeasureBackgroundPageClosingOneOfTwoNativePortsWithTheKeepAliveArmed() async throws {
+    @MainActor func testMeasureBackgroundPageClosingOneOfTwoNativePortsWithTheKeepAliveArmed() async throws {
         try XCTSkipUnless(measuringBackgroundPageUnload,
                           "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
         let id = measurementExtensionID("task141-keepalive")
@@ -2283,7 +2282,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// control: without that port the page is still running at +300 s. Measured
     /// 2026-10-03: the port closed at +10.6 s and the page was unloaded at
     /// +30.2 s, keep-alive armed, three replies received, host still connected.
-    func testMeasureBackgroundPageWithTheKeepAliveArmedAfterARuntimePortCloses() async throws {
+    @MainActor func testMeasureBackgroundPageWithTheKeepAliveArmedAfterARuntimePortCloses() async throws {
         try XCTSkipUnless(measuringBackgroundPageUnload,
                           "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
         let id = measurementExtensionID("task141-runtime-port")
@@ -2332,7 +2331,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// What every TASK-142 leg checks at the end besides the page's life: the
     /// background holds exactly one anchor and Detour exactly the hosts it
     /// should, so re-anchoring leaks nothing.
-    private func assertNothingLeaked(_ label: String, controller: WKWebExtensionController, extensionID: String,
+    @MainActor private func assertNothingLeaked(_ label: String, controller: WKWebExtensionController, extensionID: String,
                                      hosts: Int, host: FakeNativeMessagingHost? = nil,
                                      file: StaticString = #filePath, line: UInt = #line) {
         let manager = ExtensionManager.shared
@@ -2352,7 +2351,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// ports at +10 s and Detour, seeing a host go while another keeps the
     /// keep-alive armed, asks for a re-anchor. The page must outlive leg (e)'s
     /// +29.7 s by far.
-    func testMeasureBackgroundPageClosingOneOfTwoNativePortsIsKeptByTheAnchor() async throws {
+    @MainActor func testMeasureBackgroundPageClosingOneOfTwoNativePortsIsKeptByTheAnchor() async throws {
         try XCTSkipUnless(measuringBackgroundPageUnload,
                           "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
         let id = measurementExtensionID("task142-native")
@@ -2383,7 +2382,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     /// Leg (f) with the anchor: a runtime port an extension page opened to the
     /// background ends at the page's side.
-    func testMeasureBackgroundPageWhoseRuntimePortClosesIsKeptByTheAnchor() async throws {
+    @MainActor func testMeasureBackgroundPageWhoseRuntimePortClosesIsKeptByTheAnchor() async throws {
         try XCTSkipUnless(measuringBackgroundPageUnload,
                           "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
         let id = measurementExtensionID("task142-runtime")
@@ -2420,7 +2419,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// Leg (g): the background opens a runtime port to an extension page and
     /// closes it itself 10 s later. Without the anchor it goes at the next tick
     /// like leg (f); with it, it stays.
-    private func measureBackgroundPageClosingItsOwnRuntimePort(withAnchor: Bool) async throws {
+    @MainActor private func measureBackgroundPageClosingItsOwnRuntimePort(withAnchor: Bool) async throws {
         try XCTSkipUnless(measuringBackgroundPageUnload,
                           "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
         let label = withAnchor ? "g': anchor, the background closed its own port" : "g: no anchor, the background closed its own port"
@@ -2458,11 +2457,11 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         }
     }
 
-    func testMeasureBackgroundPageClosingItsOwnRuntimePortWithoutTheAnchor() async throws {
+    @MainActor func testMeasureBackgroundPageClosingItsOwnRuntimePortWithoutTheAnchor() async throws {
         try await measureBackgroundPageClosingItsOwnRuntimePort(withAnchor: false)
     }
 
-    func testMeasureBackgroundPageClosingItsOwnRuntimePortIsKeptByTheAnchor() async throws {
+    @MainActor func testMeasureBackgroundPageClosingItsOwnRuntimePortIsKeptByTheAnchor() async throws {
         try await measureBackgroundPageClosingItsOwnRuntimePort(withAnchor: true)
     }
 
@@ -2472,7 +2471,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// work in the test host's workers, so its life is read from Detour's own
     /// pings, every 15 s: a worker WebKit unloaded stops answering them, and
     /// reports none of its ports closed (TASK-141).
-    private func measureWorkerWhoseRuntimePortCloses(withAnchor: Bool) async throws {
+    @MainActor private func measureWorkerWhoseRuntimePortCloses(withAnchor: Bool) async throws {
         try XCTSkipUnless(measuringBackgroundPageUnload,
                           "long measurement leg; set DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1")
         let label = withAnchor ? "h': worker, anchor, a runtime port closed" : "h: worker, no anchor, a runtime port closed"
@@ -2556,18 +2555,18 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         }
     }
 
-    func testMeasureWorkerWhoseRuntimePortClosesWithoutTheAnchor() async throws {
+    @MainActor func testMeasureWorkerWhoseRuntimePortClosesWithoutTheAnchor() async throws {
         try await measureWorkerWhoseRuntimePortCloses(withAnchor: false)
     }
 
-    func testMeasureWorkerWhoseRuntimePortClosesIsKeptByTheAnchor() async throws {
+    @MainActor func testMeasureWorkerWhoseRuntimePortClosesIsKeptByTheAnchor() async throws {
         try await measureWorkerWhoseRuntimePortCloses(withAnchor: true)
     }
 
     /// The helper legs (b) and (c) depend on, run fast and on its own: the
     /// prepended script runs before the polyfill (it sees no keep-alive status
     /// yet) and the polyfill still runs after it, with nothing duplicated.
-    func testPrependedUserScriptRunsBeforeThePolyfill() async throws {
+    @MainActor func testPrependedUserScriptRunsBeforeThePolyfill() async throws {
         let ext = try await makeMeasurementExtension(id: measurementExtensionID("task62-prepend"))
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
         let profile = makeProfile("TASK-62 Prepend")
@@ -2598,11 +2597,11 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// The long leg runs for minutes, so it only runs when asked for:
     /// `DETOUR_MEASURE_WORKER_UNLOAD=1`, for
     /// `DETOUR_MEASURE_WORKER_UNLOAD_SECONDS` (default 300) seconds.
-    private var measuringWorkerUnload: Bool {
+    @MainActor private var measuringWorkerUnload: Bool {
         ProcessInfo.processInfo.environment["DETOUR_MEASURE_WORKER_UNLOAD"] == "1"
     }
 
-    private var workerUnloadMeasurementSeconds: TimeInterval {
+    @MainActor private var workerUnloadMeasurementSeconds: TimeInterval {
         ProcessInfo.processInfo.environment["DETOUR_MEASURE_WORKER_UNLOAD_SECONDS"]
             .flatMap(Double.init) ?? 300
     }
@@ -2631,7 +2630,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// How many times the probe worker has started, read out of the extension's
     /// own storage through an ordinary page — nothing here wakes the worker.
     /// -1 when the page cannot read it at all.
-    private func workerStartCount(from webView: WKWebView) async -> Int {
+    @MainActor private func workerStartCount(from webView: WKWebView) async -> Int {
         let raw = try? await webView.callAsyncJavaScript("""
             try {
                 const stored = await chrome.storage.local.get('starts');
@@ -2658,7 +2657,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// opened — so one worker, well past the ~170 s at which production's
     /// worker-driven pings stopped counting. Released, WebKit closed the port
     /// 149.4 s later.
-    func testMeasureWorkerUnloadWithOnlyTheKeepAliveOnItsPort() async throws {
+    @MainActor func testMeasureWorkerUnloadWithOnlyTheKeepAliveOnItsPort() async throws {
         try XCTSkipUnless(measuringWorkerUnload,
                           "long measurement leg; set DETOUR_MEASURE_WORKER_UNLOAD=1")
         let id = measurementExtensionID("task68-worker")
@@ -2867,7 +2866,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// all (`WK_WEB_EXTENSIONS_OFFSCREEN` is main-only), so the marker must read
     /// a plain `polyfill` — the day it reads `polyfill-over-native` here, WebKit
     /// has grown one and the shadowing decision needs revisiting.
-    func testOffscreenInstallMarkerIsRecordedInTheWorker() async throws {
+    @MainActor func testOffscreenInstallMarkerIsRecordedInTheWorker() async throws {
         let id = measurementExtensionID("task71-offscreen-install")
         let ext = try await makeWorkerExtension(
             id: id, permissions: ["offscreen"],
@@ -2914,7 +2913,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
                        "chrome.offscreen in the worker must be Detour's own object: \(reply)")
     }
 
-    private func makeKeepAliveProbeExtension(id: String) async throws -> WebExtension {
+    @MainActor private func makeKeepAliveProbeExtension(id: String) async throws -> WebExtension {
         try await makeWorkerExtension(
             id: id, permissions: ["nativeMessaging", "offscreen"],
             backgroundJS: Self.nativeOffscreenCaptureJS + ExtensionAPIPolyfill.polyfillJS
@@ -2926,7 +2925,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// Start the probe in a fresh profile with the keep-alive armed by a simulated
     /// host, so the round trips Detour drives are the only traffic on the worker's
     /// only port — and shorten the ping interval so a leg takes seconds.
-    private func startKeepAliveProbe(
+    @MainActor private func startKeepAliveProbe(
         _ ext: WebExtension, profileName: String, pingInterval: TimeInterval
     ) async throws -> (profile: Profile, context: WKWebExtensionContext, page: WKWebView,
                        controller: WKWebExtensionController) {
@@ -2948,7 +2947,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     }
 
     /// One line of the keep-alive ledger, for the measurement legs' output.
-    private func keepAliveLedger(_ ext: WebExtension,
+    @MainActor private func keepAliveLedger(_ ext: WebExtension,
                                  _ controller: WKWebExtensionController) -> String {
         let manager = ExtensionManager.shared
         let sent = manager.keepAlivePingsSentForTesting(controller: controller, extensionID: ext.id)
@@ -2976,7 +2975,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// What *does* reproduce the production kill here is
     /// `testClosingTheLastExtensionPageKillsTheWorker` below: a page close, of the
     /// kind WebKit's own offscreen implementation performs.
-    func testADetourHostedOffscreenDocumentDoesNotKillTheWorker() async throws {
+    @MainActor func testADetourHostedOffscreenDocumentDoesNotKillTheWorker() async throws {
         let id = measurementExtensionID("task68-offscreen")
         let ext = try await makeKeepAliveProbeExtension(id: id)
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
@@ -3044,7 +3043,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// keep-alive port stays open and registered, `portOpen` and `armed` stay
     /// true, alarms and messages are silently lost, and the only sign of death is
     /// that the pings stop coming back.
-    func testAWorkerTerminatedUnderItsLiveBackgroundPageIsRestarted() async throws {
+    @MainActor func testAWorkerTerminatedUnderItsLiveBackgroundPageIsRestarted() async throws {
         let id = measurementExtensionID("task68-terminated")
         let ext = try await makeKeepAliveProbeExtension(id: id)
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
@@ -3120,7 +3119,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// that kills the worker but the last client of its service-worker
     /// registration going away, which is why closing WebKit's own offscreen
     /// document was enough in production and why an ordinary popup is not.
-    func testAnOrdinaryExtensionPageClosingDoesNotKillTheWorker() async throws {
+    @MainActor func testAnOrdinaryExtensionPageClosingDoesNotKillTheWorker() async throws {
         let id = measurementExtensionID("task68-page-close")
         let ext = try await makeKeepAliveProbeExtension(id: id)
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
@@ -3162,7 +3161,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// still loaded, its port still open, and nothing ever coming back. The
     /// recovery must disconnect what it holds (which drops the port, so WebKit can
     /// collect the page) and let a fresh keep-alive port take its place.
-    func testASilentBackgroundIsTornDownAndRestarted() async throws {
+    @MainActor func testASilentBackgroundIsTornDownAndRestarted() async throws {
         let id = measurementExtensionID("task68-silent")
         let ext = try await makeKeepAliveProbeExtension(id: id)
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
@@ -3220,7 +3219,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     /// The negative: one missed reply is a hiccup, not a death. Detour logs it,
     /// keeps pinging on the same port, and tears nothing down.
-    func testASingleMissedKeepAliveReplyDoesNotRestartTheBackground() async throws {
+    @MainActor func testASingleMissedKeepAliveReplyDoesNotRestartTheBackground() async throws {
         let id = measurementExtensionID("task68-one-miss")
         let ext = try await makeKeepAliveProbeExtension(id: id)
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
@@ -3262,7 +3261,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     /// What the polyfill's keep-alive made of a background context, asked through
     /// an ordinary page of the same extension.
-    private func keepAliveReport(_ ext: WebExtension, profileName: String,
+    @MainActor private func keepAliveReport(_ ext: WebExtension, profileName: String,
                                  wakeBackground: Bool = true) async throws -> [String: Any] {
         let profile = makeProfile(profileName)
         _ = profile.extensionController
@@ -3278,7 +3277,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     /// A non-persistent `background.scripts` page that declares `nativeMessaging`
     /// installs the keep-alive, exactly as a service worker does.
-    func testKeepAliveInstallsInANonPersistentBackgroundPage() async throws {
+    @MainActor func testKeepAliveInstallsInANonPersistentBackgroundPage() async throws {
         let ext = try await makeMeasurementExtension(id: measurementExtensionID("task62-install-page"))
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
 
@@ -3292,7 +3291,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     /// A *persistent* MV2 background page is never unloaded, so it has nothing to
     /// keep alive and must not hold a port in Detour for nothing.
-    func testKeepAliveIsNotInstalledInAPersistentBackgroundPage() async throws {
+    @MainActor func testKeepAliveIsNotInstalledInAPersistentBackgroundPage() async throws {
         let ext = try await makeMeasurementExtension(
             id: measurementExtensionID("task62-install-persistent"),
             manifestVersion: 2, persistent: nil)
@@ -3311,7 +3310,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// An extension page that is not the background context installs nothing:
     /// Detour keeps one keep-alive port per extension, so a popup or options page
     /// opening its own would evict the background's.
-    func testKeepAliveIsNotInstalledInAnOrdinaryExtensionPage() async throws {
+    @MainActor func testKeepAliveIsNotInstalledInAnOrdinaryExtensionPage() async throws {
         let ext = try await makeMeasurementExtension(id: measurementExtensionID("task62-install-ordinary"))
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
         let profile = makeProfile("TASK-62 Install Ordinary Page")
@@ -3338,7 +3337,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     /// A background page whose extension cannot ever have a native host holds no
     /// port either — the permission gate is unchanged by the context relaxation.
-    func testKeepAliveIsNotInstalledInABackgroundPageWithoutNativeMessaging() async throws {
+    @MainActor func testKeepAliveIsNotInstalledInABackgroundPageWithoutNativeMessaging() async throws {
         let ext = try await makeMeasurementExtension(
             id: measurementExtensionID("task62-install-nopermission"), permissions: [])
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
@@ -3377,7 +3376,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     /// Every context's latest keep-alive beat, keyed by instance, read through
     /// `webView` (any page of the extension's origin).
-    private func keepAliveBeats(from webView: WKWebView) async throws -> [String: [String: Any]] {
+    @MainActor private func keepAliveBeats(from webView: WKWebView) async throws -> [String: [String: Any]] {
         let raw = try await webView.callAsyncJavaScript("""
             const beats = {};
             for (let i = 0; i < localStorage.length; i++) {
@@ -3397,7 +3396,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// the evicted context reconnected, evicting the other in turn, and the two
     /// took the port from each other forever. Now the newest port wins and the
     /// evicted context stops (`installDetail` 'superseded') until its next start.
-    func testASupersededKeepAlivePortStopsInsteadOfReconnecting() async throws {
+    @MainActor func testASupersededKeepAlivePortStopsInsteadOfReconnecting() async throws {
         let id = measurementExtensionID("task62-superseded")
         let ext = try await makeBackgroundPageExtension(
             .scripts, id: id, permissions: ["nativeMessaging"],
@@ -3491,7 +3490,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// ExtensionManager wakes a worker for an owed onInstalled in a regular profile
     /// (the positive control) but never in a Private one, where nothing is owed.
     /// The worker script carries no polyfill, so nothing claims during the test.
-    func testPrivateProfileWorkerIsNeverWokenForRuntimeOnInstalled() async throws {
+    @MainActor func testPrivateProfileWorkerIsNeverWokenForRuntimeOnInstalled() async throws {
         let ext = try await makeTestExtension(
             idPrefix: "oninstalled-wake",
             manifest: """
@@ -3534,7 +3533,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// `addListener` (the class's prototype method, which the shadowing leaves in
     /// place): it receiving `install` is what shows WebKit really dispatched to
     /// this page, so the shadowed listener's silence means something.
-    func testRealExtensionPageDoesNotSeeWebKitsRuntimeOnInstalled() async throws {
+    @MainActor func testRealExtensionPageDoesNotSeeWebKitsRuntimeOnInstalled() async throws {
         let workerDelayMS = 2500
         let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
 
@@ -3655,7 +3654,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// tests grew out of, and re-asserted here so a WebKit change that moves the
     /// generated page fails the suite rather than silently costing every such
     /// extension its event.
-    private enum BackgroundPage {
+    @MainActor private enum BackgroundPage {
         /// `background.scripts`: WebKit hosts them in a page it generates.
         case scripts
         /// `background.page`: the author's own page, at its manifest path.
@@ -3790,7 +3789,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// MV2 page (`manifestVersion: 2`, `persistent: nil` — the key left out, which
     /// is what makes an MV2 background persistent), and a background script other
     /// than the onInstalled reporter.
-    private func makeBackgroundPageExtension(
+    @MainActor private func makeBackgroundPageExtension(
         _ shape: BackgroundPage, id: String, version: String = "1.0.0",
         permissions: [String] = [],
         manifestVersion: Int = 3,
@@ -3836,7 +3835,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// the same extension (the only way into it from a test), once the report
     /// satisfies `until` — the claim is a round trip to native, so a report can
     /// arrive with the claim counted and its dispatch still in flight.
-    private func reportFromBackgroundContext(
+    @MainActor private func reportFromBackgroundContext(
         page webView: WKWebView, what: String,
         until: ([String: Any]) -> Bool = { _ in true }
     ) async throws -> [String: Any] {
@@ -3852,13 +3851,13 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
 
     /// The report has been dispatched `count` events — the predicate the install
     /// and update legs wait on.
-    private static func dispatched(_ count: Int) -> ([String: Any]) -> Bool {
+    @MainActor private static func dispatched(_ count: Int) -> ([String: Any]) -> Bool {
         { ($0["allReceived"] as? [Any])?.count == count }
     }
 
     /// What the polyfill made of an ordinary extension page, plus anything an
     /// iframe of that page reported to it.
-    private func polyfillStatus(ofPage webView: WKWebView) async throws -> [String: Any] {
+    @MainActor private func polyfillStatus(ofPage webView: WKWebView) async throws -> [String: Any] {
         let raw = try await webView.callAsyncJavaScript("""
             const status = globalThis.__detourRuntimeOnInstalled;
             return JSON.stringify({
@@ -3875,18 +3874,18 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
     }
 
-    func testMV3BackgroundScriptsPageGetsRuntimeOnInstalledOnce() async throws {
+    @MainActor func testMV3BackgroundScriptsPageGetsRuntimeOnInstalledOnce() async throws {
         try await assertBackgroundPageGetsTheInstallExactlyOnce(.scripts)
     }
 
-    func testMV3BackgroundPageGetsRuntimeOnInstalledOnce() async throws {
+    @MainActor func testMV3BackgroundPageGetsRuntimeOnInstalledOnce() async throws {
         try await assertBackgroundPageGetsTheInstallExactlyOnce(.page)
     }
 
     /// The same `background.page`, declared './bg.html': a relative spelling
     /// Chrome accepts, which the polyfill must resolve against the extension root
     /// to recognise the page WebKit loads at /bg.html as the background context.
-    func testBackgroundPageDeclaredWithARelativePathGetsRuntimeOnInstalledOnce() async throws {
+    @MainActor func testBackgroundPageDeclaredWithARelativePathGetsRuntimeOnInstalledOnce() async throws {
         try await assertBackgroundPageGetsTheInstallExactlyOnce(.dotSlashPage)
     }
 
@@ -3897,7 +3896,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// page as the claiming context, and the event arrives there exactly once —
     /// while an ordinary extension page of the same extension stays `suppressed`
     /// and claims nothing.
-    private func assertBackgroundPageGetsTheInstallExactlyOnce(_ shape: BackgroundPage) async throws {
+    @MainActor private func assertBackgroundPageGetsTheInstallExactlyOnce(_ shape: BackgroundPage) async throws {
         let id = "oninstalled-bgpage-\(shape.label)-\(UUID().uuidString.prefix(8))"
         let ext = try await makeBackgroundPageExtension(shape, id: id)
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
@@ -3966,7 +3965,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// A version change is delivered to the background page as one `update`
     /// carrying the version the install was delivered for — the same ledger step
     /// a worker gets, now reaching a page.
-    func testMV3BackgroundPageGetsTheUpdateAfterAVersionChange() async throws {
+    @MainActor func testMV3BackgroundPageGetsTheUpdateAfterAVersionChange() async throws {
         let id = "oninstalled-bgpage-update-\(UUID().uuidString.prefix(8))"
         let first = try await makeBackgroundPageExtension(.scripts, id: id, version: "1.0.0")
         defer { AppDatabase.shared.deleteExtension(id: id) }
@@ -4011,7 +4010,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// An extension page that iframes the background page's own path is not the
     /// background context: it stays `suppressed`, so it cannot consume the
     /// install the real background page is waiting for.
-    func testAnIframeOfTheBackgroundPagePathDoesNotClaimTheInstalledEvent() async throws {
+    @MainActor func testAnIframeOfTheBackgroundPagePathDoesNotClaimTheInstalledEvent() async throws {
         let id = "oninstalled-bgpage-iframe-\(UUID().uuidString.prefix(8))"
         let ext = try await makeBackgroundPageExtension(
             .page, id: id,
@@ -4080,7 +4079,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// `ExtensionPolyfillTests.testClaimInstalledEventThroughTheNativeBridgeIsRefusedWithoutABackgroundContext`.
     /// What this test pins is the end state: the page got nothing, the
     /// background context got the one install.
-    func testAnOrdinaryExtensionPageCannotClaimTheInstalledEventThroughTheBridge() async throws {
+    @MainActor func testAnOrdinaryExtensionPageCannotClaimTheInstalledEventThroughTheBridge() async throws {
         let id = "oninstalled-page-claim-\(UUID().uuidString.prefix(8))"
         let ext = try await makeBackgroundPageExtension(.scripts, id: id)
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
@@ -4125,7 +4124,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// way to ask a *specific* context when two of them are at the same path.
     /// `allReceived` is the origin's localStorage, shared by every context of the
     /// extension in this profile.
-    private func polyfillClaimState(of webView: WKWebView) async throws -> [String: Any] {
+    @MainActor private func polyfillClaimState(of webView: WKWebView) async throws -> [String: Any] {
         let raw = try await webView.callAsyncJavaScript("""
             const status = globalThis.__detourRuntimeOnInstalled;
             let allReceived = [];
@@ -4161,7 +4160,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// claim may land first — so what is pinned is who ended up with the event:
     /// the tab was dispatched nothing at all, and the extension's background
     /// context recorded exactly one install.
-    func testAnExtensionTabNavigatedToTheBackgroundPathCannotClaimTheInstalledEvent() async throws {
+    @MainActor func testAnExtensionTabNavigatedToTheBackgroundPathCannotClaimTheInstalledEvent() async throws {
         let id = "oninstalled-tab-claim-\(UUID().uuidString.prefix(8))"
         let ext = try await makeBackgroundPageExtension(.scripts, id: id)
         defer { AppDatabase.shared.deleteExtension(id: ext.id) }
@@ -4242,7 +4241,7 @@ final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     /// The registry is what tells an extension page Detour is showing from
     /// WebKit's own background view: every web view Detour creates or presents is
     /// in it, and a view the host never touched is not.
-    func testExtensionPageHostRegistryHoldsTheViewsDetourCreatesOrPresents() async throws {
+    @MainActor func testExtensionPageHostRegistryHoldsTheViewsDetourCreatesOrPresents() async throws {
         let ext = try await makeTestExtension()
         let profile = makeProfile("Host Registry Profile")
         _ = profile.extensionController

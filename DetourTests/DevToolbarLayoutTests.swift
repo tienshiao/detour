@@ -5,31 +5,31 @@ import AppKit
 /// TASK-186.2: the dev toolbar sits above the web view inside the tab's
 /// container, laid out by frames so WebKit's docked Web Inspector keeps
 /// working. The geometry is `DevToolbarLayout`; the container applies it.
-final class DevToolbarLayoutTests: XCTestCase {
+nonisolated final class DevToolbarLayoutTests: XCTestCase {
 
     private let container = NSRect(x: 0, y: 0, width: 800, height: 600)
-    private let h = DevToolbarLayout.height
+    @MainActor private var h: CGFloat { DevToolbarLayout.height }
 
-    private func frames(_ webView: NSRect, shows: Bool, in bounds: NSRect? = nil) -> DevToolbarLayout.Frames {
+    @MainActor private func frames(_ webView: NSRect, shows: Bool, in bounds: NSRect? = nil) -> DevToolbarLayout.Frames {
         DevToolbarLayout.frames(containerBounds: bounds ?? container, webViewFrame: webView,
                                 toolbarHeight: h, showsToolbar: shows)
     }
 
     // MARK: - The pure layout
 
-    func testWithoutAnInspectorTheToolbarTakesTheTopAndTheWebViewTheRest() {
+    @MainActor func testWithoutAnInspectorTheToolbarTakesTheTopAndTheWebViewTheRest() {
         let result = frames(container, shows: true)
         XCTAssertEqual(result.webView, NSRect(x: 0, y: 0, width: 800, height: 600 - h))
         XCTAssertEqual(result.toolbar, NSRect(x: 0, y: 600 - h, width: 800, height: h))
     }
 
-    func testHiddenTheWebViewFillsTheContainerAndThereIsNoToolbar() {
+    @MainActor func testHiddenTheWebViewFillsTheContainerAndThereIsNoToolbar() {
         let result = frames(container, shows: false)
         XCTAssertEqual(result.webView, container)
         XCTAssertNil(result.toolbar)
     }
 
-    func testABottomDockedInspectorKeepsItsHeight() {
+    @MainActor func testABottomDockedInspectorKeepsItsHeight() {
         // The inspector takes the bottom 200 pt; the web view starts above it.
         let docked = NSRect(x: 0, y: 200, width: 800, height: 400)
         let result = frames(docked, shows: true)
@@ -37,7 +37,7 @@ final class DevToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(result.toolbar, NSRect(x: 0, y: 600 - h, width: 800, height: h))
     }
 
-    func testARightDockedInspectorNarrowsTheToolbarWithTheWebView() {
+    @MainActor func testARightDockedInspectorNarrowsTheToolbarWithTheWebView() {
         // A side-docked inspector spans the container's full height.
         let docked = NSRect(x: 0, y: 0, width: 500, height: 600)
         let result = frames(docked, shows: true)
@@ -45,14 +45,14 @@ final class DevToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(result.toolbar, NSRect(x: 0, y: 600 - h, width: 500, height: h))
     }
 
-    func testALeftDockedInspectorMovesTheToolbarWithTheWebView() {
+    @MainActor func testALeftDockedInspectorMovesTheToolbarWithTheWebView() {
         let docked = NSRect(x: 300, y: 0, width: 500, height: 600)
         let result = frames(docked, shows: true)
         XCTAssertEqual(result.webView, NSRect(x: 300, y: 0, width: 500, height: 600 - h))
         XCTAssertEqual(result.toolbar, NSRect(x: 300, y: 600 - h, width: 500, height: h))
     }
 
-    func testTogglingOnThenOffReturnsTheOriginalFrame() {
+    @MainActor func testTogglingOnThenOffReturnsTheOriginalFrame() {
         for original in [container,
                          NSRect(x: 0, y: 200, width: 800, height: 400),
                          NSRect(x: 0, y: 0, width: 500, height: 600),
@@ -66,7 +66,7 @@ final class DevToolbarLayoutTests: XCTestCase {
         }
     }
 
-    func testAContainerResizeKeepsTheToolbarAtTheNewTop() {
+    @MainActor func testAContainerResizeKeepsTheToolbarAtTheNewTop() {
         let bigger = NSRect(x: 0, y: 0, width: 1000, height: 700)
         // Autoresizing keeps the web view's margins, so it grows under the toolbar.
         let grown = NSRect(x: 0, y: 0, width: 1000, height: 700 - h)
@@ -75,7 +75,7 @@ final class DevToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(result.toolbar, NSRect(x: 0, y: 700 - h, width: 1000, height: h))
     }
 
-    func testAWebViewThatLostItsGapIsPushedBackUnderTheToolbar() {
+    @MainActor func testAWebViewThatLostItsGapIsPushedBackUnderTheToolbar() {
         // A container that grew from zero size autoresizes the web view to its
         // full height; the layout restores the toolbar's space.
         let bigger = NSRect(x: 0, y: 0, width: 1000, height: 700)
@@ -84,7 +84,7 @@ final class DevToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(result.toolbar, NSRect(x: 0, y: 700 - h, width: 1000, height: h))
     }
 
-    func testAContainerShorterThanTheToolbarGivesTheWebViewNoHeight() {
+    @MainActor func testAContainerShorterThanTheToolbarGivesTheWebViewNoHeight() {
         let tiny = NSRect(x: 0, y: 0, width: 300, height: 20)
         let result = frames(tiny, shows: true, in: tiny)
         XCTAssertEqual(result.webView.height, 0)
@@ -92,7 +92,7 @@ final class DevToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(result.toolbar, NSRect(x: 0, y: 20 - h, width: 300, height: h))
     }
 
-    func testTheToolbarTracksTheWebViewFrameWebKitSets() {
+    @MainActor func testTheToolbarTracksTheWebViewFrameWebKitSets() {
         // WebKit re-frames the web view when the inspector docks on the right.
         let docked = NSRect(x: 0, y: 0, width: 520, height: 600 - h)
         XCTAssertEqual(DevToolbarLayout.toolbarFrame(containerBounds: container, webViewFrame: docked, toolbarHeight: h),
@@ -104,7 +104,7 @@ final class DevToolbarLayoutTests: XCTestCase {
 
     // MARK: - The container applying it
 
-    private func makeContainer() -> (WebViewContainerView, NSView) {
+    @MainActor private func makeContainer() -> (WebViewContainerView, NSView) {
         let container = WebViewContainerView(frame: container)
         container.autoresizingMask = [.width, .height]
         let webView = NSView(frame: container.bounds)
@@ -114,7 +114,7 @@ final class DevToolbarLayoutTests: XCTestCase {
         return (container, webView)
     }
 
-    func testTheContainerShowsTheToolbarAboveTheWebView() throws {
+    @MainActor func testTheContainerShowsTheToolbarAboveTheWebView() throws {
         let (container, webView) = makeContainer()
         container.updateDevToolbar(shown: true, url: URL(string: "http://localhost:3000/app"))
 
@@ -126,7 +126,7 @@ final class DevToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(toolbar.urlButton.title, "http://localhost:3000/app")
     }
 
-    func testHidingTheToolbarGivesTheWebViewTheWholeContainerBack() throws {
+    @MainActor func testHidingTheToolbarGivesTheWebViewTheWholeContainerBack() throws {
         let (container, webView) = makeContainer()
         container.updateDevToolbar(shown: true, url: URL(string: "http://localhost:3000/"))
         container.updateDevToolbar(shown: false, url: URL(string: "https://example.com/"))
@@ -136,14 +136,14 @@ final class DevToolbarLayoutTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(container.devToolbar).isHidden)
     }
 
-    func testAContainerWithoutTheToolbarIsUntouched() {
+    @MainActor func testAContainerWithoutTheToolbarIsUntouched() {
         let (container, webView) = makeContainer()
         container.updateDevToolbar(shown: false, url: URL(string: "https://example.com/"))
         XCTAssertNil(container.devToolbar, "no toolbar is made for a page that never needs one")
         XCTAssertEqual(webView.frame, container.bounds)
     }
 
-    func testTheToolbarFollowsTheWebViewWhenSomethingElseReframesIt() throws {
+    @MainActor func testTheToolbarFollowsTheWebViewWhenSomethingElseReframesIt() throws {
         let (container, webView) = makeContainer()
         container.updateDevToolbar(shown: true, url: URL(string: "http://localhost:3000/"))
         // What WebKit does when the inspector docks on the right.
@@ -151,7 +151,7 @@ final class DevToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(container.devToolbar).frame, NSRect(x: 0, y: 600 - h, width: 450, height: h))
     }
 
-    func testTheToolbarStaysAtTheTopWhenTheContainerResizes() throws {
+    @MainActor func testTheToolbarStaysAtTheTopWhenTheContainerResizes() throws {
         let (container, webView) = makeContainer()
         container.updateDevToolbar(shown: true, url: URL(string: "http://localhost:3000/"))
         container.setFrameSize(NSSize(width: 1000, height: 700))
@@ -159,7 +159,7 @@ final class DevToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(container.devToolbar).frame, NSRect(x: 0, y: 700 - h, width: 1000, height: h))
     }
 
-    func testAToolbarShownInAZeroSizedContainerKeepsItsSpaceOnceSized() throws {
+    @MainActor func testAToolbarShownInAZeroSizedContainerKeepsItsSpaceOnceSized() throws {
         let container = WebViewContainerView()
         container.autoresizingMask = [.width, .height]
         let webView = NSView(frame: .zero)
@@ -173,7 +173,7 @@ final class DevToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(container.devToolbar).frame, NSRect(x: 0, y: 480 - h, width: 640, height: h))
     }
 
-    func testRoundedPanesRoundOnlyTheOuterCornersWhileTheToolbarShows() throws {
+    @MainActor func testRoundedPanesRoundOnlyTheOuterCornersWhileTheToolbarShows() throws {
         let (container, webView) = makeContainer()
         container.contentCornerRadius = 8
         container.updateDevToolbar(shown: true, url: URL(string: "http://localhost:3000/"))
@@ -186,13 +186,13 @@ final class DevToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(webView.layer?.maskedCorners, DevToolbarLayout.allCorners, "all corners again without the toolbar")
     }
 
-    private final class FlippedView: NSView {
+    @MainActor private final class FlippedView: NSView {
         override var isFlipped: Bool { true }
     }
 
     /// `WKWebView` is flipped, so its layer's `MaxY` edge is its bottom: the
     /// page's bottom corners are the `MaxY` ones, wherever the pane is hosted.
-    func testAFlippedWebViewRoundsItsVisualBottomCorners() throws {
+    @MainActor func testAFlippedWebViewRoundsItsVisualBottomCorners() throws {
         let container = WebViewContainerView(frame: container)
         let webView = FlippedView(frame: container.bounds)
         container.addSubview(webView)
@@ -208,14 +208,14 @@ final class DevToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(webView.layer?.maskedCorners, DevToolbarLayout.topCorners)
     }
 
-    func testTheURLLabelFollowsTheURL() throws {
+    @MainActor func testTheURLLabelFollowsTheURL() throws {
         let (container, _) = makeContainer()
         container.updateDevToolbar(shown: true, url: URL(string: "http://localhost:3000/a"))
         container.updateDevToolbar(shown: true, url: URL(string: "http://localhost:3000/b?q=1"))
         XCTAssertEqual(try XCTUnwrap(container.devToolbar).urlButton.title, "http://localhost:3000/b?q=1")
     }
 
-    func testEveryToolbarButtonHasAnAccessibilityLabel() throws {
+    @MainActor func testEveryToolbarButtonHasAnAccessibilityLabel() throws {
         let (container, _) = makeContainer()
         container.updateDevToolbar(shown: true, url: URL(string: "http://localhost:3000/"))
         let toolbar = try XCTUnwrap(container.devToolbar)
@@ -224,7 +224,7 @@ final class DevToolbarLayoutTests: XCTestCase {
         XCTAssertFalse(toolbar.urlButton.accessibilityLabel()?.isEmpty ?? true)
     }
 
-    func testATrailingGroupIsAddedAfterTheCopyButton() throws {
+    @MainActor func testATrailingGroupIsAddedAfterTheCopyButton() throws {
         let (container, _) = makeContainer()
         container.updateDevToolbar(shown: true, url: URL(string: "http://localhost:3000/"))
         let toolbar = try XCTUnwrap(container.devToolbar)

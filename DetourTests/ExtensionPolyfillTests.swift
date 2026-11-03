@@ -20,8 +20,7 @@ private final class OriginMappingProfile: Profile {
 /// Tests for the extension API polyfill bridge.
 /// Verifies that the JS polyfills can communicate with the native
 /// `ExtensionPolyfillHandler` and receive correct responses.
-@MainActor
-final class ExtensionPolyfillTests: XCTestCase {
+nonisolated final class ExtensionPolyfillTests: XCTestCase {
 
     private var webView: WKWebView!
     private var handler: ExtensionPolyfillHandler!
@@ -35,7 +34,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// script message handler each of them holds (the handler is shared).
     private var createdWebViews: [WKWebView] = []
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
 
         // The bare web view loads from https://test.example.com; attribute that
@@ -78,7 +77,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// background-context-only requests are matched against (TASK-64), so a
     /// fixture standing in for the background context loads at the background
     /// document's path.
-    private func makeWebView(manifestPermissions: [String], shimExtras: String = "",
+    @MainActor private func makeWebView(manifestPermissions: [String], shimExtras: String = "",
                              baseURL: URL = URL(string: "https://test.example.com")!) async throws -> WKWebView {
         let permissionsJSON = String(
             decoding: try JSONSerialization.data(withJSONObject: manifestPermissions), as: UTF8.self
@@ -161,7 +160,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         return created
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for created in createdWebViews {
             created.configuration.userContentController.removeAllScriptMessageHandlers()
         }
@@ -173,7 +172,7 @@ final class ExtensionPolyfillTests: XCTestCase {
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
         }
         registeredExtensionIDs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Register a synthetic extension in ExtensionManager whose manifest declares
@@ -184,7 +183,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// `background`, when given, is the manifest's `background` entry — needed
     /// by the background-context-only requests (TASK-64).
     @discardableResult
-    private func registerExtension(id: String, permissions: [String],
+    @MainActor private func registerExtension(id: String, permissions: [String],
                                    background: [String: Any]? = nil) throws -> WebExtension {
         var manifestDict: [String: Any] = [
             "manifest_version": 3,
@@ -206,7 +205,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// Uses callAsyncJavaScript so Promises are automatically awaited.
     /// `on` defaults to the suite's own web view; pass one from `makeWebView`
     /// to evaluate in a differently-shimmed context.
-    private func evalJSON(_ js: String, arguments: [String: Any] = [:], on target: WKWebView? = nil) async throws -> Any? {
+    @MainActor private func evalJSON(_ js: String, arguments: [String: Any] = [:], on target: WKWebView? = nil) async throws -> Any? {
         let result = try await (target ?? webView!).callAsyncJavaScript(
             js, arguments: arguments, contentWorld: .page
         )
@@ -219,7 +218,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Evaluate a JS expression that may return a Promise.
     /// Uses callAsyncJavaScript so Promises are automatically awaited.
-    private func eval(_ js: String, on target: WKWebView? = nil) async throws -> Any? {
+    @MainActor private func eval(_ js: String, on target: WKWebView? = nil) async throws -> Any? {
         try await (target ?? webView!).callAsyncJavaScript(
             js, arguments: [:], contentWorld: .page
         )
@@ -227,42 +226,42 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     // MARK: - Polyfill Namespace Existence
 
-    func testIdleNamespaceExists() async throws {
+    @MainActor func testIdleNamespaceExists() async throws {
         let exists = try await eval("return typeof chrome.idle") as? String
         XCTAssertEqual(exists, "object")
     }
 
-    func testNotificationsNamespaceExists() async throws {
+    @MainActor func testNotificationsNamespaceExists() async throws {
         let exists = try await eval("return typeof chrome.notifications") as? String
         XCTAssertEqual(exists, "object")
     }
 
-    func testHistoryNamespaceExists() async throws {
+    @MainActor func testHistoryNamespaceExists() async throws {
         let exists = try await eval("return typeof chrome.history") as? String
         XCTAssertEqual(exists, "object")
     }
 
-    func testManagementNamespaceExists() async throws {
+    @MainActor func testManagementNamespaceExists() async throws {
         let exists = try await eval("return typeof chrome.management") as? String
         XCTAssertEqual(exists, "object")
     }
 
-    func testFontSettingsNamespaceExists() async throws {
+    @MainActor func testFontSettingsNamespaceExists() async throws {
         let exists = try await eval("return typeof chrome.fontSettings") as? String
         XCTAssertEqual(exists, "object")
     }
 
-    func testSessionsNamespaceExists() async throws {
+    @MainActor func testSessionsNamespaceExists() async throws {
         let exists = try await eval("return typeof chrome.sessions") as? String
         XCTAssertEqual(exists, "object")
     }
 
-    func testSearchNamespaceExists() async throws {
+    @MainActor func testSearchNamespaceExists() async throws {
         let exists = try await eval("return typeof chrome.search") as? String
         XCTAssertEqual(exists, "object")
     }
 
-    func testOffscreenNamespaceExists() async throws {
+    @MainActor func testOffscreenNamespaceExists() async throws {
         let exists = try await eval("return typeof chrome.offscreen") as? String
         XCTAssertEqual(exists, "object")
     }
@@ -270,26 +269,26 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     // MARK: - chrome.idle
 
-    func testIdleQueryState() async throws {
+    @MainActor func testIdleQueryState() async throws {
         let state = try await eval("return await chrome.idle.queryState(60)") as? String
         XCTAssertNotNil(state)
         XCTAssertTrue(["active", "idle", "locked"].contains(state!),
                        "idle.queryState should return active, idle, or locked but got: \(state!)")
     }
 
-    func testIdleSetDetectionInterval() async throws {
+    @MainActor func testIdleSetDetectionInterval() async throws {
         // Should not throw — setDetectionInterval is fire-and-forget
         _ = try await eval("chrome.idle.setDetectionInterval(30)")
     }
 
-    func testIdleOnStateChangedIsEventEmitter() async throws {
+    @MainActor func testIdleOnStateChangedIsEventEmitter() async throws {
         let hasAddListener = try await eval("return typeof chrome.idle.onStateChanged.addListener") as? String
         XCTAssertEqual(hasAddListener, "function")
         let hasRemoveListener = try await eval("return typeof chrome.idle.onStateChanged.removeListener") as? String
         XCTAssertEqual(hasRemoveListener, "function")
     }
 
-    func testIdleStateConstants() async throws {
+    @MainActor func testIdleStateConstants() async throws {
         let active = try await eval("return chrome.idle.IdleState.ACTIVE") as? String
         XCTAssertEqual(active, "active")
         let idle = try await eval("return chrome.idle.IdleState.IDLE") as? String
@@ -300,7 +299,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     // MARK: - chrome.notifications
 
-    func testNotificationsCreate() async throws {
+    @MainActor func testNotificationsCreate() async throws {
         let result = try await evalJSON("""
             var id = await chrome.notifications.create('test-notif', {
                 type: 'basic', title: 'Test', message: 'Hello'
@@ -312,7 +311,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertFalse(notifId?.isEmpty ?? true)
     }
 
-    func testNotificationsGetAll() async throws {
+    @MainActor func testNotificationsGetAll() async throws {
         _ = try await eval("""
             await chrome.notifications.create('getall-test', {
                 type: 'basic', title: 'Test', message: 'Hello'
@@ -326,7 +325,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertNotNil(result)
     }
 
-    func testNotificationsClear() async throws {
+    @MainActor func testNotificationsClear() async throws {
         _ = try await eval("""
             await chrome.notifications.create('clear-test', {
                 type: 'basic', title: 'Test', message: 'Hello'
@@ -340,7 +339,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result?["cleared"] as? Bool, true)
     }
 
-    func testNotificationsEventEmitters() async throws {
+    @MainActor func testNotificationsEventEmitters() async throws {
         let onClicked = try await eval("return typeof chrome.notifications.onClicked.addListener") as? String
         XCTAssertEqual(onClicked, "function")
         let onClosed = try await eval("return typeof chrome.notifications.onClosed.addListener") as? String
@@ -349,7 +348,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     // MARK: - chrome.history
 
-    func testHistorySearchReturnsArray() async throws {
+    @MainActor func testHistorySearchReturnsArray() async throws {
         let result = try await evalJSON("""
             var items = await chrome.history.search({ text: '' });
             return JSON.stringify({ count: items.length, isArray: Array.isArray(items) });
@@ -357,7 +356,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result?["isArray"] as? Bool, true)
     }
 
-    func testHistoryGetVisitsStub() async throws {
+    @MainActor func testHistoryGetVisitsStub() async throws {
         let result = try await evalJSON("""
             var visits = await chrome.history.getVisits({ url: 'https://example.com' });
             return JSON.stringify({ count: visits.length });
@@ -365,14 +364,14 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result?["count"] as? Int, 0)
     }
 
-    func testHistoryEventEmitters() async throws {
+    @MainActor func testHistoryEventEmitters() async throws {
         let onVisited = try await eval("return typeof chrome.history.onVisited.addListener") as? String
         XCTAssertEqual(onVisited, "function")
     }
 
     // MARK: - chrome.fontSettings
 
-    func testFontSettingsGetFontList() async throws {
+    @MainActor func testFontSettingsGetFontList() async throws {
         let result = try await evalJSON("""
             var fonts = await chrome.fontSettings.getFontList();
             return JSON.stringify({ count: fonts.length, hasItems: fonts.length > 0 });
@@ -380,7 +379,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result?["hasItems"] as? Bool, true, "Should return system fonts")
     }
 
-    func testFontSettingsGetFontListFormat() async throws {
+    @MainActor func testFontSettingsGetFontListFormat() async throws {
         let result = try await evalJSON("""
             var fonts = await chrome.fontSettings.getFontList();
             var first = fonts[0];
@@ -392,7 +391,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     // MARK: - chrome.management
 
-    func testManagementGetSelf() async throws {
+    @MainActor func testManagementGetSelf() async throws {
         let result = try await evalJSON("""
             var info = await chrome.management.getSelf();
             return JSON.stringify(info);
@@ -401,7 +400,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertNotNil(result?["type"])
     }
 
-    func testManagementGetAll() async throws {
+    @MainActor func testManagementGetAll() async throws {
         let result = try await evalJSON("""
             var all = await chrome.management.getAll();
             return JSON.stringify({ isArray: Array.isArray(all) });
@@ -412,7 +411,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// setEnabled is a no-op on the native side, but it must resolve rather than
     /// reject: 1Password calls it to disable its sibling channel builds and an
     /// "Unknown polyfill message type" rejection surfaces as a setup failure.
-    func testManagementSetEnabledResolves() async throws {
+    @MainActor func testManagementSetEnabledResolves() async throws {
         let result = try await evalDictionary("""
         let rejection = null;
         let value = '(not settled)';
@@ -433,7 +432,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// With the `privacy` permission declared, the no-op ChromeSetting objects
     /// 1Password dereferences (`chrome.privacy.services.*`) must be present and
     /// answer in both the promise and callback styles.
-    func testPrivacyServicesInstalledWithPermission() async throws {
+    @MainActor func testPrivacyServicesInstalledWithPermission() async throws {
         let result = try await evalDictionary("""
         const names = ['passwordSavingEnabled', 'autofillEnabled', 'autofillCreditCardEnabled', 'autofillAddressEnabled'];
         const getters = names.map(n => typeof chrome.privacy.services[n].get);
@@ -474,7 +473,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Without the permission the namespace must stay absent, the way Chrome
     /// leaves it out, so a feature detection on chrome.privacy is honest.
-    func testPrivacyAbsentWithoutPermission() async throws {
+    @MainActor func testPrivacyAbsentWithoutPermission() async throws {
         let unprivileged = try await makeWebView(manifestPermissions: ["history", "management"])
         let result = try await evalDictionary("""
         return JSON.stringify({
@@ -491,7 +490,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// 1Password registers onAuthRequired with Chrome's three-argument
     /// addListener in the same block as its webNavigation listeners; a missing
     /// event there throws and skips the rest of the block.
-    func testWebRequestOnAuthRequiredStub() async throws {
+    @MainActor func testWebRequestOnAuthRequiredStub() async throws {
         let result = try await evalDictionary("""
         const fn = function() {};
         let threw = null;
@@ -526,7 +525,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// Chrome exposes chrome.webRequest only to extensions that declared it, so
     /// an extension feature-testing the namespace (to choose between blocking
     /// listeners and declarativeNetRequest) must keep seeing `undefined`.
-    func testWebRequestAbsentWithoutPermission() async throws {
+    @MainActor func testWebRequestAbsentWithoutPermission() async throws {
         let unprivileged = try await makeWebView(manifestPermissions: ["history", "management"])
         let result = try await evalDictionary("""
         return JSON.stringify({
@@ -545,7 +544,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// fabricated frames. So in a bare WKWebView, which has no native
     /// chrome.webNavigation at all, the diag must read `missing` and the
     /// functions must stay `undefined`: no silent fallback.
-    func testWebNavigationFrameNativenessRecordedInDiag() async throws {
+    @MainActor func testWebNavigationFrameNativenessRecordedInDiag() async throws {
         let result = try await evalDictionary("""
         return JSON.stringify({
             diag: __detourPolyfillDiag.apis.webNavigationFrames,
@@ -567,7 +566,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Re-running the polyfill must not relabel the environment: the diag
     /// records the *pre-patch* reading once, and nothing patches these two.
-    func testWebNavigationFrameNativenessSurvivesRerun() async throws {
+    @MainActor func testWebNavigationFrameNativenessSurvivesRerun() async throws {
         let result = try await evalDictionary("""
         \(ExtensionAPIPolyfill.polyfillJS)
         return JSON.stringify({
@@ -583,7 +582,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     // MARK: - chrome.action.getUserSettings
 
-    func testActionGetUserSettingsStub() async throws {
+    @MainActor func testActionGetUserSettingsStub() async throws {
         // A bare WKWebView has no chrome.action at all; give it the shape
         // WebKit provides (an action object without getUserSettings).
         let withAction = try await makeWebView(
@@ -605,7 +604,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["diag"] as? String, "polyfill")
     }
 
-    func testActionGetUserSettingsNotReplacedWhenNative() async throws {
+    @MainActor func testActionGetUserSettingsNotReplacedWhenNative() async throws {
         let nativeAction = try await makeWebView(
             manifestPermissions: ["history", "management", "privacy"],
             shimExtras: """
@@ -632,7 +631,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// `storage.managed.get` inside its background initialize; without the area
     /// the TypeError aborts initialization and the desktop app is never
     /// connected. The stub is an empty, read-only area in both call styles.
-    func testStorageManagedStub() async throws {
+    @MainActor func testStorageManagedStub() async throws {
         // A bare WKWebView has no chrome.storage at all; give it the shape
         // WebKit provides (a storage namespace without `managed`).
         let withStorage = try await makeWebView(
@@ -690,7 +689,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// NEGATIVE: a write in callback form reports the read-only error through
     /// runtime.lastError, not as an unhandled rejection.
-    func testStorageManagedWriteCallbackSetsLastError() async throws {
+    @MainActor func testStorageManagedWriteCallbackSetsLastError() async throws {
         let withStorage = try await makeWebView(
             manifestPermissions: ["storage"],
             shimExtras: "globalThis.chrome.storage = {};"
@@ -711,7 +710,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     }
 
     /// NEGATIVE: a native managed area is never replaced.
-    func testStorageManagedNotReplacedWhenNative() async throws {
+    @MainActor func testStorageManagedNotReplacedWhenNative() async throws {
         let nativeStorage = try await makeWebView(
             manifestPermissions: ["storage"],
             shimExtras: """
@@ -734,7 +733,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// NEGATIVE: without chrome.storage (no `storage` permission) nothing is
     /// created — the namespace stays undefined, as in Chrome.
-    func testStorageManagedAbsentWithoutStorageNamespace() async throws {
+    @MainActor func testStorageManagedAbsentWithoutStorageNamespace() async throws {
         let result = try await evalDictionary("""
         return JSON.stringify({
             storage: typeof chrome.storage,
@@ -776,7 +775,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     };
     """
 
-    private func makePermissionsWebView(extras: String = "") async throws -> WKWebView {
+    @MainActor private func makePermissionsWebView(extras: String = "") async throws -> WKWebView {
         try await makeWebView(manifestPermissions: ["history"],
                               shimExtras: Self.fakePermissionsShim + "\n" + extras)
     }
@@ -784,7 +783,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// contains/request/remove all reach the native function with the port gone
     /// from every ported origin and everything else — other origins, the rest of
     /// the details object — exactly as the caller wrote it.
-    func testPermissionsOriginPortStrippedForAllThreeMethods() async throws {
+    @MainActor func testPermissionsOriginPortStrippedForAllThreeMethods() async throws {
         let wv = try await makePermissionsWebView()
         let result = try await evalDictionary("""
         const details = {
@@ -848,7 +847,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// Both call styles survive the wrapper: a call with a callback stays a
     /// callback call (two arguments, native answers through the callback), and
     /// one without stays a promise call (one argument).
-    func testPermissionsOriginPortKeepsCallbackAndPromiseForms() async throws {
+    @MainActor func testPermissionsOriginPortKeepsCallbackAndPromiseForms() async throws {
         let wv = try await makePermissionsWebView()
         let result = try await evalDictionary("""
         const viaCallback = await new Promise(function(resolve) {
@@ -877,7 +876,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     }
 
     /// The rewrite rule itself: only a real port on the authority goes.
-    func testPermissionsOriginPortStripRule() async throws {
+    @MainActor func testPermissionsOriginPortStripRule() async throws {
         let wv = try await makePermissionsWebView()
         let result = try await evalDictionary("""
         const cases = [
@@ -933,7 +932,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// NEGATIVE: nothing to rewrite means nothing is touched — a details object
     /// with no `origins` array, and one whose origins carry no port, both reach
     /// the native function as the very object the caller passed.
-    func testPermissionsOriginPortForwardsUnrewrittenDetailsUntouched() async throws {
+    @MainActor func testPermissionsOriginPortForwardsUnrewrittenDetailsUntouched() async throws {
         let wv = try await makePermissionsWebView()
         let result = try await evalDictionary("""
         const apiOnly = { permissions: ['tabs'] };
@@ -971,7 +970,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Re-running the polyfill in the same realm must not wrap the wrapper: the
     /// native function is called once per call and stays one hop away.
-    func testPermissionsOriginPortRerunLeavesOneWrapperLayer() async throws {
+    @MainActor func testPermissionsOriginPortRerunLeavesOneWrapperLayer() async throws {
         let wv = try await makePermissionsWebView()
         let result = try await evalDictionary("""
         \(ExtensionAPIPolyfill.polyfillJS)
@@ -1001,7 +1000,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// A `browser.permissions` that is a different object than
     /// `chrome.permissions` is patched too, under its own root key — 1Password
     /// calls `browser.*`.
-    func testPermissionsOriginPortPatchesADistinctBrowserNamespace() async throws {
+    @MainActor func testPermissionsOriginPortPatchesADistinctBrowserNamespace() async throws {
         let wv = try await makePermissionsWebView(extras: """
         globalThis.browser = globalThis.browser || {};
         globalThis.browser.permissions = {
@@ -1038,7 +1037,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// NEGATIVE: a namespace that refuses the write must not be reported as
     /// patched — `__detourDefine` only warns, so the install marker has to notice.
-    func testPermissionsOriginPortReportsARefusedDefine() async throws {
+    @MainActor func testPermissionsOriginPortReportsARefusedDefine() async throws {
         let wv = try await makePermissionsWebView(
             extras: "Object.freeze(globalThis.chrome.permissions);")
         let result = try await evalDictionary("""
@@ -1055,7 +1054,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// NEGATIVE: without a `chrome.permissions` namespace nothing is created —
     /// its absence is the right answer, as in Chrome.
-    func testPermissionsOriginPortAbsentWithoutNamespace() async throws {
+    @MainActor func testPermissionsOriginPortAbsentWithoutNamespace() async throws {
         let result = try await evalDictionary("""
         return JSON.stringify({
             permissions: typeof chrome.permissions,
@@ -1072,12 +1071,12 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     // MARK: - chrome.sessions
 
-    func testSessionsMaxSessionResults() async throws {
+    @MainActor func testSessionsMaxSessionResults() async throws {
         let result = try await eval("return chrome.sessions.MAX_SESSION_RESULTS") as? Int
         XCTAssertEqual(result, 25)
     }
 
-    func testSessionsGetRecentlyClosedStub() async throws {
+    @MainActor func testSessionsGetRecentlyClosedStub() async throws {
         let result = try await evalJSON("""
             var sessions = await chrome.sessions.getRecentlyClosed();
             return JSON.stringify({ count: sessions.length });
@@ -1087,12 +1086,12 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     // MARK: - chrome.offscreen
 
-    func testOffscreenReasonConstants() async throws {
+    @MainActor func testOffscreenReasonConstants() async throws {
         let result = try await eval("return chrome.offscreen.Reason.DOM_PARSER") as? String
         XCTAssertEqual(result, "DOM_PARSER")
     }
 
-    func testOffscreenHasDocumentInitiallyFalse() async throws {
+    @MainActor func testOffscreenHasDocumentInitiallyFalse() async throws {
         let result = try await eval("return await chrome.offscreen.hasDocument()")
         XCTAssertEqual(result as? Bool, false)
     }
@@ -1102,7 +1101,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// The shipped WebKit has no `chrome.offscreen` at all, so Detour's polyfill
     /// is the implementation in force — and says so, in a marker the diag carries
     /// out of a context whose console nothing can read.
-    func testOffscreenInstallMarkerWhenNothingWasThere() async throws {
+    @MainActor func testOffscreenInstallMarkerWhenNothingWasThere() async throws {
         let result = try await evalDictionary("""
         const nativeness = function(fn) {
             if (typeof fn !== 'function') return 'missing';
@@ -1131,7 +1130,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Re-running the polyfill must neither relabel the install nor rebuild the
     /// namespace: the first reading is what described this context's start.
-    func testOffscreenInstallMarkerSurvivesRerun() async throws {
+    @MainActor func testOffscreenInstallMarkerSurvivesRerun() async throws {
         let result = try await evalDictionary("""
         const before = chrome.offscreen;
         \(ExtensionAPIPolyfill.polyfillJS)
@@ -1156,7 +1155,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// and the tested `OffscreenDocumentHost` lifecycle — but the shadowing has
     /// to be visible rather than silent. Bound functions stringify as
     /// `function () { [native code] }`, which is what `nativeness` reads.
-    func testOffscreenInstallMarkerWhenANativeNamespaceIsShadowed() async throws {
+    @MainActor func testOffscreenInstallMarkerWhenANativeNamespaceIsShadowed() async throws {
         let withNative = try await makeWebView(
             manifestPermissions: ["history", "management", "privacy"],
             shimExtras: """
@@ -1187,7 +1186,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// A non-native object of someone else's is shadowed too, and labelled apart
     /// from a native one so a diag reading says which it was.
-    func testOffscreenInstallMarkerWhenAForeignNamespaceIsShadowed() async throws {
+    @MainActor func testOffscreenInstallMarkerWhenAForeignNamespaceIsShadowed() async throws {
         let withForeign = try await makeWebView(
             manifestPermissions: ["history", "management", "privacy"],
             shimExtras: """
@@ -1216,7 +1215,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// nothing it can do, and it only warns. The extension is then running against
     /// an implementation Detour did not install, so this must be an *error* in the
     /// log and an `error:` marker in the diag — never a silent fallthrough.
-    func testOffscreenInstallMarkerWhenTheDefineDoesNotTake() async throws {
+    @MainActor func testOffscreenInstallMarkerWhenTheDefineDoesNotTake() async throws {
         let frozen = try await makeWebView(
             manifestPermissions: ["history", "management", "privacy"],
             shimExtras: """
@@ -1275,7 +1274,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     private static let offscreenParams =
         "{ url: 'offscreen.html', reasons: ['DOM_PARSER'], justification: 'test' }"
 
-    private func callbackOutcome(call: String, setup: String = "", teardown: String = "",
+    @MainActor private func callbackOutcome(call: String, setup: String = "", teardown: String = "",
                                  readLastError: Bool = true, throwFromCallback: Bool = false,
                                  on target: WKWebView? = nil) async throws -> [String: Any] {
         try await evalDictionary(
@@ -1286,7 +1285,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// The harness must be able to see an unhandled rejection at all, or the
     /// "no unhandled rejection" assertions below prove nothing.
-    func testCallbackHarnessObservesUnhandledRejections() async throws {
+    @MainActor func testCallbackHarnessObservesUnhandledRejections() async throws {
         let outcome = try await callbackOutcome(call: """
             Promise.reject(new Error('control rejection'));
             cb();
@@ -1298,7 +1297,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// context, so "Extension not found"). The callback still runs, with no
     /// arguments and lastError carrying the message, and lastError is gone
     /// once it returns. A checked error is not reported to the console.
-    func testOffscreenCreateDocumentCallbackGetsLastErrorOnNativeFailure() async throws {
+    @MainActor func testOffscreenCreateDocumentCallbackGetsLastErrorOnNativeFailure() async throws {
         let outcome = try await callbackOutcome(
             call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);")
 
@@ -1316,7 +1315,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// NEGATIVE: a callback that never reads lastError gets Chrome's
     /// "Unchecked runtime.lastError" console report, and still no unhandled
     /// rejection.
-    func testOffscreenCreateDocumentUncheckedLastErrorIsReported() async throws {
+    @MainActor func testOffscreenCreateDocumentUncheckedLastErrorIsReported() async throws {
         let outcome = try await callbackOutcome(
             call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);",
             readLastError: false)
@@ -1329,7 +1328,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// NEGATIVE: the promise form is untouched by the callback handling and
     /// still rejects with the native message.
-    func testOffscreenCreateDocumentPromiseFormStillRejects() async throws {
+    @MainActor func testOffscreenCreateDocumentPromiseFormStillRejects() async throws {
         let outcome = try await evalDictionary(
             promiseOutcomeJS("chrome.offscreen.createDocument(\(Self.offscreenParams))"))
         XCTAssertEqual(outcome["settled"] as? String, "rejected")
@@ -1340,7 +1339,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// arguments and no lastError. The bridge is stubbed to succeed, since a
     /// bare web view cannot host a real offscreen document (the real success
     /// path is covered in ExtensionPolyfillProfileWiringTests).
-    func testOffscreenCreateDocumentCallbackOnSuccess() async throws {
+    @MainActor func testOffscreenCreateDocumentCallbackOnSuccess() async throws {
         let outcome = try await callbackOutcome(
             call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);",
             setup: """
@@ -1363,7 +1362,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// POSITIVE: history.search through the real native bridge hands its
     /// result to the callback with no lastError.
-    func testHistorySearchCallbackReceivesResults() async throws {
+    @MainActor func testHistorySearchCallbackReceivesResults() async throws {
         let outcome = try await callbackOutcome(call: "return chrome.history.search({ text: '' }, cb);")
 
         XCTAssertEqual(outcome["returnedType"] as? String, "undefined")
@@ -1377,7 +1376,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// NEGATIVE: without the `history` permission the native gate rejects;
     /// the callback gets that as lastError, and the promise form rejects.
-    func testHistorySearchCallbackGetsLastErrorWithoutPermission() async throws {
+    @MainActor func testHistorySearchCallbackGetsLastErrorWithoutPermission() async throws {
         ExtensionManager.shared.extensions.removeAll { $0.id == "test-polyfill-extension" }
         try registerExtension(id: "test-polyfill-extension", permissions: ["management"])
 
@@ -1396,7 +1395,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// An exception thrown by the callback surfaces as an uncaught error (as
     /// in Chrome), not as an unhandled rejection, and lastError is still
     /// cleared behind it.
-    func testCallbackExceptionIsRethrownAndLastErrorStillCleared() async throws {
+    @MainActor func testCallbackExceptionIsRethrownAndLastErrorStillCleared() async throws {
         let outcome = try await callbackOutcome(
             call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);",
             throwFromCallback: true)
@@ -1417,7 +1416,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// the relay: the message goes to Detour's polyfill host through the
     /// callback-style sendNativeMessage, and the callback runs from that
     /// callback. The fake sendNativeMessage stands in for WebKit's.
-    func testNonOverridableLastErrorRelaysThroughSendNativeMessage() async throws {
+    @MainActor func testNonOverridableLastErrorRelaysThroughSendNativeMessage() async throws {
         let outcome = try await callbackOutcome(
             call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);",
             setup: """
@@ -1447,7 +1446,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// With neither a redefinable lastError nor sendNativeMessage, the callback
     /// still runs and the error is reported to the console.
-    func testNonOverridableLastErrorWithoutRelayFallsBackToConsole() async throws {
+    @MainActor func testNonOverridableLastErrorWithoutRelayFallsBackToConsole() async throws {
         let outcome = try await callbackOutcome(
             call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);",
             setup: "Object.defineProperty(chrome.runtime, 'lastError', { get() { return undefined; }, configurable: false });")
@@ -1462,16 +1461,17 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// The native half of the relay: it always fails, with the sender's own
     /// message (capped), and needs no permission.
-    func testLastErrorRelayRepliesWithTheMessageAsItsError() async throws {
+    @MainActor func testLastErrorRelayRepliesWithTheMessageAsItsError() async throws {
         func relay(_ params: [String: Any]) async -> (result: Any?, error: String?) {
-            await withCheckedContinuation { continuation in
+            let reply = await withCheckedContinuation { (continuation: CheckedContinuation<BridgeReply, Never>) in
                 handler.handleNativeMessage(
                     ["type": ExtensionPolyfillHandler.lastErrorRelayType, "extensionID": "", "params": params],
                     verifiedExtensionID: "no-permissions-extension"
                 ) { result, error in
-                    continuation.resume(returning: (result, (error as NSError?)?.localizedDescription))
+                    continuation.resume(returning: BridgeReply(result: result, error: (error as NSError?)?.localizedDescription))
                 }
             }
+            return (reply.result, reply.error)
         }
         let echoed = await relay(["message": "offscreen page failed to load"])
         XCTAssertNil(echoed.result)
@@ -1487,7 +1487,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     // MARK: - Event Emitter Utility
 
-    func testEventEmitterAddAndHasListener() async throws {
+    @MainActor func testEventEmitterAddAndHasListener() async throws {
         let result = try await eval("""
             var fn = function() {};
             chrome.idle.onStateChanged.addListener(fn);
@@ -1496,7 +1496,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result, true)
     }
 
-    func testEventEmitterRemoveListener() async throws {
+    @MainActor func testEventEmitterRemoveListener() async throws {
         let result = try await eval("""
             var fn = function() {};
             chrome.idle.onStateChanged.addListener(fn);
@@ -1508,7 +1508,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     // MARK: - chrome.search
 
-    func testSearchQueryFunctionExists() async throws {
+    @MainActor func testSearchQueryFunctionExists() async throws {
         let exists = try await eval("return typeof chrome.search.query") as? String
         XCTAssertEqual(exists, "function")
     }
@@ -1517,7 +1517,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Test the handleNativeMessage path directly — this is the path used by
     /// service workers where webkit.messageHandlers is unavailable.
-    func testNativeMessageBridgeIdleQueryState() {
+    @MainActor func testNativeMessageBridgeIdleQueryState() {
         let expectation = expectation(description: "idle.queryState via native bridge")
 
         handler.handleNativeMessage(
@@ -1533,7 +1533,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         wait(for: [expectation], timeout: 5)
     }
 
-    func testNativeMessageBridgeFontSettings() {
+    @MainActor func testNativeMessageBridgeFontSettings() {
         let expectation = expectation(description: "fontSettings via native bridge")
 
         handler.handleNativeMessage(
@@ -1553,7 +1553,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// history.search is gated behind the "history" manifest permission. With
     /// an unregistered/unknown extension id (no manifest, no permission) the
     /// bridge must refuse and surface the "history permission not declared" error.
-    func testHistorySearchDeniedWithoutPermission() {
+    @MainActor func testHistorySearchDeniedWithoutPermission() {
         let expectation = expectation(description: "history.search denied without permission")
 
         handler.handleNativeMessage(
@@ -1572,7 +1572,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// management.setEnabled is honoured as a no-op success on the native side.
     /// The sender must declare `management` (see the negative test below), so
     /// this registers one rather than using the bare "test" id.
-    func testNativeMessageBridgeManagementSetEnabled() throws {
+    @MainActor func testNativeMessageBridgeManagementSetEnabled() throws {
         try registerExtension(id: "mgmt-setenabled-ext", permissions: ["management"])
         let expectation = expectation(description: "management.setEnabled via native bridge")
 
@@ -1589,7 +1589,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         wait(for: [expectation], timeout: 5)
     }
 
-    func testNativeMessageBridgeOffscreenHasDocument() {
+    @MainActor func testNativeMessageBridgeOffscreenHasDocument() {
         let expectation = expectation(description: "offscreen.hasDocument via native bridge")
 
         handler.handleNativeMessage(
@@ -1604,7 +1604,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         wait(for: [expectation], timeout: 5)
     }
 
-    func testNativeMessageBridgeInvalidType() {
+    @MainActor func testNativeMessageBridgeInvalidType() {
         let expectation = expectation(description: "unknown type via native bridge")
 
         handler.handleNativeMessage(
@@ -1618,7 +1618,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         wait(for: [expectation], timeout: 5)
     }
 
-    func testNativeMessageBridgeMissingType() {
+    @MainActor func testNativeMessageBridgeMissingType() {
         let expectation = expectation(description: "missing type via native bridge")
 
         handler.handleNativeMessage(
@@ -1636,7 +1636,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// history.search POSITIVE: an extension that declared the "history"
     /// permission is allowed through and gets a results array.
-    func testHistorySearchAllowedWithPermission() throws {
+    @MainActor func testHistorySearchAllowedWithPermission() throws {
         try registerExtension(id: "histperm-ext", permissions: ["history"])
         let expectation = expectation(description: "history.search allowed with permission")
 
@@ -1657,7 +1657,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// history.search NEGATIVE: a registered extension that did NOT declare the
     /// "history" permission is refused, even though it exists in ExtensionManager.
-    func testHistorySearchDeniedWhenPermissionMissing() throws {
+    @MainActor func testHistorySearchDeniedWhenPermissionMissing() throws {
         try registerExtension(id: "nohistory-ext", permissions: ["storage"])
         let expectation = expectation(description: "history.search denied when permission missing")
 
@@ -1676,7 +1676,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// management.getAll POSITIVE: an extension that declared the "management"
     /// permission gets the full extension list back.
-    func testManagementGetAllAllowedWithPermission() throws {
+    @MainActor func testManagementGetAllAllowedWithPermission() throws {
         try registerExtension(id: "mgmtperm-ext", permissions: ["management"])
         let expectation = expectation(description: "management.getAll allowed with permission")
 
@@ -1696,7 +1696,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// management.getAll NEGATIVE: a registered extension without the
     /// "management" permission is refused.
-    func testManagementGetAllDeniedWithoutPermission() throws {
+    @MainActor func testManagementGetAllDeniedWithoutPermission() throws {
         try registerExtension(id: "nomgmt-ext", permissions: ["storage"])
         let expectation = expectation(description: "management.getAll denied without permission")
 
@@ -1717,7 +1717,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// uninstallSelf are permission-free, so an extension that never declared
     /// `management` must not be able to ask Detour to disable anything — even
     /// though the handler's answer is a no-op success when it may.
-    func testManagementSetEnabledDeniedWithoutPermission() throws {
+    @MainActor func testManagementSetEnabledDeniedWithoutPermission() throws {
         try registerExtension(id: "nomgmt-setenabled-ext", permissions: ["storage"])
         let expectation = expectation(description: "management.setEnabled denied without permission")
 
@@ -1739,7 +1739,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// NEGATIVE: when the verified id (derived from the sending context/frame)
     /// disagrees with the self-reported body extensionID, the request is an
     /// impersonation attempt and must be rejected.
-    func testIdentitySpoofingRejected() {
+    @MainActor func testIdentitySpoofingRejected() {
         let expectation = expectation(description: "identity spoofing rejected")
 
         handler.handleNativeMessage(
@@ -1757,7 +1757,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// Happy path: when the verified id matches the claimed body id there is no
     /// identity mismatch and the request proceeds. Uses idle.queryState since it
     /// needs no manifest permission.
-    func testIdentityVerifiedHappyPath() {
+    @MainActor func testIdentityVerifiedHappyPath() {
         let expectation = expectation(description: "verified identity proceeds")
 
         handler.handleNativeMessage(
@@ -1779,13 +1779,13 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// Send a raw envelope through webkit.messageHandlers from the test page,
     /// bypassing the polyfill's own `extensionID` stamping so the body can
     /// claim any id. Returns the bridge's reply or the error string.
-    private func sendRawBridgeMessage(type: String, claimedID: String) async throws -> (result: Any?, error: String?) {
+    @MainActor private func sendRawBridgeMessage(type: String, claimedID: String) async throws -> (result: Any?, error: String?) {
         try await postRawPolyfillEnvelope(from: webView, type: type, claimedID: claimedID)
     }
 
     /// POSITIVE: a message from a page whose origin resolves to an extension is
     /// attributed to that extension, and a matching body id proceeds.
-    func testWebViewMessageAttributedByOrigin() async throws {
+    @MainActor func testWebViewMessageAttributedByOrigin() async throws {
         let reply = try await sendRawBridgeMessage(type: "idle.queryState", claimedID: "test-polyfill-extension")
         XCTAssertNil(reply.error)
         XCTAssertTrue(["active", "idle", "locked"].contains(reply.result as? String ?? ""),
@@ -1795,7 +1795,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// POSITIVE: the polyfill stamps an empty id when `chrome.runtime.id` is
     /// unavailable in the sending frame; that is no claim at all, so the
     /// origin-verified identity is used and the request proceeds.
-    func testWebViewMessageWithEmptyClaimedIDUsesVerifiedOrigin() async throws {
+    @MainActor func testWebViewMessageWithEmptyClaimedIDUsesVerifiedOrigin() async throws {
         let reply = try await sendRawBridgeMessage(type: "idle.queryState", claimedID: "")
         XCTAssertNil(reply.error)
         XCTAssertTrue(["active", "idle", "locked"].contains(reply.result as? String ?? ""))
@@ -1803,7 +1803,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// NEGATIVE: the body claims another extension's id from a verified origin;
     /// the verified id wins and the request is rejected as impersonation.
-    func testWebViewMessageClaimingOtherExtensionRejected() async throws {
+    @MainActor func testWebViewMessageClaimingOtherExtensionRejected() async throws {
         let reply = try await sendRawBridgeMessage(type: "idle.queryState", claimedID: "some-other-extension")
         XCTAssertNil(reply.result)
         XCTAssertEqual(reply.error, "Extension identity mismatch")
@@ -1812,7 +1812,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// NEGATIVE: the origin resolves to no loaded extension (e.g. its context
     /// was unloaded, so its old UUID origin is stale); the body id is not a
     /// fallback on the web-view path, even when it names a real extension.
-    func testWebViewMessageFromUnknownOriginRejected() async throws {
+    @MainActor func testWebViewMessageFromUnknownOriginRejected() async throws {
         profile.originMap = { _, _ in nil }
         let reply = try await sendRawBridgeMessage(type: "idle.queryState", claimedID: "test-polyfill-extension")
         XCTAssertNil(reply.result)
@@ -1821,7 +1821,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// NEGATIVE: a handler whose profile has been released trusts nothing —
     /// there is nothing left that could attribute the origin.
-    func testWebViewMessageWithReleasedProfileRejected() async throws {
+    @MainActor func testWebViewMessageWithReleasedProfileRejected() async throws {
         // The handler's reference is weak and the web view's message handler
         // registration keeps only the handler alive, so dropping the test's
         // reference releases the profile.
@@ -1835,7 +1835,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// The profile's origin lookup is handed the frame's real scheme and host,
     /// so a profile keyed on both (as the real one is) sees exactly the page's
     /// origin.
-    func testWebViewOriginLookupReceivesFrameOrigin() async throws {
+    @MainActor func testWebViewOriginLookupReceivesFrameOrigin() async throws {
         var seen: (scheme: String, host: String)?
         profile.originMap = { scheme, host in
             seen = (scheme, host)
@@ -1848,7 +1848,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     // MARK: - Service Worker Fallback Detection
 
-    func testPolyfillUsesWebkitHandlerWhenAvailable() async throws {
+    @MainActor func testPolyfillUsesWebkitHandlerWhenAvailable() async throws {
         // In a WKWebView with the handler registered, the polyfill should work
         // via webkit.messageHandlers (already tested above). Verify the bridge
         // actually resolves — if it fell back to sendNativeMessage, idle.queryState
@@ -1857,7 +1857,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertNotNil(state, "Polyfill should work via webkit.messageHandlers in WKWebView")
     }
 
-    func testPolyfillFallsBackToNativeMessageWhenNoHandler() async throws {
+    @MainActor func testPolyfillFallsBackToNativeMessageWhenNoHandler() async throws {
         // Create a web view WITHOUT the webkit handler but WITH browser.runtime.sendNativeMessage stubbed.
         // This simulates the service worker environment.
         let config = WKWebViewConfiguration()
@@ -1908,7 +1908,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// 'log' request it produced, in order. The rate limiter (TASK-17) is reset
     /// first, so a test starts from a full token bucket and an empty dedupe
     /// window whatever the context logged while loading.
-    private func bridgedLogs(running statementJS: String, on target: WKWebView? = nil)
+    @MainActor private func bridgedLogs(running statementJS: String, on target: WKWebView? = nil)
         async throws -> [(level: String, message: String)] {
         let raw = try await evalJSON("""
         globalThis.__detourConsoleBridge.reset();
@@ -1930,12 +1930,12 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// Covers both ways the console bridge is driven: calling `console.*`
     /// directly, and dispatching an `error` / `unhandledrejection` event that the
     /// bridge reports.
-    private func bridgedLog(running statementJS: String) async throws -> (level: String, message: String) {
+    @MainActor private func bridgedLog(running statementJS: String) async throws -> (level: String, message: String) {
         let logs = try await bridgedLogs(running: statementJS)
         return try XCTUnwrap(logs.first, "nothing reached the bridge")
     }
 
-    func testConsoleBridgeFormatsErrorAsNameMessageAndStack() async throws {
+    @MainActor func testConsoleBridgeFormatsErrorAsNameMessageAndStack() async throws {
         let formatted = try await bridgedLog(running: "console.error(new TypeError('boom'));").message
         XCTAssertTrue(formatted.hasPrefix("TypeError: boom"),
                       "Expected 'TypeError: boom' prefix, got: \(formatted)")
@@ -1943,14 +1943,14 @@ final class ExtensionPolyfillTests: XCTestCase {
                       "Expected a stack appended after the header, got: \(formatted)")
     }
 
-    func testConsoleBridgeFormatsErrorWithoutStack() async throws {
+    @MainActor func testConsoleBridgeFormatsErrorWithoutStack() async throws {
         let formatted = try await bridgedLog(
             running: "console.error(Object.assign(Object.create(Error.prototype), { name: 'Error', message: 'nostack' }));"
         ).message
         XCTAssertEqual(formatted, "Error: nostack")
     }
 
-    func testConsoleBridgeDoesNotDuplicateV8StyleHeader() async throws {
+    @MainActor func testConsoleBridgeDoesNotDuplicateV8StyleHeader() async throws {
         let formatted = try await bridgedLog(running: """
         console.error(Object.assign(Object.create(Error.prototype), {
             name: 'RangeError',
@@ -1961,7 +1961,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(formatted, "RangeError: bad\n    at foo (a.js:1:1)")
     }
 
-    func testConsoleBridgeKeepsHeaderWhenStackMerelyStartsWithName() async throws {
+    @MainActor func testConsoleBridgeKeepsHeaderWhenStackMerelyStartsWithName() async throws {
         // JSC stacks carry no "Name: message" header line, so it must be kept
         // even when the first frame happens to start with the error's name.
         let formatted = try await bridgedLog(running: """
@@ -1974,7 +1974,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(formatted, "Error\nErrorReporter@app.js:3:9\nglobal code@app.js:9:1")
     }
 
-    func testConsoleBridgeIncludesOwnPropertiesOfErrors() async throws {
+    @MainActor func testConsoleBridgeIncludesOwnPropertiesOfErrors() async throws {
         let formatted = try await bridgedLog(
             running: "console.error(Object.assign(new Error('boom'), { code: 'E_AUTH' }));"
         ).message
@@ -1982,7 +1982,7 @@ final class ExtensionPolyfillTests: XCTestCase {
                       "Expected own props after the header, got: \(formatted)")
     }
 
-    func testConsoleBridgeSerializesNestedErrors() async throws {
+    @MainActor func testConsoleBridgeSerializesNestedErrors() async throws {
         let formatted = try await bridgedLog(
             running: "console.error({ err: Object.assign(new Error('inner'), { code: 'E1' }), n: 1 });"
         ).message
@@ -1996,7 +1996,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(parsed["n"] as? Int, 1)
     }
 
-    func testConsoleBridgeFormatsDOMException() async throws {
+    @MainActor func testConsoleBridgeFormatsDOMException() async throws {
         let formatted = try await bridgedLog(
             running: "console.error(new DOMException('denied', 'NotAllowedError'));"
         ).message
@@ -2004,7 +2004,7 @@ final class ExtensionPolyfillTests: XCTestCase {
                       "Expected 'NotAllowedError: denied' prefix, got: \(formatted)")
     }
 
-    func testConsoleBridgeFormatsPlainValues() async throws {
+    @MainActor func testConsoleBridgeFormatsPlainValues() async throws {
         let bridged = try await bridgedLog(
             running: "console.log('a', 1, null, undefined, {k: 'v'});"
         )
@@ -2012,7 +2012,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(bridged.message, "a 1 null undefined {\"k\":\"v\"}")
     }
 
-    func testConsoleBridgeSurvivesThrowingErrorAccessors() async throws {
+    @MainActor func testConsoleBridgeSurvivesThrowingErrorAccessors() async throws {
         let formatted = try await bridgedLog(running: """
         console.error((() => {
             const e = new Error('x');
@@ -2026,7 +2026,7 @@ final class ExtensionPolyfillTests: XCTestCase {
                       "Sibling keys should survive a throwing accessor, got: \(formatted)")
     }
 
-    func testConsoleBridgeIsolatesUnserializableArguments() async throws {
+    @MainActor func testConsoleBridgeIsolatesUnserializableArguments() async throws {
         // Also proves console.* never throws: otherwise `eval` itself would reject.
         let formatted = try await bridgedLog(
             running: "console.error('before', new Proxy({}, { get() { throw new TypeError('get'); }, ownKeys() { throw new TypeError('keys'); }, getPrototypeOf() { throw new TypeError('gpo'); } }), 'after');"
@@ -2034,14 +2034,14 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(formatted, "before [unserializable] after")
     }
 
-    func testConsoleBridgeTruncatesLongMessages() async throws {
+    @MainActor func testConsoleBridgeTruncatesLongMessages() async throws {
         let formatted = try await bridgedLog(running: "console.error('x'.repeat(20000));").message
         XCTAssertTrue(formatted.hasSuffix("…[truncated]"),
                       "Expected a truncation marker, got suffix: \(formatted.suffix(20))")
         XCTAssertEqual(formatted.count, 8192 + "…[truncated]".count)
     }
 
-    func testConsoleErrorWithErrorObjectDoesNotThrow() async throws {
+    @MainActor func testConsoleErrorWithErrorObjectDoesNotThrow() async throws {
         let result = try await eval("""
         console.error('ctx', new Error('e2'));
         return 'ok';
@@ -2049,7 +2049,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result, "ok")
     }
 
-    func testConsoleBridgeReportsUncaughtExceptions() async throws {
+    @MainActor func testConsoleBridgeReportsUncaughtExceptions() async throws {
         let entry = try await bridgedLog(running: """
         globalThis.dispatchEvent(new ErrorEvent('error', { message: 'boom', error: new RangeError('boom'), filename: 'sw.js', lineno: 12, colno: 7 }));
         """)
@@ -2058,14 +2058,14 @@ final class ExtensionPolyfillTests: XCTestCase {
                       "Unexpected uncaught-exception line: \(entry.message)")
     }
 
-    func testConsoleBridgeReportsUncaughtExceptionsWithoutErrorObject() async throws {
+    @MainActor func testConsoleBridgeReportsUncaughtExceptionsWithoutErrorObject() async throws {
         let entry = try await bridgedLog(running: """
         globalThis.dispatchEvent(new ErrorEvent('error', { message: 'Script error.' }));
         """)
         XCTAssertEqual(entry.message, "[uncaught exception] Script error.")
     }
 
-    func testConsoleBridgeReportsUnhandledRejections() async throws {
+    @MainActor func testConsoleBridgeReportsUnhandledRejections() async throws {
         let entry = try await bridgedLog(running: """
         globalThis.dispatchEvent(new PromiseRejectionEvent('unhandledrejection', { promise: Promise.resolve(), reason: new TypeError('rejected') }));
         """)
@@ -2076,7 +2076,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// The bridge swallows its own rejection: an unhandledrejection reporter that
     /// logs through the same path must not turn one failed send into a loop.
-    func testConsoleBridgeDoesNotFeedItselfWhenBridgeRejects() async throws {
+    @MainActor func testConsoleBridgeDoesNotFeedItselfWhenBridgeRejects() async throws {
         let result = try await evalDictionary("""
         const calls = [];
         const orig = globalThis.__detourPolyfillRequest;
@@ -2105,13 +2105,13 @@ final class ExtensionPolyfillTests: XCTestCase {
     // MARK: - Console bridge rate limit (TASK-17)
 
     /// The JS limiter's burst, read from the polyfill so the tests follow tuning.
-    private func consoleBridgeBurst(on target: WKWebView? = nil) async throws -> Int {
+    @MainActor private func consoleBridgeBurst(on target: WKWebView? = nil) async throws -> Int {
         // Hoisted out of XCTUnwrap: its argument is an autoclosure and cannot await.
         let value = try await eval("return globalThis.__detourConsoleBridge.BURST", on: target)
         return try XCTUnwrap(value as? Int, "the console bridge exposes no BURST constant")
     }
 
-    func testConsoleBridgeForwardsTheWholeBurst() async throws {
+    @MainActor func testConsoleBridgeForwardsTheWholeBurst() async throws {
         let burst = try await consoleBridgeBurst()
         let logs = try await bridgedLogs(running: """
         for (let i = 0; i < \(burst); i++) console.log('burst ' + i);
@@ -2122,7 +2122,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Distinct messages beyond the burst are dropped, and the drop is accounted
     /// for by one summary line once a token comes back.
-    func testConsoleBridgeDropsBeyondTheBurstAndSummarizesWhatItDropped() async throws {
+    @MainActor func testConsoleBridgeDropsBeyondTheBurstAndSummarizesWhatItDropped() async throws {
         let burst = try await consoleBridgeBurst()
         let flood = 200
         let logs = try await bridgedLogs(running: """
@@ -2158,7 +2158,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// A flood that outlasts the burst: tokens return every 1/REFILL_PER_SEC, and
     /// each return must not buy its own summary line, or the summaries double the
     /// traffic the bucket caps. One summary per DROP_SUMMARY_MS, the rest deferred.
-    func testConsoleBridgeSummarizesASustainedFloodOncePerPeriod() async throws {
+    @MainActor func testConsoleBridgeSummarizesASustainedFloodOncePerPeriod() async throws {
         let logs = try await bridgedLogs(running: """
         for (let batch = 0; batch < 8; batch++) {
             for (let i = 0; i < 30; i++) console.error('sustained ' + batch + '/' + i);
@@ -2173,7 +2173,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// A `(repeated N times)` flush that the bucket drops loses N messages; the
     /// summary must say so rather than counting the one line.
-    func testConsoleBridgeCountsADroppedRepeatFlushAsEveryRepeat() async throws {
+    @MainActor func testConsoleBridgeCountsADroppedRepeatFlushAsEveryRepeat() async throws {
         let burst = try await consoleBridgeBurst()
         let logs = try await bridgedLogs(running: """
         for (let i = 0; i < \(burst); i++) console.error('burst ' + i);
@@ -2194,7 +2194,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// The shape of the 2026-09-11 incident: a worker error loop repeating one
     /// message. It must cost a couple of sends, not one per iteration, and must
     /// not burn the bucket other messages need.
-    func testConsoleBridgeCoalescesARepeatingMessageIntoACount() async throws {
+    @MainActor func testConsoleBridgeCoalescesARepeatingMessageIntoACount() async throws {
         let logs = try await bridgedLogs(running: """
         for (let i = 0; i < 5000; i++) console.error('the same error');
         console.error('something else');
@@ -2209,7 +2209,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// With no different message to close it, the dedupe window is flushed by its
     /// own timer so a still-looping worker is reported about once a second.
-    func testConsoleBridgeFlushesARepeatCountOnATimer() async throws {
+    @MainActor func testConsoleBridgeFlushesARepeatCountOnATimer() async throws {
         let logs = try await bridgedLogs(running: """
         console.warn('tick');
         console.warn('tick');
@@ -2223,7 +2223,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Identical messages at *different* levels are different messages: a
     /// warn/error pair must not be collapsed into one.
-    func testConsoleBridgeDoesNotCoalesceAcrossLevels() async throws {
+    @MainActor func testConsoleBridgeDoesNotCoalesceAcrossLevels() async throws {
         let logs = try await bridgedLogs(running: """
         console.warn('same text');
         console.error('same text');
@@ -2235,7 +2235,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// Only the bridge send is limited. The extension's own console — what the Web
     /// Inspector shows — still receives every call, so limiting never hides
     /// anything from the extension developer.
-    func testConsoleBridgeLimitDoesNotTouchTheContextsOwnConsole() async throws {
+    @MainActor func testConsoleBridgeLimitDoesNotTouchTheContextsOwnConsole() async throws {
         // The shim runs before the polyfill, so the polyfill binds _origError to
         // this counter the way it would bind the real console.
         let wv = try await makeWebView(manifestPermissions: ["history"], shimExtras: """
@@ -2254,7 +2254,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     // MARK: - Native port keep-alive
 
     /// Run JS that returns a JSON string and parse it into a dictionary.
-    private func evalDictionary(_ js: String, on target: WKWebView? = nil) async throws -> [String: Any] {
+    @MainActor private func evalDictionary(_ js: String, on target: WKWebView? = nil) async throws -> [String: Any] {
         // Hoisted out of XCTUnwrap: its argument is an autoclosure and cannot await.
         let value = try await evalJSON(js, on: target)
         return try XCTUnwrap(value as? [String: Any],
@@ -2263,7 +2263,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// `__detourNativePortKeepAlive` plus the applications every fake native port
     /// was opened with, in order.
-    private func keepAliveStatus(on target: WKWebView? = nil) async throws -> [String: Any] {
+    @MainActor private func keepAliveStatus(on target: WKWebView? = nil) async throws -> [String: Any] {
         try await evalDictionary("""
         const status = globalThis.__detourNativePortKeepAlive;
         return JSON.stringify({
@@ -2280,7 +2280,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// The worker opens its port to Detour at startup and then waits: nothing is
     /// pinging until Detour says a native host is connected (TASK-16).
-    func testKeepAliveOpensOneIdlePortAtInstall() async throws {
+    @MainActor func testKeepAliveOpensOneIdlePortAtInstall() async throws {
         let status = try await keepAliveStatus()
         XCTAssertEqual(status["applications"] as? [String], ["detourPolyfill"],
                        "exactly one port, to Detour's own host, opened at install")
@@ -2294,7 +2294,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Opening a real native port is Detour's business now: the worker must not
     /// react to it at all (it cannot even see it — TASK-15).
-    func testKeepAliveIgnoresTheExtensionsOwnNativePorts() async throws {
+    @MainActor func testKeepAliveIgnoresTheExtensionsOwnNativePorts() async throws {
         _ = try await eval("chrome.runtime.connectNative('com.example.host');")
 
         let status = try await keepAliveStatus()
@@ -2307,7 +2307,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// Detour owns the interval now (TASK-68): a start arms the diagnostic flag and
     /// posts nothing, and each `keepalive-ping` is echoed back at once with its own
     /// `seq` — the post WebKit's inactive-ports timer counts.
-    func testKeepAliveAnswersEachPingWithItsSequence() async throws {
+    @MainActor func testKeepAliveAnswersEachPingWithItsSequence() async throws {
         let result = try await evalDictionary("""
         const status = globalThis.__detourNativePortKeepAlive;
         const keepAlive = globalThis.__fakeNativePorts[0];
@@ -2349,7 +2349,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// A stop flips the diagnostic flag and closes nothing. A ping after it is
     /// still answered: Detour pings only a port it has armed, and the worker is
     /// deliberately not the one deciding.
-    func testKeepAliveStopFlipsTheArmedFlagAndKeepsThePortOpen() async throws {
+    @MainActor func testKeepAliveStopFlipsTheArmedFlagAndKeepsThePortOpen() async throws {
         let result = try await evalDictionary("""
         const status = globalThis.__detourNativePortKeepAlive;
         const keepAlive = globalThis.__fakeNativePorts[0];
@@ -2379,7 +2379,7 @@ final class ExtensionPolyfillTests: XCTestCase {
                        "the port stays open while idle; Detour re-arms it on the same port")
     }
 
-    func testKeepAliveIgnoresUnknownMessages() async throws {
+    @MainActor func testKeepAliveIgnoresUnknownMessages() async throws {
         let result = try await evalDictionary("""
         const status = globalThis.__detourNativePortKeepAlive;
         const keepAlive = globalThis.__fakeNativePorts[0];
@@ -2397,7 +2397,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// Detour dropping the port (a profile reload, an unloaded context) must not
     /// leave the worker without one: it reconnects with a backoff, disarmed, and
     /// Detour re-sends keepalive-start on the new port if hosts are still connected.
-    func testKeepAliveReconnectsAfterARemoteDisconnect() async throws {
+    @MainActor func testKeepAliveReconnectsAfterARemoteDisconnect() async throws {
         let result = try await evalDictionary("""
         const status = globalThis.__detourNativePortKeepAlive;
         const first = globalThis.__fakeNativePorts[0];
@@ -2504,7 +2504,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     globalThis.__shimOnConnect = globalThis.chrome.runtime.onConnect;
     """
 
-    private static let anchorHelpersJS = """
+    @MainActor private static let anchorHelpersJS = """
     const status = globalThis.__detourNativePortKeepAlive;
     const keepAlive = globalThis.__fakeNativePorts[0];
     const anchors = () => globalThis.__fakeNativePorts.filter(p => p.application === '\(ExtensionManager.keepAliveAnchorHostName)');
@@ -2512,11 +2512,11 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     """
 
-    private func evalAnchor(_ js: String, on target: WKWebView? = nil) async throws -> [String: Any] {
+    @MainActor private func evalAnchor(_ js: String, on target: WKWebView? = nil) async throws -> [String: Any] {
         try await evalDictionary(Self.anchorHelpersJS + js, on: target)
     }
 
-    private func makePortWatchWebView() async throws -> WKWebView {
+    @MainActor private func makePortWatchWebView() async throws -> WKWebView {
         try await makeWebView(manifestPermissions: ["nativeMessaging"], shimExtras: Self.portWatchShim)
     }
 
@@ -2524,7 +2524,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// leaves it open but stops re-anchoring: closing it would be a port
     /// removal, and WebKit would then report none of the background's ports
     /// when it unloads it.
-    func testKeepAliveOpensAnAnchorWhenArmedAndStopsReanchoringWhenDisarmed() async throws {
+    @MainActor func testKeepAliveOpensAnAnchorWhenArmedAndStopsReanchoringWhenDisarmed() async throws {
         let result = try await evalAnchor("""
         await settle();
         const idle = anchors().length;
@@ -2550,7 +2550,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Re-anchoring closes the old anchor before it opens the next one: a
     /// removal after the open would wipe the entry the open re-created.
-    func testKeepAliveReanchorClosesTheOldAnchorBeforeOpeningTheNext() async throws {
+    @MainActor func testKeepAliveReanchorClosesTheOldAnchorBeforeOpeningTheNext() async throws {
         let result = try await evalAnchor("""
         keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
         await settle();
@@ -2575,7 +2575,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     }
 
     /// Every ping re-anchors, for a port that ended where nothing saw it.
-    func testKeepAliveReanchorsOnEveryPing() async throws {
+    @MainActor func testKeepAliveReanchorsOnEveryPing() async throws {
         let result = try await evalAnchor("""
         keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
         await settle();
@@ -2591,7 +2591,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     }
 
     /// The keep-alive port dropping closes the anchor with it.
-    func testKeepAliveClosesTheAnchorWhenItsPortDrops() async throws {
+    @MainActor func testKeepAliveClosesTheAnchorWhenItsPortDrops() async throws {
         let result = try await evalAnchor("""
         keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
         await settle();
@@ -2607,7 +2607,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// either side, re-anchors. The extension's listener is wrapped rather than
     /// joined by one of Detour's: WebKit gives every listener a port of its own,
     /// so an extra listener would be an extra port.
-    func testKeepAliveReanchorsWhenAPortTheBackgroundReceivedEnds() async throws {
+    @MainActor func testKeepAliveReanchorsWhenAPortTheBackgroundReceivedEnds() async throws {
         let wv = try await makePortWatchWebView()
         let result = try await evalAnchor("""
         const onConnect = globalThis.__shimOnConnect;
@@ -2650,7 +2650,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Ports the background opens with `runtime.connect` and `tabs.connect`
     /// come back to it unchanged and re-anchor when they end.
-    func testKeepAliveReanchorsWhenAPortTheBackgroundOpenedEnds() async throws {
+    @MainActor func testKeepAliveReanchorsWhenAPortTheBackgroundOpenedEnds() async throws {
         let wv = try await makePortWatchWebView()
         let result = try await evalAnchor("""
         keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
@@ -2673,7 +2673,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Should WebKit ever vend `browser.runtime` / `browser.tabs` as objects of
     /// their own, the ports made or received through them are watched too.
-    func testKeepAliveWatchesPortsOfADistinctBrowserNamespace() async throws {
+    @MainActor func testKeepAliveWatchesPortsOfADistinctBrowserNamespace() async throws {
         let wv = try await makeWebView(manifestPermissions: ["nativeMessaging"], shimExtras: Self.portWatchShim + """
 
         globalThis.browser = {
@@ -2718,7 +2718,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// A port ending while the keep-alive is disarmed opens nothing: an idle
     /// background must stay free to unload.
-    func testKeepAliveDoesNotReanchorWhileDisarmed() async throws {
+    @MainActor func testKeepAliveDoesNotReanchorWhileDisarmed() async throws {
         let wv = try await makePortWatchWebView()
         let result = try await evalAnchor("""
         const port = chrome.runtime.connect({ name: 'idle' });
@@ -2731,7 +2731,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["anchors"] as? Int, 0)
     }
 
-    func testKeepAliveStatusIsReadOnly() async throws {
+    @MainActor func testKeepAliveStatusIsReadOnly() async throws {
         // The callAsyncJavaScript body is sloppy mode, so the write to the frozen
         // status object silently no-ops rather than throwing.
         let result = try await evalDictionary("""
@@ -2749,7 +2749,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// host, so for every other worker the keep-alive would open a port that stays
     /// idle for the worker's whole life — and moves it off WebKit's 30 s idle
     /// unload onto the 2-minute inactive-ports path for nothing (TASK-16).
-    func testKeepAliveNotInstalledWithoutNativeMessagingPermission() async throws {
+    @MainActor func testKeepAliveNotInstalledWithoutNativeMessagingPermission() async throws {
         let noNativeMessaging = try await makeWebView(manifestPermissions: ["history", "management"])
 
         let status = try await keepAliveStatus(on: noNativeMessaging)
@@ -2765,7 +2765,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// background's. Ordinary page contexts install nothing at all — and since
     /// TASK-62 a background *page* is a background context, which this fixture's
     /// page is not: its manifest declares no `background` entry at all.
-    func testKeepAliveIsNotInstalledOutsideABackgroundContext() async throws {
+    @MainActor func testKeepAliveIsNotInstalledOutsideABackgroundContext() async throws {
         let pageView = try await makeWebView(
             manifestPermissions: ["history"],
             // Runs after the shim set the flag and before the polyfill reads it.
@@ -2781,7 +2781,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Nothing is wrapped, bound or replaced any more: the namespace, its runtime
     /// and `connectNative` must be exactly what the environment provided (TASK-15).
-    func testKeepAliveLeavesConnectNativeAndTheGlobalsUntouched() async throws {
+    @MainActor func testKeepAliveLeavesConnectNativeAndTheGlobalsUntouched() async throws {
         let result = try await evalDictionary("""
         return JSON.stringify({
             chromeIsShim: globalThis.chrome === globalThis.__shimChrome,
@@ -2804,7 +2804,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// the runtime is non-extensible (defineProperty cannot add an own override).
     /// This is the shape WebKit's own namespace has, in which any attempt to
     /// observe `connectNative` calls fails and a stand-in is tempting.
-    private func makeUnpatchableNamespaceWebView() async throws -> WKWebView {
+    @MainActor private func makeUnpatchableNamespaceWebView() async throws -> WKWebView {
         let config = WKWebViewConfiguration()
         let shim = WKUserScript(
             source: """
@@ -2862,7 +2862,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// The keep-alive only ever *calls* `connectNative`: even on a namespace where
     /// nothing can be patched, the globals, the runtime and connectNative must be
     /// left exactly as found and the port must still open (TASK-16).
-    func testKeepAliveLeavesGlobalsUntouchedWhenConnectNativeIsNotPatchable() async throws {
+    @MainActor func testKeepAliveLeavesGlobalsUntouchedWhenConnectNativeIsNotPatchable() async throws {
         let wv = try await makeUnpatchableNamespaceWebView()
         let raw = try await wv.callAsyncJavaScript("""
             try {
@@ -2917,13 +2917,13 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     """
 
-    private func evalRelay(_ js: String, on target: WKWebView? = nil) async throws -> [String: Any] {
+    @MainActor private func evalRelay(_ js: String, on target: WKWebView? = nil) async throws -> [String: Any] {
         try await evalDictionary(Self.relayHelpersJS + js, on: target)
     }
 
     /// A context whose `connectNative` is missing, so every socket takes the
     /// guard fallback (the TASK-2 behaviour: fail asynchronously, never deadlock).
-    private func makeGuardFallbackWebView() async throws -> WKWebView {
+    @MainActor private func makeGuardFallbackWebView() async throws -> WKWebView {
         try await makeWebView(
             manifestPermissions: ["history", "nativeMessaging"],
             // Runs after the shim installed the fake connectNative and before the
@@ -2931,7 +2931,7 @@ final class ExtensionPolyfillTests: XCTestCase {
             shimExtras: "delete globalThis.chrome.runtime.connectNative;")
     }
 
-    func testWebSocketRelayInstallsAndOpensARelayPort() async throws {
+    @MainActor func testWebSocketRelayInstallsAndOpensARelayPort() async throws {
         let result = try await evalRelay("""
         const socket = new WebSocket('wss://example.invalid/notify', ['p1', 'p2']);
         const port = relayPort();
@@ -2980,7 +2980,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(posted.first?["protocols"] as? [String], ["p1", "p2"])
     }
 
-    func testWebSocketRelayRejectsInvalidURLs() async throws {
+    @MainActor func testWebSocketRelayRejectsInvalidURLs() async throws {
         let result = try await evalRelay("""
         function attempt(u) {
             try { new WebSocket(u); return { threw: false, name: null }; }
@@ -3008,7 +3008,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["httpsRewritten"] as? String, "wss://example.invalid/z")
     }
 
-    func testWebSocketRelayNormalizesAStringProtocol() async throws {
+    @MainActor func testWebSocketRelayNormalizesAStringProtocol() async throws {
         let result = try await evalRelay("""
         new WebSocket('wss://example.invalid/', 'chat.v1');
         return JSON.stringify({ posted: relayPort().posted });
@@ -3018,7 +3018,7 @@ final class ExtensionPolyfillTests: XCTestCase {
                        "a single protocol string must be sent as a one-element list")
     }
 
-    func testWebSocketRelaySendWhileConnectingThrowsInvalidState() async throws {
+    @MainActor func testWebSocketRelaySendWhileConnectingThrowsInvalidState() async throws {
         let result = try await evalRelay("""
         const socket = new WebSocket('wss://example.invalid/');
         let threw = false, name = null;
@@ -3035,7 +3035,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["posted"] as? Int, 1, "only the open op should have been posted")
     }
 
-    func testWebSocketRelayOpensOnTheNativeOpenMessage() async throws {
+    @MainActor func testWebSocketRelayOpensOnTheNativeOpenMessage() async throws {
         let result = try await evalRelay("""
         const socket = new WebSocket('wss://example.invalid/');
         let handlerCalls = 0, listenerCalls = 0;
@@ -3059,7 +3059,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["openSockets"] as? Int, 1)
     }
 
-    func testWebSocketRelayDeliversTextMessages() async throws {
+    @MainActor func testWebSocketRelayDeliversTextMessages() async throws {
         let result = try await evalRelay("""
         const socket = new WebSocket('wss://example.invalid/');
         const port = relayPort();
@@ -3078,7 +3078,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(received.last?["data"] as? String, "")
     }
 
-    func testWebSocketRelayDeliversBinaryMessagesPerBinaryType() async throws {
+    @MainActor func testWebSocketRelayDeliversBinaryMessagesPerBinaryType() async throws {
         let result = try await evalRelay("""
         // 0x01 0x02 0xFA 0xFF — bytes that are not valid UTF-8 on their own.
         const base64 = btoa(String.fromCharCode(1, 2, 250, 255));
@@ -3127,7 +3127,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["blobBytes"] as? [Int], [1, 2, 250, 255])
     }
 
-    func testWebSocketRelayPostsSendOpsForEveryDataType() async throws {
+    @MainActor func testWebSocketRelayPostsSendOpsForEveryDataType() async throws {
         let result = try await evalRelay("""
         const socket = new WebSocket('wss://example.invalid/');
         const port = relayPort();
@@ -3163,7 +3163,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// A Blob's bytes only arrive a microtask later, so a frame sent behind one
     /// must not overtake it: every send goes through one FIFO and the drain loop
     /// waits at a pending Blob.
-    func testWebSocketRelaySendQueueKeepsFrameOrderAcrossABlob() async throws {
+    @MainActor func testWebSocketRelaySendQueueKeepsFrameOrderAcrossABlob() async throws {
         let result = try await evalRelay("""
         const socket = new WebSocket('wss://example.invalid/');
         const port = relayPort();
@@ -3201,7 +3201,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// A real socket flushes what is buffered during the closing handshake, so a
     /// Blob still being read when `close()` runs must still be sent — and the
     /// close must land behind it.
-    func testWebSocketRelayCloseFlushesAPendingBlob() async throws {
+    @MainActor func testWebSocketRelayCloseFlushesAPendingBlob() async throws {
         let result = try await evalRelay("""
         const socket = new WebSocket('wss://example.invalid/');
         const port = relayPort();
@@ -3234,7 +3234,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// `close()` with no code closes with *no status*: the op must carry no code
     /// at all (native turns that into 1005), not a 1000 the caller never chose.
-    func testWebSocketRelayCloseWithoutACodeOmitsIt() async throws {
+    @MainActor func testWebSocketRelayCloseWithoutACodeOmitsIt() async throws {
         let result = try await evalRelay("""
         const socket = new WebSocket('wss://example.invalid/');
         const port = relayPort();
@@ -3264,7 +3264,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(closeEvent["reason"] as? String, "")
     }
 
-    func testWebSocketRelayValidatesCloseArguments() async throws {
+    @MainActor func testWebSocketRelayValidatesCloseArguments() async throws {
         let result = try await evalRelay("""
         function attempt(fn) {
             try { fn(); return { threw: false, name: null }; }
@@ -3302,7 +3302,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         try check("multiByteReason", throws: "SyntaxError")
     }
 
-    func testWebSocketRelayCloseRoundTripsThroughNative() async throws {
+    @MainActor func testWebSocketRelayCloseRoundTripsThroughNative() async throws {
         let result = try await evalRelay("""
         const socket = new WebSocket('wss://example.invalid/');
         const port = relayPort();
@@ -3352,7 +3352,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["openSockets"] as? Int, 0)
     }
 
-    func testWebSocketRelayForwardsANativeError() async throws {
+    @MainActor func testWebSocketRelayForwardsANativeError() async throws {
         let result = try await evalRelay("""
         const socket = new WebSocket('wss://example.invalid/');
         const port = relayPort();
@@ -3381,7 +3381,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Detour dropping the port (context unload, a relay session torn down) must
     /// look to the extension like a socket that died: error, then close 1006.
-    func testWebSocketRelayPortDisconnectFailsTheSocket() async throws {
+    @MainActor func testWebSocketRelayPortDisconnectFailsTheSocket() async throws {
         let result = try await evalRelay("""
         const socket = new WebSocket('wss://example.invalid/');
         const port = relayPort();
@@ -3409,7 +3409,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["openSockets"] as? Int, 0)
     }
 
-    func testWebSocketRelayDoesNotAffectEventTargetSemantics() async throws {
+    @MainActor func testWebSocketRelayDoesNotAffectEventTargetSemantics() async throws {
         let result = try await evalRelay("""
         const socket = new WebSocket('wss://example.invalid/');
         const port = relayPort();
@@ -3427,7 +3427,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["keptCalls"] as? Int, 1)
     }
 
-    func testWebSocketRelayStatusIsReadOnly() async throws {
+    @MainActor func testWebSocketRelayStatusIsReadOnly() async throws {
         // The callAsyncJavaScript body is sloppy mode, so the write to the frozen
         // status object silently no-ops rather than throwing.
         let result = try await evalRelay("""
@@ -3443,7 +3443,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Page contexts (popups, options pages, content scripts) run on their own
     /// thread and never deadlocked: they keep the real WebSocket.
-    func testWebSocketRelayNotInstalledOutsideAWorker() async throws {
+    @MainActor func testWebSocketRelayNotInstalledOutsideAWorker() async throws {
         let pageView = try await makeWebView(
             manifestPermissions: ["history"],
             shimExtras: "globalThis.__detourForceWebSocketRelay = false;")
@@ -3464,7 +3464,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["diag"] as? String, "native")
     }
 
-    func testWebSocketRelayReportsItsModeInTheDiagnostics() async throws {
+    @MainActor func testWebSocketRelayReportsItsModeInTheDiagnostics() async throws {
         let relayDiag = try await eval("return __detourPolyfillDiag.apis.webSocket") as? String
         XCTAssertEqual(relayDiag, "relay")
 
@@ -3481,7 +3481,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// an `error` then a `close` with code 1006, the path extensions already
     /// handle for an unreachable server.
 
-    func testWebSocketGuardFallbackFailsAsynchronously() async throws {
+    @MainActor func testWebSocketGuardFallbackFailsAsynchronously() async throws {
         let guardView = try await makeGuardFallbackWebView()
         let result = try await evalRelay("""
         const events = [];
@@ -3519,7 +3519,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// The first socket in a context fails at once; each further one backs off by
     /// 250 ms so a client reconnecting straight from onclose cannot spin the worker.
-    func testWebSocketGuardFallbackBacksOffRepeatedConnections() async throws {
+    @MainActor func testWebSocketGuardFallbackBacksOffRepeatedConnections() async throws {
         let guardView = try await makeGuardFallbackWebView()
         let result = try await evalDictionary("""
         const first = new WebSocket('wss://example.invalid/first');
@@ -3553,7 +3553,7 @@ final class ExtensionPolyfillTests: XCTestCase {
                        "the backoff is a delay, not a cap: every socket still fails")
     }
 
-    func testWebSocketGuardFallbackSendAfterCloseIsSilent() async throws {
+    @MainActor func testWebSocketGuardFallbackSendAfterCloseIsSilent() async throws {
         let guardView = try await makeGuardFallbackWebView()
         let result = try await evalDictionary("""
         const socket = new WebSocket('wss://example.invalid/');
@@ -3568,7 +3568,7 @@ final class ExtensionPolyfillTests: XCTestCase {
                        "send() after the socket closed should be a silent no-op, as in browsers")
     }
 
-    func testWebSocketGuardFallbackExplicitCloseUsesGivenCode() async throws {
+    @MainActor func testWebSocketGuardFallbackExplicitCloseUsesGivenCode() async throws {
         let guardView = try await makeGuardFallbackWebView()
         let result = try await evalDictionary("""
         function watch(socket) {
@@ -3612,7 +3612,7 @@ final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["withoutCodeReadyState"] as? Int, 3)
     }
 
-    func testWebSocketGuardFallbackWarnsOnce() async throws {
+    @MainActor func testWebSocketGuardFallbackWarnsOnce() async throws {
         let guardView = try await makeGuardFallbackWebView()
         let result = try await evalDictionary("""
         const originalWarn = console.warn;
@@ -3641,7 +3641,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// natively registered listeners in `__nativeInstalledListeners`, and
     /// `__fireNativeInstalled(details)` plays WebKit dispatching its own event to
     /// them. `eventExpression` replaces how `chrome.runtime.onInstalled` is set up.
-    private func makeInstalledEventWebView(force: Bool = true, eventExpression: String? = nil) async throws -> WKWebView {
+    @MainActor private func makeInstalledEventWebView(force: Bool = true, eventExpression: String? = nil) async throws -> WKWebView {
         let makeEvent = """
         (() => ({
             addListener(fn) { globalThis.__nativeInstalledListeners.push(fn); },
@@ -3681,7 +3681,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// Re-register the suite's extension (setUp's permissions) with the given
     /// manifest `background`, for the background-context-only requests
     /// (TASK-64). tearDown removes the registration by id.
-    private func reregisterSuiteExtension(background: [String: Any]) throws {
+    @MainActor private func reregisterSuiteExtension(background: [String: Any]) throws {
         ExtensionManager.shared.extensions.removeAll { $0.id == "test-polyfill-extension" }
         try registerExtension(id: "test-polyfill-extension",
                               permissions: ["history", "management", "privacy"],
@@ -3690,7 +3690,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Put the ledger row for the suite's extension in the suite's profile at
     /// `version`, or remove it (nil: the event was never delivered there).
-    private func setInstalledLedger(version: String?) throws {
+    @MainActor private func setInstalledLedger(version: String?) throws {
         let profileID = profile.id.uuidString
         try AppDatabase.shared.dbQueue.write { db in
             try ExtensionInstalledEventRecord
@@ -3705,14 +3705,14 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Wait for the claim the module sends by itself at install to settle, so a
     /// test's own claim never races it.
-    private func settleInstallClaim(on target: WKWebView) async throws {
+    @MainActor private func settleInstallClaim(on target: WKWebView) async throws {
         _ = try await eval("await new Promise((r) => setTimeout(r, 50));", on: target)
     }
 
     /// The extension's listeners live in Detour's list, not on WebKit's event, so
     /// WebKit's own dispatch — the spurious `install` on every same-version reload —
     /// never reaches them; and nothing but the event's methods was touched.
-    func testRuntimeOnInstalledKeepsListenersOffWebKitsEvent() async throws {
+    @MainActor func testRuntimeOnInstalledKeepsListenersOffWebKitsEvent() async throws {
         try setInstalledLedger(version: "1.0.0")
         defer { try? setInstalledLedger(version: nil) }
         let view = try await makeInstalledEventWebView()
@@ -3762,7 +3762,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// Owed an update: the claim delivers `update` with the previous version to
     /// every listener exactly once, and a second claim — a restarted worker, or
     /// this one again — gets nothing. The ledger then says nothing is owed.
-    func testRuntimeOnInstalledClaimDeliversAnOwedUpdateExactlyOnce() async throws {
+    @MainActor func testRuntimeOnInstalledClaimDeliversAnOwedUpdateExactlyOnce() async throws {
         try setInstalledLedger(version: "1.0.0")
         defer { try? setInstalledLedger(version: nil) }
         let view = try await makeInstalledEventWebView()
@@ -3788,7 +3788,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     }
 
     /// A throwing listener does not keep the event from the listeners after it.
-    func testRuntimeOnInstalledListenerErrorIsContained() async throws {
+    @MainActor func testRuntimeOnInstalledListenerErrorIsContained() async throws {
         try setInstalledLedger(version: "1.0.0")
         defer { try? setInstalledLedger(version: nil) }
         let view = try await makeInstalledEventWebView()
@@ -3808,7 +3808,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// Never delivered in this profile: the claim the module sends by itself at
     /// install delivers `install`, without `previousVersion`.
-    func testRuntimeOnInstalledInstallIsClaimedAtStartup() async throws {
+    @MainActor func testRuntimeOnInstalledInstallIsClaimedAtStartup() async throws {
         try setInstalledLedger(version: nil)
         defer { try? setInstalledLedger(version: nil) }
         let view = try await makeInstalledEventWebView()
@@ -3825,7 +3825,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     }
 
     /// Same version as delivered (a reload, relaunch or re-enable): nothing.
-    func testRuntimeOnInstalledNothingOwedForTheDeliveredVersion() async throws {
+    @MainActor func testRuntimeOnInstalledNothingOwedForTheDeliveredVersion() async throws {
         try setInstalledLedger(version: "1.0.0")
         defer { try? setInstalledLedger(version: nil) }
         let view = try await makeInstalledEventWebView()
@@ -3846,7 +3846,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// them, and the page never claims or receives Detour's event, which is the
     /// worker's alone. The same against a real page and a real WebKit dispatch is
     /// `ExtensionPolyfillProfileWiringTests.testRealExtensionPageDoesNotSeeWebKitsRuntimeOnInstalled`.
-    func testRuntimeOnInstalledSuppressedInExtensionPages() async throws {
+    @MainActor func testRuntimeOnInstalledSuppressedInExtensionPages() async throws {
         try setInstalledLedger(version: nil)
         defer { try? setInstalledLedger(version: nil) }
         let view = try await makeInstalledEventWebView(force: false)
@@ -3887,7 +3887,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// If reading the event again does not return the patched object (a wrapper
     /// that is not cached), the patch is undone and the event left to WebKit, so
     /// listeners are never split across two lists.
-    func testRuntimeOnInstalledFallsBackWhenThePatchIsNotVisible() async throws {
+    @MainActor func testRuntimeOnInstalledFallsBackWhenThePatchIsNotVisible() async throws {
         try setInstalledLedger(version: nil)
         defer { try? setInstalledLedger(version: nil) }
         let view = try await makeInstalledEventWebView(eventExpression: """
@@ -3929,7 +3929,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     // MARK: - TASK-64: only the background context may claim runtime.onInstalled
 
     /// A manifest's `background` entry, decoded the way a real manifest's is.
-    private func decodedBackground(_ entry: [String: Any]?) throws -> ExtensionManifest.Background? {
+    @MainActor private func decodedBackground(_ entry: [String: Any]?) throws -> ExtensionManifest.Background? {
         var manifestDict: [String: Any] = [
             "manifest_version": 3, "name": "Claim Gate Test", "version": "1.0.0"
         ]
@@ -3939,13 +3939,13 @@ final class ExtensionPolyfillTests: XCTestCase {
     }
 
     /// A URL in an extension's own origin, as `frameInfo.request.url` carries it.
-    private func extensionURL(_ path: String) -> URL {
+    @MainActor private func extensionURL(_ path: String) -> URL {
         URL(string: "webkit-extension://8A5B1C2D-3E4F-5061-7283-94A5B6C7D8E9\(path)")!
     }
 
     /// POSITIVE: the worker's native-message bridge is the background context
     /// exactly when the manifest declares a service worker.
-    func testSenderIsBackgroundContextAcceptsTheServiceWorkersNativeMessage() throws {
+    @MainActor func testSenderIsBackgroundContextAcceptsTheServiceWorkersNativeMessage() throws {
         let background = try decodedBackground(["service_worker": "background.js"])
         XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(.nativeMessage, background: background))
     }
@@ -3953,7 +3953,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// POSITIVE: a `scripts` list WebKit is asked to host in a worker
     /// (`preferred_environment`, string or list) reaches the handler over the
     /// native-message bridge like any worker, and is the background context.
-    func testSenderIsBackgroundContextAcceptsANativeMessageForScriptsPreferringAServiceWorker() throws {
+    @MainActor func testSenderIsBackgroundContextAcceptsANativeMessageForScriptsPreferringAServiceWorker() throws {
         for preferred in ["service_worker", ["service_worker", "document"]] as [Any] {
             let background = try decodedBackground(["scripts": ["background.js"], "preferred_environment": preferred])
             XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(.nativeMessage, background: background),
@@ -3964,7 +3964,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// POSITIVE: a `service_worker` WebKit is asked to host in a document
     /// (`preferred_environment: document`) loads in the generated page, so the
     /// top-level frame at that path is the background context.
-    func testSenderIsBackgroundContextAcceptsTheGeneratedPageForAServiceWorkerPreferringADocument() throws {
+    @MainActor func testSenderIsBackgroundContextAcceptsTheGeneratedPageForAServiceWorkerPreferringADocument() throws {
         let background = try decodedBackground(["service_worker": "background.js", "preferred_environment": ["document"]])
         XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
             .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true, isDetourHosted: false),
@@ -3974,7 +3974,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// NEGATIVE: an alternate spelling of the background path (`bg%2Ehtml` for
     /// `bg.html`) is not the path WebKit serves the page at, so it is refused —
     /// the gate compares the percent-encoded path, as the polyfill does.
-    func testSenderIsBackgroundContextRefusesAnAlternateEncodingOfTheBackgroundPath() throws {
+    @MainActor func testSenderIsBackgroundContextRefusesAnAlternateEncodingOfTheBackgroundPath() throws {
         let background = try decodedBackground(["page": "bg.html"])
         XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
             .frame(url: extensionURL("/bg%2Ehtml"), isMainFrame: true, isDetourHosted: false), background: background))
@@ -3982,7 +3982,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// POSITIVE: a page name with a space is declared raw in the manifest and
     /// served percent-encoded; the two must meet.
-    func testSenderIsBackgroundContextAcceptsAPercentEncodedBackgroundPage() throws {
+    @MainActor func testSenderIsBackgroundContextAcceptsAPercentEncodedBackgroundPage() throws {
         let background = try decodedBackground(["page": "my page.html"])
         XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
             .frame(url: extensionURL("/my%20page.html"), isMainFrame: true, isDetourHosted: false), background: background))
@@ -3990,7 +3990,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// POSITIVE: `background.scripts` runs in the page WebKit generates, so the
     /// top-level frame at that generated path is the background context.
-    func testSenderIsBackgroundContextAcceptsTheGeneratedPageForBackgroundScripts() throws {
+    @MainActor func testSenderIsBackgroundContextAcceptsTheGeneratedPageForBackgroundScripts() throws {
         let background = try decodedBackground(["scripts": ["background.js"], "persistent": false])
         XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
             .frame(url: extensionURL(ExtensionPolyfillHandler.generatedBackgroundPagePath), isMainFrame: true, isDetourHosted: false),
@@ -3999,7 +3999,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// POSITIVE: an explicit `background.page`, in both the plain and the
     /// './'-prefixed spelling Chrome accepts — both load at /bg.html.
-    func testSenderIsBackgroundContextAcceptsADeclaredBackgroundPage() throws {
+    @MainActor func testSenderIsBackgroundContextAcceptsADeclaredBackgroundPage() throws {
         for spelling in ["bg.html", "./bg.html"] {
             let background = try decodedBackground(["page": spelling, "persistent": false])
             XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
@@ -4012,7 +4012,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// `page` wins over `scripts` when a manifest declares both, as the
     /// polyfill's own `contextKind` decides it: the declared page is the
     /// background context and the generated path is not.
-    func testSenderIsBackgroundContextPrefersTheDeclaredPageOverTheGeneratedPath() throws {
+    @MainActor func testSenderIsBackgroundContextPrefersTheDeclaredPageOverTheGeneratedPath() throws {
         let background = try decodedBackground(["page": "bg.html", "scripts": ["background.js"]])
         XCTAssertTrue(ExtensionPolyfillHandler.senderIsBackgroundContext(
             .frame(url: extensionURL("/bg.html"), isMainFrame: true, isDetourHosted: false), background: background))
@@ -4025,7 +4025,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// NEGATIVE: an ordinary extension page (a popup, an options page, an
     /// extension tab) is never the background context, whatever shape the
     /// manifest's background has.
-    func testSenderIsBackgroundContextRefusesAnOrdinaryExtensionPage() throws {
+    @MainActor func testSenderIsBackgroundContextRefusesAnOrdinaryExtensionPage() throws {
         let shapes: [[String: Any]] = [
             ["service_worker": "background.js"],
             ["scripts": ["background.js"]],
@@ -4041,7 +4041,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// NEGATIVE: an extension page that iframes the background path is at that
     /// path but is not the top-level document, so it must not claim.
-    func testSenderIsBackgroundContextRefusesAnIframeOfTheBackgroundPath() throws {
+    @MainActor func testSenderIsBackgroundContextRefusesAnIframeOfTheBackgroundPath() throws {
         let pageBackground = try decodedBackground(["page": "bg.html"])
         XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
             .frame(url: extensionURL("/bg.html"), isMainFrame: false, isDetourHosted: false), background: pageBackground))
@@ -4058,7 +4058,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// the hole a path-only check leaves: a page can navigate itself there
     /// (`location.href = '/bg.html'`). WebKit's background page runs in the one
     /// view Detour never creates or presents, so it is unaffected.
-    func testSenderIsBackgroundContextRefusesADetourHostedViewAtTheBackgroundPath() throws {
+    @MainActor func testSenderIsBackgroundContextRefusesADetourHostedViewAtTheBackgroundPath() throws {
         let cases: [(shape: [String: Any], path: String)] = [
             (["scripts": ["background.js"]], ExtensionPolyfillHandler.generatedBackgroundPagePath),
             (["service_worker": "background.js", "preferred_environment": ["document"]],
@@ -4081,7 +4081,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// NEGATIVE: a frame whose URL WebKit does not report cannot be matched
     /// against a path, so it fails closed.
-    func testSenderIsBackgroundContextRefusesAFrameWithNoURL() throws {
+    @MainActor func testSenderIsBackgroundContextRefusesAFrameWithNoURL() throws {
         for shape in [["scripts": ["background.js"]], ["page": "bg.html"]] as [[String: Any]] {
             let background = try decodedBackground(shape)
             XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
@@ -4092,7 +4092,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// NEGATIVE: a page-backed background always reaches the handler through
     /// `webkit.messageHandlers`, never through the native-message bridge, so a
     /// native-message claim for such a manifest is refused.
-    func testSenderIsBackgroundContextRefusesANativeMessageForAPageBackedBackground() throws {
+    @MainActor func testSenderIsBackgroundContextRefusesANativeMessageForAPageBackedBackground() throws {
         for shape in [["scripts": ["background.js"]], ["page": "bg.html"]] as [[String: Any]] {
             let background = try decodedBackground(shape)
             XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
@@ -4103,7 +4103,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// NEGATIVE: a manifest with no background content at all has no claiming
     /// context, so every sender is refused.
-    func testSenderIsBackgroundContextRefusesEverySenderWithoutBackgroundContent() throws {
+    @MainActor func testSenderIsBackgroundContextRefusesEverySenderWithoutBackgroundContent() throws {
         for background in [try decodedBackground(nil), try decodedBackground([:])] {
             XCTAssertFalse(ExtensionPolyfillHandler.senderIsBackgroundContext(
                 .nativeMessage, background: background))
@@ -4119,7 +4119,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// its native-message claims count as coming from the background context
     /// (TASK-64). setUp registers a manifest with no background at all, which
     /// the claim gate refuses. tearDown removes the registration by id.
-    private func registerWithServiceWorkerBackground() throws {
+    @MainActor private func registerWithServiceWorkerBackground() throws {
         try reregisterSuiteExtension(background: ["service_worker": "background.js"])
     }
 
@@ -4128,17 +4128,18 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// service worker. With setUp's background-less manifest the claim is
     /// refused — and refused without touching the ledger, so the same claim
     /// delivers the install once the manifest does declare one.
-    func testClaimInstalledEventThroughTheNativeBridgeIsRefusedWithoutABackgroundContext() async throws {
+    @MainActor func testClaimInstalledEventThroughTheNativeBridgeIsRefusedWithoutABackgroundContext() async throws {
         try setInstalledLedger(version: nil)
         defer { try? setInstalledLedger(version: nil) }
 
         func claim() async -> (Any?, (any Error)?) {
-            await withCheckedContinuation { continuation in
+            let reply = await withCheckedContinuation { (continuation: CheckedContinuation<(BridgeReply, (any Error)?), Never>) in
                 handler.handleNativeMessage(["type": "runtime.claimInstalledEvent", "params": [String: Any]()],
                                             verifiedExtensionID: "test-polyfill-extension") { result, error in
-                    continuation.resume(returning: (result, error))
+                    continuation.resume(returning: (BridgeReply(result: result, error: nil), error))
                 }
             }
+            return (reply.0.result, reply.1)
         }
         let (refusedResult, refusedError) = await claim()
         XCTAssertNil(refusedResult)
@@ -4156,7 +4157,7 @@ final class ExtensionPolyfillTests: XCTestCase {
 
     /// The native side of the claim, as the worker reaches it: of two claims for
     /// the same version exactly the first delivers.
-    func testClaimInstalledEventThroughTheNativeBridgeDeliversOnce() async throws {
+    @MainActor func testClaimInstalledEventThroughTheNativeBridgeDeliversOnce() async throws {
         try setInstalledLedger(version: nil)
         defer { try? setInstalledLedger(version: nil) }
         // Only the background context may claim (TASK-64); on this path that
@@ -4164,12 +4165,12 @@ final class ExtensionPolyfillTests: XCTestCase {
         try registerWithServiceWorkerBackground()
 
         func claim() async -> Any? {
-            await withCheckedContinuation { continuation in
+            await withCheckedContinuation { (continuation: CheckedContinuation<BridgeReply, Never>) in
                 handler.handleNativeMessage(["type": "runtime.claimInstalledEvent", "params": [String: Any]()],
                                             verifiedExtensionID: "test-polyfill-extension") { result, _ in
-                    continuation.resume(returning: result)
+                    continuation.resume(returning: BridgeReply(result: result, error: nil))
                 }
-            }
+            }.result
         }
         let first = await claim()
         let second = await claim()
@@ -4181,7 +4182,7 @@ final class ExtensionPolyfillTests: XCTestCase {
     /// first run, not after a relaunch (a new profile object and handler over the
     /// same ledger), not after a reinstall; and no ledger row is written for it. The
     /// regular profile's claim on the same extension still delivers.
-    func testClaimInstalledEventThroughTheNativeBridgeAnswersNothingInThePrivateProfile() async throws {
+    @MainActor func testClaimInstalledEventThroughTheNativeBridgeAnswersNothingInThePrivateProfile() async throws {
         try setInstalledLedger(version: nil)
         defer { try? setInstalledLedger(version: nil) }
         // Only the background context may claim (TASK-64); on this path that
@@ -4199,12 +4200,12 @@ final class ExtensionPolyfillTests: XCTestCase {
         defer { try? clearPrivateRows() }
 
         func claim(through claimHandler: ExtensionPolyfillHandler) async -> Any? {
-            await withCheckedContinuation { continuation in
+            await withCheckedContinuation { (continuation: CheckedContinuation<BridgeReply, Never>) in
                 claimHandler.handleNativeMessage(["type": "runtime.claimInstalledEvent", "params": [String: Any]()],
                                                  verifiedExtensionID: "test-polyfill-extension") { result, _ in
-                    continuation.resume(returning: result)
+                    continuation.resume(returning: BridgeReply(result: result, error: nil))
                 }
-            }
+            }.result
         }
 
         for launch in 1...2 {

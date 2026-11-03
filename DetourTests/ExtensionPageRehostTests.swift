@@ -1,3 +1,4 @@
+import Synchronization
 import XCTest
 import WebKit
 import GRDB
@@ -10,15 +11,14 @@ import GRDB
 /// `TabStore.addExtensionTab`, `BrowserTab.wake`, `ExtensionManager.setEnabled` —
 /// against the shared `TabStore` and `AppDatabase` (the test scheme points
 /// `DETOUR_DATA_DIR` at an isolated directory).
-@MainActor
-final class ExtensionPageRehostTests: XCTestCase {
+nonisolated final class ExtensionPageRehostTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
     private var createdProfiles: [Profile] = []
     private var createdSpaceIDs: [UUID] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for spaceID in createdSpaceIDs {
             guard let space = TabStore.shared.space(withID: spaceID) else { continue }
             for tab in space.tabs + space.pinnedTabs { tab.teardown() }
@@ -33,7 +33,7 @@ final class ExtensionPageRehostTests: XCTestCase {
         createdProfiles.removeAll()
         for id in registeredExtensionIDs {
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
-            try? AppDatabase.shared.dbQueue.write { db in
+            try? await AppDatabase.shared.dbQueue.write { db in
                 _ = try ExtensionPermissionRecord
                     .filter(Column("extensionID") == id)
                     .deleteAll(db)
@@ -45,7 +45,7 @@ final class ExtensionPageRehostTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
@@ -53,7 +53,7 @@ final class ExtensionPageRehostTests: XCTestCase {
     /// A minimal MV3 extension with an options page and no background content
     /// (nothing here needs a worker, and a failing one would trip the recovery
     /// path a second time).
-    private func makeTestExtension(named name: String) async throws -> WebExtension {
+    @MainActor private func makeTestExtension(named name: String) async throws -> WebExtension {
         let id = "page-rehost-\(name)-\(UUID().uuidString.prefix(8))"
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-test-\(id)")
@@ -93,20 +93,20 @@ final class ExtensionPageRehostTests: XCTestCase {
         return ext
     }
 
-    private func makeProfile(_ name: String) -> Profile {
+    @MainActor private func makeProfile(_ name: String) -> Profile {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         return profile
     }
 
-    private func makeSpace(_ name: String, in profile: Profile) -> Space {
+    @MainActor private func makeSpace(_ name: String, in profile: Profile) -> Space {
         let space = TabStore.shared.addSpace(name: name, emoji: "🧪", colorHex: "007AFF",
                                              profileID: profile.id)
         createdSpaceIDs.append(space.id)
         return space
     }
 
-    private func loadContext(_ profile: Profile, _ ext: WebExtension) throws -> WKWebExtensionContext {
+    @MainActor private func loadContext(_ profile: Profile, _ ext: WebExtension) throws -> WKWebExtensionContext {
         _ = profile.extensionController
         _ = profile.loadExtensionContext(ext)
         return try XCTUnwrap(profile.extensionContexts[ext.id],
@@ -116,7 +116,7 @@ final class ExtensionPageRehostTests: XCTestCase {
     /// Opens an extension page in a tab exactly as production does (the options
     /// page, an `action` popup expanded into a tab, `chrome.tabs.create` on an
     /// extension URL): a web view built from the *context's* configuration.
-    private func openExtensionPage(
+    @MainActor private func openExtensionPage(
         _ context: WKWebExtensionContext, in space: Space, path: String
     ) throws -> (tab: BrowserTab, url: URL) {
         let pageURL = try XCTUnwrap(URL(string: path, relativeTo: context.baseURL)?.absoluteURL)
@@ -133,11 +133,11 @@ final class ExtensionPageRehostTests: XCTestCase {
         return (tab, pageURL)
     }
 
-    private func userScriptSources(_ config: WKWebViewConfiguration) -> Set<String> {
+    @MainActor private func userScriptSources(_ config: WKWebViewConfiguration) -> Set<String> {
         Set(config.userContentController.userScripts.map(\.source))
     }
 
-    private func waitUntil(
+    @MainActor private func waitUntil(
         _ what: String, timeout: TimeInterval = 3,
         _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line
     ) async {
@@ -154,7 +154,7 @@ final class ExtensionPageRehostTests: XCTestCase {
 
     // MARK: - AC #1: the recovery path rehosts the open page
 
-    func testRecoveryRehostsOpenExtensionPageOntoTheNewOrigin() async throws {
+    @MainActor func testRecoveryRehostsOpenExtensionPageOntoTheNewOrigin() async throws {
         let ext = try await makeTestExtension(named: "recover")
         let profile = makeProfile("Rehost Recovery Profile")
         let space = makeSpace("Rehost", in: profile)
@@ -189,7 +189,7 @@ final class ExtensionPageRehostTests: XCTestCase {
 
     /// The rehosted tab must wake into the *new* context's configuration — the
     /// space's own configuration cannot load `webkit-extension://` at all.
-    func testWakingARehostedTabUsesTheNewContextsConfiguration() async throws {
+    @MainActor func testWakingARehostedTabUsesTheNewContextsConfiguration() async throws {
         let ext = try await makeTestExtension(named: "wake")
         let profile = makeProfile("Rehost Wake Profile")
         let space = makeSpace("Rehost Wake", in: profile)
@@ -220,7 +220,7 @@ final class ExtensionPageRehostTests: XCTestCase {
     /// A tab whose web view another window owns shows a snapshot here and has no
     /// web view of its own; a sleeping tab has none either. Both must still be
     /// moved to the new origin — the rehost works from `tab.url`.
-    func testRehostMovesATabWithNoWebView() async throws {
+    @MainActor func testRehostMovesATabWithNoWebView() async throws {
         let ext = try await makeTestExtension(named: "detached")
         let profile = makeProfile("Rehost Detached Profile")
         let space = makeSpace("Rehost Detached", in: profile)
@@ -243,7 +243,7 @@ final class ExtensionPageRehostTests: XCTestCase {
 
     // MARK: - AC #3: everything else is left alone
 
-    func testRehostLeavesOtherTabsUntouched() async throws {
+    @MainActor func testRehostLeavesOtherTabsUntouched() async throws {
         let ext = try await makeTestExtension(named: "mine")
         let other = try await makeTestExtension(named: "other")
         let profile = makeProfile("Rehost Isolation Profile")
@@ -271,7 +271,7 @@ final class ExtensionPageRehostTests: XCTestCase {
     }
 
     /// Spaces are global; only those on the reloading profile may be touched.
-    func testRehostLeavesAnotherProfilesPagesUntouched() async throws {
+    @MainActor func testRehostLeavesAnotherProfilesPagesUntouched() async throws {
         let ext = try await makeTestExtension(named: "shared")
         let profile = makeProfile("Rehost Profile A")
         let otherProfile = makeProfile("Rehost Profile B")
@@ -293,7 +293,7 @@ final class ExtensionPageRehostTests: XCTestCase {
 
     // MARK: - AC #1: the rehost notification
 
-    func testRehostPostsOneRehostNotificationForTheAffectedSpace() async throws {
+    @MainActor func testRehostPostsOneRehostNotificationForTheAffectedSpace() async throws {
         let ext = try await makeTestExtension(named: "notify")
         let profile = makeProfile("Rehost Notify Profile")
         let space = makeSpace("Rehost Notify", in: profile)
@@ -301,8 +301,9 @@ final class ExtensionPageRehostTests: XCTestCase {
         _ = try openExtensionPage(first, in: space, path: "options.html")
         _ = try openExtensionPage(first, in: space, path: "popup.html")
 
+        let spaceID = space.id
         let exp = expectation(forNotification: .spaceTabsNeedRehost, object: nil) { note in
-            note.userInfo?["spaceID"] as? UUID == space.id
+            note.userInfo?["spaceID"] as? UUID == spaceID
         }
         exp.assertForOverFulfill = true
 
@@ -313,7 +314,7 @@ final class ExtensionPageRehostTests: XCTestCase {
 
     /// A failed reload leaves no replacement origin, so the pages stay where they
     /// are rather than being moved to nowhere or closed behind the user's back.
-    func testFailedReloadLeavesPagesAlone() async throws {
+    @MainActor func testFailedReloadLeavesPagesAlone() async throws {
         let ext = try await makeTestExtension(named: "failed")
         let profile = makeProfile("Rehost Failed Profile")
         let space = makeSpace("Rehost Failed", in: profile)
@@ -337,7 +338,7 @@ final class ExtensionPageRehostTests: XCTestCase {
 
     // MARK: - AC #2: disable and uninstall close the pages
 
-    func testDisablingTheExtensionClosesItsOpenPages() async throws {
+    @MainActor func testDisablingTheExtensionClosesItsOpenPages() async throws {
         let ext = try await makeTestExtension(named: "disable")
         let profile = makeProfile("Rehost Disable Profile")
         let space = makeSpace("Rehost Disable", in: profile)
@@ -356,7 +357,7 @@ final class ExtensionPageRehostTests: XCTestCase {
                       "an ordinary web page in the same space must survive the disable")
     }
 
-    func testUninstallingTheExtensionClosesItsOpenPages() async throws {
+    @MainActor func testUninstallingTheExtensionClosesItsOpenPages() async throws {
         let ext = try await makeTestExtension(named: "uninstall")
         let other = try await makeTestExtension(named: "uninstall-other")
         let profile = makeProfile("Rehost Uninstall Profile")
@@ -377,7 +378,7 @@ final class ExtensionPageRehostTests: XCTestCase {
 
     /// A pinned extension page goes dormant (the tile stays), which is what
     /// closing a pinned tab by hand does.
-    func testDisablingTheExtensionClosesAPinnedExtensionPage() async throws {
+    @MainActor func testDisablingTheExtensionClosesAPinnedExtensionPage() async throws {
         let ext = try await makeTestExtension(named: "pinned")
         let profile = makeProfile("Rehost Pinned Profile")
         let space = makeSpace("Rehost Pinned", in: profile)
@@ -399,7 +400,7 @@ final class ExtensionPageRehostTests: XCTestCase {
     /// A page on a dead origin can never be reopened — its context is gone and
     /// a re-enable mints a fresh one — so closing it must not leave a
     /// closed-tab record (Cmd+Shift+T) or an undo that would restore a blank tab.
-    func testClosingExtensionPagesDoesNotRecordThemAsReopenable() async throws {
+    @MainActor func testClosingExtensionPagesDoesNotRecordThemAsReopenable() async throws {
         let ext = try await makeTestExtension(named: "no-reopen")
         let profile = makeProfile("Rehost No Reopen Profile")
         let space = makeSpace("Rehost No Reopen", in: profile)
@@ -422,7 +423,7 @@ final class ExtensionPageRehostTests: XCTestCase {
     /// The bookmark that owns a rehosted page — a pinned entry's `pinnedURL`, a
     /// favourite's `url` — is what a later reactivation loads, so it must move to
     /// the new origin with the tab, dormant or not.
-    func testRehostRewritesPinnedAndFavoriteURLs() async throws {
+    @MainActor func testRehostRewritesPinnedAndFavoriteURLs() async throws {
         let ext = try await makeTestExtension(named: "bookmarks")
         let profile = makeProfile("Rehost Bookmarks Profile")
         let space = makeSpace("Rehost Bookmarks", in: profile)
@@ -459,7 +460,7 @@ final class ExtensionPageRehostTests: XCTestCase {
     /// A favourite-backed page is displayable from every space of the profile,
     /// so its notification must reach a window on any of them, and closing it
     /// must move the space's selection off the torn-down tab first.
-    func testClosingADisplayedFavoriteMovesSelectionAndNotifiesEverySpace() async throws {
+    @MainActor func testClosingADisplayedFavoriteMovesSelectionAndNotifiesEverySpace() async throws {
         let ext = try await makeTestExtension(named: "favorite")
         let profile = makeProfile("Rehost Favorite Profile")
         let space = makeSpace("Rehost Favorite A", in: profile)
@@ -473,9 +474,10 @@ final class ExtensionPageRehostTests: XCTestCase {
         space.selectedTabID = page.id
         otherSpace.selectedTabID = page.id
 
+        let otherSpaceID = otherSpace.id, pageID = page.id
         let notified = expectation(forNotification: .spaceTabsNeedRehost, object: nil) { note in
-            note.userInfo?["spaceID"] as? UUID == otherSpace.id
-                && (note.userInfo?["tabIDs"] as? Set<UUID>)?.contains(page.id) == true
+            note.userInfo?["spaceID"] as? UUID == otherSpaceID
+                && (note.userInfo?["tabIDs"] as? Set<UUID>)?.contains(pageID) == true
         }
 
         ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: false)
@@ -490,7 +492,7 @@ final class ExtensionPageRehostTests: XCTestCase {
 
     /// The rehost notification names the tabs it moved, so a window showing an
     /// untouched tab can leave it alone rather than re-running `selectTab`.
-    func testRehostNotificationCarriesTheRetargetedTabIDs() async throws {
+    @MainActor func testRehostNotificationCarriesTheRetargetedTabIDs() async throws {
         let ext = try await makeTestExtension(named: "tabids")
         let profile = makeProfile("Rehost TabIDs Profile")
         let space = makeSpace("Rehost TabIDs", in: profile)
@@ -498,17 +500,19 @@ final class ExtensionPageRehostTests: XCTestCase {
         let (page, _) = try openExtensionPage(first, in: space, path: "options.html")
         let webTab = TabStore.shared.addTab(in: space, url: URL(string: "https://example.com"))
 
-        var tabIDs: Set<UUID>?
+        let tabIDs = Mutex<Set<UUID>?>(nil)
+        let spaceID = space.id
         let exp = expectation(forNotification: .spaceTabsNeedRehost, object: nil) { note in
-            guard note.userInfo?["spaceID"] as? UUID == space.id else { return false }
-            tabIDs = note.userInfo?["tabIDs"] as? Set<UUID>
+            guard note.userInfo?["spaceID"] as? UUID == spaceID else { return false }
+            let ids = note.userInfo?["tabIDs"] as? Set<UUID>
+            tabIDs.withLock { $0 = ids }
             return true
         }
 
         profile.recoverFromBackgroundLoadFailure(extensionID: ext.id, failedContext: first)
         await fulfillment(of: [exp], timeout: 2)
 
-        XCTAssertEqual(tabIDs, [page.id], "only the rehosted tab is named; \(webTab.id) was untouched")
+        XCTAssertEqual(tabIDs.withLock { $0 }, [page.id], "only the rehosted tab is named; \(webTab.id) was untouched")
     }
 
     // MARK: - TASK-24: pending origins
@@ -516,7 +520,7 @@ final class ExtensionPageRehostTests: XCTestCase {
     /// A disable leaves the pinned tile dormant on the dead origin; the origin is
     /// kept as pending, so the tile keeps its extension identity (a save writes
     /// it) and a re-enable moves it onto the new context's origin.
-    func testReEnablingMovesADormantTileLeftOnTheDisabledOrigin() async throws {
+    @MainActor func testReEnablingMovesADormantTileLeftOnTheDisabledOrigin() async throws {
         let ext = try await makeTestExtension(named: "reenable")
         let profile = makeProfile("Rehost Reenable Profile")
         let space = makeSpace("Rehost Reenable", in: profile)
@@ -542,7 +546,7 @@ final class ExtensionPageRehostTests: XCTestCase {
     /// A page restored from the previous launch that is still waiting for its
     /// context is on no loaded origin, so a disable must find it through the
     /// pending origin to close it; an uninstall forgets the origin entirely.
-    func testDisablingAndUninstallingCloseRestoredPagesStillWaitingForTheirContext() async throws {
+    @MainActor func testDisablingAndUninstallingCloseRestoredPagesStillWaitingForTheirContext() async throws {
         let ext = try await makeTestExtension(named: "pending-close")
         let profile = makeProfile("Rehost Pending Profile")
         let space = makeSpace("Rehost Pending", in: profile)
@@ -567,7 +571,7 @@ final class ExtensionPageRehostTests: XCTestCase {
     /// An unpacked source directory for `ExtensionManager.install`, plus a public
     /// key: the id is derived from the key, so installing the same source twice
     /// derives the same id and the second install takes the replace path.
-    private func makeInstallSource(named name: String) throws -> (source: URL, publicKey: Data) {
+    @MainActor private func makeInstallSource(named name: String) throws -> (source: URL, publicKey: Data) {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-test-install-\(name)-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -594,7 +598,7 @@ final class ExtensionPageRehostTests: XCTestCase {
     /// are served by nothing. The origin has to stay pending across that window,
     /// or a save in it (the 1 s debounce, or a quit) writes no extension id and
     /// the next restore classifies the tile unavailable and deletes it.
-    func testReinstallKeepsTheOldOriginPendingWhileTheReplacementLoads() async throws {
+    @MainActor func testReinstallKeepsTheOldOriginPendingWhileTheReplacementLoads() async throws {
         let (source, publicKey) = try makeInstallSource(named: "reinstall")
         let profile = makeProfile("Rehost Reinstall Profile")
         let space = makeSpace("Rehost Reinstall", in: profile)

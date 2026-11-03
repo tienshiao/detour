@@ -10,15 +10,14 @@ import WebKit
 /// for storage it creates itself: the test host shares the production app's
 /// bundle id, and so its WebKit directory. In the test data directory every
 /// identifier is derived and recorded (`WebKitStorageScope`, TASK-36).
-@MainActor
-final class ProfileDataRemovalTests: XCTestCase {
+nonisolated final class ProfileDataRemovalTests: XCTestCase {
 
-    private struct SimulatedInUse: LocalizedError {
+    nonisolated private struct SimulatedInUse: LocalizedError {
         var errorDescription: String? { "Data store is in use (simulated)" }
     }
 
     /// Records every remover call, and what the world looked like at that moment.
-    private final class FakeRemover {
+    @MainActor private final class FakeRemover {
         var calls: [(step: String, id: UUID)] = []
         var extensionFailuresLeft = 0
         var storeFailuresLeft = 0
@@ -49,23 +48,23 @@ final class ProfileDataRemovalTests: XCTestCase {
         var removedIDs: Set<UUID> { Set(calls.map(\.id)) }
     }
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         try AppDatabase(dbQueue: DatabaseQueue())
     }
 
     /// The default data directory's scope over `db`: WebKit identifiers are the
     /// profile ids and nothing is recorded, so a fake remover sees profile ids.
-    private func defaultDirectoryScope(_ db: AppDatabase) -> WebKitStorageScope {
+    @MainActor private func defaultDirectoryScope(_ db: AppDatabase) -> WebKitStorageScope {
         WebKitStorageScope(dataDirectoryName: defaultDetourDataDirectoryName, registry: db, productionProfileIDs: { [] })
     }
 
     /// An isolated data directory's scope over `db`.
-    private func isolatedScope(_ db: AppDatabase, name: String = "DetourUnitTest",
+    @MainActor private func isolatedScope(_ db: AppDatabase, name: String = "DetourUnitTest",
                                productionProfileIDs: @escaping () -> Set<UUID>? = { [] }) -> WebKitStorageScope {
         WebKitStorageScope(dataDirectoryName: name, registry: db, productionProfileIDs: productionProfileIDs)
     }
 
-    private func pendingIDs(_ db: AppDatabase) -> Set<String> {
+    @MainActor private func pendingIDs(_ db: AppDatabase) -> Set<String> {
         Set(db.pendingProfileDataRemovals())
     }
 
@@ -74,7 +73,7 @@ final class ProfileDataRemovalTests: XCTestCase {
     /// Adds a profile with a live favourite whose backing tab has a web view, and
     /// returns only its id and weak references, so the test itself does not keep
     /// the profile alive.
-    private func addProfileWithLiveFavorite(to store: TabStore, name: String)
+    @MainActor private func addProfileWithLiveFavorite(to store: TabStore, name: String)
         -> (id: UUID, profile: () -> Profile?, tab: BrowserTab)
     {
         let profile = store.addProfile(name: name)
@@ -84,7 +83,7 @@ final class ProfileDataRemovalTests: XCTestCase {
         return (profile.id, { weakProfile }, tab)
     }
 
-    func testDeleteProfileTearsDownAndReleasesEverythingBeforeRemovingItsData() async throws {
+    @MainActor func testDeleteProfileTearsDownAndReleasesEverythingBeforeRemovingItsData() async throws {
         let db = try makeDatabase()
         let fake = FakeRemover()
         let store = TabStore(appDB: db, profileDataRemover: fake.remover, profileDataRemovalRetryDelays: [0.01],
@@ -121,7 +120,7 @@ final class ProfileDataRemovalTests: XCTestCase {
         XCTAssertEqual(store.profiles.map(\.id), [keeper.id])
     }
 
-    func testDeleteProfileRemovesOnlyThatProfilesData() async throws {
+    @MainActor func testDeleteProfileRemovesOnlyThatProfilesData() async throws {
         let db = try makeDatabase()
         let fake = FakeRemover()
         let store = TabStore(appDB: db, profileDataRemover: fake.remover, profileDataRemovalRetryDelays: [0.01],
@@ -138,7 +137,7 @@ final class ProfileDataRemovalTests: XCTestCase {
         XCTAssertEqual(Set(db.loadProfiles().map(\.id)), [first.uuidString, third.uuidString])
     }
 
-    func testDeleteProfileRefusedByTheGuardsRemovesNothing() async throws {
+    @MainActor func testDeleteProfileRefusedByTheGuardsRemovesNothing() async throws {
         let db = try makeDatabase()
         let fake = FakeRemover()
         let store = TabStore(appDB: db, profileDataRemover: fake.remover, profileDataRemovalRetryDelays: [0.01],
@@ -161,7 +160,7 @@ final class ProfileDataRemovalTests: XCTestCase {
     /// A space moved off the profile moments ago still references it in the
     /// database until the next session save; the delete must not be refused
     /// (and the data left behind) because of that.
-    func testDeleteProfileRightAfterItsLastSpaceMovedAwayStillRemovesItsData() async throws {
+    @MainActor func testDeleteProfileRightAfterItsLastSpaceMovedAwayStillRemovesItsData() async throws {
         let db = try makeDatabase()
         let fake = FakeRemover()
         let store = TabStore(appDB: db, profileDataRemover: fake.remover, profileDataRemovalRetryDelays: [0.01],
@@ -183,7 +182,7 @@ final class ProfileDataRemovalTests: XCTestCase {
 
     // MARK: - Failure and the launch retry
 
-    func testFailedRemovalStaysPendingAndIsRetriedAtTheNextLaunch() async throws {
+    @MainActor func testFailedRemovalStaysPendingAndIsRetriedAtTheNextLaunch() async throws {
         let db = try makeDatabase()
         let failing = FakeRemover()
         failing.storeFailuresLeft = .max
@@ -215,7 +214,7 @@ final class ProfileDataRemovalTests: XCTestCase {
         XCTAssertEqual(pendingIDs(db), [])
     }
 
-    func testExtensionDataFailureIsRetriedBeforeTheStoreIsRemoved() async throws {
+    @MainActor func testExtensionDataFailureIsRetriedBeforeTheStoreIsRemoved() async throws {
         let db = try makeDatabase()
         let fake = FakeRemover()
         fake.extensionFailuresLeft = 1
@@ -231,7 +230,7 @@ final class ProfileDataRemovalTests: XCTestCase {
         XCTAssertEqual(pendingIDs(db), [])
     }
 
-    func testLaunchRetryNeverTouchesAnExistingProfileOrThePrivateProfile() async throws {
+    @MainActor func testLaunchRetryNeverTouchesAnExistingProfileOrThePrivateProfile() async throws {
         let db = try makeDatabase()
         let stored = Profile(name: "Stored")
         db.saveProfile(stored.toRecord())
@@ -268,11 +267,11 @@ final class ProfileDataRemovalTests: XCTestCase {
 
     /// AppDelegate skips the launch retry in the test host, which shares the
     /// production app's WebKit data directory.
-    func testTheTestHostIsDetectedSoTheLaunchRetryIsSkipped() {
+    @MainActor func testTheTestHostIsDetectedSoTheLaunchRetryIsSkipped() {
         XCTAssertTrue(AppDelegate.isRunningUnitTests)
     }
 
-    func testRecordingAPendingRemovalForThePrivateProfileIsIgnored() throws {
+    @MainActor func testRecordingAPendingRemovalForThePrivateProfileIsIgnored() throws {
         let db = try makeDatabase()
         db.recordPendingProfileDataRemoval(profileID: TabStore.incognitoProfileID.uuidString)
         db.recordPendingProfileDataRemoval(profileID: TabStore.incognitoProfileID.uuidString.lowercased())
@@ -281,7 +280,7 @@ final class ProfileDataRemovalTests: XCTestCase {
 
     /// The guard is re-checked right before each WebKit call, not only when the
     /// removal is scheduled: a profile row that is back by then is left alone.
-    func testRemovalIsRefusedIfTheProfileExistsWhenTheAttemptRuns() async throws {
+    @MainActor func testRemovalIsRefusedIfTheProfileExistsWhenTheAttemptRuns() async throws {
         let db = try makeDatabase()
         let profile = Profile(name: "Back again")
         db.recordPendingProfileDataRemoval(profileID: profile.id.uuidString)
@@ -298,7 +297,7 @@ final class ProfileDataRemovalTests: XCTestCase {
     }
 
     /// Between the extension step and the store step, too.
-    func testRemovalStopsIfTheProfileAppearsBetweenSteps() async throws {
+    @MainActor func testRemovalStopsIfTheProfileAppearsBetweenSteps() async throws {
         let db = try makeDatabase()
         let profile = Profile(name: "Appears")
         db.recordPendingProfileDataRemoval(profileID: profile.id.uuidString)
@@ -320,7 +319,7 @@ final class ProfileDataRemovalTests: XCTestCase {
     /// The production profiles on the machine this was written on. In the
     /// default data directory the identifier is the profile id itself, so the
     /// existing production stores keep being used.
-    func testTheDefaultDataDirectoryUsesTheProfileIDAsTheWebKitIdentifier() throws {
+    @MainActor func testTheDefaultDataDirectoryUsesTheProfileIDAsTheWebKitIdentifier() throws {
         let personal = try XCTUnwrap(UUID(uuidString: "B0E91083-1EE3-4280-A675-132391F8AE01"))
         let work = try XCTUnwrap(UUID(uuidString: "CA8C2B61-B63B-4577-8EB3-89470FF077DD"))
         for id in [personal, work, UUID()] {
@@ -338,7 +337,7 @@ final class ProfileDataRemovalTests: XCTestCase {
         XCTAssertNotNil(scope.refusalToRemove(identifier: personal), "and never cleans up through the scope")
     }
 
-    func testIsolatedDataDirectoriesDeriveStableVersion5Identifiers() throws {
+    @MainActor func testIsolatedDataDirectoriesDeriveStableVersion5Identifiers() throws {
         // RFC 4122 test vector (Python's uuid.uuid5(NAMESPACE_DNS, "python.org")).
         let dns = try XCTUnwrap(UUID(uuidString: "6BA7B810-9DAD-11D1-80B4-00C04FD430C8"))
         XCTAssertEqual(WebKitStorageScope.nameBasedUUIDv5(namespace: dns, name: "python.org"),
@@ -355,7 +354,7 @@ final class ProfileDataRemovalTests: XCTestCase {
         XCTAssertEqual(WebKitStorageScope.version(of: UUID()), 4, "profile ids are random, so they never equal a derived id")
     }
 
-    func testAnIsolatedDataDirectoryRecordsIdentifiersItCreatesStorageFor() throws {
+    @MainActor func testAnIsolatedDataDirectoryRecordsIdentifiersItCreatesStorageFor() throws {
         let db = try makeDatabase()
         let scope = isolatedScope(db)
         let profile = UUID()
@@ -373,7 +372,7 @@ final class ProfileDataRemovalTests: XCTestCase {
     /// A profile in the test host's data directory creates its store and
     /// controller under the derived identifier, recorded in the data directory's
     /// database. The storage is removed by the test bundle's cleanup.
-    func testAProfileInTheTestDataDirectoryUsesTheDerivedRecordedIdentifier() throws {
+    @MainActor func testAProfileInTheTestDataDirectoryUsesTheDerivedRecordedIdentifier() throws {
         guard !WebKitStorageScope.current.isDefaultDataDirectory else {
             throw XCTSkip("DETOUR_DATA_DIR is unset or \"Detour\"")
         }
@@ -387,7 +386,7 @@ final class ProfileDataRemovalTests: XCTestCase {
         XCTAssertEqual(AppDatabase.shared.recordedWebKitStorageProfileID(for: identifier), profile.id)
     }
 
-    func testTheRemovalGuardOnlyAllowsRecordedIdentifiersDerivedFromThisDataDirectory() throws {
+    @MainActor func testTheRemovalGuardOnlyAllowsRecordedIdentifiersDerivedFromThisDataDirectory() throws {
         let db = try makeDatabase()
         let profile = UUID()
         var productionIDs: Set<UUID>? = []
@@ -413,7 +412,7 @@ final class ProfileDataRemovalTests: XCTestCase {
         XCTAssertEqual(scope.refusalToRemove(identifier: derived), "the production profile table could not be read")
     }
 
-    func testProductionProfileIDsAreReadFromACopyOfTheDatabase() throws {
+    @MainActor func testProductionProfileIDsAreReadFromACopyOfTheDatabase() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-task36-\(UUID().uuidString.prefix(8))", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -438,7 +437,7 @@ final class ProfileDataRemovalTests: XCTestCase {
     /// under the derived identifier when the data directory recorded creating
     /// it, and forgets the record. A profile that never created storage there
     /// has nothing to remove: no WebKit call, the pending row is cleared.
-    func testDeletingAProfileInAnIsolatedDataDirectoryRemovesOnlyRecordedStorage() async throws {
+    @MainActor func testDeletingAProfileInAnIsolatedDataDirectoryRemovesOnlyRecordedStorage() async throws {
         let db = try makeDatabase()
         let fake = FakeRemover()
         let scope = isolatedScope(db)
@@ -467,7 +466,7 @@ final class ProfileDataRemovalTests: XCTestCase {
 
     /// When the production profile table cannot be read, nothing is removed and
     /// the removal stays pending for the next launch.
-    func testIsolatedRemovalWaitsWhileTheProductionProfileTableIsUnreadable() async throws {
+    @MainActor func testIsolatedRemovalWaitsWhileTheProductionProfileTableIsUnreadable() async throws {
         let db = try makeDatabase()
         let fake = FakeRemover()
         let scope = isolatedScope(db, productionProfileIDs: { nil })
@@ -488,7 +487,7 @@ final class ProfileDataRemovalTests: XCTestCase {
     /// TabStore's defaults are the real remover and the process's data
     /// directory. In the test data directory a profile that never created
     /// storage is skipped without any WebKit call.
-    func testTabStoreDefaultsSkipUnrecordedStorageInTheTestDataDirectory() async throws {
+    @MainActor func testTabStoreDefaultsSkipUnrecordedStorageInTheTestDataDirectory() async throws {
         let name = WebKitStorageScope.currentDataDirectoryName
         guard name != defaultDetourDataDirectoryName else {
             throw XCTSkip("DETOUR_DATA_DIR is unset or \"Detour\"; the default scope would remove real data")
@@ -503,7 +502,7 @@ final class ProfileDataRemovalTests: XCTestCase {
         XCTAssertEqual(outcome, .skippedUnrecordedStorage, "data dir \(name)")
     }
 
-    func testCleanupRemovesRecordedStorageExceptLiveAndRefusedIdentifiers() async throws {
+    @MainActor func testCleanupRemovesRecordedStorageExceptLiveAndRefusedIdentifiers() async throws {
         let db = try makeDatabase()
         let scope = isolatedScope(db)
         let live = UUID(), idle = UUID(), busy = UUID()
@@ -540,7 +539,7 @@ final class ProfileDataRemovalTests: XCTestCase {
         XCTAssertEqual(defaultReport, WebKitStorageScope.CleanupReport(), "never in the default data directory")
     }
 
-    func testCleanupRemovesNothingWhileTheProductionProfileTableIsUnreadable() async throws {
+    @MainActor func testCleanupRemovesNothingWhileTheProductionProfileTableIsUnreadable() async throws {
         let db = try makeDatabase()
         let scope = isolatedScope(db, productionProfileIDs: { nil })
         let identifier = scope.identifierForCreatingStorage(forProfile: UUID())
@@ -561,7 +560,7 @@ final class ProfileDataRemovalTests: XCTestCase {
     /// restored profile with a favourite alive, and with it the website data
     /// store, so a deleted profile's store stayed in use (found by TASK-36's
     /// cleanup).
-    func testARestoredProfileWithADormantFavoriteIsReleased() throws {
+    @MainActor func testARestoredProfileWithADormantFavoriteIsReleased() throws {
         let db = try makeDatabase()
         let profileID: UUID
         do {
@@ -597,7 +596,7 @@ final class ProfileDataRemovalTests: XCTestCase {
     /// that had not would sweep their rows out at the first save (`saveProfiles`)
     /// and, while that sweep armed data removals, irreversibly wipe the user's
     /// cookies, logins and extension storage at the launch after that.
-    func testSessionLessLaunchKeepsSavedProfilesAndRemovesNoData() async throws {
+    @MainActor func testSessionLessLaunchKeepsSavedProfilesAndRemovesNoData() async throws {
         let db = try makeDatabase()
         let orphan = Profile(name: "Saved, never loaded")
         db.saveProfile(orphan.toRecord())
@@ -622,17 +621,17 @@ final class ProfileDataRemovalTests: XCTestCase {
 
     // MARK: - Real WebKit
 
-    private var webKitDirectory: URL {
+    @MainActor private var webKitDirectory: URL {
         FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("WebKit", isDirectory: true)
             .appendingPathComponent(Bundle.main.bundleIdentifier ?? "", isDirectory: true)
     }
 
-    private func websiteDataStoreDirectory(_ id: UUID) -> URL {
+    @MainActor private func websiteDataStoreDirectory(_ id: UUID) -> URL {
         webKitDirectory.appendingPathComponent("WebsiteDataStore/\(id.uuidString.lowercased())", isDirectory: true)
     }
 
-    private func dataStoreIsListed(_ id: UUID) async -> Bool {
+    @MainActor private func dataStoreIsListed(_ id: UUID) async -> Bool {
         await WKWebsiteDataStore.allDataStoreIdentifiers.contains(id)
     }
 
@@ -641,7 +640,7 @@ final class ProfileDataRemovalTests: XCTestCase {
     /// controller (an extension whose worker writes `storage.local`, loaded and
     /// registered as the profile's context). Scoped so that nothing but the
     /// store's own objects retains the profile afterwards.
-    private func populateWebKitData(
+    @MainActor private func populateWebKitData(
         of profileID: UUID, in store: TabStore, extensionDirectory: URL
     ) async throws -> () -> Profile? {
         let profile = try XCTUnwrap(store.profile(withID: profileID))
@@ -679,7 +678,7 @@ final class ProfileDataRemovalTests: XCTestCase {
         return { weakProfile }
     }
 
-    func testDeletingAProfileRemovesItsWebKitDataFromDisk() async throws {
+    @MainActor func testDeletingAProfileRemovesItsWebKitDataFromDisk() async throws {
         let extensionDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-task32-\(UUID().uuidString.prefix(8))", isDirectory: true)
         try FileManager.default.createDirectory(at: extensionDirectory, withIntermediateDirectories: true)

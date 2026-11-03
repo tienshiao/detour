@@ -3,52 +3,52 @@ import XCTest
 
 /// TASK-119: the Archived Tabs page's pure row layout — relative-date buckets,
 /// ordering, search, the space filter and the URL line.
-final class ArchiveListLayoutTests: XCTestCase {
+nonisolated final class ArchiveListLayoutTests: XCTestCase {
 
-    private var calendar: Calendar {
+    @MainActor private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
         return calendar
     }
 
     /// 2026-09-26 15:00 UTC.
-    private var now: Date {
+    @MainActor private var now: Date {
         calendar.date(from: DateComponents(year: 2026, month: 9, day: 26, hour: 15))!
     }
 
-    private func date(_ year: Int, _ month: Int, _ day: Int, hour: Int = 12) -> Date {
+    @MainActor private func date(_ year: Int, _ month: Int, _ day: Int, hour: Int = 12) -> Date {
         calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour))!
     }
 
-    private func daysAgo(_ days: Int, hour: Int = 12) -> Date {
+    @MainActor private func daysAgo(_ days: Int, hour: Int = 12) -> Date {
         let day = calendar.date(byAdding: .day, value: -days, to: now)!
         return calendar.date(bySettingHour: hour, minute: 0, second: 0, of: day)!
     }
 
-    private func bucket(_ date: Date) -> ArchiveBucket {
+    @MainActor private func bucket(_ date: Date) -> ArchiveBucket {
         archiveBucket(for: date, now: now, calendar: calendar)
     }
 
     private let spaceA = UUID()
     private let spaceB = UUID()
 
-    private func entry(_ id: Int64, _ title: String = "Page", url: String? = "https://example.com/",
+    @MainActor private func entry(_ id: Int64, _ title: String = "Page", url: String? = "https://example.com/",
                        closedAt: Date?, space: UUID? = nil) -> ArchiveEntry {
         ArchiveEntry(id: id, spaceID: space ?? spaceA, title: title, url: url, faviconURL: nil,
                      closedAt: closedAt, isRestorable: true)
     }
 
-    private func rows(_ entries: [ArchiveEntry], query: String = "", filter: UUID? = nil) -> [ArchiveRow] {
+    @MainActor private func rows(_ entries: [ArchiveEntry], query: String = "", filter: UUID? = nil) -> [ArchiveRow] {
         archiveRows(entries: entries, query: query, spaceFilter: filter, now: now, calendar: calendar)
     }
 
-    private func entryIDs(_ rows: [ArchiveRow]) -> [Int64] {
+    @MainActor private func entryIDs(_ rows: [ArchiveRow]) -> [Int64] {
         rows.compactMap { if case .entry(let e) = $0 { return e.id } else { return nil } }
     }
 
     // MARK: - Buckets
 
-    func testDayBuckets() {
+    @MainActor func testDayBuckets() {
         XCTAssertEqual(bucket(daysAgo(0, hour: 0)), .today, "start of today")
         XCTAssertEqual(bucket(daysAgo(1, hour: 23)), .yesterday, "calendar days, not 24-hour spans")
         XCTAssertEqual(bucket(daysAgo(1, hour: 0)), .yesterday)
@@ -56,7 +56,7 @@ final class ArchiveListLayoutTests: XCTestCase {
         XCTAssertEqual(bucket(daysAgo(6)), .daysAgo(6))
     }
 
-    func testWeekBuckets() {
+    @MainActor func testWeekBuckets() {
         XCTAssertEqual(bucket(daysAgo(7)), .weeksAgo(1))
         XCTAssertEqual(bucket(daysAgo(13)), .weeksAgo(1))
         XCTAssertEqual(bucket(daysAgo(14)), .weeksAgo(2))
@@ -64,7 +64,7 @@ final class ArchiveListLayoutTests: XCTestCase {
         XCTAssertEqual(bucket(daysAgo(29)), .weeksAgo(4))
     }
 
-    func testMonthAndYearBuckets() {
+    @MainActor func testMonthAndYearBuckets() {
         XCTAssertEqual(bucket(daysAgo(30)), .monthsAgo(1), "Aug 27 is under a calendar month back, floored to 1")
         XCTAssertEqual(bucket(daysAgo(59)), .monthsAgo(1), "Jul 29 → 1 month 28 days")
         XCTAssertEqual(bucket(date(2026, 7, 26)), .monthsAgo(2))
@@ -74,11 +74,11 @@ final class ArchiveListLayoutTests: XCTestCase {
         XCTAssertEqual(bucket(date(2023, 1, 1)), .yearsAgo(3))
     }
 
-    func testFutureDateIsToday() {
+    @MainActor func testFutureDateIsToday() {
         XCTAssertEqual(bucket(now.addingTimeInterval(3 * 86_400)), .today)
     }
 
-    func testBucketTitles() {
+    @MainActor func testBucketTitles() {
         XCTAssertEqual(archiveBucketTitle(.today), "Today")
         XCTAssertEqual(archiveBucketTitle(.yesterday), "Yesterday")
         XCTAssertEqual(archiveBucketTitle(.daysAgo(3)), "3 days ago")
@@ -93,7 +93,7 @@ final class ArchiveListLayoutTests: XCTestCase {
 
     // MARK: - Rows
 
-    func testRowsSortNewestFirstUnderHeaders() {
+    @MainActor func testRowsSortNewestFirstUnderHeaders() {
         let entries = [
             entry(1, closedAt: daysAgo(3)),
             entry(2, closedAt: daysAgo(0, hour: 9)),
@@ -108,13 +108,13 @@ final class ArchiveListLayoutTests: XCTestCase {
         ])
     }
 
-    func testTiesBreakByIDDescending() {
+    @MainActor func testTiesBreakByIDDescending() {
         let stamp = daysAgo(0, hour: 10)
         let result = rows([entry(5, closedAt: stamp), entry(9, closedAt: stamp), entry(7, closedAt: stamp)])
         XCTAssertEqual(entryIDs(result), [9, 7, 5])
     }
 
-    func testUndatedEntriesGoLastByIDDescending() {
+    @MainActor func testUndatedEntriesGoLastByIDDescending() {
         let result = rows([
             entry(1, closedAt: nil),
             entry(2, closedAt: daysAgo(400)),
@@ -127,13 +127,13 @@ final class ArchiveListLayoutTests: XCTestCase {
         XCTAssertEqual(result[result.count - 3], .header(.undated))
     }
 
-    func testEmptyInputHasNoRows() {
+    @MainActor func testEmptyInputHasNoRows() {
         XCTAssertEqual(rows([]), [])
     }
 
     // MARK: - Search
 
-    func testSearchNeedsEveryTermInTitleOrURL() {
+    @MainActor func testSearchNeedsEveryTermInTitleOrURL() {
         let entries = [
             entry(1, "Swift Forums", url: "https://forums.swift.org/t/1", closedAt: daysAgo(0)),
             entry(2, "Swift Package Index", url: "https://swiftpackageindex.com/", closedAt: daysAgo(0)),
@@ -146,19 +146,19 @@ final class ArchiveListLayoutTests: XCTestCase {
         XCTAssertEqual(entryIDs(rows(entries, query: "")), [3, 2, 1])
     }
 
-    func testSearchIgnoresDiacritics() {
+    @MainActor func testSearchIgnoresDiacritics() {
         let entries = [entry(1, "Café Crème", closedAt: daysAgo(0))]
         XCTAssertEqual(entryIDs(rows(entries, query: "cafe creme")), [1])
         XCTAssertEqual(entryIDs(rows([entry(2, "Cafe", closedAt: daysAgo(0))], query: "café")), [2])
     }
 
-    func testSearchDoesNotMatchTheScheme() {
+    @MainActor func testSearchDoesNotMatchTheScheme() {
         let entries = [entry(1, "Page", url: "https://example.com/", closedAt: daysAgo(0))]
         XCTAssertEqual(entryIDs(rows(entries, query: "https")), [])
         XCTAssertEqual(entryIDs(rows(entries, query: "example.com")), [1])
     }
 
-    func testHeadersOnlyForBucketsWithSurvivingEntries() {
+    @MainActor func testHeadersOnlyForBucketsWithSurvivingEntries() {
         let entries = [
             entry(1, "Keep", closedAt: daysAgo(0)),
             entry(2, "Drop", closedAt: daysAgo(1)),
@@ -170,7 +170,7 @@ final class ArchiveListLayoutTests: XCTestCase {
         ])
     }
 
-    func testSpaceFilterKeepsOnlyThatSpace() {
+    @MainActor func testSpaceFilterKeepsOnlyThatSpace() {
         let entries = [
             entry(1, closedAt: daysAgo(0), space: spaceA),
             entry(2, closedAt: daysAgo(1), space: spaceB),
@@ -183,7 +183,7 @@ final class ArchiveListLayoutTests: XCTestCase {
 
     // MARK: - Display URL
 
-    func testDisplayURL() {
+    @MainActor func testDisplayURL() {
         XCTAssertEqual(archiveDisplayURL("https://www.youtube.com/watch?v=abc"), "youtube.com/watch?v=abc")
         XCTAssertEqual(archiveDisplayURL("https://example.com/"), "example.com")
         XCTAssertEqual(archiveDisplayURL("http://www.example.com/"), "example.com")
@@ -197,14 +197,14 @@ final class ArchiveListLayoutTests: XCTestCase {
 
     // MARK: - Quick Detour entries (TASK-193.5)
 
-    private func quickDetour(_ id: Int64, scope: UUID, autoClosed: Bool) -> ArchiveEntry {
+    @MainActor private func quickDetour(_ id: Int64, scope: UUID, autoClosed: Bool) -> ArchiveEntry {
         var entry = ArchiveEntry(id: id, spaceID: scope, title: "Lookup", url: "https://www.example.com/a",
                                  faviconURL: nil, closedAt: now, isRestorable: true)
         entry.kind = .quickDetour(profileID: UUID(), autoClosed: autoClosed)
         return entry
     }
 
-    func testAQuickDetoursSubtitleSaysSo() {
+    @MainActor func testAQuickDetoursSubtitleSaysSo() {
         XCTAssertEqual(archiveEntrySubtitle(quickDetour(1, scope: UUID(), autoClosed: false)),
                        "Quick Detour · example.com/a")
         XCTAssertEqual(archiveEntrySubtitle(quickDetour(1, scope: UUID(), autoClosed: true)),
@@ -212,7 +212,7 @@ final class ArchiveListLayoutTests: XCTestCase {
         XCTAssertEqual(archiveEntrySubtitle(entry(2, closedAt: now)), "example.com", "a tab's is its address alone")
     }
 
-    func testClearingEverythingCoversTheQuickDetourScopes() {
+    @MainActor func testClearingEverythingCoversTheQuickDetourScopes() {
         let scope = UUID()
         let entries = [entry(1, closedAt: now), quickDetour(2, scope: scope, autoClosed: true),
                        quickDetour(3, scope: scope, autoClosed: false)]
@@ -222,7 +222,7 @@ final class ArchiveListLayoutTests: XCTestCase {
                        "a space filter leaves Quick Detours out, as the list does")
     }
 
-    func testASpaceFilterHidesQuickDetours() {
+    @MainActor func testASpaceFilterHidesQuickDetours() {
         let scope = UUID()
         let entries = [entry(1, closedAt: now), quickDetour(2, scope: scope, autoClosed: false)]
         XCTAssertEqual(entryIDs(rows(entries, filter: spaceA)), [1])

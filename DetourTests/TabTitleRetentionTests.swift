@@ -12,27 +12,26 @@ import GRDB
 /// (`youtube.com/watch?v=…`); the next save stored that, and a tab put to sleep
 /// kept it across every relaunch after. A restored tab woken without being
 /// shown did the same at commit, before its document reported a title.
-@MainActor
-final class TabTitleRetentionTests: XCTestCase {
+nonisolated final class TabTitleRetentionTests: XCTestCase {
 
     private var tabs: [BrowserTab] = []
-    private let scheme = StallingSchemeHandler()
+    @MainActor private lazy var scheme = StallingSchemeHandler()
     private let pageURL = URL(string: "stall://title.test/watch?v=1")!
     private let otherURL = URL(string: "stall://title.test/other")!
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for tab in tabs { tab.teardown() }
         tabs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func configuration() -> WKWebViewConfiguration {
+    @MainActor private func configuration() -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(scheme, forURLScheme: "stall")
         return configuration
     }
 
-    private func track(_ tab: BrowserTab) -> BrowserTab {
+    @MainActor private func track(_ tab: BrowserTab) -> BrowserTab {
         tabs.append(tab)
         return tab
     }
@@ -41,7 +40,7 @@ final class TabTitleRetentionTests: XCTestCase {
     /// kill does, and waits for WebKit to reset the web view: its URL goes nil
     /// and its title empty. (`_killWebContentProcess` leaves an unclaimed web
     /// view's process running on macOS 26.)
-    private func killWebContentProcess(of tab: BrowserTab) async throws {
+    @MainActor private func killWebContentProcess(of tab: BrowserTab) async throws {
         let webView = try XCTUnwrap(tab.webView)
         let pid = try XCTUnwrap((webView.value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value)
         XCTAssertGreaterThan(pid, 0, "the page has a web content process")
@@ -52,7 +51,7 @@ final class TabTitleRetentionTests: XCTestCase {
 
     // MARK: - BrowserTab
 
-    func testAKilledWebProcessKeepsTheDocumentTitle() async throws {
+    @MainActor func testAKilledWebProcessKeepsTheDocumentTitle() async throws {
         scheme.pages[pageURL.path] = "<html><head><title>A Video - YouTube</title></head><body>video</body></html>"
         let tab = track(BrowserTab(configuration: configuration()))
         tab.load(pageURL)
@@ -66,7 +65,7 @@ final class TabTitleRetentionTests: XCTestCase {
 
     /// The bug as the user met it: the placeholder outlived the dead page
     /// because the tab went to sleep with it.
-    func testATabPutToSleepAfterItsProcessDiedKeepsTheDocumentTitle() async throws {
+    @MainActor func testATabPutToSleepAfterItsProcessDiedKeepsTheDocumentTitle() async throws {
         scheme.pages[pageURL.path] = "<html><head><title>A Video - YouTube</title></head><body>video</body></html>"
         let tab = track(BrowserTab(configuration: configuration()))
         tab.load(pageURL)
@@ -84,7 +83,7 @@ final class TabTitleRetentionTests: XCTestCase {
     /// a title — and a hidden web view may not reach the `<title>` for a long
     /// time. The persisted title names this page, so it stays until the
     /// document reports its own.
-    func testAWokenRestoredTabKeepsItsPersistedTitleUntilTheDocumentReportsOne() async throws {
+    @MainActor func testAWokenRestoredTabKeepsItsPersistedTitleUntilTheDocumentReportsOne() async throws {
         // A real http page: `wake()` builds its web view from the tab's space
         // (none here, so a default configuration), which has no custom scheme.
         let server = try LoopbackHTTPServer(
@@ -117,7 +116,7 @@ final class TabTitleRetentionTests: XCTestCase {
 
     /// Going somewhere else is not the same page: the placeholder still says
     /// where the tab is going.
-    func testANavigationToAnotherPageStillShowsWhereItIsGoing() async throws {
+    @MainActor func testANavigationToAnotherPageStillShowsWhereItIsGoing() async throws {
         scheme.pages[pageURL.path] = "<html><head><title>A Video - YouTube</title></head><body>video</body></html>"
         scheme.pages[otherURL.path] = "<html><body>untitled<img src=\"/hang.png\"></body></html>"
         let tab = track(BrowserTab(configuration: configuration()))
@@ -135,7 +134,7 @@ final class TabTitleRetentionTests: XCTestCase {
     /// A navigation the page starts makes the web view's URL the destination
     /// while its title is still the old document's: an untitled destination is
     /// named by its URL, never by the page it left.
-    func testAPageInitiatedNavigationToAnUntitledPageDoesNotKeepTheOldTitle() async throws {
+    @MainActor func testAPageInitiatedNavigationToAnUntitledPageDoesNotKeepTheOldTitle() async throws {
         scheme.pages[pageURL.path] = "<html><head><title>A Video - YouTube</title></head><body>video</body></html>"
         scheme.pages[otherURL.path] = "<html><body>untitled</body></html>"
         let tab = track(BrowserTab(configuration: configuration()))
@@ -151,7 +150,7 @@ final class TabTitleRetentionTests: XCTestCase {
 
     /// A load that redirected still names its page once the process dies: the
     /// page is the redirect's target, not the address the load left.
-    func testAKilledWebProcessKeepsTheTitleOfARedirectedLoad() async throws {
+    @MainActor func testAKilledWebProcessKeepsTheTitleOfARedirectedLoad() async throws {
         let server = try LoopbackHTTPServer(
             routes: ["/watch": "<html><head><title>A Video - YouTube</title></head><body>video</body></html>"],
             redirects: ["/short": "http://127.0.0.1:{port}/watch"])
@@ -173,7 +172,7 @@ final class TabTitleRetentionTests: XCTestCase {
     /// `replaceState`, possibly while the page is still loading — a hidden web
     /// view can stay loading for a long time — and the process dies later. The
     /// title names the page at its new address.
-    func testAKilledWebProcessKeepsTheTitleAfterAReplaceStateWhileLoading() async throws {
+    @MainActor func testAKilledWebProcessKeepsTheTitleAfterAReplaceStateWhileLoading() async throws {
         let trackedURL = URL(string: "stall://title.test/watch?v=1&pp=abc")!
         scheme.pages[trackedURL.path] = """
             <html><head><title>A Video - YouTube</title></head><body>video
@@ -196,13 +195,13 @@ final class TabTitleRetentionTests: XCTestCase {
 
     // MARK: - Session save
 
-    private struct SaveFixture {
+    @MainActor private struct SaveFixture {
         let db: AppDatabase
         let store: TabStore
         let tab: BrowserTab
     }
 
-    private func makeSaveFixture(titleSaveDelay: TimeInterval) throws -> SaveFixture {
+    @MainActor private func makeSaveFixture(titleSaveDelay: TimeInterval) throws -> SaveFixture {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         let store = TabStore(appDB: db, titleSaveDelay: titleSaveDelay)
         let profile = store.addProfile(name: "Work")
@@ -215,7 +214,7 @@ final class TabTitleRetentionTests: XCTestCase {
         return SaveFixture(db: db, store: store, tab: tab)
     }
 
-    private func savedTitle(_ fixture: SaveFixture) throws -> String? {
+    @MainActor private func savedTitle(_ fixture: SaveFixture) throws -> String? {
         try fixture.db.dbQueue.read { conn in
             try String.fetchOne(conn, sql: "SELECT title FROM tab WHERE id = ?", arguments: [fixture.tab.id.uuidString])
         }
@@ -224,7 +223,7 @@ final class TabTitleRetentionTests: XCTestCase {
     /// A title that settles after the last URL or favicon change used to reach
     /// the database only with an unrelated save, or the save at quit — which a
     /// crash, a kill or a forced relaunch never runs.
-    func testATitleChangeIsSavedWithoutAnyOtherChange() async throws {
+    @MainActor func testATitleChangeIsSavedWithoutAnyOtherChange() async throws {
         let fixture = try makeSaveFixture(titleSaveDelay: 0.2)
         XCTAssertEqual(try savedTitle(fixture), "youtube.com/watch?v=1")
 
@@ -235,7 +234,7 @@ final class TabTitleRetentionTests: XCTestCase {
 
     /// A page that rewrites its title faster than the save delay (a chat's
     /// unread flash) must not hold every session save off.
-    func testATitleThatKeepsChangingDoesNotPostponeTheSave() async throws {
+    @MainActor func testATitleThatKeepsChangingDoesNotPostponeTheSave() async throws {
         let fixture = try makeSaveFixture(titleSaveDelay: 0.3)
 
         for index in 0 ..< 12 {

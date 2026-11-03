@@ -14,8 +14,7 @@ import GRDB
 /// is a shell script that `exec`s `sleep <unique seconds>`, so whether a process
 /// was spawned is read off the process table by that unique argument, and every
 /// such process is killed in tearDown.
-@MainActor
-final class NativeMessagingEnforcementTests: XCTestCase {
+nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
 
     private static let hostName = "com.detour.task25_enforcement_test"
 
@@ -26,7 +25,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// The shared fake-host fixture, if this test installed one (at most one per test).
     private var fakeHost: FakeNativeMessagingHost?
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         webViews.removeAll()
         for profile in createdProfiles {
             profile.unloadAllExtensions()
@@ -35,7 +34,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
         createdProfiles.removeAll()
         for id in registeredExtensionIDs {
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
-            try? AppDatabase.shared.dbQueue.write { db in
+            try? await AppDatabase.shared.dbQueue.write { db in
                 _ = try ExtensionPermissionRecord.filter(Column("extensionID") == id).deleteAll(db)
             }
             AppDatabase.shared.deleteExtension(id: id)
@@ -49,12 +48,12 @@ final class NativeMessagingEnforcementTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
-    private func makeTempDir(_ label: String) throws -> URL {
+    @MainActor private func makeTempDir(_ label: String) throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-test-\(label)-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -64,7 +63,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
 
     /// Install the silent fake host for `extensionIDs` (one manifest may list several
     /// origins) and point the host search at it. Torn down in this suite's tearDown.
-    private func installFakeHost(allowing extensionIDs: [String]) throws {
+    @MainActor private func installFakeHost(allowing extensionIDs: [String]) throws {
         let host = try FakeNativeMessagingHost(name: Self.hostName, allowing: extensionIDs)
         fakeHost = host
     }
@@ -74,7 +73,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// `permissions` is a parameter so a test can make the manifest itself the
     /// thing under test — an extension that never declared nativeMessaging is
     /// the `.denied` half of the gate.
-    private func makeExtension(permissions: [String] = ["nativeMessaging"]) async throws -> WebExtension {
+    @MainActor private func makeExtension(permissions: [String] = ["nativeMessaging"]) async throws -> WebExtension {
         let id = "nm-enforce-\(UUID().uuidString.prefix(8).lowercased())"
         let dir = try makeTempDir(id)
         let manifestJSON = """
@@ -102,13 +101,13 @@ final class NativeMessagingEnforcementTests: XCTestCase {
         return ext
     }
 
-    private struct Loaded {
+    @MainActor private struct Loaded {
         let profile: Profile
         let context: WKWebExtensionContext
         let webView: WKWebView
     }
 
-    private func load(_ ext: WebExtension, profileName: String) async throws -> Loaded {
+    @MainActor private func load(_ ext: WebExtension, profileName: String) async throws -> Loaded {
         let profile = TabStore.shared.addProfile(name: profileName)
         createdProfiles.append(profile)
         _ = profile.extensionController
@@ -121,16 +120,16 @@ final class NativeMessagingEnforcementTests: XCTestCase {
         return Loaded(profile: profile, context: context, webView: webView)
     }
 
-    private func saveNativeMessagingDecision(_ ext: WebExtension, _ status: ExtensionPermissionStatus) {
+    @MainActor private func saveNativeMessagingDecision(_ ext: WebExtension, _ status: ExtensionPermissionStatus) {
         AppDatabase.shared.savePermission(ExtensionPermissionRecord(
             extensionID: ext.id, key: "nativeMessaging", type: .apiPermission, status: status))
     }
 
     /// Fake host processes currently alive for this test.
-    private func fakeHostProcessCount() -> Int { fakeHost?.processCount() ?? 0 }
+    @MainActor private func fakeHostProcessCount() -> Int { fakeHost?.processCount() ?? 0 }
 
     /// Evaluate `body` (an async function body returning a JSON-able value) in the page.
-    private func evalJSON(_ body: String, in webView: WKWebView,
+    @MainActor private func evalJSON(_ body: String, in webView: WKWebView,
                           arguments: [String: Any] = [:]) async throws -> [String: Any] {
         let raw = try await webView.callAsyncJavaScript(
             "return JSON.stringify(await (async () => { \(body) })());",
@@ -140,7 +139,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     }
 
     /// `runtime.sendNativeMessage` from the page, settled or timed out.
-    private func sendNativeMessage(_ host: String, _ message: [String: Any], in webView: WKWebView,
+    @MainActor private func sendNativeMessage(_ host: String, _ message: [String: Any], in webView: WKWebView,
                                    timeoutMS: Int = 3000) async throws -> [String: Any] {
         try await evalJSON("""
             return await new Promise((resolve) => {
@@ -154,7 +153,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
 
     /// Open a `runtime.connectNative` port from the page and record how it ends
     /// on `window.__ports[name]`.
-    private func connectNative(_ host: String, as name: String, in webView: WKWebView) async throws {
+    @MainActor private func connectNative(_ host: String, as name: String, in webView: WKWebView) async throws {
         _ = try await evalJSON("""
             window.__ports = window.__ports || {};
             const record = { disconnected: false, lastError: null, portError: null, port: null };
@@ -171,7 +170,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
             """, in: webView, arguments: ["host": host, "name": name])
     }
 
-    private func portState(_ name: String, in webView: WKWebView) async throws -> [String: Any] {
+    @MainActor private func portState(_ name: String, in webView: WKWebView) async throws -> [String: Any] {
         try await evalJSON("""
             const record = (window.__ports || {})[name];
             return record ? { disconnected: record.disconnected, lastError: record.lastError, portError: record.portError } : { missing: true };
@@ -182,7 +181,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
 
     /// A saved denial refuses `sendNativeMessage` with Chrome's forbidden error and
     /// spawns nothing.
-    func testDeniedNativeMessagingRejectsSendNativeMessageWithoutSpawning() async throws {
+    @MainActor func testDeniedNativeMessagingRejectsSendNativeMessageWithoutSpawning() async throws {
         let ext = try await makeExtension()
         try installFakeHost(allowing: [ext.id])
         saveNativeMessagingDecision(ext, .denied)
@@ -199,7 +198,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
 
     /// A saved denial refuses `connectNative`: the port disconnects with the
     /// forbidden error and no process is spawned or registered.
-    func testDeniedNativeMessagingRefusesConnectNativeWithoutSpawning() async throws {
+    @MainActor func testDeniedNativeMessagingRefusesConnectNativeWithoutSpawning() async throws {
         let ext = try await makeExtension()
         try installFakeHost(allowing: [ext.id])
         saveNativeMessagingDecision(ext, .denied)
@@ -228,7 +227,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// Denying from Settings then tears the live connection down at once: the
     /// process is killed, the port disconnects with the forbidden error, and a
     /// reconnect is refused — all on the same loaded context.
-    func testAbsentDecisionAllowsConnectNativeAndDenialDisconnectsIt() async throws {
+    @MainActor func testAbsentDecisionAllowsConnectNativeAndDenialDisconnectsIt() async throws {
         let ext = try await makeExtension()
         try installFakeHost(allowing: [ext.id])
         let loaded = try await load(ext, profileName: "NM Absent Connect Profile")
@@ -270,7 +269,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// A saved grant spawns the one-shot host; a denial arriving while it waits
     /// for a reply kills it and rejects the pending promise instead of leaving it
     /// hanging.
-    func testGrantedDecisionAllowsSendNativeMessageAndDenialRejectsThePendingReply() async throws {
+    @MainActor func testGrantedDecisionAllowsSendNativeMessageAndDenialRejectsThePendingReply() async throws {
         let ext = try await makeExtension()
         try installFakeHost(allowing: [ext.id])
         saveNativeMessagingDecision(ext, .granted)
@@ -304,7 +303,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     }
 
     /// Re-granting from Settings lifts the block on the same loaded context.
-    func testRegrantingLiftsTheBlockWithoutReload() async throws {
+    @MainActor func testRegrantingLiftsTheBlockWithoutReload() async throws {
         let ext = try await makeExtension()
         try installFakeHost(allowing: [ext.id])
         saveNativeMessagingDecision(ext, .denied)
@@ -323,7 +322,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     }
 
     /// Denying one extension leaves another extension's live host alone.
-    func testDenialOnlyDisconnectsThatExtensionsHosts() async throws {
+    @MainActor func testDenialOnlyDisconnectsThatExtensionsHosts() async throws {
         let denied = try await makeExtension()
         let other = try await makeExtension()
         // One host manifest may list both origins.
@@ -354,7 +353,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// Until TASK-90 the second half was accepted in silence (`completionHandler(nil)`):
     /// a port with no handlers, no host process and no log line, which is the
     /// state the production reconnect-loop investigation had to rule out by hand.
-    func testConnectNativeIsAcceptedForAListedContextAndRefusedOnceItIsNot() async throws {
+    @MainActor func testConnectNativeIsAcceptedForAListedContextAndRefusedOnceItIsNot() async throws {
         let ext = try await makeExtension()
         try installFakeHost(allowing: [ext.id])
         let loaded = try await load(ext, profileName: "NM Listed Context Profile")
@@ -391,7 +390,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// The other half of the gate's refusal: an extension that never declared
     /// nativeMessaging is refused by the manifest check, with the reason that
     /// names the manifest rather than the context.
-    func testConnectNativeWithoutTheDeclaredPermissionIsRefusedWithoutSpawning() async throws {
+    @MainActor func testConnectNativeWithoutTheDeclaredPermissionIsRefusedWithoutSpawning() async throws {
         let ext = try await makeExtension(permissions: [])
         try installFakeHost(allowing: [ext.id])
         let loaded = try await load(ext, profileName: "NM Undeclared Profile")
@@ -417,7 +416,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
 
     /// Detour's polyfill host still answers an envelope from an extension whose
     /// nativeMessaging is denied — it is the bridge, not the capability.
-    func testDeniedNativeMessagingKeepsPolyfillHostWorking() async throws {
+    @MainActor func testDeniedNativeMessagingKeepsPolyfillHostWorking() async throws {
         let ext = try await makeExtension()
         saveNativeMessagingDecision(ext, .denied)
         let loaded = try await load(ext, profileName: "NM Denied Polyfill Profile")
@@ -433,7 +432,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     }
 
     /// The keep-alive port and the WebSocket relay port are still accepted.
-    func testDeniedNativeMessagingKeepsBuiltInPortsWorking() async throws {
+    @MainActor func testDeniedNativeMessagingKeepsBuiltInPortsWorking() async throws {
         let ext = try await makeExtension()
         saveNativeMessagingDecision(ext, .denied)
         let loaded = try await load(ext, profileName: "NM Denied Ports Profile")
@@ -464,7 +463,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// installed must outlive both a reinstall of the same version and an update
     /// that re-declares the permission, while a permission the update newly
     /// declares is still recorded as granted.
-    func testSavedDenialSurvivesReinstallAndUpdate() async throws {
+    @MainActor func testSavedDenialSurvivesReinstallAndUpdate() async throws {
         let source = try makeTempDir("task63-source")
         // A manifest key pins the id, so every install is the same extension.
         let key = Data("detour-task63-\(UUID().uuidString)".utf8).base64EncodedString()

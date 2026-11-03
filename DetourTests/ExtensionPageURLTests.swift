@@ -3,18 +3,18 @@ import XCTest
 
 /// TASK-14: the URL rewrite that moves an open extension page from a dead
 /// context origin to the reloaded context's origin. Pure — no WebKit, no store.
-final class ExtensionPageURLTests: XCTestCase {
+nonisolated final class ExtensionPageURLTests: XCTestCase {
 
     private let oldBase = URL(string: "webkit-extension://11111111-1111-1111-1111-111111111111/")!
     private let newBase = URL(string: "webkit-extension://22222222-2222-2222-2222-222222222222/")!
 
-    private func url(_ string: String) throws -> URL {
+    @MainActor private func url(_ string: String) throws -> URL {
         try XCTUnwrap(URL(string: string))
     }
 
     // MARK: - rewriteExtensionPageURL
 
-    func testRewritePreservesPathQueryAndFragment() throws {
+    @MainActor func testRewritePreservesPathQueryAndFragment() throws {
         let page = try url("webkit-extension://11111111-1111-1111-1111-111111111111/options/index.html?tab=general&x=1#privacy")
 
         let rewritten = try XCTUnwrap(rewriteExtensionPageURL(page, from: oldBase, to: newBase))
@@ -23,7 +23,7 @@ final class ExtensionPageURLTests: XCTestCase {
                        "webkit-extension://22222222-2222-2222-2222-222222222222/options/index.html?tab=general&x=1#privacy")
     }
 
-    func testRewriteKeepsBarePath() throws {
+    @MainActor func testRewriteKeepsBarePath() throws {
         let page = try url("webkit-extension://11111111-1111-1111-1111-111111111111/popup.html")
 
         XCTAssertEqual(try XCTUnwrap(rewriteExtensionPageURL(page, from: oldBase, to: newBase)).absoluteString,
@@ -32,7 +32,7 @@ final class ExtensionPageURLTests: XCTestCase {
 
     /// The root page of the old origin, with and without a trailing slash. A
     /// host-only URL has an empty path, which must not produce a nil URL.
-    func testRewriteHandlesOriginRoot() throws {
+    @MainActor func testRewriteHandlesOriginRoot() throws {
         XCTAssertEqual(try XCTUnwrap(rewriteExtensionPageURL(oldBase, from: oldBase, to: newBase)).absoluteString,
                        "webkit-extension://22222222-2222-2222-2222-222222222222/")
 
@@ -43,7 +43,7 @@ final class ExtensionPageURLTests: XCTestCase {
 
     /// An extension page's query routinely carries a URL of its own; the escapes
     /// must survive untouched rather than being decoded and re-encoded.
-    func testRewritePreservesPercentEncoding() throws {
+    @MainActor func testRewritePreservesPercentEncoding() throws {
         let page = try url("webkit-extension://11111111-1111-1111-1111-111111111111/save.html?url=https%3A%2F%2Fexample.com%2Fa%20b&q=%26")
 
         XCTAssertEqual(try XCTUnwrap(rewriteExtensionPageURL(page, from: oldBase, to: newBase)).absoluteString,
@@ -54,7 +54,7 @@ final class ExtensionPageURLTests: XCTestCase {
     /// through persistence or written by a page's own link can carry any case,
     /// and an origin check that missed would leave the page on a dead origin.
     /// (A hex UUID with letters — an all-digit one would make this vacuous.)
-    func testRewriteIsCaseInsensitiveInHost() throws {
+    @MainActor func testRewriteIsCaseInsensitiveInHost() throws {
         let lowerBase = try url("webkit-extension://aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/")
         let upperBase = try url("webkit-extension://AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE/")
         let lowerPage = try url("webkit-extension://aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/p.html")
@@ -71,14 +71,14 @@ final class ExtensionPageURLTests: XCTestCase {
 
     // MARK: - rewriteExtensionPageURL: what must be left alone
 
-    func testRewriteRejectsAnotherExtensionsOrigin() throws {
+    @MainActor func testRewriteRejectsAnotherExtensionsOrigin() throws {
         let other = try url("webkit-extension://33333333-3333-3333-3333-333333333333/options.html")
 
         XCTAssertNil(rewriteExtensionPageURL(other, from: oldBase, to: newBase),
                      "another extension's page must not be moved by this context's reload")
     }
 
-    func testRewriteRejectsOrdinaryWebPage() throws {
+    @MainActor func testRewriteRejectsOrdinaryWebPage() throws {
         XCTAssertNil(rewriteExtensionPageURL(try url("https://example.com/options.html"),
                                              from: oldBase, to: newBase),
                      "an https page must never be rewritten")
@@ -87,7 +87,7 @@ final class ExtensionPageURLTests: XCTestCase {
     }
 
     /// A page whose host matches but whose scheme does not is a different origin.
-    func testRewriteRejectsMatchingHostUnderAnotherScheme() throws {
+    @MainActor func testRewriteRejectsMatchingHostUnderAnotherScheme() throws {
         let page = try url("https://11111111-1111-1111-1111-111111111111/options.html")
 
         XCTAssertNil(rewriteExtensionPageURL(page, from: oldBase, to: newBase))
@@ -95,7 +95,7 @@ final class ExtensionPageURLTests: XCTestCase {
 
     // MARK: - isExtensionPage
 
-    func testIsExtensionPageMatchesOriginHost() throws {
+    @MainActor func testIsExtensionPageMatchesOriginHost() throws {
         let host = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
         XCTAssertTrue(isExtensionPage(try url("webkit-extension://\(host)/a/b.html?q=1"), ofOriginHost: host))
@@ -104,7 +104,7 @@ final class ExtensionPageURLTests: XCTestCase {
         XCTAssertTrue(isExtensionPage(try url("webkit-extension://\(host)/"), ofOriginHost: host.uppercased()))
     }
 
-    func testIsExtensionPageRejectsOtherOriginsAndSchemes() throws {
+    @MainActor func testIsExtensionPageRejectsOtherOriginsAndSchemes() throws {
         let host = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
         XCTAssertFalse(isExtensionPage(try url("webkit-extension://33333333-3333-3333-3333-333333333333/a.html"),

@@ -5,13 +5,13 @@ import WebKit
 /// The pure rules that keep internal pages (`detour://history/`) out of reach
 /// of web content: URL classification, the navigation policy, the scheme
 /// handler's main-document check and the bridge's sender verification.
-final class InternalPageTests: XCTestCase {
+nonisolated final class InternalPageTests: XCTestCase {
     private let history = URL(string: "detour://history/")!
     private let web = URL(string: "https://example.com/")!
 
     // MARK: - URL classification
 
-    func testPageFromURL() {
+    @MainActor func testPageFromURL() {
         XCTAssertEqual(InternalPage(url: history), .history)
         XCTAssertEqual(InternalPage(url: URL(string: "detour://history/page.css")!), .history)
         XCTAssertEqual(InternalPage(url: URL(string: "detour://history/?q=swift")!), .history)
@@ -19,13 +19,13 @@ final class InternalPageTests: XCTestCase {
         XCTAssertEqual(InternalPage.history.url, history)
     }
 
-    func testUnknownHostIsInternalButNoPage() {
+    @MainActor func testUnknownHostIsInternalButNoPage() {
         let unknown = URL(string: "detour://settings/")!
         XCTAssertTrue(InternalPage.isInternal(unknown))
         XCTAssertNil(InternalPage(url: unknown))
     }
 
-    func testOtherSchemesAreNotInternal() {
+    @MainActor func testOtherSchemesAreNotInternal() {
         XCTAssertFalse(InternalPage.isInternal(web))
         XCTAssertFalse(InternalPage.isInternal(URL(string: "detour-favicon://history/")!))
         XCTAssertFalse(InternalPage.isInternal(URL(string: "https://history/")!))
@@ -35,29 +35,29 @@ final class InternalPageTests: XCTestCase {
 
     // MARK: - Navigation policy
 
-    private func decision(_ url: URL?, mainFrame: Bool = true, type: WKNavigationType = .other,
+    @MainActor private func decision(_ url: URL?, mainFrame: Bool = true, type: WKNavigationType = .other,
                           armed: InternalPage? = nil, entries: Set<URL> = []) -> InternalPageNavigationPolicy.Decision {
         InternalPageNavigationPolicy.decision(for: url, targetsMainFrame: mainFrame, navigationType: type,
                                               armedPage: armed, sessionEntryURLs: entries)
     }
 
-    private func allows(_ url: URL?, mainFrame: Bool = true, type: WKNavigationType = .other,
+    @MainActor private func allows(_ url: URL?, mainFrame: Bool = true, type: WKNavigationType = .other,
                         armed: InternalPage? = nil, entries: Set<URL> = []) -> Bool {
         decision(url, mainFrame: mainFrame, type: type, armed: armed, entries: entries).allows
     }
 
-    func testPolicyIgnoresOtherSchemes() {
+    @MainActor func testPolicyIgnoresOtherSchemes() {
         XCTAssertTrue(allows(web))
         XCTAssertTrue(allows(web, mainFrame: false, type: .linkActivated))
         XCTAssertTrue(allows(nil))
     }
 
-    func testArmedTabMayLoadItsPage() {
+    @MainActor func testArmedTabMayLoadItsPage() {
         XCTAssertTrue(allows(history, armed: .history))
         XCTAssertTrue(allows(URL(string: "detour://history/?q=x")!, armed: .history))
     }
 
-    func testUnarmedNavigationIsRefused() {
+    @MainActor func testUnarmedNavigationIsRefused() {
         // A link, a script navigation, a form, an extension's tabs.update: all
         // arrive without the tab having been armed.
         for type in [WKNavigationType.linkActivated, .other, .formSubmitted, .formResubmitted] {
@@ -65,14 +65,14 @@ final class InternalPageTests: XCTestCase {
         }
     }
 
-    func testSubframeAndNewWindowAreRefusedEvenWhenArmed() {
+    @MainActor func testSubframeAndNewWindowAreRefusedEvenWhenArmed() {
         // `mainFrame: false` covers both an <iframe> and a nil target frame.
         XCTAssertFalse(allows(history, mainFrame: false, armed: .history))
         XCTAssertFalse(allows(history, mainFrame: false, type: .backForward, entries: [history]))
         XCTAssertFalse(allows(history, mainFrame: false, type: .reload, entries: [history]))
     }
 
-    func testBackForwardAndReloadRevisitASessionEntryWithoutArming() {
+    @MainActor func testBackForwardAndReloadRevisitASessionEntryWithoutArming() {
         // Session restore arrives as .backForward in a fresh, unarmed web view
         // whose list is already in place.
         XCTAssertEqual(decision(history, type: .backForward, entries: [web, history]), .allowedAsRevisit)
@@ -81,7 +81,7 @@ final class InternalPageTests: XCTestCase {
         XCTAssertTrue(allows(search, type: .reload, entries: [search]), "replaceState rewrites the entry")
     }
 
-    func testARedirectDuringBackForwardIsRefused() {
+    @MainActor func testARedirectDuringBackForwardIsRefused() {
         // Going back to a web page that answers 302 detour://history/?q=… keeps
         // the .backForward type, but its URL is no entry of the list.
         let forged = URL(string: "detour://history/?q=attacker")!
@@ -90,14 +90,14 @@ final class InternalPageTests: XCTestCase {
         XCTAssertFalse(allows(history, type: .reload))
     }
 
-    func testOnlyAnArmingAllowIsSpent() {
+    @MainActor func testOnlyAnArmingAllowIsSpent() {
         XCTAssertEqual(decision(history, armed: .history), .allowedByArming)
         XCTAssertEqual(decision(history, type: .backForward, entries: [history]), .allowedAsRevisit)
         XCTAssertEqual(decision(web, armed: .history), .notInternal)
         XCTAssertEqual(decision(history), .refused)
     }
 
-    func testUnknownInternalHostIsAlwaysRefused() {
+    @MainActor func testUnknownInternalHostIsAlwaysRefused() {
         let unknown = URL(string: "detour://settings/")!
         XCTAssertFalse(allows(unknown, armed: .history))
         XCTAssertFalse(allows(unknown, type: .backForward, entries: [unknown]))
@@ -105,13 +105,13 @@ final class InternalPageTests: XCTestCase {
 
     // MARK: - Scheme handler
 
-    private func request(_ url: String, mainDocument: String?) -> URLRequest {
+    @MainActor private func request(_ url: String, mainDocument: String?) -> URLRequest {
         var request = URLRequest(url: URL(string: url)!)
         request.mainDocumentURL = mainDocument.flatMap(URL.init(string:))
         return request
     }
 
-    func testSchemeHandlerServesOnlyInternalMainDocuments() {
+    @MainActor func testSchemeHandlerServesOnlyInternalMainDocuments() {
         XCTAssertEqual(InternalPageSchemeHandler.page(serving: request("detour://history/", mainDocument: "detour://history/")), .history)
         XCTAssertEqual(InternalPageSchemeHandler.page(serving: request("detour://history/page.css", mainDocument: "detour://history/?q=x")), .history)
         // Embedded in, or fetched by, a web page.
@@ -121,7 +121,7 @@ final class InternalPageTests: XCTestCase {
         XCTAssertNil(InternalPageSchemeHandler.page(serving: request("detour://settings/", mainDocument: "detour://settings/")))
     }
 
-    func testContentSecurityPolicyAllowsNoScript() {
+    @MainActor func testContentSecurityPolicyAllowsNoScript() {
         let csp = InternalPageSchemeHandler.contentSecurityPolicy
         XCTAssertTrue(csp.contains("default-src 'none'"))
         XCTAssertFalse(csp.contains("script-src"))
@@ -131,18 +131,18 @@ final class InternalPageTests: XCTestCase {
 
     // MARK: - Bridge sender verification
 
-    private func authorized(mainFrame: Bool = true, proto: String = "detour", host: String = "history",
+    @MainActor private func authorized(mainFrame: Bool = true, proto: String = "detour", host: String = "history",
                             frame: URL? = URL(string: "detour://history/"),
                             webView: URL? = URL(string: "detour://history/")) -> InternalPage? {
         InternalPageBridge.authorizedPage(isMainFrame: mainFrame, originProtocol: proto, originHost: host,
                                           frameURL: frame, webViewURL: webView)
     }
 
-    func testBridgeAcceptsTheInternalMainFrame() {
+    @MainActor func testBridgeAcceptsTheInternalMainFrame() {
         XCTAssertEqual(authorized(), .history)
     }
 
-    func testBridgeRejectsEveryOtherSender() {
+    @MainActor func testBridgeRejectsEveryOtherSender() {
         XCTAssertNil(authorized(mainFrame: false), "subframe")
         XCTAssertNil(authorized(proto: "https", host: "example.com", frame: web, webView: web), "web page")
         XCTAssertNil(authorized(proto: "https", host: "history"), "web origin named like the page")
@@ -157,7 +157,7 @@ final class InternalPageTests: XCTestCase {
 
     // MARK: - Installation
 
-    func testInstallIsIdempotent() {
+    @MainActor func testInstallIsIdempotent() {
         let configuration = WKWebViewConfiguration()
         InternalPageBridge.install(on: configuration)
         let count = configuration.userContentController.userScripts.count
@@ -167,7 +167,7 @@ final class InternalPageTests: XCTestCase {
         XCTAssertEqual(count, InternalPage.allCases.count)
     }
 
-    func testUserScriptIsInertOffItsPage() {
+    @MainActor func testUserScriptIsInertOffItsPage() {
         let source = InternalPageBridge.userScriptSource(for: .history)
         XCTAssertTrue(source.contains("location.protocol !== 'detour:'"))
         XCTAssertTrue(source.contains("location.host !== 'history'"))

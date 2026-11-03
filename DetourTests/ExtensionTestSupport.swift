@@ -1,5 +1,6 @@
 import XCTest
 import Network
+import Synchronization
 import WebKit
 @testable import Detour
 
@@ -462,19 +463,29 @@ func extensionPageURL(_ path: String, on base: URL) throws -> URL {
     try XCTUnwrap(URL(string: path, relativeTo: base)?.absoluteURL)
 }
 
+// MARK: - Bridge reply
+
+/// A bridge reply handed from a reply handler to the test awaiting it.
+/// `@unchecked`: the value is a JSON-like object graph handed over once, on
+/// the main actor, and never shared afterwards.
+struct BridgeReply: @unchecked Sendable {
+    let result: Any?
+    let error: String?
+}
+
 // MARK: - One-shot flag
 
 /// One-shot flag guarding a continuation that several callbacks can reach.
-final class LockedFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var used = false
+/// Nonisolated: the callbacks run on the servers' own dispatch queues.
+nonisolated final class LockedFlag: Sendable {
+    private let used = Mutex(false)
 
     func claim() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if used { return false }
-        used = true
-        return true
+        used.withLock { used in
+            if used { return false }
+            used = true
+            return true
+        }
     }
 }
 
@@ -485,7 +496,8 @@ final class LockedFlag: @unchecked Sendable {
 /// binary frame is echoed back unchanged and a close from the peer is answered
 /// with a close, so a relayed socket can be driven end to end against a real
 /// server (TASK-8, `WebSocketRelaySessionTests`).
-final class LoopbackWebSocketServer: @unchecked Sendable {
+/// Nonisolated: it runs on its own dispatch queue, its state behind its lock.
+nonisolated final class LoopbackWebSocketServer: @unchecked Sendable {
 
     private let listener: NWListener
     private let queue = DispatchQueue(label: "detour-test-loopback-ws")
@@ -657,7 +669,8 @@ final class LoopbackWebSocketServer: @unchecked Sendable {
 /// sends, so the socket that opens is `LoopbackWebSocketServer`'s job and this
 /// one's is only to show what was asked for. The client sees the connection
 /// fail, which the relay reports as an error and a 1006 close.
-final class LoopbackHandshakeCaptureServer: @unchecked Sendable {
+/// Nonisolated: it runs on its own dispatch queue, its state behind its lock.
+nonisolated final class LoopbackHandshakeCaptureServer: @unchecked Sendable {
 
     private let listener: NWListener
     private let queue = DispatchQueue(label: "detour-test-ws-handshake")
@@ -869,7 +882,8 @@ func pageEval(_ js: String, in page: WKWebView) async throws -> [String: Any] {
 ///
 /// Every request's path is recorded in `requestedPaths` (a 404 counts too), so
 /// a page can also use the server as a beacon target to say "I loaded".
-final class LoopbackHTTPServer: @unchecked Sendable {
+/// Nonisolated: it runs on its own dispatch queue, its state behind its lock.
+nonisolated final class LoopbackHTTPServer: @unchecked Sendable {
 
     private let listener: NWListener
     private let queue = DispatchQueue(label: "detour-test-loopback-http")

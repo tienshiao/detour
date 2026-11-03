@@ -14,18 +14,17 @@ import WebKit
 ///
 /// The pages are served by loopback servers and the calls are made in a real
 /// `BrowserWindowController`, so the delegate that answers is the window's.
-@MainActor
-final class PageOpenedWindowTests: XCTestCase {
+nonisolated final class PageOpenedWindowTests: XCTestCase {
 
     private var controllers: [BrowserWindowController] = []
     private var createdSpaceIDs: [UUID] = []
     private var servers: [LoopbackHTTPServer] = []
     private var previousLastActiveSpaceID: UUID?
     private var previousExtensionLastActiveSpaceID: UUID?
-    private var defaultFaviconFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         previousLastActiveSpaceID = TabStore.shared.lastActiveSpaceID
         previousExtensionLastActiveSpaceID = ExtensionManager.shared.lastActiveSpaceID
         defaultFaviconFetch = FaviconLoader.shared.fetch
@@ -33,7 +32,7 @@ final class PageOpenedWindowTests: XCTestCase {
         FaviconLoader.shared.fetch = { _, completion in completion(nil) }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for controller in controllers { controller.window?.close() }
         controllers.removeAll()
         for id in createdSpaceIDs { TabStore.shared.deleteSpace(id: id) }
@@ -44,7 +43,7 @@ final class PageOpenedWindowTests: XCTestCase {
         ExtensionManager.shared.lastActiveSpaceID = previousExtensionLastActiveSpaceID
         FaviconLoader.shared.fetch = defaultFaviconFetch
         FaviconLoader.shared.resetForTesting()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixture
@@ -73,14 +72,14 @@ final class PageOpenedWindowTests: XCTestCase {
                                  "/second": "<html><head><title>Second</title></head><body>second</body></html>"]
 
     /// A server for the fixture pages. Two of them are two origins.
-    private func makeServer() async throws -> (server: LoopbackHTTPServer, base: String) {
+    @MainActor private func makeServer() async throws -> (server: LoopbackHTTPServer, base: String) {
         let server = try LoopbackHTTPServer(routes: Self.routes)
         servers.append(server)
         let port = try await server.start()
         return (server, "http://127.0.0.1:\(port)")
     }
 
-    private func makeSpace(_ name: String = "Opened windows") throws -> Space {
+    @MainActor private func makeSpace(_ name: String = "Opened windows") throws -> Space {
         let store = TabStore.shared
         let profile = try XCTUnwrap(store.profiles.first { !$0.isIncognito })
         let space = store.addSpace(name: name, emoji: "W", colorHex: "007AFF", profileID: profile.id)
@@ -88,7 +87,7 @@ final class PageOpenedWindowTests: XCTestCase {
         return space
     }
 
-    private func makeWindow(on space: Space) -> BrowserWindowController {
+    @MainActor private func makeWindow(on space: Space) -> BrowserWindowController {
         let wc = BrowserWindowController(incognito: false)
         controllers.append(wc)
         // Never let this window's split view touch the autosaved sidebar
@@ -100,7 +99,7 @@ final class PageOpenedWindowTests: XCTestCase {
     }
 
     /// A selected tab showing the opener page.
-    private func openOpener(in space: Space, window wc: BrowserWindowController, base: String) async throws -> BrowserTab {
+    @MainActor private func openOpener(in space: Space, window wc: BrowserWindowController, base: String) async throws -> BrowserTab {
         let tab = TabStore.shared.addTab(in: space, url: URL(string: base + "/opener")!)
         wc.selectTab(id: tab.id)
         try await waitUntil("the opener page to load") { tab.webView?.title == "Opener" && tab.isLoading == false }
@@ -110,16 +109,16 @@ final class PageOpenedWindowTests: XCTestCase {
     /// Runs `script` in the tab's page. `evaluateJavaScript` counts as a user
     /// gesture, so the page is allowed to open a window.
     @discardableResult
-    private func run(_ script: String, in tab: BrowserTab) async throws -> Any? {
+    @MainActor private func run(_ script: String, in tab: BrowserTab) async throws -> Any? {
         try await XCTUnwrap(tab.webView).evaluateJavaScript(script)
     }
 
-    private func requests(for path: String, on server: LoopbackHTTPServer) -> Int {
+    @MainActor private func requests(for path: String, on server: LoopbackHTTPServer) -> Int {
         server.requestedPaths.filter { $0 == path }.count
     }
 
     /// The one tab `body` adds to `space`.
-    private func tabOpened(in space: Space, by body: () async throws -> Void,
+    @MainActor private func tabOpened(in space: Space, by body: () async throws -> Void,
                            file: StaticString = #filePath, line: UInt = #line) async throws -> BrowserTab {
         let before = Set(space.tabs.map(\.id))
         try await body()
@@ -133,7 +132,7 @@ final class PageOpenedWindowTests: XCTestCase {
 
     /// xterm.js's link handler: open a blank window, drop its opener, then
     /// navigate it. With no window handed back the second half never ran.
-    func testABlankWindowThePageThenNavigatesLoadsTheURLInOneNewTab() async throws {
+    @MainActor func testABlankWindowThePageThenNavigatesLoadsTheURLInOneNewTab() async throws {
         let (server, base) = try await makeServer()
         let space = try makeSpace()
         let wc = makeWindow(on: space)
@@ -159,7 +158,7 @@ final class PageOpenedWindowTests: XCTestCase {
         XCTAssertEqual(requests(for: "/target", on: server), 1)
     }
 
-    func testWindowOpenWithAURLReturnsAWindowAndLoadsItOnce() async throws {
+    @MainActor func testWindowOpenWithAURLReturnsAWindowAndLoadsItOnce() async throws {
         let (server, base) = try await makeServer()
         let space = try makeSpace()
         let wc = makeWindow(on: space)
@@ -181,7 +180,7 @@ final class PageOpenedWindowTests: XCTestCase {
     /// The new tab is an ordinary tab of the opener's space: placed after its
     /// opener, on the opener's data store, with a web view and a user content
     /// controller of its own, and known to the store's web view lookups.
-    func testTheOpenedTabIsAnOrdinaryTabNextToItsOpener() async throws {
+    @MainActor func testTheOpenedTabIsAnOrdinaryTabNextToItsOpener() async throws {
         let (_, base) = try await makeServer()
         let space = try makeSpace()
         let wc = makeWindow(on: space)
@@ -208,7 +207,7 @@ final class PageOpenedWindowTests: XCTestCase {
 
     /// The page asked for no opener link: it gets null either way, and the
     /// tab still opens and loads.
-    func testANoopenerWindowStillOpensATabThatLoads() async throws {
+    @MainActor func testANoopenerWindowStillOpensATabThatLoads() async throws {
         let (server, base) = try await makeServer()
         let space = try makeSpace()
         let wc = makeWindow(on: space)
@@ -225,7 +224,7 @@ final class PageOpenedWindowTests: XCTestCase {
         XCTAssertEqual(requests(for: "/popup", on: server), 1)
     }
 
-    func testABlankTargetLinkOpensATabThatLoadsOnce() async throws {
+    @MainActor func testABlankTargetLinkOpensATabThatLoadsOnce() async throws {
         let (server, base) = try await makeServer()
         let space = try makeSpace()
         let wc = makeWindow(on: space)
@@ -243,7 +242,7 @@ final class PageOpenedWindowTests: XCTestCase {
 
     /// The link in the report points at a dev server; when that is not running
     /// the new tab must say so, with the URL, like any other failed load.
-    func testAnOpenedWindowWhoseLoadFailsShowsTheErrorPageForItsURL() async throws {
+    @MainActor func testAnOpenedWindowWhoseLoadFailsShowsTheErrorPageForItsURL() async throws {
         let (_, base) = try await makeServer()
         let space = try makeSpace()
         let wc = makeWindow(on: space)
@@ -265,7 +264,7 @@ final class PageOpenedWindowTests: XCTestCase {
     /// A window opened by a tab of a space this window is no longer showing
     /// belongs to that tab's space (and its profile's data), not to whichever
     /// space is on screen, and does not take the selection.
-    func testAWindowOpenedByATabOfAnotherSpaceOpensInThatSpace() async throws {
+    @MainActor func testAWindowOpenedByATabOfAnotherSpaceOpensInThatSpace() async throws {
         let (_, base) = try await makeServer()
         let background = try makeSpace("Background")
         let foreground = try makeSpace("Foreground")
@@ -287,7 +286,7 @@ final class PageOpenedWindowTests: XCTestCase {
 
     /// The sign-in popup's way back: a message to `window.opener`, here from
     /// another origin.
-    func testAnOpenedWindowCanMessageItsOpenerAcrossOrigins() async throws {
+    @MainActor func testAnOpenedWindowCanMessageItsOpenerAcrossOrigins() async throws {
         let (_, base) = try await makeServer()
         let (_, otherBase) = try await makeServer()
         let space = try makeSpace()
@@ -310,7 +309,7 @@ final class PageOpenedWindowTests: XCTestCase {
 
     /// The popup closes itself when it is done; the tab goes away and the
     /// page that opened it is on screen again.
-    func testAnOpenedWindowThatClosesItselfClosesItsTabAndReturnsToItsOpener() async throws {
+    @MainActor func testAnOpenedWindowThatClosesItselfClosesItsTabAndReturnsToItsOpener() async throws {
         let (_, base) = try await makeServer()
         let space = try makeSpace()
         let wc = makeWindow(on: space)
@@ -338,7 +337,7 @@ final class PageOpenedWindowTests: XCTestCase {
     /// The opener can close the window it opened, and a tab the user closes
     /// reads as closed to the page that opened it — a page waiting on a popup
     /// polls for exactly that.
-    func testTheOpenerSeesItsWindowClosedHoweverItWasClosed() async throws {
+    @MainActor func testTheOpenerSeesItsWindowClosedHoweverItWasClosed() async throws {
         let (_, base) = try await makeServer()
         let space = try makeSpace()
         let wc = makeWindow(on: space)
@@ -362,7 +361,7 @@ final class PageOpenedWindowTests: XCTestCase {
 
     /// WebKit's rule for which windows a script may close is kept: a tab the
     /// user opened and has navigated in is not closed by its page.
-    func testAPageCannotCloseATabTheUserOpenedAndNavigated() async throws {
+    @MainActor func testAPageCannotCloseATabTheUserOpenedAndNavigated() async throws {
         let (_, base) = try await makeServer()
         let space = try makeSpace()
         let wc = makeWindow(on: space)
@@ -383,8 +382,7 @@ final class PageOpenedWindowTests: XCTestCase {
 /// the extension's hosts, the web view counted as one of the extension's own
 /// pages), and a web page must not load in that. It stays a tab of the space's
 /// own that the browser loads, with no window handed to the extension page.
-@MainActor
-final class ExtensionPageOpenedWindowTests: XCTestCase {
+nonisolated final class ExtensionPageOpenedWindowTests: XCTestCase {
 
     private var controllers: [BrowserWindowController] = []
     private var servers: [LoopbackHTTPServer] = []
@@ -395,13 +393,13 @@ final class ExtensionPageOpenedWindowTests: XCTestCase {
     private var previousLastActiveSpaceID: UUID?
     private var previousExtensionLastActiveSpaceID: UUID?
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         previousLastActiveSpaceID = TabStore.shared.lastActiveSpaceID
         previousExtensionLastActiveSpaceID = ExtensionManager.shared.lastActiveSpaceID
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for controller in controllers { controller.window?.close() }
         controllers.removeAll()
         for server in servers { server.stop() }
@@ -426,10 +424,10 @@ final class ExtensionPageOpenedWindowTests: XCTestCase {
         tempDirs.removeAll()
         TabStore.shared.lastActiveSpaceID = previousLastActiveSpaceID
         ExtensionManager.shared.lastActiveSpaceID = previousExtensionLastActiveSpaceID
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    func testAWindowAnExtensionPageOpensIsNotBuiltFromTheExtensionsConfiguration() async throws {
+    @MainActor func testAWindowAnExtensionPageOpensIsNotBuiltFromTheExtensionsConfiguration() async throws {
         let server = try LoopbackHTTPServer(routes: [
             "/target": "<html><head><title>Target</title></head><body>target</body></html>",
         ])

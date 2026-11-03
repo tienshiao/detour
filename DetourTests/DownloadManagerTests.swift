@@ -7,14 +7,14 @@ import GRDB
 /// debounce. A download is stood in for by a manual item (`addManualItem`) that
 /// is ended through `downloadDidEnd`, the method the `WKDownloadDelegate`
 /// callbacks call.
-final class DownloadManagerTests: XCTestCase {
+nonisolated final class DownloadManagerTests: XCTestCase {
 
     /// Whole seconds: the `download` table stores dates to the millisecond.
     private static let t0 = Date(timeIntervalSince1970: 1_800_000_000)
 
     /// Stands in for the main-queue debounce: holds the scheduled saves until
     /// the test fires them.
-    private final class ManualScheduler {
+    @MainActor private final class ManualScheduler {
         private var nextID = 0
         private(set) var pending: [(id: Int, delay: TimeInterval, work: () -> Void)] = []
 
@@ -34,12 +34,12 @@ final class DownloadManagerTests: XCTestCase {
         }
     }
 
-    private final class Clock {
+    @MainActor private final class Clock {
         var now: Date
         init(_ now: Date) { self.now = now }
     }
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let database: AppDatabase
         let clock: Clock
         let scheduler: ManualScheduler
@@ -61,7 +61,7 @@ final class DownloadManagerTests: XCTestCase {
         }
     }
 
-    private func makeFixture() throws -> Fixture {
+    @MainActor private func makeFixture() throws -> Fixture {
         let database = try AppDatabase(dbQueue: try DatabaseQueue())
         let clock = Clock(Self.t0)
         let scheduler = ManualScheduler()
@@ -69,7 +69,7 @@ final class DownloadManagerTests: XCTestCase {
         return Fixture(database: database, clock: clock, scheduler: scheduler, manager: manager)
     }
 
-    private func addItem(_ f: Fixture, _ name: String = "file.zip", scope: DownloadScope = .normal) -> DownloadItem {
+    @MainActor private func addItem(_ f: Fixture, _ name: String = "file.zip", scope: DownloadScope = .normal) -> DownloadItem {
         let item = f.manager.addManualItem(filename: name, sourceURL: URL(string: "https://example.com/\(name)"),
                                            scope: scope)
         item.destinationURL = URL(fileURLWithPath: "/tmp/\(name)")
@@ -77,7 +77,7 @@ final class DownloadManagerTests: XCTestCase {
     }
 
     /// Records what the manager tells its observers (a window's badge, a popover).
-    private final class ObserverSpy: DownloadManagerObserver {
+    @MainActor private final class ObserverSpy: DownloadManagerObserver {
         private(set) var added: [UUID] = []
         private(set) var updated: [UUID] = []
         private(set) var removed: [UUID] = []
@@ -89,7 +89,7 @@ final class DownloadManagerTests: XCTestCase {
 
     // MARK: - completedAt (TASK-143)
 
-    func testCompletedAtIsTheTimeTheDownloadCompleted() throws {
+    @MainActor func testCompletedAtIsTheTimeTheDownloadCompleted() throws {
         let f = try makeFixture()
         let item = addItem(f)
 
@@ -104,7 +104,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(f.record(for: item)?.completedAt, Self.t0.addingTimeInterval(30))
     }
 
-    func testLaterSavesLeaveCompletedAtUnchanged() throws {
+    @MainActor func testLaterSavesLeaveCompletedAtUnchanged() throws {
         let f = try makeFixture()
         let first = addItem(f, "first.zip")
         f.manager.downloadDidEnd(first)
@@ -121,7 +121,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(f.record(for: second)?.completedAt, Self.t0.addingTimeInterval(3600))
     }
 
-    func testMarkCompletedTwiceKeepsTheFirstTime() {
+    @MainActor func testMarkCompletedTwiceKeepsTheFirstTime() {
         let item = DownloadItem(filename: "file.zip", sourceURL: nil, createdAt: Self.t0)
         item.markCompleted(at: Self.t0.addingTimeInterval(5))
         item.markCompleted(at: Self.t0.addingTimeInterval(50))
@@ -129,7 +129,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(item.completedAt, Self.t0.addingTimeInterval(5))
     }
 
-    func testFailedAndCancelledDownloadsHaveNoCompletedAt() throws {
+    @MainActor func testFailedAndCancelledDownloadsHaveNoCompletedAt() throws {
         let f = try makeFixture()
         let failed = addItem(f, "failed.zip")
         let cancelled = addItem(f, "cancelled.zip")
@@ -147,7 +147,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertNil(f.record(for: cancelled)?.completedAt)
     }
 
-    func testCompletedAtSurvivesARelaunchAndTheNextSave() throws {
+    @MainActor func testCompletedAtSurvivesARelaunchAndTheNextSave() throws {
         let f = try makeFixture()
         let item = addItem(f)
         f.manager.downloadDidEnd(item)
@@ -167,7 +167,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(later.record(for: item)?.completedAt, Self.t0)
     }
 
-    func testARecordThatIsNotCompletedLoadsWithoutACompletionTime() throws {
+    @MainActor func testARecordThatIsNotCompletedLoadsWithoutACompletionTime() throws {
         let record = DownloadRecord(id: UUID().uuidString, filename: "a.zip", sourceURL: nil,
                                     destinationURL: "/tmp/a.zip", totalBytes: 10, bytesWritten: 4,
                                     state: "downloading", createdAt: Self.t0,
@@ -180,7 +180,7 @@ final class DownloadManagerTests: XCTestCase {
 
     // MARK: - Debounce and the termination flush (TASK-143)
 
-    func testAStateChangeIsNotWrittenUntilTheDebounceFires() throws {
+    @MainActor func testAStateChangeIsNotWrittenUntilTheDebounceFires() throws {
         let f = try makeFixture()
         let item = addItem(f)
 
@@ -193,7 +193,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(f.records.map(\.id), [item.id.uuidString])
     }
 
-    func testABurstOfChangesSchedulesOneSave() throws {
+    @MainActor func testABurstOfChangesSchedulesOneSave() throws {
         let f = try makeFixture()
         let a = addItem(f, "a.zip")
         let b = addItem(f, "b.zip")
@@ -206,7 +206,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(Set(f.records.map(\.id)), [a.id.uuidString, b.id.uuidString])
     }
 
-    func testFlushWritesAChangeStillInTheDebounceWindow() throws {
+    @MainActor func testFlushWritesAChangeStillInTheDebounceWindow() throws {
         let f = try makeFixture()
         let item = addItem(f)
         f.manager.downloadDidEnd(item)
@@ -225,7 +225,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(later.manager.items.map(\.state), [.completed])
     }
 
-    func testFlushWritesACancelStillInTheDebounceWindow() throws {
+    @MainActor func testFlushWritesACancelStillInTheDebounceWindow() throws {
         let f = try makeFixture()
         let item = addItem(f)
 
@@ -235,7 +235,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(f.record(for: item)?.state, "cancelled")
     }
 
-    func testFlushWithNothingPendingWritesNothing() throws {
+    @MainActor func testFlushWithNothingPendingWritesNothing() throws {
         let f = try makeFixture()
         let item = addItem(f)
         f.manager.downloadDidEnd(item)
@@ -249,7 +249,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertTrue(f.records.isEmpty)
     }
 
-    func testADownloadStillInFlightIsNeverWritten() throws {
+    @MainActor func testADownloadStillInFlightIsNeverWritten() throws {
         let f = try makeFixture()
         let inFlight = addItem(f, "big.iso")
         let done = addItem(f, "small.zip")
@@ -266,12 +266,12 @@ final class DownloadManagerTests: XCTestCase {
     private static let windowA = DownloadScope.incognito(spaceID: UUID())
     private static let windowB = DownloadScope.incognito(spaceID: UUID())
 
-    func testOnlyANormalWindowsDownloadsArePersisted() {
+    @MainActor func testOnlyANormalWindowsDownloadsArePersisted() {
         XCTAssertTrue(DownloadScope.normal.isPersisted)
         XCTAssertFalse(Self.windowA.isPersisted)
     }
 
-    func testAWindowListsOnlyTheDownloadsOfItsOwnScope() {
+    @MainActor func testAWindowListsOnlyTheDownloadsOfItsOwnScope() {
         // A normal window's download: every normal window, no Private window.
         XCTAssertTrue(DownloadScope.normal.isListed(inWindowWith: .normal))
         XCTAssertFalse(DownloadScope.normal.isListed(inWindowWith: Self.windowA))
@@ -281,7 +281,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertFalse(Self.windowA.isListed(inWindowWith: Self.windowB))
     }
 
-    func testAPrivateDownloadIsOrphanedOnceItsSpaceIsGone() {
+    @MainActor func testAPrivateDownloadIsOrphanedOnceItsSpaceIsGone() {
         guard case .incognito(let spaceA) = Self.windowA, case .incognito(let spaceB) = Self.windowB else {
             return XCTFail("fixture scopes are incognito")
         }
@@ -293,7 +293,7 @@ final class DownloadManagerTests: XCTestCase {
 
     // MARK: - Private windows: nothing is saved (TASK-148)
 
-    func testAPrivateDownloadLeavesNoRowInTheTable() throws {
+    @MainActor func testAPrivateDownloadLeavesNoRowInTheTable() throws {
         let f = try makeFixture()
         let completed = addItem(f, "completed.zip", scope: Self.windowA)
         let failed = addItem(f, "failed.zip", scope: Self.windowA)
@@ -310,7 +310,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertTrue(f.records.isEmpty)
     }
 
-    func testANormalDownloadIsStillSavedNextToAPrivateOne() throws {
+    @MainActor func testANormalDownloadIsStillSavedNextToAPrivateOne() throws {
         let f = try makeFixture()
         let normal = addItem(f, "normal.zip")
         let secret = addItem(f, "private.zip", scope: Self.windowA)
@@ -323,7 +323,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(f.record(for: normal)?.state, "completed")
     }
 
-    func testTheTerminationFlushDoesNotWriteAPrivateDownload() throws {
+    @MainActor func testTheTerminationFlushDoesNotWriteAPrivateDownload() throws {
         let f = try makeFixture()
         let normal = addItem(f, "normal.zip")
         let secret = addItem(f, "private.zip", scope: Self.windowA)
@@ -335,7 +335,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(f.records.map(\.id), [normal.id.uuidString])
     }
 
-    func testAPrivateDownloadIsNotListedAfterARelaunch() throws {
+    @MainActor func testAPrivateDownloadIsNotListedAfterARelaunch() throws {
         let f = try makeFixture()
         let secret = addItem(f, "private.zip", scope: Self.windowA)
         f.manager.downloadDidEnd(secret)
@@ -347,7 +347,7 @@ final class DownloadManagerTests: XCTestCase {
 
     // MARK: - Private windows: listed in their own window only (TASK-148)
 
-    func testEachWindowListsItsOwnDownloads() throws {
+    @MainActor func testEachWindowListsItsOwnDownloads() throws {
         let f = try makeFixture()
         let normal = addItem(f, "normal.zip")
         let inA = addItem(f, "a.zip", scope: Self.windowA)
@@ -358,7 +358,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(f.manager.items(in: Self.windowB).map(\.id), [inB.id])
     }
 
-    func testNormalWindowsShareOneListNewestFirst() throws {
+    @MainActor func testNormalWindowsShareOneListNewestFirst() throws {
         let f = try makeFixture()
         let first = addItem(f, "first.zip")
         _ = addItem(f, "private.zip", scope: Self.windowA)
@@ -367,7 +367,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(f.manager.items(in: .normal).map(\.id), [second.id, first.id])
     }
 
-    func testOnlyTheOwningWindowsBadgeShowsAPrivateDownloadInFlight() throws {
+    @MainActor func testOnlyTheOwningWindowsBadgeShowsAPrivateDownloadInFlight() throws {
         let f = try makeFixture()
         let secret = addItem(f, "private.iso", scope: Self.windowA)
 
@@ -379,7 +379,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertFalse(f.manager.hasActiveDownloads(in: Self.windowA))
     }
 
-    func testANormalDownloadInFlightDoesNotBadgeAPrivateWindow() throws {
+    @MainActor func testANormalDownloadInFlightDoesNotBadgeAPrivateWindow() throws {
         let f = try makeFixture()
         _ = addItem(f, "normal.iso")
 
@@ -387,7 +387,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertFalse(f.manager.hasActiveDownloads(in: Self.windowA))
     }
 
-    func testClearInANormalWindowLeavesPrivateDownloadsListed() throws {
+    @MainActor func testClearInANormalWindowLeavesPrivateDownloadsListed() throws {
         let f = try makeFixture()
         let normal = addItem(f, "normal.zip")
         let secret = addItem(f, "private.zip", scope: Self.windowA)
@@ -402,7 +402,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertTrue(f.records.isEmpty)
     }
 
-    func testClearInAPrivateWindowLeavesNormalDownloadsAndTheirRows() throws {
+    @MainActor func testClearInAPrivateWindowLeavesNormalDownloadsAndTheirRows() throws {
         let f = try makeFixture()
         let normal = addItem(f, "normal.zip")
         let secret = addItem(f, "private.zip", scope: Self.windowA)
@@ -422,13 +422,13 @@ final class DownloadManagerTests: XCTestCase {
 
     /// A real `TabStore` on an in-memory database, followed by the manager as
     /// `DownloadManager.shared` follows `TabStore.shared`.
-    private func makeStore(observedBy f: Fixture) throws -> TabStore {
+    @MainActor private func makeStore(observedBy f: Fixture) throws -> TabStore {
         let store = TabStore(appDB: f.database)
         f.manager.observeIncognitoSpaces(of: store)
         return store
     }
 
-    func testClosingThePrivateWindowDropsItsDownloadsFromTheList() throws {
+    @MainActor func testClosingThePrivateWindowDropsItsDownloadsFromTheList() throws {
         let f = try makeFixture()
         let store = try makeStore(observedBy: f)
         let space = store.addIncognitoSpace()
@@ -447,7 +447,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(spy.removed, [secret.id])
     }
 
-    func testAnotherPrivateWindowKeepsItsDownloads() throws {
+    @MainActor func testAnotherPrivateWindowKeepsItsDownloads() throws {
         let f = try makeFixture()
         let store = try makeStore(observedBy: f)
         let closing = store.addIncognitoSpace()
@@ -463,7 +463,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(f.manager.items(in: .incognito(spaceID: staying.id)).map(\.id), [kept.id])
     }
 
-    func testOtherSpaceChangesLeaveAPrivateDownloadListed() throws {
+    @MainActor func testOtherSpaceChangesLeaveAPrivateDownloadListed() throws {
         let f = try makeFixture()
         let store = try makeStore(observedBy: f)
         let space = store.addIncognitoSpace()
@@ -476,7 +476,7 @@ final class DownloadManagerTests: XCTestCase {
     }
 
     /// TASK-156: nothing keeps running where no window can see or stop it.
-    func testAPrivateDownloadStillInFlightIsCancelledWhenItsWindowCloses() throws {
+    @MainActor func testAPrivateDownloadStillInFlightIsCancelledWhenItsWindowCloses() throws {
         let f = try makeFixture()
         let store = try makeStore(observedBy: f)
         let space = store.addIncognitoSpace()
@@ -500,7 +500,7 @@ final class DownloadManagerTests: XCTestCase {
 
     /// A manual item's fetch is cancelled with it: the CRX fetch of a Private
     /// window that closed must not go on to an install prompt.
-    func testAPrivateWindowsCRXFetchIsCancelledWhenItsWindowCloses() throws {
+    @MainActor func testAPrivateWindowsCRXFetchIsCancelledWhenItsWindowCloses() throws {
         let f = try makeFixture()
         let store = try makeStore(observedBy: f)
         let space = store.addIncognitoSpace()
@@ -519,7 +519,7 @@ final class DownloadManagerTests: XCTestCase {
 
     /// The CRX fetch removes its manual item itself when the fetch ends, by
     /// then long gone from the list.
-    func testRemovingADownloadDroppedWithItsWindowTellsNobody() throws {
+    @MainActor func testRemovingADownloadDroppedWithItsWindowTellsNobody() throws {
         let f = try makeFixture()
         let store = try makeStore(observedBy: f)
         let space = store.addIncognitoSpace()
@@ -537,7 +537,7 @@ final class DownloadManagerTests: XCTestCase {
 
     // MARK: - Cancelling a closing window's downloads (TASK-156)
 
-    func testTheDownloadsAClosingPrivateWindowWouldCancel() throws {
+    @MainActor func testTheDownloadsAClosingPrivateWindowWouldCancel() throws {
         let f = try makeFixture()
         let windowA = DownloadScope.incognito(spaceID: UUID())
         let windowB = DownloadScope.incognito(spaceID: UUID())
@@ -555,7 +555,7 @@ final class DownloadManagerTests: XCTestCase {
         _ = runningNormal
     }
 
-    func testCancellingAClosingWindowsDownloadsLeavesEveryOtherAlone() throws {
+    @MainActor func testCancellingAClosingWindowsDownloadsLeavesEveryOtherAlone() throws {
         let f = try makeFixture()
         let windowA = DownloadScope.incognito(spaceID: UUID())
         let windowB = DownloadScope.incognito(spaceID: UUID())
@@ -582,7 +582,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertTrue(f.records.isEmpty, "a cancelled Private download is not saved either")
     }
 
-    func testQuittingCancelsEveryPrivateWindowsDownloadsAndNoNormalOne() throws {
+    @MainActor func testQuittingCancelsEveryPrivateWindowsDownloadsAndNoNormalOne() throws {
         let f = try makeFixture()
         let runningA = addItem(f, "a.iso", scope: .incognito(spaceID: UUID()))
         let runningB = addItem(f, "b.iso", scope: .incognito(spaceID: UUID()))
@@ -596,7 +596,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertTrue(f.manager.privateDownloadsInFlight(closing: .allWindows).isEmpty)
     }
 
-    func testClosingAPrivateWindowLeavesNormalDownloadsAndTheirRows() throws {
+    @MainActor func testClosingAPrivateWindowLeavesNormalDownloadsAndTheirRows() throws {
         let f = try makeFixture()
         let store = try makeStore(observedBy: f)
         let space = store.addIncognitoSpace()
@@ -614,22 +614,21 @@ final class DownloadManagerTests: XCTestCase {
 
 /// The production wiring behind the rules above: a Private window's scope, and
 /// `DownloadManager.shared` following `TabStore.shared` (TASK-148).
-@MainActor
-final class DownloadWindowScopeTests: XCTestCase {
+nonisolated final class DownloadWindowScopeTests: XCTestCase {
 
     private var controller: BrowserWindowController?
     private var leftover: DownloadItem?
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         controller?.window?.close()
         controller = nil
         // Only reached with an item still listed when a test failed half way.
         if let leftover { DownloadManager.shared.removeDownload(leftover) }
         leftover = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func makePrivateWindow() throws -> (BrowserWindowController, Space) {
+    @MainActor private func makePrivateWindow() throws -> (BrowserWindowController, Space) {
         let wc = BrowserWindowController(incognito: true)
         controller = wc
         // Never let this window's split view touch the autosaved sidebar
@@ -638,14 +637,14 @@ final class DownloadWindowScopeTests: XCTestCase {
         return (wc, try XCTUnwrap(wc.activeSpace))
     }
 
-    func testAPrivateWindowsDownloadScopeIsItsIncognitoSpace() throws {
+    @MainActor func testAPrivateWindowsDownloadScopeIsItsIncognitoSpace() throws {
         let (wc, space) = try makePrivateWindow()
 
         XCTAssertTrue(space.isIncognito)
         XCTAssertEqual(wc.downloadScope, .incognito(spaceID: space.id))
     }
 
-    func testClosingAPrivateWindowDropsItsDownloadsFromTheSharedManager() throws {
+    @MainActor func testClosingAPrivateWindowDropsItsDownloadsFromTheSharedManager() throws {
         let (wc, space) = try makePrivateWindow()
         let manager = DownloadManager.shared
         let scope = wc.downloadScope

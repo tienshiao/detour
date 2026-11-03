@@ -1,11 +1,11 @@
 import XCTest
 @testable import Detour
 
-final class TabCloseSelectionTests: XCTestCase {
+nonisolated final class TabCloseSelectionTests: XCTestCase {
 
     // MARK: - Next sibling
 
-    func testClosingMiddleChildSelectsNextSibling() {
+    @MainActor func testClosingMiddleChildSelectsNextSibling() {
         let parent = UUID()
         let child1 = UUID()
         let child2 = UUID()
@@ -20,7 +20,7 @@ final class TabCloseSelectionTests: XCTestCase {
         XCTAssertEqual(result, child3, "Should select next sibling")
     }
 
-    func testClosingFirstChildSelectsNextSibling() {
+    @MainActor func testClosingFirstChildSelectsNextSibling() {
         let parent = UUID()
         let child1 = UUID()
         let child2 = UUID()
@@ -35,7 +35,7 @@ final class TabCloseSelectionTests: XCTestCase {
 
     // MARK: - Previous sibling
 
-    func testClosingLastChildSelectsPreviousSibling() {
+    @MainActor func testClosingLastChildSelectsPreviousSibling() {
         let parent = UUID()
         let child1 = UUID()
         let child2 = UUID()
@@ -50,7 +50,7 @@ final class TabCloseSelectionTests: XCTestCase {
 
     // MARK: - Non-contiguous siblings
 
-    func testNonContiguousSiblingStillFound() {
+    @MainActor func testNonContiguousSiblingStillFound() {
         let parent = UUID()
         let child1 = UUID()
         let unrelated = UUID()
@@ -66,7 +66,7 @@ final class TabCloseSelectionTests: XCTestCase {
         XCTAssertEqual(result, child2, "Should find non-contiguous next sibling")
     }
 
-    func testNonContiguousPreviousSibling() {
+    @MainActor func testNonContiguousPreviousSibling() {
         let parent = UUID()
         let child1 = UUID()
         let unrelated = UUID()
@@ -84,7 +84,7 @@ final class TabCloseSelectionTests: XCTestCase {
 
     // MARK: - Parent selection
 
-    func testOnlyChildSelectsParent() {
+    @MainActor func testOnlyChildSelectsParent() {
         let parent = UUID()
         let child = UUID()
         let tabs: [(id: UUID, parentID: UUID?)] = [
@@ -95,7 +95,7 @@ final class TabCloseSelectionTests: XCTestCase {
         XCTAssertEqual(result, parent, "Only child should select parent")
     }
 
-    func testOnlyChildOfPinnedParentReturnsAdjacent() {
+    @MainActor func testOnlyChildOfPinnedParentReturnsAdjacent() {
         let pinnedParent = UUID()
         let child = UUID()
         let other = UUID()
@@ -107,7 +107,7 @@ final class TabCloseSelectionTests: XCTestCase {
         XCTAssertEqual(result, other, "Pinned parent not selectable — should fall back to adjacent")
     }
 
-    func testOrphanTabFallsBackToAdjacent() {
+    @MainActor func testOrphanTabFallsBackToAdjacent() {
         let missingParent = UUID()
         let orphan = UUID()
         let other = UUID()
@@ -121,7 +121,7 @@ final class TabCloseSelectionTests: XCTestCase {
 
     // MARK: - Adjacent fallback
 
-    func testNoParentSelectsRightNeighbor() {
+    @MainActor func testNoParentSelectsRightNeighbor() {
         let tab1 = UUID()
         let tab2 = UUID()
         let tab3 = UUID()
@@ -134,7 +134,7 @@ final class TabCloseSelectionTests: XCTestCase {
         XCTAssertEqual(result, tab3, "No parent — should select right neighbor")
     }
 
-    func testRightmostTabSelectsLeftNeighbor() {
+    @MainActor func testRightmostTabSelectsLeftNeighbor() {
         let tab1 = UUID()
         let tab2 = UUID()
         let tabs: [(id: UUID, parentID: UUID?)] = [
@@ -147,7 +147,7 @@ final class TabCloseSelectionTests: XCTestCase {
 
     // MARK: - Edge cases
 
-    func testSingleTabReturnsNil() {
+    @MainActor func testSingleTabReturnsNil() {
         let tab = UUID()
         let tabs: [(id: UUID, parentID: UUID?)] = [
             (id: tab, parentID: nil),
@@ -156,12 +156,12 @@ final class TabCloseSelectionTests: XCTestCase {
         XCTAssertNil(result, "Single tab — no next tab to select")
     }
 
-    func testEmptyTabsReturnsNil() {
+    @MainActor func testEmptyTabsReturnsNil() {
         let result = tabCloseSelectionID(closingIndex: 0, tabs: [], pinnedTabIDs: [])
         XCTAssertNil(result, "Empty tabs — no next tab to select")
     }
 
-    func testInvalidIndexReturnsNil() {
+    @MainActor func testInvalidIndexReturnsNil() {
         let tab = UUID()
         let tabs: [(id: UUID, parentID: UUID?)] = [
             (id: tab, parentID: nil),
@@ -170,7 +170,7 @@ final class TabCloseSelectionTests: XCTestCase {
         XCTAssertNil(result, "Invalid index — should return nil")
     }
 
-    func testNegativeIndexReturnsNil() {
+    @MainActor func testNegativeIndexReturnsNil() {
         let tab = UUID()
         let tabs: [(id: UUID, parentID: UUID?)] = [
             (id: tab, parentID: nil),
@@ -181,7 +181,7 @@ final class TabCloseSelectionTests: XCTestCase {
 
     // MARK: - Priority ordering
 
-    func testNextSiblingPreferredOverPreviousSibling() {
+    @MainActor func testNextSiblingPreferredOverPreviousSibling() {
         let parent = UUID()
         let child1 = UUID()
         let child2 = UUID()
@@ -197,7 +197,7 @@ final class TabCloseSelectionTests: XCTestCase {
         XCTAssertEqual(result, child3, "Next sibling should be preferred over previous sibling")
     }
 
-    func testSiblingPreferredOverParent() {
+    @MainActor func testSiblingPreferredOverParent() {
         let parent = UUID()
         let child1 = UUID()
         let child2 = UUID()
@@ -211,7 +211,7 @@ final class TabCloseSelectionTests: XCTestCase {
         XCTAssertEqual(result, child1, "Sibling should be preferred over parent")
     }
 
-    func testParentPreferredOverAdjacentNonSibling() {
+    @MainActor func testParentPreferredOverAdjacentNonSibling() {
         let parent = UUID()
         let child = UUID()
         let unrelated = UUID()

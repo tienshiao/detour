@@ -9,12 +9,11 @@ import AppKit
 /// `LinkRouteResolverTests`.
 ///
 /// The URLs use `.test` hosts, which never resolve: nothing reaches the network.
-@MainActor
-final class ExternalLinkRoutingTests: XCTestCase {
+nonisolated final class ExternalLinkRoutingTests: XCTestCase {
 
     private var appDelegate: AppDelegate!
-    private var store: TabStore { .shared }
-    private var routes: LinkRouteStore { TabStore.shared.linkRoutes }
+    @MainActor private var store: TabStore { .shared }
+    @MainActor private var routes: LinkRouteStore { TabStore.shared.linkRoutes }
 
     private var windowsBefore: Set<ObjectIdentifier> = []
     private var quickDetoursBefore: Set<ObjectIdentifier> = []
@@ -23,14 +22,14 @@ final class ExternalLinkRoutingTests: XCTestCase {
     private var previousDefault: LinkRouteTarget = .mostRecentSpace
     private var previousLastActiveSpaceID: UUID?
     private var previousExtensionLastActiveSpaceID: UUID?
-    private var defaultFaviconFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
 
     private var work: Space!
     private var personal: Space!
     private var other: Space!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         appDelegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         windowsBefore = Set(browserWindows().map(ObjectIdentifier.init))
         quickDetoursBefore = Set(QuickDetourWindowController.openControllers.map(ObjectIdentifier.init))
@@ -56,7 +55,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         route(nil, app: "com.example.chat", to: .quickDetour)
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for controller in newQuickDetours() {
             controller.closeDisposition = .discard
             controller.close()
@@ -84,35 +83,35 @@ final class ExternalLinkRoutingTests: XCTestCase {
         ExtensionManager.shared.lastActiveSpaceID = previousExtensionLastActiveSpaceID
         FaviconLoader.shared.fetch = defaultFaviconFetch
         FaviconLoader.shared.resetForTesting()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixture
 
-    private func addSpace(_ name: String, _ profileID: UUID) -> Space {
+    @MainActor private func addSpace(_ name: String, _ profileID: UUID) -> Space {
         let space = store.addSpace(name: name, emoji: "🛫", colorHex: "007AFF", profileID: profileID)
         createdSpaceIDs.append(space.id)
         return space
     }
 
-    private func route(_ kind: LinkRouteMatchKind?, _ pattern: String = "", app: String? = nil,
+    @MainActor private func route(_ kind: LinkRouteMatchKind?, _ pattern: String = "", app: String? = nil,
                        to target: LinkRouteTarget) {
         let added = routes.add(LinkRoute(match: kind.map { LinkRouteMatch(kind: $0, pattern: pattern) },
                                          sourceApp: app, target: target))
         if let added { addedRouteIDs.append(added.id) }
     }
 
-    private func browserWindows() -> [BrowserWindowController] {
+    @MainActor private func browserWindows() -> [BrowserWindowController] {
         NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }.filter { $0.window?.isVisible == true }
     }
 
-    private func newBrowserWindows() -> [BrowserWindowController] {
+    @MainActor private func newBrowserWindows() -> [BrowserWindowController] {
         browserWindows().filter { !windowsBefore.contains(ObjectIdentifier($0)) }
     }
 
     /// A normal window on `space`, put in front of the others.
     @discardableResult
-    private func makeWindow(showing space: Space) -> BrowserWindowController {
+    @MainActor private func makeWindow(showing space: Space) -> BrowserWindowController {
         let wc = BrowserWindowController(incognito: false)
         wc.sidebarSplitView.autosaveName = nil
         wc.setActiveSpace(id: space.id, selectTab: false)
@@ -121,27 +120,27 @@ final class ExternalLinkRoutingTests: XCTestCase {
         return wc
     }
 
-    private func url(_ s: String) -> URL { URL(string: s)! }
+    @MainActor private func url(_ s: String) -> URL { URL(string: s)! }
 
-    private func newQuickDetours() -> [QuickDetourWindowController] {
+    @MainActor private func newQuickDetours() -> [QuickDetourWindowController] {
         QuickDetourWindowController.openControllers.filter { !quickDetoursBefore.contains(ObjectIdentifier($0)) }
     }
 
-    private func tabAnywhere(_ url: URL) -> BrowserTab? {
+    @MainActor private func tabAnywhere(_ url: URL) -> BrowserTab? {
         store.spaces.lazy.flatMap(\.tabs).first { $0.url == url }
     }
 
-    private func tab(_ url: URL, in space: Space) -> BrowserTab? {
+    @MainActor private func tab(_ url: URL, in space: Space) -> BrowserTab? {
         space.tabs.first { $0.url == url }
     }
 
-    private func frontBrowserWindow() -> BrowserWindowController? {
+    @MainActor private func frontBrowserWindow() -> BrowserWindowController? {
         NSApp.browserWindowControllersFrontToBack.first
     }
 
     // MARK: - A space shown by a window
 
-    func testARoutedLinkOpensInTheWindowShowingItsSpaceAndBringsItForward() throws {
+    @MainActor func testARoutedLinkOpensInTheWindowShowingItsSpaceAndBringsItForward() throws {
         let workWindow = makeWindow(showing: work)
         let personalWindow = makeWindow(showing: personal)   // in front
         XCTAssertTrue(frontBrowserWindow() === personalWindow)
@@ -157,7 +156,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertEqual(newBrowserWindows().count, 2, "no window is opened")
     }
 
-    func testASpaceShownBySeveralWindowsOpensInTheMostRecentOfThem() throws {
+    @MainActor func testASpaceShownBySeveralWindowsOpensInTheMostRecentOfThem() throws {
         let older = makeWindow(showing: work)
         let recent = makeWindow(showing: work)
         let front = makeWindow(showing: personal)
@@ -173,7 +172,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
 
     // MARK: - A space no window shows
 
-    func testASpaceShownByNoWindowSwitchesTheMostRecentNormalWindow() throws {
+    @MainActor func testASpaceShownByNoWindowSwitchesTheMostRecentNormalWindow() throws {
         let back = makeWindow(showing: work)
         let front = makeWindow(showing: personal)
 
@@ -188,7 +187,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertEqual(newBrowserWindows().count, 2, "no window is opened")
     }
 
-    func testAPrivateWindowInFrontIsNotSwitchedToANormalSpace() throws {
+    @MainActor func testAPrivateWindowInFrontIsNotSwitchedToANormalSpace() throws {
         let normal = makeWindow(showing: work)
         let privateWC = BrowserWindowController(incognito: true)
         privateWC.sidebarSplitView.autosaveName = nil
@@ -207,7 +206,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
 
     // MARK: - Private window
 
-    func testAPrivateRouteOpensANewPrivateWindowThenReusesIt() throws {
+    @MainActor func testAPrivateRouteOpensANewPrivateWindowThenReusesIt() throws {
         makeWindow(showing: work)
         let first = url("https://secret.test/1")
         appDelegate.application(NSApp, open: [first])
@@ -234,7 +233,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
 
     // MARK: - The source app
 
-    func testASourceAppRouteMatchesLinksFromThatAppOnly() throws {
+    @MainActor func testASourceAppRouteMatchesLinksFromThatAppOnly() throws {
         let workWindow = makeWindow(showing: work)
         let personalWindow = makeWindow(showing: personal)
         workWindow.window?.makeKeyAndOrderFront(nil)
@@ -256,7 +255,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertTrue(frontBrowserWindow() === workWindow)
     }
 
-    func testWithoutASenderNoSourceAppRouteMatches() throws {
+    @MainActor func testWithoutASenderNoSourceAppRouteMatches() throws {
         makeWindow(showing: personal)
         let link = url("https://mail-only.test/z")
         let expectation = todaysBehaviour()
@@ -267,7 +266,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
 
     // MARK: - Unmatched links and Most Recent Space
 
-    func testAnUnmatchedLinkGoesToTheDefaultSpace() throws {
+    @MainActor func testAnUnmatchedLinkGoesToTheDefaultSpace() throws {
         routes.setDefaultTarget(.space(personal.id))
         makeWindow(showing: work)
         let personalWindow = makeWindow(showing: personal)
@@ -280,7 +279,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertTrue(frontBrowserWindow() === personalWindow)
     }
 
-    func testAnUnmatchedLinkWithTheMostRecentSpaceDefaultBehavesAsBefore() throws {
+    @MainActor func testAnUnmatchedLinkWithTheMostRecentSpaceDefaultBehavesAsBefore() throws {
         makeWindow(showing: work)
         makeWindow(showing: personal)
         let link = url("https://unrouted.test/most-recent")
@@ -291,7 +290,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
 
     // MARK: - Quarantine (TASK-194)
 
-    func testAQuarantineRouteOpensAQuarantineWindow() throws {
+    @MainActor func testAQuarantineRouteOpensAQuarantineWindow() throws {
         let workWindow = makeWindow(showing: work)
         let link = url("https://app.later.test/look")
 
@@ -309,7 +308,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertTrue(newBrowserWindows().allSatisfy { $0 === workWindow })
     }
 
-    func testAQuarantineDefaultTakesUnmatchedLinks() throws {
+    @MainActor func testAQuarantineDefaultTakesUnmatchedLinks() throws {
         makeWindow(showing: work)
         XCTAssertTrue(routes.setDefaultTarget(.quarantine))
         let link = url("https://unrouted.test/default")
@@ -326,7 +325,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertEqual(newQuickDetours().count, 1)
     }
 
-    func testAQuarantinedLinkLosesItsTrackingParameters() throws {
+    @MainActor func testAQuarantinedLinkLosesItsTrackingParameters() throws {
         makeWindow(showing: work)
         let link = url("https://later.test/article?id=7&utm_source=newsletter&gclid=abc")
 
@@ -337,7 +336,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertEqual(quarantine.quarantine?.originalURL, link, "the window still knows the link as it came")
     }
 
-    func testEachQuarantinedLinkGetsItsOwnWindowAndStore() throws {
+    @MainActor func testEachQuarantinedLinkGetsItsOwnWindowAndStore() throws {
         makeWindow(showing: work)
         appDelegate.application(NSApp, open: [url("https://later.test/1"), url("https://later.test/2")])
 
@@ -352,7 +351,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
 
     // MARK: - Quick Detour (TASK-193.5)
 
-    func testAQuickDetourRouteOpensAQuickDetourOnTheFrontWindowsProfile() throws {
+    @MainActor func testAQuickDetourRouteOpensAQuickDetourOnTheFrontWindowsProfile() throws {
         let workWindow = makeWindow(showing: work)
         let link = url("https://app.quick.test/lookup")
 
@@ -367,7 +366,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertTrue(newBrowserWindows().allSatisfy { $0 === workWindow })
     }
 
-    func testLinksFromOneAppOpenInQuickDetour() throws {
+    @MainActor func testLinksFromOneAppOpenInQuickDetour() throws {
         // "Links from Slack open in Quick Detour": an app-only route.
         makeWindow(showing: work)
         let link = url("https://anything.test/from-chat")
@@ -383,7 +382,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertEqual(newQuickDetours().count, 1, "another app's link follows the Default")
     }
 
-    func testAQuickDetourDefaultTakesUnmatchedLinks() throws {
+    @MainActor func testAQuickDetourDefaultTakesUnmatchedLinks() throws {
         makeWindow(showing: work)
         XCTAssertTrue(routes.setDefaultTarget(.quickDetour))
         let link = url("https://unrouted.test/default")
@@ -394,7 +393,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertNil(tabAnywhere(link))
     }
 
-    func testWithAPrivateWindowInFrontTheQuickDetourIsNotPrivate() throws {
+    @MainActor func testWithAPrivateWindowInFrontTheQuickDetourIsNotPrivate() throws {
         makeWindow(showing: work)
         let privateWindow = BrowserWindowController(incognito: true)
         privateWindow.sidebarSplitView.autosaveName = nil
@@ -412,7 +411,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
     /// What a link from another app did before routes: a tab in the key
     /// browser window's active space, else a new window. Captured before the
     /// open, checked after.
-    private struct TodaysBehaviour {
+    @MainActor private struct TodaysBehaviour {
         let keyWindow: BrowserWindowController?
         let keySpace: Space?
         let windowsBefore: Set<ObjectIdentifier>
@@ -433,7 +432,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         }
     }
 
-    private func todaysBehaviour() -> TodaysBehaviour {
+    @MainActor private func todaysBehaviour() -> TodaysBehaviour {
         let key = NSApp.keyWindow?.windowController as? BrowserWindowController
         return TodaysBehaviour(keyWindow: key, keySpace: key?.activeSpace,
                                windowsBefore: Set(browserWindows().map(ObjectIdentifier.init)))
@@ -441,7 +440,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
 
     // MARK: - Several URLs
 
-    func testEachURLOfAMultiURLOpenRoutesOnItsOwn() throws {
+    @MainActor func testEachURLOfAMultiURLOpenRoutesOnItsOwn() throws {
         let workWindow = makeWindow(showing: work)
         let personalWindow = makeWindow(showing: personal)
 
@@ -459,7 +458,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertTrue(frontBrowserWindow() === privateWC, "the last link's window is in front")
     }
 
-    func testTwoLinksToAnUnshownSpaceUseOneWindowSwitch() throws {
+    @MainActor func testTwoLinksToAnUnshownSpaceUseOneWindowSwitch() throws {
         let front = makeWindow(showing: work)
         let links = [url("https://other.test/1"), url("https://other.test/2")]
         appDelegate.application(NSApp, open: links)
@@ -469,7 +468,7 @@ final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertEqual(newBrowserWindows().count, 1)
     }
 
-    func testNonWebURLsAreIgnored() {
+    @MainActor func testNonWebURLsAreIgnored() {
         let before = Set(store.spaces.flatMap(\.tabs).map(\.id))
         appDelegate.application(NSApp, open: [url("file:///tmp/x.html"), url("detour://history")])
         XCTAssertEqual(Set(store.spaces.flatMap(\.tabs).map(\.id)), before)

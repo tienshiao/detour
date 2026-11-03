@@ -14,7 +14,7 @@ import Foundation
 /// The default data directory keeps the plain name, so production keeps reading
 /// and writing exactly the keys it always has; any other data directory gets its
 /// own suffixed name, and so its own keys.
-enum UserDefaultsScope {
+nonisolated enum UserDefaultsScope {
 
     /// The autosave name `base` uses in the data directory `dataDirectory`,
     /// which defaults to this process's. A nil directory name (no data
@@ -42,5 +42,7 @@ enum UserDefaultsScope {
     }
 
     /// The defaults of this process's data directory (`suiteName`).
-    static let defaults: UserDefaults = suiteName().flatMap { UserDefaults(suiteName: $0) } ?? .standard
+    /// `nonisolated(unsafe)`: `UserDefaults` is documented thread-safe but is
+    /// not marked `Sendable`, and this is a constant reference to it.
+    nonisolated(unsafe) static let defaults: UserDefaults = suiteName().flatMap { UserDefaults(suiteName: $0) } ?? .standard
 }

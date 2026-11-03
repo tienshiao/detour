@@ -8,27 +8,26 @@ import WebKit
 /// chosen space and closes it, and nothing quarantined reaches that space
 /// (a loopback server that sets a cookie, and records the cookies each request
 /// sends); a download is asked about each time.
-@MainActor
-final class QuarantineWindowTests: XCTestCase {
+nonisolated final class QuarantineWindowTests: XCTestCase {
 
-    private var store: TabStore { .shared }
+    @MainActor private var store: TabStore { .shared }
     private var appDelegate: AppDelegate!
     private var quickDetoursBefore: Set<ObjectIdentifier> = []
     private var browserWindowsBefore: Set<ObjectIdentifier> = []
     private var createdProfiles: [Profile] = []
     private var createdSpaceIDs: [UUID] = []
     private var servers: [LoopbackHTTPServer] = []
-    private var previousAsk: ((QuarantineDownloadQuestion, NSWindow?, @escaping (Bool) -> Void) -> Void)!
+    private var previousAsk: (@MainActor (QuarantineDownloadQuestion, NSWindow?, @escaping (Bool) -> Void) -> Void)!
     private var previousDownloadsDirectory: URL!
     private var downloadsDirectory: URL!
     private var cookiesToRemove: [(WKHTTPCookieStore, HTTPCookie)] = []
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
     private var work: Profile!
     private var desk: Space!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         appDelegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         quickDetoursBefore = Set(QuickDetourWindowController.openControllers.map(ObjectIdentifier.init))
         browserWindowsBefore = Set(browserWindows().map(ObjectIdentifier.init))
@@ -48,7 +47,7 @@ final class QuarantineWindowTests: XCTestCase {
         createdSpaceIDs.append(desk.id)
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         QuickDetourWindowController.askQuarantineDownload = previousAsk
         for controller in newQuickDetours() {
             controller.closeDisposition = .discard
@@ -87,15 +86,15 @@ final class QuarantineWindowTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func browserWindows() -> [BrowserWindowController] {
+    @MainActor private func browserWindows() -> [BrowserWindowController] {
         NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }.filter { $0.window?.isVisible == true }
     }
 
-    private func newQuickDetours() -> [QuickDetourWindowController] {
+    @MainActor private func newQuickDetours() -> [QuickDetourWindowController] {
         QuickDetourWindowController.openControllers.filter { !quickDetoursBefore.contains(ObjectIdentifier($0)) }
     }
 
-    private func isOpen(_ controller: QuickDetourWindowController) -> Bool {
+    @MainActor private func isOpen(_ controller: QuickDetourWindowController) -> Bool {
         QuickDetourWindowController.openControllers.contains { $0 === controller }
     }
 
@@ -110,7 +109,7 @@ final class QuarantineWindowTests: XCTestCase {
         </script>
         """
 
-    private func serve() async throws -> (LoopbackHTTPServer, String) {
+    @MainActor private func serve() async throws -> (LoopbackHTTPServer, String) {
         let server = try LoopbackHTTPServer(routes: [
             "/set": """
             <html><head><script>
@@ -162,24 +161,24 @@ final class QuarantineWindowTests: XCTestCase {
         return (server, "http://127.0.0.1:\(port)")
     }
 
-    private func openQuarantine(_ url: String, sourceSpace: Space? = nil) -> QuickDetourWindowController {
+    @MainActor private func openQuarantine(_ url: String, sourceSpace: Space? = nil) -> QuickDetourWindowController {
         QuickDetourWindowController.openQuarantine(url: URL(string: url)!, privateProfile: store.ensureIncognitoProfile(),
                                                    sourceSpace: sourceSpace)
     }
 
-    private func waitForTitle(_ title: String, in tab: @escaping () -> BrowserTab?) async throws {
+    @MainActor private func waitForTitle(_ title: String, in tab: @escaping () -> BrowserTab?) async throws {
         try await waitUntil("the page titled \(title)", timeout: 10) {
             tab()?.title == title && tab()?.isLoading == false
         }
     }
 
-    private func lastCookie(forPath path: String, on server: LoopbackHTTPServer) -> String?? {
+    @MainActor private func lastCookie(forPath path: String, on server: LoopbackHTTPServer) -> String?? {
         server.requests.last { $0.path == path }.map(\.cookie)
     }
 
     /// A normal window on `space`, in front of the others.
     @discardableResult
-    private func makeWindow(showing space: Space) -> BrowserWindowController {
+    @MainActor private func makeWindow(showing space: Space) -> BrowserWindowController {
         let wc = BrowserWindowController(incognito: false)
         wc.sidebarSplitView.autosaveName = nil
         wc.setActiveSpace(id: space.id, selectTab: false)
@@ -190,7 +189,7 @@ final class QuarantineWindowTests: XCTestCase {
 
     // MARK: - The window
 
-    func testTheWindowIsMarkedAndKeepsTheSystemAppearance() throws {
+    @MainActor func testTheWindowIsMarkedAndKeepsTheSystemAppearance() throws {
         let controller = openQuarantine("https://quarantine-mark.invalid/")
 
         XCTAssertTrue(controller.isQuarantine)
@@ -199,7 +198,7 @@ final class QuarantineWindowTests: XCTestCase {
         XCTAssertNil(controller.window?.appearance, "not a Private window's dark: a look of its own")
     }
 
-    func testThePillSwitchesNoProfile() throws {
+    @MainActor func testThePillSwitchesNoProfile() throws {
         let controller = openQuarantine("https://quarantine-switch.invalid/")
         let page = controller.tab
 
@@ -210,7 +209,7 @@ final class QuarantineWindowTests: XCTestCase {
 
     /// TASK-209: a quarantine records no history and reads none, not even the
     /// profile of the space it was opened from.
-    func testItsPaletteOffersNoHistoryAndNoTabs() throws {
+    @MainActor func testItsPaletteOffersNoHistoryAndNoTabs() throws {
         let controller = openQuarantine("https://quarantine-palette.invalid/", sourceSpace: desk)
 
         controller.titleBar.hostButton.performClick(nil)
@@ -221,7 +220,7 @@ final class QuarantineWindowTests: XCTestCase {
         controller.dismissPalette()
     }
 
-    func testItNeverClosesForIdleness() throws {
+    @MainActor func testItNeverClosesForIdleness() throws {
         let controller = openQuarantine("https://quarantine-idle.invalid/")
         var state = controller.idleState
         state.isFrontmost = false
@@ -229,7 +228,7 @@ final class QuarantineWindowTests: XCTestCase {
                        "nothing would be archived: the timer would only lose the page")
     }
 
-    func testClosingItArchivesNothing() throws {
+    @MainActor func testClosingItArchivesNothing() throws {
         let controller = openQuarantine("https://quarantine-archive.invalid/page")
         controller.close()
         XCTAssertFalse(store.archiveEntries().contains { $0.url?.contains("quarantine-archive.invalid") == true })
@@ -237,7 +236,7 @@ final class QuarantineWindowTests: XCTestCase {
 
     // MARK: - Isolation
 
-    func testTwoQuarantineWindowsShareNothing() async throws {
+    @MainActor func testTwoQuarantineWindowsShareNothing() async throws {
         let (server, base) = try await serve()
         let first = openQuarantine(base + "/set")
         try await waitForTitle("Set") { first.tab }
@@ -250,7 +249,7 @@ final class QuarantineWindowTests: XCTestCase {
         XCTAssertEqual(lastCookie(forPath: "/probe", on: server), .some(nil), "no cookie sent from the second")
     }
 
-    func testCookiesOfPrivateWindowsAndProfilesNeverReachIt() async throws {
+    @MainActor func testCookiesOfPrivateWindowsAndProfilesNeverReachIt() async throws {
         let (server, base) = try await serve()
         for (name, dataStore) in [("private", store.ensureIncognitoProfile().dataStore), ("work", work.dataStore)] {
             let cookie = try XCTUnwrap(HTTPCookie(properties: [.domain: "127.0.0.1", .path: "/", .name: "qd",
@@ -264,7 +263,7 @@ final class QuarantineWindowTests: XCTestCase {
         XCTAssertEqual(lastCookie(forPath: "/probe", on: server), .some(nil))
     }
 
-    func testAWindowThePageOpensSharesItsQuarantine() async throws {
+    @MainActor func testAWindowThePageOpensSharesItsQuarantine() async throws {
         let (_, base) = try await serve()
         let opener = openQuarantine(base + "/opener")
         try await waitForTitle("Opener") { opener.tab }
@@ -280,7 +279,7 @@ final class QuarantineWindowTests: XCTestCase {
 
     // MARK: - Link tracking parameters
 
-    func testAClickedLinkLosesItsTrackingParameters() async throws {
+    @MainActor func testAClickedLinkLosesItsTrackingParameters() async throws {
         let (server, base) = try await serve()
         let controller = openQuarantine(base + "/tracked")
         try await waitForTitle("Tracked") { controller.tab }
@@ -295,7 +294,7 @@ final class QuarantineWindowTests: XCTestCase {
     /// A server that redirects the clean address back to one with tracking
     /// parameters is let through the second time rather than looping
     /// (code review, TASK-194).
-    func testARedirectBackToTrackingParametersDoesNotLoop() async throws {
+    @MainActor func testARedirectBackToTrackingParametersDoesNotLoop() async throws {
         let (server, base) = try await serve()
         let controller = openQuarantine(base + "/bounce")
         try await waitForTitle("Bounced") { controller.tab }
@@ -307,7 +306,7 @@ final class QuarantineWindowTests: XCTestCase {
     /// with `location.replace` (no redirect to WebKit, no user gesture) is let
     /// through the second time; the page settles (code review, TASK-194
     /// follow-up).
-    func testAClientRedirectBackToTrackingParametersSettles() async throws {
+    @MainActor func testAClientRedirectBackToTrackingParametersSettles() async throws {
         let (server, base) = try await serve()
         let controller = openQuarantine(base + "/replace")
         try await waitForTitle("Replaced") { controller.tab }
@@ -320,7 +319,7 @@ final class QuarantineWindowTests: XCTestCase {
     /// A jump to an anchor of a page whose address kept its parameters is
     /// not turned into a load of the page without them (code review, TASK-194
     /// follow-up).
-    func testAnAnchorJumpIsNotReloaded() async throws {
+    @MainActor func testAnAnchorJumpIsNotReloaded() async throws {
         let (server, base) = try await serve()
         let controller = openQuarantine(base + "/replace")
         try await waitForTitle("Replaced") { controller.tab }
@@ -344,7 +343,7 @@ final class QuarantineWindowTests: XCTestCase {
     /// and no store (code review, TASK-194 follow-up). WebKit also hands the
     /// policy no modifiers for a synthetic click (measured 2026-10-25), so
     /// the click is an ordinary one: the page follows it in place.
-    func testAScriptsCmdClickOpensNoQuarantine() async throws {
+    @MainActor func testAScriptsCmdClickOpensNoQuarantine() async throws {
         let (_, base) = try await serve()
         let controller = openQuarantine(base + "/cmdclick?auto")
         try await waitUntil("the timer's click to land") {
@@ -370,7 +369,7 @@ final class QuarantineWindowTests: XCTestCase {
         </script></head><body>fingerprint</body></html>
         """
 
-    private func fingerprint(in controller: QuickDetourWindowController) async throws -> (canvas: String, screenWidth: Int) {
+    @MainActor private func fingerprint(in controller: QuickDetourWindowController) async throws -> (canvas: String, screenWidth: Int) {
         let json = try await XCTUnwrap(controller.tab?.webView).evaluateJavaScript("window.fingerprint()") as? String
         let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(try XCTUnwrap(json).utf8)) as? [String: Any])
         return (try XCTUnwrap(object["canvas"] as? String), try XCTUnwrap(object["screenWidth"] as? Int))
@@ -379,7 +378,7 @@ final class QuarantineWindowTests: XCTestCase {
     /// Measured on macOS 26.7: with WebKit's fingerprinting protections a
     /// canvas read back is noised per session, and `screen` reports the
     /// window's size rather than the display's.
-    func testCanvasReadbackIsNoisedAndTheScreenIsTheWindow() async throws {
+    @MainActor func testCanvasReadbackIsNoisedAndTheScreenIsTheWindow() async throws {
         guard Quarantine.privacyProtectionsAvailable(on: WKWebpagePreferences()) else {
             throw XCTSkip("this WebKit has no _networkConnectionIntegrityPolicy")
         }
@@ -402,7 +401,7 @@ final class QuarantineWindowTests: XCTestCase {
 
     // MARK: - Open in
 
-    func testOpenInListsEveryProfilesSpacesAndEachReloads() throws {
+    @MainActor func testOpenInListsEveryProfilesSpacesAndEachReloads() throws {
         let controller = openQuarantine("https://quarantine-open-in.invalid/", sourceSpace: desk)
         let menu = controller.openInMenu
 
@@ -415,7 +414,7 @@ final class QuarantineWindowTests: XCTestCase {
     /// AC #3: the address loads fresh in a tab of the chosen space, the
     /// window closes, and neither the quarantined cookie nor its storage
     /// reaches the space.
-    func testOpenInLoadsTheAddressFreshAndNoQuarantinedCookieOrStorageReachesTheSpace() async throws {
+    @MainActor func testOpenInLoadsTheAddressFreshAndNoQuarantinedCookieOrStorageReachesTheSpace() async throws {
         let (server, base) = try await serve()
         let deskWindow = makeWindow(showing: desk)
         let controller = openQuarantine(base + "/set")
@@ -441,7 +440,7 @@ final class QuarantineWindowTests: XCTestCase {
 
     /// Open in closes the window, so a download still running is asked
     /// about first, as closing it is (code review, TASK-194).
-    func testOpenInAsksBeforeCancellingARunningDownload() throws {
+    @MainActor func testOpenInAsksBeforeCancellingARunningDownload() throws {
         let controller = openQuarantine("https://quarantine-open-in-download.invalid/page")
         let tabID = try XCTUnwrap(controller.tab?.id)
         let item = DownloadManager.shared.addManualItem(filename: "secret.zip", sourceURL: nil,
@@ -469,7 +468,7 @@ final class QuarantineWindowTests: XCTestCase {
     /// Open in asks about a running download, but cancels it only once the
     /// address has a tab: when nothing takes it, the window and its download
     /// stay (code review, TASK-194 follow-up).
-    func testOpenInThatPlacesNothingKeepsTheWindowAndItsDownload() throws {
+    @MainActor func testOpenInThatPlacesNothingKeepsTheWindowAndItsDownload() throws {
         let controller = openQuarantine("https://quarantine-open-in-fails.invalid/page")
         let tabID = try XCTUnwrap(controller.tab?.id)
         let item = DownloadManager.shared.addManualItem(filename: "kept.zip", sourceURL: nil,
@@ -492,7 +491,7 @@ final class QuarantineWindowTests: XCTestCase {
     /// put up a sheet WebKit waits on: Open in then leaves everything as it
     /// was rather than close the window under it (code review, TASK-194
     /// follow-up).
-    func testOpenInRefusesWhenASheetCameUpDuringTheDownloadQuestion() throws {
+    @MainActor func testOpenInRefusesWhenASheetCameUpDuringTheDownloadQuestion() throws {
         let controller = openQuarantine("https://quarantine-open-in-sheet.invalid/page")
         let window = try XCTUnwrap(controller.window)
         let tabID = try XCTUnwrap(controller.tab?.id)
@@ -520,7 +519,7 @@ final class QuarantineWindowTests: XCTestCase {
 
     /// A download link with tracking parameters is a download, asked about,
     /// not a page loaded without them (code review, TASK-194 follow-up).
-    func testATrackedDownloadLinkIsStillADownload() async throws {
+    @MainActor func testATrackedDownloadLinkIsStillADownload() async throws {
         let (server, base) = try await serve()
         var asked: [QuarantineDownloadQuestion] = []
         QuickDetourWindowController.askQuarantineDownload = { question, _, answer in
@@ -538,7 +537,7 @@ final class QuarantineWindowTests: XCTestCase {
         XCTAssertFalse(server.requestedPaths.contains("/report.txt"), "\(server.requestedPaths)")
     }
 
-    func testADownloadIsAskedAboutAndCancelledOnNo() async throws {
+    @MainActor func testADownloadIsAskedAboutAndCancelledOnNo() async throws {
         let (_, base) = try await serve()
         var asked: [QuarantineDownloadQuestion] = []
         QuickDetourWindowController.askQuarantineDownload = { question, _, answer in
@@ -558,7 +557,7 @@ final class QuarantineWindowTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: downloadsDirectory.path), [], "no file")
     }
 
-    func testADownloadIsSavedOnYes() async throws {
+    @MainActor func testADownloadIsSavedOnYes() async throws {
         let (_, base) = try await serve()
         var asked = 0
         QuickDetourWindowController.askQuarantineDownload = { _, _, answer in

@@ -8,12 +8,11 @@ import AppKit
 /// contents. Scrolling the details used to scroll the whole body, list
 /// included, because the body was one scroll view (TASK-189). Panes without a
 /// master list keep scrolling as one body.
-@MainActor
-final class SettingsPaneColumnsTests: XCTestCase {
+nonisolated final class SettingsPaneColumnsTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private final class Rows: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    @MainActor private final class Rows: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         var count = 30
         func numberOfRows(in tableView: NSTableView) -> Int { count }
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? { NSView() }
@@ -21,7 +20,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
 
     /// A list pane like Profiles: a bordered list on the left, a detail
     /// column on the right in a column scroll view.
-    private final class ListPane: SettingsPaneViewController {
+    @MainActor private final class ListPane: SettingsPaneViewController {
         let rows = Rows()
         let table = NSTableView()
         var listScroll: NSScrollView!
@@ -82,7 +81,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
     }
 
     /// A pane without a master list, like General: one scrolling body.
-    private final class WholePane: SettingsPaneViewController {
+    @MainActor private final class WholePane: SettingsPaneViewController {
         override var paneDescription: String? { "A pane that scrolls as one body." }
         override func makeBody() -> NSView {
             let body = NSView()
@@ -101,7 +100,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
     }
 
     /// Extensions' shape: the details scroll above a button that stays put.
-    private final class FooterPane: SettingsPaneViewController {
+    @MainActor private final class FooterPane: SettingsPaneViewController {
         var detailScroll: NSScrollView!
         let button = NSButton(title: "Uninstall Extension", target: nil, action: nil)
         var detailHeight: NSLayoutConstraint!
@@ -137,7 +136,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
         }
     }
 
-    private func makeListPane(height: CGFloat) -> ListPane {
+    @MainActor private func makeListPane(height: CGFloat) -> ListPane {
         let pane = ListPane()
         pane.view.setFrameSize(NSSize(width: SettingsMetrics.windowWidth, height: height))
         pane.table.reloadData()
@@ -145,23 +144,23 @@ final class SettingsPaneColumnsTests: XCTestCase {
         return pane
     }
 
-    private func frame(of view: NSView, in pane: SettingsPaneViewController) -> NSRect {
+    @MainActor private func frame(of view: NSView, in pane: SettingsPaneViewController) -> NSRect {
         view.convert(view.bounds, to: pane.view)
     }
 
-    private func resize(_ pane: SettingsPaneViewController, height: CGFloat) {
+    @MainActor private func resize(_ pane: SettingsPaneViewController, height: CGFloat) {
         pane.view.setFrameSize(NSSize(width: SettingsMetrics.windowWidth, height: height))
         pane.view.layoutSubtreeIfNeeded()
     }
 
-    private func scroll(_ scrollView: NSScrollView, to y: CGFloat) {
+    @MainActor private func scroll(_ scrollView: NSScrollView, to y: CGFloat) {
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
-    private func offset(_ scrollView: NSScrollView) -> CGFloat { scrollView.contentView.bounds.origin.y }
+    @MainActor private func offset(_ scrollView: NSScrollView) -> CGFloat { scrollView.contentView.bounds.origin.y }
 
-    private func maxOffset(_ scrollView: NSScrollView) -> CGFloat {
+    @MainActor private func maxOffset(_ scrollView: NSScrollView) -> CGFloat {
         let clip = scrollView.contentView
         var probe = clip.bounds
         probe.origin.y = 1e7
@@ -170,7 +169,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
 
     // MARK: - Fixed columns
 
-    func testListAndDetailsFillThePaneBelowTheDescriptionAtEveryHeight() {
+    @MainActor func testListAndDetailsFillThePaneBelowTheDescriptionAtEveryHeight() {
         let pane = makeListPane(height: SettingsMetrics.listPaneMinimumHeight)
         let margin = SettingsMetrics.paneMargin
         // The root view is not flipped: measure the top from the pane's top edge.
@@ -189,7 +188,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
         }
     }
 
-    func testScrollingTheDetailsLeavesTheListInPlace() {
+    @MainActor func testScrollingTheDetailsLeavesTheListInPlace() {
         let pane = makeListPane(height: 400)
         let listFrame = frame(of: pane.listScroll, in: pane)
         let detailFrame = frame(of: pane.detailScroll, in: pane)
@@ -204,7 +203,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
         XCTAssertEqual(frame(of: pane.detailScroll, in: pane), detailFrame, "the detail area itself stays put")
     }
 
-    func testScrollingTheListLeavesTheDetailsInPlace() {
+    @MainActor func testScrollingTheListLeavesTheDetailsInPlace() {
         let pane = makeListPane(height: 400)
         let detailFrame = frame(of: pane.detailScroll, in: pane)
         scroll(pane.detailScroll, to: 120)
@@ -217,14 +216,14 @@ final class SettingsPaneColumnsTests: XCTestCase {
         XCTAssertEqual(offset(pane.detailScroll), 120, accuracy: 0.5)
     }
 
-    func testTheDetailDocumentIsAsTallAsItsContentAndAsWideAsTheColumn() {
+    @MainActor func testTheDetailDocumentIsAsTallAsItsContentAndAsWideAsTheColumn() {
         let pane = makeListPane(height: 400)
         let document = pane.detailScroll.documentView!
         XCTAssertEqual(document.frame.height, 1000, accuracy: 0.5)
         XCTAssertEqual(document.frame.width, pane.detailScroll.contentView.bounds.width, accuracy: 0.5)
     }
 
-    func testScrollingColumnsToTopLeavesTheList() {
+    @MainActor func testScrollingColumnsToTopLeavesTheList() {
         let pane = makeListPane(height: 400)
         scroll(pane.detailScroll, to: 300)
         scroll(pane.listScroll, to: 50)
@@ -237,7 +236,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
 
     // MARK: - Natural height
 
-    func testNaturalHeightShowsTheWholeDetailColumn() {
+    @MainActor func testNaturalHeightShowsTheWholeDetailColumn() {
         let pane = makeListPane(height: 400)
         pane.rows.count = 2
         pane.table.reloadData()
@@ -247,7 +246,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
         XCTAssertEqual(tall - shorter, 400, accuracy: 0.5, "the detail content sets the natural height")
     }
 
-    func testNaturalHeightShowsEveryRowWhenTheListIsTaller() {
+    @MainActor func testNaturalHeightShowsEveryRowWhenTheListIsTaller() {
         let pane = makeListPane(height: 400)
         pane.detailHeight.constant = 100
         pane.rows.count = 40
@@ -259,7 +258,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
                        accuracy: 0.5)
     }
 
-    func testNaturalHeightIgnoresTheWindowsCurrentHeight() {
+    @MainActor func testNaturalHeightIgnoresTheWindowsCurrentHeight() {
         let pane = makeListPane(height: 400)
         let natural = pane.naturalContentHeight
         resize(pane, height: 900)
@@ -270,7 +269,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
 
     // MARK: - A button below the details
 
-    func testAButtonBelowTheDetailsStaysInViewWhileTheyScroll() {
+    @MainActor func testAButtonBelowTheDetailsStaysInViewWhileTheyScroll() {
         let pane = FooterPane()
         pane.view.setFrameSize(NSSize(width: SettingsMetrics.windowWidth, height: SettingsMetrics.listPaneMinimumHeight))
         pane.view.layoutSubtreeIfNeeded()
@@ -285,7 +284,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(frame(of: pane.detailScroll, in: pane).minY, button.maxY, "the details end above it")
     }
 
-    func testNaturalHeightCountsTheButtonBelowTheDetails() {
+    @MainActor func testNaturalHeightCountsTheButtonBelowTheDetails() {
         let pane = FooterPane()
         pane.view.setFrameSize(NSSize(width: SettingsMetrics.windowWidth, height: SettingsMetrics.listPaneMinimumHeight))
         pane.view.layoutSubtreeIfNeeded()
@@ -296,7 +295,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
 
     // MARK: - Whole-body panes
 
-    func testAPaneWithoutAListStillScrollsAsOneBody() {
+    @MainActor func testAPaneWithoutAListStillScrollsAsOneBody() {
         let pane = WholePane()
         pane.view.setFrameSize(NSSize(width: SettingsMetrics.windowWidth, height: 300))
         pane.view.layoutSubtreeIfNeeded()
@@ -306,19 +305,19 @@ final class SettingsPaneColumnsTests: XCTestCase {
         XCTAssertEqual(offset(scrollView), 200, accuracy: 0.5)
     }
 
-    func testAListPaneHasNoBodyScrollView() {
+    @MainActor func testAListPaneHasNoBodyScrollView() {
         let pane = makeListPane(height: 400)
         XCTAssertNil(pane.scrollView, "nothing scrolls the list and the details together")
     }
 
     // MARK: - The real panes
 
-    func testQuickDetourHasAPaneOfItsOwnAfterLinks() {
+    @MainActor func testQuickDetourHasAPaneOfItsOwnAfterLinks() {
         XCTAssertEqual(SettingsWindowController.paneOrder.map(\.rawValue),
                        ["general", "spaces", "links", "quickdetour", "profiles", "extensions", "contentblocker"])
     }
 
-    func testPanesWithAListScrollTheirColumnsAndTheOthersScrollAsOneBody() {
+    @MainActor func testPanesWithAListScrollTheirColumnsAndTheOthersScrollAsOneBody() {
         let whole: [SettingsPaneViewController] = [GeneralSettingsViewController(), QuickDetourSettingsViewController(),
                                                    ContentBlockerSettingsViewController()]
         let columns: [SettingsPaneViewController] = [SpacesSettingsViewController(), LinksSettingsViewController(),
@@ -335,7 +334,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
         }
     }
 
-    func testTheQuickDetourPaneFitsItsControls() {
+    @MainActor func testTheQuickDetourPaneFitsItsControls() {
         let pane = QuickDetourSettingsViewController()
         pane.view.setFrameSize(NSSize(width: SettingsMetrics.windowWidth, height: 600))
         pane.view.layoutSubtreeIfNeeded()
@@ -344,7 +343,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
         XCTAssertLessThan(natural, SettingsMetrics.listPaneMinimumHeight)
     }
 
-    func testTheLinksPaneDoesNotNeedMoreThanTheListMinimum() {
+    @MainActor func testTheLinksPaneDoesNotNeedMoreThanTheListMinimum() {
         let pane = LinksSettingsViewController()
         pane.view.setFrameSize(NSSize(width: SettingsMetrics.windowWidth, height: SettingsMetrics.listPaneMinimumHeight))
         pane.view.layoutSubtreeIfNeeded()
@@ -355,7 +354,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
 
     // MARK: - End anchoring
 
-    func testADetailColumnScrolledToItsEndStaysAtItsEndWhenThePaneShrinks() {
+    @MainActor func testADetailColumnScrolledToItsEndStaysAtItsEndWhenThePaneShrinks() {
         let pane = makeListPane(height: 640)
         scroll(pane.detailScroll, to: maxOffset(pane.detailScroll))
 
@@ -365,7 +364,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
         XCTAssertEqual(offset(pane.detailScroll), maxOffset(pane.detailScroll), accuracy: 0.5)
     }
 
-    func testAListScrolledToItsEndStaysAtItsEndWhenThePaneShrinks() {
+    @MainActor func testAListScrolledToItsEndStaysAtItsEndWhenThePaneShrinks() {
         let pane = makeListPane(height: 640)
         scroll(pane.listScroll, to: maxOffset(pane.listScroll))
 
@@ -374,7 +373,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
         XCTAssertEqual(offset(pane.listScroll), maxOffset(pane.listScroll), accuracy: 0.5)
     }
 
-    func testAListAtItsEndStaysAtItsEndWhenThePaneGrows() {
+    @MainActor func testAListAtItsEndStaysAtItsEndWhenThePaneGrows() {
         let pane = makeListPane(height: 420)
         scroll(pane.listScroll, to: maxOffset(pane.listScroll))
 
@@ -383,7 +382,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
         XCTAssertEqual(offset(pane.listScroll), maxOffset(pane.listScroll), accuracy: 0.5)
     }
 
-    func testAColumnScrolledElsewhereKeepsItsOffset() {
+    @MainActor func testAColumnScrolledElsewhereKeepsItsOffset() {
         let pane = makeListPane(height: 640)
         scroll(pane.detailScroll, to: 150)
         scroll(pane.listScroll, to: 60)
@@ -394,7 +393,7 @@ final class SettingsPaneColumnsTests: XCTestCase {
         XCTAssertEqual(offset(pane.listScroll), 60, accuracy: 0.5)
     }
 
-    func testAColumnAtItsTopStaysAtItsTop() {
+    @MainActor func testAColumnAtItsTopStaysAtItsTop() {
         let pane = makeListPane(height: 640)
 
         resize(pane, height: 420)

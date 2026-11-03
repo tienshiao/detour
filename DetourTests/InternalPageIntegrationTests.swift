@@ -24,8 +24,7 @@ import WebKit
 /// content world, which the handler is not registered in at all. Case (c) below
 /// is the stronger statement — even code already running in the *right* world is
 /// refused when the document it runs in is not the page.
-@MainActor
-final class InternalPageIntegrationTests: XCTestCase {
+nonisolated final class InternalPageIntegrationTests: XCTestCase {
 
     private let historyURL = URL(string: "detour://history/")!
     private let webURL = URL(string: "https://example.invalid/page")!
@@ -33,10 +32,10 @@ final class InternalPageIntegrationTests: XCTestCase {
     private var sharedProfiles: [Profile] = []
     private var sharedSpaceIDs: [UUID] = []
     private var createdTabs: [BrowserTab] = []
-    private var defaultFaviconFetch: ((URL, @escaping (Data?) -> Void) -> Void)!
+    private var defaultFaviconFetch: (FaviconPNGLoader.Fetch)!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         // The page asks for a favicon per rendered row; keep that off the
         // network and out of the shared cache.
         defaultFaviconFetch = FaviconPNGLoader.shared.fetch
@@ -44,7 +43,7 @@ final class InternalPageIntegrationTests: XCTestCase {
         FaviconPNGLoader.shared.fetch = { _, completion in completion(nil) }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         HistoryPageBridge.database = .shared
         FaviconPNGLoader.shared.fetch = defaultFaviconFetch
         FaviconPNGLoader.shared.resetForTesting()
@@ -62,7 +61,7 @@ final class InternalPageIntegrationTests: XCTestCase {
             TabStore.shared.forceRemoveProfile(id: profile.id)
         }
         sharedProfiles.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
@@ -70,7 +69,7 @@ final class InternalPageIntegrationTests: XCTestCase {
     /// A space on a profile of its own in the shared store — the bridge resolves
     /// the sending web view through `TabStore.shared`, so the store has to be
     /// that one.
-    private func makeSpace(_ name: String) -> Space {
+    @MainActor private func makeSpace(_ name: String) -> Space {
         let profile = TabStore.shared.addProfile(name: "Internal \(name)")
         sharedProfiles.append(profile)
         let space = TabStore.shared.addSpace(name: "Internal \(name)", emoji: "🕘",
@@ -80,21 +79,21 @@ final class InternalPageIntegrationTests: XCTestCase {
         return space
     }
 
-    private func makeIncognitoSpace() -> Space {
+    @MainActor private func makeIncognitoSpace() -> Space {
         let space = TabStore.shared.addIncognitoSpace()
         sharedSpaceIDs.append(space.id)
         return space
     }
 
     /// A tab with a web view big enough to lay the page out.
-    private func makeTab(in space: Space) -> BrowserTab {
+    @MainActor private func makeTab(in space: Space) -> BrowserTab {
         let tab = TabStore.shared.addTab(in: space)
         tab.webView?.frame = NSRect(x: 0, y: 0, width: 900, height: 700)
         createdTabs.append(tab)
         return tab
     }
 
-    private func makeDatabase() throws -> HistoryDatabase {
+    @MainActor private func makeDatabase() throws -> HistoryDatabase {
         var config = Configuration()
         config.foreignKeysEnabled = true
         return try HistoryDatabase(dbQueue: try DatabaseQueue(configuration: config))
@@ -103,7 +102,7 @@ final class InternalPageIntegrationTests: XCTestCase {
     /// Seeds one visit at a caller-chosen time. `recordVisit` stamps `Date()`
     /// and writes asynchronously; the page's ordering has to be deterministic.
     @discardableResult
-    private func seedVisit(_ db: HistoryDatabase, url: String, title: String,
+    @MainActor private func seedVisit(_ db: HistoryDatabase, url: String, title: String,
                            spaceID: UUID, visitTime: Double) throws -> Int64 {
         try db.dbQueue.write { conn in
             let urlID = try Int64.fetchOne(conn, sql: """
@@ -127,7 +126,7 @@ final class InternalPageIntegrationTests: XCTestCase {
     /// something — a row, or one of the empty states. The tab's own navigation
     /// delegate stays installed throughout (a `NavigationWaiter` would replace
     /// it, and with it the policy under test), so this polls instead.
-    private func waitForHistoryPage(_ tab: BrowserTab) async throws {
+    @MainActor private func waitForHistoryPage(_ tab: BrowserTab) async throws {
         try await waitUntil("the History page to render") {
             guard let webView = tab.webView, !webView.isLoading,
                   InternalPage(url: webView.url ?? URL(string: "about:blank")!) == .history else { return false }
@@ -139,13 +138,13 @@ final class InternalPageIntegrationTests: XCTestCase {
     }
 
     /// Runs `js` in the page world and decodes the JSON string it returns.
-    private func pageJSON(_ webView: WKWebView, _ js: String) async throws -> [String: Any] {
+    @MainActor private func pageJSON(_ webView: WKWebView, _ js: String) async throws -> [String: Any] {
         let raw = try await webView.callAsyncJavaScript(js, contentWorld: .page)
         let text = try XCTUnwrap(raw as? String, "expected a JSON string from the page")
         return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
     }
 
-    private func rowTitles(_ webView: WKWebView) async throws -> [String] {
+    @MainActor private func rowTitles(_ webView: WKWebView) async throws -> [String] {
         let result = try await pageJSON(webView, """
             return JSON.stringify({
                 titles: Array.from(document.querySelectorAll('.row .title')).map((el) => el.textContent),
@@ -155,7 +154,7 @@ final class InternalPageIntegrationTests: XCTestCase {
     }
 
     /// Posts one bridge message from `world` and reports how the promise settled.
-    private func callBridge(_ webView: WKWebView, in world: WKContentWorld,
+    @MainActor private func callBridge(_ webView: WKWebView, in world: WKContentWorld,
                             method: String = "history.query") async throws -> (result: Any?, error: String?) {
         let js = """
             try {
@@ -174,14 +173,14 @@ final class InternalPageIntegrationTests: XCTestCase {
     }
 
     /// Loads a web page into `tab`'s web view, keeping the tab's delegate.
-    private func loadWebPage(_ tab: BrowserTab, html: String) async throws {
+    @MainActor private func loadWebPage(_ tab: BrowserTab, html: String) async throws {
         let webView = try XCTUnwrap(tab.webView)
         try await loadHTMLStringAndWait(webView, html: html, baseURL: webURL)
     }
 
     // MARK: - The page loads
 
-    func testArmedTabLoadsTheHistoryPage() async throws {
+    @MainActor func testArmedTabLoadsTheHistoryPage() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Loads")
@@ -206,7 +205,7 @@ final class InternalPageIntegrationTests: XCTestCase {
 
     /// AC #9: an incognito space's page explains itself instead of falling
     /// through to another profile's history.
-    func testIncognitoTabSeesAnExplanationAndNoEntries() async throws {
+    @MainActor func testIncognitoTabSeesAnExplanationAndNoEntries() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let other = makeSpace("Incognito Other")
@@ -229,7 +228,7 @@ final class InternalPageIntegrationTests: XCTestCase {
     /// different times. The page shows its own profile's visit and its own
     /// visit time — never the `historyURL` aggregate, and never the other
     /// profile's visit.
-    func testAPageSeesOnlyItsOwnProfilesVisits() async throws {
+    @MainActor func testAPageSeesOnlyItsOwnProfilesVisits() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let mine = makeSpace("Scope Mine")
@@ -265,7 +264,7 @@ final class InternalPageIntegrationTests: XCTestCase {
 
     /// TASK-193.1: a Quick Detour's visits are the profile's, filed under no
     /// space; the page lists them with the rest and labels them.
-    func testQuickDetourVisitsAreListedWithALabel() async throws {
+    @MainActor func testQuickDetourVisitsAreListedWithALabel() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Quick Detour")
@@ -299,7 +298,7 @@ final class InternalPageIntegrationTests: XCTestCase {
 
     // MARK: - Hostile data (AC #7)
 
-    func testAHostileTitleIsRenderedAsText() async throws {
+    @MainActor func testAHostileTitleIsRenderedAsText() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Hostile")
@@ -340,7 +339,7 @@ final class InternalPageIntegrationTests: XCTestCase {
 
     // MARK: - The bridge is out of reach (AC #6)
 
-    func testPageWorldCannotSeeTheBridge() async throws {
+    @MainActor func testPageWorldCannotSeeTheBridge() async throws {
         HistoryPageBridge.database = try makeDatabase()
         let tab = makeTab(in: makeSpace("Page World"))
         tab.loadInternalPage(.history)
@@ -357,7 +356,7 @@ final class InternalPageIntegrationTests: XCTestCase {
     }
 
     /// (a) A web page cannot send its own tab to the internal page.
-    func testAWebPageCannotNavigateToTheInternalPage() async throws {
+    @MainActor func testAWebPageCannotNavigateToTheInternalPage() async throws {
         let tab = makeTab(in: makeSpace("Navigate"))
         try await loadWebPage(tab, html: "<html><body><a id='link' href='detour://history/'>go</a></body></html>")
         let webView = try XCTUnwrap(tab.webView)
@@ -376,7 +375,7 @@ final class InternalPageIntegrationTests: XCTestCase {
 
     /// (b) Nor embed it: the subframe navigation is cancelled, and the scheme
     /// handler would refuse to serve a web page's main document anyway.
-    func testAWebPageCannotEmbedTheInternalPage() async throws {
+    @MainActor func testAWebPageCannotEmbedTheInternalPage() async throws {
         let tab = makeTab(in: makeSpace("Iframe"))
         try await loadWebPage(tab, html: """
             <html><body><iframe id="frame" src="detour://history/"></iframe></body></html>
@@ -408,7 +407,7 @@ final class InternalPageIntegrationTests: XCTestCase {
     /// (c) The key one: code already running in the bridge's own content world
     /// is still refused while the document it runs in is a web page. Being in
     /// the right world is exposure control; the sender check is the guarantee.
-    func testTheBridgeRefusesTheRightWorldOnAWebPage() async throws {
+    @MainActor func testTheBridgeRefusesTheRightWorldOnAWebPage() async throws {
         HistoryPageBridge.database = try makeDatabase()
         let tab = makeTab(in: makeSpace("Wrong Document"))
         try await loadWebPage(tab, html: "<html><body>web</body></html>")
@@ -421,7 +420,7 @@ final class InternalPageIntegrationTests: XCTestCase {
 
     /// (d) And `load(_:)` — the entry point extensions, links and other apps
     /// all share — refuses the scheme outright.
-    func testLoadRefusesTheInternalSchemeOnAnUnarmedTab() async throws {
+    @MainActor func testLoadRefusesTheInternalSchemeOnAnUnarmedTab() async throws {
         let tab = makeTab(in: makeSpace("Unarmed"))
         try await loadWebPage(tab, html: "<html><head><title>Web</title></head><body>web</body></html>")
         let webView = try XCTUnwrap(tab.webView)
@@ -438,7 +437,7 @@ final class InternalPageIntegrationTests: XCTestCase {
 
     /// Sleep and wake: `wake()` re-arms from the persisted URL, so the page
     /// comes back rather than being cancelled by the policy.
-    func testAHistoryTabSurvivesSleepAndWake() async throws {
+    @MainActor func testAHistoryTabSurvivesSleepAndWake() async throws {
         HistoryPageBridge.database = try makeDatabase()
         let space = makeSpace("Wake")
         let tab = makeTab(in: space)
@@ -459,7 +458,7 @@ final class InternalPageIntegrationTests: XCTestCase {
     /// Relaunch: a session restore rebuilds the tab asleep from its persisted
     /// URL and wakes it when the window shows it. Its name and icon are there
     /// before the web view is.
-    func testARestoredHistoryTabLoadsOnWake() async throws {
+    @MainActor func testARestoredHistoryTabLoadsOnWake() async throws {
         HistoryPageBridge.database = try makeDatabase()
         let space = makeSpace("Restore")
         let restored = BrowserTab(id: UUID(), title: "History", url: historyURL, faviconURL: nil,
@@ -479,7 +478,7 @@ final class InternalPageIntegrationTests: XCTestCase {
 
     /// AC #8: visiting the page never puts it in the history. A private store,
     /// so the assertion is about the database the recorder actually writes to.
-    func testTheHistoryPageIsNeverRecordedAsAVisit() throws {
+    @MainActor func testTheHistoryPageIsNeverRecordedAsAVisit() throws {
         let historyDB = try makeDatabase()
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()), historyDB: historyDB)
         let profile = store.addProfile(name: "Not Recorded")

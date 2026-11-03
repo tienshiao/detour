@@ -15,12 +15,11 @@ import WebKit
 /// We test in a web view configured with the extension controller rather than
 /// messaging through a service worker, because the test sandbox doesn't support
 /// the cross-process IPC that service worker messaging requires.
-@MainActor
-final class ExtensionPolyfillIntegrationTests: XCTestCase {
+nonisolated final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
     private static let extensionID = "test-polyfill-integration"
 
-    private struct SharedState {
+    @MainActor private struct SharedState {
         let tempDir: URL
         let ext: WebExtension
         let context: WKWebExtensionContext
@@ -29,19 +28,19 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         let testProfile: Profile
     }
 
-    private nonisolated(unsafe) static var shared: SharedState?
-    private var state: SharedState { Self.shared! }
+    @MainActor private static var shared: SharedState?
+    @MainActor private var state: SharedState { Self.shared! }
 
     // MARK: - Setup
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         if Self.shared == nil {
             try await createSharedState()
         }
     }
 
-    private func createSharedState() async throws {
+    @MainActor private func createSharedState() async throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-test-polyfill-int-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -354,14 +353,17 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     }
 
     override class func tearDown() {
-        if let state = shared {
-            try? state.controller.unload(state.context)
-            ExtensionManager.shared.extensions.removeAll { $0.id == extensionID }
-            state.testProfile.extensionContexts.removeValue(forKey: extensionID)
-            try? FileManager.default.removeItem(at: state.tempDir)
+        // XCTest calls this on the main thread; the test state is main-actor.
+        MainActor.assumeIsolated {
+            if let state = shared {
+                try? state.controller.unload(state.context)
+                ExtensionManager.shared.extensions.removeAll { $0.id == extensionID }
+                state.testProfile.extensionContexts.removeValue(forKey: extensionID)
+                try? FileManager.default.removeItem(at: state.tempDir)
+            }
+            shared = nil
+            super.tearDown()
         }
-        shared = nil
-        super.tearDown()
     }
 
     // MARK: - Helpers
@@ -370,7 +372,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// This is the same configuration path that popup and options pages use —
     /// it inherits from the controller's config.webViewConfiguration where we
     /// registered the polyfill handler and script.
-    private func makeExtensionWebView() async throws -> WKWebView {
+    @MainActor private func makeExtensionWebView() async throws -> WKWebView {
         guard let config = state.context.webViewConfiguration else {
             throw XCTSkip("webViewConfiguration is nil — context not loaded in controller")
         }
@@ -384,11 +386,11 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     }
 
     /// Evaluate JS using callAsyncJavaScript so Promises are awaited.
-    private func eval(_ js: String, in webView: WKWebView) async throws -> Any? {
+    @MainActor private func eval(_ js: String, in webView: WKWebView) async throws -> Any? {
         try await webView.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
     }
 
-    private func evalJSON(_ js: String, in webView: WKWebView) async throws -> Any? {
+    @MainActor private func evalJSON(_ js: String, in webView: WKWebView) async throws -> Any? {
         let result = try await webView.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
         if let jsonString = result as? String,
            let data = jsonString.data(using: .utf8) {
@@ -399,11 +401,11 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
     // MARK: - Extension Loading
 
-    func testContextLoaded() {
+    @MainActor func testContextLoaded() {
         XCTAssertTrue(state.context.isLoaded, "Extension context should be loaded")
     }
 
-    func testExtensionDisplayName() {
+    @MainActor func testExtensionDisplayName() {
         XCTAssertEqual(state.context.webExtension.displayName, "Polyfill Integration Test")
     }
 
@@ -413,7 +415,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     // These tests verify polyfilled APIs work correctly in a WKWebView that has
     // the extension controller set.
 
-    func testAllPolyfillNamespacesExist() async throws {
+    @MainActor func testAllPolyfillNamespacesExist() async throws {
         let wv = try await makeExtensionWebView()
         let result = try await evalJSON("""
             return JSON.stringify({
@@ -435,14 +437,14 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
     // MARK: - Polyfill Bridge Works in Extension Controller Context
 
-    func testIdleQueryStateWithController() async throws {
+    @MainActor func testIdleQueryStateWithController() async throws {
         let wv = try await makeExtensionWebView()
         let state = try await eval("return await chrome.idle.queryState(60)", in: wv) as? String
         XCTAssertTrue(["active", "idle", "locked"].contains(state ?? ""),
                        "Should return valid idle state, got: \(state ?? "nil")")
     }
 
-    func testNotificationsCreateWithController() async throws {
+    @MainActor func testNotificationsCreateWithController() async throws {
         let wv = try await makeExtensionWebView()
         let result = try await evalJSON("""
             var id = await chrome.notifications.create('controller-test', {
@@ -453,7 +455,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         XCTAssertNotNil(result?["notificationId"] as? String)
     }
 
-    func testHistorySearchWithController() async throws {
+    @MainActor func testHistorySearchWithController() async throws {
         let wv = try await makeExtensionWebView()
         let result = try await evalJSON("""
             var items = await chrome.history.search({ text: '' });
@@ -462,7 +464,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         XCTAssertEqual(result?["isArray"] as? Bool, true)
     }
 
-    func testFontSettingsWithController() async throws {
+    @MainActor func testFontSettingsWithController() async throws {
         let wv = try await makeExtensionWebView()
         let result = try await evalJSON("""
             var fonts = await chrome.fontSettings.getFontList();
@@ -475,7 +477,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         XCTAssertEqual(result?["hasFontId"] as? Bool, true)
     }
 
-    func testManagementGetSelfWithController() async throws {
+    @MainActor func testManagementGetSelfWithController() async throws {
         let wv = try await makeExtensionWebView()
         let result = try await evalJSON("""
             var info = await chrome.management.getSelf();
@@ -486,7 +488,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         XCTAssertEqual(result?["type"] as? String, "extension")
     }
 
-    func testOffscreenHasDocumentWithController() async throws {
+    @MainActor func testOffscreenHasDocumentWithController() async throws {
         let wv = try await makeExtensionWebView()
         let result = try await eval("return await chrome.offscreen.hasDocument()", in: wv) as? Bool
         XCTAssertEqual(result, false)
@@ -494,7 +496,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
 
 
-    func testSessionsGetRecentlyClosedWithController() async throws {
+    @MainActor func testSessionsGetRecentlyClosedWithController() async throws {
         let wv = try await makeExtensionWebView()
         let result = try await evalJSON("""
             var sessions = await chrome.sessions.getRecentlyClosed();
@@ -503,7 +505,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
         XCTAssertEqual(result?["count"] as? Int, 0)
     }
 
-    func testEventEmittersWorkWithController() async throws {
+    @MainActor func testEventEmittersWorkWithController() async throws {
         let wv = try await makeExtensionWebView()
         let result = try await eval("""
             var fn = function() {};
@@ -521,7 +523,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// each module took, so this both asserts the API is usable and pins the
     /// environment: if a future WebKit starts vending `chrome.webRequest` or
     /// `chrome.action.getUserSettings`, the install mode changes here first.
-    func testGapFillingModulesInRealExtensionContext() async throws {
+    @MainActor func testGapFillingModulesInRealExtensionContext() async throws {
         let wv = try await makeExtensionWebView()
         let result = try await evalJSON("""
             return JSON.stringify({
@@ -568,7 +570,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// the hold; the churn guards the mechanism itself. The churn escalates each
     /// round on purpose: after the rest of the suite has grown the heap, a flat
     /// 1M allocations a round went 10 rounds without a collection (2026-09-13).
-    func testActionGetUserSettingsSurvivesGarbageCollection() async throws {
+    @MainActor func testActionGetUserSettingsSurvivesGarbageCollection() async throws {
         let wv = try await makeExtensionWebView()
         let install = try await eval("return __detourPolyfillDiag.apis.actionGetUserSettings;", in: wv) as? String
         if install == "native" {
@@ -628,7 +630,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// polyfill installs; a future WebKit that ships one is a passing test.
     /// Then the same collection churn as the getUserSettings guard, because
     /// `chrome.storage` is a weakly cached wrapper too.
-    func testStorageManagedInRealExtensionContextSurvivesGarbageCollection() async throws {
+    @MainActor func testStorageManagedInRealExtensionContextSurvivesGarbageCollection() async throws {
         let wv = try await makeExtensionWebView()
         let install = try await eval("return __detourPolyfillDiag.apis.storageManaged;", in: wv) as? String
         if install == "native" {
@@ -683,7 +685,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// granted and for a denied host, both with a port, and the negative control
     /// shows WebKit's own function still throws on the same input (if it stops,
     /// this test says so and the wrapper can go).
-    func testPermissionsContainsAnswersForPortedOriginPatterns() async throws {
+    @MainActor func testPermissionsContainsAnswersForPortedOriginPatterns() async throws {
         let wv = try await makeExtensionWebView()
 
         let result = try await evalJSON("""
@@ -765,7 +767,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// 2026-09-20). Nor does `setPermissionStatus(.unknown:)` clear an all-hosts
     /// grant, the same WebKit behaviour `ExtensionManager.setPermissionDecision`
     /// works around, so the granted dictionary is emptied directly and put back.
-    func testPermissionsContainsIsFalseForAnUngrantedPortedOrigin() async throws {
+    @MainActor func testPermissionsContainsIsFalseForAnUngrantedPortedOrigin() async throws {
         let wv = try await makeExtensionWebView()
 
         let savedGrants = state.context.grantedPermissionMatchPatterns
@@ -790,7 +792,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
     // MARK: - Polyfill Guards
 
-    func testPolyfillCanBeRerunWithoutBreaking() async throws {
+    @MainActor func testPolyfillCanBeRerunWithoutBreaking() async throws {
         // Running the polyfill a second time should not crash and APIs should still work
         let wv = try await makeExtensionWebView()
         let result = try await eval("""
@@ -808,7 +810,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// i.e. shaped like 1Password's; this fails with an empty reply if the polyfill
     /// ever replaces those globals again (TASK-15, verified 2026-09-11 by grafting
     /// the old global-swapping fallback back in: reply nil, lastError nil).
-    func testRuntimeSendMessageReachesWorkerRunningThePolyfill() async throws {
+    @MainActor func testRuntimeSendMessageReachesWorkerRunningThePolyfill() async throws {
         let wv = try await makeExtensionWebView()
         let result = try await askWorker(from: wv, message: ["type": "ping"])
         XCTAssertNil(result["lastError"] as? String, "sendMessage reported lastError")
@@ -834,7 +836,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// rejected by the delegate, not routed to the real native-host path (where
     /// `nativeHostAccess` exempts that host name from the manifest permission and
     /// a host manifest named "detourPolyfill" would be searched for and spawned).
-    func testNonObjectPolyfillNativeMessageIsRejected() async throws {
+    @MainActor func testNonObjectPolyfillNativeMessageIsRejected() async throws {
         let wv = try await makeExtensionWebView()
         let result = try await evalJSON("""
             const reply = await new Promise((resolve) => {
@@ -854,7 +856,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
     /// The page's origin is the context's random webkit-extension://<UUID>/,
     /// not the uniqueIdentifier; the profile resolves it to the extension id.
-    func testExtensionPageOriginResolvesToExtensionID() async throws {
+    @MainActor func testExtensionPageOriginResolvesToExtensionID() async throws {
         let wv = try await makeExtensionWebView()
         let originJSON = try await evalJSON(
             "return JSON.stringify({ scheme: location.protocol.slice(0, -1), host: location.host })", in: wv
@@ -873,7 +875,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
 
     /// NEGATIVE: from a real extension page, a body that names another
     /// extension is rejected because the origin-verified id disagrees.
-    func testExtensionPageCannotClaimAnotherExtensionID() async throws {
+    @MainActor func testExtensionPageCannotClaimAnotherExtensionID() async throws {
         let wv = try await makeExtensionWebView()
         let result = try await evalJSON("""
             try {
@@ -904,7 +906,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// replaces native frame enumeration — never loosened to make the suite
     /// green. The observed values are carried in the failure messages so the new
     /// reading is visible immediately.
-    func testWebNavigationFrameAPIsInRealExtensionContext() async throws {
+    @MainActor func testWebNavigationFrameAPIsInRealExtensionContext() async throws {
         let wv = try await makeExtensionWebView()
 
         let page = try await evalJSON("""
@@ -962,7 +964,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// and are the `sender.frameId`s it arrives with usable for targeting? This
     /// is the mechanism the Phase-3 frame registry would be built on, so it is
     /// probed directly rather than assumed.
-    func testContentScriptFrameHellosReachTheWorker() async throws {
+    @MainActor func testContentScriptFrameHellosReachTheWorker() async throws {
         // Real http(s) subframes, not srcdoc/data: ones — content scripts are
         // only injected into frames whose URL a match pattern accepts, and
         // `<all_urls>` does not cover about:srcdoc or data:. A loopback server
@@ -1114,7 +1116,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// script after load. Only the stable facts are asserted; the srcdoc and
     /// about:blank rows are the measurement, printed as
     /// `TASK-4 frame-kind measurement:` lines and attached to the activity.
-    func testFrameKindsAsReportedByNativeGetAllFrames() async throws {
+    @MainActor func testFrameKindsAsReportedByNativeGetAllFrames() async throws {
         // Single-quoted attributes so the same markup can also sit inside a
         // double-quoted `srcdoc=` attribute and a double-quoted JS string.
         func loginForm(_ marker: String) -> String {
@@ -1410,7 +1412,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// WebSocket()` reaches a real server through Detour's port, echoes a text and
     /// a binary frame, and closes cleanly — without touching WebKit's worker
     /// channel, which would deadlock this worker (TASK-2).
-    func testWorkerWebSocketIsRelayedToARealServer() async throws {
+    @MainActor func testWorkerWebSocketIsRelayedToARealServer() async throws {
         let server = try LoopbackWebSocketServer()
         defer { server.stop() }
         let serverPort = try await server.start()
@@ -1450,7 +1452,7 @@ final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// `sendNativeMessage` to it must be refused by the delegate rather than
     /// falling through to the real native-host path (where its name is exempt from
     /// the manifest gate and a host process named after it would be looked up).
-    func testOneShotMessageToTheRelayHostIsRejected() async throws {
+    @MainActor func testOneShotMessageToTheRelayHostIsRejected() async throws {
         let wv = try await makeExtensionWebView()
         let answer = try await askWorker(from: wv, message: ["type": "rawRelayNative"], timeout: 10)
         let reply = try XCTUnwrap(answer["reply"] as? [String: Any], "\(answer)")

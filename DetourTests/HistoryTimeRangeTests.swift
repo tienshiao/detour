@@ -8,18 +8,18 @@ import XCTest
 /// not one of two exact shapes has to be refused rather than guessed at — and
 /// what each period *means* in a local calendar, including on the two days a
 /// year that are not 24 hours long.
-final class HistoryTimeRangeTests: XCTestCase {
+nonisolated final class HistoryTimeRangeTests: XCTestCase {
 
     /// A calendar whose answers do not depend on where the test runs. Los
     /// Angeles because it has the DST transitions the day arithmetic has to
     /// survive.
-    private func losAngeles() throws -> Calendar {
+    @MainActor private func losAngeles() throws -> Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
         return calendar
     }
 
-    private func date(_ calendar: Calendar, _ year: Int, _ month: Int, _ day: Int,
+    @MainActor private func date(_ calendar: Calendar, _ year: Int, _ month: Int, _ day: Int,
                       _ hour: Int = 0, _ minute: Int = 0,
                       file: StaticString = #filePath, line: UInt = #line) throws -> Date {
         var components = DateComponents()
@@ -35,26 +35,26 @@ final class HistoryTimeRangeTests: XCTestCase {
     /// `startOfDay` — the expectation must not be computed the way the code
     /// under test computes it. (Every midnight these tests name exists: the
     /// Los Angeles DST jumps are at 02:00.)
-    private func seconds(_ calendar: Calendar, _ year: Int, _ month: Int, _ day: Int,
+    @MainActor private func seconds(_ calendar: Calendar, _ year: Int, _ month: Int, _ day: Int,
                          file: StaticString = #filePath, line: UInt = #line) throws -> Double {
         try date(calendar, year, month, day, 0, 0, file: file, line: line).timeIntervalSince1970
     }
 
     // MARK: - parse
 
-    func testAnAbsentRangeIsAllTime() {
+    @MainActor func testAnAbsentRangeIsAllTime() {
         XCTAssertEqual(HistoryTimeRange.parse(nil), .allTime)
         XCTAssertEqual(HistoryTimeRange.parse(NSNull()), .allTime)
     }
 
-    func testEachPresetParses() {
+    @MainActor func testEachPresetParses() {
         XCTAssertEqual(HistoryTimeRange.parse(["preset": "today"]), .range(.today))
         XCTAssertEqual(HistoryTimeRange.parse(["preset": "yesterday"]), .range(.yesterday))
         XCTAssertEqual(HistoryTimeRange.parse(["preset": "week"]), .range(.week))
         XCTAssertEqual(HistoryTimeRange.parse(["preset": "month"]), .range(.month))
     }
 
-    func testAValidDayParses() {
+    @MainActor func testAValidDayParses() {
         XCTAssertEqual(HistoryTimeRange.parse(["day": "2026-09-19"]),
                        .range(.day(year: 2026, month: 9, day: 19)))
         XCTAssertEqual(HistoryTimeRange.parse(["day": "2024-02-29"]),
@@ -64,12 +64,12 @@ final class HistoryTimeRangeTests: XCTestCase {
     /// A day the retention window no longer holds is not an error — it is a
     /// period nothing was recorded in, and the caller answers it with an empty
     /// list (AC #3).
-    func testADayOutsideTheRetentionWindowIsStillValid() {
+    @MainActor func testADayOutsideTheRetentionWindowIsStillValid() {
         XCTAssertEqual(HistoryTimeRange.parse(["day": "1999-01-01"]),
                        .range(.day(year: 1999, month: 1, day: 1)))
     }
 
-    func testEverythingElseIsMalformed() {
+    @MainActor func testEverythingElseIsMalformed() {
         let cases: [Any] = [
             "today",                                    // not a dictionary
             7,
@@ -103,7 +103,7 @@ final class HistoryTimeRangeTests: XCTestCase {
 
     // MARK: - bounds
 
-    func testPresetBounds() throws {
+    @MainActor func testPresetBounds() throws {
         let calendar = try losAngeles()
         let now = try date(calendar, 2026, 9, 19, 14, 30)
         let startOfToday = try seconds(calendar, 2026, 9, 19)
@@ -127,7 +127,7 @@ final class HistoryTimeRangeTests: XCTestCase {
 
     /// The bound is the start of the *local* day, not of the UTC one, whatever
     /// time of day it is asked at.
-    func testBoundsAreTheStartOfTheLocalDay() throws {
+    @MainActor func testBoundsAreTheStartOfTheLocalDay() throws {
         let calendar = try losAngeles()
         let startOfToday = try seconds(calendar, 2026, 9, 19)
         for hour in [0, 7, 16, 23] {
@@ -137,7 +137,7 @@ final class HistoryTimeRangeTests: XCTestCase {
         }
     }
 
-    func testADayIsTheWholeCalendarDay() throws {
+    @MainActor func testADayIsTheWholeCalendarDay() throws {
         let calendar = try losAngeles()
         let window = HistoryTimeRange.day(year: 2026, month: 9, day: 19)
             .bounds(now: try date(calendar, 2026, 9, 25), calendar: calendar)
@@ -149,7 +149,7 @@ final class HistoryTimeRangeTests: XCTestCase {
 
     /// The reason none of this is `86400` arithmetic: in Los Angeles 8 March
     /// 2026 is 23 hours long and 1 November 2026 is 25.
-    func testADayAcrossADSTTransitionIsNot24Hours() throws {
+    @MainActor func testADayAcrossADSTTransitionIsNot24Hours() throws {
         let calendar = try losAngeles()
         let now = try date(calendar, 2026, 12, 1)
 
@@ -164,7 +164,7 @@ final class HistoryTimeRangeTests: XCTestCase {
 
     /// The same for the presets, which walk backwards over those days: an
     /// interval subtraction would put "yesterday" an hour inside the day before.
-    func testPresetsLandOnMidnightAcrossADSTTransition() throws {
+    @MainActor func testPresetsLandOnMidnightAcrossADSTTransition() throws {
         let calendar = try losAngeles()
         let now = try date(calendar, 2026, 11, 2, 9, 0)
 
@@ -181,7 +181,7 @@ final class HistoryTimeRangeTests: XCTestCase {
 
     /// The same day means different instants in different places; the bounds
     /// follow the calendar they are given.
-    func testBoundsFollowTheGivenTimeZone() throws {
+    @MainActor func testBoundsFollowTheGivenTimeZone() throws {
         var tokyo = Calendar(identifier: .gregorian)
         tokyo.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Tokyo"))
         let losAngeles = try self.losAngeles()
@@ -198,7 +198,7 @@ final class HistoryTimeRangeTests: XCTestCase {
     /// and nothing else — so it is resolved as one whatever calendar the system
     /// is set to. Read as a Buddhist year, 2026 is 543 years in the past, and
     /// the list would not be showing the day the control names.
-    func testADayIsAGregorianDayWhateverTheSystemCalendarIs() throws {
+    @MainActor func testADayIsAGregorianDayWhateverTheSystemCalendarIs() throws {
         let gregorian = try losAngeles()
         var buddhist = Calendar(identifier: .buddhist)
         buddhist.timeZone = gregorian.timeZone
@@ -216,7 +216,7 @@ final class HistoryTimeRangeTests: XCTestCase {
 
     /// And the time zone of the calendar it was given is still what decides
     /// where that day begins — only the calendar system is replaced.
-    func testANonGregorianCalendarKeepsItsTimeZone() throws {
+    @MainActor func testANonGregorianCalendarKeepsItsTimeZone() throws {
         var buddhistTokyo = Calendar(identifier: .buddhist)
         buddhistTokyo.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Tokyo"))
         var tokyo = Calendar(identifier: .gregorian)
@@ -231,7 +231,7 @@ final class HistoryTimeRangeTests: XCTestCase {
 
     // MARK: - Parsed.bounds
 
-    func testParsedBoundsDistinguishAllTimeFromMalformed() throws {
+    @MainActor func testParsedBoundsDistinguishAllTimeFromMalformed() throws {
         let calendar = try losAngeles()
         let now = try date(calendar, 2026, 9, 19, 14, 30)
 
@@ -252,7 +252,7 @@ final class HistoryTimeRangeTests: XCTestCase {
     /// The resolved window travels back to the page and comes back again on the
     /// listing's later pages and on its deletes, so what the bridge accepts as
     /// one is pinned exactly: two keys, both there, `from` before `until`.
-    func testAWindowParses() {
+    @MainActor func testAWindowParses() {
         let window = HistoryTimeWindow(bridgeValue: ["from": 100, "until": 200])
         XCTAssertEqual(window, HistoryTimeWindow(from: 100, until: 200))
         XCTAssertEqual(HistoryTimeWindow(bridgeValue: ["from": 1.5, "until": 2.5]),
@@ -263,7 +263,7 @@ final class HistoryTimeRangeTests: XCTestCase {
 
     /// A period that is still running has no upper bound, and JSON `null` is
     /// how the page says so.
-    func testAWindowWithNoUpperBound() throws {
+    @MainActor func testAWindowWithNoUpperBound() throws {
         XCTAssertEqual(HistoryTimeWindow(bridgeValue: ["from": 100, "until": NSNull()]),
                        HistoryTimeWindow(from: 100, until: nil))
 
@@ -272,7 +272,7 @@ final class HistoryTimeRangeTests: XCTestCase {
                        "which is what a JS null arrives as")
     }
 
-    func testEverythingElseIsNotAWindow() {
+    @MainActor func testEverythingElseIsNotAWindow() {
         let cases: [Any] = [
             [String: Any](),                                    // says nothing
             ["from": 100],                                      // until is not optional on the wire
@@ -301,7 +301,7 @@ final class HistoryTimeRangeTests: XCTestCase {
 
     /// What goes out is what comes back: the reply's window is the page's next
     /// request, so the two spellings have to agree.
-    func testAWindowRoundTrips() throws {
+    @MainActor func testAWindowRoundTrips() throws {
         for window in [HistoryTimeWindow(from: 100, until: 200), HistoryTimeWindow(from: 100, until: nil)] {
             XCTAssertEqual(HistoryTimeWindow(bridgeValue: window.bridgeValue), window)
         }

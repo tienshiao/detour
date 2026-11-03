@@ -7,21 +7,20 @@ import WebKit
 /// a real web view (handlers and metadata reported, a stored handler run from
 /// native, the handler out of the page's reach), page mute, the playback run
 /// and the picture in picture bookkeeping.
-@MainActor
-final class NowPlayingTabTests: XCTestCase {
+nonisolated final class NowPlayingTabTests: XCTestCase {
 
     private var tabs: [BrowserTab] = []
-    private let scheme = StallingSchemeHandler()
+    @MainActor private lazy var scheme = StallingSchemeHandler()
     private let pageURL = URL(string: "stall://media.test/page")!
     private let otherURL = URL(string: "stall://media.test/other")!
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for tab in tabs { tab.teardown() }
         tabs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func makeTab() -> BrowserTab {
+    @MainActor private func makeTab() -> BrowserTab {
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(scheme, forURLScheme: "stall")
         let tab = BrowserTab(configuration: configuration)
@@ -39,19 +38,19 @@ final class NowPlayingTabTests: XCTestCase {
         </script></body></html>
         """
 
-    private func loadSessionPage(in tab: BrowserTab) async throws {
+    @MainActor private func loadSessionPage(in tab: BrowserTab) async throws {
         scheme.pages[pageURL.path] = Self.sessionPage
         tab.load(pageURL)
         try await waitUntil("the page's Media Session to reach the tab") { tab.mediaSession?.title == "Song" }
     }
 
-    private func pageLog(_ tab: BrowserTab) async throws -> String {
+    @MainActor private func pageLog(_ tab: BrowserTab) async throws -> String {
         try await tab.webView?.evaluateJavaScript("__log.join(',')") as? String ?? ""
     }
 
     // MARK: - Media Session bridge
 
-    func testThePageSessionReachesTheTab() async throws {
+    @MainActor func testThePageSessionReachesTheTab() async throws {
         let tab = makeTab()
         try await loadSessionPage(in: tab)
         XCTAssertEqual(tab.mediaSession, MediaSessionReport(actions: [.nexttrack], title: "Song", artist: "Band",
@@ -62,14 +61,14 @@ final class NowPlayingTabTests: XCTestCase {
         XCTAssertFalse(tab.canPerformMediaSessionAction(.previoustrack), "no handler, no button")
     }
 
-    func testNextRunsThePagesOwnHandler() async throws {
+    @MainActor func testNextRunsThePagesOwnHandler() async throws {
         let tab = makeTab()
         try await loadSessionPage(in: tab)
         tab.performMediaSessionAction(.nexttrack)
         try await waitUntil("the page's nexttrack handler to run") { try await self.pageLog(tab) == "next:nexttrack" }
     }
 
-    func testMetadataChangesAndRemovedHandlersAreReported() async throws {
+    @MainActor func testMetadataChangesAndRemovedHandlersAreReported() async throws {
         let tab = makeTab()
         try await loadSessionPage(in: tab)
         _ = try await tab.webView?.evaluateJavaScript("navigator.mediaSession.metadata.title = 'Other'; 1")
@@ -79,7 +78,7 @@ final class NowPlayingTabTests: XCTestCase {
         XCTAssertFalse(tab.canPerformMediaSessionAction(.nexttrack))
     }
 
-    func testANewDocumentForgetsTheOldSession() async throws {
+    @MainActor func testANewDocumentForgetsTheOldSession() async throws {
         let tab = makeTab()
         try await loadSessionPage(in: tab)
         scheme.pages[otherURL.path] = "<html><body>plain</body></html>"
@@ -89,7 +88,7 @@ final class NowPlayingTabTests: XCTestCase {
 
     /// A document no user script runs in (a PDF, a plugin document) never
     /// posts 'document': the native commit has to forget the old session.
-    func testACommittedNavigationForgetsTheOldSessionAtOnce() async throws {
+    @MainActor func testACommittedNavigationForgetsTheOldSessionAtOnce() async throws {
         let tab = makeTab()
         try await loadSessionPage(in: tab)
         tab.isPlayingAudio = true
@@ -106,7 +105,7 @@ final class NowPlayingTabTests: XCTestCase {
 
     /// The new page's reports arrive after the commit, so clearing on commit
     /// never wipes them.
-    func testTheNextPagesSessionSurvivesItsCommit() async throws {
+    @MainActor func testTheNextPagesSessionSurvivesItsCommit() async throws {
         let tab = makeTab()
         try await loadSessionPage(in: tab)
         scheme.pages[otherURL.path] = Self.sessionPage.replacingOccurrences(of: "title: 'Song'", with: "title: 'Second'")
@@ -117,7 +116,7 @@ final class NowPlayingTabTests: XCTestCase {
         XCTAssertEqual(tab.mediaSession?.title, "Second")
     }
 
-    func testThePageCannotSeeTheMessageHandler() async throws {
+    @MainActor func testThePageCannotSeeTheMessageHandler() async throws {
         let tab = makeTab()
         try await loadSessionPage(in: tab)
         let type = try await tab.webView?.evaluateJavaScript(
@@ -125,7 +124,7 @@ final class NowPlayingTabTests: XCTestCase {
         XCTAssertEqual(type, "undefined", "the handler lives in the isolated world only")
     }
 
-    func testAPageCanOnlyMisreportItsOwnSessionWithKnownActions() async throws {
+    @MainActor func testAPageCanOnlyMisreportItsOwnSessionWithKnownActions() async throws {
         let tab = makeTab()
         try await loadSessionPage(in: tab)
         _ = try await tab.webView?.evaluateJavaScript("""
@@ -135,10 +134,11 @@ final class NowPlayingTabTests: XCTestCase {
         try await waitUntil("the forged report") { tab.mediaSession?.actions == [.previoustrack] }
     }
 
-    func testAReportPostsANowPlayingChange() async throws {
+    @MainActor func testAReportPostsANowPlayingChange() async throws {
         let tab = makeTab()
         let posted = expectation(forNotification: BrowserTab.nowPlayingDidChangeNotification, object: tab) { _ in
-            tab.mediaSession?.title == "Song"
+            // The tab posts it from the main actor, synchronously.
+            MainActor.assumeIsolated { tab.mediaSession?.title == "Song" }
         }
         try await loadSessionPage(in: tab)
         await fulfillment(of: [posted], timeout: 5)
@@ -146,7 +146,7 @@ final class NowPlayingTabTests: XCTestCase {
 
     // MARK: - Mute
 
-    func testMuteMutesThePageAndUnmuteRestoresIt() throws {
+    @MainActor func testMuteMutesThePageAndUnmuteRestoresIt() throws {
         let tab = makeTab()
         let webView = try XCTUnwrap(tab.webView)
         tab.toggleMute()
@@ -159,7 +159,7 @@ final class NowPlayingTabTests: XCTestCase {
 
     // MARK: - Playback run
 
-    func testAudibleStateDrivesThePlaybackRun() throws {
+    @MainActor func testAudibleStateDrivesThePlaybackRun() throws {
         let tab = makeTab()
         XCTAssertNil(tab.playbackSession)
         tab.isPlayingAudio = true
@@ -170,7 +170,7 @@ final class NowPlayingTabTests: XCTestCase {
         XCTAssertNotNil(tab.playbackSession?.stoppedAt, "quiet, in its grace")
     }
 
-    func testClosingATabTakesItOffTheBarAtOnce() {
+    @MainActor func testClosingATabTakesItOffTheBarAtOnce() {
         let tab = makeTab()
         tab.isPlayingAudio = true
         tab.teardown()
@@ -178,7 +178,7 @@ final class NowPlayingTabTests: XCTestCase {
         XCTAssertNil(tab.nowPlayingCandidate(isPrivate: false).session)
     }
 
-    func testLiftingTheBarSuspensionKeepsThePauseHeld() {
+    @MainActor func testLiftingTheBarSuspensionKeepsThePauseHeld() {
         let tab = makeTab()
         tab.isPlayingAudio = true
         tab.togglePlayPauseFromBar()
@@ -191,7 +191,7 @@ final class NowPlayingTabTests: XCTestCase {
         XCTAssertTrue(tab.isPausedFromBar, "the pausing window's bar still holds it")
     }
 
-    func testAStaleAudioChangeDoesNotReachASleptTab() async throws {
+    @MainActor func testAStaleAudioChangeDoesNotReachASleptTab() async throws {
         let tab = makeTab()
         let webView = try XCTUnwrap(tab.webView)
         // What KVO queues just before `releaseWebView` removes the observer.
@@ -205,7 +205,7 @@ final class NowPlayingTabTests: XCTestCase {
         XCTAssertNil(tab.playbackSession, "a sleeping tab must not land on the bar")
     }
 
-    func testDismissingNamesTheCurrentRun() {
+    @MainActor func testDismissingNamesTheCurrentRun() {
         let tab = makeTab()
         tab.isPlayingAudio = true
         tab.dismissFromNowPlaying()
@@ -216,7 +216,7 @@ final class NowPlayingTabTests: XCTestCase {
 
     // MARK: - Picture in picture
 
-    func testAFrameInPiPKeepsTheTabInPiPUntilItLeaves() {
+    @MainActor func testAFrameInPiPKeepsTheTabInPiPUntilItLeaves() {
         let tab = makeTab()
         tab.mediaBridgeDidReport(.pictureInPicture(frame: "a", active: true))
         tab.mediaBridgeDidReport(.pictureInPicture(frame: "b", active: true))
@@ -227,14 +227,14 @@ final class NowPlayingTabTests: XCTestCase {
         XCTAssertFalse(tab.isInPictureInPicture, "the PiP window closed")
     }
 
-    func testANewDocumentLeavesPiP() {
+    @MainActor func testANewDocumentLeavesPiP() {
         let tab = makeTab()
         tab.mediaBridgeDidReport(.pictureInPicture(frame: "a", active: true))
         tab.mediaBridgeDidReport(.document)
         XCTAssertFalse(tab.isInPictureInPicture)
     }
 
-    func testARequestedPiPCountsUntilTheFrameReports() {
+    @MainActor func testARequestedPiPCountsUntilTheFrameReports() {
         let tab = makeTab()
         tab.pictureInPictureEntryWillStart()
         XCTAssertTrue(tab.isInPictureInPicture, "no bar flashes up while the video is on its way into PiP")
@@ -243,14 +243,14 @@ final class NowPlayingTabTests: XCTestCase {
         XCTAssertFalse(tab.isAwaitingPictureInPicture)
     }
 
-    func testAPageWithNoPiPVideoIsNotInPiP() {
+    @MainActor func testAPageWithNoPiPVideoIsNotInPiP() {
         let tab = makeTab()
         tab.pictureInPictureEntryWillStart()
         tab.pictureInPictureEntryDidFinish(requested: false)
         XCTAssertFalse(tab.isInPictureInPicture, "an audio-only page gets the bar")
     }
 
-    func testARequestThatNeverLandsTimesOut() async throws {
+    @MainActor func testARequestThatNeverLandsTimesOut() async throws {
         let saved = BrowserTab.pictureInPictureEntryTimeout
         BrowserTab.pictureInPictureEntryTimeout = 0.1
         defer { BrowserTab.pictureInPictureEntryTimeout = saved }

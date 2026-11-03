@@ -4,18 +4,18 @@ import CryptoKit
 
 /// TASK-113 AC #3: an update CRX is taken only when its CRX3 signatures verify and
 /// the declared key derives the installed extension's id.
-final class CRX3VerifierTests: XCTestCase {
+nonisolated final class CRX3VerifierTests: XCTestCase {
 
     private var zip: Data!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         zip = try CRX3TestBuilder.zip(files: [
             "manifest.json": #"{"manifest_version":3,"name":"Verify","version":"1.0"}"#,
         ])
     }
 
-    func testAnRSASignedFileVerifiesAndYieldsTheDeclaredKey() throws {
+    @MainActor func testAnRSASignedFileVerifiesAndYieldsTheDeclaredKey() throws {
         let pair = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)])
         XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .verified(publicKey: pair.publicKeySPKI))
@@ -26,7 +26,7 @@ final class CRX3VerifierTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("manifest.json").path))
     }
 
-    func testAnECDSASignedFileVerifies() throws {
+    @MainActor func testAnECDSASignedFileVerifies() throws {
         let key = P256.Signing.PrivateKey()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.ecdsa(key)])
         XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .verified(publicKey: key.publicKey.derRepresentation))
@@ -34,7 +34,7 @@ final class CRX3VerifierTests: XCTestCase {
 
     /// A store CRX carries the developer's proof and the store's; `crx_id` names
     /// the developer's key, and both must verify.
-    func testTwoProofsBothVerifyAndTheCRXIDPicksTheDeclaredOne() throws {
+    @MainActor func testTwoProofsBothVerifyAndTheCRXIDPicksTheDeclaredOne() throws {
         let developer = try CRX3TestBuilder.RSAKeyPair.generate()
         let store = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(store), .rsa(developer)],
@@ -42,7 +42,7 @@ final class CRX3VerifierTests: XCTestCase {
         XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .verified(publicKey: developer.publicKeySPKI))
     }
 
-    func testAPKCS1KeyInTheHeaderIsAccepted() throws {
+    @MainActor func testAPKCS1KeyInTheHeaderIsAccepted() throws {
         // Some packers write the bare RSAPublicKey; Security wants exactly that,
         // so the SPKI unwrapping must pass it through untouched.
         let pair = try CRX3TestBuilder.RSAKeyPair.generate()
@@ -54,7 +54,7 @@ final class CRX3VerifierTests: XCTestCase {
 
     /// The constant is Chromium's `kPublisherKeyHash`
     /// (components/crx_file/crx_verifier.cc), byte for byte.
-    func testTheWebStorePublisherKeyHashIsChromiums() {
+    @MainActor func testTheWebStorePublisherKeyHashIsChromiums() {
         XCTAssertEqual(CRX3Verifier.webStorePublisherKeyHash.map { String(format: "%02x", $0) }.joined(),
                        "61f7f2a6bfcf74cd0bc1fe2497cc9b04254c658f79f2145392867ea8366367cf")
         XCTAssertEqual(CRX3Verifier.Format.webStore,
@@ -63,7 +63,7 @@ final class CRX3VerifierTests: XCTestCase {
 
     /// A store file: the developer's proof (the `crx_id` key) and the
     /// publisher's. The result is still the developer's key.
-    func testAFileWithThePublishersProofPassesThePublisherFormat() throws {
+    @MainActor func testAFileWithThePublishersProofPassesThePublisherFormat() throws {
         let developer = try CRX3TestBuilder.RSAKeyPair.generate()
         let publisher = P256.Signing.PrivateKey()
         let format = CRX3Verifier.Format.publisherProof(keyHash: CRX3TestBuilder.keyHash(publisher))
@@ -79,7 +79,7 @@ final class CRX3VerifierTests: XCTestCase {
 
     /// NEGATIVE: correctly signed by its developer and by nobody else. Good
     /// enough for the developer format, not for the publisher's.
-    func testADeveloperOnlyFileFailsThePublisherFormat() throws {
+    @MainActor func testADeveloperOnlyFileFailsThePublisherFormat() throws {
         let developer = try CRX3TestBuilder.RSAKeyPair.generate()
         let publisher = P256.Signing.PrivateKey()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(developer)])
@@ -91,7 +91,7 @@ final class CRX3VerifierTests: XCTestCase {
 
     /// A second proof is not the publisher's just for being there: it has to
     /// be made with the publisher's key.
-    func testASecondProofByAnotherKeyIsNotThePublishers() throws {
+    @MainActor func testASecondProofByAnotherKeyIsNotThePublishers() throws {
         let developer = try CRX3TestBuilder.RSAKeyPair.generate()
         let publisher = P256.Signing.PrivateKey()
         let someoneElse = P256.Signing.PrivateKey()
@@ -104,7 +104,7 @@ final class CRX3VerifierTests: XCTestCase {
     /// The publisher's key is public, so anyone can *name* it in a header. A
     /// proof that names it over someone else's signature fails as a signature,
     /// before it can count as the publisher's.
-    func testNamingThePublishersKeyWithoutItsSignatureFails() throws {
+    @MainActor func testNamingThePublishersKeyWithoutItsSignatureFails() throws {
         let developer = try CRX3TestBuilder.RSAKeyPair.generate()
         let publisher = P256.Signing.PrivateKey()
         let forger = P256.Signing.PrivateKey()
@@ -119,7 +119,7 @@ final class CRX3VerifierTests: XCTestCase {
 
     /// The publisher's proof covers the archive: a store-signed file with one
     /// byte changed is no longer the store's.
-    func testATamperedFileWithThePublishersProofFails() throws {
+    @MainActor func testATamperedFileWithThePublishersProofFails() throws {
         let developer = try CRX3TestBuilder.RSAKeyPair.generate()
         let publisher = P256.Signing.PrivateKey()
         var crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(developer), .ecdsa(publisher)],
@@ -131,7 +131,7 @@ final class CRX3VerifierTests: XCTestCase {
 
     /// The publisher vouches for a file; it does not name the extension. A file
     /// with only the publisher's proof has no key for its `crx_id`.
-    func testThePublishersProofAloneDoesNotReplaceTheDevelopers() throws {
+    @MainActor func testThePublishersProofAloneDoesNotReplaceTheDevelopers() throws {
         let developer = try CRX3TestBuilder.RSAKeyPair.generate()
         let publisher = P256.Signing.PrivateKey()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.ecdsa(publisher)],
@@ -142,14 +142,14 @@ final class CRX3VerifierTests: XCTestCase {
 
     // MARK: - Rejections
 
-    func testATamperedPayloadFailsTheSignature() throws {
+    @MainActor func testATamperedPayloadFailsTheSignature() throws {
         let pair = try CRX3TestBuilder.RSAKeyPair.generate()
         var crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)])
         crx[crx.count - 1] ^= 0x01
         XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .failed(.badSignature))
     }
 
-    func testACorruptSignatureFails() throws {
+    @MainActor func testACorruptSignatureFails() throws {
         let pair = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(pair)], corruptSignatures: true)
         XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .failed(.badSignature))
@@ -159,7 +159,7 @@ final class CRX3VerifierTests: XCTestCase {
 
     /// The attack the check exists for: a header that *declares* the installed
     /// extension's key but was signed by someone else's.
-    func testAProofWhoseKeyDidNotSignItFails() throws {
+    @MainActor func testAProofWhoseKeyDidNotSignItFails() throws {
         let installed = try CRX3TestBuilder.RSAKeyPair.generate()
         let attacker = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(
@@ -167,14 +167,14 @@ final class CRX3VerifierTests: XCTestCase {
         XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .failed(.badSignature))
     }
 
-    func testAValidProofForADifferentKeyThanCRXIDFails() throws {
+    @MainActor func testAValidProofForADifferentKeyThanCRXIDFails() throws {
         let signer = try CRX3TestBuilder.RSAKeyPair.generate()
         let other = try CRX3TestBuilder.RSAKeyPair.generate()
         let crx = try CRX3TestBuilder.build(zip: zip, signers: [.rsa(signer)], declaredKey: other.publicKeySPKI)
         XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .failed(.noProofMatchesCRXID))
     }
 
-    func testOneBadProofAmongGoodOnesFailsTheWholeFile() throws {
+    @MainActor func testOneBadProofAmongGoodOnesFailsTheWholeFile() throws {
         let developer = try CRX3TestBuilder.RSAKeyPair.generate()
         let store = try CRX3TestBuilder.RSAKeyPair.generate()
         let forger = try CRX3TestBuilder.RSAKeyPair.generate()
@@ -185,7 +185,7 @@ final class CRX3VerifierTests: XCTestCase {
         XCTAssertEqual(CRX3Verifier.verify(crxData: crx, format: .developerProof), .failed(.badSignature))
     }
 
-    func testAFileWithoutProofsOrSignedHeaderDataFails() throws {
+    @MainActor func testAFileWithoutProofsOrSignedHeaderDataFails() throws {
         let noProofs = try CRX3TestBuilder.build(zip: zip, signers: [], declaredKey: Data([1, 2, 3]))
         XCTAssertEqual(CRX3Verifier.verify(crxData: noProofs, format: .developerProof), .failed(.noProofs))
 
@@ -202,7 +202,7 @@ final class CRX3VerifierTests: XCTestCase {
         header.removeAll()
     }
 
-    func testMalformedContainersFail() {
+    @MainActor func testMalformedContainersFail() {
         XCTAssertEqual(CRX3Verifier.verify(crxData: Data("Cr24".utf8), format: .developerProof), .failed(.malformed("too small")))
         XCTAssertEqual(CRX3Verifier.verify(crxData: Data(repeating: 0, count: 64), format: .developerProof), .failed(.malformed("bad magic")))
         var crx2 = Data("Cr24".utf8)
@@ -214,7 +214,7 @@ final class CRX3VerifierTests: XCTestCase {
 
     /// A length varint above Int.max must fail the parse, not trap on `Int(_:)`:
     /// the bytes come from the update server.
-    func testAFieldLengthAboveIntMaxIsMalformedNotACrash() {
+    @MainActor func testAFieldLengthAboveIntMaxIsMalformedNotACrash() {
         // Field 2 (RSA proof), wire type 2, length UInt64.max, and one zip byte
         // after the header so the container itself is well-formed.
         let header = CRX3TestBuilder.Protobuf.varint(2 << 3 | 2) + CRX3TestBuilder.Protobuf.varint(UInt64.max)
@@ -233,7 +233,7 @@ final class CRX3VerifierTests: XCTestCase {
 
     /// A CRX3 container around `header`, with one byte of "archive" so the
     /// container itself is well-formed.
-    private func container(header: Data) -> Data {
+    @MainActor private func container(header: Data) -> Data {
         var crx = Data("Cr24".utf8)
         var version = UInt32(3).littleEndian
         crx.append(Data(bytes: &version, count: 4))
@@ -252,7 +252,7 @@ final class CRX3VerifierTests: XCTestCase {
     /// These cases guarded `CRXUnpacker.extractPublicKey` (TASK-139) until that
     /// parser was removed (TASK-158); the verifier is now the only reader of a
     /// header, and takes all of them.
-    func testTheVerifierRejectsOversizedHeaderFieldLengthsWithoutCrashing() {
+    @MainActor func testTheVerifierRejectsOversizedHeaderFieldLengthsWithoutCrashing() {
         for length in Self.hostileLengths {
             for field in [2, 3, 7, 10000] as [UInt64] {
                 let header = CRX3TestBuilder.Protobuf.varint(field << 3 | 2)
@@ -266,7 +266,7 @@ final class CRX3VerifierTests: XCTestCase {
     /// The same lengths one level down, where `extractFieldBytes` reads them:
     /// the key or the signature inside a proof, and the crx_id inside
     /// `signed_header_data`.
-    func testTheVerifierRejectsOversizedLengthsInsideAProofAndTheSignedHeader() throws {
+    @MainActor func testTheVerifierRejectsOversizedLengthsInsideAProofAndTheSignedHeader() throws {
         let pair = try CRX3TestBuilder.RSAKeyPair.generate()
         let goodProof = CRX3TestBuilder.Protobuf.bytesField(1, pair.publicKeySPKI)
             + CRX3TestBuilder.Protobuf.bytesField(2, Data(repeating: 1, count: 8))
@@ -297,7 +297,7 @@ final class CRX3VerifierTests: XCTestCase {
 
     /// The unpacker does not read the header at all, so a hostile one cannot
     /// reach it: the same bytes get as far as unzip, which refuses the archive.
-    func testUnpackingAFileWithAnOversizedHeaderFieldLengthThrows() {
+    @MainActor func testUnpackingAFileWithAnOversizedHeaderFieldLengthThrows() {
         let header = CRX3TestBuilder.Protobuf.varint(2 << 3 | 2) + CRX3TestBuilder.Protobuf.varint(UInt64.max)
         XCTAssertThrowsError(try CRXUnpacker.unpack(data: container(header: header))) { error in
             guard case CRXUnpacker.CRXError.zipExtractionFailed = error else {
@@ -308,7 +308,7 @@ final class CRX3VerifierTests: XCTestCase {
 
     // MARK: - DER
 
-    func testSPKIUnwrappingYieldsThePKCS1KeySecurityAccepts() throws {
+    @MainActor func testSPKIUnwrappingYieldsThePKCS1KeySecurityAccepts() throws {
         let pair = try CRX3TestBuilder.RSAKeyPair.generate()
         XCTAssertEqual(CRX3Verifier.DER.pkcs1RSAPublicKey(fromSubjectPublicKeyInfo: pair.publicKeySPKI), pair.publicKeyPKCS1)
         XCTAssertEqual(CRX3Verifier.DER.pkcs1RSAPublicKey(fromSubjectPublicKeyInfo: pair.publicKeyPKCS1), pair.publicKeyPKCS1)

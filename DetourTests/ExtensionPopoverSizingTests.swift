@@ -12,8 +12,7 @@ import WebKit
 /// same about:blank document, which the popup page replaced. The popover
 /// stayed at 100×100 for good while WebKit laid the page out at its own
 /// content size, so the page was cut off.
-@MainActor
-final class ExtensionPopoverSizingTests: XCTestCase {
+nonisolated final class ExtensionPopoverSizingTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var createdProfiles: [Profile] = []
@@ -24,9 +23,9 @@ final class ExtensionPopoverSizingTests: XCTestCase {
     /// Kept alive for the rest of the test process: releasing a profile whose
     /// configuration hosted a popup web view frees its process pool inside an
     /// IPC dispatch and WebKit traps (see ExtensionMenuPopupDecisionTests).
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for controller in controllers { controller.close() }
         controllers.removeAll()
         for context in contexts { context.action(for: nil)?.closePopup() }
@@ -48,7 +47,7 @@ final class ExtensionPopoverSizingTests: XCTestCase {
     // MARK: - Fixture
 
     /// A page whose only content is a `width`×`height` box with no body margin.
-    private static func boxPage(width: Int, height: Int, color: String = "#c33") -> String {
+    @MainActor private static func boxPage(width: Int, height: Int, color: String = "#c33") -> String {
         """
         <!doctype html><html><head><style>
         html, body { margin: 0; padding: 0; }
@@ -57,13 +56,13 @@ final class ExtensionPopoverSizingTests: XCTestCase {
         """
     }
 
-    private struct Popup {
+    @MainActor private struct Popup {
         let context: WKWebExtensionContext
         let extensionID: String
         let profile: Profile
     }
 
-    private func loadPopupExtension(files: [String: String]) async throws -> Popup {
+    @MainActor private func loadPopupExtension(files: [String: String]) async throws -> Popup {
         let ext = try await makeTestExtension(
             id: "popup-size-\(UUID().uuidString.prefix(8))",
             manifestJSON: """
@@ -80,7 +79,7 @@ final class ExtensionPopoverSizingTests: XCTestCase {
     }
 
     /// A window with a button-sized anchor to present from.
-    private func makeAnchor() -> NSView {
+    @MainActor private func makeAnchor() -> NSView {
         let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 600, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -93,14 +92,14 @@ final class ExtensionPopoverSizingTests: XCTestCase {
 
     /// The popover's size when it first appears: polled finely, so a popover
     /// presented small and corrected later is caught small.
-    private func firstPresentedSize(of controller: ExtensionPopoverController,
+    @MainActor private func firstPresentedSize(of controller: ExtensionPopoverController,
                                     file: StaticString = #filePath, line: UInt = #line) async throws -> NSSize? {
         try await waitUntil("the popover to be shown", timeout: 10, pollInterval: 0.01,
                             file: file, line: line) { controller.presentedContentSize != nil }
         return controller.presentedContentSize
     }
 
-    private func waitForSize(_ size: NSSize, of controller: ExtensionPopoverController,
+    @MainActor private func waitForSize(_ size: NSSize, of controller: ExtensionPopoverController,
                              webView: WKWebView?, _ what: String,
                              file: StaticString = #filePath, line: UInt = #line) async throws {
         try await waitUntil(what, timeout: 10, file: file, line: line) {
@@ -114,7 +113,7 @@ final class ExtensionPopoverSizingTests: XCTestCase {
 
     /// AC #1, the toolbar-button path (`show`), which both the main window and
     /// the Quick Detour bar use.
-    func testAFixedSizePopupOpensAtItsContentSize() async throws {
+    @MainActor func testAFixedSizePopupOpensAtItsContentSize() async throws {
         let popup = try await loadPopupExtension(files: ["popup.html": Self.boxPage(width: 220, height: 300)])
         let anchor = makeAnchor()
         let controller = ExtensionPopoverController(extensionID: popup.extensionID, profile: popup.profile)
@@ -131,7 +130,7 @@ final class ExtensionPopoverSizingTests: XCTestCase {
 
     /// The `action.openPopup()` path: WebKit hands over a web view that has
     /// already loaded the page.
-    func testAnAlreadyLoadedPopupWebViewIsPresentedAtItsContentSize() async throws {
+    @MainActor func testAnAlreadyLoadedPopupWebViewIsPresentedAtItsContentSize() async throws {
         let popup = try await loadPopupExtension(files: ["popup.html": Self.boxPage(width: 260, height: 180)])
         let anchor = makeAnchor()
         let webView = try XCTUnwrap(popup.context.action(for: nil)?.popupWebView)
@@ -150,7 +149,7 @@ final class ExtensionPopoverSizingTests: XCTestCase {
 
     /// Content beyond 800×600 is held to it, and a tiny page to 100×100 — the
     /// limits the popover always had.
-    func testThePopoverSizeIsClampedToItsLimits() async throws {
+    @MainActor func testThePopoverSizeIsClampedToItsLimits() async throws {
         let popup = try await loadPopupExtension(files: ["popup.html": Self.boxPage(width: 1200, height: 40)])
         let anchor = makeAnchor()
         let controller = ExtensionPopoverController(extensionID: popup.extensionID, profile: popup.profile)
@@ -165,7 +164,7 @@ final class ExtensionPopoverSizingTests: XCTestCase {
 
     /// WebKit keeps the popup web view between opens: a second open of the
     /// same popup sizes it again, with nothing left over from the first.
-    func testReopeningThePopupSizesItAgain() async throws {
+    @MainActor func testReopeningThePopupSizesItAgain() async throws {
         let popup = try await loadPopupExtension(files: ["popup.html": Self.boxPage(width: 220, height: 300)])
         let anchor = makeAnchor()
         let webView = try XCTUnwrap(popup.context.action(for: nil)?.popupWebView)
@@ -204,7 +203,7 @@ final class ExtensionPopoverSizingTests: XCTestCase {
     /// Closed while it waits for the page to load: it never appears, and
     /// `onClose` is called — the Quick Detour closes the previous popup the
     /// moment it opens the next.
-    func testClosingBeforeThePageLoadsNeverPresents() async throws {
+    @MainActor func testClosingBeforeThePageLoadsNeverPresents() async throws {
         let popup = try await loadPopupExtension(files: ["popup.html": Self.boxPage(width: 220, height: 300)])
         let anchor = makeAnchor()
         let controller = ExtensionPopoverController(extensionID: popup.extensionID, profile: popup.profile)
@@ -225,7 +224,7 @@ final class ExtensionPopoverSizingTests: XCTestCase {
     /// The Quick Detour closes the previous popup as it opens the next, and
     /// the next can be presented before the previous one's close animation
     /// ends: that late close must not take the web view out of the new popover.
-    func testALateCloseOfThePreviousPopoverLeavesTheNextOneItsWebView() async throws {
+    @MainActor func testALateCloseOfThePreviousPopoverLeavesTheNextOneItsWebView() async throws {
         let popup = try await loadPopupExtension(files: ["popup.html": Self.boxPage(width: 220, height: 300)])
         let anchor = makeAnchor()
         let webView = try XCTUnwrap(popup.context.action(for: nil)?.popupWebView)
@@ -249,7 +248,7 @@ final class ExtensionPopoverSizingTests: XCTestCase {
 
     /// The anchor's window closed while the page loaded: nothing is presented
     /// and the close is reported, so an `openPopup()` caller is not left waiting.
-    func testAPopupWhoseAnchorIsGoneByLoadIsReportedClosed() async throws {
+    @MainActor func testAPopupWhoseAnchorIsGoneByLoadIsReportedClosed() async throws {
         let popup = try await loadPopupExtension(files: ["popup.html": Self.boxPage(width: 220, height: 300)])
         let controller = ExtensionPopoverController(extensionID: popup.extensionID, profile: popup.profile)
         controllers.append(controller)
@@ -268,7 +267,7 @@ final class ExtensionPopoverSizingTests: XCTestCase {
 
     /// AC #2: content that changes size after the page loaded resizes the
     /// popover, both larger and smaller.
-    func testAPopupThatChangesSizeAfterLoadResizesThePopover() async throws {
+    @MainActor func testAPopupThatChangesSizeAfterLoadResizesThePopover() async throws {
         let popup = try await loadPopupExtension(files: ["popup.html": Self.boxPage(width: 220, height: 300)])
         let anchor = makeAnchor()
         let controller = ExtensionPopoverController(extensionID: popup.extensionID, profile: popup.profile)
@@ -291,7 +290,7 @@ final class ExtensionPopoverSizingTests: XCTestCase {
 
     /// A popup that navigates to another of its pages takes that page's size:
     /// nothing that tracks the size may live in a document the popup leaves.
-    func testAPopupThatNavigatesToAnotherPageTakesThatPagesSize() async throws {
+    @MainActor func testAPopupThatNavigatesToAnotherPageTakesThatPagesSize() async throws {
         let popup = try await loadPopupExtension(files: [
             "popup.html": Self.boxPage(width: 220, height: 300),
             "second.html": Self.boxPage(width: 300, height: 240, color: "#36c"),

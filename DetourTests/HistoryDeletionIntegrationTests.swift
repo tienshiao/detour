@@ -18,29 +18,28 @@ import WebKit
 /// `HistoryPageBridge.database` and asks its question through
 /// `HistoryPageBridge.confirmClear`; nothing here touches the real history and
 /// no NSAlert is ever presented.
-@MainActor
-final class HistoryDeletionIntegrationTests: XCTestCase {
+nonisolated final class HistoryDeletionIntegrationTests: XCTestCase {
 
     private let webURL = URL(string: "https://example.invalid/page")!
 
     private var sharedProfiles: [Profile] = []
     private var sharedSpaceIDs: [UUID] = []
     private var createdTabs: [BrowserTab] = []
-    private var defaultFaviconFetch: ((URL, @escaping (Data?) -> Void) -> Void)!
-    private var defaultConfirmClear: ((BrowserTab, HistoryPageBridge.ClearRange, @escaping (Bool) -> Void) -> Void)!
+    private var defaultFaviconFetch: (FaviconPNGLoader.Fetch)!
+    private var defaultConfirmClear: (@MainActor (BrowserTab, HistoryPageBridge.ClearRange, @escaping (Bool) -> Void) -> Void)!
 
     /// What the last `history.clear` asked the user, recorded by the seam below.
     private var confirmedRanges: [HistoryPageBridge.ClearRange] = []
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         defaultFaviconFetch = FaviconPNGLoader.shared.fetch
         FaviconPNGLoader.shared.resetForTesting()
         FaviconPNGLoader.shared.fetch = { _, completion in completion(nil) }
         defaultConfirmClear = HistoryPageBridge.confirmClear
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         HistoryPageBridge.database = .shared
         HistoryPageBridge.confirmClear = defaultConfirmClear
         FaviconPNGLoader.shared.fetch = defaultFaviconFetch
@@ -59,7 +58,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
             TabStore.shared.forceRemoveProfile(id: profile.id)
         }
         sharedProfiles.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
@@ -67,7 +66,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// A space on a profile of its own in the shared store — the bridge resolves
     /// the sending web view through `TabStore.shared`, so the store has to be
     /// that one.
-    private func makeSpace(_ name: String) -> Space {
+    @MainActor private func makeSpace(_ name: String) -> Space {
         let profile = TabStore.shared.addProfile(name: "Delete \(name)")
         sharedProfiles.append(profile)
         let space = TabStore.shared.addSpace(name: "Delete \(name)", emoji: "🕘",
@@ -77,20 +76,20 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         return space
     }
 
-    private func makeIncognitoSpace() -> Space {
+    @MainActor private func makeIncognitoSpace() -> Space {
         let space = TabStore.shared.addIncognitoSpace()
         sharedSpaceIDs.append(space.id)
         return space
     }
 
-    private func makeTab(in space: Space) -> BrowserTab {
+    @MainActor private func makeTab(in space: Space) -> BrowserTab {
         let tab = TabStore.shared.addTab(in: space)
         tab.webView?.frame = NSRect(x: 0, y: 0, width: 900, height: 700)
         createdTabs.append(tab)
         return tab
     }
 
-    private func makeDatabase() throws -> HistoryDatabase {
+    @MainActor private func makeDatabase() throws -> HistoryDatabase {
         var config = Configuration()
         config.foreignKeysEnabled = true
         return try HistoryDatabase(dbQueue: try DatabaseQueue(configuration: config))
@@ -99,7 +98,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// Seeds one visit at a caller-chosen time; `recordVisit` stamps `Date()`
     /// and writes asynchronously, and these tests need deterministic ordering.
     @discardableResult
-    private func seedVisit(_ db: HistoryDatabase, url: String, title: String,
+    @MainActor private func seedVisit(_ db: HistoryDatabase, url: String, title: String,
                            spaceID: UUID, visitTime: Double) throws -> Int64 {
         try db.dbQueue.write { conn in
             let urlID = try Int64.fetchOne(conn, sql: """
@@ -119,7 +118,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// Answers `confirmed` to every clear and records the range it was asked
     /// about, in place of the NSAlert sheet production puts on the window.
-    private func stubConfirmClear(_ confirmed: Bool) {
+    @MainActor private func stubConfirmClear(_ confirmed: Bool) {
         confirmedRanges.removeAll()
         HistoryPageBridge.confirmClear = { [weak self] _, range, completion in
             self?.confirmedRanges.append(range)
@@ -127,15 +126,15 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         }
     }
 
-    private func visitTimes(_ db: HistoryDatabase, _ space: Space) -> [Double] {
+    @MainActor private func visitTimes(_ db: HistoryDatabase, _ space: Space) -> [Double] {
         db.visits(spaceIDs: [space.id.uuidString], limit: 100).map(\.visitTime)
     }
 
-    private func visitRowCount(_ db: HistoryDatabase) throws -> Int {
+    @MainActor private func visitRowCount(_ db: HistoryDatabase) throws -> Int {
         try db.dbQueue.read { conn in try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM historyVisit") ?? 0 }
     }
 
-    private func urlRowExists(_ db: HistoryDatabase, _ url: String) throws -> Bool {
+    @MainActor private func urlRowExists(_ db: HistoryDatabase, _ url: String) throws -> Bool {
         try db.dbQueue.read { conn in
             try Bool.fetchOne(conn, sql: "SELECT EXISTS(SELECT 1 FROM historyURL WHERE url = ?)",
                               arguments: [url]) ?? false
@@ -144,7 +143,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     // MARK: - Driving the page
 
-    private func waitForHistoryPage(_ tab: BrowserTab) async throws {
+    @MainActor private func waitForHistoryPage(_ tab: BrowserTab) async throws {
         try await waitUntil("the History page to render") {
             guard let webView = tab.webView, !webView.isLoading,
                   InternalPage(url: webView.url ?? URL(string: "about:blank")!) == .history else { return false }
@@ -157,7 +156,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// Posts one bridge message from `world` and reports how the promise settled.
     /// `params` travels as an argument rather than being spliced into the source,
     /// so a test can send exactly the shape it means to.
-    private func callBridge(_ webView: WKWebView, in world: WKContentWorld, method: String,
+    @MainActor private func callBridge(_ webView: WKWebView, in world: WKContentWorld, method: String,
                             params: [String: Any] = [:]) async throws -> (result: [String: Any]?, error: String?) {
         let js = """
             try {
@@ -180,12 +179,12 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// the document — clicks and key events dispatched here reach the listeners
     /// the user script registered.
     @discardableResult
-    private func runInPage(_ webView: WKWebView, _ js: String) async throws -> Any? {
+    @MainActor private func runInPage(_ webView: WKWebView, _ js: String) async throws -> Any? {
         try await webView.callAsyncJavaScript(js, contentWorld: InternalPageBridge.contentWorld)
     }
 
     /// Everything the assertions below look at, in one round trip.
-    private struct PageState {
+    @MainActor private struct PageState {
         var ids: [Int64] = []
         var titles: [String] = []
         var days: [String] = []
@@ -202,7 +201,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         var search = ""
     }
 
-    private func pageState(_ webView: WKWebView) async throws -> PageState {
+    @MainActor private func pageState(_ webView: WKWebView) async throws -> PageState {
         let raw = try await runInPage(webView, """
             const empty = document.getElementById('empty');
             const selection = document.getElementById('selection');
@@ -250,7 +249,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// belonging to that URL, so a test can watch a write fail without a corrupt
     /// database. `RAISE(ABORT)` rolls the whole delete back, which is exactly
     /// what a real write error does.
-    private func blockVisitDeletes(_ db: HistoryDatabase, forURL url: String? = nil) throws {
+    @MainActor private func blockVisitDeletes(_ db: HistoryDatabase, forURL url: String? = nil) throws {
         // SQLite allows no bound parameters inside a trigger program, and the
         // URLs these tests use are literals of their own.
         let when = url.map { "WHEN OLD.urlID = (SELECT id FROM historyURL WHERE url = '\($0)')" } ?? ""
@@ -262,7 +261,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         }
     }
 
-    private func waitForRows(_ webView: WKWebView, _ count: Int, _ what: String = "",
+    @MainActor private func waitForRows(_ webView: WKWebView, _ count: Int, _ what: String = "",
                              file: StaticString = #filePath, line: UInt = #line) async throws {
         try await waitUntil("the list to hold \(count) row(s)\(what.isEmpty ? "" : " — \(what)")",
                             file: file, line: line) {
@@ -270,7 +269,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         }
     }
 
-    private func loadWebPage(_ tab: BrowserTab, html: String) async throws {
+    @MainActor private func loadWebPage(_ tab: BrowserTab, html: String) async throws {
         let webView = try XCTUnwrap(tab.webView)
         try await loadHTMLStringAndWait(webView, html: html, baseURL: webURL)
     }
@@ -279,7 +278,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// The happy path through the real bridge: the page names one of its own
     /// visits and the row is gone.
-    func testDeletingAVisitFromThePageRemovesTheRow() async throws {
+    @MainActor func testDeletingAVisitFromThePageRemovesTheRow() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("One Visit")
@@ -306,7 +305,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// another profile deletes nothing, with or without the `allVisitsOfURL`
     /// fan-out — and the page's own visits of that URL are not collateral for a
     /// forged pointer either.
-    func testACrossProfileForgedVisitIDDeletesNothing() async throws {
+    @MainActor func testACrossProfileForgedVisitIDDeletesNothing() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let mine = makeSpace("Forged Mine")
@@ -352,7 +351,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// The confirmation is native and its answer is the only thing that can
     /// start a clear: "no" deletes nothing and says so.
-    func testClearDeletesNothingWhenTheUserCancels() async throws {
+    @MainActor func testClearDeletesNothingWhenTheUserCancels() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         stubConfirmClear(false)
@@ -375,7 +374,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     }
 
     /// And "yes" clears the sending profile only.
-    func testClearAllRemovesOnlyTheSendingProfilesVisits() async throws {
+    @MainActor func testClearAllRemovesOnlyTheSendingProfilesVisits() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         stubConfirmClear(true)
@@ -405,7 +404,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// The sheet blocks its own window, not the app: spaces can come and go
     /// while it is up. What gets cleared is the profile's scope as it is when
     /// the user answers, not as it was when the question was asked (TASK-87).
-    func testAClearUsesTheScopeTheTabHasWhenTheUserAnswers() async throws {
+    @MainActor func testAClearUsesTheScopeTheTabHasWhenTheUserAnswers() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let mine = makeSpace("Clear Scope")
@@ -443,7 +442,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// The cutoffs the ranges compute. The page never sends a time, so this is
     /// the whole of what "last hour" and "today" mean.
-    func testClearRangeCutoffs() throws {
+    @MainActor func testClearRangeCutoffs() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
         var components = DateComponents()
@@ -470,7 +469,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// Code in the bridge's own content world, running in a *web* document, is
     /// refused — the destructive methods are not a second door into the bridge.
-    func testDeleteAndClearAreRefusedFromAWebPage() async throws {
+    @MainActor func testDeleteAndClearAreRefusedFromAWebPage() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         stubConfirmClear(true)
@@ -494,7 +493,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// And the page world — where anything injected into the document would run
     /// — cannot see the handler at all, so it has nothing to call.
-    func testThePageWorldCannotReachTheDestructiveMethods() async throws {
+    @MainActor func testThePageWorldCannotReachTheDestructiveMethods() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Page World Delete")
@@ -518,7 +517,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// Params the page would never send: the bridge answers "malformed" rather
     /// than guessing what was meant.
-    func testMalformedDeleteAndClearParamsAreRejected() async throws {
+    @MainActor func testMalformedDeleteAndClearParamsAreRejected() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         stubConfirmClear(true)
@@ -554,7 +553,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// An incognito tab has no scope to delete in — and must not fall through to
     /// another profile's history.
-    func testDeleteAndClearAreUnavailableInIncognito() async throws {
+    @MainActor func testDeleteAndClearAreUnavailableInIncognito() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         stubConfirmClear(true)
@@ -586,7 +585,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// A day with several visits and a day with one, so deleting the lone row
     /// has to take its heading with it.
-    private struct PageFixture {
+    @MainActor private struct PageFixture {
         let db: HistoryDatabase
         let space: Space
         let tab: BrowserTab
@@ -596,7 +595,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         let yesterdayID: Int64
     }
 
-    private func makePageFixture(_ name: String) async throws -> PageFixture {
+    @MainActor private func makePageFixture(_ name: String) async throws -> PageFixture {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace(name)
@@ -626,7 +625,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// AC #1: the row's own delete button removes that row and nothing else,
     /// without a reload — and the day heading it was the last row of goes too.
-    func testTheRowDeleteButtonRemovesJustThatRow() async throws {
+    @MainActor func testTheRowDeleteButtonRemovesJustThatRow() async throws {
         let f = try await makePageFixture("Row Button")
         let before = try await pageState(f.webView)
         XCTAssertEqual(before.days.count, 2, "Today and Yesterday")
@@ -651,7 +650,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// AC #2: two rows picked with their checkboxes and removed with the Delete
     /// key. The search field is blurred first, the way clicking a row's checkbox
     /// blurs it — the key belongs to the list only when nothing is being typed.
-    func testSelectingTwoRowsAndPressingDeleteRemovesBoth() async throws {
+    @MainActor func testSelectingTwoRowsAndPressingDeleteRemovesBoth() async throws {
         let f = try await makePageFixture("Key Delete")
 
         let selected = try await runInPage(f.webView, """
@@ -678,7 +677,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// Shift+click takes the range between the last row toggled by hand and this
     /// one, and Escape puts the selection back.
-    func testShiftClickSelectsARangeAndEscapeClearsIt() async throws {
+    @MainActor func testShiftClickSelectsARangeAndEscapeClearsIt() async throws {
         let f = try await makePageFixture("Shift Range")
 
         let count = try await runInPage(f.webView, """
@@ -702,7 +701,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// In search mode a row stands for a URL, so deleting it takes every visit
     /// of that URL in scope — the page sends `allVisitsOfURL`.
-    func testDeletingASearchResultRemovesEveryVisitOfThatURL() async throws {
+    @MainActor func testDeletingASearchResultRemovesEveryVisitOfThatURL() async throws {
         let f = try await makePageFixture("Search Delete")
 
         try await runInPage(f.webView, """
@@ -729,7 +728,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// A write that fails must not look like a delete: the rows stay, the page
     /// says so, and the list it rebuilds afterwards still holds them (TASK-87).
-    func testAFailedDeleteKeepsTheRowsAndSaysSo() async throws {
+    @MainActor func testAFailedDeleteKeepsTheRowsAndSaysSo() async throws {
         let f = try await makePageFixture("Failed Delete")
         let before = try await pageState(f.webView).ids
         try blockVisitDeletes(f.db)
@@ -752,7 +751,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// A selection whose rows were rendered in different modes is sent as one
     /// request per mode: the URL-mode row takes every in-scope visit of its URL
     /// (and every row showing one of them), the list-mode row takes one visit.
-    func testAMixedSelectionAsksForWhatEachRowShows() async throws {
+    @MainActor func testAMixedSelectionAsksForWhatEachRowShows() async throws {
         let f = try await makePageFixture("Mixed Modes")
 
         // The page only produces a mixed list transiently — a reply for the
@@ -788,7 +787,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// screen already, the rest is still there, and the list is rebuilt from the
     /// database rather than left to the next refresh — which would see the same
     /// top row and change nothing.
-    func testAFailedRequestLeavesTheCommittedDeletionsGone() async throws {
+    @MainActor func testAFailedRequestLeavesTheCommittedDeletionsGone() async throws {
         let f = try await makePageFixture("Partial Failure")
         try blockVisitDeletes(f.db, forURL: "https://zulu.example/")
 
@@ -818,7 +817,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// Deleting every row that is loaded is not an empty history: the next page
     /// is already on its way, and "No history yet" would be a lie (TASK-87).
-    func testDeletingEveryLoadedRowNeverClaimsTheHistoryIsEmpty() async throws {
+    @MainActor func testDeletingEveryLoadedRowNeverClaimsTheHistoryIsEmpty() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Long History")
@@ -864,7 +863,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// query already says "search" and the rows on screen are still the list's
     /// per-visit ones. Deleting one of them must take that visit, not the URL's
     /// whole history (TASK-87).
-    func testARowDeletedWhileASearchIsPendingTakesOnlyThatVisit() async throws {
+    @MainActor func testARowDeletedWhileASearchIsPendingTakesOnlyThatVisit() async throws {
         let f = try await makePageFixture("Pending Search")
 
         // The database is one connection, so holding a write holds the search
@@ -914,7 +913,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// AC #3 from the page's side: the menu's ranges reach the bridge, and a
     /// confirmed clear leaves the list showing the empty state.
-    func testClearingFromTheMenuEmptiesTheList() async throws {
+    @MainActor func testClearingFromTheMenuEmptiesTheList() async throws {
         let f = try await makePageFixture("Clear Menu")
         stubConfirmClear(true)
         let chrome = try await pageState(f.webView)
@@ -934,7 +933,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// Cancelling changes nothing on screen — the page draws no confirmation of
     /// its own and has nothing to undo.
-    func testCancellingAClearLeavesTheListAlone() async throws {
+    @MainActor func testCancellingAClearLeavesTheListAlone() async throws {
         let f = try await makePageFixture("Clear Cancelled")
         stubConfirmClear(false)
         let before = try await pageState(f.webView).ids
@@ -956,7 +955,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// One `history.query`, refused loudly: the reply itself, for the tests that
     /// look at more of it than the entries.
-    private func query(_ webView: WKWebView, _ params: [String: Any],
+    @MainActor private func query(_ webView: WKWebView, _ params: [String: Any],
                        file: StaticString = #filePath, line: UInt = #line) async throws -> [String: Any] {
         let outcome = try await callBridge(webView, in: InternalPageBridge.contentWorld,
                                            method: "history.query", params: params)
@@ -965,7 +964,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     }
 
     /// The URLs one `history.query` answered with, in the order it answered.
-    private func queryURLs(_ webView: WKWebView, _ params: [String: Any],
+    @MainActor private func queryURLs(_ webView: WKWebView, _ params: [String: Any],
                            file: StaticString = #filePath, line: UInt = #line) async throws -> [String] {
         let entries = try await query(webView, params, file: file, line: line)["entries"]
             as? [[String: Any]] ?? []
@@ -973,7 +972,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     }
 
     /// A local day, as the page's date field and the `?day=` parameter spell it.
-    private func dayText(_ date: Date) -> String {
+    @MainActor private func dayText(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
@@ -981,11 +980,11 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         return formatter.string(from: date)
     }
 
-    private func todayText() -> String { dayText(Date()) }
+    @MainActor private func todayText() -> String { dayText(Date()) }
 
     /// The window a row on screen was rendered under, as the page stamped it.
     /// Nil for a listing of all of history, which has no window.
-    private func windowStamp(_ webView: WKWebView, at index: Int = 0) async throws -> [String: Any]? {
+    @MainActor private func windowStamp(_ webView: WKWebView, at index: Int = 0) async throws -> [String: Any]? {
         let raw = try await runInPage(webView, """
             const item = document.querySelectorAll('.item')[\(index)];
             return item ? String(item.dataset.window || '') : '';
@@ -996,7 +995,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// A preset is turned into bounds natively; the page gets the period's
     /// visits and nothing else, with or without a search.
-    func testAQueryWithAPresetAnswersOnlyThePeriodsVisits() async throws {
+    @MainActor func testAQueryWithAPresetAnswersOnlyThePeriodsVisits() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Preset Query")
@@ -1041,7 +1040,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// `history.delete` is not in this list any more: it takes the resolved
     /// `window` its rows were rendered under, never a period name (TASK-92), and
     /// a `range` it is sent anyway is simply a param it does not read.
-    func testAMalformedRangeIsRejected() async throws {
+    @MainActor func testAMalformedRangeIsRejected() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Malformed Range")
@@ -1082,7 +1081,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// The `window` the page echoes is validated as strictly as a range was:
     /// two keys, both there, `from` before `until`, on both methods.
-    func testAMalformedWindowIsRejected() async throws {
+    @MainActor func testAMalformedWindowIsRejected() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Malformed Window")
@@ -1132,7 +1131,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// The reply says which window it read under, so the page can ask for the
     /// rest of the same listing inside it. All of history has none: there is no
     /// period for a later page to stay inside.
-    func testAQueryReplyCarriesTheWindowItRead() async throws {
+    @MainActor func testAQueryReplyCarriesTheWindowItRead() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Reply Window")
@@ -1169,7 +1168,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// rendered under. The window the page echoes is what the bounds are, and
     /// the symbolic range — which would resolve to something else entirely — is
     /// not consulted for them.
-    func testAnEchoedWindowIsWhatALaterPageIsReadUnder() async throws {
+    @MainActor func testAnEchoedWindowIsWhatALaterPageIsReadUnder() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Echoed Window")
@@ -1203,7 +1202,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// AC #5: deleting a search row while a period is showing takes that URL's
     /// visits inside the window the row was rendered under. The ones outside it
     /// are not what the row stood for, and they stay.
-    func testDeletingAURLRowWithAWindowKeepsTheVisitsOutsideIt() async throws {
+    @MainActor func testDeletingAURLRowWithAWindowKeepsTheVisitsOutsideIt() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Ranged Delete")
@@ -1238,7 +1237,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// The wire change itself: `history.delete` no longer knows what a `range`
     /// is. One sent anyway is an unread param — not an error, and above all not
     /// a narrowing the caller might think it asked for.
-    func testDeleteIgnoresARangeParam() async throws {
+    @MainActor func testDeleteIgnoresARangeParam() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Delete Range Param")
@@ -1266,7 +1265,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// AC #1 and #4 from the page's side: the control reloads the list into the
     /// period, the rows remember which period they were read under, and the URL
     /// carries it so a reload comes back to the same view.
-    func testChoosingAPeriodFiltersTheListAndTheURL() async throws {
+    @MainActor func testChoosingAPeriodFiltersTheListAndTheURL() async throws {
         let f = try await makePageFixture("Range Control")
         let before = try await pageState(f.webView)
         XCTAssertFalse(before.rangeHidden, "the control is there for a normal space")
@@ -1335,7 +1334,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// page script has set the controls from the URL. The controls follow the
     /// page's state, not the other way round: a restored value that disagrees
     /// with the list is put right without a `change` (TASK-92).
-    func testRestoredFormStateCannotPutTheRangeControlOutOfStepWithTheList() async throws {
+    @MainActor func testRestoredFormStateCannotPutTheRangeControlOutOfStepWithTheList() async throws {
         let f = try await makePageFixture("Restored Form State")
 
         try await runInPage(f.webView, """
@@ -1350,7 +1349,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         XCTAssertEqual(state.search, "")
     }
 
-    func testChoosingASpecificDayFiltersToADayAtOnce() async throws {
+    @MainActor func testChoosingASpecificDayFiltersToADayAtOnce() async throws {
         let f = try await makePageFixture("Specific Day")
         let today = todayText()
         let startOfToday = Calendar.current.startOfDay(for: Date())
@@ -1428,7 +1427,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// AC #5 end to end, and the reason the row carries a window rather than a
     /// period: a URL row deleted while a day is showing takes that URL's visits
     /// *in that day* and leaves the ones the user could not see.
-    func testDeletingASearchRowUnderADayLeavesTheOtherDaysVisits() async throws {
+    @MainActor func testDeletingASearchRowUnderADayLeavesTheOtherDaysVisits() async throws {
         let f = try await makePageFixture("Windowed Row Delete")
         let today = todayText()
         // One more visit of the search row's URL, on another day entirely.
@@ -1463,7 +1462,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// A JSON object the page built, as a dictionary — for the measurements
     /// below that `pageState` has no business carrying.
-    private func jsonFromPage(_ webView: WKWebView, _ js: String) async throws -> [String: Any] {
+    @MainActor private func jsonFromPage(_ webView: WKWebView, _ js: String) async throws -> [String: Any] {
         let raw = try await runInPage(webView, js)
         let text = try XCTUnwrap(raw as? String, "expected a JSON string from the page")
         return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
@@ -1476,7 +1475,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// all; nothing is added to the page for this. A test that needs "no read
     /// happened" also asserts a read happening later, which is what proves the
     /// wrapper was in place rather than quietly missing.
-    private func instrumentBridge(_ webView: WKWebView) async throws {
+    @MainActor private func instrumentBridge(_ webView: WKWebView) async throws {
         try await runInPage(webView, """
             if (!window.bridgeLog) {
                 window.bridgeLog = { sent: 0, settled: 0, deletes: 0 };
@@ -1507,13 +1506,13 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     }
 
     /// What the page has asked the bridge for since the counters were zeroed.
-    private struct BridgeLog: Equatable {
+    @MainActor private struct BridgeLog: Equatable {
         var sent = 0
         var settled = 0
         var deletes = 0
     }
 
-    private func bridgeLog(_ webView: WKWebView) async throws -> BridgeLog {
+    @MainActor private func bridgeLog(_ webView: WKWebView) async throws -> BridgeLog {
         let dict = try await jsonFromPage(webView, "return JSON.stringify(window.bridgeLog);")
         var log = BridgeLog()
         log.sent = (dict["sent"] as? NSNumber)?.intValue ?? -1
@@ -1525,7 +1524,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// Waits for `count` reads to have been answered, so what is asserted
     /// afterwards is the page's state *after* the reply, not while it is in
     /// flight.
-    private func waitForSettledQueries(_ webView: WKWebView, _ count: Int,
+    @MainActor private func waitForSettledQueries(_ webView: WKWebView, _ count: Int,
                                        file: StaticString = #filePath, line: UInt = #line) async throws {
         try await waitUntil("\(count) history.query repl(y|ies) to land", file: file, line: line) {
             try await self.bridgeLog(webView).settled >= count
@@ -1536,14 +1535,14 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// sticky header is, where the list sits under it, and where the page is
     /// scrolled to. The numbers themselves are nobody's business — only that
     /// they are the same in both states.
-    private struct HeaderGeometry: Equatable {
+    @MainActor private struct HeaderGeometry: Equatable {
         var headerHeight = 0.0
         var firstItemTop = 0.0
         var lastItemTop = 0.0
         var scrollY = 0.0
     }
 
-    private func geometry(_ webView: WKWebView) async throws -> HeaderGeometry {
+    @MainActor private func geometry(_ webView: WKWebView) async throws -> HeaderGeometry {
         let dict = try await jsonFromPage(webView, """
             const items = document.querySelectorAll('.item');
             const last = items.length ? items[items.length - 1] : null;
@@ -1562,7 +1561,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
         return geometry
     }
 
-    private func assertUnmoved(_ actual: HeaderGeometry, _ expected: HeaderGeometry, _ what: String,
+    @MainActor private func assertUnmoved(_ actual: HeaderGeometry, _ expected: HeaderGeometry, _ what: String,
                                file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(actual.headerHeight, expected.headerHeight, accuracy: 0.01,
                        "the header changed height \(what)", file: file, line: line)
@@ -1577,7 +1576,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// AC: ticking the first row's checkbox moves nothing — not the header's
     /// height, not a row, not the scroll position — and neither does clearing
     /// the selection again (TASK-95).
-    func testSelectingTheFirstRowMovesNothing() async throws {
+    @MainActor func testSelectingTheFirstRowMovesNothing() async throws {
         let f = try await makePageFixture("Selection Layout")
         let idle = try await geometry(f.webView)
 
@@ -1601,7 +1600,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// The same, with the list scrolled: the header is sticky, so a strip added
     /// to it would push every visible row down here too.
-    func testSelectingARowMovesNothingWhenTheListIsScrolled() async throws {
+    @MainActor func testSelectingARowMovesNothingWhenTheListIsScrolled() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Selection Scrolled")
@@ -1667,7 +1666,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// is safe here, and it takes them out of hit-testing, the tab order and
     /// the accessibility tree. They come back with the search term, the period
     /// and the page's URL untouched.
-    func testTheSearchRowsControlsLeaveTheRowAndComeBackUnchanged() async throws {
+    @MainActor func testTheSearchRowsControlsLeaveTheRowAndComeBackUnchanged() async throws {
         let f = try await makePageFixture("Selection Controls")
 
         try await runInPage(f.webView, """
@@ -1744,7 +1743,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// A Clear History menu left open would hang over a list the selection is
     /// about to change, and come back open afterwards: entering the selection
     /// closes it, and it stays closed.
-    func testStartingASelectionClosesTheClearHistoryMenu() async throws {
+    @MainActor func testStartingASelectionClosesTheClearHistoryMenu() async throws {
         let f = try await makePageFixture("Selection Closes Menu")
 
         let opened = try await jsonFromPage(f.webView, """
@@ -1773,7 +1772,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// A control that has just left the row may not keep the caret — it would
     /// be typed into unseen. Focus goes back to the document while the
     /// selection is on, and the field gets it back when the selection ends.
-    func testASelectionNeverLeavesFocusInAControlThatLeftTheRow() async throws {
+    @MainActor func testASelectionNeverLeavesFocusInAControlThatLeftTheRow() async throws {
         let f = try await makePageFixture("Selection Focus")
 
         let selecting = try await jsonFromPage(f.webView, """
@@ -1811,7 +1810,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// The flow the restore is for: type a query, tick a row, change your mind,
     /// carry on typing. Cancel gives the field its focus and its text back —
     /// and runs the search it was owed.
-    func testCancellingASelectionGivesTheSearchFieldItsFocusBack() async throws {
+    @MainActor func testCancellingASelectionGivesTheSearchFieldItsFocusBack() async throws {
         let f = try await makePageFixture("Focus Restore")
 
         try await runInPage(f.webView, """
@@ -1837,7 +1836,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// Focus is given back, never taken: a user who put the caret somewhere
     /// else during the selection keeps it there.
-    func testASelectionDoesNotTakeFocusBackFromWhereTheUserPutIt() async throws {
+    @MainActor func testASelectionDoesNotTakeFocusBackFromWhereTheUserPutIt() async throws {
         let f = try await makePageFixture("Focus Not Stolen")
 
         let result = try await jsonFromPage(f.webView, """
@@ -1863,7 +1862,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// middle of the selection: re-rendering the list would throw the tick away
     /// and flash the header. The debounce is held, and run when the selection
     /// ends (TASK-95).
-    func testASearchTypedBeforeASelectionWaitsForItToEnd() async throws {
+    @MainActor func testASearchTypedBeforeASelectionWaitsForItToEnd() async throws {
         let f = try await makePageFixture("Pending Search Selection")
         try await instrumentBridge(f.webView)
 
@@ -1923,7 +1922,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// A narrow window is where an overlay would have put the count on top of
     /// the title. In the row itself the count is just another flex child: it
     /// ellipsizes, and the buttons stay inside the row.
-    func testTheSelectionFitsANarrowWindowWithoutOverlappingTheTitle() async throws {
+    @MainActor func testTheSelectionFitsANarrowWindowWithoutOverlappingTheTitle() async throws {
         let f = try await makePageFixture("Narrow Selection")
         // The same way `makeTab` sizes it — the view is in no hierarchy, so
         // nothing lays it back out; if that ever changes this fails as a
@@ -1973,7 +1972,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// is the row the swap has to work in as well. A private space records
     /// nothing, so there is no row to tick: the header's two states are driven
     /// here by the one class `updateSelectionBar` toggles.
-    func testTheIncognitoHeaderKeepsItsHeightInBothStates() async throws {
+    @MainActor func testTheIncognitoHeaderKeepsItsHeightInBothStates() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let tab = makeTab(in: makeIncognitoSpace())
@@ -2011,7 +2010,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// The reply to a read that was already in flight when the selection
     /// started is a replacement too, and waits its turn: dropped where it
     /// lands, re-asked when the selection ends (TASK-95).
-    func testAReplyInFlightWhenTheSelectionStartsIsDroppedAndReAsked() async throws {
+    @MainActor func testAReplyInFlightWhenTheSelectionStartsIsDroppedAndReAsked() async throws {
         let f = try await makePageFixture("Deferred Reply")
         try await instrumentBridge(f.webView)
 
@@ -2092,7 +2091,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// A refresh — the tab coming back into view, the window taking focus — is
     /// deferred too, and it is still a *refresh* when it runs: it finds the
     /// same top row and leaves the list, and the rows paged in below it, alone.
-    func testARefreshWhileSelectingIsDeferredAndStillARefresh() async throws {
+    @MainActor func testARefreshWhileSelectingIsDeferredAndStillARefresh() async throws {
         let f = try await makePageFixture("Deferred Refresh")
         try await instrumentBridge(f.webView)
 
@@ -2144,7 +2143,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// Only *replacing* the list is deferred. Cmd+A and then scrolling for
     /// more is a real flow, so a load-more page still appends — under the
     /// selection, which keeps every row it had.
-    func testLoadMoreStillAppendsWhileSelecting() async throws {
+    @MainActor func testLoadMoreStillAppendsWhileSelecting() async throws {
         let db = try makeDatabase()
         HistoryPageBridge.database = db
         let space = makeSpace("Append While Selecting")
@@ -2186,7 +2185,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// A delete that fails: the selection ends — the header may not go on
     /// offering Delete for rows it could not delete — and the list is rebuilt
     /// from the database exactly once.
-    func testAFailedDeleteClearsTheSelectionAndRebuildsTheListOnce() async throws {
+    @MainActor func testAFailedDeleteClearsTheSelectionAndRebuildsTheListOnce() async throws {
         let f = try await makePageFixture("Failed Delete Selection")
         try blockVisitDeletes(f.db)
         try await instrumentBridge(f.webView)
@@ -2230,7 +2229,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// The caret comes back when the delete *failed*: nothing was removed, the
     /// key that asked is long since up, and the user is where they were.
-    func testAFailedDeleteGivesTheSearchFieldItsFocusBack() async throws {
+    @MainActor func testAFailedDeleteGivesTheSearchFieldItsFocusBack() async throws {
         let f = try await makePageFixture("Failed Delete Focus")
         try blockVisitDeletes(f.db)
         try await instrumentBridge(f.webView)
@@ -2260,7 +2259,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// that asked may still be down, and a repeat arriving once the field has
     /// the caret is typed into it: the repeat guard never sees those, because
     /// a focused text field returns before it (TASK-95).
-    func testAFailedKeyboardDeleteDoesNotHandTheCaretBack() async throws {
+    @MainActor func testAFailedKeyboardDeleteDoesNotHandTheCaretBack() async throws {
         let f = try await makePageFixture("Failed Keyboard Delete Focus")
         try blockVisitDeletes(f.db)
         try await instrumentBridge(f.webView)
@@ -2291,7 +2290,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// A secondary press opens a menu and fires no `click`, so nothing
     /// collects the candidate it would otherwise have left — and a keyboard
     /// selection made later must not inherit it.
-    func testARightClickLeavesNoFocusCandidateBehind() async throws {
+    @MainActor func testARightClickLeavesNoFocusCandidateBehind() async throws {
         let f = try await makePageFixture("Right Click Candidate")
 
         let result = try await jsonFromPage(f.webView, """
@@ -2316,7 +2315,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// And so does a press released where no `click` follows: the release
     /// itself clears the candidate, after the click it was waiting for did
     /// not come.
-    func testAPressThatFiresNoClickLeavesNoFocusCandidateBehind() async throws {
+    @MainActor func testAPressThatFiresNoClickLeavesNoFocusCandidateBehind() async throws {
         let f = try await makePageFixture("Abandoned Press Candidate")
 
         try await runInPage(f.webView, """
@@ -2345,7 +2344,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// A row's own × while other rows are ticked deletes that row only: the
     /// selection stands, and the caret it is holding is still owed back.
-    func testDeletingAnUnselectedRowLeavesTheSelectionAndItsFocusAlone() async throws {
+    @MainActor func testDeletingAnUnselectedRowLeavesTheSelectionAndItsFocusAlone() async throws {
         let f = try await makePageFixture("Row Button During Selection")
 
         try await runInPage(f.webView, """
@@ -2380,7 +2379,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// Clearing the history while something else is owed is still one read:
     /// ending the selection runs it, and the caller does not run a second.
-    func testClearingWithAReloadOwedReadsTheHistoryOnce() async throws {
+    @MainActor func testClearingWithAReloadOwedReadsTheHistoryOnce() async throws {
         let f = try await makePageFixture("Clear With Owed Reload")
         stubConfirmClear(true)
         try await instrumentBridge(f.webView)
@@ -2410,7 +2409,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// Holding Delete down deletes once. The repeats arrive while the request
     /// is in flight and after the rows are gone; neither may do anything —
     /// least of all reach the search field the selection gives back.
-    func testHoldingDeleteDeletesOnceAndTheRepeatsGoNowhere() async throws {
+    @MainActor func testHoldingDeleteDeletesOnceAndTheRepeatsGoNowhere() async throws {
         let f = try await makePageFixture("Key Repeat")
         try await instrumentBridge(f.webView)
 
@@ -2472,7 +2471,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// A selection that ends because its rows were deleted hands focus to
     /// nobody — the key that deleted them may still be down.
-    func testASelectionEndedByADeleteDoesNotHandFocusBack() async throws {
+    @MainActor func testASelectionEndedByADeleteDoesNotHandFocusBack() async throws {
         let f = try await makePageFixture("Focus After Delete")
 
         try await runInPage(f.webView, """
@@ -2501,7 +2500,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// page notes where the caret was as the press begins, so Cancel can still
     /// give it back (TASK-95) — `pick.click()` alone never exercises this,
     /// because a synthetic click does no focus handling at all.
-    func testAPressThatBlursTheFieldStillHandsTheCaretBack() async throws {
+    @MainActor func testAPressThatBlursTheFieldStillHandsTheCaretBack() async throws {
         let f = try await makePageFixture("Pointer Focus")
 
         let result = try await jsonFromPage(f.webView, """
@@ -2537,7 +2536,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// And the candidate belongs to that press alone: a press that started no
     /// selection must not hand its caret to a keyboard selection made later,
     /// with the focus somewhere else entirely.
-    func testAPressThatStartedNoSelectionLeavesNothingBehind() async throws {
+    @MainActor func testAPressThatStartedNoSelectionLeavesNothingBehind() async throws {
         let f = try await makePageFixture("Stale Focus Candidate")
 
         let result = try await jsonFromPage(f.webView, """
@@ -2569,7 +2568,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// Cancel reached with the keyboard: focus is on the button that is about
     /// to stop being rendered, which counts as nowhere — the field gets it
     /// back (Full Keyboard Access).
-    func testCancellingFromTheKeyboardStillGivesTheFieldItsFocusBack() async throws {
+    @MainActor func testCancellingFromTheKeyboardStillGivesTheFieldItsFocusBack() async throws {
         let f = try await makePageFixture("Focus From Cancel")
 
         let result = try await jsonFromPage(f.webView, """
@@ -2598,7 +2597,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// `TabStore.shared.historyDidDelete`, which this store is not; the delete
     /// and the notification are therefore driven by hand, in the order the
     /// bridge drives them. What is under test is the invalidation itself.
-    func testRevisitingRightAfterADeleteIsRecordedAgain() async throws {
+    @MainActor func testRevisitingRightAfterADeleteIsRecordedAgain() async throws {
         let historyDB = try makeDatabase()
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()), historyDB: historyDB)
         let profile = store.addProfile(name: "Dedup")
@@ -2643,7 +2642,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// in flight — legitimately *after* the user chose what to delete. What that
     /// visit left in memory describes a row the delete never saw, and clearing
     /// it would cost the user the next revisit and the next title correction.
-    func testStateFromAVisitRecordedAfterTheRequestSurvivesTheDelete() async throws {
+    @MainActor func testStateFromAVisitRecordedAfterTheRequestSurvivesTheDelete() async throws {
         let historyDB = try makeDatabase()
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()), historyDB: historyDB)
         let profile = store.addProfile(name: "Late Visit")
@@ -2678,7 +2677,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// A URL that only *lost* visits still has its `historyURL` row, so a tab
     /// sitting on it keeps the window in which its settled title corrects that
     /// row (TASK-88) — only a URL that went entirely clears it.
-    func testATabOnAnAffectedButNotRemovedURLKeepsItsCorrectionState() async throws {
+    @MainActor func testATabOnAnAffectedButNotRemovedURLKeepsItsCorrectionState() async throws {
         let historyDB = try makeDatabase()
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()), historyDB: historyDB)
         let profile = store.addProfile(name: "Affected")
@@ -2713,7 +2712,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
 
     /// A space that no longer exists keeps visits no profile can see; the sweep
     /// at launch is where they go.
-    func testTheLaunchSweepRemovesVisitsOfDeletedSpaces() throws {
+    @MainActor func testTheLaunchSweepRemovesVisitsOfDeletedSpaces() throws {
         let historyDB = try makeDatabase()
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()), historyDB: historyDB)
         let profile = store.addProfile(name: "Sweep")
@@ -2739,7 +2738,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// whole session: a space deleted in between is still undoable, so its
     /// visits must survive the sweep — otherwise the undo brings the space back
     /// without its history.
-    func testTheLaunchSweepKeepsTheHistoryOfASpaceDeletedThisSession() throws {
+    @MainActor func testTheLaunchSweepKeepsTheHistoryOfASpaceDeletedThisSession() throws {
         let historyDB = try makeDatabase()
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()), historyDB: historyDB)
         let profile = store.addProfile(name: "Sweep Undo")
@@ -2765,7 +2764,7 @@ final class HistoryDeletionIntegrationTests: XCTestCase {
     /// reset or failed to restore comes up with spaces no visit belongs to, and
     /// every visit would look orphaned. Nothing is swept until one surviving
     /// space proves the two files belong together.
-    func testTheLaunchSweepRemovesNothingWhenNoSurvivingSpaceHasVisits() throws {
+    @MainActor func testTheLaunchSweepRemovesNothingWhenNoSurvivingSpaceHasVisits() throws {
         let historyDB = try makeDatabase()
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()), historyDB: historyDB)
         let profile = store.addProfile(name: "Sweep Guard")

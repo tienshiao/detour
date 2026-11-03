@@ -12,15 +12,14 @@ import GRDB
 /// The round trips use two `TabStore`s on one in-memory `AppDatabase` (the second
 /// store is the relaunch) and real `WKWebExtension` contexts, so each launch gets
 /// the base URL WebKit actually hands out.
-@MainActor
-final class ExtensionPagePersistenceTests: XCTestCase {
+nonisolated final class ExtensionPagePersistenceTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var loadedProfiles: [Profile] = []
     private var sharedSpaceIDs: [UUID] = []
     private var sharedProfiles: [Profile] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for spaceID in sharedSpaceIDs {
             guard let space = TabStore.shared.space(withID: spaceID) else { continue }
             for tab in space.tabs + space.pinnedTabs { tab.teardown() }
@@ -36,29 +35,29 @@ final class ExtensionPagePersistenceTests: XCTestCase {
         loadedProfiles.removeAll()
         for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         try AppDatabase(dbQueue: DatabaseQueue())
     }
 
     /// A minimal MV3 extension with an options page and no background content.
-    private func makeExtension() async throws -> WebExtension {
+    @MainActor private func makeExtension() async throws -> WebExtension {
         let ext = try await makeOptionsPageTestExtension(idPrefix: "page-persist",
                                                          name: "Page Persistence Test")
         tempDirs.append(ext.basePath)
         return ext
     }
 
-    private func loadContext(_ ext: WebExtension, in profile: Profile) throws -> WKWebExtensionContext {
+    @MainActor private func loadContext(_ ext: WebExtension, in profile: Profile) throws -> WKWebExtensionContext {
         loadedProfiles.append(profile)
         return try loadTestContext(ext, in: profile)
     }
 
-    private func restoredStore(_ db: AppDatabase) -> TabStore {
+    @MainActor private func restoredStore(_ db: AppDatabase) -> TabStore {
         let store = TabStore(appDB: db)
         _ = store.restoreSession()
         return store
@@ -66,7 +65,7 @@ final class ExtensionPagePersistenceTests: XCTestCase {
 
     // MARK: - Classifier
 
-    func testClassifierLeavesOrdinaryURLsAlone() {
+    @MainActor func testClassifierLeavesOrdinaryURLsAlone() {
         XCTAssertEqual(classifyPersistedExtensionPage(url: URL(string: "https://example.com/"), extensionID: nil,
                                                       installedExtensionIDs: [], enabledExtensionIDs: []),
                        .notExtensionPage)
@@ -75,14 +74,14 @@ final class ExtensionPagePersistenceTests: XCTestCase {
                        .notExtensionPage)
     }
 
-    func testClassifierRestoresAnEnabledExtensionsPage() {
+    @MainActor func testClassifierRestoresAnEnabledExtensionsPage() {
         let url = URL(string: "webkit-extension://ABCD-1234/options.html#a")
         XCTAssertEqual(classifyPersistedExtensionPage(url: url, extensionID: "ext",
                                                       installedExtensionIDs: ["ext"], enabledExtensionIDs: ["ext"]),
                        .restorable(extensionID: "ext", originHost: "abcd-1234"))
     }
 
-    func testClassifierKeepsAnInstalledButDisabledExtensionsPageDistinct() {
+    @MainActor func testClassifierKeepsAnInstalledButDisabledExtensionsPageDistinct() {
         let url = URL(string: "webkit-extension://ABCD/options.html")
         let page = classifyPersistedExtensionPage(url: url, extensionID: "ext",
                                                   installedExtensionIDs: ["ext"], enabledExtensionIDs: ["other"])
@@ -91,7 +90,7 @@ final class ExtensionPagePersistenceTests: XCTestCase {
         XCTAssertEqual(page.pendingOrigin?.originHost, "abcd")
     }
 
-    func testClassifierDropsUninstalledAndLegacyPages() {
+    @MainActor func testClassifierDropsUninstalledAndLegacyPages() {
         let url = URL(string: "webkit-extension://abcd/options.html")
         XCTAssertEqual(classifyPersistedExtensionPage(url: url, extensionID: "gone",
                                                       installedExtensionIDs: ["other"], enabledExtensionIDs: ["other"]),
@@ -113,7 +112,7 @@ final class ExtensionPagePersistenceTests: XCTestCase {
     /// uninstalled since (the uninstall forgot the origin, so the next save wrote
     /// no id) and the tile is dropped; the sentinel means the id was never
     /// recorded, and the tile is kept like a disabled extension's.
-    func testClassifierKeepsALegacyPageAsDisabledRatherThanDroppingIt() {
+    @MainActor func testClassifierKeepsALegacyPageAsDisabledRatherThanDroppingIt() {
         let url = URL(string: "webkit-extension://ABCD/options.html")
         let page = classifyPersistedExtensionPage(url: url, extensionID: ExtensionPageURL.unknownExtensionID,
                                                   installedExtensionIDs: ["ext"], enabledExtensionIDs: ["ext"])
@@ -127,7 +126,7 @@ final class ExtensionPagePersistenceTests: XCTestCase {
 
     // MARK: - Round trip
 
-    func testExtensionPagesSurviveARelaunchInEveryPlaceTheyLive() async throws {
+    @MainActor func testExtensionPagesSurviveARelaunchInEveryPlaceTheyLive() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension()
         installTestExtension(ext, in: db)
@@ -241,7 +240,7 @@ final class ExtensionPagePersistenceTests: XCTestCase {
 
     /// Quitting before the contexts load must not lose the identity: the pending
     /// origin is what the save writes the id from.
-    func testIdentitySurvivesASaveBeforeTheContextLoads() async throws {
+    @MainActor func testIdentitySurvivesASaveBeforeTheContextLoads() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension()
         installTestExtension(ext, in: db)
@@ -271,7 +270,7 @@ final class ExtensionPagePersistenceTests: XCTestCase {
 
     // MARK: - Uninstalled while the app was closed
 
-    func testPagesOfAnExtensionUninstalledWhileClosedAreDropped() async throws {
+    @MainActor func testPagesOfAnExtensionUninstalledWhileClosedAreDropped() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension()
         installTestExtension(ext, in: db)
@@ -360,7 +359,7 @@ final class ExtensionPagePersistenceTests: XCTestCase {
     /// relaunch (and a second one) with their identity, as a mid-session disable
     /// keeps them; open tabs on its pages are dropped, as that disable closes
     /// them. Enabling it moves the tiles onto the new context's origin.
-    func testDisabledExtensionsTilesSurviveARelaunchAndResolveWhenEnabled() async throws {
+    @MainActor func testDisabledExtensionsTilesSurviveARelaunchAndResolveWhenEnabled() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension()
         installTestExtension(ext, in: db)
@@ -461,7 +460,7 @@ final class ExtensionPagePersistenceTests: XCTestCase {
     /// a restored page woken before its context loads stays unloaded (rather than
     /// loading a dead origin into the space configuration), and once the context
     /// loads the resolution pass rehosts it onto the live origin.
-    func testRestoredPageWokenBeforeItsContextLoadsIsRehostedOnceItDoes() async throws {
+    @MainActor func testRestoredPageWokenBeforeItsContextLoadsIsRehostedOnceItDoes() async throws {
         let ext = try await makeExtension()
         let profile = TabStore.shared.addProfile(name: "Persist-shared")
         sharedProfiles.append(profile)

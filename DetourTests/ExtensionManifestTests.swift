@@ -1,16 +1,16 @@
 import XCTest
 @testable import Detour
 
-final class ExtensionManifestTests: XCTestCase {
+nonisolated final class ExtensionManifestTests: XCTestCase {
 
-    private func parse(_ json: String) throws -> ExtensionManifest {
+    @MainActor private func parse(_ json: String) throws -> ExtensionManifest {
         let data = json.data(using: .utf8)!
         return try JSONDecoder().decode(ExtensionManifest.self, from: data)
     }
 
     // MARK: - Basic parsing
 
-    func testParseMinimalManifest() throws {
+    @MainActor func testParseMinimalManifest() throws {
         let manifest = try parse("""
         {"manifest_version": 3, "name": "Test", "version": "1.0"}
         """)
@@ -24,7 +24,7 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertNil(manifest.contentScripts)
     }
 
-    func testParseFullManifest() throws {
+    @MainActor func testParseFullManifest() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3,
@@ -66,7 +66,7 @@ final class ExtensionManifestTests: XCTestCase {
 
     // MARK: - Background content (TASK-43)
 
-    func testServiceWorkerBackgroundHasBackgroundContent() throws {
+    @MainActor func testServiceWorkerBackgroundHasBackgroundContent() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "SW", "version": "1.0",
@@ -83,7 +83,7 @@ final class ExtensionManifestTests: XCTestCase {
 
     /// A background script list — MV2's shape, also accepted in MV3 — which
     /// WebKit runs as a page.
-    func testBackgroundScriptsAreDecoded() throws {
+    @MainActor func testBackgroundScriptsAreDecoded() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "Scripts", "version": "1.0",
@@ -97,7 +97,7 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertTrue(background.hasBackgroundContent)
     }
 
-    func testBackgroundPageIsDecoded() throws {
+    @MainActor func testBackgroundPageIsDecoded() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "Page", "version": "1.0",
@@ -116,7 +116,7 @@ final class ExtensionManifestTests: XCTestCase {
     /// `runtime.onInstalled` the same way (as in Chrome). Nothing in
     /// `hasBackgroundContent` — or in the polyfill that classifies the context —
     /// reads the manifest version, and this pins that.
-    func testMV2BackgroundContentIsRecognisedLikeMV3() throws {
+    @MainActor func testMV2BackgroundContentIsRecognisedLikeMV3() throws {
         for entry in [#"{"scripts": ["background.js"], "persistent": false}"#, #"{"page": "bg.html"}"#] {
             let manifest = try parse("""
             {
@@ -133,7 +133,7 @@ final class ExtensionManifestTests: XCTestCase {
     /// A `background` entry that declares nothing runnable — and an empty
     /// `scripts` list or an empty path, which are the same thing — is no
     /// background content, so nothing is woken for `runtime.onInstalled`.
-    func testBackgroundWithoutAnyContentHasNone() throws {
+    @MainActor func testBackgroundWithoutAnyContentHasNone() throws {
         for entry in [#"{}"#, #"{"scripts": []}"#, #"{"page": ""}"#, #"{"service_worker": ""}"#] {
             let manifest = try parse("""
             {
@@ -147,7 +147,7 @@ final class ExtensionManifestTests: XCTestCase {
         }
     }
 
-    func testRoundTripPreservesBackgroundScriptsAndPage() throws {
+    @MainActor func testRoundTripPreservesBackgroundScriptsAndPage() throws {
         for entry in [#"{"scripts": ["background.js"]}"#, #"{"page": "bg.html"}"#] {
             let original = try parse("""
             {
@@ -164,7 +164,7 @@ final class ExtensionManifestTests: XCTestCase {
 
     // MARK: - Icon spec
 
-    func testIconSpecSingleString() throws {
+    @MainActor func testIconSpecSingleString() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -178,7 +178,7 @@ final class ExtensionManifestTests: XCTestCase {
         }
     }
 
-    func testIconSpecDictionary() throws {
+    @MainActor func testIconSpecDictionary() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -193,7 +193,7 @@ final class ExtensionManifestTests: XCTestCase {
         }
     }
 
-    func testIconSpecBestPathPrefers128() throws {
+    @MainActor func testIconSpecBestPathPrefers128() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -203,7 +203,7 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertEqual(manifest.action?.defaultIcon?.bestPath, "l.png")
     }
 
-    func testIconSpecBestPathFallsTo48() throws {
+    @MainActor func testIconSpecBestPathFallsTo48() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -215,7 +215,7 @@ final class ExtensionManifestTests: XCTestCase {
 
     // MARK: - Content script injection time
 
-    func testContentScriptDocumentStart() throws {
+    @MainActor func testContentScriptDocumentStart() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -225,7 +225,7 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertEqual(manifest.contentScripts?.first?.injectionTime, .documentStart)
     }
 
-    func testContentScriptDocumentIdle() throws {
+    @MainActor func testContentScriptDocumentIdle() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -235,7 +235,7 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertEqual(manifest.contentScripts?.first?.injectionTime, .documentIdle)
     }
 
-    func testContentScriptDefaultIsDocumentEnd() throws {
+    @MainActor func testContentScriptDefaultIsDocumentEnd() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -247,7 +247,7 @@ final class ExtensionManifestTests: XCTestCase {
 
     // MARK: - Round-trip encoding
 
-    func testRoundTripEncoding() throws {
+    @MainActor func testRoundTripEncoding() throws {
         let original = try parse("""
         {
             "manifest_version": 3, "name": "Round Trip", "version": "1.0",
@@ -264,7 +264,7 @@ final class ExtensionManifestTests: XCTestCase {
 
     // MARK: - Multiple content scripts
 
-    func testMultipleContentScriptEntries() throws {
+    @MainActor func testMultipleContentScriptEntries() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -281,7 +281,7 @@ final class ExtensionManifestTests: XCTestCase {
 
     // MARK: - Host permissions (Phase 2)
 
-    func testParseHostPermissions() throws {
+    @MainActor func testParseHostPermissions() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -293,14 +293,14 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertEqual(manifest.hostPermissions?[1], "http://localhost/*")
     }
 
-    func testHostPermissionsNilWhenAbsent() throws {
+    @MainActor func testHostPermissionsNilWhenAbsent() throws {
         let manifest = try parse("""
         {"manifest_version": 3, "name": "T", "version": "1"}
         """)
         XCTAssertNil(manifest.hostPermissions)
     }
 
-    func testParseOptionalPermissions() throws {
+    @MainActor func testParseOptionalPermissions() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -312,14 +312,14 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertEqual(manifest.optionalPermissions?[1], "history")
     }
 
-    func testOptionalPermissionsNilWhenAbsent() throws {
+    @MainActor func testOptionalPermissionsNilWhenAbsent() throws {
         let manifest = try parse("""
         {"manifest_version": 3, "name": "T", "version": "1"}
         """)
         XCTAssertNil(manifest.optionalPermissions)
     }
 
-    func testRoundTripWithHostPermissions() throws {
+    @MainActor func testRoundTripWithHostPermissions() throws {
         let original = try parse("""
         {
             "manifest_version": 3, "name": "RT", "version": "1",
@@ -335,7 +335,7 @@ final class ExtensionManifestTests: XCTestCase {
 
     // MARK: - Content script world field
 
-    func testContentScriptWorldField() throws {
+    @MainActor func testContentScriptWorldField() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -350,7 +350,7 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertNil(manifest.contentScripts?[1].world)
     }
 
-    func testContentScriptAllFramesField() throws {
+    @MainActor func testContentScriptAllFramesField() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -362,7 +362,7 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertEqual(manifest.contentScripts?.first?.allFrames, true)
     }
 
-    func testContentScriptMatchAboutBlankField() throws {
+    @MainActor func testContentScriptMatchAboutBlankField() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -376,7 +376,7 @@ final class ExtensionManifestTests: XCTestCase {
 
     // MARK: - Commands field
 
-    func testParseCommands() throws {
+    @MainActor func testParseCommands() throws {
         let manifest = try parse("""
         {
             "manifest_version": 3, "name": "T", "version": "1",
@@ -404,14 +404,14 @@ final class ExtensionManifestTests: XCTestCase {
         XCTAssertNil(action?.suggestedKey?.mac)
     }
 
-    func testCommandsNilWhenAbsent() throws {
+    @MainActor func testCommandsNilWhenAbsent() throws {
         let manifest = try parse("""
         {"manifest_version": 3, "name": "T", "version": "1"}
         """)
         XCTAssertNil(manifest.commands)
     }
 
-    func testRoundTripWithCommands() throws {
+    @MainActor func testRoundTripWithCommands() throws {
         let original = try parse("""
         {
             "manifest_version": 3, "name": "RT", "version": "1",

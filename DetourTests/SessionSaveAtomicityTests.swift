@@ -14,20 +14,20 @@ import GRDB
 /// constraint failure) is handled differently since TASK-154 — the unit it
 /// belongs to keeps its previous rows and the rest is saved — and is covered
 /// by `SessionSaveFailureTests`.
-final class SessionSaveAtomicityTests: XCTestCase {
+nonisolated final class SessionSaveAtomicityTests: XCTestCase {
 
     // MARK: - Fixture
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         try AppDatabase(dbQueue: DatabaseQueue())
     }
 
-    private func makeSleepingTab(spaceID: UUID, url: String) -> BrowserTab {
+    @MainActor private func makeSleepingTab(spaceID: UUID, url: String) -> BrowserTab {
         BrowserTab(id: UUID(), title: "Tab", url: URL(string: url), faviconURL: nil,
                    cachedInteractionState: Data([1, 2, 3]), spaceID: spaceID)
     }
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let db: AppDatabase
         let store: TabStore
         let work: Profile
@@ -38,7 +38,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
 
     /// State A: two profiles, a space on each, normal tabs, nested pinned
     /// folders, live and dormant pinned entries, live and dormant favourites.
-    private func makeFixture() throws -> Fixture {
+    @MainActor private func makeFixture() throws -> Fixture {
         let db = try makeDatabase()
         let store = TabStore(appDB: db)
         let work = store.addProfile(name: "Work")
@@ -80,7 +80,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
 
     /// State B: a change in every part `saveNow()` writes, so a save that
     /// stopped half-way is visible in whichever table it reached.
-    private func mutateToStateB(_ fixture: Fixture) throws {
+    @MainActor private func mutateToStateB(_ fixture: Fixture) throws {
         let store = fixture.store
         fixture.workSpace.tabs.append(makeSleepingTab(spaceID: fixture.workSpace.id, url: "https://work.example.com/new"))
         fixture.workSpace.name = "Work renamed"
@@ -107,7 +107,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
     private static let sessionTables = ["profile", "space", "tab", "pinnedFolder", "pinnedTab", "favorite", "appState"]
 
     /// Every row of every session table, as text, in primary-key order.
-    private func dump(_ db: AppDatabase) throws -> [String: [String]] {
+    @MainActor private func dump(_ db: AppDatabase) throws -> [String: [String]] {
         try db.dbQueue.read { conn in
             var tables: [String: [String]] = [:]
             for table in Self.sessionTables {
@@ -123,7 +123,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
 
     /// What a relaunch sees: the restored spaces, pinned folders and entries,
     /// and favourites, as plain values.
-    private func restoredShape(_ db: AppDatabase) -> [String] {
+    @MainActor private func restoredShape(_ db: AppDatabase) -> [String] {
         let store = TabStore(appDB: db)
         _ = store.restoreSession()
         var lines: [String] = []
@@ -152,7 +152,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
     /// Makes every `event` on `table` fail the way a full disk would: the
     /// statement throws inside the save's transaction, with an error that is
     /// not a constraint failure (`RAISE` in a trigger would be one).
-    private func injectFailure(on table: String, event: String, in db: AppDatabase) throws {
+    @MainActor private func injectFailure(on table: String, event: String, in db: AppDatabase) throws {
         try db.dbQueue.write { conn in
             conn.add(function: DatabaseFunction("injected_failure", argumentCount: 0) { _ in
                 throw DatabaseError(resultCode: .SQLITE_FULL, message: "injected failure")
@@ -164,7 +164,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
         }
     }
 
-    private func removeInjectedFailure(in db: AppDatabase) throws {
+    @MainActor private func removeInjectedFailure(in db: AppDatabase) throws {
         try db.dbQueue.write { conn in
             try conn.execute(sql: "DROP TRIGGER injectedFailure")
         }
@@ -173,7 +173,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
     /// Saves state A, moves the store to state B, makes the save fail when it
     /// writes `table`, and checks the database still holds state A in full.
     /// Then lets the save through and checks it holds state B in full.
-    private func assertInterruptedSaveKeepsPreviousState(failingOn table: String, event: String = "INSERT",
+    @MainActor private func assertInterruptedSaveKeepsPreviousState(failingOn table: String, event: String = "INSERT",
                                                          file: StaticString = #filePath, line: UInt = #line) throws {
         let fixture = try makeFixture()
         fixture.store.saveNow()
@@ -217,24 +217,24 @@ final class SessionSaveAtomicityTests: XCTestCase {
 
     // MARK: - An interrupted save
 
-    func testSaveFailingOnTabRowsKeepsPreviousState() throws {
+    @MainActor func testSaveFailingOnTabRowsKeepsPreviousState() throws {
         try assertInterruptedSaveKeepsPreviousState(failingOn: "tab")
     }
 
-    func testSaveFailingOnProfileRowsKeepsPreviousState() throws {
+    @MainActor func testSaveFailingOnProfileRowsKeepsPreviousState() throws {
         // `ProfileRecord.save` updates an existing row.
         try assertInterruptedSaveKeepsPreviousState(failingOn: "profile", event: "UPDATE")
     }
 
-    func testSaveFailingOnPinnedFolderRowsKeepsPreviousState() throws {
+    @MainActor func testSaveFailingOnPinnedFolderRowsKeepsPreviousState() throws {
         try assertInterruptedSaveKeepsPreviousState(failingOn: "pinnedFolder")
     }
 
-    func testSaveFailingOnPinnedEntryRowsKeepsPreviousState() throws {
+    @MainActor func testSaveFailingOnPinnedEntryRowsKeepsPreviousState() throws {
         try assertInterruptedSaveKeepsPreviousState(failingOn: "pinnedTab")
     }
 
-    func testSaveFailingOnFavoriteRowsKeepsPreviousState() throws {
+    @MainActor func testSaveFailingOnFavoriteRowsKeepsPreviousState() throws {
         try assertInterruptedSaveKeepsPreviousState(failingOn: "favorite")
     }
 
@@ -245,7 +245,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
     /// into one created after it stays ahead of it. Written in array order the
     /// child row is refused, and since TASK-149 that refusal fails the whole
     /// save, every time, for as long as the folders stay nested that way.
-    func testAFolderAheadOfItsParentInTheStoreIsSaved() throws {
+    @MainActor func testAFolderAheadOfItsParentInTheStoreIsSaved() throws {
         let fixture = try makeFixture()
         let store = fixture.store
         let space = fixture.workSpace
@@ -275,7 +275,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
 
     /// Undo Delete Folder appends the restored folder after the children it
     /// takes back, so the children are ahead of their parent.
-    func testAFolderRestoredByUndoBehindItsChildrenIsSaved() throws {
+    @MainActor func testAFolderRestoredByUndoBehindItsChildrenIsSaved() throws {
         let fixture = try makeFixture()
         let store = fixture.store
         let space = fixture.workSpace
@@ -297,7 +297,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
 
     // MARK: - One transaction
 
-    private final class CommitCounter: TransactionObserver {
+    @MainActor private final class CommitCounter: TransactionObserver {
         private(set) var commits = 0
         func observes(eventsOfKind eventKind: DatabaseEventKind) -> Bool { true }
         func databaseDidChange(with event: DatabaseEvent) {}
@@ -305,7 +305,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
         func databaseDidRollback(_ db: GRDB.Database) {}
     }
 
-    func testSaveNowCommitsOnce() throws {
+    @MainActor func testSaveNowCommitsOnce() throws {
         let fixture = try makeFixture()
         fixture.store.saveNow()
         try mutateToStateB(fixture)
@@ -323,7 +323,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
     /// The one-transaction save is a change of transaction boundaries only: it
     /// leaves exactly the rows that `saveSession`, `saveProfiles`,
     /// `savePinnedFoldersAndTabs` and `saveFavorites`, run in that order, leave.
-    func testSnapshotSaveWritesTheSameRowsAsThePerPieceSaves() throws {
+    @MainActor func testSnapshotSaveWritesTheSameRowsAsThePerPieceSaves() throws {
         let fixture = try makeFixture()
         let reference = try makeDatabase()
 
@@ -364,7 +364,7 @@ final class SessionSaveAtomicityTests: XCTestCase {
 
     // MARK: - A successful save
 
-    func testSuccessfulSaveRoundTripsFullState() throws {
+    @MainActor func testSuccessfulSaveRoundTripsFullState() throws {
         let fixture = try makeFixture()
         fixture.store.saveNow()
         try mutateToStateB(fixture)

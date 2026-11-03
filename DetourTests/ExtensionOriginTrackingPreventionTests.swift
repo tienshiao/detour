@@ -54,8 +54,7 @@ private final class InteractionRecorder: @unchecked Sendable {
 /// one interaction per loaded context, and none at all for a non-persistent
 /// store), and a real ITP pass that empties an origin with no interaction while
 /// sparing both an origin the keeper logged and a loaded extension's.
-@MainActor
-final class ExtensionOriginTrackingPreventionTests: XCTestCase {
+nonisolated final class ExtensionOriginTrackingPreventionTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
@@ -68,9 +67,9 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
     /// when that happens inside an IPC dispatch — see
     /// `ExtensionMenuPopupDecisionTests`. The contexts are still unloaded and
     /// the store row removed; only the object outlives the test.
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         ExtensionOriginInteractionKeeper.interactionLogHookForTesting = nil
         for webView in openWebViews {
             webView.stopLoading()
@@ -97,7 +96,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func makeProfile(_ name: String) -> Profile {
+    @MainActor private func makeProfile(_ name: String) -> Profile {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         return profile
@@ -183,7 +182,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
 
     /// Write the probe extension to a fresh temp directory and register it the
     /// way an installed extension is registered.
-    private func makeProbeExtension(idPrefix: String) async throws -> WebExtension {
+    @MainActor private func makeProbeExtension(idPrefix: String) async throws -> WebExtension {
         let id = "\(idPrefix)-\(UUID().uuidString.prefix(8))"
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-test-\(id)")
@@ -214,7 +213,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
 
     /// An extension page of the context, loaded from the controller's own
     /// configuration — the only place a test can talk to the worker from.
-    private func makeExtensionPage(for context: WKWebExtensionContext) async throws -> WKWebView {
+    @MainActor private func makeExtensionPage(for context: WKWebExtensionContext) async throws -> WKWebView {
         let config = try XCTUnwrap(context.webViewConfiguration,
                                    "webViewConfiguration is nil — context not loaded in a controller")
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300),
@@ -227,7 +226,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
 
     /// Load the probe into `profile`, start its worker, and wait until it
     /// answers. Returns the context and the page the test asks through.
-    private func startProbe(_ ext: WebExtension, in profile: Profile)
+    @MainActor private func startProbe(_ ext: WebExtension, in profile: Profile)
         async throws -> (context: WKWebExtensionContext, page: WKWebView) {
         _ = profile.extensionController
         _ = profile.loadExtensionContext(ext)
@@ -247,7 +246,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
     /// The marker the probe's worker has in IndexedDB, or nil when there is
     /// none — including when the worker cannot be reached at all, which is the
     /// other face of a purged origin (its registration went with the storage).
-    private func marker(from page: WKWebView) async throws -> String? {
+    @MainActor private func marker(from page: WKWebView) async throws -> String? {
         let envelope = try await askWorker(from: page, message: ["type": "readMarker"], timeout: 15)
         guard let reply = envelope["reply"] as? [String: Any] else { return nil }
         if let error = reply["error"] as? String {
@@ -264,7 +263,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
     /// it last saw (`LastSeenBaseURL` in State.plist) to the new one
     /// (`WebExtensionContext::moveLocalStorageIfNeeded`). A value written in
     /// one load is read back in the next.
-    func testIndexedDBAndLocalStorageSurviveAnUnloadAndLoad() async throws {
+    @MainActor func testIndexedDBAndLocalStorageSurviveAnUnloadAndLoad() async throws {
         let profile = makeProfile("TASK-99 storage \(UUID().uuidString.prefix(6))")
         let ext = try await makeProbeExtension(idPrefix: "task99-storage")
 
@@ -290,7 +289,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
     /// A non-persistent store has no statistics database and loses its storage
     /// at teardown: the keeper must not call into WebKit for one, and must not
     /// trip over it either.
-    func testKeeperSkipsANonPersistentDataStore() async throws {
+    @MainActor func testKeeperSkipsANonPersistentDataStore() async throws {
         let recorder = InteractionRecorder()
         recorder.install()
 
@@ -316,7 +315,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
     /// running Private-profile worker. The premise below is what tells the two
     /// situations apart, so if it ever fails again, turn these assertions back
     /// around rather than deleting them.
-    func testIncognitoProfilesPagesRunInItsEphemeralStoreSoNothingIsLogged() async throws {
+    @MainActor func testIncognitoProfilesPagesRunInItsEphemeralStoreSoNothingIsLogged() async throws {
         let recorder = InteractionRecorder()
         recorder.install()
 
@@ -340,7 +339,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
 
     /// A deleted profile's storage is being removed: nothing of it is kept,
     /// whatever store its pages would have used.
-    func testDeletedProfileLogsNoInteraction() async throws {
+    @MainActor func testDeletedProfileLogsNoInteraction() async throws {
         let recorder = InteractionRecorder()
         recorder.install()
 
@@ -355,7 +354,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
     /// The production path: loading a context logs one interaction, for that
     /// context's own base URL — and `refreshNow` (the daily timer's work)
     /// re-logs every context still loaded, and only those.
-    func testLoadingAContextLogsExactlyOneInteractionForItsOrigin() async throws {
+    @MainActor func testLoadingAContextLogsExactlyOneInteractionForItsOrigin() async throws {
         let recorder = InteractionRecorder()
         recorder.install()
 
@@ -393,7 +392,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
     /// profiles' extension pages, workers and IndexedDB share the default data
     /// store — where the ITP purge ran, out of reach of an interaction logged
     /// into the profile store (production, 2026-09-13).
-    func testExtensionWebViewsUseTheProfileStore() {
+    @MainActor func testExtensionWebViewsUseTheProfileStore() {
         let profile = makeProfile("Extension Store Profile")
         let store = profile.extensionController.configuration.webViewConfiguration.websiteDataStore
         XCTAssertTrue(store === profile.dataStore, "extension web views must use the profile's data store")
@@ -433,7 +432,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
     /// `fetchDataRecords` never reports `webkit-extension://` origins at all,
     /// not even after `_allowWebsiteDataRecordsForAllOrigins`, so leg A carries
     /// the negative control and leg B asserts the extension survives.
-    func testTrackingPreventionPassSparesOriginsWithALoggedInteraction() async throws {
+    @MainActor func testTrackingPreventionPassSparesOriginsWithALoggedInteraction() async throws {
         let profile = makeProfile("ITP Pass Profile")
         let store = profile.dataStore
         try XCTSkipUnless(store.respondsToITPTestingSelectors,
@@ -507,7 +506,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
 
     /// Give `url`'s origin some script-written storage, in a web view on the
     /// profile's own store.
-    private func writeLocalStorage(at url: URL, on store: WKWebsiteDataStore) async throws {
+    @MainActor private func writeLocalStorage(at url: URL, on store: WKWebsiteDataStore) async throws {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = store
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200),
@@ -521,7 +520,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
 
     /// `ExtensionOriginInteractionKeeper.logInteraction`, awaited — WebKit has
     /// to have written the record before the pass reads it.
-    private func logInteraction(for url: URL, on store: WKWebsiteDataStore,
+    @MainActor private func logInteraction(for url: URL, on store: WKWebsiteDataStore,
                                 extensionID: String) async {
         await withCheckedContinuation { continuation in
             ExtensionOriginInteractionKeeper.logInteraction(
@@ -529,7 +528,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
         }
     }
 
-    private func assertMarkerWritten(through page: WKWebView, what: String,
+    @MainActor private func assertMarkerWritten(through page: WKWebView, what: String,
                                      file: StaticString = #filePath,
                                      line: UInt = #line) async throws {
         let written = try await askWorker(from: page, message: ["type": "writeMarker"], timeout: 20)
@@ -541,7 +540,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
                        file: file, line: line)
     }
 
-    private func displayNames(in store: WKWebsiteDataStore,
+    @MainActor private func displayNames(in store: WKWebsiteDataStore,
                               ofTypes types: Set<String>) async -> [String] {
         await withCheckedContinuation { continuation in
             store.fetchDataRecords(ofTypes: types) { records in
@@ -552,7 +551,7 @@ final class ExtensionOriginTrackingPreventionTests: XCTestCase {
 
     /// Everything the store will admit to holding, for the log: how WebKit
     /// names a `webkit-extension://` record is documented nowhere.
-    private func recordDescriptions(
+    @MainActor private func recordDescriptions(
         in store: WKWebsiteDataStore,
         ofTypes types: Set<String> = [
             WKWebsiteDataTypeLocalStorage,
@@ -608,7 +607,7 @@ extension WKWebsiteDataStore {
         Self.itpTestingSelectors.allSatisfy { responds(to: NSSelectorFromString($0)) }
     }
 
-    private var itp: ITPTestingShim { unsafeBitCast(self, to: ITPTestingShim.self) }
+    @MainActor private var itp: ITPTestingShim { unsafeBitCast(self, to: ITPTestingShim.self) }
 
     /// Without this, `fetchDataRecords` hides every non-http origin — which is
     /// every extension origin. Process-wide and one-way; no production code and

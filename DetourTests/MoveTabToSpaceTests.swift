@@ -19,8 +19,7 @@ import GRDB
 /// `TabStore.shared` and `ExtensionManager.shared` (the test scheme points
 /// `DETOUR_DATA_DIR` at an isolated directory), because `BrowserTab.wake`
 /// resolves its space through the shared store.
-@MainActor
-final class MoveTabToSpaceTests: XCTestCase {
+nonisolated final class MoveTabToSpaceTests: XCTestCase {
 
     private var createdTabs: [BrowserTab] = []
     private var tempDirs: [URL] = []
@@ -28,7 +27,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     private var sharedProfiles: [Profile] = []
     private var sharedSpaceIDs: [UUID] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
         for id in sharedSpaceIDs {
@@ -51,7 +50,7 @@ final class MoveTabToSpaceTests: XCTestCase {
         registeredExtensionIDs.removeAll()
         for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
@@ -59,7 +58,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// Nothing listens on port 1, so a load navigates nowhere real.
     private let pageURL = URL(string: "http://127.0.0.1:1/page")!
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let db: AppDatabase
         let store: TabStore
         let profile: Profile
@@ -75,7 +74,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// `manualUndoGrouping` switches the undo manager's event grouping off
     /// before the first registration, for a test that undoes a sequence a step
     /// at a time; every mutation then has to go through `act`.
-    private func makeFixture(manualUndoGrouping: Bool = false) throws -> Fixture {
+    @MainActor private func makeFixture(manualUndoGrouping: Bool = false) throws -> Fixture {
         let db = try AppDatabase(dbQueue: try DatabaseQueue())
         let store = TabStore(appDB: db)
         if manualUndoGrouping {
@@ -93,7 +92,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     }
 
     /// The same shape on `TabStore.shared`, for the tests that wake a tab.
-    private func makeSharedFixture(_ name: String) -> (store: TabStore, profile: Profile,
+    @MainActor private func makeSharedFixture(_ name: String) -> (store: TabStore, profile: Profile,
                                                        other: Profile, a: Space, b: Space, c: Space) {
         let store = TabStore.shared
         let profile = store.addProfile(name: "Move \(name)")
@@ -112,7 +111,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// body never turns, so a sequence would otherwise pile into one group and a
     /// single undo would run all of it — switch `groupsByEvent` off before the
     /// first registration and put every mutation through here.
-    private func act(_ store: TabStore, _ body: () -> Void) {
+    @MainActor private func act(_ store: TabStore, _ body: () -> Void) {
         store.undoManager.beginUndoGrouping()
         body()
         store.undoManager.endUndoGrouping()
@@ -120,7 +119,7 @@ final class MoveTabToSpaceTests: XCTestCase {
 
     /// A minimal MV3 extension with an options page, registered with the shared
     /// manager and database.
-    private func makeExtension() async throws -> WebExtension {
+    @MainActor private func makeExtension() async throws -> WebExtension {
         let ext = try await makeOptionsPageTestExtension(idPrefix: "move-to-space",
                                                          name: "Move To Space Test")
         tempDirs.append(ext.basePath)
@@ -136,7 +135,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// The old sequence for an ordinary tab: the tab is archived on the
     /// closed-tab stack, a Close Tab undo is registered, and what lands in the
     /// destination is a *different* tab with a different web view.
-    func testCharacterizationCloseAndRecreateArchivesTheTabAndLosesItsIdentity() throws {
+    @MainActor func testCharacterizationCloseAndRecreateArchivesTheTabAndLosesItsIdentity() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.a, url: pageURL)
         createdTabs.append(tab)
@@ -156,7 +155,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     }
 
     /// The old sequence for a pinned entry: it stops being pinned.
-    func testCharacterizationCloseAndRecreateUnpinsAPinnedEntry() throws {
+    @MainActor func testCharacterizationCloseAndRecreateUnpinsAPinnedEntry() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.a, url: pageURL)
         createdTabs.append(tab)
@@ -176,7 +175,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// `webkit-extension://`. Only the context's own configuration can load it,
     /// and only `makeTab(loading:)` — which leaves the tab sleeping for `wake()`
     /// to pick that configuration — ever gets there (TASK-24).
-    func testCharacterizationCloseAndRecreateRebuildsAnExtensionPageInTheSpaceConfiguration() async throws {
+    @MainActor func testCharacterizationCloseAndRecreateRebuildsAnExtensionPageInTheSpaceConfiguration() async throws {
         let ext = try await makeExtension()
         let f = makeSharedFixture("Characterize")
         _ = f.profile.extensionController
@@ -203,7 +202,7 @@ final class MoveTabToSpaceTests: XCTestCase {
 
     // MARK: - Within one profile: the tab itself moves
 
-    func testMoveTabWithinAProfileKeepsTheTabItsWebViewAndItsIdentity() throws {
+    @MainActor func testMoveTabWithinAProfileKeepsTheTabItsWebViewAndItsIdentity() throws {
         let f = try makeFixture()
         let stay = f.store.addTab(in: f.a, url: pageURL)
         let tab = f.store.addTab(in: f.a, url: pageURL)
@@ -220,7 +219,7 @@ final class MoveTabToSpaceTests: XCTestCase {
         XCTAssertEqual(tab.spaceID, f.b.id, "rehomed onto the destination space")
     }
 
-    func testMoveTabArchivesNothingAndRegistersOneMoveUndo() throws {
+    @MainActor func testMoveTabArchivesNothingAndRegistersOneMoveUndo() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.a, url: pageURL)
         createdTabs.append(tab)
@@ -231,7 +230,7 @@ final class MoveTabToSpaceTests: XCTestCase {
         XCTAssertEqual(f.store.undoManager.undoActionName, "Move to Space")
     }
 
-    func testUndoMovesTheTabBackToTheIndexItLeft() throws {
+    @MainActor func testUndoMovesTheTabBackToTheIndexItLeft() throws {
         let f = try makeFixture()
         // A new tab opens at the top of the list, so the creation order is not
         // the list order — read the order off the space.
@@ -254,7 +253,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// A moved tab arrives as a root tab — the tab it was opened from stays
     /// behind — and coming home means coming back under that tab, while it is
     /// still there.
-    func testUndoRestoresTheParentLinkTheMoveCut() throws {
+    @MainActor func testUndoRestoresTheParentLinkTheMoveCut() throws {
         let f = try makeFixture()
         let parent = f.store.addTab(in: f.a, url: pageURL)
         let child = f.store.addTab(in: f.a, url: pageURL, parentID: parent.id)
@@ -280,7 +279,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// The store resolves both spaces by id when the undo actually runs, so a
     /// space deleted in between leaves the tab where it is instead of crashing
     /// or resurrecting a dead space.
-    func testUndoOfAMoveIntoADeletedSpaceDoesNothing() throws {
+    @MainActor func testUndoOfAMoveIntoADeletedSpaceDoesNothing() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.a, url: pageURL)
         createdTabs.append(tab)
@@ -292,7 +291,7 @@ final class MoveTabToSpaceTests: XCTestCase {
         XCTAssertEqual(f.b.tabs.map(\.id), [tab.id], "the tab stays in the destination")
     }
 
-    func testMovingTheSelectedTabLeavesTheSourceSelectionOnATabThatStillLivesThere() throws {
+    @MainActor func testMovingTheSelectedTabLeavesTheSourceSelectionOnATabThatStillLivesThere() throws {
         let f = try makeFixture()
         let stay = f.store.addTab(in: f.a, url: pageURL)
         let tab = f.store.addTab(in: f.a, url: pageURL)
@@ -307,7 +306,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// The store's fallback picks what a window entering the space would
     /// (`tabToSelectOnEntry`), so the two agree — and that prefers the first
     /// live pinned tab to the first normal tab.
-    func testMovingTheSelectedTabFallsBackToTheSourcesFirstLivePinnedTab() throws {
+    @MainActor func testMovingTheSelectedTabFallsBackToTheSourcesFirstLivePinnedTab() throws {
         let f = try makeFixture()
         let pinned = f.store.addTab(in: f.a, url: pageURL)
         let stay = f.store.addTab(in: f.a, url: pageURL)
@@ -324,7 +323,7 @@ final class MoveTabToSpaceTests: XCTestCase {
 
     // MARK: - Split members
 
-    func testMovingASplitMemberLeavesItsGroupAndDissolvesTheGroup() throws {
+    @MainActor func testMovingASplitMemberLeavesItsGroupAndDissolvesTheGroup() throws {
         let f = try makeFixture()
         let left = f.store.addTab(in: f.a, url: pageURL)
         let right = f.store.addTab(in: f.a, url: pageURL)
@@ -344,7 +343,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// Appending to the destination must not land between two members of a split
     /// that already lives there — the contiguity invariant every TabStore
     /// mutation keeps.
-    func testAMovedTabLandsOutsideADestinationSplitGroup() throws {
+    @MainActor func testAMovedTabLandsOutsideADestinationSplitGroup() throws {
         let f = try makeFixture()
         let left = f.store.addTab(in: f.b, url: pageURL)
         let right = f.store.addTab(in: f.b, url: pageURL)
@@ -360,7 +359,7 @@ final class MoveTabToSpaceTests: XCTestCase {
 
     // MARK: - Pinned entries
 
-    func testMoveLivePinnedEntryStaysPinnedAndKeepsItsTab() throws {
+    @MainActor func testMoveLivePinnedEntryStaysPinnedAndKeepsItsTab() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.a, url: pageURL)
         createdTabs.append(tab)
@@ -379,7 +378,7 @@ final class MoveTabToSpaceTests: XCTestCase {
         XCTAssertEqual(f.store.undoManager.undoActionName, "Move to Space")
     }
 
-    func testMoveDormantPinnedEntryStaysDormant() throws {
+    @MainActor func testMoveDormantPinnedEntryStaysDormant() throws {
         let f = try makeFixture()
         f.store.pinURL(pageURL, title: "Dormant", faviconURL: nil, in: f.a)
         let entry = try XCTUnwrap(f.a.pinnedEntries.first)
@@ -394,7 +393,7 @@ final class MoveTabToSpaceTests: XCTestCase {
 
     /// Pinned folders belong to their space, so the entry arrives at the
     /// destination's root — and goes home into its folder on undo.
-    func testMovedPinnedEntryLandsAtTheDestinationRootAndUndoRestoresItsFolder() throws {
+    @MainActor func testMovedPinnedEntryLandsAtTheDestinationRootAndUndoRestoresItsFolder() throws {
         let f = try makeFixture()
         let folder = f.store.addPinnedFolder(name: "Work", in: f.a)
         f.store.pinURL(pageURL, title: "Filed", faviconURL: nil, in: f.a)
@@ -422,7 +421,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// the same ids (TASK-40), so the move's undo has to resolve the entry by id
     /// in the destination it finds at undo time — the instance it captured is an
     /// orphan by then, and mutating it would leave the listed entry behind.
-    func testUndoOfAPinnedMoveAfterUndoDeleteSpaceActsOnTheRebuiltEntry() throws {
+    @MainActor func testUndoOfAPinnedMoveAfterUndoDeleteSpaceActsOnTheRebuiltEntry() throws {
         let f = try makeFixture(manualUndoGrouping: true)
         var createdFolder: PinnedFolder?
         var createdEntry: PinnedEntry?
@@ -465,7 +464,7 @@ final class MoveTabToSpaceTests: XCTestCase {
 
     /// A pinned split is two entries; moving one is the pinned mirror of moving
     /// one normal split member, and the pair dissolves (§12).
-    func testMovingOnePinnedSplitMemberDissolvesThePinnedSplit() throws {
+    @MainActor func testMovingOnePinnedSplitMemberDissolvesThePinnedSplit() throws {
         let f = try makeFixture()
         let left = f.store.addTab(in: f.a, url: pageURL)
         let right = f.store.addTab(in: f.a, url: pageURL)
@@ -490,7 +489,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// The web view was built from the source profile's data store and extension
     /// controller, and a configuration is only chosen at creation and at `wake`.
     /// So the tab has to release it and wake rebuilt from the destination.
-    func testCrossProfileMoveSleepsTheTabWhichWakesFromTheDestinationProfile() throws {
+    @MainActor func testCrossProfileMoveSleepsTheTabWhichWakesFromTheDestinationProfile() throws {
         let f = makeSharedFixture("CrossProfile")
         let tab = f.store.addTab(in: f.a, url: pageURL)
         createdTabs.append(tab)
@@ -513,7 +512,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// An ordinary page crosses profiles by `sleep(force:)`, which keeps the
     /// interaction state — so the back/forward list comes back on the wake,
     /// where the close-and-recreate dropped it.
-    func testCrossProfileMoveKeepsAnOrdinaryPagesSavedSession() throws {
+    @MainActor func testCrossProfileMoveKeepsAnOrdinaryPagesSavedSession() throws {
         let f = try makeFixture()
         let state = Data("session".utf8)
         let tab = BrowserTab(id: UUID(), title: "Page", url: pageURL, faviconURL: nil,
@@ -533,7 +532,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// A peek is an overlay on its host, not a page the destination profile has
     /// to claim: an ordinary peek URL needs nothing from over there, so it
     /// travels with the host untouched.
-    func testCrossProfileMoveKeepsAnOrdinaryPeekURLAndParksThePeek() throws {
+    @MainActor func testCrossProfileMoveKeepsAnOrdinaryPeekURLAndParksThePeek() throws {
         let f = try makeFixture()
         let peekURL = URL(string: "http://127.0.0.1:1/peek")!
         let tab = sleepingTab(pageURL, in: f.a)
@@ -551,7 +550,7 @@ final class MoveTabToSpaceTests: XCTestCase {
 
     /// A peek the destination profile cannot show is dropped, not a reason to
     /// refuse: the move is about the tab's own page, and that one loads fine.
-    func testCrossProfileMoveDropsAnExtensionPeekTheDestinationCannotShow() async throws {
+    @MainActor func testCrossProfileMoveDropsAnExtensionPeekTheDestinationCannotShow() async throws {
         let ext = try await makeExtension()
         let f = makeSharedFixture("ExtPeekDropped")
         _ = f.profile.extensionController
@@ -578,7 +577,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// Within one profile an extension page keeps everything: the same tab, the
     /// same web view from its context's configuration, the same URL. Nothing has
     /// to be rebuilt, so there is nothing to rebuild wrongly.
-    func testExtensionPageTabMovedWithinAProfileKeepsItsWebViewAndURL() async throws {
+    @MainActor func testExtensionPageTabMovedWithinAProfileKeepsItsWebViewAndURL() async throws {
         let ext = try await makeExtension()
         let f = makeSharedFixture("ExtSameProfile")
         _ = f.profile.extensionController
@@ -601,7 +600,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// Across profiles the page has to be rehomed: the destination profile runs
     /// its own context for the extension, on its own origin. The tab is
     /// retargeted onto it and wakes there (TASK-34).
-    func testExtensionPageTabMovedToAProfileWithTheExtensionLoadsOnItsOrigin() async throws {
+    @MainActor func testExtensionPageTabMovedToAProfileWithTheExtensionLoadsOnItsOrigin() async throws {
         let ext = try await makeExtension()
         let f = makeSharedFixture("ExtCrossProfile")
         _ = f.profile.extensionController
@@ -649,7 +648,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// tab may not wait on: it would wake blank and the next restore would drop
     /// it. So the move is refused and nothing at all happens — the tab keeps its
     /// space, its web view and its URL, and the store can say why (TASK-37).
-    func testExtensionPageTabMovedToAProfileWithoutTheExtensionIsRefused() async throws {
+    @MainActor func testExtensionPageTabMovedToAProfileWithoutTheExtensionIsRefused() async throws {
         let ext = try await makeExtension()
         let f = makeSharedFixture("ExtRefused")
         _ = f.profile.extensionController
@@ -686,7 +685,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// extension's pinned entry is — so the pinned move is allowed where the tab
     /// move is refused, and a later enable in the destination profile moves the
     /// entry onto the new origin.
-    func testDormantExtensionPinnedEntryMovesToAProfileWhereTheExtensionIsOff() async throws {
+    @MainActor func testDormantExtensionPinnedEntryMovesToAProfileWhereTheExtensionIsOff() async throws {
         let ext = try await makeExtension()
         let f = makeSharedFixture("ExtPinnedOff")
         _ = f.profile.extensionController
@@ -715,7 +714,7 @@ final class MoveTabToSpaceTests: XCTestCase {
 
     /// An extension nothing has installed can never serve the page again, so
     /// even the pinned move is refused and the entry stays where it is.
-    func testExtensionPinnedEntryMoveIsRefusedWhenTheExtensionIsUninstalled() async throws {
+    @MainActor func testExtensionPinnedEntryMoveIsRefusedWhenTheExtensionIsUninstalled() async throws {
         let ext = try await makeExtension()
         let f = makeSharedFixture("ExtPinnedGone")
         _ = f.profile.extensionController
@@ -742,7 +741,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// `canMoveTab` answers what `moveTab` would do without touching anything,
     /// which is what lets the window settle its own selection only once the move
     /// is certain instead of putting it back after a refusal.
-    func testCanMoveTabAndRefusalAgreeWithMoveTab() throws {
+    @MainActor func testCanMoveTabAndRefusalAgreeWithMoveTab() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.a, url: pageURL)
         createdTabs.append(tab)
@@ -767,7 +766,7 @@ final class MoveTabToSpaceTests: XCTestCase {
 
     // MARK: - Refused up front
 
-    func testMoveToTheSameSpaceIsARefusalThatChangesNothing() throws {
+    @MainActor func testMoveToTheSameSpaceIsARefusalThatChangesNothing() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.a, url: pageURL)
         createdTabs.append(tab)
@@ -783,7 +782,7 @@ final class MoveTabToSpaceTests: XCTestCase {
     /// session history into a persistent profile, which `scheduleSave` then
     /// writes to the session database. The sidebar hides the menu in an
     /// incognito window; the store refuses the move regardless.
-    func testMoveOutOfAnIncognitoSpaceIsRefused() throws {
+    @MainActor func testMoveOutOfAnIncognitoSpaceIsRefused() throws {
         let f = try makeFixture()
         let incognito = f.store.addIncognitoSpace()
         let tab = f.store.addTab(in: incognito, url: pageURL)
@@ -808,7 +807,7 @@ final class MoveTabToSpaceTests: XCTestCase {
         f.store.removeIncognitoSpace(id: incognito.id)
     }
 
-    func testMoveOfAnUnknownTabOrEntryIsARefusal() throws {
+    @MainActor func testMoveOfAnUnknownTabOrEntryIsARefusal() throws {
         let f = try makeFixture()
         XCTAssertFalse(f.store.moveTab(id: UUID(), from: f.a, to: f.b))
         XCTAssertFalse(f.store.movePinnedEntry(id: UUID(), from: f.a, to: f.b))
@@ -819,7 +818,7 @@ final class MoveTabToSpaceTests: XCTestCase {
 
     /// The session row follows the space the tab is in, so the move must not
     /// leave a row under the source.
-    func testSessionSaveRecordsAMovedTabUnderTheDestinationSpace() throws {
+    @MainActor func testSessionSaveRecordsAMovedTabUnderTheDestinationSpace() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.a, url: pageURL)
         createdTabs.append(tab)

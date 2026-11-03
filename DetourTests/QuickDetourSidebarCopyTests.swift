@@ -11,18 +11,17 @@ import AppKit
 /// A real browser window on a space of a profile of the test's own; the
 /// clicks are mouse-down events handed to the sidebar's table, which takes
 /// them before the table's own tracking. The pages are `.invalid` hosts.
-@MainActor
-final class QuickDetourSidebarCopyTests: XCTestCase {
+nonisolated final class QuickDetourSidebarCopyTests: XCTestCase {
 
-    private var store: TabStore { .shared }
+    @MainActor private var store: TabStore { .shared }
     private var profile: Profile!
     private var space: Space!
     private var wc: BrowserWindowController!
     private var quickDetoursBefore: Set<ObjectIdentifier> = []
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         quickDetoursBefore = Set(QuickDetourWindowController.openControllers.map(ObjectIdentifier.init))
         profile = store.addProfile(name: "Sidebar Copy \(UUID().uuidString.prefix(4))")
         space = store.addSpace(name: "Copy", emoji: "📋", colorHex: "007AFF", profileID: profile.id)
@@ -32,7 +31,7 @@ final class QuickDetourSidebarCopyTests: XCTestCase {
         wc.showWindow(nil)
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for controller in newQuickDetours() {
             controller.closeDisposition = .discard
             controller.close()
@@ -50,31 +49,31 @@ final class QuickDetourSidebarCopyTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func newQuickDetours() -> [QuickDetourWindowController] {
+    @MainActor private func newQuickDetours() -> [QuickDetourWindowController] {
         QuickDetourWindowController.openControllers.filter { !quickDetoursBefore.contains(ObjectIdentifier($0)) }
     }
 
-    private func url(_ path: String) -> URL { URL(string: "https://sidebar-copy.invalid/\(path)")! }
+    @MainActor private func url(_ path: String) -> URL { URL(string: "https://sidebar-copy.invalid/\(path)")! }
 
-    private func addTab(_ path: String) -> BrowserTab {
+    @MainActor private func addTab(_ path: String) -> BrowserTab {
         store.addTab(in: space, url: url(path))
     }
 
-    private var sidebar: TabSidebarViewController { wc.tabSidebar }
+    @MainActor private var sidebar: TabSidebarViewController { wc.tabSidebar }
 
-    private func settle() {
+    @MainActor private func settle() {
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     }
 
     /// The table row of the item holding `tab`.
-    private func row(of tab: BrowserTab) throws -> Int {
+    @MainActor private func row(of tab: BrowserTab) throws -> Int {
         settle()
         let item = try XCTUnwrap(sidebar.tabItems.firstIndex { $0.tabs.contains { $0 === tab } })
         return rowForNormalTab(at: item, pinnedItemCount: sidebar.flattenedPinnedItems.count)
     }
 
     /// An Opt-Cmd mouse-down on `row`, at `fraction` of its width.
-    private func optionCommandClick(row: Int, at fraction: CGFloat = 0.25,
+    @MainActor private func optionCommandClick(row: Int, at fraction: CGFloat = 0.25,
                                     flags: NSEvent.ModifierFlags = [.command, .option]) throws {
         let table = sidebar.tableView
         let rect = table.rect(ofRow: row)
@@ -86,14 +85,14 @@ final class QuickDetourSidebarCopyTests: XCTestCase {
         table.mouseDown(with: event)
     }
 
-    private func onlyNewQuickDetour() throws -> QuickDetourWindowController {
+    @MainActor private func onlyNewQuickDetour() throws -> QuickDetourWindowController {
         XCTAssertEqual(newQuickDetours().count, 1)
         return try XCTUnwrap(newQuickDetours().first)
     }
 
     // MARK: - Normal tabs
 
-    func testANormalTabOpensACopyAndStaysUntouched() throws {
+    @MainActor func testANormalTabOpensACopyAndStaysUntouched() throws {
         let first = addTab("first")
         let copied = addTab("copied")
         wc.selectTab(id: first.id)
@@ -111,7 +110,7 @@ final class QuickDetourSidebarCopyTests: XCTestCase {
         XCTAssertEqual(copied.url, url("copied"))
     }
 
-    func testASleepingTabCopiesItsStoredAddress() throws {
+    @MainActor func testASleepingTabCopiesItsStoredAddress() throws {
         let asleep = addTab("asleep")
         _ = addTab("other")
         asleep.sleep(force: true)
@@ -123,7 +122,7 @@ final class QuickDetourSidebarCopyTests: XCTestCase {
         XCTAssertTrue(asleep.isSleeping, "the tab is not woken")
     }
 
-    func testASplitRowCopiesThePaneClicked() throws {
+    @MainActor func testASplitRowCopiesThePaneClicked() throws {
         let left = addTab("left")
         let right = addTab("right")
         store.createSplit(draggedTabID: right.id, targetTabID: left.id, edge: .right, in: space)
@@ -137,7 +136,7 @@ final class QuickDetourSidebarCopyTests: XCTestCase {
         XCTAssertEqual(left.splitGroupID, right.splitGroupID, "the split is untouched")
     }
 
-    func testOtherModifiersAreNotTheQuickDetourClick() throws {
+    @MainActor func testOtherModifiersAreNotTheQuickDetourClick() throws {
         let tab = addTab("cmd-only")
         _ = addTab("other")
         XCTAssertFalse(QuickDetour.isQuickDetourClick(.command, enabled: true))
@@ -147,7 +146,7 @@ final class QuickDetourSidebarCopyTests: XCTestCase {
 
     // MARK: - Pinned entries and favourites
 
-    func testAPinnedEntryCopiesItsPage() throws {
+    @MainActor func testAPinnedEntryCopiesItsPage() throws {
         let tab = addTab("pinned")
         store.pinTab(id: tab.id, in: space)
         settle()
@@ -162,7 +161,7 @@ final class QuickDetourSidebarCopyTests: XCTestCase {
         XCTAssertNotEqual(wc.selectedTabID, tab.id)
     }
 
-    func testAFavouriteCopiesItsPageOrItsSavedAddress() throws {
+    @MainActor func testAFavouriteCopiesItsPageOrItsSavedAddress() throws {
         XCTAssertTrue(store.addFavoriteFromEntry(url: url("dormant-favourite"), title: "Fav", faviconURL: nil,
                                                  favicon: nil, profileID: profile.id, at: 0))
         settle()

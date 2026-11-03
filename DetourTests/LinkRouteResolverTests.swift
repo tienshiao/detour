@@ -3,33 +3,33 @@ import XCTest
 
 /// TASK-191.1: the Link Routes pure rules — which route a link matches,
 /// where it then opens from each origin, and what targets a space.
-final class LinkRouteResolverTests: XCTestCase {
+nonisolated final class LinkRouteResolverTests: XCTestCase {
 
     private let work = UUID()
     private let personal = UUID()
     private let privateSpace = UUID()
-    private var context: LinkRouteContext { LinkRouteContext(spaceIDs: [work, personal]) }
+    @MainActor private var context: LinkRouteContext { LinkRouteContext(spaceIDs: [work, personal]) }
 
-    private func url(_ s: String) -> URL { URL(string: s)! }
+    @MainActor private func url(_ s: String) -> URL { URL(string: s)! }
 
-    private func route(_ kind: LinkRouteMatchKind?, _ pattern: String = "", app: String? = nil,
+    @MainActor private func route(_ kind: LinkRouteMatchKind?, _ pattern: String = "", app: String? = nil,
                        to target: LinkRouteTarget, order: Int = 0) -> LinkRoute {
         LinkRoute(match: kind.map { LinkRouteMatch(kind: $0, pattern: pattern) }, sourceApp: app,
                   target: target, sortOrder: order)
     }
 
-    private func resolve(_ s: String, from origin: LinkOrigin = .external(sourceApp: nil), _ routes: [LinkRoute],
+    @MainActor private func resolve(_ s: String, from origin: LinkOrigin = .external(sourceApp: nil), _ routes: [LinkRoute],
                          default defaultTarget: LinkRouteTarget = .mostRecentSpace) -> LinkRouteDecision {
         resolveLinkRoute(url: url(s), origin: origin, routes: routes, defaultTarget: defaultTarget, context: context)
     }
 
-    private func matches(_ kind: LinkRouteMatchKind, _ pattern: String, _ s: String) -> Bool {
+    @MainActor private func matches(_ kind: LinkRouteMatchKind, _ pattern: String, _ s: String) -> Bool {
         linkRouteMatch(LinkRouteMatch(kind: kind, pattern: pattern), matches: url(s))
     }
 
     // MARK: - Match kinds
 
-    func testIsEqualToMatchesTheWholeURLOnly() {
+    @MainActor func testIsEqualToMatchesTheWholeURLOnly() {
         XCTAssertTrue(matches(.isEqualTo, "https://example.com/a?b=1", "https://example.com/a?b=1"))
         XCTAssertFalse(matches(.isEqualTo, "https://example.com/a", "https://example.com/a/b"))
         XCTAssertFalse(matches(.isEqualTo, "https://example.com/a", "http://example.com/a"), "the scheme counts")
@@ -37,7 +37,7 @@ final class LinkRouteResolverTests: XCTestCase {
                        "a pattern without a scheme is not a URL, so it equals none")
     }
 
-    func testIsEqualToIgnoresCaseFragmentDefaultPortAndAnEmptyPath() {
+    @MainActor func testIsEqualToIgnoresCaseFragmentDefaultPortAndAnEmptyPath() {
         XCTAssertTrue(matches(.isEqualTo, "HTTPS://Example.com/A", "https://example.com/a"))
         XCTAssertTrue(matches(.isEqualTo, "https://example.com/a", "https://example.com/a#section"))
         XCTAssertTrue(matches(.isEqualTo, "https://example.com/a#x", "https://example.com/a"))
@@ -47,14 +47,14 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertTrue(matches(.isEqualTo, "  https://example.com/  ", "https://example.com/"), "whitespace is trimmed")
     }
 
-    func testContainsIsACaseInsensitiveSubstringOfTheFullURL() {
+    @MainActor func testContainsIsACaseInsensitiveSubstringOfTheFullURL() {
         XCTAssertTrue(matches(.contains, "github.com/acme", "https://github.com/Acme/repo"))
         XCTAssertTrue(matches(.contains, "?TAB=", "https://example.com/p?tab=2"))
         XCTAssertTrue(matches(.contains, "#inbox", "https://mail.example.com/#inbox"), "the fragment is part of the text")
         XCTAssertFalse(matches(.contains, "gitlab", "https://github.com/acme"))
     }
 
-    func testDomainIsMatchesTheHostAndSubdomainsOnADotBoundary() {
+    @MainActor func testDomainIsMatchesTheHostAndSubdomainsOnADotBoundary() {
         XCTAssertTrue(matches(.domainIs, "example.com", "https://example.com/x"))
         XCTAssertTrue(matches(.domainIs, "example.com", "https://a.example.com/"))
         XCTAssertTrue(matches(.domainIs, "example.com", "https://a.b.example.com/"))
@@ -64,11 +64,11 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertFalse(matches(.domainIs, "example.com", "https://other.test/?u=example.com"), "only the host counts")
     }
 
-    func testDomainIsIgnoresCase() {
+    @MainActor func testDomainIsIgnoresCase() {
         XCTAssertTrue(matches(.domainIs, "Example.COM", "https://WWW.example.com/"))
     }
 
-    func testDomainIsPatternMayBeWrittenAsAURL() {
+    @MainActor func testDomainIsPatternMayBeWrittenAsAURL() {
         XCTAssertTrue(matches(.domainIs, "https://example.com/some/path", "https://a.example.com/"))
         XCTAssertTrue(matches(.domainIs, "*.example.com", "https://a.example.com/"))
         XCTAssertTrue(matches(.domainIs, "*.example.com", "https://example.com/"))
@@ -77,7 +77,7 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertTrue(matches(.domainIs, "example.com", "https://example.com./"), "on the URL's host too")
     }
 
-    func testDomainIsTreatsALeadingWWWAsTheBareDomain() {
+    @MainActor func testDomainIsTreatsALeadingWWWAsTheBareDomain() {
         XCTAssertTrue(matches(.domainIs, "www.example.com", "https://example.com/"))
         XCTAssertTrue(matches(.domainIs, "www.example.com", "https://www.example.com/"))
         XCTAssertTrue(matches(.domainIs, "www.example.com", "https://mail.example.com/"))
@@ -89,13 +89,13 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertFalse(matches(.domainIs, "www.com", "https://example.com/"))
     }
 
-    func testDomainIsIgnoresPortsOnBothSides() {
+    @MainActor func testDomainIsIgnoresPortsOnBothSides() {
         XCTAssertTrue(matches(.domainIs, "localhost", "http://localhost:3000/"))
         XCTAssertTrue(matches(.domainIs, "localhost:3000", "http://localhost:4000/"))
         XCTAssertEqual(linkRouteDomain(fromPattern: "example.com:8080"), "example.com")
     }
 
-    func testDomainIsComparesIDNsInPunycode() {
+    @MainActor func testDomainIsComparesIDNsInPunycode() {
         XCTAssertEqual(linkRouteDomain(fromPattern: "münchen.de"), "xn--mnchen-3ya.de")
         XCTAssertEqual(linkRouteDomain(fromPattern: "MÜNCHEN.de"), "xn--mnchen-3ya.de")
         XCTAssertTrue(matches(.domainIs, "münchen.de", "https://xn--mnchen-3ya.de/"))
@@ -103,7 +103,7 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertTrue(matches(.domainIs, "xn--mnchen-3ya.de", "https://münchen.de/"))
     }
 
-    func testDomainIsMatchesIPLiteralsExactly() {
+    @MainActor func testDomainIsMatchesIPLiteralsExactly() {
         XCTAssertEqual(linkRouteDomain(fromPattern: "::1"), "[::1]")
         XCTAssertEqual(linkRouteDomain(fromPattern: "[::1]:3000"), "[::1]")
         XCTAssertTrue(matches(.domainIs, "::1", "http://[::1]:3000/"))
@@ -114,7 +114,7 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertFalse(matches(.domainIs, "0.1", "http://10.0.0.1/"))
     }
 
-    func testAnEmptyPatternMatchesNothing() {
+    @MainActor func testAnEmptyPatternMatchesNothing() {
         for kind in LinkRouteMatchKind.allCases {
             XCTAssertFalse(matches(kind, "", "https://example.com/"), "\(kind)")
             XCTAssertFalse(matches(kind, "   ", "https://example.com/"), "\(kind)")
@@ -122,7 +122,7 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertNil(linkRouteDomain(fromPattern: "https://"))
     }
 
-    func testOnlyHTTPAndHTTPSURLsMatch() {
+    @MainActor func testOnlyHTTPAndHTTPSURLsMatch() {
         XCTAssertFalse(matches(.contains, "history", "detour://history"))
         XCTAssertFalse(matches(.contains, "tmp", "file:///tmp/a.html"))
         XCTAssertFalse(matches(.domainIs, "example.com", "ftp://example.com/"))
@@ -131,7 +131,7 @@ final class LinkRouteResolverTests: XCTestCase {
 
     // MARK: - Ordering
 
-    func testTheFirstMatchingRouteInSortOrderWins() {
+    @MainActor func testTheFirstMatchingRouteInSortOrderWins() {
         let routes = [
             route(.domainIs, "example.com", to: .space(personal), order: 1),
             route(.contains, "example.com/work", to: .space(work), order: 0),
@@ -141,7 +141,7 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertEqual(resolve("https://example.com/home", routes), .openInSpace(personal))
     }
 
-    func testAnUnmatchedExternalLinkGoesToTheDefault() {
+    @MainActor func testAnUnmatchedExternalLinkGoesToTheDefault() {
         let routes = [route(.domainIs, "example.com", to: .space(work))]
         XCTAssertEqual(resolve("https://other.test/", routes), .mostRecentSpace)
         XCTAssertEqual(resolve("https://other.test/", routes, default: .space(personal)), .openInSpace(personal))
@@ -151,7 +151,7 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertEqual(resolve("https://other.test/", [], default: .space(work)), .openInSpace(work))
     }
 
-    func testAMatchedExternalLinkOpensInEachTargetKind() {
+    @MainActor func testAMatchedExternalLinkOpensInEachTargetKind() {
         let ext = LinkOrigin.external(sourceApp: nil)
         XCTAssertEqual(resolve("https://a.test/", from: ext, [route(.domainIs, "a.test", to: .space(work))]), .openInSpace(work))
         XCTAssertEqual(resolve("https://a.test/", from: ext, [route(.domainIs, "a.test", to: .mostRecentSpace)],
@@ -163,7 +163,7 @@ final class LinkRouteResolverTests: XCTestCase {
 
     // MARK: - Source app
 
-    func testASourceAppRouteMatchesOnlyExternalLinksFromThatApp() {
+    @MainActor func testASourceAppRouteMatchesOnlyExternalLinksFromThatApp() {
         let slack = route(nil, app: "com.tinyspeck.slackmacgap", to: .space(work))
         XCTAssertEqual(resolve("https://any.test/", from: .external(sourceApp: "com.tinyspeck.slackmacgap"), [slack]),
                        .openInSpace(work), "an app-only route matches any URL from the app")
@@ -176,7 +176,7 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertEqual(resolve("https://any.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), [slack]), .stay)
     }
 
-    func testARouteWithAURLAndASourceAppNeedsBoth() {
+    @MainActor func testARouteWithAURLAndASourceAppNeedsBoth() {
         let r = route(.domainIs, "acme.test", app: "com.tinyspeck.slackmacgap", to: .space(work))
         XCTAssertEqual(resolve("https://acme.test/", from: .external(sourceApp: "com.tinyspeck.slackmacgap"), [r]),
                        .openInSpace(work))
@@ -186,7 +186,7 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertEqual(resolve("https://acme.test/", from: .typed(fromSpace: personal, isPrivateWindow: false), [r]), .stay)
     }
 
-    func testARouteWithNoConditionNeverMatches() {
+    @MainActor func testARouteWithNoConditionNeverMatches() {
         let r = route(nil, to: .space(work))
         XCTAssertFalse(r.hasCondition)
         XCTAssertEqual(resolve("https://a.test/", [r]), .mostRecentSpace)
@@ -197,7 +197,7 @@ final class LinkRouteResolverTests: XCTestCase {
 
     // MARK: - Typed URLs and clicks
 
-    func testATypedOrClickedLinkMovesToTheRoutedSpace() {
+    @MainActor func testATypedOrClickedLinkMovesToTheRoutedSpace() {
         let r = [route(.domainIs, "work.test", to: .space(work))]
         XCTAssertEqual(resolve("https://work.test/", from: .typed(fromSpace: personal, isPrivateWindow: false), r),
                        .openInSpace(work))
@@ -205,7 +205,7 @@ final class LinkRouteResolverTests: XCTestCase {
                        .openInSpace(work))
     }
 
-    func testARouteToTheSpaceTheLinkIsAlreadyInStays() {
+    @MainActor func testARouteToTheSpaceTheLinkIsAlreadyInStays() {
         let r = [route(.domainIs, "work.test", to: .space(work)), route(.contains, "work", to: .space(personal), order: 1)]
         XCTAssertEqual(resolve("https://work.test/", from: .typed(fromSpace: work, isPrivateWindow: false), r), .stay,
                        "the first match decides: it stays, the later route is not tried")
@@ -219,36 +219,36 @@ final class LinkRouteResolverTests: XCTestCase {
     // resolver applies the Default to every `.typed` and `.clicked` origin it
     // is handed.
 
-    private var typedFromPersonal: LinkOrigin { .typed(fromSpace: personal, isPrivateWindow: false) }
-    private var clickedInPersonal: LinkOrigin { .clicked(inSpace: personal, isPrivateWindow: false) }
+    @MainActor private var typedFromPersonal: LinkOrigin { .typed(fromSpace: personal, isPrivateWindow: false) }
+    @MainActor private var clickedInPersonal: LinkOrigin { .clicked(inSpace: personal, isPrivateWindow: false) }
 
-    func testAnUnmatchedTypedOrClickedLinkOpensInTheDefaultSpace() {
+    @MainActor func testAnUnmatchedTypedOrClickedLinkOpensInTheDefaultSpace() {
         let r = [route(.domainIs, "example.com", to: .space(personal))]
         XCTAssertEqual(resolve("https://other.test/", from: typedFromPersonal, r, default: .space(work)), .openInSpace(work))
         XCTAssertEqual(resolve("https://other.test/", from: clickedInPersonal, r, default: .space(work)), .openInSpace(work))
     }
 
-    func testAnUnmatchedTypedOrClickedLinkInTheDefaultSpaceStays() {
+    @MainActor func testAnUnmatchedTypedOrClickedLinkInTheDefaultSpaceStays() {
         XCTAssertEqual(resolve("https://other.test/", from: .typed(fromSpace: work, isPrivateWindow: false), [],
                                default: .space(work)), .stay)
         XCTAssertEqual(resolve("https://other.test/", from: .clicked(inSpace: work, isPrivateWindow: false), [],
                                default: .space(work)), .stay)
     }
 
-    func testAMostRecentSpaceDefaultLeavesATypedOrClickedLinkWhereItIs() {
+    @MainActor func testAMostRecentSpaceDefaultLeavesATypedOrClickedLinkWhereItIs() {
         XCTAssertEqual(resolve("https://other.test/", from: typedFromPersonal, [], default: .mostRecentSpace), .stay)
         XCTAssertEqual(resolve("https://other.test/", from: clickedInPersonal, [], default: .mostRecentSpace), .stay)
         XCTAssertEqual(resolve("https://other.test/", [], default: .mostRecentSpace), .mostRecentSpace,
                        "an external link still goes to the most recent space")
     }
 
-    func testAPrivateWindowDefaultAppliesToEveryOrigin() {
+    @MainActor func testAPrivateWindowDefaultAppliesToEveryOrigin() {
         XCTAssertEqual(resolve("https://other.test/", [], default: .privateWindow), .privateWindow)
         XCTAssertEqual(resolve("https://other.test/", from: typedFromPersonal, [], default: .privateWindow), .privateWindow)
         XCTAssertEqual(resolve("https://other.test/", from: clickedInPersonal, [], default: .privateWindow), .privateWindow)
     }
 
-    func testAPrivateWindowDefaultFromAPrivateWindowStays() {
+    @MainActor func testAPrivateWindowDefaultFromAPrivateWindowStays() {
         XCTAssertEqual(resolve("https://other.test/", from: .typed(fromSpace: privateSpace, isPrivateWindow: true), [],
                                default: .privateWindow), .stay)
         XCTAssertEqual(resolve("https://other.test/", from: .clicked(inSpace: privateSpace, isPrivateWindow: true), [],
@@ -258,7 +258,7 @@ final class LinkRouteResolverTests: XCTestCase {
     /// The Default naming Quarantine takes unmatched links from other apps
     /// only; a click no route matches stays (TASK-194: only a route set to
     /// Quarantine catches clicks).
-    func testQuarantineAndQuickDetourDefaultsApplyOnlyToExternalLinks() {
+    @MainActor func testQuarantineAndQuickDetourDefaultsApplyOnlyToExternalLinks() {
         for defaultTarget: LinkRouteTarget in [.quarantine, .quickDetour] {
             XCTAssertEqual(resolve("https://other.test/", from: typedFromPersonal, [], default: defaultTarget), .stay,
                            "\(defaultTarget): a typed URL stays, rather than going to the most recent space")
@@ -269,7 +269,7 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertEqual(resolve("https://other.test/", [], default: .quickDetour), .quickDetour)
     }
 
-    func testANormalSpaceDefaultIsIgnoredFromAPrivateWindow() {
+    @MainActor func testANormalSpaceDefaultIsIgnoredFromAPrivateWindow() {
         for origin: LinkOrigin in [.typed(fromSpace: privateSpace, isPrivateWindow: true),
                                    .clicked(inSpace: privateSpace, isPrivateWindow: true)] {
             XCTAssertEqual(resolve("https://other.test/", from: origin, [], default: .space(work)), .stay, "\(origin)")
@@ -277,13 +277,13 @@ final class LinkRouteResolverTests: XCTestCase {
         }
     }
 
-    func testATypedURLWhoseRouteIsSkippedFallsThroughToTheDefault() {
+    @MainActor func testATypedURLWhoseRouteIsSkippedFallsThroughToTheDefault() {
         let r = [route(.domainIs, "a.test", to: .quarantine), route(.domainIs, "a.test", to: .space(UUID()), order: 1)]
         XCTAssertEqual(resolve("https://a.test/", from: typedFromPersonal, r, default: .space(work)), .openInSpace(work),
                        "Quarantine (never for a typed URL) and a missing space are skipped; the Default decides")
     }
 
-    func testAMostRecentSpaceRouteLeavesATypedOrClickedLinkWhereItIs() {
+    @MainActor func testAMostRecentSpaceRouteLeavesATypedOrClickedLinkWhereItIs() {
         let r = [route(.domainIs, "a.test", to: .mostRecentSpace), route(.domainIs, "a.test", to: .space(work), order: 1)]
         XCTAssertEqual(resolve("https://a.test/", from: .typed(fromSpace: personal, isPrivateWindow: false), r), .stay)
         XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), r), .stay)
@@ -291,7 +291,7 @@ final class LinkRouteResolverTests: XCTestCase {
 
     // MARK: - Quick Detour: links from other apps only
 
-    func testQuickDetourRoutesApplyOnlyToExternalLinks() {
+    @MainActor func testQuickDetourRoutesApplyOnlyToExternalLinks() {
         let r = [route(.domainIs, "a.test", to: .quickDetour), route(.domainIs, "a.test", to: .space(work), order: 1)]
         XCTAssertEqual(resolve("https://a.test/", from: .typed(fromSpace: personal, isPrivateWindow: false), r),
                        .openInSpace(work), "skipped for a typed URL; the next route applies")
@@ -303,14 +303,14 @@ final class LinkRouteResolverTests: XCTestCase {
 
     // MARK: - Quarantine (TASK-194): links from other apps and clicks, never typed
 
-    func testAQuarantineRouteCatchesAMatchingClick() {
+    @MainActor func testAQuarantineRouteCatchesAMatchingClick() {
         let r = [route(.domainIs, "a.test", to: .quarantine), route(.domainIs, "a.test", to: .space(work), order: 1)]
         XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), r),
                        .quarantine, "the user's decision of 2026-10-26: a route set to Quarantine catches clicks too")
         XCTAssertEqual(resolve("https://a.test/", from: .external(sourceApp: nil), r), .quarantine)
     }
 
-    func testAQuarantineRouteNeverTakesATypedURL() {
+    @MainActor func testAQuarantineRouteNeverTakesATypedURL() {
         let r = [route(.domainIs, "a.test", to: .quarantine), route(.domainIs, "a.test", to: .space(work), order: 1)]
         XCTAssertEqual(resolve("https://a.test/", from: .typed(fromSpace: personal, isPrivateWindow: false), r),
                        .openInSpace(work), "skipped for a typed URL; the next route applies")
@@ -318,7 +318,7 @@ final class LinkRouteResolverTests: XCTestCase {
                        .stay)
     }
 
-    func testAQuarantineRouteNeverTakesAClickOutOfAPrivateWindow() {
+    @MainActor func testAQuarantineRouteNeverTakesAClickOutOfAPrivateWindow() {
         // A quarantine's Open in reaches normal spaces, so a Private page's
         // link quarantined would be one Cmd+O from a normal profile (and its
         // history): nothing leaves a Private window (code review, TASK-194).
@@ -330,7 +330,7 @@ final class LinkRouteResolverTests: XCTestCase {
     /// A Quarantine route skipped for a Private window's link lets the next
     /// matching route decide, which keeps the link in the Private window too
     /// (code review, TASK-194 follow-up).
-    func testAPrivateSkippedQuarantineRouteFallsThroughToTheNextRoute() {
+    @MainActor func testAPrivateSkippedQuarantineRouteFallsThroughToTheNextRoute() {
         let privateClick = LinkOrigin.clicked(inSpace: privateSpace, isPrivateWindow: true)
         let privateTyped = LinkOrigin.typed(fromSpace: privateSpace, isPrivateWindow: true)
         let toPrivate = [route(.domainIs, "a.test", to: .quarantine),
@@ -354,7 +354,7 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertEqual(resolve("https://a.test/", from: normalTyped, toSpace), .openInSpace(work))
     }
 
-    func testAQuarantineDefaultNeverTakesAClick() {
+    @MainActor func testAQuarantineDefaultNeverTakesAClick() {
         XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), [],
                                default: .quarantine), .stay)
         XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: privateSpace, isPrivateWindow: true), [],
@@ -363,7 +363,7 @@ final class LinkRouteResolverTests: XCTestCase {
 
     // MARK: - Private windows
 
-    func testAPrivateWindowRouteMatchesFromEveryNormalOrigin() {
+    @MainActor func testAPrivateWindowRouteMatchesFromEveryNormalOrigin() {
         let r = [route(.domainIs, "secret.test", to: .privateWindow)]
         XCTAssertEqual(resolve("https://secret.test/", from: .external(sourceApp: nil), r), .privateWindow)
         XCTAssertEqual(resolve("https://secret.test/", from: .typed(fromSpace: personal, isPrivateWindow: false), r),
@@ -372,13 +372,13 @@ final class LinkRouteResolverTests: XCTestCase {
                        .privateWindow)
     }
 
-    func testAPrivateRouteFromAPrivateWindowStays() {
+    @MainActor func testAPrivateRouteFromAPrivateWindowStays() {
         let r = [route(.domainIs, "secret.test", to: .privateWindow), route(.domainIs, "secret.test", to: .space(work), order: 1)]
         XCTAssertEqual(resolve("https://secret.test/", from: .typed(fromSpace: privateSpace, isPrivateWindow: true), r), .stay)
         XCTAssertEqual(resolve("https://secret.test/", from: .clicked(inSpace: privateSpace, isPrivateWindow: true), r), .stay)
     }
 
-    func testNothingRoutesOutOfAPrivateWindow() {
+    @MainActor func testNothingRoutesOutOfAPrivateWindow() {
         let r = [
             route(.domainIs, "a.test", to: .space(work)),
             route(.domainIs, "a.test", to: .mostRecentSpace, order: 1),
@@ -394,7 +394,7 @@ final class LinkRouteResolverTests: XCTestCase {
                        "a later Private route still only stays")
     }
 
-    func testAPrivateWindowsSpaceIsNeverARouteTarget() {
+    @MainActor func testAPrivateWindowsSpaceIsNeverARouteTarget() {
         // A route can only name a space by id; a Private window's space is not
         // in the context, so it is skipped like a missing space.
         let r = [route(.domainIs, "a.test", to: .space(privateSpace))]
@@ -404,7 +404,7 @@ final class LinkRouteResolverTests: XCTestCase {
 
     // MARK: - Missing spaces
 
-    func testARouteToAMissingSpaceIsSkipped() {
+    @MainActor func testARouteToAMissingSpaceIsSkipped() {
         let gone = UUID()
         let r = [route(.domainIs, "a.test", to: .space(gone)), route(.contains, "a.test", to: .space(work), order: 1)]
         XCTAssertEqual(resolve("https://a.test/", r), .openInSpace(work))
@@ -414,12 +414,12 @@ final class LinkRouteResolverTests: XCTestCase {
         XCTAssertEqual(resolve("https://a.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), [r[0]]), .stay)
     }
 
-    func testADefaultToAMissingSpaceFallsBackToTheMostRecentSpaceForAnExternalLink() {
+    @MainActor func testADefaultToAMissingSpaceFallsBackToTheMostRecentSpaceForAnExternalLink() {
         XCTAssertEqual(resolve("https://a.test/", [], default: .space(UUID())), .mostRecentSpace)
         XCTAssertEqual(resolve("https://a.test/", [], default: .space(privateSpace)), .mostRecentSpace)
     }
 
-    func testADefaultToAMissingSpaceLeavesATypedOrClickedLinkWhereItIs() {
+    @MainActor func testADefaultToAMissingSpaceLeavesATypedOrClickedLinkWhereItIs() {
         for gone in [UUID(), privateSpace] {
             XCTAssertEqual(resolve("https://a.test/", from: typedFromPersonal, [], default: .space(gone)), .stay)
             XCTAssertEqual(resolve("https://a.test/", from: clickedInPersonal, [], default: .space(gone)), .stay)
@@ -428,7 +428,7 @@ final class LinkRouteResolverTests: XCTestCase {
 
     // MARK: - Routes targeting a space
 
-    func testRoutesTargetingASpaceListsThemInSortOrderAndTheDefault() {
+    @MainActor func testRoutesTargetingASpaceListsThemInSortOrderAndTheDefault() {
         let a = route(.domainIs, "a.test", to: .space(work), order: 2)
         let b = route(.domainIs, "b.test", to: .space(personal), order: 1)
         let c = route(.contains, "c", to: .space(work), order: 0)

@@ -11,28 +11,27 @@ import WebKit
 ///
 /// Every store here is a private `TabStore` on in-memory databases; pages
 /// that must really load come from a loopback HTTP server.
-@MainActor
-final class QuickDetourProfileSwitchTests: XCTestCase {
+nonisolated final class QuickDetourProfileSwitchTests: XCTestCase {
 
     private var openedTabs: [(store: TabStore, tab: BrowserTab)] = []
     private var servers: [LoopbackHTTPServer] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for (store, tab) in openedTabs { store.closeQuickDetourTab(tab) }
         openedTabs.removeAll()
         for server in servers { server.stop() }
         servers.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
-    private func snapshot(_ name: String, id: UUID = UUID(), isPrivate: Bool = false,
+    @MainActor private func snapshot(_ name: String, id: UUID = UUID(), isPrivate: Bool = false,
                           isDeleted: Bool = false) -> QuickDetourProfileSnapshot {
         QuickDetourProfileSnapshot(id: id, name: name, isPrivate: isPrivate, isDeleted: isDeleted)
     }
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let store: TabStore
         let historyDB: HistoryDatabase
         let work: Profile
@@ -42,7 +41,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         let downloads: DownloadManager
     }
 
-    private func makeFixture() throws -> Fixture {
+    @MainActor private func makeFixture() throws -> Fixture {
         var config = Configuration()
         config.foreignKeysEnabled = true
         let historyDB = try HistoryDatabase(dbQueue: try DatabaseQueue(configuration: config))
@@ -60,27 +59,27 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
                        settings: settings, downloads: downloads)
     }
 
-    private func open(in store: TabStore, profile: Profile) -> BrowserTab {
+    @MainActor private func open(in store: TabStore, profile: Profile) -> BrowserTab {
         let tab = store.openQuickDetourTab(profile: profile)
         openedTabs.append((store, tab))
         return tab
     }
 
-    private func replace(_ tab: BrowserTab, in store: TabStore, with profile: Profile,
+    @MainActor private func replace(_ tab: BrowserTab, in store: TabStore, with profile: Profile,
                          betweenPages: () -> Void = {}) -> BrowserTab? {
         let new = store.replaceQuickDetourTab(tab, withPageOn: profile, betweenPages: betweenPages)
         if let new { openedTabs.append((store, new)) }
         return new
     }
 
-    private func serve(_ routes: [String: String]) async throws -> URL {
+    @MainActor private func serve(_ routes: [String: String]) async throws -> URL {
         let server = try LoopbackHTTPServer(routes: routes)
         servers.append(server)
         let port = try await server.start()
         return URL(string: "http://127.0.0.1:\(port)/")!
     }
 
-    private func pump(_ seconds: TimeInterval) {
+    @MainActor private func pump(_ seconds: TimeInterval) {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
@@ -89,7 +88,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
 
     private static let page = "<html><head><title>Lookup</title></head><body>looked up</body></html>"
 
-    private final class Recorder: TabStoreObserver {
+    @MainActor private final class Recorder: TabStoreObserver {
         var closed: [UUID] = []
         var replaced: [(old: UUID, new: UUID)] = []
         func tabStoreDidCloseQuickDetour(_ tab: BrowserTab) { closed.append(tab.id) }
@@ -98,13 +97,13 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         }
     }
 
-    private func privateOverride(_ settings: SiteSettingsStore) -> Bool? {
+    @MainActor private func privateOverride(_ settings: SiteSettingsStore) -> Bool? {
         settings.override(.pictureInPicture, forSite: "youtube.com", profileID: TabStore.incognitoProfileID)
     }
 
     // MARK: - The menu
 
-    func testTheMenuListsTheNormalProfilesInOrderThenPrivateLast() {
+    @MainActor func testTheMenuListsTheNormalProfilesInOrderThenPrivateLast() {
         let privateProfile = snapshot("Private", id: TabStore.incognitoProfileID, isPrivate: true)
         let work = snapshot("Work")
         let home = snapshot("Home")
@@ -117,7 +116,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         XCTAssertEqual(menu.separatorIndex, 2, "a separator before Private")
     }
 
-    func testTheWindowsOwnProfileIsChecked() {
+    @MainActor func testTheWindowsOwnProfileIsChecked() {
         let privateProfile = snapshot("Private", id: TabStore.incognitoProfileID, isPrivate: true)
         let work = snapshot("Work")
         let home = snapshot("Home")
@@ -130,7 +129,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         XCTAssertEqual(onPrivate.items.filter(\.isChecked).map(\.profileID), [privateProfile.id])
     }
 
-    func testWithOneProfileTheMenuShowsItAndPrivate() {
+    @MainActor func testWithOneProfileTheMenuShowsItAndPrivate() {
         let privateProfile = snapshot("Private", id: TabStore.incognitoProfileID, isPrivate: true)
         let only = snapshot("Default")
 
@@ -141,7 +140,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         XCTAssertEqual(menu.separatorIndex, 1)
     }
 
-    func testDeletedProfilesAreLeftOut() {
+    @MainActor func testDeletedProfilesAreLeftOut() {
         let privateProfile = snapshot("Private", id: TabStore.incognitoProfileID, isPrivate: true)
         let work = snapshot("Work")
         let gone = snapshot("Gone", isDeleted: true)
@@ -151,7 +150,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         XCTAssertEqual(menu.items.map(\.name), ["Work", "Private"])
     }
 
-    func testWithoutAPrivateProfileThereIsNoSeparator() {
+    @MainActor func testWithoutAPrivateProfileThereIsNoSeparator() {
         let work = snapshot("Work")
         let home = snapshot("Home")
 
@@ -163,19 +162,19 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
 
     // MARK: - The decision
 
-    func testTheSameProfileStays() {
+    @MainActor func testTheSameProfileStays() {
         let work = snapshot("Work")
         XCTAssertEqual(QuickDetour.profileSwitchDecision(from: work, to: work, privateDownloadsInFlight: 0), .stay)
     }
 
-    func testAGoneOrDeletedTargetStays() {
+    @MainActor func testAGoneOrDeletedTargetStays() {
         let work = snapshot("Work")
         XCTAssertEqual(QuickDetour.profileSwitchDecision(from: work, to: nil, privateDownloadsInFlight: 0), .stay)
         XCTAssertEqual(QuickDetour.profileSwitchDecision(from: work, to: snapshot("Gone", isDeleted: true),
                                                          privateDownloadsInFlight: 0), .stay)
     }
 
-    func testAnotherNormalProfileOrPrivateSwitchesAtOnce() {
+    @MainActor func testAnotherNormalProfileOrPrivateSwitchesAtOnce() {
         let work = snapshot("Work")
         let privateProfile = snapshot("Private", id: TabStore.incognitoProfileID, isPrivate: true)
         XCTAssertEqual(QuickDetour.profileSwitchDecision(from: work, to: snapshot("Home"), privateDownloadsInFlight: 0),
@@ -184,13 +183,13 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
                        .switchProfile, "into Private: nothing of a normal page's is cancelled")
     }
 
-    func testLeavingPrivateWithNoDownloadRunningSwitchesAtOnce() {
+    @MainActor func testLeavingPrivateWithNoDownloadRunningSwitchesAtOnce() {
         let privateProfile = snapshot("Private", id: TabStore.incognitoProfileID, isPrivate: true)
         XCTAssertEqual(QuickDetour.profileSwitchDecision(from: privateProfile, to: snapshot("Work"),
                                                          privateDownloadsInFlight: 0), .switchProfile)
     }
 
-    func testLeavingPrivateWithDownloadsRunningAsksFirst() {
+    @MainActor func testLeavingPrivateWithDownloadsRunningAsksFirst() {
         let privateProfile = snapshot("Private", id: TabStore.incognitoProfileID, isPrivate: true)
         let work = snapshot("Work")
 
@@ -210,7 +209,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         XCTAssertEqual(two.informativeText, "2 downloads are in progress. Leaving Private browsing cancels them.")
     }
 
-    func testANormalPageNeverAsksAboutDownloads() {
+    @MainActor func testANormalPageNeverAsksAboutDownloads() {
         // A normal page's downloads are listed in every normal window and
         // outlive it; a count passed for one means nothing.
         XCTAssertEqual(QuickDetour.profileSwitchDecision(from: snapshot("Work"), to: snapshot("Home"),
@@ -219,7 +218,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
 
     // MARK: - The store's replacement
 
-    func testReplacingOpensANewTabOnTheOtherProfileAndTearsTheOldOneDown() throws {
+    @MainActor func testReplacingOpensANewTabOnTheOtherProfileAndTearsTheOldOneDown() throws {
         let f = try makeFixture()
         let old = open(in: f.store, profile: f.work)
 
@@ -236,7 +235,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         XCTAssertNil(old.webView, "the old page is torn down (its release: QuickDetourProfileSwitchWindowTests)")
     }
 
-    func testReplacingUsesTheGivenID() throws {
+    @MainActor func testReplacingUsesTheGivenID() throws {
         let f = try makeFixture()
         let old = open(in: f.store, profile: f.work)
         let id = UUID()
@@ -248,7 +247,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         XCTAssertTrue(f.store.quickDetourTab(withID: id) === new)
     }
 
-    func testTheHookRunsBetweenTheOldPageLeavingAndTheNewOneEntering() throws {
+    @MainActor func testTheHookRunsBetweenTheOldPageLeavingAndTheNewOneEntering() throws {
         let f = try makeFixture()
         let old = open(in: f.store, profile: f.work)
         var listedDuringHook: [UUID]?
@@ -264,7 +263,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         XCTAssertEqual(f.store.quickDetourTabs.map(\.id), [new.id])
     }
 
-    func testObserversHearAReplacementNotAClose() throws {
+    @MainActor func testObserversHearAReplacementNotAClose() throws {
         let f = try makeFixture()
         let recorder = Recorder()
         f.store.addObserver(recorder)
@@ -278,7 +277,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         XCTAssertEqual(recorder.replaced.map(\.new), [new.id])
     }
 
-    func testTheSameProfileADeletedOneOrAStrangersTabIsRefused() throws {
+    @MainActor func testTheSameProfileADeletedOneOrAStrangersTabIsRefused() throws {
         let f = try makeFixture()
         let tab = open(in: f.store, profile: f.work)
         var hookRan = false
@@ -296,7 +295,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         XCTAssertNotNil(tab.webView, "left as it was")
     }
 
-    func testDeletingTheNewProfileClosesTheReplacedPage() throws {
+    @MainActor func testDeletingTheNewProfileClosesTheReplacedPage() throws {
         let f = try makeFixture()
         let recorder = Recorder()
         f.store.addObserver(recorder)
@@ -313,7 +312,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
 
     // MARK: - Private
 
-    func testSwitchingIntoPrivateUsesThePrivateStoreAndKeepsTheSessionLive() throws {
+    @MainActor func testSwitchingIntoPrivateUsesThePrivateStoreAndKeepsTheSessionLive() throws {
         let f = try makeFixture()
         let old = open(in: f.store, profile: f.work)
         XCTAssertFalse(f.store.hasLivePrivateSession)
@@ -325,7 +324,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         XCTAssertEqual(f.store.liveIncognitoDownloadScopeIDs, [new.id], "its downloads are its own")
     }
 
-    func testLeavingPrivateEndsTheSessionWhenItWasTheLastPrivatePage() throws {
+    @MainActor func testLeavingPrivateEndsTheSessionWhenItWasTheLastPrivatePage() throws {
         let f = try makeFixture()
         let old = open(in: f.store, profile: f.privateProfile)
         f.settings.set(.pictureInPicture, site: "youtube.com", to: false, profileID: TabStore.incognitoProfileID)
@@ -336,7 +335,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         XCTAssertNil(privateOverride(f.settings), "the Private session's settings go with its last page")
     }
 
-    func testLeavingPrivateKeepsTheSessionForAPrivateWindow() throws {
+    @MainActor func testLeavingPrivateKeepsTheSessionForAPrivateWindow() throws {
         let f = try makeFixture()
         let space = f.store.addIncognitoSpace()
         let old = open(in: f.store, profile: f.privateProfile)
@@ -349,7 +348,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
         f.store.removeIncognitoSpace(id: space.id)
     }
 
-    func testLeavingPrivateDropsItsDownloads() throws {
+    @MainActor func testLeavingPrivateDropsItsDownloads() throws {
         let f = try makeFixture()
         let old = open(in: f.store, profile: f.privateProfile)
         let scope = DownloadScope.incognito(spaceID: old.id)
@@ -364,11 +363,11 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
 
     // MARK: - History
 
-    private func visits(_ db: HistoryDatabase, in scope: [String]) -> [HistoryVisitEntry] {
+    @MainActor private func visits(_ db: HistoryDatabase, in scope: [String]) -> [HistoryVisitEntry] {
         db.visits(spaceIDs: scope, limit: 50)
     }
 
-    func testVisitsAfterTheSwitchGoToTheNewProfilesScope() async throws {
+    @MainActor func testVisitsAfterTheSwitchGoToTheNewProfilesScope() async throws {
         let f = try makeFixture()
         let base = try await serve(["/": Self.page, "/after": "<html><head><title>After</title></head></html>"])
         let old = open(in: f.store, profile: f.work)
@@ -394,7 +393,7 @@ final class QuickDetourProfileSwitchTests: XCTestCase {
                        [base.appendingPathComponent("after").absoluteString])
     }
 
-    func testSwitchingToPrivateRecordsNothing() async throws {
+    @MainActor func testSwitchingToPrivateRecordsNothing() async throws {
         let f = try makeFixture()
         let base = try await serve(["/": Self.page])
         let old = open(in: f.store, profile: f.work)

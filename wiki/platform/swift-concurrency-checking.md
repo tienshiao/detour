@@ -1,7 +1,7 @@
 ---
 type: Platform Quirk
 title: Swift concurrency checking in an AppKit and WebKit app
-description: What turning on complete concurrency checking, main-actor default isolation and the Swift 6 language mode does to Detour — WebKit delegate methods that silently stop being called because the SDK's closure types change, the implicit-deinit isolation error, build settings that leak into Swift packages, which settings carry runtime meaning in each language mode, how the Objective-C entry points were audited before Swift 6 could trap on them, and why the test target had to follow.
+description: What turning on complete concurrency checking, main-actor default isolation and the Swift 6 language mode does to Detour — WebKit delegate methods that silently stop being called because the SDK's closure types change, the implicit-deinit isolation error, build settings that leak into Swift packages, which settings carry runtime meaning in each language mode, how the Objective-C entry points were audited before Swift 6 could trap on them, why the test target had to follow, and the one test-class shape XCTest allows in Swift 6.
 tags: [swift, concurrency, webkit, build]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T03:25:41Z }
@@ -15,6 +15,9 @@ sources:
   - id: task-231-6
     resource: backlog:TASK-231.6
     title: The app target builds in Swift 6 language mode
+  - id: task-231-7
+    resource: backlog:TASK-231.7
+    title: The test target builds in Swift 6 language mode
   - id: main-actor-callbacks
     resource: ../../Detour/Browser/Shared/MainActorCallbacks.swift
     title: MainActorCallbacks.swift
@@ -150,6 +153,35 @@ in the Swift 5 mode, made the test methods main-actor isolated and left 5
 errors, all closures and default arguments; XCTest runs synchronous tests on
 the main thread anyway.[^task-231-6]
 
+## XCTest allows only one test-class shape in Swift 6
+
+XCTest declares `XCTestCase`'s `init`, `setUp()` and `tearDown()`
+nonisolated. Under main-actor default isolation every test class therefore
+fails in the Swift 6 mode: its inherited initializers and its `setUp` /
+`tearDown` overrides are main-actor isolated against a nonisolated base.
+Compiling small variants with `swiftc` showed that a plain class, an explicit
+`@MainActor` class and an async `setUp` on a main-actor class all fail; the
+only shape that compiles is a `nonisolated` class with `@MainActor` on each
+member and nested type, and setUp/tearDown written as
+`@MainActor override func setUp() async throws` with
+`try await super.setUp()`. XCTest calls the async form before the sync one,
+so fixtures keep their order. Extensions of test classes are `@MainActor`.
+The 197 classes in DetourTests were rewritten by a script
+(`docs/harness/task231-7-xctest-isolate.py`); before that, the target had 898
+warnings under complete checking, 708 of them these override and
+inherited-initializer mismatches.[^task-231-7]
+
+What the compiler reported after the rewrite was mostly test plumbing:
+captured variables mutated from `@Sendable` closures (moved behind a `Mutex`),
+default property values that call main-actor API (made `@MainActor lazy`),
+queue-based fixture servers (made `nonisolated`), and bridge replies holding
+`Any?` handed from a reply handler to an awaiting test (wrapped in
+`BridgeReply`, `@unchecked Sendable` because the value is handed over once).
+Two fake `WKNavigationDelegate`s (in `ContentBlockerWhitelistTests` and
+`ContentRuleListChunkTests`) still declared `decidePolicyFor` with the old
+closure type, so under complete checking WebKit had stopped calling them —
+the same silent loss as in the app, found in test code.[^task-231-7]
+
 # Why it matters here
 
 Most of Detour runs on the main thread because AppKit, `WKWebView` and
@@ -184,3 +216,4 @@ without a failing build.
 [^se-0466]: SE-0466
 [^se-0470]: SE-0470
 [^task-231-6]: TASK-231.6
+[^task-231-7]: TASK-231.7

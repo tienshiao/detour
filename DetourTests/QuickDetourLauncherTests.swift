@@ -6,23 +6,22 @@ import WebKit
 /// the command palette alone in a panel, like Spotlight. Submitting closes it
 /// and opens the Quick Detour window loading the page; Escape or clicking
 /// away closes it and opens nothing, so no window ever has an empty page.
-@MainActor
-final class QuickDetourLauncherTests: XCTestCase {
+nonisolated final class QuickDetourLauncherTests: XCTestCase {
 
     private var launcher: QuickDetourLauncher!
     private var opened: [(profile: Profile, url: URL, typed: Bool)] = []
     private var createdProfiles: [Profile] = []
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         launcher = QuickDetourLauncher()
         launcher.openWindow = { [unowned self] profile, _, url, typed in
             self.opened.append((profile, url, typed))
         }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         launcher.close()
         launcher = nil
         opened.removeAll()
@@ -32,10 +31,10 @@ final class QuickDetourLauncherTests: XCTestCase {
             Self.retainedProfiles.append(profile)
         }
         createdProfiles.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func makeProfile() -> Profile {
+    @MainActor private func makeProfile() -> Profile {
         let profile = TabStore.shared.addProfile(name: "Quick Detour Launcher \(UUID().uuidString.prefix(4))")
         createdProfiles.append(profile)
         return profile
@@ -43,7 +42,7 @@ final class QuickDetourLauncherTests: XCTestCase {
 
     // MARK: - The panel
 
-    func testShowingOpensAPalettePanelAndNoWindow() throws {
+    @MainActor func testShowingOpensAPalettePanelAndNoWindow() throws {
         let profile = makeProfile()
         let windowsBefore = QuickDetourWindowController.openControllers.count
         let tabsBefore = TabStore.shared.quickDetourTabs.count
@@ -71,7 +70,7 @@ final class QuickDetourLauncherTests: XCTestCase {
 
     /// TASK-209: the whole profile's history, whichever window it was asked
     /// from; never the source window's profile's when that is another one.
-    func testThePaletteSuggestsFromTheWholeProfile() throws {
+    @MainActor func testThePaletteSuggestsFromTheWholeProfile() throws {
         let profile = makeProfile()
         let other = makeProfile()
         let space = TabStore.shared.addSpace(name: "Launcher Source", emoji: "L", colorHex: "007AFF",
@@ -97,12 +96,12 @@ final class QuickDetourLauncherTests: XCTestCase {
                        "asked from another profile's window: still this profile's history only")
     }
 
-    func testAPrivateLauncherHasNoHistory() throws {
+    @MainActor func testAPrivateLauncherHasNoHistory() throws {
         launcher.show(profile: TabStore.shared.ensureIncognitoProfile(), sourceSpace: nil)
         XCTAssertEqual(launcher.palette?.historySpaceIDs, [])
     }
 
-    func testSubmittingAURLClosesThePanelAndOpensTheWindowLoadingIt() throws {
+    @MainActor func testSubmittingAURLClosesThePanelAndOpensTheWindowLoadingIt() throws {
         let profile = makeProfile()
         launcher.show(profile: profile, sourceSpace: nil)
         let palette = try XCTUnwrap(launcher.palette)
@@ -117,7 +116,7 @@ final class QuickDetourLauncherTests: XCTestCase {
         XCTAssertEqual(opened.first?.typed, true, "a typed URL is a typed visit")
     }
 
-    func testASearchUsesTheProfilesEngine() throws {
+    @MainActor func testASearchUsesTheProfilesEngine() throws {
         let profile = makeProfile()
         launcher.show(profile: profile, sourceSpace: nil)
         let palette = try XCTUnwrap(launcher.palette)
@@ -128,7 +127,7 @@ final class QuickDetourLauncherTests: XCTestCase {
         XCTAssertEqual(opened.first?.typed, false)
     }
 
-    func testChoosingASearchSuggestionOpensIt() throws {
+    @MainActor func testChoosingASearchSuggestionOpensIt() throws {
         let profile = makeProfile()
         launcher.show(profile: profile, sourceSpace: nil)
         let palette = try XCTUnwrap(launcher.palette)
@@ -139,7 +138,7 @@ final class QuickDetourLauncherTests: XCTestCase {
         XCTAssertFalse(launcher.isShowing)
     }
 
-    func testEscapeClosesThePanelAndOpensNothing() throws {
+    @MainActor func testEscapeClosesThePanelAndOpensNothing() throws {
         launcher.show(profile: makeProfile(), sourceSpace: nil)
 
         // What Escape on an empty field ends in (`CommandPaletteView.dismiss`).
@@ -150,7 +149,7 @@ final class QuickDetourLauncherTests: XCTestCase {
         XCTAssertTrue(opened.isEmpty)
     }
 
-    func testClickingAwayClosesThePanelAndOpensNothing() throws {
+    @MainActor func testClickingAwayClosesThePanelAndOpensNothing() throws {
         launcher.show(profile: makeProfile(), sourceSpace: nil)
         let panel = try XCTUnwrap(launcher.panel)
 
@@ -162,7 +161,7 @@ final class QuickDetourLauncherTests: XCTestCase {
         XCTAssertTrue(opened.isEmpty)
     }
 
-    func testShowingAgainKeepsOnePanel() throws {
+    @MainActor func testShowingAgainKeepsOnePanel() throws {
         let profile = makeProfile()
         launcher.show(profile: profile, sourceSpace: nil)
         let first = try XCTUnwrap(launcher.panel)
@@ -172,7 +171,7 @@ final class QuickDetourLauncherTests: XCTestCase {
         XCTAssertTrue(launcher.panel === first, "Opt-Cmd-N again brings the open panel forward")
     }
 
-    func testShowingForAnotherProfileReplacesThePanel() throws {
+    @MainActor func testShowingForAnotherProfileReplacesThePanel() throws {
         launcher.show(profile: makeProfile(), sourceSpace: nil)
         let other = makeProfile()
 
@@ -184,7 +183,7 @@ final class QuickDetourLauncherTests: XCTestCase {
     /// With nothing of its own window behind it, the palette's glass would
     /// show whatever the screen has there and read light over a light window
     /// in dark mode; the panel tints it to the appearance.
-    func testThePanelsGlassIsTintedToTheAppearance() throws {
+    @MainActor func testThePanelsGlassIsTintedToTheAppearance() throws {
         launcher.show(profile: makeProfile(), sourceSpace: nil)
         XCTAssertTrue(launcher.palette?.glassTint === QuickDetourPalettePanel.glassTint)
 
@@ -201,7 +200,7 @@ final class QuickDetourLauncherTests: XCTestCase {
 
     // MARK: - Placement
 
-    func testThePanelIsCentredOnTheScreen() {
+    @MainActor func testThePanelIsCentredOnTheScreen() {
         let frame = QuickDetour.panelFrame(size: NSSize(width: 540, height: 400),
                                            in: NSRect(x: 100, y: 50, width: 1440, height: 875))
         XCTAssertEqual(frame, NSRect(x: 550, y: 288, width: 540, height: 400))
@@ -211,7 +210,7 @@ final class QuickDetourLauncherTests: XCTestCase {
 
     /// The production `openWindow`: the window opens loading the page, so its
     /// page is never empty.
-    func testTheRealWindowOpensWithThePage() throws {
+    @MainActor func testTheRealWindowOpensWithThePage() throws {
         let profile = makeProfile()
         let real = QuickDetourLauncher()
         real.show(profile: profile, sourceSpace: nil)

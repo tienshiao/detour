@@ -9,8 +9,7 @@ import WebKit
 ///
 /// The hosts are `.test` (local by the rule) and `.invalid` (not): neither
 /// resolves, so nothing reaches the network, and a failed load keeps the URL.
-@MainActor
-final class DevToolbarHostingTests: XCTestCase {
+nonisolated final class DevToolbarHostingTests: XCTestCase {
 
     private var controller: BrowserWindowController?
     private var createdTabs: [BrowserTab] = []
@@ -19,7 +18,7 @@ final class DevToolbarHostingTests: XCTestCase {
     private let otherLocalURL = URL(string: "http://app.test:3000/settings?tab=1")!
     private let remoteURL = URL(string: "http://remote.invalid/")!
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         if let profileID = controller?.activeSpace?.profile?.id {
             // Back to the URL rule: removes any override a test stored.
             DevMode.setEnabled(true, for: localURL, profileID: profileID)
@@ -29,11 +28,11 @@ final class DevToolbarHostingTests: XCTestCase {
         controller = nil
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// A Private window, so per-site choices stay in memory.
-    private func makeController() throws -> (BrowserWindowController, Space) {
+    @MainActor private func makeController() throws -> (BrowserWindowController, Space) {
         let wc = BrowserWindowController(incognito: true)
         controller = wc
         wc.sidebarSplitView.autosaveName = nil
@@ -44,18 +43,18 @@ final class DevToolbarHostingTests: XCTestCase {
         return (wc, try XCTUnwrap(wc.activeSpace))
     }
 
-    private func addTab(_ url: URL, to wc: BrowserWindowController, in space: Space) -> BrowserTab {
+    @MainActor private func addTab(_ url: URL, to wc: BrowserWindowController, in space: Space) -> BrowserTab {
         let tab = wc.store.addTab(in: space, url: url)
         createdTabs.append(tab)
         return tab
     }
 
     /// Lets the `$url` sinks (delivered on the main run loop) run.
-    private func spinRunLoop() {
+    @MainActor private func spinRunLoop() {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     }
 
-    private func assertShowsToolbar(_ tab: BrowserTab, url: URL, file: StaticString = #filePath, line: UInt = #line) throws {
+    @MainActor private func assertShowsToolbar(_ tab: BrowserTab, url: URL, file: StaticString = #filePath, line: UInt = #line) throws {
         let container = try XCTUnwrap(tab.webViewContainer, file: file, line: line)
         let webView = try XCTUnwrap(tab.webView, file: file, line: line)
         XCTAssertTrue(container.isShowingDevToolbar, "toolbar shown for \(url)", file: file, line: line)
@@ -68,7 +67,7 @@ final class DevToolbarHostingTests: XCTestCase {
         XCTAssertEqual(toolbar.frame.width, webView.frame.width, file: file, line: line)
     }
 
-    private func assertNoToolbar(_ tab: BrowserTab, file: StaticString = #filePath, line: UInt = #line) throws {
+    @MainActor private func assertNoToolbar(_ tab: BrowserTab, file: StaticString = #filePath, line: UInt = #line) throws {
         let container = try XCTUnwrap(tab.webViewContainer, file: file, line: line)
         XCTAssertFalse(container.isShowingDevToolbar, file: file, line: line)
         XCTAssertEqual(tab.webView?.frame, container.bounds, "the page fills the container", file: file, line: line)
@@ -76,14 +75,14 @@ final class DevToolbarHostingTests: XCTestCase {
 
     // MARK: - Which panes
 
-    func testALocalTabShowsTheToolbarAboveItsPage() throws {
+    @MainActor func testALocalTabShowsTheToolbarAboveItsPage() throws {
         let (wc, space) = try makeController()
         let tab = addTab(localURL, to: wc, in: space)
         wc.selectTab(id: tab.id)
         try assertShowsToolbar(tab, url: localURL)
     }
 
-    func testARemoteTabHasNoToolbar() throws {
+    @MainActor func testARemoteTabHasNoToolbar() throws {
         let (wc, space) = try makeController()
         let tab = addTab(remoteURL, to: wc, in: space)
         wc.selectTab(id: tab.id)
@@ -93,7 +92,7 @@ final class DevToolbarHostingTests: XCTestCase {
 
     /// TASK-186.3: a toast (Screenshot copied) must not cover the toolbar's
     /// right-hand buttons.
-    func testTheToastGoesBelowAToolbarUnderItsSpot() throws {
+    @MainActor func testTheToastGoesBelowAToolbarUnderItsSpot() throws {
         let (wc, space) = try makeController()
         let local = addTab(localURL, to: wc, in: space)
         let remote = addTab(remoteURL, to: wc, in: space)
@@ -109,7 +108,7 @@ final class DevToolbarHostingTests: XCTestCase {
         XCTAssertEqual(wc.toastTopInset(), ToastManager.defaultTopInset)
     }
 
-    func testTheToolbarFollowsNavigationInTheSameTab() throws {
+    @MainActor func testTheToolbarFollowsNavigationInTheSameTab() throws {
         let (wc, space) = try makeController()
         let tab = addTab(localURL, to: wc, in: space)
         wc.selectTab(id: tab.id)
@@ -124,7 +123,7 @@ final class DevToolbarHostingTests: XCTestCase {
         try assertShowsToolbar(tab, url: otherLocalURL)
     }
 
-    func testSwitchingTabsShowsEachTabsOwnState() throws {
+    @MainActor func testSwitchingTabsShowsEachTabsOwnState() throws {
         let (wc, space) = try makeController()
         let local = addTab(localURL, to: wc, in: space)
         let remote = addTab(remoteURL, to: wc, in: space)
@@ -135,7 +134,7 @@ final class DevToolbarHostingTests: XCTestCase {
         try assertShowsToolbar(local, url: localURL)
     }
 
-    func testThePerSiteSwitchHidesAndShowsTheToolbarAtOnce() throws {
+    @MainActor func testThePerSiteSwitchHidesAndShowsTheToolbarAtOnce() throws {
         let (wc, space) = try makeController()
         let profileID = try XCTUnwrap(space.profile?.id)
         let local = addTab(localURL, to: wc, in: space)
@@ -148,7 +147,7 @@ final class DevToolbarHostingTests: XCTestCase {
         try assertShowsToolbar(local, url: localURL)
     }
 
-    func testTurningDevModeOnForARemoteSiteShowsTheToolbar() throws {
+    @MainActor func testTurningDevModeOnForARemoteSiteShowsTheToolbar() throws {
         let (wc, space) = try makeController()
         let profileID = try XCTUnwrap(space.profile?.id)
         let remote = addTab(remoteURL, to: wc, in: space)
@@ -158,7 +157,7 @@ final class DevToolbarHostingTests: XCTestCase {
         try assertShowsToolbar(remote, url: remoteURL)
     }
 
-    func testASplitShowsTheToolbarOnlyOnTheLocalPane() throws {
+    @MainActor func testASplitShowsTheToolbarOnlyOnTheLocalPane() throws {
         let (wc, space) = try makeController()
         let left = addTab(remoteURL, to: wc, in: space)
         let right = addTab(localURL, to: wc, in: space)
@@ -178,7 +177,7 @@ final class DevToolbarHostingTests: XCTestCase {
         try assertShowsToolbar(left, url: otherLocalURL)
     }
 
-    func testAPeekHasNoToolbarAndTheHostKeepsIts() throws {
+    @MainActor func testAPeekHasNoToolbarAndTheHostKeepsIts() throws {
         let (wc, space) = try makeController()
         let host = addTab(localURL, to: wc, in: space)
         wc.selectTab(id: host.id)
@@ -194,14 +193,14 @@ final class DevToolbarHostingTests: XCTestCase {
     // MARK: - Controls
 
     /// The palette's field: its one editable text field.
-    private func paletteText(_ wc: BrowserWindowController) -> String? {
+    @MainActor private func paletteText(_ wc: BrowserWindowController) -> String? {
         func fields(_ view: NSView) -> [NSTextField] {
             view.subviews.compactMap { $0 as? NSTextField } + view.subviews.flatMap(fields)
         }
         return wc.commandPaletteView.flatMap { fields($0).first { $0.isEditable }?.stringValue }
     }
 
-    func testClickingTheURLOpensThePaletteToNavigateInPlace() throws {
+    @MainActor func testClickingTheURLOpensThePaletteToNavigateInPlace() throws {
         let (wc, space) = try makeController()
         let tab = addTab(localURL, to: wc, in: space)
         wc.selectTab(id: tab.id)
@@ -213,7 +212,7 @@ final class DevToolbarHostingTests: XCTestCase {
         XCTAssertEqual(paletteText(wc), localURL.absoluteString)
     }
 
-    func testClickingTheUnfocusedPanesURLFocusesThatPaneFirst() throws {
+    @MainActor func testClickingTheUnfocusedPanesURLFocusesThatPaneFirst() throws {
         let (wc, space) = try makeController()
         let left = addTab(localURL, to: wc, in: space)
         let right = addTab(otherLocalURL, to: wc, in: space)
@@ -228,7 +227,7 @@ final class DevToolbarHostingTests: XCTestCase {
         XCTAssertEqual(paletteText(wc), otherLocalURL.absoluteString)
     }
 
-    func testTheCopyButtonCopiesThePanesURL() throws {
+    @MainActor func testTheCopyButtonCopiesThePanesURL() throws {
         let (wc, space) = try makeController()
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("DetourTests.devToolbar.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }

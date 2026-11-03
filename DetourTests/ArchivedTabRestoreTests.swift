@@ -5,14 +5,14 @@ import GRDB
 /// TASK-119: the Archived Tabs page's data layer — the listing across spaces,
 /// restoring a record into its own space, delete and clear, and the
 /// `tabStoreDidUpdateClosedTabRecords` notification.
-final class ArchivedTabRestoreTests: XCTestCase {
+nonisolated final class ArchivedTabRestoreTests: XCTestCase {
 
-    private final class RecordsObserver: TabStoreObserver {
+    @MainActor private final class RecordsObserver: TabStoreObserver {
         var updates = 0
         func tabStoreDidUpdateClosedTabRecords() { updates += 1 }
     }
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let db: AppDatabase
         let store: TabStore
         let profile: Profile
@@ -21,7 +21,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         let observer: RecordsObserver
     }
 
-    private func makeFixture() throws -> Fixture {
+    @MainActor private func makeFixture() throws -> Fixture {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Archive")
@@ -34,20 +34,20 @@ final class ArchivedTabRestoreTests: XCTestCase {
         return Fixture(db: db, store: store, profile: profile, spaceA: spaceA, spaceB: spaceB, observer: observer)
     }
 
-    private func inUndoGroup(_ store: TabStore, _ body: () -> Void) {
+    @MainActor private func inUndoGroup(_ store: TabStore, _ body: () -> Void) {
         store.undoManager.beginUndoGrouping()
         body()
         store.undoManager.endUndoGrouping()
     }
 
-    private func makeTab(_ url: String, in space: Space) -> BrowserTab {
+    @MainActor private func makeTab(_ url: String, in space: Space) -> BrowserTab {
         BrowserTab(id: UUID(), title: url, url: URL(string: url), faviconURL: nil,
                    cachedInteractionState: nil, spaceID: space.id)
     }
 
     /// Writes a record straight to the table, as a close in an earlier session would have.
     @discardableResult
-    private func pushRecord(_ db: AppDatabase, spaceID: UUID, url: String, sortOrder: Int = 0,
+    @MainActor private func pushRecord(_ db: AppDatabase, spaceID: UUID, url: String, sortOrder: Int = 0,
                             closedAt: Double? = 1_800_000_000, archivedAt: Double? = nil,
                             extensionID: String? = nil) -> Int64 {
         db.pushClosedTab(ClosedTabRecord(
@@ -57,7 +57,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         return db.closedTabSummaries().first { $0.url == url }!.id
     }
 
-    private func installExtension(_ id: String, in db: AppDatabase) {
+    @MainActor private func installExtension(_ id: String, in db: AppDatabase) {
         db.saveExtension(ExtensionRecord(
             id: id, name: id, version: "1.0", manifestJSON: Data("{}".utf8),
             basePath: "/nonexistent/\(id)", isEnabled: true, installedAt: 0))
@@ -65,7 +65,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
 
     // MARK: - Listing
 
-    func testListingSpansSpacesNewestFirst() throws {
+    @MainActor func testListingSpansSpacesNewestFirst() throws {
         let f = try makeFixture()
         let a = makeTab("https://a.example/", in: f.spaceA)
         let b = makeTab("https://b.example/", in: f.spaceB)
@@ -81,7 +81,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         XCTAssertNotNil(entries.first?.closedAt)
     }
 
-    func testListingExcludesIncognitoAndOrphanedRecords() throws {
+    @MainActor func testListingExcludesIncognitoAndOrphanedRecords() throws {
         let f = try makeFixture()
         let incognito = f.store.addIncognitoSpace()
         pushRecord(f.db, spaceID: f.spaceA.id, url: "https://kept.example/")
@@ -94,7 +94,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
             .first { $0.url == "https://orphan.example/" }!.id), "an orphan's space is gone")
     }
 
-    func testHasClosedTabRecordsIsFalseWithOnlyOrphans() throws {
+    @MainActor func testHasClosedTabRecordsIsFalseWithOnlyOrphans() throws {
         let f = try makeFixture()
         XCTAssertFalse(f.store.hasClosedTabRecords())
         pushRecord(f.db, spaceID: UUID(), url: "https://orphan.example/")
@@ -103,7 +103,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
 
     // MARK: - Restore
 
-    func testRestoreIntoItsOwnNonActiveSpaceAtItsIndex() throws {
+    @MainActor func testRestoreIntoItsOwnNonActiveSpaceAtItsIndex() throws {
         let f = try makeFixture()
         let tabs = ["https://0.example/", "https://1.example/", "https://2.example/"].map { makeTab($0, in: f.spaceB) }
         f.spaceB.tabs.append(contentsOf: tabs)
@@ -121,7 +121,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         XCTAssertNil(f.store.restoreClosedTab(recordID: recordID), "a second restore finds nothing")
     }
 
-    func testRestoreClampsAndSnapsOutOfASplitGroup() throws {
+    @MainActor func testRestoreClampsAndSnapsOutOfASplitGroup() throws {
         let f = try makeFixture()
         let tabs = ["https://x.example/", "https://left.example/", "https://right.example/"].map { makeTab($0, in: f.spaceA) }
         let group = UUID()
@@ -140,7 +140,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         XCTAssertEqual(f.spaceA.tabs.last?.url?.absoluteString, "https://beyond.example/", "clamped to the end")
     }
 
-    func testArchivedRecordIsRestorableUnlikeReopen() throws {
+    @MainActor func testArchivedRecordIsRestorableUnlikeReopen() throws {
         let f = try makeFixture()
         let tab = makeTab("https://archived.example/", in: f.spaceA)
         f.spaceA.tabs.append(tab)
@@ -155,7 +155,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
 
     // MARK: - Extension pages
 
-    func testDisabledExtensionPageIsListedButNotRestorable() throws {
+    @MainActor func testDisabledExtensionPageIsListedButNotRestorable() throws {
         let f = try makeFixture()
         installExtension("ext", in: f.db)
         f.db.setProfileExtensionEnabled(extensionID: "ext", profileID: f.profile.id.uuidString, enabled: false)
@@ -173,7 +173,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         XCTAssertEqual(f.observer.updates, updatesBefore, "nothing changed")
     }
 
-    func testUninstalledExtensionPageIsPurgedFromTheListing() throws {
+    @MainActor func testUninstalledExtensionPageIsPurgedFromTheListing() throws {
         let f = try makeFixture()
         let gone = pushRecord(f.db, spaceID: f.spaceA.id, url: "webkit-extension://abcd/options.html",
                               extensionID: "uninstalled")
@@ -185,7 +185,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         XCTAssertEqual(f.observer.updates, updatesBefore, "a silent purge: no reload loop")
     }
 
-    func testRestoringAnUninstalledExtensionPageDeletesItsRecord() throws {
+    @MainActor func testRestoringAnUninstalledExtensionPageDeletesItsRecord() throws {
         let f = try makeFixture()
         let gone = pushRecord(f.db, spaceID: f.spaceA.id, url: "webkit-extension://abcd/options.html",
                               extensionID: "uninstalled")
@@ -197,7 +197,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
 
     // MARK: - Delete and clear
 
-    func testDeleteRecord() throws {
+    @MainActor func testDeleteRecord() throws {
         let f = try makeFixture()
         let keep = pushRecord(f.db, spaceID: f.spaceA.id, url: "https://keep.example/")
         let drop = pushRecord(f.db, spaceID: f.spaceA.id, url: "https://drop.example/")
@@ -205,7 +205,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         XCTAssertEqual(f.store.archiveEntries().map(\.id), [keep])
     }
 
-    func testClearPerSpaceAndAll() throws {
+    @MainActor func testClearPerSpaceAndAll() throws {
         let f = try makeFixture()
         pushRecord(f.db, spaceID: f.spaceA.id, url: "https://a1.example/")
         pushRecord(f.db, spaceID: f.spaceA.id, url: "https://a2.example/")
@@ -222,7 +222,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
 
     // MARK: - Notifications
 
-    func testRecordsNotificationFiresOnEveryMutation() throws {
+    @MainActor func testRecordsNotificationFiresOnEveryMutation() throws {
         let f = try makeFixture()
         var expected = f.observer.updates
         func expectUpdate(_ what: String, line: UInt = #line) {
@@ -260,7 +260,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         expectUpdate("clear")
     }
 
-    func testIncognitoCloseDoesNotNotify() throws {
+    @MainActor func testIncognitoCloseDoesNotNotify() throws {
         let f = try makeFixture()
         let incognito = f.store.addIncognitoSpace()
         let tab = makeTab("https://private.example/", in: incognito)
@@ -270,7 +270,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         XCTAssertEqual(f.observer.updates, before)
     }
 
-    func testSpaceDeleteAndUndoNotify() throws {
+    @MainActor func testSpaceDeleteAndUndoNotify() throws {
         let f = try makeFixture()
         pushRecord(f.db, spaceID: f.spaceB.id, url: "https://b.example/")
         let before = f.observer.updates
@@ -284,9 +284,9 @@ final class ArchivedTabRestoreTests: XCTestCase {
 
     // MARK: - Close undo after the record is consumed or deleted
 
-    private func urls(_ space: Space) -> [String] { space.tabs.map { $0.url?.absoluteString ?? "" } }
+    @MainActor private func urls(_ space: Space) -> [String] { space.tabs.map { $0.url?.absoluteString ?? "" } }
 
-    func testUndoCloseAfterArchiveRestoreDoesNotDuplicate() throws {
+    @MainActor func testUndoCloseAfterArchiveRestoreDoesNotDuplicate() throws {
         let f = try makeFixture()
         let keep = makeTab("https://keep.example/", in: f.spaceA)
         let tab = makeTab("https://closed.example/", in: f.spaceA)
@@ -301,7 +301,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
                        "the close's undo is a no-op once its record was restored")
     }
 
-    func testUndoCloseAfterReopenClosedTabDoesNotDuplicate() throws {
+    @MainActor func testUndoCloseAfterReopenClosedTabDoesNotDuplicate() throws {
         let f = try makeFixture()
         let tab = makeTab("https://closed.example/", in: f.spaceA)
         f.spaceA.tabs = [tab]
@@ -311,7 +311,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         XCTAssertEqual(urls(f.spaceA), ["https://closed.example/"])
     }
 
-    func testUndoCloseAfterDeleteOrClearDoesNothing() throws {
+    @MainActor func testUndoCloseAfterDeleteOrClearDoesNothing() throws {
         let f = try makeFixture()
         let a = makeTab("https://deleted.example/", in: f.spaceA)
         let b = makeTab("https://cleared.example/", in: f.spaceB)
@@ -329,7 +329,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         XCTAssertTrue(f.spaceB.tabs.isEmpty, "a cleared record's tab stays closed")
     }
 
-    func testUndoCloseStillWorksWhileTheRecordExists() throws {
+    @MainActor func testUndoCloseStillWorksWhileTheRecordExists() throws {
         let f = try makeFixture()
         let tab = makeTab("https://closed.example/", in: f.spaceA)
         f.spaceA.tabs = [tab]
@@ -339,7 +339,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         XCTAssertTrue(f.store.archiveEntries().isEmpty, "the undo consumed the record")
     }
 
-    func testIncognitoUndoCloseIsUnaffected() throws {
+    @MainActor func testIncognitoUndoCloseIsUnaffected() throws {
         let f = try makeFixture()
         let incognito = f.store.addIncognitoSpace()
         let tab = makeTab("https://private.example/", in: incognito)
@@ -349,7 +349,7 @@ final class ArchivedTabRestoreTests: XCTestCase {
         XCTAssertEqual(urls(incognito), ["https://private.example/"], "no record is pushed, so none is required")
     }
 
-    func testUndoCloseBothSplitsSkipsARestoredMember() throws {
+    @MainActor func testUndoCloseBothSplitsSkipsARestoredMember() throws {
         let f = try makeFixture()
         let left = makeTab("https://left.example/", in: f.spaceA)
         let right = makeTab("https://right.example/", in: f.spaceA)

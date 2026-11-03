@@ -1,4 +1,5 @@
 import XCTest
+import Synchronization
 import WebKit
 @testable import Detour
 
@@ -10,15 +11,14 @@ import WebKit
 ///
 /// Compiles of one list run one at a time in call order, so a compile that
 /// is still searching for bad rules cannot record its list over a later one.
-@MainActor
-final class ContentRuleStoreThreadingTests: XCTestCase {
+nonisolated final class ContentRuleStoreThreadingTests: XCTestCase {
 
     // MARK: - Fixture
 
     private var directory: URL!
     private var defaultsSuiteName: String!
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ContentRuleStoreThreadingTests-\(UUID().uuidString)", isDirectory: true)
@@ -26,14 +26,14 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
         defaultsSuiteName = "ContentRuleStoreThreadingTests.\(UUID().uuidString)"
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         UserDefaults().removePersistentDomain(forName: defaultsSuiteName)
         try? FileManager.default.removeItem(at: directory)
         try await super.tearDown()
     }
 
     /// A storage of its own under this test's directory.
-    private func makeStorage(_ name: String) throws -> ContentBlockerStorage {
+    @MainActor private func makeStorage(_ name: String) throws -> ContentBlockerStorage {
         let ruleListDirectory = directory.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: ruleListDirectory, withIntermediateDirectories: true)
         return ContentBlockerStorage(
@@ -42,15 +42,15 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
             defaults: try XCTUnwrap(UserDefaults(suiteName: defaultsSuiteName)))
     }
 
-    private func block(_ host: String) -> [String: Any] {
+    @MainActor private func block(_ host: String) -> ContentRule {
         ["trigger": ["url-filter": "\(host)\\.example"], "action": ["type": "block"]]
     }
 
     /// WebKit refuses the whole list over this rule: its URL filters have no
     /// disjunction.
-    private let badRule: [String: Any] = ["trigger": ["url-filter": "bad|rule"], "action": ["type": "block"]]
+    private let badRule: ContentRule = ["trigger": ["url-filter": "bad|rule"], "action": ["type": "block"]]
 
-    private func compile(_ store: ContentRuleStore, _ identifier: String, _ rules: [[String: Any]]) async -> [WKContentRuleList] {
+    @MainActor private func compile(_ store: ContentRuleStore, _ identifier: String, _ rules: [ContentRule]) async -> [WKContentRuleList] {
         await withCheckedContinuation { continuation in
             store.compile(identifier: identifier, rules: rules) { continuation.resume(returning: $0.lists) }
         }
@@ -58,7 +58,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
 
     // MARK: - Off the main queue
 
-    func testRuleSerialisationRunsOffTheMainQueue() async throws {
+    @MainActor func testRuleSerialisationRunsOffTheMainQueue() async throws {
         let spy = EncoderSpy()
         let store = ContentRuleStore(storage: try makeStorage("store"), maxRulesPerList: 2, encode: spy.encode)
 
@@ -70,7 +70,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
         XCTAssertEqual(spy.calls.filter(\.onMain).count, 0, "no chunk is encoded on the main queue")
     }
 
-    func testTheBadRuleSearchRunsOffTheMainQueue() async throws {
+    @MainActor func testTheBadRuleSearchRunsOffTheMainQueue() async throws {
         let spy = EncoderSpy()
         let store = ContentRuleStore(storage: try makeStorage("store"), encode: spy.encode)
 
@@ -82,7 +82,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
         XCTAssertEqual(spy.calls.filter(\.onMain).count, 0, "no probe or cleaned list is encoded on the main queue")
     }
 
-    func testTheDefaultEncodingIsTheJSONWebKitWasGivenBefore() async throws {
+    @MainActor func testTheDefaultEncodingIsTheJSONWebKitWasGivenBefore() async throws {
         let rules = EasyListParser().parse(text: Self.sampleList).rules
         XCTAssertGreaterThan(rules.count, 8)
         let reference = String(data: try JSONSerialization.data(withJSONObject: rules), encoding: .utf8)
@@ -95,7 +95,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
 
     /// The compiled file a list leaves in WebKit's store is byte for byte
     /// the one compiled from the JSON the store encoded on main before.
-    func testTheCompiledListIsByteIdenticalToBefore() async throws {
+    @MainActor func testTheCompiledListIsByteIdenticalToBefore() async throws {
         let rules = EasyListParser().parse(text: Self.sampleList).rules
         let storeStorage = try makeStorage("store")
         let store = ContentRuleStore(storage: storeStorage)
@@ -124,7 +124,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
     /// The first compile hits a bad rule and searches for it; the second,
     /// issued at once, waits for it, so the list left attached is the
     /// second's.
-    func testASecondCompileOfAListWaitsForTheFirstsBadRuleSearch() async throws {
+    @MainActor func testASecondCompileOfAListWaitsForTheFirstsBadRuleSearch() async throws {
         let spy = EncoderSpy()
         let store = ContentRuleStore(storage: try makeStorage("store"), encode: spy.encode)
         let first = [block("a"), badRule, block("b")]
@@ -152,7 +152,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
         XCTAssertGreaterThan(secondEncoded, firstDone, "the second compile starts once the first is done")
     }
 
-    func testCompilesOfDifferentListsDoNotWaitForEachOther() async throws {
+    @MainActor func testCompilesOfDifferentListsDoNotWaitForEachOther() async throws {
         let spy = EncoderSpy()
         let store = ContentRuleStore(storage: try makeStorage("store"), encode: spy.encode)
         var cookieLists: [WKContentRuleList] = []
@@ -183,7 +183,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
 
     // MARK: - Older text never replaces newer text
 
-    func testACompileOfOlderTextDoesNotStartAfterOneOfNewerText() {
+    @MainActor func testACompileOfOlderTextDoesNotStartAfterOneOfNewerText() {
         var order = FilterListCompileOrder()
         let cache = order.takeTicket()
         let download = order.takeTicket()
@@ -192,7 +192,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
                        "the cached text was read before the download arrived")
     }
 
-    func testCompilesStartingInTicketOrderAllStart() {
+    @MainActor func testCompilesStartingInTicketOrderAllStart() {
         var order = FilterListCompileOrder()
         let cache = order.takeTicket()
         let download = order.takeTicket()
@@ -200,7 +200,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
         XCTAssertTrue(order.shouldStartCompile(ticket: download, for: "easylist"))
     }
 
-    func testEachListIsOrderedOnItsOwn() {
+    @MainActor func testEachListIsOrderedOnItsOwn() {
         var order = FilterListCompileOrder()
         let easylist = order.takeTicket()
         let privacy = order.takeTicket()
@@ -211,28 +211,28 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
 
     // MARK: - Clear Cache & Redownload (TASK-202)
 
-    private func compileOutcome(_ store: ContentRuleStore, _ identifier: String,
-                                _ rules: [[String: Any]]) async -> ContentRuleStore.CompileOutcome {
+    @MainActor private func compileOutcome(_ store: ContentRuleStore, _ identifier: String,
+                                _ rules: [ContentRule]) async -> ContentRuleStore.CompileOutcome {
         await withCheckedContinuation { continuation in
             store.compile(identifier: identifier, rules: rules) { continuation.resume(returning: $0) }
         }
     }
 
-    private func lookUp(_ store: ContentRuleStore, _ identifier: String) async -> [WKContentRuleList] {
+    @MainActor private func lookUp(_ store: ContentRuleStore, _ identifier: String) async -> [WKContentRuleList] {
         await withCheckedContinuation { continuation in
             store.lookUpList(identifier: identifier) { continuation.resume(returning: $0) }
         }
     }
 
     /// Every rule list in the storage's WebKit store, sorted.
-    private func storedIdentifiers(_ storage: ContentBlockerStorage) async -> [String] {
+    @MainActor private func storedIdentifiers(_ storage: ContentBlockerStorage) async -> [String] {
         await withCheckedContinuation { continuation in
             storage.ruleListStore.getAvailableContentRuleListIdentifiers { continuation.resume(returning: ($0 ?? []).sorted()) }
         }
     }
 
     /// The content blocker keys the storage's defaults suite holds.
-    private func contentBlockerKeys(_ storage: ContentBlockerStorage) -> [String] {
+    @MainActor private func contentBlockerKeys(_ storage: ContentBlockerStorage) -> [String] {
         storage.defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("ContentBlocker.") }.sorted()
     }
 
@@ -244,7 +244,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
     /// The launch recompile is inside WebKit when the user clears the cache:
     /// it records nothing, and what WebKit wrote for it is removed, so the
     /// next launch finds nothing either.
-    func testClearingWhileWebKitCompilesRecordsNothing() async throws {
+    @MainActor func testClearingWhileWebKitCompilesRecordsNothing() async throws {
         let storage = try makeStorage("store")
         let hook = CompileHook()
         let store = ContentRuleStore(storage: storage, maxRulesPerList: 2, compileRuleList: hook.compiler(storage.ruleListStore))
@@ -269,7 +269,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
 
     /// A compile asked for after the clear waits for the superseded one, and
     /// the removal of what the superseded one wrote does not take its list.
-    func testACompileAskedForAfterClearingIsKept() async throws {
+    @MainActor func testACompileAskedForAfterClearingIsKept() async throws {
         let storage = try makeStorage("store")
         let hook = CompileHook()
         let store = ContentRuleStore(storage: storage, compileRuleList: hook.compiler(storage.ruleListStore))
@@ -303,7 +303,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
 
     /// Compiles that were waiting for their list, or encoding, when the
     /// cache was cleared never reach WebKit; one asked for afterwards runs.
-    func testCompilesQueuedOrEncodingWhenClearedDoNotRun() async throws {
+    @MainActor func testCompilesQueuedOrEncodingWhenClearedDoNotRun() async throws {
         let storage = try makeStorage("store")
         let spy = EncoderSpy()
         let hook = CompileHook()
@@ -333,7 +333,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
 
     /// A list searching for its bad rules when the cache is cleared stops
     /// searching and compiles no cleaned list.
-    func testClearingDuringTheBadRuleSearchStopsIt() async throws {
+    @MainActor func testClearingDuringTheBadRuleSearchStopsIt() async throws {
         let storage = try makeStorage("store")
         let hook = CompileHook()
         let store = ContentRuleStore(storage: storage, compileRuleList: hook.compiler(storage.ruleListStore))
@@ -355,7 +355,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
     }
 
     /// A look-up answered after the clear does not bring the list back.
-    func testALookUpAnsweredAfterClearingRecordsNothing() async throws {
+    @MainActor func testALookUpAnsweredAfterClearingRecordsNothing() async throws {
         let storage = try makeStorage("store")
         _ = await compile(ContentRuleStore(storage: storage), "easylist", [block("a")])
         let relaunched = ContentRuleStore(storage: storage)
@@ -374,7 +374,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
 
     /// A cache parse still running when the cache is cleared does not compile
     /// its (deleted) text; the redownload's does.
-    func testClearingRefusesTicketsTakenBefore() {
+    @MainActor func testClearingRefusesTicketsTakenBefore() {
         var order = FilterListCompileOrder()
         let cache = order.takeTicket()
         let otherList = order.takeTicket()
@@ -387,7 +387,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
         XCTAssertTrue(order.shouldStartCompile(ticket: download, for: "easylist"))
     }
 
-    func testARefreshEndsWhenItsFetchEnds() {
+    @MainActor func testARefreshEndsWhenItsFetchEnds() {
         var refreshes = FilterListRefreshes()
         let token = refreshes.begin("easylist")
         XCTAssertEqual(refreshes.identifiers, ["easylist"])
@@ -397,7 +397,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
 
     /// Clear Cache & Redownload during a refresh: the earlier fetch ending
     /// (its compile superseded) leaves the new refresh running.
-    func testAnEarlierFetchEndingLeavesANewerRefreshRunning() {
+    @MainActor func testAnEarlierFetchEndingLeavesANewerRefreshRunning() {
         var refreshes = FilterListRefreshes()
         let earlier = refreshes.begin("easylist")
         let other = refreshes.begin("easyprivacy")
@@ -450,29 +450,28 @@ private final class CompileHook {
 }
 
 /// Encodes like the store and records where it ran: from the store's work
-/// queue, so every access takes the lock.
-private final class EncoderSpy: @unchecked Sendable {
-    struct Call {
+/// queue, so its state is behind a mutex.
+nonisolated private final class EncoderSpy: Sendable {
+    struct Call: Sendable {
         let ruleCount: Int
         let onMain: Bool
     }
 
-    private let lock = NSLock()
-    private var _calls: [Call] = []
-    private var _events: [String] = []
+    private let state = Mutex<(calls: [Call], events: [String])>(([], []))
 
-    var calls: [Call] { lock.withLock { _calls } }
-    var events: [String] { lock.withLock { _events } }
+    var calls: [Call] { state.withLock { $0.calls } }
+    var events: [String] { state.withLock { $0.events } }
 
     func record(_ event: String) {
-        lock.withLock { _events.append(event) }
+        state.withLock { $0.events.append(event) }
     }
 
     var encode: ContentRuleStore.RuleListEncoder {
         { [self] rules in
-            lock.withLock {
-                _calls.append(Call(ruleCount: rules.count, onMain: Thread.isMainThread))
-                _events.append("encode \(rules.count)")
+            let call = Call(ruleCount: rules.count, onMain: Thread.isMainThread)
+            state.withLock {
+                $0.calls.append(call)
+                $0.events.append("encode \(rules.count)")
             }
             guard let data = try? JSONSerialization.data(withJSONObject: rules) else { return nil }
             return String(data: data, encoding: .utf8)

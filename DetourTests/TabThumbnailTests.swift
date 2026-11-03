@@ -5,7 +5,7 @@ import GRDB
 /// TASK-190: tab thumbnails for the sidebar hover card, cached on disk so they
 /// survive a relaunch. Keyed by the row the user hovers: a pinned entry's or
 /// favourite's own id (stable while the tile is dormant), else the tab id.
-final class TabThumbnailTests: XCTestCase {
+nonisolated final class TabThumbnailTests: XCTestCase {
 
     private var directory: URL!
 
@@ -18,7 +18,7 @@ final class TabThumbnailTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 
-    private func makeImage(width: Int = 480, height: Int = 300) -> NSImage {
+    @MainActor private func makeImage(width: Int = 480, height: Int = 300) -> NSImage {
         let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
                                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
@@ -27,7 +27,7 @@ final class TabThumbnailTests: XCTestCase {
         return image
     }
 
-    private func loadedImage(_ cache: TabThumbnailCache, _ key: UUID) -> NSImage? {
+    @MainActor private func loadedImage(_ cache: TabThumbnailCache, _ key: UUID) -> NSImage? {
         let loaded = expectation(description: "image loaded")
         var result: NSImage?
         cache.image(for: key) { image in
@@ -40,7 +40,7 @@ final class TabThumbnailTests: XCTestCase {
 
     // MARK: - Cache
 
-    func testAStoredThumbnailIsReadBackFromDisk() throws {
+    @MainActor func testAStoredThumbnailIsReadBackFromDisk() throws {
         let key = UUID()
         let writer = TabThumbnailCache(directory: directory)
         writer.store(makeImage(), for: key)
@@ -52,11 +52,11 @@ final class TabThumbnailTests: XCTestCase {
         XCTAssertEqual(image.representations.first?.pixelsWide, 480, "stored at the capture's pixel width")
     }
 
-    func testAKeyWithNoFileReadsNil() {
+    @MainActor func testAKeyWithNoFileReadsNil() {
         XCTAssertNil(loadedImage(TabThumbnailCache(directory: directory), UUID()))
     }
 
-    func testTheSweepRemovesOrphansAndKeepsLiveKeys() throws {
+    @MainActor func testTheSweepRemovesOrphansAndKeepsLiveKeys() throws {
         let cache = TabThumbnailCache(directory: directory)
         let live = UUID(), orphan = UUID()
         cache.store(makeImage(), for: live)
@@ -70,7 +70,7 @@ final class TabThumbnailTests: XCTestCase {
         XCTAssertNil(loadedImage(cache, orphan))
     }
 
-    func testTheOrphanRule() {
+    @MainActor func testTheOrphanRule() {
         let live = UUID(), orphan = UUID(), fresh = UUID()
         let cutoff = Date(timeIntervalSince1970: 1_000)
         let files: [String: Date] = [
@@ -87,19 +87,19 @@ final class TabThumbnailTests: XCTestCase {
 
     // MARK: - Keys
 
-    private func makeStore() throws -> (TabStore, Space) {
+    @MainActor private func makeStore() throws -> (TabStore, Space) {
         let store = TabStore(appDB: try AppDatabase(dbQueue: DatabaseQueue()))
         let profile = store.addProfile(name: "Test")
         let space = store.addSpace(name: "Test", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
         return (store, space)
     }
 
-    private func makeTab(in space: Space) -> BrowserTab {
+    @MainActor private func makeTab(in space: Space) -> BrowserTab {
         BrowserTab(id: UUID(), title: "Tab", url: URL(string: "https://example.com/"), faviconURL: nil,
                    cachedInteractionState: nil, spaceID: space.id)
     }
 
-    func testANormalTabIsKeyedByItsID() throws {
+    @MainActor func testANormalTabIsKeyedByItsID() throws {
         let (store, space) = try makeStore()
         let tab = makeTab(in: space)
         space.tabs.append(tab)
@@ -108,7 +108,7 @@ final class TabThumbnailTests: XCTestCase {
         XCTAssertTrue(store.liveThumbnailKeys.contains(tab.id))
     }
 
-    func testAPinnedTabIsKeyedByItsEntryAndStaysLiveWhileDormant() throws {
+    @MainActor func testAPinnedTabIsKeyedByItsEntryAndStaysLiveWhileDormant() throws {
         let (store, space) = try makeStore()
         let tab = makeTab(in: space)
         space.tabs.append(tab)
@@ -122,7 +122,7 @@ final class TabThumbnailTests: XCTestCase {
         XCTAssertTrue(store.liveThumbnailKeys.contains(entry.id), "a dormant tile keeps its picture")
     }
 
-    func testAFavouriteTabIsKeyedByTheFavourite() throws {
+    @MainActor func testAFavouriteTabIsKeyedByTheFavourite() throws {
         let (store, space) = try makeStore()
         let profileID = try XCTUnwrap(space.profile?.id)
         let tab = makeTab(in: space)
@@ -133,7 +133,7 @@ final class TabThumbnailTests: XCTestCase {
         XCTAssertTrue(store.liveThumbnailKeys.contains(favorite.id))
     }
 
-    func testAPrivateTabHasNoKey() throws {
+    @MainActor func testAPrivateTabHasNoKey() throws {
         let (store, _) = try makeStore()
         let privateSpace = store.addIncognitoSpace()
         let tab = makeTab(in: privateSpace)
@@ -142,7 +142,7 @@ final class TabThumbnailTests: XCTestCase {
         XCTAssertNil(store.thumbnailKey(for: tab), "never written for Private")
     }
 
-    func testATabNoRowListsOrHostsHasNoKey() throws {
+    @MainActor func testATabNoRowListsOrHostsHasNoKey() throws {
         let (store, space) = try makeStore()
         XCTAssertNil(store.thumbnailKey(for: makeTab(in: space)))
     }
@@ -152,11 +152,11 @@ final class TabThumbnailTests: XCTestCase {
     private let articleURL = URL(string: "https://news.example/story")!
     private let otherURL = URL(string: "https://news.example/other")!
 
-    private func peek(_ url: URL?) -> BrowserTab {
+    @MainActor private func peek(_ url: URL?) -> BrowserTab {
         BrowserTab(id: UUID(), title: "Article", url: url, faviconURL: nil, cachedInteractionState: nil, spaceID: UUID())
     }
 
-    func testAPeekKeyIsDerivedFromItsHostsKeyAndItsURL() {
+    @MainActor func testAPeekKeyIsDerivedFromItsHostsKeyAndItsURL() {
         let host = UUID(), other = UUID()
         let key = TabStore.peekThumbnailKey(hostKey: host, peekURL: articleURL)
         XCTAssertEqual(key, TabStore.peekThumbnailKey(hostKey: host, peekURL: articleURL), "the same on every launch")
@@ -170,7 +170,7 @@ final class TabThumbnailTests: XCTestCase {
     /// Peek tab's own `url`, which can differ (an error page keeps the
     /// failed URL): otherwise a picture written while the app runs would be
     /// looked up, and swept, under another key after a relaunch.
-    func testANormalTabsPeekIsKeyedByTheTabAndTheURLTheSessionSaves() throws {
+    @MainActor func testANormalTabsPeekIsKeyedByTheTabAndTheURLTheSessionSaves() throws {
         let (store, space) = try makeStore()
         let host = makeTab(in: space)
         space.tabs.append(host)
@@ -183,7 +183,7 @@ final class TabThumbnailTests: XCTestCase {
         XCTAssertTrue(store.liveThumbnailKeys.contains(key))
     }
 
-    func testAPinnedOrFavouriteHostsPeekIsKeyedByTheTile() throws {
+    @MainActor func testAPinnedOrFavouriteHostsPeekIsKeyedByTheTile() throws {
         let (store, space) = try makeStore()
         let profileID = try XCTUnwrap(space.profile?.id)
         let pinned = makeTab(in: space)
@@ -209,7 +209,7 @@ final class TabThumbnailTests: XCTestCase {
         ]))
     }
 
-    func testAParkedPeekWithoutAURLIsKeyedByTheURLItsHostSaved() throws {
+    @MainActor func testAParkedPeekWithoutAURLIsKeyedByTheURLItsHostSaved() throws {
         let (store, space) = try makeStore()
         let host = makeTab(in: space)
         space.tabs.append(host)
@@ -220,7 +220,7 @@ final class TabThumbnailTests: XCTestCase {
         XCTAssertEqual(store.thumbnailKey(for: parked), TabStore.peekThumbnailKey(hostKey: host.id, peekURL: articleURL))
     }
 
-    func testARestoredPeeksKeyStaysLive() throws {
+    @MainActor func testARestoredPeeksKeyStaysLive() throws {
         // After a relaunch the host has only its saved peek columns.
         let (store, space) = try makeStore()
         let host = makeTab(in: space)
@@ -230,7 +230,7 @@ final class TabThumbnailTests: XCTestCase {
         XCTAssertTrue(store.liveThumbnailKeys.contains(TabStore.peekThumbnailKey(hostKey: host.id, peekURL: articleURL)))
     }
 
-    func testAClosedOrNavigatedPeeksPictureIsNoLongerLive() throws {
+    @MainActor func testAClosedOrNavigatedPeeksPictureIsNoLongerLive() throws {
         let (store, space) = try makeStore()
         let host = makeTab(in: space)
         space.tabs.append(host)
@@ -245,7 +245,7 @@ final class TabThumbnailTests: XCTestCase {
                        "the Peek was closed")
     }
 
-    func testAPrivateHostsPeekHasNoKey() throws {
+    @MainActor func testAPrivateHostsPeekHasNoKey() throws {
         let (store, _) = try makeStore()
         let privateSpace = store.addIncognitoSpace()
         let host = makeTab(in: privateSpace)
@@ -257,7 +257,7 @@ final class TabThumbnailTests: XCTestCase {
         XCTAssertNil(store.thumbnailKey(for: live), "never written for Private")
     }
 
-    func testAClosedTabsKeyIsNoLongerLive() throws {
+    @MainActor func testAClosedTabsKeyIsNoLongerLive() throws {
         let (store, space) = try makeStore()
         let tab = makeTab(in: space)
         space.tabs.append(tab)

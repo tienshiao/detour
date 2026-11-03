@@ -13,25 +13,24 @@ import WebKit
 ///
 /// The shared store and `AppDelegate`, with profiles and spaces of the test's
 /// own; pages from a loopback server, or `.invalid` hosts that never resolve.
-@MainActor
-final class QuickDetourOpenInWindowTests: XCTestCase {
+nonisolated final class QuickDetourOpenInWindowTests: XCTestCase {
 
     private var appDelegate: AppDelegate!
-    private var store: TabStore { .shared }
+    @MainActor private var store: TabStore { .shared }
     private var windowsBefore: Set<ObjectIdentifier> = []
     private var quickDetours: [QuickDetourWindowController] = []
     private var createdProfiles: [Profile] = []
     private var createdSpaceIDs: [UUID] = []
     private var servers: [LoopbackHTTPServer] = []
     private var previousLastActiveSpaceID: UUID?
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
     private var profile: Profile!
     private var inbox: Space!
     private var build: Space!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         appDelegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         windowsBefore = Set(browserWindows().map(ObjectIdentifier.init))
         previousLastActiveSpaceID = store.lastActiveSpaceID
@@ -40,7 +39,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
         build = addSpace("Build", "🔨", profile)
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for controller in quickDetours { controller.close() }
         quickDetours.removeAll()
         for wc in browserWindows() where !windowsBefore.contains(ObjectIdentifier(wc)) {
@@ -70,30 +69,30 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func makeProfile(_ name: String) -> Profile {
+    @MainActor private func makeProfile(_ name: String) -> Profile {
         let profile = store.addProfile(name: "\(name) \(UUID().uuidString.prefix(4))")
         createdProfiles.append(profile)
         return profile
     }
 
-    private func addSpace(_ name: String, _ emoji: String, _ profile: Profile) -> Space {
+    @MainActor private func addSpace(_ name: String, _ emoji: String, _ profile: Profile) -> Space {
         let space = store.addSpace(name: name, emoji: emoji, colorHex: "007AFF", profileID: profile.id)
         createdSpaceIDs.append(space.id)
         return space
     }
 
-    private func browserWindows() -> [BrowserWindowController] {
+    @MainActor private func browserWindows() -> [BrowserWindowController] {
         NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
             .filter { $0.window?.isVisible == true }
     }
 
-    private func newBrowserWindows() -> [BrowserWindowController] {
+    @MainActor private func newBrowserWindows() -> [BrowserWindowController] {
         browserWindows().filter { !windowsBefore.contains(ObjectIdentifier($0)) }
     }
 
     /// A normal window on `space`, in front of the others.
     @discardableResult
-    private func makeWindow(showing space: Space) -> BrowserWindowController {
+    @MainActor private func makeWindow(showing space: Space) -> BrowserWindowController {
         let wc = BrowserWindowController(incognito: false)
         wc.sidebarSplitView.autosaveName = nil
         wc.setActiveSpace(id: space.id, selectTab: false)
@@ -104,7 +103,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
     }
 
     @discardableResult
-    private func makePrivateWindow() -> BrowserWindowController {
+    @MainActor private func makePrivateWindow() -> BrowserWindowController {
         let wc = BrowserWindowController(incognito: true)
         wc.showWindow(nil)
         wc.window?.makeKeyAndOrderFront(nil)
@@ -112,14 +111,14 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
         return wc
     }
 
-    private func openQuickDetour(on profile: Profile, from source: Space? = nil,
+    @MainActor private func openQuickDetour(on profile: Profile, from source: Space? = nil,
                                  url: URL = URL(string: "https://open-in.invalid/")!) -> QuickDetourWindowController {
         let controller = QuickDetourWindowController.open(profile: profile, sourceSpace: source, url: url)
         quickDetours.append(controller)
         return controller
     }
 
-    private func serve() async throws -> URL {
+    @MainActor private func serve() async throws -> URL {
         let server = try LoopbackHTTPServer(routes: [
             "/": "<html><head><title>First</title></head><body>first</body></html>",
             "/second": "<html><head><title>Second</title></head><body><input id=q></body></html>",
@@ -129,21 +128,21 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
         return URL(string: "http://127.0.0.1:\(port)/")!
     }
 
-    private func spin(_ seconds: TimeInterval = 0.05) {
+    @MainActor private func spin(_ seconds: TimeInterval = 0.05) {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 
-    private func frontBrowserWindow() -> BrowserWindowController? {
+    @MainActor private func frontBrowserWindow() -> BrowserWindowController? {
         NSApp.browserWindowControllersFrontToBack.first
     }
 
-    private func isOpen(_ controller: QuickDetourWindowController) -> Bool {
+    @MainActor private func isOpen(_ controller: QuickDetourWindowController) -> Bool {
         QuickDetourWindowController.openControllers.contains { $0 === controller }
     }
 
     // MARK: - The button
 
-    func testTheButtonNamesTheSourceSpace() {
+    @MainActor func testTheButtonNamesTheSourceSpace() {
         let controller = openQuickDetour(on: profile, from: build)
 
         XCTAssertFalse(controller.titleBar.openInControl.isHidden)
@@ -152,7 +151,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
         XCTAssertEqual(controller.openInMenu.defaultTarget, .space(build.id))
     }
 
-    func testADeletedSourceSpaceFallsBackToTheProfilesMostRecent() {
+    @MainActor func testADeletedSourceSpaceFallsBackToTheProfilesMostRecent() {
         let controller = openQuickDetour(on: profile, from: build)
         store.noteSpaceUsed(inbox.id)
 
@@ -163,7 +162,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
                        "the button follows the store")
     }
 
-    func testCmdOIsTheFileMenusItemWhileAQuickDetourIsKey() throws {
+    @MainActor func testCmdOIsTheFileMenusItemWhileAQuickDetourIsKey() throws {
         let controller = openQuickDetour(on: profile, from: build)
         let item = try XCTUnwrap(NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).first {
             $0.action == #selector(QuickDetourWindowController.openInDefaultSpace(_:))
@@ -179,7 +178,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
 
     // MARK: - The same profile: the page moves intact
 
-    func testCmdOMovesThePageIntoTheWindowShowingTheSpace() async throws {
+    @MainActor func testCmdOMovesThePageIntoTheWindowShowingTheSpace() async throws {
         let base = try await serve()
         let buildWindow = makeWindow(showing: build)
         let inboxWindow = makeWindow(showing: inbox)   // in front
@@ -213,7 +212,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
                       "moved, not closed: nothing goes to the archive (TASK-193.5)")
     }
 
-    func testTheButtonDoesWhatCmdODoes() throws {
+    @MainActor func testTheButtonDoesWhatCmdODoes() throws {
         let buildWindow = makeWindow(showing: build)
         let controller = openQuickDetour(on: profile, from: build)
         let page = try XCTUnwrap(controller.tab)
@@ -224,7 +223,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
         XCTAssertEqual(buildWindow.selectedTabID, page.id)
     }
 
-    func testWithNoWindowOnTheSpaceTheMostRecentNormalWindowSwitches() throws {
+    @MainActor func testWithNoWindowOnTheSpaceTheMostRecentNormalWindowSwitches() throws {
         let window = makeWindow(showing: inbox)
         let controller = openQuickDetour(on: profile, from: build)
         let page = try XCTUnwrap(controller.tab)
@@ -237,7 +236,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
         XCTAssertTrue(newBrowserWindows().allSatisfy { $0 === window }, "no new window")
     }
 
-    func testTheDropdownCanPickAnotherSpaceOfTheProfile() throws {
+    @MainActor func testTheDropdownCanPickAnotherSpaceOfTheProfile() throws {
         let inboxWindow = makeWindow(showing: inbox)
         let controller = openQuickDetour(on: profile, from: build)
         let page = try XCTUnwrap(controller.tab)
@@ -251,7 +250,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
         XCTAssertFalse(isOpen(controller))
     }
 
-    func testAnOpenPaletteAndFindBarGoWithTheWindow() throws {
+    @MainActor func testAnOpenPaletteAndFindBarGoWithTheWindow() throws {
         let buildWindow = makeWindow(showing: build)
         let controller = openQuickDetour(on: profile, from: build)
         let page = try XCTUnwrap(controller.tab)
@@ -268,7 +267,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
     /// The teardown order: the Quick Detour is told nothing that tears the
     /// page down, and lets go of everything — its controller is released while
     /// the web view lives on in the browser window.
-    func testTheQuickDetourIsReleasedAndTheHandedOverWebViewIsNot() throws {
+    @MainActor func testTheQuickDetourIsReleasedAndTheHandedOverWebViewIsNot() throws {
         let buildWindow = makeWindow(showing: build)
         weak var weakController: QuickDetourWindowController?
         weak var weakWebView: WKWebView?
@@ -293,7 +292,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
 
     // MARK: - Another profile: the address reloads there
 
-    func testAnotherProfilesSpaceReloadsTheAddressThere() throws {
+    @MainActor func testAnotherProfilesSpaceReloadsTheAddressThere() throws {
         let url = URL(string: "https://open-in-reload.invalid/page?q=1")!
         let other = makeProfile("Open In Home")
         let fun = addSpace("Fun", "🎉", other)
@@ -330,7 +329,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
         XCTAssertNil(weakOldWebView, "the Quick Detour's web view is released")
     }
 
-    func testTheDropdownGroupsByProfileAndMarksTheReloads() throws {
+    @MainActor func testTheDropdownGroupsByProfileAndMarksTheReloads() throws {
         let other = makeProfile("Open In Home")
         _ = addSpace("Fun", "🎉", other)
         let controller = openQuickDetour(on: profile, from: build)
@@ -353,7 +352,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
 
     // MARK: - Private
 
-    func testAPrivateQuickDetourMovesIntoTheMostRecentPrivateWindow() throws {
+    @MainActor func testAPrivateQuickDetourMovesIntoTheMostRecentPrivateWindow() throws {
         let privateProfile = store.ensureIncognitoProfile()
         let older = makePrivateWindow()
         let recent = makePrivateWindow()
@@ -375,7 +374,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
         XCTAssertTrue(store.hasLivePrivateSession)
     }
 
-    func testWithNoPrivateWindowANewOneOpens() throws {
+    @MainActor func testWithNoPrivateWindowANewOneOpens() throws {
         let privateProfile = store.ensureIncognitoProfile()
         let controller = openQuickDetour(on: privateProfile)
         let page = try XCTUnwrap(controller.tab)
@@ -388,7 +387,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
         XCTAssertTrue(page.webView?.window === opened.window)
     }
 
-    func testANormalQuickDetourCannotOpenInAPrivateWindowNorAPrivateOneInASpace() throws {
+    @MainActor func testANormalQuickDetourCannotOpenInAPrivateWindowNorAPrivateOneInASpace() throws {
         let buildWindow = makeWindow(showing: build)
         let normal = openQuickDetour(on: profile, from: build)
         normal.open(in: .privateWindow)
@@ -402,7 +401,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
 
     // MARK: - A sheet on the window
 
-    private func openInItem() throws -> NSMenuItem {
+    @MainActor private func openInItem() throws -> NSMenuItem {
         try XCTUnwrap(NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).first {
             $0.action == #selector(QuickDetourWindowController.openInDefaultSpace(_:))
         })
@@ -410,7 +409,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
 
     /// A sheet (an alert, a file panel, a sign-in prompt) is waiting on the
     /// page: Open in neither validates nor moves it, and does once it is gone.
-    func testASheetOnTheWindowBlocksOpenInUntilItEnds() throws {
+    @MainActor func testASheetOnTheWindowBlocksOpenInUntilItEnds() throws {
         let buildWindow = makeWindow(showing: build)
         let controller = openQuickDetour(on: profile, from: build)
         let page = try XCTUnwrap(controller.tab)
@@ -439,7 +438,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
 
     /// The case the guard is for: a page's `alert()` runs as a sheet whose
     /// completion WebKit is waiting on; moving the page from under it crashed.
-    func testAPageAlertBlocksOpenInUntilItIsDismissed() async throws {
+    @MainActor func testAPageAlertBlocksOpenInUntilItIsDismissed() async throws {
         let base = try await serve()
         let buildWindow = makeWindow(showing: build)
         let controller = openQuickDetour(on: profile, from: build, url: base)
@@ -468,7 +467,7 @@ final class QuickDetourOpenInWindowTests: XCTestCase {
 
     // MARK: - "Most recently used"
 
-    func testABrowserWindowSwitchingSpaceNotesItsUse() {
+    @MainActor func testABrowserWindowSwitchingSpaceNotesItsUse() {
         let window = makeWindow(showing: inbox)
         window.setActiveSpace(id: build.id)
         XCTAssertEqual(store.spaceUseOrder.first, build.id)

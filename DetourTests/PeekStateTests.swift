@@ -2,9 +2,9 @@ import XCTest
 import WebKit
 @testable import Detour
 
-final class PeekStateTests: XCTestCase {
+nonisolated final class PeekStateTests: XCTestCase {
 
-    private func makeSleepingTab() -> BrowserTab {
+    @MainActor private func makeSleepingTab() -> BrowserTab {
         BrowserTab(
             id: UUID(),
             title: "Host",
@@ -17,7 +17,7 @@ final class PeekStateTests: XCTestCase {
 
     // MARK: - clearPeekState
 
-    func testClearPeekStateResetsAllFields() {
+    @MainActor func testClearPeekStateResetsAllFields() {
         let host = makeSleepingTab()
         host.peekTab = BrowserTab(configuration: WKWebViewConfiguration())
         host.peekURL = URL(string: "https://peek.example.com")
@@ -36,7 +36,7 @@ final class PeekStateTests: XCTestCase {
 
     // MARK: - savePeekStateForPersistence
 
-    func testSaveKeepsExistingStateWhenPeekTabIsNil() {
+    @MainActor func testSaveKeepsExistingStateWhenPeekTabIsNil() {
         let host = makeSleepingTab()
         let url = URL(string: "https://peek.example.com")
         let state = Data([1, 2, 3])
@@ -51,7 +51,7 @@ final class PeekStateTests: XCTestCase {
         XCTAssertEqual(host.peekFaviconURL, URL(string: "https://peek.example.com/favicon.ico"))
     }
 
-    func testSaveKeepsExistingURLWhenPeekWebViewHasNoURL() {
+    @MainActor func testSaveKeepsExistingURLWhenPeekWebViewHasNoURL() {
         let host = makeSleepingTab()
         let originalURL = URL(string: "https://peek.example.com")
         host.peekURL = originalURL
@@ -63,7 +63,7 @@ final class PeekStateTests: XCTestCase {
         XCTAssertEqual(host.peekURL, originalURL)
     }
 
-    func testSaveKeepsExistingStateWhenPeekIsSleeping() {
+    @MainActor func testSaveKeepsExistingStateWhenPeekIsSleeping() {
         let host = makeSleepingTab()
         let originalURL = URL(string: "https://peek.example.com")
         let state = Data([9, 9])
@@ -81,11 +81,11 @@ final class PeekStateTests: XCTestCase {
 
     // MARK: - hasPeek
 
-    func testATabWithoutPeekStateHasNoPeek() {
+    @MainActor func testATabWithoutPeekStateHasNoPeek() {
         XCTAssertFalse(makeSleepingTab().hasPeek)
     }
 
-    func testALivePeekCounts() {
+    @MainActor func testALivePeekCounts() {
         let host = makeSleepingTab()
         host.peekTab = BrowserTab(configuration: WKWebViewConfiguration())
         XCTAssertTrue(host.hasPeek)
@@ -93,7 +93,7 @@ final class PeekStateTests: XCTestCase {
 
     /// Parked (the host slept) or restored with the session: no web view, but
     /// selecting the host rebuilds the Peek from its URL.
-    func testAPeekKnownOnlyByItsURLCounts() {
+    @MainActor func testAPeekKnownOnlyByItsURLCounts() {
         let host = makeSleepingTab()
         host.peekURL = URL(string: "https://peek.example.com")
         XCTAssertTrue(host.hasPeek)
@@ -103,13 +103,13 @@ final class PeekStateTests: XCTestCase {
 
     /// A Peek object that lost its web view and has no URL to rebuild from
     /// cannot be shown again.
-    func testAPeekWithNeitherWebViewNorURLDoesNotCount() {
+    @MainActor func testAPeekWithNeitherWebViewNorURLDoesNotCount() {
         let host = makeSleepingTab()
         host.peekTab = makeSleepingTab()
         XCTAssertFalse(host.hasPeek)
     }
 
-    func testClearingPeekStateRemovesThePeek() {
+    @MainActor func testClearingPeekStateRemovesThePeek() {
         let host = makeSleepingTab()
         host.peekTab = BrowserTab(configuration: WKWebViewConfiguration())
         host.peekURL = URL(string: "https://peek.example.com")
@@ -119,7 +119,7 @@ final class PeekStateTests: XCTestCase {
 
     // MARK: - displayPeekFavicon
 
-    func testDisplayPeekFaviconPrefersLivePeekTabFavicon() {
+    @MainActor func testDisplayPeekFaviconPrefersLivePeekTabFavicon() {
         let host = makeSleepingTab()
         let live = NSImage()
         let downloaded = NSImage()
@@ -131,7 +131,7 @@ final class PeekStateTests: XCTestCase {
         XCTAssertTrue(host.displayPeekFavicon === live)
     }
 
-    func testDisplayPeekFaviconFallsBackToDownloadedFavicon() {
+    @MainActor func testDisplayPeekFaviconFallsBackToDownloadedFavicon() {
         let host = makeSleepingTab()
         let downloaded = NSImage()
         host.peekFavicon = downloaded

@@ -7,32 +7,31 @@ import WebKit
 /// a WebKit gets is `WebInspectorControl.capabilities`, from the selectors it
 /// answers. The private calls themselves are checked at runtime
 /// (docs/harness/task186-4-harness.patch), not here.
-@MainActor
-final class WebInspectorControlTests: XCTestCase {
+nonisolated final class WebInspectorControlTests: XCTestCase {
 
     // MARK: - The toggle rule
 
-    func testAClosedInspectorOpensOnTheRequestedTab() {
+    @MainActor func testAClosedInspectorOpensOnTheRequestedTab() {
         XCTAssertEqual(InspectorToggle.action(isVisible: false, currentTab: nil, requested: .console), .show(.console))
         XCTAssertEqual(InspectorToggle.action(isVisible: false, currentTab: nil, requested: .network), .show(.network))
     }
 
-    func testAClosedInspectorIgnoresTheTabItLastShowed() {
+    @MainActor func testAClosedInspectorIgnoresTheTabItLastShowed() {
         XCTAssertEqual(InspectorToggle.action(isVisible: false, currentTab: .console, requested: .console), .show(.console))
         XCTAssertEqual(InspectorToggle.action(isVisible: false, currentTab: .network, requested: .network), .show(.network))
     }
 
-    func testPressingTheTabItShowsClosesIt() {
+    @MainActor func testPressingTheTabItShowsClosesIt() {
         XCTAssertEqual(InspectorToggle.action(isVisible: true, currentTab: .console, requested: .console), .close)
         XCTAssertEqual(InspectorToggle.action(isVisible: true, currentTab: .network, requested: .network), .close)
     }
 
-    func testPressingAnotherTabSwitchesToIt() {
+    @MainActor func testPressingAnotherTabSwitchesToIt() {
         XCTAssertEqual(InspectorToggle.action(isVisible: true, currentTab: .network, requested: .console), .switchTo(.console))
         XCTAssertEqual(InspectorToggle.action(isVisible: true, currentTab: .console, requested: .network), .switchTo(.network))
     }
 
-    func testAnOtherOrUnknownTabSwitchesRatherThanCloses() {
+    @MainActor func testAnOtherOrUnknownTabSwitchesRatherThanCloses() {
         // Elements, Sources… or a frontend that did not answer.
         XCTAssertEqual(InspectorToggle.action(isVisible: true, currentTab: nil, requested: .console), .switchTo(.console))
         XCTAssertEqual(InspectorToggle.action(isVisible: true, currentTab: nil, requested: .network), .switchTo(.network))
@@ -40,19 +39,19 @@ final class WebInspectorControlTests: XCTestCase {
 
     // MARK: - The frontend's tab types
 
-    func testTheFrontendsTabTypesMapToTabs() {
+    @MainActor func testTheFrontendsTabTypesMapToTabs() {
         XCTAssertEqual(WebInspectorTab(frontendType: "console"), .console)
         XCTAssertEqual(WebInspectorTab(frontendType: "network"), .network)
     }
 
-    func testAnyOtherTabTypeIsNoTab() {
+    @MainActor func testAnyOtherTabTypeIsNoTab() {
         for type in ["elements", "sources", "timeline", "", "Console", "network "] {
             XCTAssertNil(WebInspectorTab(frontendType: type), type)
         }
         XCTAssertNil(WebInspectorTab(frontendType: nil))
     }
 
-    func testTheShowScriptsCallTheFrontendsOwnFunctions() {
+    @MainActor func testTheShowScriptsCallTheFrontendsOwnFunctions() {
         XCTAssertTrue(WebInspectorControl.showTabScript(.console).contains("WI.showConsoleTab()"))
         XCTAssertTrue(WebInspectorControl.showTabScript(.network).contains("WI.showNetworkTab()"))
     }
@@ -61,24 +60,24 @@ final class WebInspectorControlTests: XCTestCase {
 
     private typealias S = WebInspectorControl.Selectors
 
-    private func capabilities(webViewLacks: Set<Selector> = [], inspectorLacks: Set<Selector> = []) -> WebInspectorControl.Capabilities {
+    @MainActor private func capabilities(webViewLacks: Set<Selector> = [], inspectorLacks: Set<Selector> = []) -> WebInspectorControl.Capabilities {
         WebInspectorControl.capabilities(webViewResponds: { !webViewLacks.contains($0) },
                                          inspectorResponds: { !inspectorLacks.contains($0) })
     }
 
-    func testAWebKitWithEverySelectorGetsEveryButton() {
+    @MainActor func testAWebKitWithEverySelectorGetsEveryButton() {
         XCTAssertEqual(capabilities(), [.console, .network, .elementPicker])
     }
 
-    func testNoInspectorOnTheWebViewMeansNoButtons() {
+    @MainActor func testNoInspectorOnTheWebViewMeansNoButtons() {
         XCTAssertEqual(capabilities(webViewLacks: [S.inspector]), [])
     }
 
-    func testWithoutTheFrontendWebViewConsoleAndNetworkCannotReadTheTab() {
+    @MainActor func testWithoutTheFrontendWebViewConsoleAndNetworkCannotReadTheTab() {
         XCTAssertEqual(capabilities(inspectorLacks: [S.inspectorWebView]), [.elementPicker])
     }
 
-    func testEachButtonNeedsItsOwnCalls() {
+    @MainActor func testEachButtonNeedsItsOwnCalls() {
         XCTAssertEqual(capabilities(inspectorLacks: [S.isVisible]), [.elementPicker], "no way to tell open from closed")
         XCTAssertEqual(capabilities(inspectorLacks: [S.close]), [.elementPicker], "no way to close")
         XCTAssertEqual(capabilities(inspectorLacks: [S.show]), [.console, .elementPicker], "Console opens with showConsole")
@@ -90,17 +89,17 @@ final class WebInspectorControlTests: XCTestCase {
     /// A canary: this Mac's WebKit answers every selector the buttons use.
     /// If a macOS update fails this, the buttons hide; record what changed
     /// in wiki/platform/web-inspector-control.md.
-    func testThisWebKitSupportsEveryButton() {
+    @MainActor func testThisWebKitSupportsEveryButton() {
         XCTAssertEqual(WebInspectorControl.capabilities, [.console, .network, .elementPicker])
     }
 
     // MARK: - The toolbar group
 
-    private func makeToolbar() -> DevToolbarView {
+    @MainActor private func makeToolbar() -> DevToolbarView {
         DevToolbarView(frame: NSRect(x: 0, y: 0, width: 800, height: DevToolbarLayout.height))
     }
 
-    func testTheGroupHasConsoleNetworkAndThePickerAfterTheCopyButton() throws {
+    @MainActor func testTheGroupHasConsoleNetworkAndThePickerAfterTheCopyButton() throws {
         let toolbar = makeToolbar()
         let group = try XCTUnwrap(DevToolbarInspectorGroup.install(in: toolbar, capabilities: [.console, .network, .elementPicker]))
         XCTAssertEqual(group.buttons.map { $0.accessibilityLabel() }, ["Console", "Network", "Select Element"])
@@ -110,7 +109,7 @@ final class WebInspectorControlTests: XCTestCase {
         XCTAssertEqual(Array(views[2...]), group.buttons)
     }
 
-    func testInstallingTwiceKeepsOneGroup() throws {
+    @MainActor func testInstallingTwiceKeepsOneGroup() throws {
         let toolbar = makeToolbar()
         let first = DevToolbarInspectorGroup.install(in: toolbar, capabilities: [.console])
         let second = DevToolbarInspectorGroup.install(in: toolbar, capabilities: [.console])
@@ -118,7 +117,7 @@ final class WebInspectorControlTests: XCTestCase {
         XCTAssertEqual(toolbar.trailingStack.arrangedSubviews.count, 3, "copy, separator, console")
     }
 
-    func testAButtonThisWebKitCannotDriveIsLeftOut() throws {
+    @MainActor func testAButtonThisWebKitCannotDriveIsLeftOut() throws {
         let toolbar = makeToolbar()
         let group = try XCTUnwrap(DevToolbarInspectorGroup.install(in: toolbar, capabilities: [.elementPicker]))
         XCTAssertNil(group.consoleButton)
@@ -126,13 +125,13 @@ final class WebInspectorControlTests: XCTestCase {
         XCTAssertEqual(group.buttons.map { $0.accessibilityLabel() }, ["Select Element"])
     }
 
-    func testNoCapabilitiesMeansNoGroupAndNoSeparator() {
+    @MainActor func testNoCapabilitiesMeansNoGroupAndNoSeparator() {
         let toolbar = makeToolbar()
         XCTAssertNil(DevToolbarInspectorGroup.install(in: toolbar, capabilities: []))
         XCTAssertEqual(toolbar.trailingStack.arrangedSubviews, [toolbar.copyButton])
     }
 
-    func testTheInspectorGroupStaysAfterACaptureGroupAddedLater() throws {
+    @MainActor func testTheInspectorGroupStaysAfterACaptureGroupAddedLater() throws {
         let toolbar = makeToolbar()
         let group = try XCTUnwrap(DevToolbarInspectorGroup.install(in: toolbar, capabilities: [.console, .network]))
         let capture = NSButton(title: "Capture", target: nil, action: nil)
@@ -146,7 +145,7 @@ final class WebInspectorControlTests: XCTestCase {
         XCTAssertEqual(Array(views[4...]), group.buttons)
     }
 
-    func testTheButtonsReportWhichTabTheyAskFor() throws {
+    @MainActor func testTheButtonsReportWhichTabTheyAskFor() throws {
         let toolbar = makeToolbar()
         let group = try XCTUnwrap(DevToolbarInspectorGroup.install(in: toolbar, capabilities: [.console, .network, .elementPicker]))
         var asked: [WebInspectorTab] = []
@@ -160,7 +159,7 @@ final class WebInspectorControlTests: XCTestCase {
         XCTAssertEqual(picks, 1)
     }
 
-    func testThePickerShowsWhenItIsOn() throws {
+    @MainActor func testThePickerShowsWhenItIsOn() throws {
         let toolbar = makeToolbar()
         let group = try XCTUnwrap(DevToolbarInspectorGroup.install(in: toolbar, capabilities: [.elementPicker]))
         let button = try XCTUnwrap(group.elementPickerButton)
@@ -176,15 +175,15 @@ final class WebInspectorControlTests: XCTestCase {
     private var controller: BrowserWindowController?
     private var createdTabs: [BrowserTab] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         controller?.window?.close()
         controller = nil
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private final class RecordingToggler: WebInspectorToggling {
+    @MainActor private final class RecordingToggler: WebInspectorToggling {
         var toggles: [(WebInspectorTab, WKWebView)] = []
         var picks: [WKWebView] = []
         func toggle(_ tab: WebInspectorTab, for webView: WKWebView) { toggles.append((tab, webView)) }
@@ -193,7 +192,7 @@ final class WebInspectorControlTests: XCTestCase {
     }
 
     /// A Private window (nothing persisted) with a recording toggler.
-    private func makeController() throws -> (BrowserWindowController, Space, RecordingToggler) {
+    @MainActor private func makeController() throws -> (BrowserWindowController, Space, RecordingToggler) {
         let wc = BrowserWindowController(incognito: true)
         controller = wc
         wc.sidebarSplitView.autosaveName = nil
@@ -203,7 +202,7 @@ final class WebInspectorControlTests: XCTestCase {
         return (wc, try XCTUnwrap(wc.activeSpace), toggler)
     }
 
-    private func addTab(_ url: URL, to wc: BrowserWindowController, in space: Space) -> BrowserTab {
+    @MainActor private func addTab(_ url: URL, to wc: BrowserWindowController, in space: Space) -> BrowserTab {
         let tab = wc.store.addTab(in: space, url: url)
         createdTabs.append(tab)
         return tab
@@ -212,7 +211,7 @@ final class WebInspectorControlTests: XCTestCase {
     private let localURL = URL(string: "http://app.test:3000/")!
     private let otherLocalURL = URL(string: "http://api.test:4000/")!
 
-    func testADevModeToolbarInAWindowHasTheGroupOnce() throws {
+    @MainActor func testADevModeToolbarInAWindowHasTheGroupOnce() throws {
         let (wc, space, _) = try makeController()
         let tab = addTab(localURL, to: wc, in: space)
         wc.selectTab(id: tab.id)
@@ -228,7 +227,7 @@ final class WebInspectorControlTests: XCTestCase {
         XCTAssertEqual(toolbar.trailingStack.arrangedSubviews.count, 1 + 1 + 2 + 1 + 3)
     }
 
-    func testTheUnfocusedPanesButtonsActOnThatPanesWebView() throws {
+    @MainActor func testTheUnfocusedPanesButtonsActOnThatPanesWebView() throws {
         let (wc, space, toggler) = try makeController()
         let left = addTab(localURL, to: wc, in: space)
         let right = addTab(otherLocalURL, to: wc, in: space)

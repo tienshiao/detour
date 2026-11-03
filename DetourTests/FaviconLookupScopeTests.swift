@@ -11,13 +11,13 @@ import GRDB
 /// lookup therefore asks `historyVisit` first: a URL (or, for the same-host
 /// fallback, a host) with no visit in scope gets the answer a URL nobody
 /// visited gets.
-final class FaviconLookupScopeTests: XCTestCase {
+nonisolated final class FaviconLookupScopeTests: XCTestCase {
 
     private let spaceA = "space-a"
     private let spaceA2 = "space-a2"
     private let spaceB = "space-b"
 
-    private func makeDatabase() throws -> HistoryDatabase {
+    @MainActor private func makeDatabase() throws -> HistoryDatabase {
         var config = Configuration()
         config.foreignKeysEnabled = true
         return try HistoryDatabase(dbQueue: try DatabaseQueue(configuration: config)) // in-memory
@@ -25,7 +25,7 @@ final class FaviconLookupScopeTests: XCTestCase {
 
     /// One visit, with the shared `historyURL` row moved the way the real
     /// upsert moves it: the latest visit from anywhere sets the icon.
-    private func seedVisit(_ db: HistoryDatabase, url: String, favicon: String?, space: String,
+    @MainActor private func seedVisit(_ db: HistoryDatabase, url: String, favicon: String?, space: String,
                            visitTime: Double) throws {
         try db.dbQueue.write { conn in
             let urlID = try Int64.fetchOne(conn, sql: """
@@ -45,7 +45,7 @@ final class FaviconLookupScopeTests: XCTestCase {
 
     // MARK: - Exact URL
 
-    func testAnExactURLVisitedInScopeAnswersWithItsIcon() throws {
+    @MainActor func testAnExactURLVisitedInScopeAnswersWithItsIcon() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.example/notes", favicon: "https://a.example/icon.png",
                       space: spaceA, visitTime: 100)
@@ -56,7 +56,7 @@ final class FaviconLookupScopeTests: XCTestCase {
 
     /// The leak: the page was visited, and its icon recorded, by another
     /// profile's space only.
-    func testAURLVisitedOnlyOutOfScopeAnswersLikeAURLNeverVisited() throws {
+    @MainActor func testAURLVisitedOnlyOutOfScopeAnswersLikeAURLNeverVisited() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://b.example/payroll", favicon: "https://b.example/icon.png",
                       space: spaceB, visitTime: 100)
@@ -69,7 +69,7 @@ final class FaviconLookupScopeTests: XCTestCase {
                        "https://b.example/icon.png")
     }
 
-    func testAURLVisitedInAnySpaceOfTheScopeAnswers() throws {
+    @MainActor func testAURLVisitedInAnySpaceOfTheScopeAnswers() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.example/notes", favicon: "https://a.example/icon.png",
                       space: spaceA2, visitTime: 100)
@@ -79,7 +79,7 @@ final class FaviconLookupScopeTests: XCTestCase {
         XCTAssertNil(db.faviconURL(for: "https://a.example/notes", visitedInSpaces: [spaceA]))
     }
 
-    func testAnEmptyScopeAnswersNothing() throws {
+    @MainActor func testAnEmptyScopeAnswersNothing() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.example/notes", favicon: "https://a.example/icon.png",
                       space: spaceA, visitTime: 100)
@@ -90,7 +90,7 @@ final class FaviconLookupScopeTests: XCTestCase {
     /// A URL both profiles visited answers both, with the URL's one icon: which
     /// icon a URL has is shared (`historyURL.faviconURL`), whether the lookup
     /// answers is not.
-    func testAURLVisitedByBothAnswersBoth() throws {
+    @MainActor func testAURLVisitedByBothAnswersBoth() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://shared.example/inbox", favicon: "https://shared.example/old.png",
                       space: spaceA, visitTime: 100)
@@ -105,7 +105,7 @@ final class FaviconLookupScopeTests: XCTestCase {
 
     // MARK: - Same-host fallback
 
-    func testTheHostFallbackAnswersFromAnInScopePageOfTheSameHost() throws {
+    @MainActor func testTheHostFallbackAnswersFromAnInScopePageOfTheSameHost() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.example/notes", favicon: "https://a.example/icon.png",
                       space: spaceA, visitTime: 100)
@@ -118,7 +118,7 @@ final class FaviconLookupScopeTests: XCTestCase {
 
     /// The leak through the fallback: nothing on the host was visited in scope,
     /// so a page of it must not answer with another profile's icon.
-    func testTheHostFallbackIgnoresPagesVisitedOnlyOutOfScope() throws {
+    @MainActor func testTheHostFallbackIgnoresPagesVisitedOnlyOutOfScope() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://b.example/payroll", favicon: "https://b.example/icon.png",
                       space: spaceB, visitTime: 100)
@@ -132,7 +132,7 @@ final class FaviconLookupScopeTests: XCTestCase {
     /// Of several in-scope pages on the host the most recently visited *in
     /// scope* wins; a newer page that only another profile visited is not a
     /// candidate, however recent.
-    func testTheHostFallbackPicksTheNewestInScopeVisit() throws {
+    @MainActor func testTheHostFallbackPicksTheNewestInScopeVisit() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://site.example/a-old", favicon: "https://site.example/a-old.png",
                       space: spaceA, visitTime: 100)
@@ -146,7 +146,7 @@ final class FaviconLookupScopeTests: XCTestCase {
     }
 
     /// An exact row with no icon falls through to the host, as before.
-    func testAnExactURLWithoutAnIconFallsBackToItsHost() throws {
+    @MainActor func testAnExactURLWithoutAnIconFallsBackToItsHost() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.example/plain", favicon: nil, space: spaceA, visitTime: 200)
         try seedVisit(db, url: "https://a.example/notes", favicon: "https://a.example/icon.png",
@@ -158,7 +158,7 @@ final class FaviconLookupScopeTests: XCTestCase {
 
     /// "Same host" is the host, not a string prefix: `a.example.evil.test` and
     /// `a.examplexyz.test` are other sites, a port and a bare origin are not.
-    func testTheHostFallbackStopsAtTheEndOfTheHost() throws {
+    @MainActor func testTheHostFallbackStopsAtTheEndOfTheHost() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.example.evil.test/", favicon: "https://evil.test/icon.png",
                       space: spaceA, visitTime: 300)
@@ -179,7 +179,7 @@ final class FaviconLookupScopeTests: XCTestCase {
     /// An IPv6 literal is matched as it is written in the stored URLs, in
     /// brackets (TASK-198). `URL.host` strips them, and the same-host range
     /// built from it (`http://::1…`) matched nothing.
-    func testTheHostFallbackMatchesAnIPv6Host() throws {
+    @MainActor func testTheHostFallbackMatchesAnIPv6Host() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "http://[::1]:3000/app", favicon: "http://[::1]:3000/favicon.ico",
                       space: spaceA, visitTime: 100)
@@ -192,7 +192,7 @@ final class FaviconLookupScopeTests: XCTestCase {
     }
 
     /// The unscoped lookup (the History page's own rows) shares the host rule.
-    func testTheUnscopedLookupUsesTheSameHostRule() throws {
+    @MainActor func testTheUnscopedLookupUsesTheSameHostRule() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.example.evil.test/", favicon: "https://evil.test/icon.png",
                       space: spaceB, visitTime: 300)
@@ -204,7 +204,7 @@ final class FaviconLookupScopeTests: XCTestCase {
     }
 
     /// Not a web URL, or not a URL: nothing to look up by host.
-    func testAPageURLWithoutAHostAnswersNothing() throws {
+    @MainActor func testAPageURLWithoutAHostAnswersNothing() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.example/notes", favicon: "https://a.example/icon.png",
                       space: spaceA, visitTime: 100)

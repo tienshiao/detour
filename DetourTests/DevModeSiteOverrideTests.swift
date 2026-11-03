@@ -1,3 +1,4 @@
+import Synchronization
 import XCTest
 import AppKit
 import GRDB
@@ -6,7 +7,7 @@ import GRDB
 /// TASK-186.5: dev mode can be turned on for any site and off for a local one,
 /// per profile. The choice is a `devMode` row of the `siteSetting` table, keyed
 /// by host plus a non-default port and matched exactly.
-final class DevModeSiteOverrideTests: XCTestCase {
+nonisolated final class DevModeSiteOverrideTests: XCTestCase {
 
     private let profileA = UUID()
     private let profileB = UUID()
@@ -15,7 +16,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
     private let local3000 = URL(string: "http://localhost:3000/")!
     private let local4000 = URL(string: "http://localhost:4000/")!
 
-    private func makeProfile(_ id: UUID) -> ProfileRecord {
+    @MainActor private func makeProfile(_ id: UUID) -> ProfileRecord {
         ProfileRecord(id: id.uuidString, name: "P", userAgentMode: 0, customUserAgent: nil,
                       archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0,
                       searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true,
@@ -23,7 +24,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
                       isMalwareFilterEnabled: true)
     }
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         db.saveProfile(makeProfile(profileA))
         db.saveProfile(makeProfile(profileB))
@@ -32,7 +33,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
 
     // MARK: - The rule
 
-    func testTheOverrideDecidesAndNilFallsBackToTheURLRule() {
+    @MainActor func testTheOverrideDecidesAndNilFallsBackToTheURLRule() {
         XCTAssertTrue(DevMode.isActive(url: remote, override: true), "on for a remote site")
         XCTAssertFalse(DevMode.isActive(url: local3000, override: false), "off for a local one")
         XCTAssertTrue(DevMode.isActive(url: local3000, override: nil), "nil falls back: local")
@@ -43,7 +44,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
 
     // MARK: - Site key
 
-    func testTheSiteKeyIsTheHostPlusANonDefaultPort() {
+    @MainActor func testTheSiteKeyIsTheHostPlusANonDefaultPort() {
         XCTAssertEqual(devModeSiteKey(for: local3000), "localhost:3000")
         XCTAssertEqual(devModeSiteKey(for: URL(string: "http://Example.COM:8080/a?b")), "example.com:8080")
         XCTAssertEqual(devModeSiteKey(for: URL(string: "https://example.com:443/")), "example.com")
@@ -52,7 +53,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
         XCTAssertEqual(devModeSiteKey(for: URL(string: "http://localhost.:3000/")), "localhost:3000")
     }
 
-    func testOnlyWebPagesHaveASiteKey() {
+    @MainActor func testOnlyWebPagesHaveASiteKey() {
         XCTAssertNil(devModeSiteKey(for: nil))
         XCTAssertNil(devModeSiteKey(for: URL(string: "about:blank")))
         XCTAssertNil(devModeSiteKey(for: URL(string: "file:///Users/me/index.html")))
@@ -62,7 +63,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
 
     // MARK: - Store and switch
 
-    func testTurningItOnForARemoteSiteStoresTrue() throws {
+    @MainActor func testTurningItOnForARemoteSiteStoresTrue() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         XCTAssertFalse(DevMode.isActive(for: remote, profileID: profileA, store: store))
@@ -82,7 +83,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
                       "survives a new store")
     }
 
-    func testTurningItOffForALocalURLStoresFalseForThatPortOnly() throws {
+    @MainActor func testTurningItOffForALocalURLStoresFalseForThatPortOnly() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
 
@@ -95,7 +96,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
         XCTAssertEqual(store.overrides(.devMode, profileID: profileA), ["localhost:3000": false])
     }
 
-    func testAChoiceEqualToTheDefaultClearsTheRow() throws {
+    @MainActor func testAChoiceEqualToTheDefaultClearsTheRow() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
 
@@ -111,7 +112,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
         XCTAssertTrue(DevMode.isActive(for: local3000, profileID: profileA, store: store))
     }
 
-    func testAURLWithoutASiteKeyStoresNothing() throws {
+    @MainActor func testAURLWithoutASiteKeyStoresNothing() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         DevMode.setEnabled(true, for: URL(string: "detour://history"), profileID: profileA, store: store)
@@ -120,7 +121,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
         XCTAssertFalse(DevMode.isActive(for: URL(string: "detour://history"), profileID: profileA, store: store))
     }
 
-    func testDevModeMatchesTheSiteKeyExactly() throws {
+    @MainActor func testDevModeMatchesTheSiteKeyExactly() throws {
         let store = SiteSettingsStore(database: try makeDatabase())
         store.set(.devMode, site: "example.com", to: true, profileID: profileA)
         store.set(.devMode, site: "localhost:3000", to: false, profileID: profileA)
@@ -139,7 +140,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
 
     // MARK: - Private
 
-    func testAPrivateWindowsChoiceIsKeptInMemoryOnly() throws {
+    @MainActor func testAPrivateWindowsChoiceIsKeptInMemoryOnly() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         let privateID = TabStore.incognitoProfileID
@@ -159,7 +160,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
 
     // MARK: - Other settings unaffected
 
-    func testHostMatchedSettingsAreUnaffected() throws {
+    @MainActor func testHostMatchedSettingsAreUnaffected() throws {
         let db = try makeDatabase()
         let store = SiteSettingsStore(database: db)
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileA)
@@ -181,13 +182,14 @@ final class DevModeSiteOverrideTests: XCTestCase {
 
     // MARK: - Change notification
 
-    func testTheStorePostsAChangeNamingTheSettingAndProfile() throws {
+    @MainActor func testTheStorePostsAChangeNamingTheSettingAndProfile() throws {
         let store = SiteSettingsStore(database: try makeDatabase())
-        var received: [(SiteSetting?, UUID?)] = []
+        let received = Mutex<[(SiteSetting?, UUID?)]>([])
         let token = NotificationCenter.default.addObserver(forName: SiteSettingsStore.didChangeNotification,
                                                            object: store, queue: nil) { note in
-            received.append((note.userInfo?[SiteSettingsStore.settingKey] as? SiteSetting,
-                             note.userInfo?[SiteSettingsStore.profileIDKey] as? UUID))
+            let entry = (note.userInfo?[SiteSettingsStore.settingKey] as? SiteSetting,
+                         note.userInfo?[SiteSettingsStore.profileIDKey] as? UUID)
+            received.withLock { $0.append(entry) }
         }
         defer { NotificationCenter.default.removeObserver(token) }
 
@@ -196,14 +198,14 @@ final class DevModeSiteOverrideTests: XCTestCase {
         store.clear(.devMode, sites: ["never-stored.com"], profileID: profileA)
         store.set(.contentBlocking, site: "example.com", to: false, profileID: profileB)
 
-        XCTAssertEqual(received.map(\.0), [.devMode, .devMode, .contentBlocking],
+        XCTAssertEqual(received.withLock { $0 }.map(\.0), [.devMode, .devMode, .contentBlocking],
                        "clearing a site with no row changes nothing")
-        XCTAssertEqual(received.map(\.1), [profileA, profileA, profileB])
+        XCTAssertEqual(received.withLock { $0 }.map(\.1), [profileA, profileA, profileB])
     }
 
     // MARK: - Row marking
 
-    func testRowMarkingFollowsTheOverride() throws {
+    @MainActor func testRowMarkingFollowsTheOverride() throws {
         let store = SiteSettingsStore(database: try makeDatabase())
         DevMode.setEnabled(true, for: remote, profileID: profileA, store: store)
         DevMode.setEnabled(false, for: local3000, profileID: profileA, store: store)
@@ -218,7 +220,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
 
     // MARK: - Popover switch
 
-    private func devModeSwitch(in view: NSView) -> NSSwitch? {
+    @MainActor private func devModeSwitch(in view: NSView) -> NSSwitch? {
         if let control = view as? NSSwitch, control.accessibilityLabel() == "Dev mode for this site" { return control }
         for subview in view.subviews {
             if let found = devModeSwitch(in: subview) { return found }
@@ -226,7 +228,7 @@ final class DevModeSiteOverrideTests: XCTestCase {
         return nil
     }
 
-    func testThePopoverSwitchShowsTheEffectiveStateAndReportsTheNewOne() throws {
+    @MainActor func testThePopoverSwitchShowsTheEffectiveStateAndReportsTheNewOne() throws {
         let vc = SettingsPopoverViewController()
         vc.host = "example.com"
         vc.isDevModeAvailable = true
@@ -243,14 +245,14 @@ final class DevModeSiteOverrideTests: XCTestCase {
     }
 
     /// The address bar button opens per-site settings now, not only extensions.
-    func testTheAddressBarButtonIsLabelledSiteSettings() {
+    @MainActor func testTheAddressBarButtonIsLabelledSiteSettings() {
         let bar = FauxAddressBar()
         XCTAssertEqual(bar.settingsButton.image?.accessibilityDescription, "Site Settings")
         let expected = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: nil)
         XCTAssertEqual(bar.settingsButton.image?.tiffRepresentation, expected?.tiffRepresentation)
     }
 
-    func testThePopoverSwitchIsDisabledWithoutASite() throws {
+    @MainActor func testThePopoverSwitchIsDisabledWithoutASite() throws {
         let vc = SettingsPopoverViewController()
         vc.host = ""
         vc.isDevModeAvailable = false

@@ -53,8 +53,8 @@ final class SiteSettingsStore {
     /// the `SiteSetting` under `settingKey` and the profile's UUID under
     /// `profileIDKey`, so a view showing a site's state can follow at once.
     static let didChangeNotification = Notification.Name("SiteSettingsStoreDidChange")
-    static let settingKey = "setting"
-    static let profileIDKey = "profileID"
+    nonisolated static let settingKey = "setting"
+    nonisolated static let profileIDKey = "profileID"
 
     static let shared = SiteSettingsStore(database: .shared)
 

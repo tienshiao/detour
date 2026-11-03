@@ -5,20 +5,20 @@ import XCTest
 /// must stay visible in the persisted log without being able to evict the log
 /// history that makes it diagnosable. Pure and clock-injected, so every window
 /// boundary is exercised exactly rather than by sleeping.
-final class NativeConnectLogLimiterTests: XCTestCase {
+nonisolated final class NativeConnectLogLimiterTests: XCTestCase {
 
-    private let linesPerWindow = NativeConnectLogLimiter.linesPerWindow
-    private let window = NativeConnectLogLimiter.windowDuration
+    @MainActor private var linesPerWindow: Int { NativeConnectLogLimiter.linesPerWindow }
+    @MainActor private var window: TimeInterval { NativeConnectLogLimiter.windowDuration }
     private let t0 = Date(timeIntervalSinceReferenceDate: 1_000)
 
-    private func key(
+    @MainActor private func key(
         profile: String = "Work", extensionID: String = "ext", host: String = "com.example.host"
     ) -> NativeConnectLogLimiter.Key {
         NativeConnectLogLimiter.Key(profileName: profile, extensionID: extensionID, hostName: host)
     }
 
     /// Admit `count` attempts with the same outcome at the same instant.
-    private func admit(
+    @MainActor private func admit(
         _ limiter: inout NativeConnectLogLimiter, _ count: Int,
         outcome: NativeConnectLogLimiter.Outcome = .failed,
         at time: Date, key admitKey: NativeConnectLogLimiter.Key? = nil
@@ -27,13 +27,13 @@ final class NativeConnectLogLimiterTests: XCTestCase {
         return (0..<count).map { _ in limiter.admit(target, outcome: outcome, now: time) }
     }
 
-    func testTheFirstAttemptsOfAWindowAreLoggedInFull() {
+    @MainActor func testTheFirstAttemptsOfAWindowAreLoggedInFull() {
         var limiter = NativeConnectLogLimiter()
         let decisions = admit(&limiter, linesPerWindow, at: t0)
         XCTAssertEqual(decisions, Array(repeating: .log, count: linesPerWindow))
     }
 
-    func testAttemptsBeyondTheCapAreSuppressed() {
+    @MainActor func testAttemptsBeyondTheCapAreSuppressed() {
         var limiter = NativeConnectLogLimiter()
         _ = admit(&limiter, linesPerWindow, at: t0)
         let overflow = admit(&limiter, 20, at: t0.addingTimeInterval(window / 2))
@@ -43,7 +43,7 @@ final class NativeConnectLogLimiterTests: XCTestCase {
     /// The summary rides on the first attempt of the next window and carries the
     /// breakdown by outcome, so a suppressed storm still says whether the
     /// extension was connecting or being refused.
-    func testTheNextWindowReportsWhatWasSuppressedByOutcome() {
+    @MainActor func testTheNextWindowReportsWhatWasSuppressedByOutcome() {
         var limiter = NativeConnectLogLimiter()
         _ = admit(&limiter, linesPerWindow, at: t0)
         _ = admit(&limiter, 7, outcome: .failed, at: t0.addingTimeInterval(1))
@@ -61,7 +61,7 @@ final class NativeConnectLogLimiterTests: XCTestCase {
         XCTAssertEqual(limiter.admit(key(), outcome: .failed, now: t0.addingTimeInterval(window)), .log)
     }
 
-    func testARolledWindowThatSuppressedNothingReportsNothing() {
+    @MainActor func testARolledWindowThatSuppressedNothingReportsNothing() {
         var limiter = NativeConnectLogLimiter()
         _ = admit(&limiter, linesPerWindow, at: t0)
         XCTAssertEqual(limiter.admit(key(), outcome: .connected, now: t0.addingTimeInterval(window)), .log)
@@ -71,7 +71,7 @@ final class NativeConnectLogLimiterTests: XCTestCase {
     /// an extension that storms, stops for an hour and tries again reports the
     /// hour, which is why the caller phrases it as "in the last Ns" from this
     /// value rather than from the window constant.
-    func testTheReportedIntervalIsTheAgeOfTheClosedWindow() {
+    @MainActor func testTheReportedIntervalIsTheAgeOfTheClosedWindow() {
         var limiter = NativeConnectLogLimiter()
         _ = admit(&limiter, linesPerWindow + 1, at: t0)
         let rolled = limiter.admit(key(), outcome: .failed, now: t0.addingTimeInterval(3_600))
@@ -82,7 +82,7 @@ final class NativeConnectLogLimiterTests: XCTestCase {
 
     /// One looping extension must not silence another's lines — nor the same
     /// extension's attempts to a different host, or in a different profile.
-    func testTheCapIsPerProfileExtensionAndHost() {
+    @MainActor func testTheCapIsPerProfileExtensionAndHost() {
         var limiter = NativeConnectLogLimiter()
         _ = admit(&limiter, linesPerWindow + 5, at: t0)
         XCTAssertEqual(limiter.admit(key(), outcome: .failed, now: t0), .suppress)
@@ -93,7 +93,7 @@ final class NativeConnectLogLimiterTests: XCTestCase {
 
     /// A reconnect loop costs a bounded number of lines however fast it runs: the
     /// cap per window plus one summary.
-    func testASustainedLoopCostsTheCapPlusOneSummaryPerWindow() {
+    @MainActor func testASustainedLoopCostsTheCapPlusOneSummaryPerWindow() {
         var limiter = NativeConnectLogLimiter()
         var logged = 0
         var summaries = 0
@@ -118,7 +118,7 @@ final class NativeConnectLogLimiterTests: XCTestCase {
         XCTAssertEqual(logged + summarised, Int(window * 4) * 10 - (Int(window * 4) - linesPerWindow))
     }
 
-    func testAClockGoingBackwardsRollsTheWindowRatherThanStallingTheCap() {
+    @MainActor func testAClockGoingBackwardsRollsTheWindowRatherThanStallingTheCap() {
         var limiter = NativeConnectLogLimiter()
         _ = admit(&limiter, linesPerWindow + 2, at: t0)
         var expected = NativeConnectLogLimiter.Suppressed()

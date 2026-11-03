@@ -1,7 +1,7 @@
 import XCTest
 @testable import Detour
 
-final class ModuleBundlerTests: XCTestCase {
+nonisolated final class ModuleBundlerTests: XCTestCase {
 
     private var tempDir: URL!
 
@@ -21,7 +21,7 @@ final class ModuleBundlerTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func write(_ content: String, to relativePath: String) {
+    @MainActor private func write(_ content: String, to relativePath: String) {
         let url = tempDir.appendingPathComponent(relativePath)
         try! FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
@@ -30,13 +30,13 @@ final class ModuleBundlerTests: XCTestCase {
         try! content.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    private func bundle(entry: String) throws -> ModuleBundler.BundleResult {
+    @MainActor private func bundle(entry: String) throws -> ModuleBundler.BundleResult {
         try ModuleBundler.bundleModules(entryFile: entry, extensionRoot: tempDir)
     }
 
     // MARK: - Module ordering
 
-    func testSideEffectImportOrderIsPreserved() throws {
+    @MainActor func testSideEffectImportOrderIsPreserved() throws {
         // main.js imports A then B as side-effects. A must appear before B.
         write("globalThis.A_LOADED = true;", to: "a.js")
         write("globalThis.B_LOADED = true;", to: "b.js")
@@ -50,7 +50,7 @@ final class ModuleBundlerTests: XCTestCase {
         XCTAssertEqual(result.moduleOrder, ["a.js", "b.js", "main.js"])
     }
 
-    func testNamedImportCreatesCorrectDependencyOrder() throws {
+    @MainActor func testNamedImportCreatesCorrectDependencyOrder() throws {
         write("export function greet() { return 'hi'; }", to: "greeter.js")
         write("""
         import { greet } from './greeter.js';
@@ -62,7 +62,7 @@ final class ModuleBundlerTests: XCTestCase {
         XCTAssertTrue(result.source.contains("var { greet }"))
     }
 
-    func testMixedImportTypesPreserveSourceOrder() throws {
+    @MainActor func testMixedImportTypesPreserveSourceOrder() throws {
         // Mimics Vimium main.js: side-effect imports first, then namespace/named.
         // All import types must be ordered by their position in the source.
         write("globalThis.Utils = {};", to: "lib/utils.js")
@@ -88,7 +88,7 @@ final class ModuleBundlerTests: XCTestCase {
         XCTAssertLessThan(bgUtilsIdx, commandsIdx, "bg_utils before commands")
     }
 
-    func testNamespaceImportSynthesizesObject() throws {
+    @MainActor func testNamespaceImportSynthesizesObject() throws {
         write("""
         export function add(a, b) { return a + b; }
         export const PI = 3.14;
@@ -103,7 +103,7 @@ final class ModuleBundlerTests: XCTestCase {
         XCTAssertTrue(result.source.contains("var math = { add, PI };"))
     }
 
-    func testSubdirectoryImportResolution() throws {
+    @MainActor func testSubdirectoryImportResolution() throws {
         write("export const VERSION = '1.0';", to: "lib/config.js")
         write("""
         import { VERSION } from './lib/config.js';
@@ -114,7 +114,7 @@ final class ModuleBundlerTests: XCTestCase {
         XCTAssertEqual(result.moduleOrder, ["lib/config.js", "main.js"])
     }
 
-    func testNestedSubdirectoryEntryPoint() throws {
+    @MainActor func testNestedSubdirectoryEntryPoint() throws {
         // Entry point in a subdirectory importing from sibling and parent
         write("export const ROOT = true;", to: "root_util.js")
         write("export const HELPER = true;", to: "bg/helper.js")
@@ -128,7 +128,7 @@ final class ModuleBundlerTests: XCTestCase {
         XCTAssertEqual(result.moduleOrder, ["root_util.js", "bg/helper.js", "bg/main.js"])
     }
 
-    func testDFSPostOrderMatchesESModuleSemantics() throws {
+    @MainActor func testDFSPostOrderMatchesESModuleSemantics() throws {
         // Mimics Vimium's pattern: main imports settings (side-effect), then commands.
         // commands only imports all_commands (not settings directly), but needs
         // settings to have run first. DFS post-order on main's import list ensures this.
@@ -157,7 +157,7 @@ final class ModuleBundlerTests: XCTestCase {
         }
     }
 
-    func testDiamondDependencyDeduplicates() throws {
+    @MainActor func testDiamondDependencyDeduplicates() throws {
         // A → B, A → C, B → D, C → D. D should appear once.
         write("export const D = 'd';", to: "d.js")
         write("""
@@ -185,7 +185,7 @@ final class ModuleBundlerTests: XCTestCase {
         XCTAssertLessThan(dIdx, cIdx)
     }
 
-    func testDuplicateConstNamesAreIsolated() throws {
+    @MainActor func testDuplicateConstNamesAreIsolated() throws {
         // Two side-effect modules both declare `const RegexpCache`.
         // Without IIFE wrapping this would be a SyntaxError in strict mode.
         write("const RegexpCache = {};\nglobalThis.cache1 = RegexpCache;", to: "a.js")
@@ -207,7 +207,7 @@ final class ModuleBundlerTests: XCTestCase {
 
     // MARK: - Export handling
 
-    func testExportFunctionIsWrappedInIIFE() throws {
+    @MainActor func testExportFunctionIsWrappedInIIFE() throws {
         write("""
         export function hello() { return 'world'; }
         """, to: "lib.js")
@@ -218,7 +218,7 @@ final class ModuleBundlerTests: XCTestCase {
         XCTAssertTrue(result.source.contains("return { hello };"))
     }
 
-    func testExportAsyncFunction() throws {
+    @MainActor func testExportAsyncFunction() throws {
         write("export async function fetchData() { return 42; }", to: "api.js")
         write("import { fetchData } from './api.js';\nfetchData();", to: "main.js")
 
@@ -229,7 +229,7 @@ final class ModuleBundlerTests: XCTestCase {
         XCTAssertFalse(result.source.contains("export async function"))
     }
 
-    func testExportConstLetVar() throws {
+    @MainActor func testExportConstLetVar() throws {
         write("""
         export const A = 1;
         export let B = 2;
@@ -241,7 +241,7 @@ final class ModuleBundlerTests: XCTestCase {
         XCTAssertTrue(result.source.contains("var { A, B, C }"))
     }
 
-    func testExportBlock() throws {
+    @MainActor func testExportBlock() throws {
         write("""
         function localA() {}
         const localB = 42;
@@ -255,7 +255,7 @@ final class ModuleBundlerTests: XCTestCase {
         XCTAssertFalse(result.source.contains("export {"))
     }
 
-    func testExportClass() throws {
+    @MainActor func testExportClass() throws {
         write("export class MyClass { constructor() {} }", to: "cls.js")
         write("import { MyClass } from './cls.js';\nnew MyClass();", to: "main.js")
 
@@ -265,7 +265,7 @@ final class ModuleBundlerTests: XCTestCase {
         XCTAssertFalse(result.source.contains("export class"))
     }
 
-    func testSideEffectModuleWrappedInIIFE() throws {
+    @MainActor func testSideEffectModuleWrappedInIIFE() throws {
         write("globalThis.sideEffect = true;", to: "setup.js")
         write("import './setup.js';\nconsole.log('main');", to: "main.js")
 
@@ -274,7 +274,7 @@ final class ModuleBundlerTests: XCTestCase {
         XCTAssertTrue(result.source.contains("// === setup.js ===\n(function() {"))
     }
 
-    func testEntryModuleNotWrappedInIIFE() throws {
+    @MainActor func testEntryModuleNotWrappedInIIFE() throws {
         write("export const X = 1;", to: "dep.js")
         write("import { X } from './dep.js';\nconsole.log(X);", to: "main.js")
 
@@ -287,7 +287,7 @@ final class ModuleBundlerTests: XCTestCase {
 
     // MARK: - Import stripping
 
-    func testImportStatementsAreStripped() throws {
+    @MainActor func testImportStatementsAreStripped() throws {
         write("export const X = 1;", to: "dep.js")
         write("""
         import { X } from './dep.js';
@@ -303,7 +303,7 @@ final class ModuleBundlerTests: XCTestCase {
 
     // MARK: - Polyfill inclusion
 
-    func testPolyfillIsIncludedAtTop() throws {
+    @MainActor func testPolyfillIsIncludedAtTop() throws {
         write("console.log('entry');", to: "main.js")
 
         let result = try bundle(entry: "main.js")
@@ -315,13 +315,13 @@ final class ModuleBundlerTests: XCTestCase {
 
     // MARK: - Error cases
 
-    func testMissingEntryFileThrows() {
+    @MainActor func testMissingEntryFileThrows() {
         XCTAssertThrowsError(try bundle(entry: "nonexistent.js")) { error in
             XCTAssertTrue(error.localizedDescription.contains("not found"))
         }
     }
 
-    func testMissingImportIsSkipped() throws {
+    @MainActor func testMissingImportIsSkipped() throws {
         // Import of a non-existent file should not crash
         write("""
         import './does_not_exist.js';
@@ -335,7 +335,7 @@ final class ModuleBundlerTests: XCTestCase {
 
     // MARK: - Re-exports
 
-    func testReExportFrom() throws {
+    @MainActor func testReExportFrom() throws {
         write("export function greet() { return 'hi'; }", to: "lib/greeter.js")
         write("export { greet } from './greeter.js';", to: "lib/index.js")
         write("""
@@ -356,7 +356,7 @@ final class ModuleBundlerTests: XCTestCase {
 
     // MARK: - Hello World Module extension
 
-    func testHelloWorldModuleBundles() throws {
+    @MainActor func testHelloWorldModuleBundles() throws {
         let hwDir = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()

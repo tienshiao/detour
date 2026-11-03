@@ -12,7 +12,7 @@ import GRDB
 /// TASK-209: it was still handed every other *profile's* spaces, so Switch to
 /// Tab could jump into another profile. A palette offers its own profile's
 /// spaces only.
-final class PaletteTabScopeTests: XCTestCase {
+nonisolated final class PaletteTabScopeTests: XCTestCase {
 
     private typealias SpaceRef = PaletteTabScope.SpaceRef
 
@@ -29,7 +29,7 @@ final class PaletteTabScopeTests: XCTestCase {
 
     // MARK: - A normal window
 
-    func testNormalWindowIsNotOfferedAnOpenPrivateWindowsSpace() {
+    @MainActor func testNormalWindowIsNotOfferedAnOpenPrivateWindowsSpace() {
         let offered = PaletteTabScope.offeredSpaceIDs(
             spaces: [normalA, privateA, normalB],
             windowIsPrivate: false, activeSpaceID: normalA.id)
@@ -38,7 +38,7 @@ final class PaletteTabScopeTests: XCTestCase {
                        "every space of the profile, whichever one is active, and no Private one")
     }
 
-    func testNormalWindowIsOfferedNoneOfSeveralPrivateWindowsSpaces() {
+    @MainActor func testNormalWindowIsOfferedNoneOfSeveralPrivateWindowsSpaces() {
         let offered = PaletteTabScope.offeredSpaceIDs(
             spaces: [privateA, normalA, privateB],
             windowIsPrivate: false, activeSpaceID: normalA.id)
@@ -47,7 +47,7 @@ final class PaletteTabScopeTests: XCTestCase {
     }
 
     /// TASK-209: Switch to Tab must not jump into another profile.
-    func testNormalWindowIsOfferedOnlyItsOwnProfilesSpaces() {
+    @MainActor func testNormalWindowIsOfferedOnlyItsOwnProfilesSpaces() {
         let spaces = [normalA, homeA, normalB, homeB, privateA]
 
         XCTAssertEqual(PaletteTabScope.offeredSpaceIDs(spaces: spaces, windowIsPrivate: false,
@@ -60,7 +60,7 @@ final class PaletteTabScopeTests: XCTestCase {
 
     // MARK: - A Private window
 
-    func testPrivateWindowIsOfferedOnlyItsOwnSpace() {
+    @MainActor func testPrivateWindowIsOfferedOnlyItsOwnSpace() {
         let offered = PaletteTabScope.offeredSpaceIDs(
             spaces: [normalA, normalB, privateA],
             windowIsPrivate: true, activeSpaceID: privateA.id)
@@ -68,7 +68,7 @@ final class PaletteTabScopeTests: XCTestCase {
         XCTAssertEqual(offered, [privateA.id], "no normal space")
     }
 
-    func testPrivateWindowIsNotOfferedAnotherPrivateWindowsSpace() {
+    @MainActor func testPrivateWindowIsNotOfferedAnotherPrivateWindowsSpace() {
         let offered = PaletteTabScope.offeredSpaceIDs(
             spaces: [normalA, privateA, privateB],
             windowIsPrivate: true, activeSpaceID: privateB.id)
@@ -76,7 +76,7 @@ final class PaletteTabScopeTests: XCTestCase {
         XCTAssertEqual(offered, [privateB.id], "the same Private profile, but another window's session")
     }
 
-    func testPrivateWindowWithoutAnActiveSpaceIsOfferedNothing() {
+    @MainActor func testPrivateWindowWithoutAnActiveSpaceIsOfferedNothing() {
         let offered = PaletteTabScope.offeredSpaceIDs(
             spaces: [normalA, privateA],
             windowIsPrivate: true, activeSpaceID: nil)
@@ -89,7 +89,7 @@ final class PaletteTabScopeTests: XCTestCase {
     /// The window's Private flag reaches the palette through its profile, which
     /// is optional. A palette whose active space is incognito is a Private
     /// window's palette whatever the flag says.
-    func testAWindowShowingAnIncognitoSpaceIsTreatedAsPrivateEvenWhenNotFlagged() {
+    @MainActor func testAWindowShowingAnIncognitoSpaceIsTreatedAsPrivateEvenWhenNotFlagged() {
         let offered = PaletteTabScope.offeredSpaceIDs(
             spaces: [normalA, normalB, privateA, privateB],
             windowIsPrivate: false, activeSpaceID: privateA.id)
@@ -97,7 +97,7 @@ final class PaletteTabScopeTests: XCTestCase {
         XCTAssertEqual(offered, [privateA.id])
     }
 
-    func testAnActiveSpaceTheStoreNoLongerHasOffersNothingToAPrivateWindow() {
+    @MainActor func testAnActiveSpaceTheStoreNoLongerHasOffersNothingToAPrivateWindow() {
         let offered = PaletteTabScope.offeredSpaceIDs(
             spaces: [normalA, privateA],
             windowIsPrivate: true, activeSpaceID: UUID())
@@ -107,7 +107,7 @@ final class PaletteTabScopeTests: XCTestCase {
 
     /// TASK-209: with no active space there is no profile to scope to, and
     /// every normal space (TASK-137's answer) would include other profiles'.
-    func testNormalWindowWithoutAnActiveSpaceIsOfferedNothing() {
+    @MainActor func testNormalWindowWithoutAnActiveSpaceIsOfferedNothing() {
         XCTAssertEqual(PaletteTabScope.offeredSpaceIDs(spaces: [normalA, homeA, privateA],
                                                        windowIsPrivate: false, activeSpaceID: nil), [])
         XCTAssertEqual(PaletteTabScope.offeredSpaceIDs(spaces: [normalA, homeA, privateA],
@@ -120,15 +120,14 @@ final class PaletteTabScopeTests: XCTestCase {
 /// page's scope (`HistoryPageBridge.scope(forProfile:)`): every space of the
 /// profile and its Quick Detour visits. Never another profile's, and nothing
 /// for a Private window or a quarantine.
-@MainActor
-final class PaletteHistoryScopeTests: XCTestCase {
+nonisolated final class PaletteHistoryScopeTests: XCTestCase {
 
-    private func makeStore() throws -> TabStore {
+    @MainActor private func makeStore() throws -> TabStore {
         TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()),
                  historyDB: try HistoryDatabase(dbQueue: try DatabaseQueue()))
     }
 
-    func testThePalettesHistoryIsItsProfilesSpacesAndQuickDetourScope() throws {
+    @MainActor func testThePalettesHistoryIsItsProfilesSpacesAndQuickDetourScope() throws {
         let store = try makeStore()
         let work = store.addProfile(name: "Work")
         let home = store.addProfile(name: "Home")
@@ -148,7 +147,7 @@ final class PaletteHistoryScopeTests: XCTestCase {
                                         QuickDetour.historySpaceIDString(forProfileID: home.id)])
     }
 
-    func testAPrivateWindowsPaletteHasNoHistory() throws {
+    @MainActor func testAPrivateWindowsPaletteHasNoHistory() throws {
         let store = try makeStore()
         let privateSpace = store.addIncognitoSpace()
         let privateProfile = try XCTUnwrap(privateSpace.profile)
@@ -159,7 +158,7 @@ final class PaletteHistoryScopeTests: XCTestCase {
                        + "and reads no profile's history")
     }
 
-    func testNoProfileOrADeletedOneHasNoHistory() throws {
+    @MainActor func testNoProfileOrADeletedOneHasNoHistory() throws {
         let store = try makeStore()
         let gone = store.addProfile(name: "Gone")
         _ = store.addSpace(name: "Gone", emoji: "G", colorHex: "007AFF", profileID: gone.id)
@@ -173,22 +172,21 @@ final class PaletteHistoryScopeTests: XCTestCase {
 /// The same rule through the view: what `CommandPaletteView.gatherTabInfos`
 /// hands the suggestion pipeline from a real store that has a normal space and
 /// a Private window's space open at once.
-@MainActor
-final class PaletteTabScopeWiringTests: XCTestCase {
+nonisolated final class PaletteTabScopeWiringTests: XCTestCase {
 
     private var createdTabs: [BrowserTab] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Nothing listens on port 1, so a load navigates nowhere real.
     private let normalURL = URL(string: "http://127.0.0.1:1/normal")!
     private let privateURL = URL(string: "http://127.0.0.1:1/private")!
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let store: TabStore
         let normalSpace: Space
         let privateSpace: Space
@@ -196,7 +194,7 @@ final class PaletteTabScopeWiringTests: XCTestCase {
         let privateTab: BrowserTab
     }
 
-    private func makeFixture() throws -> Fixture {
+    @MainActor private func makeFixture() throws -> Fixture {
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()),
                              historyDB: try HistoryDatabase(dbQueue: try DatabaseQueue()))
         let profile = store.addProfile(name: "Palette Scope")
@@ -212,7 +210,7 @@ final class PaletteTabScopeWiringTests: XCTestCase {
                        normalTab: normalTab, privateTab: privateTab)
     }
 
-    private func makePalette(_ store: TabStore, showing space: Space) -> CommandPaletteView {
+    @MainActor private func makePalette(_ store: TabStore, showing space: Space) -> CommandPaletteView {
         // Configured the way `BrowserWindowController.showCommandPalette` does.
         let palette = CommandPaletteView()
         palette.tabStore = store
@@ -221,7 +219,7 @@ final class PaletteTabScopeWiringTests: XCTestCase {
         return palette
     }
 
-    func testNormalWindowPaletteIsNotHandedAPrivateWindowsTabs() throws {
+    @MainActor func testNormalWindowPaletteIsNotHandedAPrivateWindowsTabs() throws {
         let fixture = try makeFixture()
         let palette = makePalette(fixture.store, showing: fixture.normalSpace)
 
@@ -232,7 +230,7 @@ final class PaletteTabScopeWiringTests: XCTestCase {
         XCTAssertFalse(tabs.contains { $0.url == privateURL.absoluteString })
     }
 
-    func testPrivateWindowPaletteIsHandedOnlyItsOwnSpacesTabs() throws {
+    @MainActor func testPrivateWindowPaletteIsHandedOnlyItsOwnSpacesTabs() throws {
         let fixture = try makeFixture()
         let otherPrivateSpace = fixture.store.addIncognitoSpace()
         let otherPrivateTab = fixture.store.addTab(in: otherPrivateSpace, url: privateURL)
@@ -246,7 +244,7 @@ final class PaletteTabScopeWiringTests: XCTestCase {
 
     /// TASK-209: another profile's tab at the same URL is not offered, so
     /// Switch to Tab cannot jump into that profile.
-    func testNormalWindowPaletteIsNotHandedAnotherProfilesTabs() throws {
+    @MainActor func testNormalWindowPaletteIsNotHandedAnotherProfilesTabs() throws {
         let fixture = try makeFixture()
         let other = fixture.store.addProfile(name: "Other Profile")
         let otherSpace = fixture.store.addSpace(name: "Other", emoji: "🅾️", colorHex: "007AFF",
@@ -274,25 +272,24 @@ final class PaletteTabScopeWiringTests: XCTestCase {
 ///
 /// The shared store and real windows, with profiles and spaces of the test's
 /// own (`QuickDetourOpenInWindowTests`' fixture).
-@MainActor
-final class PaletteEntryPointScopeTests: XCTestCase {
+nonisolated final class PaletteEntryPointScopeTests: XCTestCase {
 
-    private var store: TabStore { .shared }
+    @MainActor private var store: TabStore { .shared }
     private var appDelegate: AppDelegate!
     private var windowsBefore: Set<ObjectIdentifier> = []
     private var createdProfiles: [Profile] = []
     private var createdSpaceIDs: [UUID] = []
     private var previousLastActiveSpaceID: UUID?
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         appDelegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         windowsBefore = Set(browserWindows().map(ObjectIdentifier.init))
         previousLastActiveSpaceID = store.lastActiveSpaceID
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for wc in browserWindows() where !windowsBefore.contains(ObjectIdentifier(wc)) {
             wc.dismissCommandPalette()
             wc.sidebarSplitView.autosaveName = nil
@@ -316,24 +313,24 @@ final class PaletteEntryPointScopeTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func browserWindows() -> [BrowserWindowController] {
+    @MainActor private func browserWindows() -> [BrowserWindowController] {
         NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
             .filter { $0.window?.isVisible == true }
     }
 
-    private func makeProfile(_ name: String) -> Profile {
+    @MainActor private func makeProfile(_ name: String) -> Profile {
         let profile = store.addProfile(name: "\(name) \(UUID().uuidString.prefix(4))")
         createdProfiles.append(profile)
         return profile
     }
 
-    private func addSpace(_ name: String, _ profile: Profile) -> Space {
+    @MainActor private func addSpace(_ name: String, _ profile: Profile) -> Space {
         let space = store.addSpace(name: name, emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
         createdSpaceIDs.append(space.id)
         return space
     }
 
-    private func makeWindow(showing space: Space) -> BrowserWindowController {
+    @MainActor private func makeWindow(showing space: Space) -> BrowserWindowController {
         let wc = BrowserWindowController(incognito: false)
         wc.sidebarSplitView.autosaveName = nil
         wc.setActiveSpace(id: space.id, selectTab: false)
@@ -342,7 +339,7 @@ final class PaletteEntryPointScopeTests: XCTestCase {
         return wc
     }
 
-    func testEveryWindowEntryPointScopesThePaletteToTheWindowsProfile() throws {
+    @MainActor func testEveryWindowEntryPointScopesThePaletteToTheWindowsProfile() throws {
         let work = makeProfile("Palette Work")
         let home = makeProfile("Palette Home")
         let inbox = addSpace("Inbox", work)
@@ -379,7 +376,7 @@ final class PaletteEntryPointScopeTests: XCTestCase {
     /// A palette left open across a space switch (Next Space into a space with
     /// no tab to select, which dismisses nothing) is re-scoped to the new
     /// space's profile rather than keeping the old one's history and tabs.
-    func testAPaletteOpenAcrossASwitchToAnotherProfilesEmptySpaceFollowsIt() throws {
+    @MainActor func testAPaletteOpenAcrossASwitchToAnotherProfilesEmptySpaceFollowsIt() throws {
         let work = makeProfile("Palette Work")
         let home = makeProfile("Palette Home")
         let inbox = addSpace("Inbox", work)
@@ -398,7 +395,7 @@ final class PaletteEntryPointScopeTests: XCTestCase {
         XCTAssertTrue(palette.profile === home)
     }
 
-    func testAPrivateWindowsPaletteHasNoHistory() throws {
+    @MainActor func testAPrivateWindowsPaletteHasNoHistory() throws {
         let wc = BrowserWindowController(incognito: true)
         wc.sidebarSplitView.autosaveName = nil
         wc.showWindow(nil)

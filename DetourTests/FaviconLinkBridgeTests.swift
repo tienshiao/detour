@@ -9,19 +9,18 @@ import WebKit
 /// generic globe. Each page here holds one image request open forever, so the
 /// load never ends and only `FaviconLinkBridge` can deliver the icon; downloads
 /// go through `FaviconLoader`'s fetch seam.
-@MainActor
-final class FaviconLinkBridgeTests: XCTestCase {
+nonisolated final class FaviconLinkBridgeTests: XCTestCase {
 
     private var pendingFetches: [URL: [(NSImage?) -> Void]] = [:]
-    private var defaultFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    private var defaultFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
     private var tabs: [BrowserTab] = []
-    private let scheme = StallingSchemeHandler()
+    @MainActor private lazy var scheme = StallingSchemeHandler()
 
     private let pageURL = URL(string: "stall://fav.test/page")!
     private let iconURL = URL(string: "stall://fav.test/icon.png")!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         defaultFetch = FaviconLoader.shared.fetch
         FaviconLoader.shared.resetForTesting()
         FaviconLoader.shared.fetch = { [weak self] url, completion in
@@ -29,20 +28,20 @@ final class FaviconLinkBridgeTests: XCTestCase {
         }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for tab in tabs { tab.teardown() }
         tabs.removeAll()
         FaviconLoader.shared.fetch = defaultFetch
         FaviconLoader.shared.resetForTesting()
         pendingFetches.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
     /// A tab built the way `TabStore.addTab` builds one (so `makeWebView`
     /// installs the bridge), on a configuration that also serves `stall://`.
-    private func makeTab(serving html: String) -> BrowserTab {
+    @MainActor private func makeTab(serving html: String) -> BrowserTab {
         scheme.pages[pageURL.path] = html
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(scheme, forURLScheme: "stall")
@@ -52,17 +51,17 @@ final class FaviconLinkBridgeTests: XCTestCase {
     }
 
     /// A page whose load never finishes: its image request is never answered.
-    private func stalledPage(head: String = "", body: String = "") -> String {
+    @MainActor private func stalledPage(head: String = "", body: String = "") -> String {
         "<html><head><title>Stalled</title>\(head)</head><body>\(body)<img src=\"/hang.png\"></body></html>"
     }
 
-    private func waitForFetch(of url: URL, file: StaticString = #filePath, line: UInt = #line) async throws {
+    @MainActor private func waitForFetch(of url: URL, file: StaticString = #filePath, line: UInt = #line) async throws {
         try await waitUntil("a favicon fetch of \(url)", file: file, line: line) {
             self.pendingFetches[url] != nil
         }
     }
 
-    private func completeFetch(_ url: URL) {
+    @MainActor private func completeFetch(_ url: URL) {
         let completions = pendingFetches.removeValue(forKey: url) ?? []
         for completion in completions { completion(NSImage(size: NSSize(width: 16, height: 16))) }
     }
@@ -71,7 +70,7 @@ final class FaviconLinkBridgeTests: XCTestCase {
 
     /// The icon link in the served HTML is downloaded and shown while the page
     /// is still loading.
-    func testAnIconLinkReachesTheTabWhileThePageIsStillLoading() async throws {
+    @MainActor func testAnIconLinkReachesTheTabWhileThePageIsStillLoading() async throws {
         let tab = makeTab(serving: stalledPage(head: "<link rel=\"icon\" href=\"/icon.png\">"))
         tab.load(pageURL)
 
@@ -84,7 +83,7 @@ final class FaviconLinkBridgeTests: XCTestCase {
 
     /// The optimistic `/favicon.ico` guess, finishing after the page's declared
     /// icon, does not replace it — the early report makes the two race.
-    func testALateOptimisticGuessDoesNotReplaceTheDeclaredIcon() async throws {
+    @MainActor func testALateOptimisticGuessDoesNotReplaceTheDeclaredIcon() async throws {
         let tab = makeTab(serving: stalledPage(head: "<link rel=\"icon\" href=\"/icon.png\">"))
         tab.load(pageURL)
         let guessURL = URL(string: "stall://fav.test/favicon.ico")!
@@ -100,7 +99,7 @@ final class FaviconLinkBridgeTests: XCTestCase {
 
     /// A link a script adds after parsing, the way a client-rendered head does,
     /// is picked up by the observer.
-    func testALinkAddedByScriptIsReported() async throws {
+    @MainActor func testALinkAddedByScriptIsReported() async throws {
         let script = """
             <script>setTimeout(() => {
               const link = document.createElement('link');
@@ -118,7 +117,7 @@ final class FaviconLinkBridgeTests: XCTestCase {
     }
 
     /// Changing the link's `href` reports the new icon.
-    func testAChangedHrefIsReported() async throws {
+    @MainActor func testAChangedHrefIsReported() async throws {
         let script = """
             <script>setTimeout(() => {
               document.querySelector("link[rel~='icon']").href = '/icon-2.png';
@@ -133,7 +132,7 @@ final class FaviconLinkBridgeTests: XCTestCase {
 
     /// A report whose origin is not the page the tab is showing now — one still
     /// in flight from the document being left — downloads nothing.
-    func testAReportFromAnotherOriginIsIgnored() async throws {
+    @MainActor func testAReportFromAnotherOriginIsIgnored() async throws {
         let tab = makeTab(serving: stalledPage())
         tab.load(pageURL)
         try await waitUntil("the page to commit") { tab.webView?.url == self.pageURL }
@@ -151,7 +150,7 @@ final class FaviconLinkBridgeTests: XCTestCase {
     /// Loading an IPv6-literal URL crashed: the optimistic guess was rebuilt
     /// from `URL.host`, which has no brackets, and force-unwrapped. The guess
     /// goes to the page's own origin, brackets and port included.
-    func testAnIPv6PageGuessesItsFaviconAtItsOwnOrigin() async throws {
+    @MainActor func testAnIPv6PageGuessesItsFaviconAtItsOwnOrigin() async throws {
         let tab = makeTab(serving: stalledPage())
         tab.load(URL(string: "stall://[::1]:3000/page")!)
 
@@ -161,7 +160,7 @@ final class FaviconLinkBridgeTests: XCTestCase {
     /// The bridge's sender check compares `WKSecurityOrigin.host`, which keeps
     /// the brackets, with the page URL's host, which Foundation strips: an
     /// IPv6 page's declared icon used to be dropped.
-    func testAnIPv6PagesIconLinkReachesTheTab() async throws {
+    @MainActor func testAnIPv6PagesIconLinkReachesTheTab() async throws {
         let tab = makeTab(serving: stalledPage(head: "<link rel=\"icon\" href=\"/icon.png\">"))
         tab.load(URL(string: "stall://[::1]:3000/page")!)
 
@@ -171,7 +170,7 @@ final class FaviconLinkBridgeTests: XCTestCase {
 
     /// Another port is another server: moving from one local dev server to
     /// another on the same host guesses the new one's icon.
-    func testAnotherPortOnTheSameHostGuessesThatServersIcon() async throws {
+    @MainActor func testAnotherPortOnTheSameHostGuessesThatServersIcon() async throws {
         let tab = makeTab(serving: stalledPage())
         tab.load(URL(string: "stall://dev.test:3000/page")!)
         try await waitForFetch(of: URL(string: "stall://dev.test:3000/favicon.ico")!)

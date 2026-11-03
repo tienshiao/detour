@@ -1,9 +1,9 @@
 import XCTest
 @testable import Detour
 
-final class PeekAnchorTests: XCTestCase {
+nonisolated final class PeekAnchorTests: XCTestCase {
 
-    private func makeSleepingTab(url: String = "https://example.com") -> BrowserTab {
+    @MainActor private func makeSleepingTab(url: String = "https://example.com") -> BrowserTab {
         BrowserTab(
             id: UUID(),
             title: "Tab",
@@ -14,13 +14,13 @@ final class PeekAnchorTests: XCTestCase {
         )
     }
 
-    private func url(_ string: String) -> URL {
+    @MainActor private func url(_ string: String) -> URL {
         URL(string: string)!
     }
 
     // MARK: - anchorURL
 
-    func testAnchorURLIsPinnedURLForLivePinnedEntry() {
+    @MainActor func testAnchorURLIsPinnedURLForLivePinnedEntry() {
         let tab = makeSleepingTab()
         let entry = PinnedEntry(pinnedURL: url("https://pinned.example.com/home"),
                                 pinnedTitle: "Pinned", tab: tab)
@@ -29,7 +29,7 @@ final class PeekAnchorTests: XCTestCase {
                        url("https://pinned.example.com/home"))
     }
 
-    func testAnchorURLIsFavoriteURLForLiveFavorite() {
+    @MainActor func testAnchorURLIsFavoriteURLForLiveFavorite() {
         let tab = makeSleepingTab()
         let favorite = Favorite(url: url("https://fav.example.com/home"), title: "Fav", tab: tab)
 
@@ -37,7 +37,7 @@ final class PeekAnchorTests: XCTestCase {
                        url("https://fav.example.com/home"))
     }
 
-    func testAnchorURLIsNilForOrdinaryTab() {
+    @MainActor func testAnchorURLIsNilForOrdinaryTab() {
         let pinnedTab = makeSleepingTab()
         let favoriteTab = makeSleepingTab()
         let plainTab = makeSleepingTab()
@@ -49,20 +49,20 @@ final class PeekAnchorTests: XCTestCase {
                                           pinnedEntries: [entry], favorites: [favorite]))
     }
 
-    func testAnchorURLIsNilForDormantFavorite() {
+    @MainActor func testAnchorURLIsNilForDormantFavorite() {
         let favorite = Favorite(url: url("https://fav.example.com/"), title: "Fav", tab: nil)
         // A dormant tile has no backing tab, so no tab id can resolve to it.
         XCTAssertNil(PeekAnchor.anchorURL(forTabID: favorite.id,
                                           pinnedEntries: [], favorites: [favorite]))
     }
 
-    func testAnchorURLIsNilForDormantPinnedEntry() {
+    @MainActor func testAnchorURLIsNilForDormantPinnedEntry() {
         let entry = PinnedEntry(pinnedURL: url("https://pinned.example.com/"),
                                 pinnedTitle: "Pinned", tab: nil)
         XCTAssertNil(PeekAnchor.anchorURL(forTabID: entry.id, pinnedEntries: [entry], favorites: []))
     }
 
-    func testPinnedEntriesAreCheckedBeforeFavorites() {
+    @MainActor func testPinnedEntriesAreCheckedBeforeFavorites() {
         let tab = makeSleepingTab()
         let entry = PinnedEntry(pinnedURL: url("https://pinned.example.com/"),
                                 pinnedTitle: "Pinned", tab: tab)
@@ -75,7 +75,7 @@ final class PeekAnchorTests: XCTestCase {
 
     // MARK: - interceptTab (TASK-48)
 
-    func testInterceptsALinkFiredByTheFocusedPane() {
+    @MainActor func testInterceptsALinkFiredByTheFocusedPane() {
         let focused = makeSleepingTab()
         let other = makeSleepingTab()
 
@@ -85,7 +85,7 @@ final class PeekAnchorTests: XCTestCase {
 
     /// The bug: a link activated in the pane that does not hold first responder
     /// fires from a web view that is not `selectedTab.webView`.
-    func testInterceptsALinkFiredByTheUnfocusedPaneOfTheSelectedSplit() {
+    @MainActor func testInterceptsALinkFiredByTheUnfocusedPaneOfTheSelectedSplit() {
         let focused = makeSleepingTab()
         let unfocused = makeSleepingTab()
 
@@ -94,7 +94,7 @@ final class PeekAnchorTests: XCTestCase {
                       "the clicked pane is anchored even while the other pane is selected")
     }
 
-    func testIgnoresALinkFiredByATabOutsideTheSelectedSplit() {
+    @MainActor func testIgnoresALinkFiredByATabOutsideTheSelectedSplit() {
         let selected = makeSleepingTab()
         let background = makeSleepingTab()
 
@@ -103,7 +103,7 @@ final class PeekAnchorTests: XCTestCase {
                      "a background tab's navigation must not take over the window's overlay")
     }
 
-    func testIgnoresALinkFiredInsideAPeek() {
+    @MainActor func testIgnoresALinkFiredInsideAPeek() {
         let host = makeSleepingTab()
         let peek = makeSleepingTab()
         host.peekTab = peek
@@ -114,7 +114,7 @@ final class PeekAnchorTests: XCTestCase {
                                              splitMembers: [host]))
     }
 
-    func testIgnoresAnUnresolvedWebView() {
+    @MainActor func testIgnoresAnUnresolvedWebView() {
         let selected = makeSleepingTab()
 
         XCTAssertNil(PeekAnchor.interceptTab(clicked: nil, selectedTab: selected,
@@ -123,7 +123,7 @@ final class PeekAnchorTests: XCTestCase {
 
     /// `splitMembers(of:)` scans the store on every link click; the common case
     /// (the clicked tab is the selected tab) must not pay for it.
-    func testDoesNotResolveSplitMembersForTheSelectedTab() {
+    @MainActor func testDoesNotResolveSplitMembersForTheSelectedTab() {
         let selected = makeSleepingTab()
 
         XCTAssertTrue(PeekAnchor.interceptTab(
@@ -133,25 +133,25 @@ final class PeekAnchorTests: XCTestCase {
 
     // MARK: - shouldPeekCrossHostNavigation
 
-    func testPeeksWhenHostsDiffer() {
+    @MainActor func testPeeksWhenHostsDiffer() {
         XCTAssertTrue(PeekAnchor.shouldPeekCrossHostNavigation(
             anchorURL: url("https://fav.example.com/home"),
             to: url("https://other.example.org/page")))
     }
 
-    func testDoesNotPeekWithinSameHost() {
+    @MainActor func testDoesNotPeekWithinSameHost() {
         XCTAssertFalse(PeekAnchor.shouldPeekCrossHostNavigation(
             anchorURL: url("https://fav.example.com/home"),
             to: url("https://fav.example.com/deep/page")))
     }
 
-    func testDoesNotPeekForHostlessTarget() {
+    @MainActor func testDoesNotPeekForHostlessTarget() {
         XCTAssertFalse(PeekAnchor.shouldPeekCrossHostNavigation(
             anchorURL: url("https://fav.example.com/home"),
             to: url("about:blank")))
     }
 
-    func testDoesNotPeekForHostlessAnchor() {
+    @MainActor func testDoesNotPeekForHostlessAnchor() {
         XCTAssertFalse(PeekAnchor.shouldPeekCrossHostNavigation(
             anchorURL: url("about:blank"),
             to: url("https://other.example.org/page")))
@@ -159,26 +159,26 @@ final class PeekAnchorTests: XCTestCase {
 
     // MARK: - shouldPeek (TASK-85: target=_blank links)
 
-    func testNewWindowLinkPeeksWithinSameHost() {
+    @MainActor func testNewWindowLinkPeeksWithinSameHost() {
         XCTAssertTrue(PeekAnchor.shouldPeek(
             anchorURL: url("https://fav.example.com/home"),
             to: url("https://fav.example.com/deep/page"), opensNewWindow: true))
     }
 
-    func testNewWindowLinkPeeksAcrossHosts() {
+    @MainActor func testNewWindowLinkPeeksAcrossHosts() {
         XCTAssertTrue(PeekAnchor.shouldPeek(
             anchorURL: url("https://fav.example.com/home"),
             to: url("https://other.example.org/page"), opensNewWindow: true))
     }
 
-    func testNewWindowLinkToHostlessTargetDoesNotPeek() {
+    @MainActor func testNewWindowLinkToHostlessTargetDoesNotPeek() {
         // blob:/about:blank popups keep their new-tab behaviour.
         XCTAssertFalse(PeekAnchor.shouldPeek(
             anchorURL: url("https://fav.example.com/home"),
             to: url("about:blank"), opensNewWindow: true))
     }
 
-    func testInPlaceLinkFollowsTheCrossHostRule() {
+    @MainActor func testInPlaceLinkFollowsTheCrossHostRule() {
         let anchor = url("https://fav.example.com/home")
         XCTAssertFalse(PeekAnchor.shouldPeek(
             anchorURL: anchor, to: url("https://fav.example.com/deep/page"), opensNewWindow: false))
@@ -188,16 +188,16 @@ final class PeekAnchorTests: XCTestCase {
 
     // MARK: - shouldPeekScriptedWindow (TASK-85: window.open)
 
-    func testTabStyleScriptedWindowPeeks() {
+    @MainActor func testTabStyleScriptedWindowPeeks() {
         XCTAssertTrue(PeekAnchor.shouldPeekScriptedWindow(to: url("https://zoom.us/j/123"), wantsPopup: false))
     }
 
-    func testPopupStyleScriptedWindowDoesNotPeek() {
+    @MainActor func testPopupStyleScriptedWindowDoesNotPeek() {
         XCTAssertFalse(PeekAnchor.shouldPeekScriptedWindow(to: url("https://accounts.example.com/oauth"),
                                                            wantsPopup: true))
     }
 
-    func testHostlessScriptedWindowDoesNotPeek() {
+    @MainActor func testHostlessScriptedWindowDoesNotPeek() {
         XCTAssertFalse(PeekAnchor.shouldPeekScriptedWindow(to: url("about:blank"), wantsPopup: false))
     }
 }

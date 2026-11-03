@@ -20,9 +20,9 @@ import XCTest
 ///
 /// Each selector is also checked against the protocol, so a typo here fails
 /// instead of passing vacuously.
-final class WebKitDelegateReachabilityTests: XCTestCase {
+nonisolated final class WebKitDelegateReachabilityTests: XCTestCase {
 
-    private struct Expectation {
+    @MainActor private struct Expectation {
         let cls: NSObject.Type
         let protocolName: String
         let selectors: [String]
@@ -137,7 +137,7 @@ final class WebKitDelegateReachabilityTests: XCTestCase {
                     ]),
     ]
 
-    func testEveryImplementedOptionalDelegateMethodIsReachableFromObjectiveC() {
+    @MainActor func testEveryImplementedOptionalDelegateMethodIsReachableFromObjectiveC() {
         for expectation in Self.expectations {
             let className = NSStringFromClass(expectation.cls)
             guard let proto = objc_getProtocol(expectation.protocolName) else {

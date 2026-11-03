@@ -4,15 +4,15 @@ import GRDB
 
 /// The one `BrowserTab` → `TabRecord` mapping every `saveNow` site goes through
 /// (TASK-49), and the decision it records about favourite backing tabs.
-final class TabRecordFactoryTests: XCTestCase {
+nonisolated final class TabRecordFactoryTests: XCTestCase {
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         let dbQueue = try DatabaseQueue()
         return try AppDatabase(dbQueue: dbQueue)
     }
 
     /// Whether an `Any` holding an `Optional` holds `.none`.
-    private func isNil(_ value: Any) -> Bool {
+    @MainActor private func isNil(_ value: Any) -> Bool {
         let mirror = Mirror(reflecting: value)
         return mirror.displayStyle == .optional && mirror.children.isEmpty
     }
@@ -26,8 +26,7 @@ final class TabRecordFactoryTests: XCTestCase {
 
     /// A tab with every persisted property set, so a column the factory forgets
     /// to map shows up as a nil in the record.
-    @MainActor
-    private func makeFullyPopulatedTab(spaceID: UUID) -> BrowserTab {
+    @MainActor private func makeFullyPopulatedTab(spaceID: UUID) -> BrowserTab {
         let tab = BrowserTab(
             id: UUID(), title: "Everything", url: url, faviconURL: faviconURL,
             cachedInteractionState: Data([0xDE, 0xAD]), spaceID: spaceID)
@@ -41,8 +40,7 @@ final class TabRecordFactoryTests: XCTestCase {
 
     // MARK: -
 
-    @MainActor
-    func testFactoryPopulatesEveryColumnFromTheTab() throws {
+    @MainActor func testFactoryPopulatesEveryColumnFromTheTab() throws {
         let spaceID = UUID()
         let tab = makeFullyPopulatedTab(spaceID: spaceID)
         defer { tab.teardown() }
@@ -81,8 +79,7 @@ final class TabRecordFactoryTests: XCTestCase {
     /// The TASK-49 decision: a favourite's backing row is written like any
     /// other, `lastDeselectedAt` and `parentID` included, instead of zeroing
     /// them at the one site that used to hand-copy the literal.
-    @MainActor
-    func testFavoriteBackingRecordPersistsLastDeselectedAtAndParentID() throws {
+    @MainActor func testFavoriteBackingRecordPersistsLastDeselectedAtAndParentID() throws {
         let db = try makeDatabase()
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Default")

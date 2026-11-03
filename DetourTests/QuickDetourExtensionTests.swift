@@ -11,8 +11,7 @@ import WebKit
 /// with `ExtensionManager` as its delegate, `loadExtensionContext`), asked
 /// from an extension page and from the service worker. The page loaded in the
 /// Quick Detour comes from a loopback server.
-@MainActor
-final class QuickDetourExtensionTests: XCTestCase {
+nonisolated final class QuickDetourExtensionTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
@@ -26,9 +25,9 @@ final class QuickDetourExtensionTests: XCTestCase {
     /// Released profiles take their process pool down with them, which WebKit
     /// traps on inside an IPC dispatch (`ExtensionPrivateStoreTests`): kept for
     /// the rest of the test process.
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for controller in windows { controller.close() }
         windows.removeAll()
         for wc in browserWindows {
@@ -139,7 +138,7 @@ final class QuickDetourExtensionTests: XCTestCase {
     });
     """
 
-    private func makeExtension(permissions: [String], hostPermissions: [String],
+    @MainActor private func makeExtension(permissions: [String], hostPermissions: [String],
                                contentScripts: Bool) async throws -> WebExtension {
         let id = "quick-detour-\(UUID().uuidString.prefix(8))"
         func json(_ value: Any) throws -> String {
@@ -172,7 +171,7 @@ final class QuickDetourExtensionTests: XCTestCase {
         return ext
     }
 
-    private func makeProfile(_ name: String) -> Profile {
+    @MainActor private func makeProfile(_ name: String) -> Profile {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         return profile
@@ -181,7 +180,7 @@ final class QuickDetourExtensionTests: XCTestCase {
     /// The extension loaded into `profile` with what its manifest asks for
     /// granted (no prompt in a test), an extension page of it open, and its
     /// worker awake.
-    private func loadPage(_ ext: WebExtension, in profile: Profile) async throws
+    @MainActor private func loadPage(_ ext: WebExtension, in profile: Profile) async throws
         -> (context: WKWebExtensionContext, page: WKWebView) {
         let context = try loadTestContext(ext, in: profile)
         let wkExtension = try XCTUnwrap(ext.wkExtension)
@@ -203,7 +202,7 @@ final class QuickDetourExtensionTests: XCTestCase {
         return (context, page)
     }
 
-    private func serve() async throws -> URL {
+    @MainActor private func serve() async throws -> URL {
         let server = try LoopbackHTTPServer(routes: [
             "/": "<html><head><title>Looked Up</title></head><body>a quick lookup</body></html>",
         ])
@@ -213,7 +212,7 @@ final class QuickDetourExtensionTests: XCTestCase {
     }
 
     /// A Quick Detour on `profile` with `url` loaded.
-    private func openQuickDetour(on profile: Profile, loading url: URL) async throws -> QuickDetourWindowController {
+    @MainActor private func openQuickDetour(on profile: Profile, loading url: URL) async throws -> QuickDetourWindowController {
         let controller = QuickDetourWindowController(profile: profile, sourceSpace: nil)
         windows.append(controller)
         controller.showWindow(nil)
@@ -225,21 +224,21 @@ final class QuickDetourExtensionTests: XCTestCase {
         return controller
     }
 
-    private func pagePromise(_ call: String, in page: WKWebView) async throws -> [String: Any] {
+    @MainActor private func pagePromise(_ call: String, in page: WKWebView) async throws -> [String: Any] {
         try await pageEval(promiseOutcomeJS(call), in: page)
     }
 
-    private func worker(_ type: String, via page: WKWebView) async throws -> [String: Any] {
+    @MainActor private func worker(_ type: String, via page: WKWebView) async throws -> [String: Any] {
         let answer = try await askWorker(from: page, message: ["type": type])
         XCTAssertNil(answer["lastError"] as? String, "the page could not reach the worker: \(answer)")
         return try XCTUnwrap(answer["reply"] as? [String: Any], "the worker must answer \(type): \(answer)")
     }
 
-    private func popupWindows(in value: Any?) -> [[String: Any]] {
+    @MainActor private func popupWindows(in value: Any?) -> [[String: Any]] {
         ((value as? [[String: Any]]) ?? []).filter { $0["type"] as? String == "popup" }
     }
 
-    private func tabs(of window: [String: Any]) -> [[String: Any]] {
+    @MainActor private func tabs(of window: [String: Any]) -> [[String: Any]] {
         window["tabs"] as? [[String: Any]] ?? []
     }
 
@@ -248,7 +247,7 @@ final class QuickDetourExtensionTests: XCTestCase {
     /// The page is the one tab of a `popup` window, from an extension page and
     /// from the worker; the window's id is the tab's `windowId`; the tab is
     /// active; `windows.get` and `tabs.query({windowType: 'popup'})` agree.
-    func testThePageIsATabOfAPopupWindowFromBothTransports() async throws {
+    @MainActor func testThePageIsATabOfAPopupWindowFromBothTransports() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let profile = makeProfile("Quick Detour Ext A")
         let (_, page) = try await loadPage(ext, in: profile)
@@ -293,7 +292,7 @@ final class QuickDetourExtensionTests: XCTestCase {
 
     /// Another profile's contexts never see the window or its page, even with
     /// the same extension and every permission.
-    func testAnotherProfilesExtensionDoesNotSeeIt() async throws {
+    @MainActor func testAnotherProfilesExtensionDoesNotSeeIt() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let owner = makeProfile("Quick Detour Ext Owner")
         let other = makeProfile("Quick Detour Ext Other")
@@ -315,7 +314,7 @@ final class QuickDetourExtensionTests: XCTestCase {
     /// A context that loads while the window is open is told about it the way
     /// a loading context is told about every window (`openWindowsFor`,
     /// `notifyExistingTabs`) — its own profile's only.
-    func testAContextLoadedAfterTheWindowOpensFindsItInItsProfileOnly() async throws {
+    @MainActor func testAContextLoadedAfterTheWindowOpensFindsItInItsProfileOnly() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let owner = makeProfile("Quick Detour Ext Late Owner")
         let other = makeProfile("Quick Detour Ext Late Other")
@@ -339,7 +338,7 @@ final class QuickDetourExtensionTests: XCTestCase {
 
     /// Without `tabs` or a host permission the extension still sees a tab in a
     /// popup window, but not its URL: the window adds no access of its own.
-    func testWithoutTheTabsPermissionTheURLIsNotReported() async throws {
+    @MainActor func testWithoutTheTabsPermissionTheURLIsNotReported() async throws {
         let ext = try await makeExtension(permissions: [], hostPermissions: [], contentScripts: false)
         let profile = makeProfile("Quick Detour Ext Unprivileged")
         let (_, page) = try await loadPage(ext, in: profile)
@@ -358,7 +357,7 @@ final class QuickDetourExtensionTests: XCTestCase {
     /// A content script runs in the page and reaches the worker, which knows
     /// its tab — what 1Password's fill needs (a page never reported as a tab
     /// gets "Tab not found", TASK-50).
-    func testAContentScriptReachesTheWorkerWithItsTab() async throws {
+    @MainActor func testAContentScriptReachesTheWorkerWithItsTab() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: true)
         let profile = makeProfile("Quick Detour Ext Content")
         let (_, page) = try await loadPage(ext, in: profile)
@@ -387,7 +386,7 @@ final class QuickDetourExtensionTests: XCTestCase {
 
     /// The window's extension button acts on its page: with no popup, the
     /// worker's `action.onClicked` gets the Quick Detour's tab.
-    func testTheExtensionButtonActsOnThePage() async throws {
+    @MainActor func testTheExtensionButtonActsOnThePage() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let profile = makeProfile("Quick Detour Ext Action")
         let (_, page) = try await loadPage(ext, in: profile)
@@ -407,7 +406,7 @@ final class QuickDetourExtensionTests: XCTestCase {
 
     /// An extension chosen in the page settings (TASK-210) acts on the Quick
     /// Detour's page too, not on a browser window's tab.
-    func testAnExtensionChosenInThePageSettingsActsOnThePage() async throws {
+    @MainActor func testAnExtensionChosenInThePageSettingsActsOnThePage() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let profile = makeProfile("Quick Detour Ext Settings")
         let (_, page) = try await loadPage(ext, in: profile)
@@ -427,7 +426,7 @@ final class QuickDetourExtensionTests: XCTestCase {
 
     /// Closing the window closes the tab and the window for the contexts: a
     /// by-id lookup is refused afterwards, promise and callback alike.
-    func testClosingTheWindowClosesTheTab() async throws {
+    @MainActor func testClosingTheWindowClosesTheTab() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let profile = makeProfile("Quick Detour Ext Close")
         let (_, page) = try await loadPage(ext, in: profile)
@@ -456,7 +455,7 @@ final class QuickDetourExtensionTests: XCTestCase {
 
     /// A Private Quick Detour is a Private popup window, seen by an extension
     /// allowed in Private.
-    func testAPrivateQuickDetourIsAnIncognitoPopup() async throws {
+    @MainActor func testAPrivateQuickDetourIsAnIncognitoPopup() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let privateProfile = Profile(name: "Quick Detour Ext Private", isIncognito: true)
         createdProfiles.append(privateProfile)
@@ -475,7 +474,7 @@ final class QuickDetourExtensionTests: XCTestCase {
 
     /// A quarantine window on `privateProfile` with `url` loaded: the Private
     /// profile's contexts, a store of its own.
-    private func openQuarantine(on privateProfile: Profile, loading url: URL) async throws -> QuickDetourWindowController {
+    @MainActor private func openQuarantine(on privateProfile: Profile, loading url: URL) async throws -> QuickDetourWindowController {
         let controller = QuickDetourWindowController(profile: privateProfile, sourceSpace: nil,
                                                      quarantine: QuarantineSession(originalURL: url))
         windows.append(controller)
@@ -492,7 +491,7 @@ final class QuickDetourExtensionTests: XCTestCase {
     /// of 2026-10-26): it is an incognito popup to them, and their content
     /// script runs in its page and reaches the worker with its tab — although
     /// the page's store is its own, not the Private profile's.
-    func testAQuarantineIsAnIncognitoPopupWhereAPrivateExtensionRuns() async throws {
+    @MainActor func testAQuarantineIsAnIncognitoPopupWhereAPrivateExtensionRuns() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: true)
         let privateProfile = Profile(name: "Quarantine Ext Private", isIncognito: true)
         createdProfiles.append(privateProfile)
@@ -525,7 +524,7 @@ final class QuickDetourExtensionTests: XCTestCase {
 
     /// A normal profile's extension never sees a quarantine, even with every
     /// permission.
-    func testANormalProfilesExtensionDoesNotSeeAQuarantine() async throws {
+    @MainActor func testANormalProfilesExtensionDoesNotSeeAQuarantine() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let privateProfile = Profile(name: "Quarantine Ext Private Owner", isIncognito: true)
         createdProfiles.append(privateProfile)
@@ -546,7 +545,7 @@ final class QuickDetourExtensionTests: XCTestCase {
 
     /// A normal window on a new space of `profile`, in front, registered with
     /// the app delegate as placement expects.
-    private func browserWindow(showingANewSpaceOf profile: Profile, named name: String) -> (BrowserWindowController, Space) {
+    @MainActor private func browserWindow(showingANewSpaceOf profile: Profile, named name: String) -> (BrowserWindowController, Space) {
         let space = TabStore.shared.addSpace(name: name, emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
         createdSpaceIDs.append(space.id)
         let wc = BrowserWindowController(incognito: false)
@@ -559,7 +558,7 @@ final class QuickDetourExtensionTests: XCTestCase {
         return (wc, space)
     }
 
-    private func popupAndTab(via page: WKWebView) async throws -> (windowID: Int, tabID: Int) {
+    @MainActor private func popupAndTab(via page: WKWebView) async throws -> (windowID: Int, tabID: Int) {
         let all = try await pagePromise("chrome.windows.getAll({ populate: true })", in: page)
         let popup = try XCTUnwrap(popupWindows(in: all["value"]).first, "\(all)")
         return (try XCTUnwrap(popup["id"] as? Int), try XCTUnwrap(tabs(of: popup).first?["id"] as? Int))
@@ -570,7 +569,7 @@ final class QuickDetourExtensionTests: XCTestCase {
     /// window, then `windows.onRemoved` for the popup — no `tabs.onRemoved`
     /// and no `tabs.onCreated` for it. The tab id stays and now names the
     /// browser window, from an extension page and from the worker.
-    func testMovingThePageIsADetachAndAttachUnderTheSameTabID() async throws {
+    @MainActor func testMovingThePageIsADetachAndAttachUnderTheSameTabID() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let profile = makeProfile("Quick Detour Ext Move")
         let (_, page) = try await loadPage(ext, in: profile)
@@ -628,7 +627,7 @@ final class QuickDetourExtensionTests: XCTestCase {
     }
 
     /// Another profile's extension hears nothing of a move within this one.
-    func testAnotherProfilesExtensionHearsNothingOfTheMove() async throws {
+    @MainActor func testAnotherProfilesExtensionHearsNothingOfTheMove() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let owner = makeProfile("Quick Detour Ext Move Owner")
         let other = makeProfile("Quick Detour Ext Move Other")
@@ -650,7 +649,7 @@ final class QuickDetourExtensionTests: XCTestCase {
     /// Into another profile's space the address reloads: the Quick Detour's
     /// tab is removed (and its window) for its own profile's extension, and
     /// the new tab is created for the other profile's, on the same URL.
-    func testReloadingInAnotherProfileIsARemoveThereAndACreateHere() async throws {
+    @MainActor func testReloadingInAnotherProfileIsARemoveThereAndACreateHere() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let source = makeProfile("Quick Detour Ext Reload Source")
         let target = makeProfile("Quick Detour Ext Reload Target")
@@ -699,7 +698,7 @@ final class QuickDetourExtensionTests: XCTestCase {
     /// open for the new profile's: `windows.onCreated` for a popup and
     /// `tabs.onCreated` for a new tab in it, listed by `windows.getAll` on the
     /// same address, from an extension page and from the worker.
-    func testSwitchingProfileIsACloseForTheOldProfileAndAnOpenForTheNew() async throws {
+    @MainActor func testSwitchingProfileIsACloseForTheOldProfileAndAnOpenForTheNew() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let source = makeProfile("Quick Detour Ext Switch Source")
         let target = makeProfile("Quick Detour Ext Switch Target")
@@ -762,7 +761,7 @@ final class QuickDetourExtensionTests: XCTestCase {
 
     /// Switching back is a new window for the first profile, not the one it
     /// was told closed.
-    func testSwitchingBackIsANewWindowForTheFirstProfile() async throws {
+    @MainActor func testSwitchingBackIsANewWindowForTheFirstProfile() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let first = makeProfile("Quick Detour Ext Switch Back First")
         let second = makeProfile("Quick Detour Ext Switch Back Second")
@@ -785,7 +784,7 @@ final class QuickDetourExtensionTests: XCTestCase {
 
     /// A profile the window was never on hears nothing of a switch between two
     /// others.
-    func testAThirdProfilesExtensionHearsNothingOfASwitch() async throws {
+    @MainActor func testAThirdProfilesExtensionHearsNothingOfASwitch() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let source = makeProfile("Quick Detour Ext Switch Iso Source")
         let target = makeProfile("Quick Detour Ext Switch Iso Target")
@@ -809,7 +808,7 @@ final class QuickDetourExtensionTests: XCTestCase {
 
     /// Into Private: an incognito popup for an extension allowed in Private,
     /// and a close for the normal profile's.
-    func testSwitchingIntoPrivateIsAnIncognitoPopupThere() async throws {
+    @MainActor func testSwitchingIntoPrivateIsAnIncognitoPopupThere() async throws {
         let ext = try await makeExtension(permissions: ["tabs"], hostPermissions: ["<all_urls>"], contentScripts: false)
         let source = makeProfile("Quick Detour Ext Switch Private Source")
         let privateProfile = Profile(name: "Quick Detour Ext Switch Private", isIncognito: true)

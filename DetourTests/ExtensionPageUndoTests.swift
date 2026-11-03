@@ -15,8 +15,7 @@ import GRDB
 /// `WKWebExtension` contexts, so a reload hands out the base URL WebKit actually
 /// mints. The wake test runs against the shared store, which `BrowserTab.wake`
 /// resolves its space from.
-@MainActor
-final class ExtensionPageUndoTests: XCTestCase {
+nonisolated final class ExtensionPageUndoTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var loadedProfiles: [Profile] = []
@@ -24,7 +23,7 @@ final class ExtensionPageUndoTests: XCTestCase {
     private var sharedProfiles: [Profile] = []
     private var sharedExtensionIDs: [String] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for spaceID in sharedSpaceIDs {
             guard let space = TabStore.shared.space(withID: spaceID) else { continue }
             for tab in space.tabs + space.pinnedTabs { tab.teardown() }
@@ -44,25 +43,25 @@ final class ExtensionPageUndoTests: XCTestCase {
         loadedProfiles.removeAll()
         for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
     /// A minimal MV3 extension with an options page and no background content.
-    private func makeExtension() async throws -> WebExtension {
+    @MainActor private func makeExtension() async throws -> WebExtension {
         let ext = try await makeOptionsPageTestExtension(idPrefix: "page-undo", name: "Page Undo Test")
         tempDirs.append(ext.basePath)
         return ext
     }
 
-    private func loadContext(_ ext: WebExtension, in profile: Profile) throws -> WKWebExtensionContext {
+    @MainActor private func loadContext(_ ext: WebExtension, in profile: Profile) throws -> WKWebExtensionContext {
         loadedProfiles.append(profile)
         return try loadTestContext(ext, in: profile)
     }
 
     /// Unloads and loads the context again: WebKit gives it a new origin.
-    private func reloadContext(_ ext: WebExtension, in profile: Profile, from oldBase: URL) throws -> URL {
+    @MainActor private func reloadContext(_ ext: WebExtension, in profile: Profile, from oldBase: URL) throws -> URL {
         _ = profile.unloadExtension(id: ext.id)
         let newBase = try loadContext(ext, in: profile).baseURL
         XCTAssertNotEqual(newBase.host?.lowercased(), oldBase.host?.lowercased(),
@@ -70,7 +69,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         return newBase
     }
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let db: AppDatabase
         let ext: WebExtension
         let store: TabStore
@@ -79,7 +78,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         let base: URL
     }
 
-    private func makeFixture() async throws -> Fixture {
+    @MainActor private func makeFixture() async throws -> Fixture {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         let ext = try await makeExtension()
         installTestExtension(ext, in: db)
@@ -90,13 +89,13 @@ final class ExtensionPageUndoTests: XCTestCase {
         return Fixture(db: db, ext: ext, store: store, profile: profile, space: space, base: base)
     }
 
-    private func teardownTabs(_ f: Fixture) {
+    @MainActor private func teardownTabs(_ f: Fixture) {
         for tab in f.space.tabs + f.space.pinnedTabs { tab.teardown() }
     }
 
     // MARK: - Close Tab
 
-    func testUndoCloseTabRestoresASleepingTabOnTheCurrentBase() async throws {
+    @MainActor func testUndoCloseTabRestoresASleepingTabOnTheCurrentBase() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
@@ -129,7 +128,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertEqual(f.store.closedTabRecords(in: f.space).map(\.extensionID), [f.ext.id])
     }
 
-    func testUndoCloseTabAfterAContextReloadUsesTheNewBase() async throws {
+    @MainActor func testUndoCloseTabAfterAContextReloadUsesTheNewBase() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let url = try extensionPageURL("options.html?q=1#frag", on: f.base)
@@ -153,7 +152,7 @@ final class ExtensionPageUndoTests: XCTestCase {
 
     /// Enabled but with no loaded context at undo time (between an unload and
     /// the load): the page waits on a pending origin, resolved when it loads.
-    func testUndoCloseTabWithTheContextNotLoadedWaitsOnAPendingOrigin() async throws {
+    @MainActor func testUndoCloseTabWithTheContextNotLoadedWaitsOnAPendingOrigin() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let url = try extensionPageURL("options.html", on: f.base)
@@ -175,7 +174,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertEqual(restored.url, rewriteExtensionPageURL(url, from: f.base, to: newBase))
     }
 
-    func testUndoCloseTabOfADisabledExtensionRestoresNothingAndKeepsTheRecord() async throws {
+    @MainActor func testUndoCloseTabOfADisabledExtensionRestoresNothingAndKeepsTheRecord() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let url = try extensionPageURL("options.html", on: f.base)
@@ -197,7 +196,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertFalse(f.store.canReopenClosedTab(in: f.space))
     }
 
-    func testUndoCloseTabOfAnUninstalledExtensionRestoresNothing() async throws {
+    @MainActor func testUndoCloseTabOfAnUninstalledExtensionRestoresNothing() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let page = sleepingTab(try extensionPageURL("options.html", on: f.base), in: f.space)
@@ -216,7 +215,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertTrue(f.store.closedTabRecords(in: f.space).isEmpty, "and discards it")
     }
 
-    func testUndoCloseTabOfAnOrdinaryTabIsUnchanged() async throws {
+    @MainActor func testUndoCloseTabOfAnOrdinaryTabIsUnchanged() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let tabs = (0..<3).map { i in sleepingTab(URL(string: "https://example.com/\(i)")!, in: f.space) }
@@ -246,7 +245,7 @@ final class ExtensionPageUndoTests: XCTestCase {
 
     // MARK: - Close Both Splits
 
-    func testUndoCloseBothSplitsRestoresBothOnTheNewBase() async throws {
+    @MainActor func testUndoCloseBothSplitsRestoresBothOnTheNewBase() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
@@ -278,7 +277,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertTrue(f.space.tabs.isEmpty, "redo closes both again")
     }
 
-    func testUndoCloseBothSplitsWithAnUninstalledMemberRestoresTheOtherAlone() async throws {
+    @MainActor func testUndoCloseBothSplitsWithAnUninstalledMemberRestoresTheOtherAlone() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let before = sleepingTab(URL(string: "https://before.example/")!, in: f.space)
@@ -312,7 +311,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertEqual(f.space.tabs.map(\.id), [before.id], "redo closes the restored member")
     }
 
-    func testUndoCloseBothSplitsWithBothMembersDisabledRestoresNothing() async throws {
+    @MainActor func testUndoCloseBothSplitsWithBothMembersDisabledRestoresNothing() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let groupID = UUID()
@@ -337,7 +336,7 @@ final class ExtensionPageUndoTests: XCTestCase {
 
     // MARK: - Pinned entry Close Tab
 
-    func testUndoClosePinnedEntryTabAfterAContextReloadUsesTheNewBase() async throws {
+    @MainActor func testUndoClosePinnedEntryTabAfterAContextReloadUsesTheNewBase() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let url = try extensionPageURL("options.html?pinned=1", on: f.base)
@@ -362,7 +361,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertNil(entry.tab, "redo closes it again")
     }
 
-    func testUndoClosePinnedEntryTabOfADisabledExtensionLeavesTheEntryDormant() async throws {
+    @MainActor func testUndoClosePinnedEntryTabOfADisabledExtensionLeavesTheEntryDormant() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let page = sleepingTab(try extensionPageURL("options.html", on: f.base), in: f.space)
@@ -385,7 +384,7 @@ final class ExtensionPageUndoTests: XCTestCase {
     // MARK: - Pinned entry Delete Tab (TASK-30)
 
     /// Pins `urls` in order and returns their entries; two URLs form a pinned split.
-    private func pinnedEntries(_ urls: [URL], split: Bool = false, in space: Space, store: TabStore) -> [PinnedEntry] {
+    @MainActor private func pinnedEntries(_ urls: [URL], split: Bool = false, in space: Space, store: TabStore) -> [PinnedEntry] {
         var entries: [PinnedEntry] = []
         for url in urls {
             let tab = sleepingTab(url, in: space)
@@ -400,7 +399,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         return entries
     }
 
-    func testUndoDeletePinnedEntryAfterAContextReloadActivatesOnTheNewBase() async throws {
+    @MainActor func testUndoDeletePinnedEntryAfterAContextReloadActivatesOnTheNewBase() async throws {
         let ext = try await makeExtension()
         installTestExtension(ext, in: AppDatabase.shared)
         sharedExtensionIDs.append(ext.id)
@@ -438,7 +437,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertTrue(space.pinnedEntries.isEmpty, "redo deletes it again")
     }
 
-    func testUndoDeletePinnedEntryOfADisabledExtensionRestoresItDormantForALaterEnable() async throws {
+    @MainActor func testUndoDeletePinnedEntryOfADisabledExtensionRestoresItDormantForALaterEnable() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let url = try extensionPageURL("options.html?disabled=1", on: f.base)
@@ -465,7 +464,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertEqual(restored.pinnedURL, rewriteExtensionPageURL(url, from: f.base, to: newBase))
     }
 
-    func testUndoDeletePinnedEntryOfAnUninstalledExtensionRestoresNothing() async throws {
+    @MainActor func testUndoDeletePinnedEntryOfAnUninstalledExtensionRestoresNothing() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let webURL = try XCTUnwrap(URL(string: "https://example.com/"))
@@ -487,7 +486,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertFalse(f.store.undoManager.canRedo, "nothing was restored, so there is nothing to redo")
     }
 
-    func testUndoDeletePinnedEntryOfAnOrdinaryPageIsUnchanged() async throws {
+    @MainActor func testUndoDeletePinnedEntryOfAnOrdinaryPageIsUnchanged() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let urls = [URL(string: "https://a.example/")!, URL(string: "https://b.example/path?q=1")!]
@@ -516,7 +515,7 @@ final class ExtensionPageUndoTests: XCTestCase {
     /// Delete Tab's — an uninstalled extension's entry is dropped with its
     /// backing tab, a disabled one's is kept dormant on a pending origin, and
     /// the other entries of the space are unaffected.
-    func testUndoDeleteSpaceDropsUninstalledPinnedEntriesAndKeepsDisabledOnes() async throws {
+    @MainActor func testUndoDeleteSpaceDropsUninstalledPinnedEntriesAndKeepsDisabledOnes() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let other = try await makeExtension()
@@ -560,7 +559,7 @@ final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertEqual(restored.selectedTabID, web.id, "selection moves off the dropped backing tab")
     }
 
-    func testUndoDeleteSpaceRehostsExtensionPagesAndDropsUninstalledOnes() async throws {
+    @MainActor func testUndoDeleteSpaceRehostsExtensionPagesAndDropsUninstalledOnes() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }
         let other = try await makeExtension()
@@ -613,7 +612,7 @@ final class ExtensionPageUndoTests: XCTestCase {
 
     /// Against the shared store: the restored tab actually wakes into its
     /// context's configuration and loads on the live origin.
-    func testUndoneExtensionPageWakesOntoTheLiveOrigin() async throws {
+    @MainActor func testUndoneExtensionPageWakesOntoTheLiveOrigin() async throws {
         let ext = try await makeExtension()
         installTestExtension(ext, in: AppDatabase.shared)
         sharedExtensionIDs.append(ext.id)

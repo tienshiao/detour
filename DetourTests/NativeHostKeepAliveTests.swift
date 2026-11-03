@@ -8,10 +8,10 @@ import XCTest
 /// host is connected for that extension and disarms it (`keepalive-stop`) when
 /// the last one goes away, so the worker never has to detect native ports itself
 /// (WebKit re-materializes `runtime.connectNative` on every read — TASK-15).
-final class NativeHostKeepAliveTests: XCTestCase {
+nonisolated final class NativeHostKeepAliveTests: XCTestCase {
 
     /// Apply a sequence of events and return the actions they produced.
-    private func actions(_ events: [NativeHostKeepAliveState.Event],
+    @MainActor private func actions(_ events: [NativeHostKeepAliveState.Event],
                          from initial: NativeHostKeepAliveState = NativeHostKeepAliveState())
     -> (state: NativeHostKeepAliveState, actions: [NativeHostKeepAliveState.Action]) {
         var state = initial
@@ -21,7 +21,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
 
     // MARK: - Arming
 
-    func testFirstHostWithPortOpenArms() {
+    @MainActor func testFirstHostWithPortOpenArms() {
         var state = NativeHostKeepAliveState()
         XCTAssertEqual(state.apply(.portOpened), .none,
                        "a port on its own has nothing to keep alive")
@@ -31,7 +31,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
         XCTAssertTrue(state.portOpen)
     }
 
-    func testSecondHostDoesNotRearm() {
+    @MainActor func testSecondHostDoesNotRearm() {
         let (state, produced) = actions([.portOpened, .hostConnected, .hostConnected])
         XCTAssertEqual(produced, [.none, .sendStart, .none],
                        "the port is already pinging; a second host changes nothing")
@@ -39,7 +39,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
         XCTAssertTrue(state.armed)
     }
 
-    func testPortOpeningAfterHostsArms() {
+    @MainActor func testPortOpeningAfterHostsArms() {
         let (state, produced) = actions([.hostConnected, .hostConnected, .portOpened])
         XCTAssertEqual(produced, [.none, .none, .sendStart],
                        "hosts connected before the worker's port is open must arm it when it arrives")
@@ -48,14 +48,14 @@ final class NativeHostKeepAliveTests: XCTestCase {
 
     // MARK: - Disarming
 
-    func testFirstOfTwoHostsDisconnectingKeepsArmed() {
+    @MainActor func testFirstOfTwoHostsDisconnectingKeepsArmed() {
         let (state, produced) = actions([.portOpened, .hostConnected, .hostConnected, .hostDisconnected])
         XCTAssertEqual(produced, [.none, .sendStart, .none, .none])
         XCTAssertEqual(state.connectedHosts, 1)
         XCTAssertTrue(state.armed, "another host is still connected")
     }
 
-    func testLastHostDisconnectingDisarms() {
+    @MainActor func testLastHostDisconnectingDisarms() {
         let (state, produced) = actions([.portOpened, .hostConnected, .hostDisconnected])
         XCTAssertEqual(produced, [.none, .sendStart, .sendStop])
         XCTAssertEqual(state.connectedHosts, 0)
@@ -63,7 +63,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
         XCTAssertTrue(state.portOpen, "the worker keeps its idle port after the pings stop")
     }
 
-    func testHostDisconnectedClampsAtZero() {
+    @MainActor func testHostDisconnectedClampsAtZero() {
         var state = NativeHostKeepAliveState()
         XCTAssertEqual(state.apply(.hostDisconnected), .none)
         XCTAssertEqual(state.apply(.hostDisconnected), .none)
@@ -76,7 +76,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
 
     // MARK: - Port lifecycle
 
-    func testPortClosingWhileArmedSendsNothingAndDisarms() {
+    @MainActor func testPortClosingWhileArmedSendsNothingAndDisarms() {
         var state = NativeHostKeepAliveState()
         _ = state.apply(.portOpened)
         XCTAssertEqual(state.apply(.hostConnected), .sendStart)
@@ -88,7 +88,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
         XCTAssertEqual(state.connectedHosts, 1, "the host is still connected")
     }
 
-    func testPortReopeningWithHostsStillConnectedRearms() {
+    @MainActor func testPortReopeningWithHostsStillConnectedRearms() {
         var state = NativeHostKeepAliveState()
         _ = state.apply(.portOpened)
         _ = state.apply(.hostConnected)
@@ -99,7 +99,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
         XCTAssertTrue(state.armed)
     }
 
-    func testPortClosingWhileDisarmedSendsNothing() {
+    @MainActor func testPortClosingWhileDisarmedSendsNothing() {
         var state = NativeHostKeepAliveState()
         _ = state.apply(.portOpened)
         XCTAssertEqual(state.apply(.portClosed), .none)
@@ -108,7 +108,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
 
     // MARK: - Context unload
 
-    func testContextUnloadedResetsEverything() {
+    @MainActor func testContextUnloadedResetsEverything() {
         for events in [[NativeHostKeepAliveState.Event.portOpened, .hostConnected],
                        [.hostConnected, .hostConnected],
                        [.portOpened],
@@ -124,7 +124,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
         }
     }
 
-    func testStateAfterUnloadCanArmAgain() {
+    @MainActor func testStateAfterUnloadCanArmAgain() {
         var state = NativeHostKeepAliveState()
         _ = state.apply(.portOpened)
         _ = state.apply(.hostConnected)
@@ -139,7 +139,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
     /// The `keepalive-start` never reached the worker, so the worker is not
     /// pinging: `armed` must stop claiming it is, and nothing is re-sent from the
     /// failure itself (the caller schedules a reconcile instead).
-    func testControlSendFailedWhileArmedClearsArmed() {
+    @MainActor func testControlSendFailedWhileArmedClearsArmed() {
         var state = NativeHostKeepAliveState()
         _ = state.apply(.portOpened)
         XCTAssertEqual(state.apply(.hostConnected), .sendStart)
@@ -154,7 +154,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
     /// This is why `armed` is stored rather than derived: after a failed send it
     /// deliberately diverges from `connectedHosts > 0 && portOpen`, and the
     /// reconcile is what closes the gap.
-    func testReconcileAfterAFailedStartRetriesIt() {
+    @MainActor func testReconcileAfterAFailedStartRetriesIt() {
         var state = NativeHostKeepAliveState()
         _ = state.apply(.portOpened)
         _ = state.apply(.hostConnected)
@@ -165,7 +165,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
         XCTAssertTrue(state.armed)
     }
 
-    func testReconcileAfterAFailedStopRetriesIt() {
+    @MainActor func testReconcileAfterAFailedStopRetriesIt() {
         var state = NativeHostKeepAliveState()
         _ = state.apply(.portOpened)
         _ = state.apply(.hostConnected)
@@ -180,7 +180,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
 
     /// The host went away while the retry was pending: the start is no longer
     /// wanted, so the reconcile must not send it after all.
-    func testReconcileAfterTheHostWentAwayRetriesNothing() {
+    @MainActor func testReconcileAfterTheHostWentAwayRetriesNothing() {
         var state = NativeHostKeepAliveState()
         _ = state.apply(.portOpened)
         _ = state.apply(.hostConnected)
@@ -192,7 +192,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
         XCTAssertFalse(state.armed)
     }
 
-    func testReconcileOnAnIdleStateDoesNothing() {
+    @MainActor func testReconcileOnAnIdleStateDoesNothing() {
         var state = NativeHostKeepAliveState()
         XCTAssertEqual(state.apply(.reconcile), .none)
         XCTAssertEqual(state, NativeHostKeepAliveState(), "reconcile changes no fields")
@@ -208,7 +208,7 @@ final class NativeHostKeepAliveTests: XCTestCase {
 
     // MARK: - isIdle
 
-    func testIsIdleOnlyWhenNothingIsTracked() {
+    @MainActor func testIsIdleOnlyWhenNothingIsTracked() {
         XCTAssertTrue(NativeHostKeepAliveState().isIdle)
 
         var state = NativeHostKeepAliveState()

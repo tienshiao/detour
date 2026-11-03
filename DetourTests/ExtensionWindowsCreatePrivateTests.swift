@@ -17,8 +17,7 @@ import WebKit
 /// Real contexts through the production wiring (`Profile.extensionController`
 /// with `ExtensionManager` as its delegate), asked from the service worker and
 /// from an extension page, in the promise and the callback form.
-@MainActor
-final class ExtensionWindowsCreatePrivateTests: XCTestCase {
+nonisolated final class ExtensionWindowsCreatePrivateTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
@@ -33,9 +32,9 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// Released profiles take their process pool down with them, which WebKit
     /// traps on inside an IPC dispatch (`ExtensionPrivateStoreTests`): kept for
     /// the rest of the test process.
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         closeBrowserWindows()
         for controller in quickDetours { controller.close() }
         quickDetours.removeAll()
@@ -77,7 +76,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
 
     /// Closes every browser window a test opened or had opened for it. A
     /// Private one removes its incognito space as it closes.
-    private func closeBrowserWindows() {
+    @MainActor private func closeBrowserWindows() {
         for wc in browserWindows {
             wc.sidebarSplitView.autosaveName = nil
             wc.window?.close()
@@ -130,7 +129,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     });
     """
 
-    private func makeExtension() async throws -> WebExtension {
+    @MainActor private func makeExtension() async throws -> WebExtension {
         let id = "windows-create-private-\(UUID().uuidString.prefix(8))"
         let ext = try await makeTestExtension(
             id: id,
@@ -157,7 +156,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// `ext` saved in the shared database as installed and globally enabled,
     /// with its built-in Private profile row on, off, or left out (`nil`,
     /// which means off, TASK-74) — what "Allow in Private" decides.
-    private func installInSharedDatabase(_ ext: WebExtension, allowedInPrivate: Bool?) {
+    @MainActor private func installInSharedDatabase(_ ext: WebExtension, allowedInPrivate: Bool?) {
         installTestExtension(ext, in: AppDatabase.shared,
                              manifestJSON: (try? testExtensionManifestData(ext)) ?? Data("{}".utf8))
         databaseExtensionIDs.append(ext.id)
@@ -166,7 +165,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
 
     /// Writes `ext`'s built-in Private profile row. The row's foreign key wants
     /// the Private profile's own row, saved first, or the write fails silently.
-    private func setAllowedInPrivate(_ ext: WebExtension, _ allowed: Bool) {
+    @MainActor private func setAllowedInPrivate(_ ext: WebExtension, _ allowed: Bool) {
         AppDatabase.shared.saveProfile(TabStore.shared.ensureIncognitoProfile().toRecord())
         AppDatabase.shared.setProfileExtensionEnabled(
             extensionID: ext.id, profileID: TabStore.incognitoProfileID.uuidString, enabled: allowed)
@@ -174,13 +173,13 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
 
     /// An incognito profile of its own — never the built-in Private profile
     /// whose rows other suites share, but the same `isIncognito` wiring.
-    private func makeIncognitoProfile(_ name: String) -> Profile {
+    @MainActor private func makeIncognitoProfile(_ name: String) -> Profile {
         let profile = Profile(name: name, isIncognito: true)
         createdProfiles.append(profile)
         return profile
     }
 
-    private func makeProfile(_ name: String) -> Profile {
+    @MainActor private func makeProfile(_ name: String) -> Profile {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         return profile
@@ -188,7 +187,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
 
     /// The extension loaded into `profile` with what its manifest asks for
     /// granted, an extension page of it open, and its worker awake.
-    private func loadPage(_ ext: WebExtension, in profile: Profile) async throws -> WKWebView {
+    @MainActor private func loadPage(_ ext: WebExtension, in profile: Profile) async throws -> WKWebView {
         let context = try loadTestContext(ext, in: profile)
         let wkExtension = try XCTUnwrap(ext.wkExtension)
         for permission in wkExtension.requestedPermissions {
@@ -209,7 +208,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         return page
     }
 
-    private func serve() async throws -> URL {
+    @MainActor private func serve() async throws -> URL {
         let server = try LoopbackHTTPServer(routes: [
             "/": "<html><head><title>Looked Up</title></head><body>a page</body></html>",
         ])
@@ -222,20 +221,20 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// with the app delegate. Showing it makes the space its profile's most
     /// recently used one.
     @discardableResult
-    private func browserWindow(showingANewSpaceOf profile: Profile) -> Space {
+    @MainActor private func browserWindow(showingANewSpaceOf profile: Profile) -> Space {
         let space = addSpace(of: profile)
         browserWindow(showing: space)
         return space
     }
 
-    private func addSpace(of profile: Profile) -> Space {
+    @MainActor private func addSpace(of profile: Profile) -> Space {
         let space = TabStore.shared.addSpace(name: "Windows Create", emoji: "🧪", colorHex: "007AFF",
                                              profileID: profile.id)
         createdSpaceIDs.append(space.id)
         return space
     }
 
-    private func browserWindow(showing space: Space) {
+    @MainActor private func browserWindow(showing space: Space) {
         let wc = BrowserWindowController(incognito: false)
         wc.sidebarSplitView.autosaveName = nil
         wc.setActiveSpace(id: space.id, selectTab: false)
@@ -246,7 +245,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     }
 
     /// A quarantine window on `privateProfile` with `url` loaded.
-    private func openQuarantine(on privateProfile: Profile, loading url: URL) async throws {
+    @MainActor private func openQuarantine(on privateProfile: Profile, loading url: URL) async throws {
         let controller = QuickDetourWindowController(profile: privateProfile, sourceSpace: nil,
                                                      quarantine: QuarantineSession(originalURL: url))
         quickDetours.append(controller)
@@ -259,24 +258,24 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         }
     }
 
-    private func browserWindowControllers() -> [BrowserWindowController] {
+    @MainActor private func browserWindowControllers() -> [BrowserWindowController] {
         NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
     }
 
-    private enum Transport: CaseIterable { case worker, page }
-    private enum Form: String, CaseIterable { case promise, callback }
+    @MainActor private enum Transport: CaseIterable { case worker, page }
+    @MainActor private enum Form: String, CaseIterable { case promise, callback }
 
     /// What one `windows.create` did: the window the API reported (nil when it
     /// failed), the rejection or `lastError`, and the browser windows that
     /// appeared.
-    private struct Created {
+    @MainActor private struct Created {
         var window: [String: Any]?
         var error: String?
         var opened: [BrowserWindowController]
         var label: String
     }
 
-    private func create(_ options: [String: Any], via transport: Transport, form: Form,
+    @MainActor private func create(_ options: [String: Any], via transport: Transport, form: Form,
                         page: WKWebView) async throws -> Created {
         // Held, not just their identifiers: a closed window's controller freed
         // during the call could hand its address to the new one, which would
@@ -318,13 +317,13 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
 
     /// What one call of `chrome.<api>(...args)` gave: its value (nil when it
     /// failed or gave nothing) and the rejection or `lastError`.
-    private struct Called {
+    @MainActor private struct Called {
         var value: Any?
         var error: String?
         var label: String
     }
 
-    private func call(_ api: String, _ args: [Any], via transport: Transport, form: Form,
+    @MainActor private func call(_ api: String, _ args: [Any], via transport: Transport, form: Form,
                       page: WKWebView) async throws -> Called {
         var called = Called(value: nil, error: nil, label: "\(transport) \(form.rawValue) \(api)\(args)")
         switch transport {
@@ -360,7 +359,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// The call succeeded, reported an incognito window (or, to a context
     /// without access to Private data, none), and the one window it opened is
     /// a Private browser window showing `url` — no normal window.
-    private func assertOpenedAPrivateWindow(_ created: Created, showing url: URL, reportsWindow: Bool = true,
+    @MainActor private func assertOpenedAPrivateWindow(_ created: Created, showing url: URL, reportsWindow: Bool = true,
                                             file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertNil(created.error, created.label, file: file, line: line)
         if reportsWindow {
@@ -380,7 +379,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
 
     // MARK: - The rule
 
-    func testTheRule() {
+    @MainActor func testTheRule() {
         XCTAssertFalse(ExtensionManager.opensPrivateWindow(requested: false, callerIsIncognito: false))
         XCTAssertTrue(ExtensionManager.opensPrivateWindow(requested: true, callerIsIncognito: false))
         XCTAssertTrue(ExtensionManager.opensPrivateWindow(requested: false, callerIsIncognito: true))
@@ -389,7 +388,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
 
     /// TASK-224: only a normal caller asking for Private needs the extension
     /// allowed there; a Private caller is running in Private already.
-    func testThePrivateAccessRule() {
+    @MainActor func testThePrivateAccessRule() {
         for allowed in [false, true] {
             XCTAssertFalse(ExtensionManager.refusesPrivateWindow(requested: false, callerIsIncognito: false,
                                                                  allowedInPrivate: allowed))
@@ -406,7 +405,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
 
     /// TASK-225: the scheme compare ignores case, which Foundation's `URL`
     /// keeps as written.
-    func testTheJavaScriptURLRule() throws {
+    @MainActor func testTheJavaScriptURLRule() throws {
         for string in ["javascript:void(0)", "JavaScript:alert(1)", "JAVASCRIPT:x"] {
             XCTAssertTrue(ExtensionManager.isJavaScriptURL(try XCTUnwrap(URL(string: string))), string)
         }
@@ -420,7 +419,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// The common call — no `incognito` — from a Private context opens a
     /// Private window, from the worker and from an extension page, in both
     /// forms; the callback form has no `lastError`.
-    func testFromPrivateWithoutIncognitoOpensAPrivateWindow() async throws {
+    @MainActor func testFromPrivateWithoutIncognitoOpensAPrivateWindow() async throws {
         let ext = try await makeExtension()
         let page = try await loadPage(ext, in: makeIncognitoProfile("Windows Create Private"))
         let url = try await serve()
@@ -436,7 +435,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
 
     /// Asking for a normal window by name changes nothing: WebKit gives the
     /// same `false` for it as for a call that leaves the key out.
-    func testFromPrivateWithIncognitoFalseStillOpensAPrivateWindow() async throws {
+    @MainActor func testFromPrivateWithIncognitoFalseStillOpensAPrivateWindow() async throws {
         let ext = try await makeExtension()
         let page = try await loadPage(ext, in: makeIncognitoProfile("Windows Create Private False"))
         let url = try await serve()
@@ -449,7 +448,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         }
     }
 
-    func testFromPrivateWithIncognitoTrueOpensAPrivateWindow() async throws {
+    @MainActor func testFromPrivateWithIncognitoTrueOpensAPrivateWindow() async throws {
         let ext = try await makeExtension()
         let page = try await loadPage(ext, in: makeIncognitoProfile("Windows Create Private True"))
         let url = try await serve()
@@ -462,7 +461,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// The task's case: with a quarantine in front, its extension opens the
     /// quarantined address in a new window. The window is Private, so the page
     /// never reaches a normal profile's cookies and history.
-    func testFromAQuarantineTheQuarantinedAddressOpensInAPrivateWindow() async throws {
+    @MainActor func testFromAQuarantineTheQuarantinedAddressOpensInAPrivateWindow() async throws {
         let ext = try await makeExtension()
         let privateProfile = makeIncognitoProfile("Windows Create Quarantine")
         let page = try await loadPage(ext, in: privateProfile)
@@ -482,7 +481,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// refuses it (it used to be dropped, leaving an empty window reported as
     /// a success): the promise rejects, the callback sees `lastError`, and no
     /// window opens.
-    func testFromPrivateAnInternalURLIsRefusedAndOpensNoWindow() async throws {
+    @MainActor func testFromPrivateAnInternalURLIsRefusedAndOpensNoWindow() async throws {
         let ext = try await makeExtension()
         let page = try await loadPage(ext, in: makeIncognitoProfile("Windows Create Refused"))
 
@@ -502,7 +501,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     // MARK: - From a normal profile
 
     /// The caller's profile is in front: the window opens on that space.
-    func testFromANormalProfileOpensANormalWindowInTheFrontSpace() async throws {
+    @MainActor func testFromANormalProfileOpensANormalWindowInTheFrontSpace() async throws {
         let ext = try await makeExtension()
         let normal = makeProfile("Windows Create Normal")
         let page = try await loadPage(ext, in: normal)
@@ -519,7 +518,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// The task's case: another profile's window is in front. The window
     /// opens on the caller's own space, where its tabs load with the caller's
     /// cookies and history, and the front window's space gets nothing.
-    func testFromANormalProfileWithAnotherProfileInFrontOpensOnTheCallersSpace() async throws {
+    @MainActor func testFromANormalProfileWithAnotherProfileInFrontOpensOnTheCallersSpace() async throws {
         let ext = try await makeExtension()
         let caller = makeProfile("Windows Create Caller")
         let other = makeProfile("Windows Create Other")
@@ -541,7 +540,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// No window shows the caller's profile: the window opens on the space of
     /// it used last (the user's decision), not on its first space and not on
     /// the front window's.
-    func testFromANormalProfileWithNoOpenSpaceOpensOnItsLastActiveSpace() async throws {
+    @MainActor func testFromANormalProfileWithNoOpenSpaceOpensOnItsLastActiveSpace() async throws {
         let ext = try await makeExtension()
         let caller = makeProfile("Windows Create Closed Caller")
         let other = makeProfile("Windows Create Closed Other")
@@ -572,7 +571,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// A profile with no space has nowhere of its own to open a window: the
     /// call is refused before any window opens, rather than borrowing the
     /// front window's space.
-    func testFromANormalProfileWithNoSpaceIsRefusedAndOpensNoWindow() async throws {
+    @MainActor func testFromANormalProfileWithNoSpaceIsRefusedAndOpensNoWindow() async throws {
         let ext = try await makeExtension()
         let caller = makeProfile("Windows Create Spaceless")
         let other = makeProfile("Windows Create Spaceless Other")
@@ -594,7 +593,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
 
     /// The call succeeded and opened one normal window, on `space`, whose new
     /// tab shows `url`.
-    private func assertOpenedANormalWindow(_ created: Created, on space: Space, showing url: URL,
+    @MainActor private func assertOpenedANormalWindow(_ created: Created, on space: Space, showing url: URL,
                                            file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertNil(created.error, created.label, file: file, line: line)
         XCTAssertEqual(created.window?["incognito"] as? Bool, false,
@@ -612,7 +611,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// for a Private window, gets one, but WebKit reports no window to a
     /// context without access to Private data, so the promise resolves with
     /// nothing.
-    func testFromANormalProfileIncognitoTrueOpensAPrivateWindowWhenAllowedInPrivate() async throws {
+    @MainActor func testFromANormalProfileIncognitoTrueOpensAPrivateWindowWhenAllowedInPrivate() async throws {
         let ext = try await makeExtension()
         installInSharedDatabase(ext, allowedInPrivate: true)
         let normal = makeProfile("Windows Create Normal To Private")
@@ -632,7 +631,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// Private profile, which means off, or a row saying off) cannot put a
     /// page in front of them there. The call is refused before any window
     /// opens, from both transports, as a rejection and as `lastError`.
-    func testFromANormalProfileIncognitoTrueIsRefusedWhenNotAllowedInPrivate() async throws {
+    @MainActor func testFromANormalProfileIncognitoTrueIsRefusedWhenNotAllowedInPrivate() async throws {
         let ext = try await makeExtension()
         installInSharedDatabase(ext, allowedInPrivate: nil)
         let normal = makeProfile("Windows Create Not In Private")
@@ -679,7 +678,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// `retainedProfiles`). With three more of them here, QuickDetourExtensionTests
     /// run after this suite in one process timed out on page loads, its
     /// occluded windows' loads never finishing on a loaded machine (TASK-225).
-    func testJavaScriptURLsAreRefusedByWindowsCreateTabsCreateAndTabsUpdate() async throws {
+    @MainActor func testJavaScriptURLsAreRefusedByWindowsCreateTabsCreateAndTabsUpdate() async throws {
         let ext = try await makeExtension()
         let normal = makeProfile("JavaScript URLs")
         let page = try await loadPage(ext, in: normal)
@@ -739,7 +738,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
     /// not the first, and not the front window's space of another profile.
     /// A profile with no space is refused, and the other profile's space still
     /// gets nothing. One loaded profile for both halves (see `retainedProfiles`).
-    func testTabsCreateAddsToTheCallersMostRecentlyUsedSpaceAndIsRefusedWithoutOne() async throws {
+    @MainActor func testTabsCreateAddsToTheCallersMostRecentlyUsedSpaceAndIsRefusedWithoutOne() async throws {
         let ext = try await makeExtension()
         let caller = makeProfile("Tabs Create Caller")
         let other = makeProfile("Tabs Create Other")
@@ -785,7 +784,7 @@ final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         XCTAssertTrue(frontSpace.tabs.isEmpty, "\(frontSpace.tabs.map(\.url))")
     }
 
-    private func assertRefusedAJavaScriptURL(_ called: Called, file: StaticString = #filePath, line: UInt = #line) {
+    @MainActor private func assertRefusedAJavaScriptURL(_ called: Called, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(called.error?.contains("javascript:") ?? false,
                       "\(called.label): \(String(describing: called.error)) \(String(describing: called.value))",
                       file: file, line: line)

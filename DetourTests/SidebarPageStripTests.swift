@@ -3,9 +3,9 @@ import XCTest
 
 /// TASK-119: the sidebar page strip's page ↔ strip-index mapping, with the
 /// Archived Tabs page at strip index 0 (non-incognito) and without it.
-final class SidebarPageStripTests: XCTestCase {
+nonisolated final class SidebarPageStripTests: XCTestCase {
 
-    func testWithArchivePage() {
+    @MainActor func testWithArchivePage() {
         let strip = SidebarPageStrip(hasArchivePage: true, spaceCount: 3)
         XCTAssertEqual(strip.pageCount, 4)
         XCTAssertEqual(strip.stripIndex(for: .archive), 0)
@@ -16,7 +16,7 @@ final class SidebarPageStripTests: XCTestCase {
         XCTAssertEqual(strip.page(atStripIndex: 3), .space(2))
     }
 
-    func testWithoutArchivePage() {
+    @MainActor func testWithoutArchivePage() {
         let strip = SidebarPageStrip(hasArchivePage: false, spaceCount: 2)
         XCTAssertEqual(strip.pageCount, 2)
         XCTAssertEqual(strip.stripIndex(for: .space(0)), 0)
@@ -25,7 +25,7 @@ final class SidebarPageStripTests: XCTestCase {
         XCTAssertEqual(strip.page(atStripIndex: 1), .space(1))
     }
 
-    func testRoundTrip() {
+    @MainActor func testRoundTrip() {
         for hasArchive in [true, false] {
             let strip = SidebarPageStrip(hasArchivePage: hasArchive, spaceCount: 5)
             for index in 0..<strip.pageCount {
@@ -35,7 +35,7 @@ final class SidebarPageStripTests: XCTestCase {
         }
     }
 
-    func testOutOfRange() {
+    @MainActor func testOutOfRange() {
         let strip = SidebarPageStrip(hasArchivePage: true, spaceCount: 2)
         XCTAssertNil(strip.page(atStripIndex: -1))
         XCTAssertNil(strip.page(atStripIndex: 3))
@@ -46,7 +46,7 @@ final class SidebarPageStripTests: XCTestCase {
         XCTAssertEqual(archiveOnly.page(atStripIndex: 0), .archive)
     }
 
-    func testFractionalSpaceButtonIndex() {
+    @MainActor func testFractionalSpaceButtonIndex() {
         let strip = SidebarPageStrip(hasArchivePage: true, spaceCount: 3)
         XCTAssertEqual(strip.spaceButtonIndex(forFractionalStripIndex: 1), 0, "first space")
         XCTAssertEqual(strip.spaceButtonIndex(forFractionalStripIndex: 2.5), 1.5, "between spaces 1 and 2")
@@ -58,7 +58,7 @@ final class SidebarPageStripTests: XCTestCase {
         XCTAssertEqual(incognito.spaceButtonIndex(forFractionalStripIndex: -0.2), -0.2, "rubber band past the edge")
     }
 
-    func testSpaceChromeRidesTheFirstSpacePageOntoTheArchive() {
+    @MainActor func testSpaceChromeRidesTheFirstSpacePageOntoTheArchive() {
         let strip = SidebarPageStrip(hasArchivePage: true, spaceCount: 3)
         let w: CGFloat = 200
         XCTAssertEqual(strip.spaceChromeX(forStripX: -w, pageWidth: w), 0, "on the first space")

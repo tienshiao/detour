@@ -7,8 +7,7 @@ import WebKit
 /// can still hold it — a row being renamed, the Archived Tabs page — gives it
 /// to the page when its sidebar page slides off screen (TASK-130) or is
 /// rebuilt (TASK-131).
-@MainActor
-final class SidebarPageFocusTests: XCTestCase {
+nonisolated final class SidebarPageFocusTests: XCTestCase {
 
     private var controller: BrowserWindowController?
     private var createdSpaceIDs: [UUID] = []
@@ -17,25 +16,25 @@ final class SidebarPageFocusTests: XCTestCase {
     private var previousLastActiveSpaceID: UUID?
     private var previousExtensionLastActiveSpaceID: UUID?
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         previousLastActiveSpaceID = TabStore.shared.lastActiveSpaceID
         previousExtensionLastActiveSpaceID = ExtensionManager.shared.lastActiveSpaceID
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         controller?.window?.close()
         controller = nil
         for id in createdSpaceIDs { TabStore.shared.deleteSpace(id: id) }
         createdSpaceIDs.removeAll()
         TabStore.shared.lastActiveSpaceID = previousLastActiveSpaceID
         ExtensionManager.shared.lastActiveSpaceID = previousExtensionLastActiveSpaceID
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// A regular window on two fresh spaces, the first one active. Incognito
     /// windows have a single page and no archive.
-    private func makeController() throws -> (BrowserWindowController, Space, Space) {
+    @MainActor private func makeController() throws -> (BrowserWindowController, Space, Space) {
         let store = TabStore.shared
         let profile = try XCTUnwrap(store.profiles.first { !$0.isIncognito })
         let first = store.addSpace(name: "Focus A", emoji: "A", colorHex: "007AFF", profileID: profile.id)
@@ -54,18 +53,18 @@ final class SidebarPageFocusTests: XCTestCase {
 
     /// One more space on the test profile, removed again in `tearDown`.
     @discardableResult
-    private func addSpace(named name: String) -> Space {
+    @MainActor private func addSpace(named name: String) -> Space {
         let store = TabStore.shared
         let space = store.addSpace(name: name, emoji: "C", colorHex: "FF9500", profileID: store.space(withID: createdSpaceIDs[0])!.profileID)
         createdSpaceIDs.append(space.id)
         return space
     }
 
-    private func addTab(to wc: BrowserWindowController, in space: Space, host: String) -> BrowserTab {
+    @MainActor private func addTab(to wc: BrowserWindowController, in space: Space, host: String) -> BrowserTab {
         wc.store.addTab(in: space, url: URL(string: "https://\(host).example.com/"))
     }
 
-    private func archivePage(of wc: BrowserWindowController) -> ArchivePageView? {
+    @MainActor private func archivePage(of wc: BrowserWindowController) -> ArchivePageView? {
         func find(in view: NSView) -> ArchivePageView? {
             if let page = view as? ArchivePageView { return page }
             for subview in view.subviews {
@@ -78,7 +77,7 @@ final class SidebarPageFocusTests: XCTestCase {
 
     /// `makeFirstResponder` reports success even when the view declines and
     /// the window takes the focus itself, so look at who ended up with it.
-    private func assertCannotFocus(_ view: NSView, in wc: BrowserWindowController,
+    @MainActor private func assertCannotFocus(_ view: NSView, in wc: BrowserWindowController,
                                    file: StaticString = #filePath, line: UInt = #line) {
         guard let window = wc.window else { return XCTFail("no window", file: file, line: line) }
         window.makeFirstResponder(view)
@@ -87,7 +86,7 @@ final class SidebarPageFocusTests: XCTestCase {
 
     /// The find bar's field: a control outside the sidebar that holds the
     /// keyboard across a tab switch.
-    private func focusFindBar(of wc: BrowserWindowController) throws -> NSResponder {
+    @MainActor private func focusFindBar(of wc: BrowserWindowController) throws -> NSResponder {
         let window = try XCTUnwrap(wc.window)
         wc.showFindBar(nil)
         let held = try XCTUnwrap(window.firstResponder)
@@ -95,13 +94,13 @@ final class SidebarPageFocusTests: XCTestCase {
         return held
     }
 
-    private func row(of tab: BrowserTab, in space: Space, of wc: BrowserWindowController) throws -> Int {
+    @MainActor private func row(of tab: BrowserTab, in space: Space, of wc: BrowserWindowController) throws -> Int {
         let item = try XCTUnwrap(itemIndex(containingTabID: tab.id, in: tabListItems(from: space.tabs)))
         return rowForNormalTab(at: item, pinnedItemCount: wc.tabSidebar.flattenedPinnedItems.count)
     }
 
     /// The New Tab row of the active tab list.
-    private func newTabRow(of wc: BrowserWindowController) throws -> Int {
+    @MainActor private func newTabRow(of wc: BrowserWindowController) throws -> Int {
         let sidebar = wc.tabSidebar
         let pinnedItemCount = sidebar.flattenedPinnedItems.count
         return try XCTUnwrap((0..<sidebar.tableView.numberOfRows).first {
@@ -115,7 +114,7 @@ final class SidebarPageFocusTests: XCTestCase {
     /// pointer — does not happen for a synthetic event in a test host that is
     /// not the active application, so tests that need the selection make it
     /// with `select(row:of:)`, and the others hold either way.
-    private func click(row: Int, of wc: BrowserWindowController) throws {
+    @MainActor private func click(row: Int, of wc: BrowserWindowController) throws {
         let window = try XCTUnwrap(wc.window)
         let table = wc.tabSidebar.tableView
         window.layoutIfNeeded()
@@ -134,14 +133,14 @@ final class SidebarPageFocusTests: XCTestCase {
     }
 
     /// What a click on `row` does to the list's selection.
-    private func select(row: Int, of wc: BrowserWindowController) {
+    @MainActor private func select(row: Int, of wc: BrowserWindowController) {
         wc.tabSidebar.tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
     }
 
     /// Starts renaming a pinned folder of `space`, as the row's context menu
     /// does. The rename field is the one thing in a space's page that takes
     /// the keyboard.
-    private func beginRename(in space: Space, of wc: BrowserWindowController) throws -> PinnedFolder {
+    @MainActor private func beginRename(in space: Space, of wc: BrowserWindowController) throws -> PinnedFolder {
         let folder = wc.store.addPinnedFolder(name: "Folder", in: space)
         let sidebar = wc.tabSidebar
         let index = try XCTUnwrap(sidebar.flattenedPinnedItems.firstIndex {
@@ -158,20 +157,20 @@ final class SidebarPageFocusTests: XCTestCase {
 
     /// Whether a rename field in the active tab list holds the keyboard (its
     /// field editor does).
-    private func isRenaming(in wc: BrowserWindowController) -> Bool {
+    @MainActor private func isRenaming(in wc: BrowserWindowController) -> Bool {
         guard let editor = wc.window?.firstResponder as? NSTextView else { return false }
         return editor.isDescendant(of: wc.tabSidebar.tableView)
     }
 
     /// Types `text` over the name being edited.
-    private func type(_ text: String, in wc: BrowserWindowController) throws {
+    @MainActor private func type(_ text: String, in wc: BrowserWindowController) throws {
         let editor = try XCTUnwrap(wc.window?.firstResponder as? NSTextView)
         editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
     }
 
     // MARK: - The gate
 
-    func testASpacesTabListNeverAcceptsKeyboardFocus() throws {
+    @MainActor func testASpacesTabListNeverAcceptsKeyboardFocus() throws {
         let (wc, _, second) = try makeController()
         let firstList = wc.tabSidebar.tableView
         XCTAssertFalse(firstList.acceptsFirstResponder)
@@ -185,7 +184,7 @@ final class SidebarPageFocusTests: XCTestCase {
         assertCannotFocus(firstList, in: wc)
     }
 
-    func testTheArchivePageAcceptsKeyboardFocusOnlyWhileItShows() throws {
+    @MainActor func testTheArchivePageAcceptsKeyboardFocusOnlyWhileItShows() throws {
         let (wc, _, _) = try makeController()
         let archive = try XCTUnwrap(archivePage(of: wc))
         XCTAssertFalse(archive.tableView.acceptsFirstResponder)
@@ -202,7 +201,7 @@ final class SidebarPageFocusTests: XCTestCase {
 
     // MARK: - Clicks on the tab list (TASK-174)
 
-    func testSelectingATabRowFocusesItsPage() throws {
+    @MainActor func testSelectingATabRowFocusesItsPage() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         let other = addTab(to: wc, in: first, host: "c")
@@ -218,7 +217,7 @@ final class SidebarPageFocusTests: XCTestCase {
 
     /// Focus held by another control does not stay there: the click chose a
     /// page, and typing goes to it.
-    func testClickingATabRowTakesTheKeyboardFromAnotherControl() throws {
+    @MainActor func testClickingATabRowTakesTheKeyboardFromAnotherControl() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         let other = addTab(to: wc, in: first, host: "c")
@@ -232,7 +231,7 @@ final class SidebarPageFocusTests: XCTestCase {
     }
 
     /// No selection change, so nothing else hands the keyboard over.
-    func testClickingTheSelectedRowFocusesItsPage() throws {
+    @MainActor func testClickingTheSelectedRowFocusesItsPage() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -247,7 +246,7 @@ final class SidebarPageFocusTests: XCTestCase {
 
     /// The New Tab row opens the command palette, which keeps the keyboard
     /// when the list gives it up after the click.
-    func testAClickThatOpensThePaletteLeavesItTheKeyboard() throws {
+    @MainActor func testAClickThatOpensThePaletteLeavesItTheKeyboard() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -263,7 +262,7 @@ final class SidebarPageFocusTests: XCTestCase {
     /// first responder is the same object before the click (editing the find
     /// bar's field) and after it (editing the palette's) — comparing first
     /// responders across the click cannot tell that the keyboard moved.
-    func testAClickThatOpensThePaletteTakesTheKeyboardFromAnotherField() throws {
+    @MainActor func testAClickThatOpensThePaletteTakesTheKeyboardFromAnotherField() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -279,7 +278,7 @@ final class SidebarPageFocusTests: XCTestCase {
 
     // MARK: - Inline rename
 
-    func testEscapeInARenameGivesTheKeyboardToThePage() throws {
+    @MainActor func testEscapeInARenameGivesTheKeyboardToThePage() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -292,7 +291,7 @@ final class SidebarPageFocusTests: XCTestCase {
         XCTAssertEqual(folder.name, "Folder")
     }
 
-    func testReturnInARenameCommitsAndGivesTheKeyboardToThePage() throws {
+    @MainActor func testReturnInARenameCommitsAndGivesTheKeyboardToThePage() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -306,7 +305,7 @@ final class SidebarPageFocusTests: XCTestCase {
     }
 
     /// Tab ends a rename too, and the list is not there to take the keyboard.
-    func testTabInARenameCommitsAndGivesTheKeyboardToThePage() throws {
+    @MainActor func testTabInARenameCommitsAndGivesTheKeyboardToThePage() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -322,7 +321,7 @@ final class SidebarPageFocusTests: XCTestCase {
 
     /// With no page to take it, the keyboard is left with nothing — not with
     /// the row that was renamed.
-    func testEndingARenameWithNoPageFocusesNothing() throws {
+    @MainActor func testEndingARenameWithNoPageFocusesNothing() throws {
         let (wc, first, _) = try makeController()
         let window = try XCTUnwrap(wc.window)
         _ = try beginRename(in: first, of: wc)
@@ -332,7 +331,7 @@ final class SidebarPageFocusTests: XCTestCase {
     }
 
     /// The list used to end a rename by taking the focus a click gave it.
-    func testClickingARowEndsARenameAndFocusesThePage() throws {
+    @MainActor func testClickingARowEndsARenameAndFocusesThePage() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         let other = addTab(to: wc, in: first, host: "c")
@@ -347,7 +346,7 @@ final class SidebarPageFocusTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === wc.selectedTab?.webView)
     }
 
-    func testClickingTheSelectedRowEndsARenameAndFocusesThePage() throws {
+    @MainActor func testClickingTheSelectedRowEndsARenameAndFocusesThePage() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -362,7 +361,7 @@ final class SidebarPageFocusTests: XCTestCase {
 
     // MARK: - Focus left behind
 
-    func testSwitchingSpaceHandsARenamesKeyboardToTheNewPage() throws {
+    @MainActor func testSwitchingSpaceHandsARenamesKeyboardToTheNewPage() throws {
         let (wc, first, second) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         let other = addTab(to: wc, in: second, host: "b")
@@ -375,7 +374,7 @@ final class SidebarPageFocusTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === other.webView)
     }
 
-    func testSwitchingToASpaceWithNoTabLeavesNothingFocused() throws {
+    @MainActor func testSwitchingToASpaceWithNoTabLeavesNothingFocused() throws {
         let (wc, first, second) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -386,7 +385,7 @@ final class SidebarPageFocusTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === window)
     }
 
-    func testShowingTheArchivePageHandsARenamesKeyboardToThePage() throws {
+    @MainActor func testShowingTheArchivePageHandsARenamesKeyboardToThePage() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -397,7 +396,7 @@ final class SidebarPageFocusTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === tab.webView)
     }
 
-    func testDismissingTheArchivePageHandsItsKeyboardToThePage() throws {
+    @MainActor func testDismissingTheArchivePageHandsItsKeyboardToThePage() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -412,7 +411,7 @@ final class SidebarPageFocusTests: XCTestCase {
 
     /// The search field's focus is held by its field editor, and the field
     /// stops accepting focus before it is asked to give it up.
-    func testDismissingTheArchivePageHandsItsSearchFieldsKeyboardToThePage() throws {
+    @MainActor func testDismissingTheArchivePageHandsItsSearchFieldsKeyboardToThePage() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -430,7 +429,7 @@ final class SidebarPageFocusTests: XCTestCase {
 
     /// A change to the space list recreates every page, and the rename field
     /// with it. The keyboard goes to the page rather than to nothing.
-    func testAddingASpaceDuringARenameGivesTheKeyboardToThePage() throws {
+    @MainActor func testAddingASpaceDuringARenameGivesTheKeyboardToThePage() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -444,7 +443,7 @@ final class SidebarPageFocusTests: XCTestCase {
     }
 
     /// The rebuilt list keeps the selected row's highlight.
-    func testAddingASpaceKeepsTheSelectedRowSelected() throws {
+    @MainActor func testAddingASpaceKeepsTheSelectedRowSelected() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         _ = addTab(to: wc, in: first, host: "c")
@@ -461,7 +460,7 @@ final class SidebarPageFocusTests: XCTestCase {
     }
 
     /// A reorder moves the active space's page to another index of the strip.
-    func testMovingTheActiveSpaceKeepsItsRowSelectedAndThePageFocused() throws {
+    @MainActor func testMovingTheActiveSpaceKeepsItsRowSelectedAndThePageFocused() throws {
         let (wc, first, second) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -483,7 +482,7 @@ final class SidebarPageFocusTests: XCTestCase {
 
     /// With the active space gone the window lands on another space, and
     /// nothing in the sidebar is left holding the keyboard (TASK-130).
-    func testDeletingTheActiveSpaceDuringARenameLeavesNoFocusInTheSidebar() throws {
+    @MainActor func testDeletingTheActiveSpaceDuringARenameLeavesNoFocusInTheSidebar() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -496,7 +495,7 @@ final class SidebarPageFocusTests: XCTestCase {
         XCTAssertFalse(responder?.isDescendant(of: wc.tabSidebar.view) ?? false)
     }
 
-    func testAddingASpaceLeavesTheWebPageFocused() throws {
+    @MainActor func testAddingASpaceLeavesTheWebPageFocused() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -507,7 +506,7 @@ final class SidebarPageFocusTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === tab.webView)
     }
 
-    func testAddingASpaceLeavesTheArchivePageFocused() throws {
+    @MainActor func testAddingASpaceLeavesTheArchivePageFocused() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -520,7 +519,7 @@ final class SidebarPageFocusTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === archive.tableView)
     }
 
-    func testAddingASpaceWithNothingFocusedFocusesNothing() throws {
+    @MainActor func testAddingASpaceWithNothingFocusedFocusesNothing() throws {
         let (wc, _, _) = try makeController()
         let window = try XCTUnwrap(wc.window)
         XCTAssertTrue(window.firstResponder === window)
@@ -530,7 +529,7 @@ final class SidebarPageFocusTests: XCTestCase {
     }
 
     /// A rebuild that changes nothing leaves a rename alone.
-    func testARenameOnTheCurrentPageKeepsTheKeyboard() throws {
+    @MainActor func testARenameOnTheCurrentPageKeepsTheKeyboard() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         wc.selectTab(id: tab.id)
@@ -542,7 +541,7 @@ final class SidebarPageFocusTests: XCTestCase {
 
     /// A tab switch from the keyboard refreshes the rows and ends the rename
     /// with them. The list does not inherit the keyboard; the page does.
-    func testSwitchingTabsDuringARenameGivesTheKeyboardToThePage() throws {
+    @MainActor func testSwitchingTabsDuringARenameGivesTheKeyboardToThePage() throws {
         let (wc, first, _) = try makeController()
         let tab = addTab(to: wc, in: first, host: "a")
         let second = addTab(to: wc, in: first, host: "c")

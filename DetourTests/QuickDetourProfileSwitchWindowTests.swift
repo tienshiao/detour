@@ -12,25 +12,24 @@ import WebKit
 /// The shared store, with profiles and spaces of the test's own; pages from a
 /// loopback server (one reads a cookie the other sets), or `.invalid` hosts
 /// that never resolve.
-@MainActor
-final class QuickDetourProfileSwitchWindowTests: XCTestCase {
+nonisolated final class QuickDetourProfileSwitchWindowTests: XCTestCase {
 
-    private var store: TabStore { .shared }
+    @MainActor private var store: TabStore { .shared }
     private var quickDetours: [QuickDetourWindowController] = []
     private var createdProfiles: [Profile] = []
     private var createdSpaceIDs: [UUID] = []
     private var servers: [LoopbackHTTPServer] = []
     private var addedDownloads: [DownloadItem] = []
-    private var previousAlert: ((PrivateDownloadClosePolicy.Prompt) -> Bool)!
-    private static var retainedProfiles: [Profile] = []
+    private var previousAlert: (@MainActor (PrivateDownloadClosePolicy.Prompt) -> Bool)!
+    @MainActor private static var retainedProfiles: [Profile] = []
 
     private var work: Profile!
     private var home: Profile!
     private var workSpace: Space!
     private var homeSpace: Space!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         previousAlert = QuickDetourWindowController.runProfileSwitchAlert
         QuickDetourWindowController.runProfileSwitchAlert = { _ in
             XCTFail("no question expected")
@@ -42,7 +41,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         homeSpace = addSpace("Sofa", "🛋️", home)
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         QuickDetourWindowController.runProfileSwitchAlert = previousAlert
         for controller in quickDetours { controller.close() }
         quickDetours.removeAll()
@@ -69,21 +68,21 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func makeProfile(_ name: String) -> Profile {
+    @MainActor private func makeProfile(_ name: String) -> Profile {
         let profile = store.addProfile(name: "\(name) \(UUID().uuidString.prefix(4))")
         createdProfiles.append(profile)
         return profile
     }
 
-    private func addSpace(_ name: String, _ emoji: String, _ profile: Profile) -> Space {
+    @MainActor private func addSpace(_ name: String, _ emoji: String, _ profile: Profile) -> Space {
         let space = store.addSpace(name: name, emoji: emoji, colorHex: "007AFF", profileID: profile.id)
         createdSpaceIDs.append(space.id)
         return space
     }
 
-    private var privateProfile: Profile { store.ensureIncognitoProfile() }
+    @MainActor private var privateProfile: Profile { store.ensureIncognitoProfile() }
 
-    private func openQuickDetour(on profile: Profile, from source: Space? = nil,
+    @MainActor private func openQuickDetour(on profile: Profile, from source: Space? = nil,
                                  url: URL = URL(string: "https://profile-switch.invalid/")!) -> QuickDetourWindowController {
         let controller = QuickDetourWindowController.open(profile: profile, sourceSpace: source, url: url)
         quickDetours.append(controller)
@@ -91,7 +90,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
     }
 
     /// `/` is titled by whether the `qd` cookie is set; `/login` sets it.
-    private func serve() async throws -> (LoopbackHTTPServer, URL) {
+    @MainActor private func serve() async throws -> (LoopbackHTTPServer, URL) {
         let server = try LoopbackHTTPServer(routes: [
             "/": """
             <html><head><script>
@@ -110,15 +109,15 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         return (server, URL(string: "http://127.0.0.1:\(port)/")!)
     }
 
-    private func spin(_ seconds: TimeInterval = 0.05) {
+    @MainActor private func spin(_ seconds: TimeInterval = 0.05) {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 
-    private func isOpen(_ controller: QuickDetourWindowController) -> Bool {
+    @MainActor private func isOpen(_ controller: QuickDetourWindowController) -> Bool {
         QuickDetourWindowController.openControllers.contains { $0 === controller }
     }
 
-    private func waitForTitle(_ title: String, in controller: QuickDetourWindowController) async throws {
+    @MainActor private func waitForTitle(_ title: String, in controller: QuickDetourWindowController) async throws {
         try await waitUntil("the page titled \(title)", timeout: 10) {
             controller.tab?.title == title && controller.tab?.isLoading == false
         }
@@ -126,13 +125,13 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
 
     // MARK: - The pill and its menu
 
-    func testThePillNamesTheWindowsProfile() {
+    @MainActor func testThePillNamesTheWindowsProfile() {
         let controller = openQuickDetour(on: work)
 
         XCTAssertEqual(controller.titleBar.profileName, work.name)
     }
 
-    func testTheMenuListsTheProfilesWithPrivateLastAndTheWindowsChecked() throws {
+    @MainActor func testTheMenuListsTheProfilesWithPrivateLastAndTheWindowsChecked() throws {
         _ = privateProfile
         let controller = openQuickDetour(on: home)
 
@@ -148,7 +147,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         XCTAssertEqual(controller.profileMenu.items.filter(\.isChecked).map(\.profileID), [home.id])
     }
 
-    func testChoosingAMenuItemSwitches() throws {
+    @MainActor func testChoosingAMenuItemSwitches() throws {
         let controller = openQuickDetour(on: work)
         let menu = controller.makeProfileMenu()
         let index = try XCTUnwrap(menu.items.firstIndex { $0.title == home.name })
@@ -162,7 +161,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
 
     // MARK: - Switching
 
-    func testSwitchingReloadsTheAddressUnderTheOtherProfilesCookies() async throws {
+    @MainActor func testSwitchingReloadsTheAddressUnderTheOtherProfilesCookies() async throws {
         let (_, base) = try await serve()
         let controller = openQuickDetour(on: work, url: base.appendingPathComponent("login"))
         try await waitForTitle("Logged in", in: controller)
@@ -193,7 +192,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         try await waitForTitle("Signed in", in: controller)
     }
 
-    func testTheSameProfileIsANoOp() {
+    @MainActor func testTheSameProfileIsANoOp() {
         let controller = openQuickDetour(on: work)
         let id = controller.tabID
         let webView = controller.tab?.webView
@@ -204,7 +203,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         XCTAssertTrue(controller.tab?.webView === webView)
     }
 
-    func testASheetBlocksTheSwitch() throws {
+    @MainActor func testASheetBlocksTheSwitch() throws {
         let controller = openQuickDetour(on: work)
         let window = try XCTUnwrap(controller.window)
         let id = controller.tabID
@@ -217,7 +216,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         XCTAssertEqual(controller.tabID, id)
     }
 
-    func testAPageMidLoadReloadsItsAddress() async throws {
+    @MainActor func testAPageMidLoadReloadsItsAddress() async throws {
         let (server, base) = try await serve()
         let slow = base.appendingPathComponent("slow")
         let controller = openQuickDetour(on: work, url: slow)
@@ -236,7 +235,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         try await waitForTitle("Slow", in: controller)
     }
 
-    func testAnInternalPageReloadsAsAnInternalPage() async throws {
+    @MainActor func testAnInternalPageReloadsAsAnInternalPage() async throws {
         let controller = openQuickDetour(on: work)
         controller.load(InternalPage.history.url, typed: true)
         try await waitUntil("the History page", timeout: 10) {
@@ -252,7 +251,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         XCTAssertTrue(controller.tab?.quickDetourProfile === home)
     }
 
-    func testThePaletteAndFindBarCloseOnASwitch() {
+    @MainActor func testThePaletteAndFindBarCloseOnASwitch() {
         let controller = openQuickDetour(on: work)
         controller.showPalette(prefill: nil)
         XCTAssertNotNil(controller.commandPaletteView)
@@ -265,7 +264,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
 
     // MARK: - Open in follows the profile
 
-    func testOpenInFollowsTheNewProfile() {
+    @MainActor func testOpenInFollowsTheNewProfile() {
         let controller = openQuickDetour(on: work, from: workSpace)
         XCTAssertEqual(controller.openInMenu.defaultTarget, .space(workSpace.id))
 
@@ -282,7 +281,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
 
     // MARK: - Private
 
-    func testSwitchingIntoPrivateMakesItAPrivateQuickDetour() throws {
+    @MainActor func testSwitchingIntoPrivateMakesItAPrivateQuickDetour() throws {
         let controller = openQuickDetour(on: work, from: workSpace)
 
         XCTAssertTrue(controller.switchProfile(to: privateProfile))
@@ -296,7 +295,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         XCTAssertTrue(store.hasLivePrivateSession)
     }
 
-    func testLeavingPrivateRestoresTheNormalWindow() throws {
+    @MainActor func testLeavingPrivateRestoresTheNormalWindow() throws {
         let controller = openQuickDetour(on: privateProfile)
         XCTAssertEqual(controller.window?.appearance?.name, .darkAqua)
 
@@ -307,7 +306,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         XCTAssertEqual(controller.openInMenu.defaultTarget, .space(workSpace.id))
     }
 
-    func testLeavingPrivateWithADownloadRunningAsksAndKeepsEverythingOnNo() throws {
+    @MainActor func testLeavingPrivateWithADownloadRunningAsksAndKeepsEverythingOnNo() throws {
         let controller = openQuickDetour(on: privateProfile)
         let id = controller.tabID
         let item = DownloadManager.shared.addManualItem(filename: "secret.zip",
@@ -325,7 +324,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         XCTAssertEqual(item.state, .downloading, "Continue Downloading")
     }
 
-    func testLeavingPrivateWithADownloadRunningCancelsItOnYes() throws {
+    @MainActor func testLeavingPrivateWithADownloadRunningCancelsItOnYes() throws {
         let controller = openQuickDetour(on: privateProfile)
         let item = DownloadManager.shared.addManualItem(filename: "secret.zip",
                                                         sourceURL: URL(string: "https://example.com/s.zip"),
@@ -342,7 +341,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         XCTAssertTrue(controller.profile === work)
     }
 
-    func testATargetDeletedWhileAskingRefusesTheSwitchAndKeepsTheDownload() throws {
+    @MainActor func testATargetDeletedWhileAskingRefusesTheSwitchAndKeepsTheDownload() throws {
         let controller = openQuickDetour(on: privateProfile)
         let id = controller.tabID
         let item = DownloadManager.shared.addManualItem(filename: "secret.zip",
@@ -363,7 +362,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         XCTAssertEqual(item.state, .downloading, "nothing cancelled for a switch that did not happen")
     }
 
-    func testASheetPutUpWhileAskingRefusesTheSwitch() throws {
+    @MainActor func testASheetPutUpWhileAskingRefusesTheSwitch() throws {
         let controller = openQuickDetour(on: privateProfile)
         let window = try XCTUnwrap(controller.window)
         let id = controller.tabID
@@ -387,7 +386,7 @@ final class QuickDetourProfileSwitchWindowTests: XCTestCase {
 
     // MARK: - Teardown
 
-    func testTheWindowStillClosesCleanlyAfterASwitch() {
+    @MainActor func testTheWindowStillClosesCleanlyAfterASwitch() {
         weak var weakController: QuickDetourWindowController?
         var tabID: UUID?
         autoreleasepool {

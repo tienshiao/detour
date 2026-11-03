@@ -4,16 +4,16 @@ import XCTest
 /// The native half of the console-bridge rate limit (TASK-17, reworked into a
 /// token bucket with flood detection by TASK-90). Pure and clock-injected, so
 /// every boundary is exercised exactly rather than by sleeping.
-final class ConsoleBridgeLimiterTests: XCTestCase {
+nonisolated final class ConsoleBridgeLimiterTests: XCTestCase {
 
-    private let burst = ConsoleBridgeLimiter.burstCapacity
-    private let rate = ConsoleBridgeLimiter.sustainedRatePerSecond
-    private let reportInterval = ConsoleBridgeLimiter.dropReportInterval
-    private let floodDuration = ConsoleBridgeLimiter.floodDuration
+    @MainActor private var burst: Int { ConsoleBridgeLimiter.burstCapacity }
+    @MainActor private var rate: Double { ConsoleBridgeLimiter.sustainedRatePerSecond }
+    @MainActor private var reportInterval: TimeInterval { ConsoleBridgeLimiter.dropReportInterval }
+    @MainActor private var floodDuration: TimeInterval { ConsoleBridgeLimiter.floodDuration }
     private let t0 = Date(timeIntervalSinceReferenceDate: 1_000)
 
     /// Admit `count` messages at the same instant, returning the decisions.
-    private func admit(
+    @MainActor private func admit(
         _ limiter: inout ConsoleBridgeLimiter,
         _ count: Int,
         at time: Date,
@@ -24,7 +24,7 @@ final class ConsoleBridgeLimiterTests: XCTestCase {
 
     /// What a run of the limiter did, so a scenario can be asserted on totals
     /// rather than on a decision at a time.
-    private struct Tally {
+    @MainActor private struct Tally {
         var admitted = 0
         var dropped = 0
         /// Every `allowReportingDropped`, as (count, when).
@@ -36,7 +36,7 @@ final class ConsoleBridgeLimiterTests: XCTestCase {
     }
 
     /// Feed one message at `time` and fold the decision into `tally`.
-    private func feed(_ limiter: inout ConsoleBridgeLimiter, _ tally: inout Tally,
+    @MainActor private func feed(_ limiter: inout ConsoleBridgeLimiter, _ tally: inout Tally,
                       at time: Date, id: String = "ext") {
         switch limiter.admit(id, now: time) {
         case .allow:
@@ -54,20 +54,20 @@ final class ConsoleBridgeLimiterTests: XCTestCase {
 
     // MARK: - Burst
 
-    func testTheWholeBurstPassesAtOnce() {
+    @MainActor func testTheWholeBurstPassesAtOnce() {
         var limiter = ConsoleBridgeLimiter()
         let decisions = admit(&limiter, burst, at: t0)
         XCTAssertEqual(decisions, Array(repeating: .allow, count: burst),
                        "a worker's start-up burst must pass whole")
     }
 
-    func testTheMessageAfterTheBurstDropsInTheSameInstant() {
+    @MainActor func testTheMessageAfterTheBurstDropsInTheSameInstant() {
         var limiter = ConsoleBridgeLimiter()
         _ = admit(&limiter, burst, at: t0)
         XCTAssertEqual(limiter.admit("ext", now: t0), .drop)
     }
 
-    func testTheBucketRefillsAtTheSustainedRate() {
+    @MainActor func testTheBucketRefillsAtTheSustainedRate() {
         var limiter = ConsoleBridgeLimiter()
         _ = admit(&limiter, burst + 1, at: t0)
         // One second of quiet buys exactly `rate` more messages, no more.
@@ -83,7 +83,7 @@ final class ConsoleBridgeLimiterTests: XCTestCase {
     /// fifth of the burst cap, which the old fixed window never touched. The
     /// bucket lets the burst through and then holds the extension to exactly the
     /// sustained rate.
-    func testASustainedFloodIsCutToTheSustainedRate() {
+    @MainActor func testASustainedFloodIsCutToTheSustainedRate() {
         var limiter = ConsoleBridgeLimiter()
         var tally = Tally()
         let step = 0.05 // 20 messages a second
@@ -106,7 +106,7 @@ final class ConsoleBridgeLimiterTests: XCTestCase {
     /// The final message comes after the flood has stopped, which is what flushes
     /// the tail — an extension that floods and then never logs again keeps its
     /// last few hundred drops unreported, and has nothing left to hide.
-    func testEveryDroppedMessageIsEventuallyReported() {
+    @MainActor func testEveryDroppedMessageIsEventuallyReported() {
         var limiter = ConsoleBridgeLimiter()
         var tally = Tally()
         let step = 0.05
@@ -126,7 +126,7 @@ final class ConsoleBridgeLimiterTests: XCTestCase {
     /// spaced by `dropReportInterval`. The one exception is the report that ends
     /// a streak, which may come sooner — it is the tail, and nothing else will
     /// ever account for it.
-    func testReportsWhileTheFloodRunsAreSpacedByTheReportInterval() {
+    @MainActor func testReportsWhileTheFloodRunsAreSpacedByTheReportInterval() {
         var limiter = ConsoleBridgeLimiter()
         var tally = Tally()
         let step = 0.05
@@ -144,7 +144,7 @@ final class ConsoleBridgeLimiterTests: XCTestCase {
 
     // MARK: - Flood detection
 
-    func testTheFloodIsReportedOnceWhenTheDroppingHasRunForTheFloodDuration() {
+    @MainActor func testTheFloodIsReportedOnceWhenTheDroppingHasRunForTheFloodDuration() {
         var limiter = ConsoleBridgeLimiter()
         var tally = Tally()
         let step = 0.05
@@ -163,7 +163,7 @@ final class ConsoleBridgeLimiterTests: XCTestCase {
     /// A flood that stops for `floodIncidentIdle` and comes back is a new
     /// incident, and is reported again: a loop that returns after a quiet spell
     /// is news.
-    func testAFloodAfterAQuietSpellIsANewIncident() {
+    @MainActor func testAFloodAfterAQuietSpellIsANewIncident() {
         var limiter = ConsoleBridgeLimiter()
         var tally = Tally()
         let step = 0.05
@@ -183,7 +183,7 @@ final class ConsoleBridgeLimiterTests: XCTestCase {
 
     /// Below the sustained rate nothing is dropped, so nothing is reported and no
     /// incident is ever declared, however long the extension keeps it up.
-    func testTrafficBelowTheSustainedRateIsNeverDropped() {
+    @MainActor func testTrafficBelowTheSustainedRateIsNeverDropped() {
         var limiter = ConsoleBridgeLimiter()
         var tally = Tally()
         let step = 1 / (rate - 1) // 4 messages a second
@@ -198,7 +198,7 @@ final class ConsoleBridgeLimiterTests: XCTestCase {
 
     // MARK: - Isolation, clock, forget
 
-    func testTheCapIsPerExtension() {
+    @MainActor func testTheCapIsPerExtension() {
         var limiter = ConsoleBridgeLimiter()
         _ = admit(&limiter, burst + 10, at: t0, id: "noisy")
         XCTAssertEqual(limiter.admit("noisy", now: t0), .drop)
@@ -206,7 +206,7 @@ final class ConsoleBridgeLimiterTests: XCTestCase {
                        "one extension flooding must not silence another's console")
     }
 
-    func testAnIncidentIsPerExtension() {
+    @MainActor func testAnIncidentIsPerExtension() {
         var limiter = ConsoleBridgeLimiter()
         var tally = Tally()
         for index in 0..<2_400 {
@@ -225,7 +225,7 @@ final class ConsoleBridgeLimiterTests: XCTestCase {
     /// A clock that jumps backwards counts as no elapsed time at all: it neither
     /// refills the bucket for free nor stalls the limiter until real time catches
     /// up (the stamps re-anchor, so the next second still buys `rate` messages).
-    func testAClockGoingBackwardsNeitherRefillsNorStalls() {
+    @MainActor func testAClockGoingBackwardsNeitherRefillsNorStalls() {
         var limiter = ConsoleBridgeLimiter()
         _ = admit(&limiter, burst + 1, at: t0)
         let backwards = t0.addingTimeInterval(-5)
@@ -237,7 +237,7 @@ final class ConsoleBridgeLimiterTests: XCTestCase {
         XCTAssertEqual(decisions.last, .drop)
     }
 
-    func testForgettingAnExtensionClearsItsBucketAndItsIncident() {
+    @MainActor func testForgettingAnExtensionClearsItsBucketAndItsIncident() {
         var limiter = ConsoleBridgeLimiter()
         var tally = Tally()
         for index in 0..<2_400 {

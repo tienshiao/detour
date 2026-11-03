@@ -12,8 +12,7 @@ import Darwin
 /// connection is refused at once without leaving the machine. Not port 1:
 /// WebKit refuses restricted ports (1, 7, 9, …) itself, committing about:blank
 /// with no failure callback at all, so a load there never fails "for real".
-@MainActor
-final class BrowserTabUnclaimedNavigationTests: XCTestCase {
+nonisolated final class BrowserTabUnclaimedNavigationTests: XCTestCase {
 
     /// A page that loads without the network — and where WebKit leaves a web
     /// view whose first navigation failed before committing.
@@ -21,10 +20,10 @@ final class BrowserTabUnclaimedNavigationTests: XCTestCase {
 
     private var tabs: [BrowserTab] = []
 
-    private var defaultFaviconFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         // `load(_:)` fetches a favicon optimistically; keep that off the network
         // and out of the shared loader's caches.
         defaultFaviconFetch = FaviconLoader.shared.fetch
@@ -32,17 +31,17 @@ final class BrowserTabUnclaimedNavigationTests: XCTestCase {
         FaviconLoader.shared.fetch = { _, completion in completion(nil) }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         tabs.forEach { $0.teardown() }
         tabs.removeAll()
         openSockets.forEach { close($0) }
         openSockets.removeAll()
         FaviconLoader.shared.fetch = defaultFaviconFetch
         FaviconLoader.shared.resetForTesting()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func track(_ tab: BrowserTab) -> BrowserTab {
+    @MainActor private func track(_ tab: BrowserTab) -> BrowserTab {
         tabs.append(tab)
         return tab
     }
@@ -51,7 +50,7 @@ final class BrowserTabUnclaimedNavigationTests: XCTestCase {
     private var openSockets: [Int32] = []
 
     /// A TCP socket bound to a loopback port the kernel hands out.
-    private func boundLoopbackSocket() throws -> (fd: Int32, port: UInt16) {
+    @MainActor private func boundLoopbackSocket() throws -> (fd: Int32, port: UInt16) {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { throw XCTSkip("socket() failed: \(errno)") }
         var address = sockaddr_in()
@@ -74,7 +73,7 @@ final class BrowserTabUnclaimedNavigationTests: XCTestCase {
 
     /// `http://127.0.0.1:<port>/<path>` on a port the kernel just handed out
     /// and that was closed again, so nothing listens there.
-    private func refusedURL(_ path: String) throws -> URL {
+    @MainActor private func refusedURL(_ path: String) throws -> URL {
         let (fd, port) = try boundLoopbackSocket()
         close(fd)
         return URL(string: "http://127.0.0.1:\(port)/\(path)")!
@@ -83,7 +82,7 @@ final class BrowserTabUnclaimedNavigationTests: XCTestCase {
     /// `http://127.0.0.1:<port>/<path>` on a port that accepts the connection
     /// (the kernel's listen backlog) but never answers, so a load there stays
     /// provisional until something else ends it.
-    private func unansweredURL(_ path: String) throws -> URL {
+    @MainActor private func unansweredURL(_ path: String) throws -> URL {
         let (fd, port) = try boundLoopbackSocket()
         openSockets.append(fd)
         guard listen(fd, 8) == 0 else { throw XCTSkip("listen() failed: \(errno)") }
@@ -92,7 +91,7 @@ final class BrowserTabUnclaimedNavigationTests: XCTestCase {
 
     /// An interaction state whose current back/forward item is `url`, archived
     /// the way `BrowserTab.sleep()` archives it.
-    private func archivedInteractionState(for url: URL) async throws -> Data {
+    @MainActor private func archivedInteractionState(for url: URL) async throws -> Data {
         let source = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
         try await loadHTMLStringAndWait(
             source, html: "<html><head><title>Restored</title></head><body>restored</body></html>",
@@ -105,7 +104,7 @@ final class BrowserTabUnclaimedNavigationTests: XCTestCase {
 
     /// A background load that fails for real (connection refused) shows the
     /// error page for the URL that was asked for.
-    func testFailedBackgroundLoadShowsTheErrorPage() async throws {
+    @MainActor func testFailedBackgroundLoadShowsTheErrorPage() async throws {
         let target = try refusedURL("typed")
         let tab = track(BrowserTab(id: UUID()))
         tab.load(target)
@@ -119,7 +118,7 @@ final class BrowserTabUnclaimedNavigationTests: XCTestCase {
 
     /// A background load superseded by another fails with `NSURLErrorCancelled`,
     /// which is not a failure worth an error page.
-    func testSupersededBackgroundLoadShowsNoErrorPage() async throws {
+    @MainActor func testSupersededBackgroundLoadShowsNoErrorPage() async throws {
         let tab = track(BrowserTab(id: UUID()))
         tab.load(try unansweredURL("first"))
         let webView = try XCTUnwrap(tab.webView)
@@ -141,7 +140,7 @@ final class BrowserTabUnclaimedNavigationTests: XCTestCase {
     /// TASK-45 through the new delegate path: a tab restored asleep whose wake
     /// kick fails for real while no window owns it keeps its restored session,
     /// title and favicon, and shows no error page.
-    func testFailedRestoreWhileUnownedKeepsTheSession() async throws {
+    @MainActor func testFailedRestoreWhileUnownedKeepsTheSession() async throws {
         let restoredURL = try refusedURL("restored")
         let tab = track(BrowserTab(
             id: UUID(), title: "Persisted title", url: restoredURL, faviconURL: nil,

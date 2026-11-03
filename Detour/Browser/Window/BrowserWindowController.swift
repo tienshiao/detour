@@ -256,8 +256,8 @@ class BrowserWindowController: NSWindowController {
     /// Autosave names of the window frame and of the sidebar split view. Scoped
     /// to the data directory so only a default-data-directory run touches the
     /// keys the production app restores from (TASK-41).
-    static let frameAutosaveName = UserDefaultsScope.autosaveName("BrowserWindow")
-    static let splitViewAutosaveName = UserDefaultsScope.autosaveName("BrowserSplitView")
+    nonisolated static let frameAutosaveName = UserDefaultsScope.autosaveName("BrowserWindow")
+    nonisolated static let splitViewAutosaveName = UserDefaultsScope.autosaveName("BrowserSplitView")
 
     convenience init(incognito: Bool) {
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)

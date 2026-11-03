@@ -1,3 +1,4 @@
+import Synchronization
 import XCTest
 import AppKit
 @testable import Detour
@@ -6,26 +7,25 @@ import AppKit
 /// by the app. It goes through its own ephemeral session (no cookies, no
 /// cache), with a size cap, and at most one fetch in flight per tab with the
 /// newest URL winning.
-@MainActor
-final class MediaArtworkLoaderTests: XCTestCase {
+nonisolated final class MediaArtworkLoaderTests: XCTestCase {
 
     private var loaders: [MediaArtworkLoader] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for loader in loaders { loader.invalidate() }
         loaders.removeAll()
         ArtworkStubProtocol.reset()
         if let cookies = HTTPCookieStorage.shared.cookies(for: URL(string: "https://artwork.test/")!) {
             for cookie in cookies { HTTPCookieStorage.shared.deleteCookie(cookie) }
         }
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Images
 
     /// A PNG of `side` x `side` pixels. `noise` makes it incompressible, so
     /// its size is about `side * side * 4` bytes.
-    private static func png(side: Int, noise: Bool = false) -> Data {
+    @MainActor private static func png(side: Int, noise: Bool = false) -> Data {
         let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side, bitsPerSample: 8,
                                    samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
                                    bytesPerRow: 0, bitsPerPixel: 0)!
@@ -41,7 +41,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
 
     // MARK: - The session
 
-    func testTheSessionKeepsNoCookiesAndNoCache() {
+    @MainActor func testTheSessionKeepsNoCookiesAndNoCache() {
         let configuration = MediaArtworkLoader.makeSessionConfiguration()
         XCTAssertEqual(configuration.httpCookieAcceptPolicy, .never)
         XCTAssertFalse(configuration.httpShouldSetCookies, "the app's cookie jar must not reach the page's server")
@@ -51,7 +51,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
         XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalCacheData)
     }
 
-    private func makeNetworkLoader(maxResponseBytes: Int) -> MediaArtworkLoader {
+    @MainActor private func makeNetworkLoader(maxResponseBytes: Int) -> MediaArtworkLoader {
         let configuration = MediaArtworkLoader.makeSessionConfiguration()
         configuration.protocolClasses = [ArtworkStubProtocol.self]
         let loader = MediaArtworkLoader(configuration: configuration, maxResponseBytes: maxResponseBytes, debounce: 0)
@@ -61,7 +61,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
 
     /// What the loader delivers for `path`; nil also when it delivers nothing
     /// within the timeout (the test then fails on the expectation).
-    private func load(_ loader: MediaArtworkLoader, _ path: String) async -> NSImage? {
+    @MainActor private func load(_ loader: MediaArtworkLoader, _ path: String) async -> NSImage? {
         let delivered = expectation(description: "the loader delivers \(path)")
         var result: NSImage?
         loader.load(URL(string: "https://artwork.test\(path)")!, tabID: UUID(), isPrivate: false) {
@@ -72,7 +72,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
         return result
     }
 
-    func testAnImageArrivesWithoutTheAppsCookies() async throws {
+    @MainActor func testAnImageArrivesWithoutTheAppsCookies() async throws {
         HTTPCookieStorage.shared.setCookie(HTTPCookie(properties: [
             .domain: "artwork.test", .path: "/", .name: "session", .value: "secret", .secure: "TRUE",
         ])!)
@@ -86,7 +86,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
         XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
     }
 
-    func testAResponseOverTheCapIsDropped() async throws {
+    @MainActor func testAResponseOverTheCapIsDropped() async throws {
         let body = Self.png(side: 64, noise: true)
         XCTAssertGreaterThan(body.count, 8_000)
         ArtworkStubProtocol.stub("/declared.png", body: body, declareLength: true)
@@ -100,7 +100,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
         XCTAssertNil(streamed, "a body that grows past the cap is cut off")
     }
 
-    func testAnErrorStatusIsDropped() async {
+    @MainActor func testAnErrorStatusIsDropped() async {
         ArtworkStubProtocol.stub("/missing.png", status: 404, body: Self.png(side: 16))
         let image = await load(makeNetworkLoader(maxResponseBytes: 100_000), "/missing.png")
         XCTAssertNil(image)
@@ -108,7 +108,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
 
     // MARK: - Decoding
 
-    func testDecodingBoundsTheImage() throws {
+    @MainActor func testDecodingBoundsTheImage() throws {
         let image = try XCTUnwrap(MediaArtworkLoader.decodeArtwork(Self.png(side: 200), maxPixelSide: 256,
                                                                    thumbnailPixels: 64))
         let cgImage = try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
@@ -121,7 +121,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
     // MARK: - One fetch per tab, newest wins
 
     /// Records the fetches a loader starts and lets the test finish them.
-    private final class FakeFetch {
+    @MainActor private final class FakeFetch {
         var started: [URL] = []
         var cancelled: [URL] = []
         var privateFetches: [URL] = []
@@ -130,7 +130,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
         func finish(_ url: URL, with data: Data?) { pending.removeValue(forKey: url)?(data) }
     }
 
-    private func makeFakeLoader(debounce: TimeInterval = 0.05) -> (MediaArtworkLoader, FakeFetch) {
+    @MainActor private func makeFakeLoader(debounce: TimeInterval = 0.05) -> (MediaArtworkLoader, FakeFetch) {
         let fake = FakeFetch()
         let loader = MediaArtworkLoader(debounce: debounce)
         loader.fetch = { url, isPrivate, completion in
@@ -147,7 +147,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
     private let b = URL(string: "https://cdn.test/b.png")!
     private let c = URL(string: "https://cdn.test/c.png")!
 
-    func testAPageChangingItsArtworkQuicklyFetchesOnlyTheNewest() async throws {
+    @MainActor func testAPageChangingItsArtworkQuicklyFetchesOnlyTheNewest() async throws {
         let (loader, fake) = makeFakeLoader()
         let tab = UUID()
         var delivered: [URL] = []
@@ -162,7 +162,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
         try await waitUntil("the image") { delivered == [c] }
     }
 
-    func testANewerURLCancelsTheFetchInFlight() async throws {
+    @MainActor func testANewerURLCancelsTheFetchInFlight() async throws {
         let (loader, fake) = makeFakeLoader()
         let tab = UUID()
         var delivered: [URL] = []
@@ -180,7 +180,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
         XCTAssertEqual(delivered, [b], "a superseded fetch delivers nothing")
     }
 
-    func testEveryWindowAskingForTheSameArtworkSharesOneFetch() async throws {
+    @MainActor func testEveryWindowAskingForTheSameArtworkSharesOneFetch() async throws {
         let (loader, fake) = makeFakeLoader()
         let tab = UUID()
         var deliveries = 0
@@ -192,7 +192,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
         XCTAssertEqual(fake.started, [a])
     }
 
-    func testTabsDoNotCancelEachOther() async throws {
+    @MainActor func testTabsDoNotCancelEachOther() async throws {
         let (loader, fake) = makeFakeLoader()
         loader.load(a, tabID: UUID(), isPrivate: false) { _ in }
         loader.load(b, tabID: UUID(), isPrivate: false) { _ in }
@@ -200,7 +200,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
         XCTAssertTrue(fake.cancelled.isEmpty)
     }
 
-    func testNormalArtworkIsKeptInMemory() async throws {
+    @MainActor func testNormalArtworkIsKeptInMemory() async throws {
         let (loader, fake) = makeFakeLoader()
         var image: NSImage?
         loader.load(a, tabID: UUID(), isPrivate: false) { image = $0 }
@@ -214,7 +214,7 @@ final class MediaArtworkLoaderTests: XCTestCase {
         XCTAssertEqual(fake.started, [a], "and not fetched again")
     }
 
-    func testPrivateArtworkIsNotCached() async throws {
+    @MainActor func testPrivateArtworkIsNotCached() async throws {
         let (loader, fake) = makeFakeLoader()
         var image: NSImage?
         loader.load(a, tabID: UUID(), isPrivate: true) { image = $0 }
@@ -231,20 +231,20 @@ final class MediaArtworkLoaderTests: XCTestCase {
 }
 
 /// Serves stubbed responses for `artwork.test` and records the requests.
-private final class ArtworkStubProtocol: URLProtocol {
+/// Nonisolated: URLSession calls a protocol on its own queues. The stubs and
+/// the recorded requests are behind a mutex.
+nonisolated private final class ArtworkStubProtocol: URLProtocol {
     private struct Stub { var status: Int; var body: Data; var declareLength: Bool }
-    private static let lock = NSLock()
-    private static var stubs: [String: Stub] = [:]
-    private static var recorded: [URLRequest] = []
+    private static let state = Mutex<(stubs: [String: Stub], recorded: [URLRequest])>(([:], []))
 
-    static var requests: [URLRequest] { lock.withLock { recorded } }
+    static var requests: [URLRequest] { state.withLock { $0.recorded } }
 
     static func stub(_ path: String, status: Int = 200, body: Data, declareLength: Bool = true) {
-        lock.withLock { stubs[path] = Stub(status: status, body: body, declareLength: declareLength) }
+        state.withLock { $0.stubs[path] = Stub(status: status, body: body, declareLength: declareLength) }
     }
 
     static func reset() {
-        lock.withLock { stubs.removeAll(); recorded.removeAll() }
+        state.withLock { $0 = ([:], []) }
     }
 
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "artwork.test" }
@@ -252,9 +252,10 @@ private final class ArtworkStubProtocol: URLProtocol {
 
     override func startLoading() {
         let url = request.url!
-        let stub = Self.lock.withLock { () -> Stub? in
-            Self.recorded.append(request)
-            return Self.stubs[url.path]
+        let request = request
+        let stub = Self.state.withLock { state -> Stub? in
+            state.recorded.append(request)
+            return state.stubs[url.path]
         }
         guard let stub else {
             client?.urlProtocol(self, didFailWithError: URLError(.fileDoesNotExist))

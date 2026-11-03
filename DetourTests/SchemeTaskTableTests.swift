@@ -5,9 +5,9 @@ import XCTest
 /// `SchemeTaskTable` answers a scheme task at most once, never after WebKit
 /// stopped it, and never a newer task that happens to have the old one's
 /// identity (WebKit can allocate the next task at a freed task's address).
-final class SchemeTaskTableTests: XCTestCase {
+nonisolated final class SchemeTaskTableTests: XCTestCase {
 
-    private final class FakeTask: NSObject, WKURLSchemeTask {
+    @MainActor private final class FakeTask: NSObject, WKURLSchemeTask {
         let request = URLRequest(url: URL(string: "detour://history/")!)
         func didReceive(_ response: URLResponse) {}
         func didReceive(_ data: Data) {}
@@ -15,7 +15,7 @@ final class SchemeTaskTableTests: XCTestCase {
         func didFailWithError(_ error: any Error) {}
     }
 
-    func testATaskIsTakenOnce() {
+    @MainActor func testATaskIsTakenOnce() {
         var table = SchemeTaskTable()
         let task = FakeTask()
         let ticket = table.insert(task)
@@ -23,7 +23,7 @@ final class SchemeTaskTableTests: XCTestCase {
         XCTAssertNil(table.take(ticket), "a second answer finds nothing")
     }
 
-    func testAStoppedTaskIsNotTaken() {
+    @MainActor func testAStoppedTaskIsNotTaken() {
         var table = SchemeTaskTable()
         let task = FakeTask()
         let ticket = table.insert(task)
@@ -33,7 +33,7 @@ final class SchemeTaskTableTests: XCTestCase {
 
     /// The same object inserted again stands for a new task WebKit allocated
     /// at a stopped task's address: the old request's ticket must not reach it.
-    func testAnOldTicketDoesNotReachANewTaskWithTheSameIdentity() {
+    @MainActor func testAnOldTicketDoesNotReachANewTaskWithTheSameIdentity() {
         var table = SchemeTaskTable()
         let task = FakeTask()
         let old = table.insert(task)
@@ -45,7 +45,7 @@ final class SchemeTaskTableTests: XCTestCase {
 
     /// Also when the old answer arrives before WebKit stopped the old task
     /// and the new one replaced it without a stop in between.
-    func testAnOldTicketDoesNotReachATaskThatReplacedItWithoutAStop() {
+    @MainActor func testAnOldTicketDoesNotReachATaskThatReplacedItWithoutAStop() {
         var table = SchemeTaskTable()
         let task = FakeTask()
         let old = table.insert(task)
@@ -54,7 +54,7 @@ final class SchemeTaskTableTests: XCTestCase {
         XCTAssertTrue(table.take(new) === task)
     }
 
-    func testTasksAreIndependent() {
+    @MainActor func testTasksAreIndependent() {
         var table = SchemeTaskTable()
         let first = FakeTask(), second = FakeTask()
         let firstTicket = table.insert(first)

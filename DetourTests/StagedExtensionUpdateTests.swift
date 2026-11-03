@@ -2,21 +2,21 @@ import XCTest
 @testable import Detour
 
 /// TASK-123: the staged copy on disk.
-final class StagedExtensionUpdateTests: XCTestCase {
+nonisolated final class StagedExtensionUpdateTests: XCTestCase {
     private var dataDir: URL!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         dataDir = FileManager.default.temporaryDirectory.appendingPathComponent("detour-staged-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         try? FileManager.default.removeItem(at: dataDir)
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func unpacked(version: String) throws -> URL {
+    @MainActor private func unpacked(version: String) throws -> URL {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("detour-unpacked-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try #"{"manifest_version":3,"name":"S","version":"\#(version)"}"#
@@ -24,7 +24,7 @@ final class StagedExtensionUpdateTests: XCTestCase {
         return dir
     }
 
-    func testStageMovesTheFilesAndLoadsBack() throws {
+    @MainActor func testStageMovesTheFilesAndLoadsBack() throws {
         let src = try unpacked(version: "2.0")
         let key = Data([1, 2, 3])
         let staged = try StagedExtensionUpdate.stage(unpackedDirectory: src, publicKey: key, version: "2.0",
@@ -50,7 +50,7 @@ final class StagedExtensionUpdateTests: XCTestCase {
         XCTAssertTrue(StagedExtensionUpdate.all(in: dataDir).isEmpty)
     }
 
-    func testAnUnreadableStagedCopyIsDroppedNotReturned() throws {
+    @MainActor func testAnUnreadableStagedCopyIsDroppedNotReturned() throws {
         let dir = StagedExtensionUpdate.directory(for: "bad", in: dataDir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try Data("not json".utf8).write(to: dir.appendingPathComponent(StagedExtensionUpdate.manifestFilename))
@@ -60,7 +60,7 @@ final class StagedExtensionUpdateTests: XCTestCase {
         XCTAssertTrue(StagedExtensionUpdate.all(in: dataDir).isEmpty)
     }
 
-    func testAStagedCopyUnderTheWrongNameIsRejected() throws {
+    @MainActor func testAStagedCopyUnderTheWrongNameIsRejected() throws {
         // A manifest that names another extension: never applied to this id.
         let src = try unpacked(version: "2.0")
         _ = try StagedExtensionUpdate.stage(unpackedDirectory: src, publicKey: Data([9]), version: "2.0", for: "one", in: dataDir)

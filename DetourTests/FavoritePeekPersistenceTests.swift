@@ -4,14 +4,14 @@ import GRDB
 
 /// A favourite peeks on cross-host link clicks exactly as a pinned entry does
 /// (TASK-42), so its peek state has to survive a relaunch the same way.
-final class FavoritePeekPersistenceTests: XCTestCase {
+nonisolated final class FavoritePeekPersistenceTests: XCTestCase {
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         let dbQueue = try DatabaseQueue()
         return try AppDatabase(dbQueue: dbQueue)
     }
 
-    private func makeSleepingTab(spaceID: UUID, url: String = "https://example.com") -> BrowserTab {
+    @MainActor private func makeSleepingTab(spaceID: UUID, url: String = "https://example.com") -> BrowserTab {
         BrowserTab(
             id: UUID(),
             title: "Tab",
@@ -26,7 +26,7 @@ final class FavoritePeekPersistenceTests: XCTestCase {
     private let peekState = Data([1, 2, 3])
     private let peekFaviconURL = URL(string: "https://peek.example.org/favicon.ico")!
 
-    func testFavoritePeekStateSurvivesRestore() throws {
+    @MainActor func testFavoritePeekStateSurvivesRestore() throws {
         let db = try makeDatabase()
         let store1 = TabStore(appDB: db)
         let profile1 = store1.addProfile(name: "Default")
@@ -53,7 +53,7 @@ final class FavoritePeekPersistenceTests: XCTestCase {
         XCTAssertEqual(restored.peekFaviconURL, peekFaviconURL)
     }
 
-    func testFavoriteWithoutPeekRestoresWithNoPeekState() throws {
+    @MainActor func testFavoriteWithoutPeekRestoresWithNoPeekState() throws {
         let db = try makeDatabase()
         let store1 = TabStore(appDB: db)
         let profile1 = store1.addProfile(name: "Default")
@@ -75,7 +75,7 @@ final class FavoritePeekPersistenceTests: XCTestCase {
 
     /// Removing a favourite outright must not leave its live backing tab (and
     /// the peek hosted on it) alive off-list.
-    func testRemovingFavoriteTearsDownItsBackingTab() throws {
+    @MainActor func testRemovingFavoriteTearsDownItsBackingTab() throws {
         let db = try makeDatabase()
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Default")
@@ -103,7 +103,7 @@ final class FavoritePeekPersistenceTests: XCTestCase {
     }
 
     /// Symmetry check: the pinned path this mirrors already persisted its peek.
-    func testPinnedEntryPeekStateSurvivesRestore() throws {
+    @MainActor func testPinnedEntryPeekStateSurvivesRestore() throws {
         let db = try makeDatabase()
         let store1 = TabStore(appDB: db)
         let profile1 = store1.addProfile(name: "Default")
@@ -132,7 +132,7 @@ final class FavoritePeekPersistenceTests: XCTestCase {
     /// A favourite's backing tab selected at quit is the tab the launch selects
     /// again (TASK-54): it is in no space list, so restore must keep pointing at
     /// it rather than falling back to the first pinned or normal tab.
-    func testSelectedFavoriteBackingTabSurvivesRestore() throws {
+    @MainActor func testSelectedFavoriteBackingTabSurvivesRestore() throws {
         let db = try makeDatabase()
         let store1 = TabStore(appDB: db)
         let profile1 = store1.addProfile(name: "Default")

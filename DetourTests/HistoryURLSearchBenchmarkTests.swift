@@ -19,23 +19,23 @@ import GRDB
 /// The history is built straight into a temp-file database in batched
 /// transactions, and everything about a URL (its home profile, its titles) is
 /// derived from its index, so the fixture holds no per-URL or per-visit arrays.
-final class HistoryURLSearchBenchmarkTests: XCTestCase {
+nonisolated final class HistoryURLSearchBenchmarkTests: XCTestCase {
 
     // MARK: - Measuring
 
-    private struct Sample {
+    @MainActor private struct Sample {
         var median: Double
         var min: Double
         var max: Double
     }
 
-    private func milliseconds(_ body: () -> Void) -> Double {
+    @MainActor private func milliseconds(_ body: () -> Void) -> Double {
         let start = CFAbsoluteTimeGetCurrent()
         body()
         return (CFAbsoluteTimeGetCurrent() - start) * 1000
     }
 
-    private func summary(_ samples: [Double]) -> Sample {
+    @MainActor private func summary(_ samples: [Double]) -> Sample {
         let sorted = samples.sorted()
         return Sample(median: sorted[sorted.count / 2], min: sorted[0], max: sorted[sorted.count - 1])
     }
@@ -43,7 +43,7 @@ final class HistoryURLSearchBenchmarkTests: XCTestCase {
     /// Median of five, in milliseconds, with the number of rows the call
     /// returned so a fast number cannot be an empty answer in disguise.
     @discardableResult
-    private func measure(_ label: String, runs: Int = 5, _ body: () -> Int) -> Sample {
+    @MainActor private func measure(_ label: String, runs: Int = 5, _ body: () -> Int) -> Sample {
         var rows = 0
         let sample = summary((0 ..< runs).map { _ in milliseconds { rows = body() } })
         print(String(format: "BENCH %@ %.2f ms (min %.2f, max %.2f) rows %d",
@@ -60,8 +60,8 @@ final class HistoryURLSearchBenchmarkTests: XCTestCase {
     /// "Just after" is one millisecond after the other thread reported it is
     /// about to call, so the search has the queue by the time the read asks
     /// for it. A run where the read won the race shows up as the minimum.
-    private func measureWait(_ label: String, runs: Int = 5,
-                             behind search: @escaping () -> Void, read: () -> Void) {
+    @MainActor private func measureWait(_ label: String, runs: Int = 5,
+                             behind search: @escaping @Sendable () -> Void, read: () -> Void) {
         var samples: [Double] = []
         for _ in 0 ..< runs {
             let starting = DispatchSemaphore(value: 0)
@@ -101,7 +101,7 @@ final class HistoryURLSearchBenchmarkTests: XCTestCase {
     private static let span = 90.0 * 86_400
 
     /// Deterministic, so the before/after columns describe the same corpus.
-    private struct Rng {
+    @MainActor private struct Rng {
         private var state: UInt64
         init(seed: UInt64) { state = seed }
         mutating func next() -> UInt64 {
@@ -124,25 +124,25 @@ final class HistoryURLSearchBenchmarkTests: XCTestCase {
     ]
 
     /// The profile most of a URL's visits come from: 55% A, 35% B, 10% C.
-    private static func homeProfile(ofURL index: Int) -> [String] {
+    @MainActor private static func homeProfile(ofURL index: Int) -> [String] {
         var rng = Rng(seed: UInt64(index) &* 31 &+ 7)
         let roll = rng.below(100)
         return roll < 55 ? profileA : (roll < 90 ? profileB : profileC)
     }
 
     /// How many titles a URL goes by: mostly one, some two or three.
-    private static func titleVariants(ofURL index: Int) -> Int {
+    @MainActor private static func titleVariants(ofURL index: Int) -> Int {
         var rng = Rng(seed: UInt64(index) &* 131 &+ 3)
         return rng.below(10) < 6 ? 1 : (rng.below(10) < 7 ? 3 : 2)
     }
 
-    private static func title(ofURL index: Int, variant: Int) -> String {
+    @MainActor private static func title(ofURL index: Int, variant: Int) -> String {
         var rng = Rng(seed: UInt64(index) &* 8 &+ UInt64(variant))
         return (0 ..< (3 + rng.below(4))).map { _ in words[rng.below(words.count)] }
             .joined(separator: " ")
     }
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let db: HistoryDatabase
         let directory: URL
     }
@@ -159,7 +159,7 @@ final class HistoryURLSearchBenchmarkTests: XCTestCase {
     /// - The oldest fifth of the visits has no title of its own, as visits
     ///   recorded before per-visit titles existed (TASK-91) do; that is the
     ///   case that costs the extension title rule a probe per visit.
-    private func makeFixture() throws -> Fixture {
+    @MainActor private func makeFixture() throws -> Fixture {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("history-search-bench-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -246,7 +246,7 @@ final class HistoryURLSearchBenchmarkTests: XCTestCase {
 
     // MARK: - The run
 
-    func testExtensionHistorySearchBenchmarks() throws {
+    @MainActor func testExtensionHistorySearchBenchmarks() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["HISTORY_SEARCH_BENCH"] == "1",
                           "history search benchmarks are env-gated: TEST_RUNNER_HISTORY_SEARCH_BENCH=1")
 

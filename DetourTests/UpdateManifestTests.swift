@@ -2,7 +2,7 @@ import XCTest
 @testable import Detour
 
 /// TASK-113: the update2 request and response as the Chrome Web Store speaks them.
-final class UpdateManifestTests: XCTestCase {
+nonisolated final class UpdateManifestTests: XCTestCase {
 
     private let storeResponse = """
     <?xml version="1.0" encoding="UTF-8"?>
@@ -18,7 +18,7 @@ final class UpdateManifestTests: XCTestCase {
     </gupdate>
     """
 
-    func testParsesAStoreResponse() throws {
+    @MainActor func testParsesAStoreResponse() throws {
         let entries = try UpdateManifest.parse(Data(storeResponse.utf8))
         XCTAssertEqual(entries.count, 3)
 
@@ -44,7 +44,7 @@ final class UpdateManifestTests: XCTestCase {
 
     /// A self-hosted update manifest (the Chromium autoupdate doc's shape): no
     /// namespace prefix games, no hash, single quotes.
-    func testParsesASelfHostedManifest() throws {
+    @MainActor func testParsesASelfHostedManifest() throws {
         let xml = """
         <?xml version='1.0' encoding='UTF-8'?>
         <gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
@@ -61,7 +61,7 @@ final class UpdateManifestTests: XCTestCase {
         XCTAssertNil(entries[0].sha256)
     }
 
-    func testNamespacePrefixedElementsStillParse() throws {
+    @MainActor func testNamespacePrefixedElementsStillParse() throws {
         let xml = """
         <g:gupdate xmlns:g="http://www.google.com/update2/response" protocol="2.0">
           <g:app appid="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" status="ok">
@@ -73,11 +73,11 @@ final class UpdateManifestTests: XCTestCase {
         XCTAssertEqual(entries.map(\.version), ["3.1"])
     }
 
-    func testNotXMLThrows() {
+    @MainActor func testNotXMLThrows() {
         XCTAssertThrowsError(try UpdateManifest.parse(Data("<html><body>nope".utf8)))
     }
 
-    func testAnOddLengthHashIsDropped() throws {
+    @MainActor func testAnOddLengthHashIsDropped() throws {
         let xml = """
         <gupdate><app appid="a"><updatecheck status="ok" version="1" hash_sha256="abc"/></app></gupdate>
         """
@@ -86,7 +86,7 @@ final class UpdateManifestTests: XCTestCase {
 
     // MARK: - Request URL
 
-    func testRequestURLEncodesTheXParameterTheWayTheStoreExpects() throws {
+    @MainActor func testRequestURLEncodesTheXParameterTheWayTheStoreExpects() throws {
         let url = try XCTUnwrap(UpdateManifest.requestURL(
             updateURL: ExtensionSource.webStoreUpdateURL, extensionID: "aeblfdkhhhdcdjpifhhbdiojplfjncoa",
             version: "8.10.40.0", prodVersion: "131.0.0.0"))
@@ -101,13 +101,13 @@ final class UpdateManifestTests: XCTestCase {
         XCTAssertFalse(query.contains("x=id="), "the inner '=' and '&' must be percent-encoded")
     }
 
-    func testRequestURLKeepsExistingQueryItems() throws {
+    @MainActor func testRequestURLKeepsExistingQueryItems() throws {
         let base = try XCTUnwrap(URL(string: "https://updates.example.test/manifest.xml?channel=beta"))
         let url = try XCTUnwrap(UpdateManifest.requestURL(updateURL: base, extensionID: "abc", version: "1", prodVersion: "131.0.0.0"))
         XCTAssertTrue(url.query?.hasPrefix("channel=beta&response=updatecheck") == true, url.absoluteString)
     }
 
-    func testChromeProductVersionComesFromTheUserAgent() {
+    @MainActor func testChromeProductVersionComesFromTheUserAgent() {
         XCTAssertEqual(ExtensionUpdater.chromeProductVersion(fromUserAgent: UserAgentMode.chromeUserAgent), "131.0.0.0")
         XCTAssertEqual(ExtensionUpdater.chromeProductVersion(fromUserAgent: "Mozilla/5.0 Chrome/140.0.7339.80 Safari/537.36"), "140.0.7339.80")
         XCTAssertEqual(ExtensionUpdater.chromeProductVersion(fromUserAgent: "Detour/1"), "131.0.0.0", "fallback")

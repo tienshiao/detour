@@ -10,14 +10,13 @@ import WebKit
 ///
 /// Every store here is a private `TabStore` on in-memory databases; pages that
 /// must really load come from a loopback HTTP server.
-@MainActor
-final class QuarantineTests: XCTestCase {
+nonisolated final class QuarantineTests: XCTestCase {
 
     private var openedTabs: [(store: TabStore, tab: BrowserTab)] = []
     private var servers: [LoopbackHTTPServer] = []
-    private var defaultFaviconFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)?
+    private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)?
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for (store, tab) in openedTabs { store.closeQuickDetourTab(tab) }
         openedTabs.removeAll()
         for server in servers { server.stop() }
@@ -26,16 +25,16 @@ final class QuarantineTests: XCTestCase {
             FaviconLoader.shared.fetch = defaultFaviconFetch
             FaviconLoader.shared.resetForTesting()
         }
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Link tracking parameters
 
-    private func stripped(_ s: String) -> String {
+    @MainActor private func stripped(_ s: String) -> String {
         Quarantine.removingTrackingParameters(from: URL(string: s)!).absoluteString
     }
 
-    func testClickIDsAndCampaignTagsAreRemoved() {
+    @MainActor func testClickIDsAndCampaignTagsAreRemoved() {
         XCTAssertEqual(stripped("https://a.test/p?gclid=1&fbclid=2&msclkid=3&utm_source=news&utm_medium=email"
                                 + "&utm_campaign=fall&utm_term=t&utm_content=c&mc_eid=4&mc_cid=5"),
                        "https://a.test/p")
@@ -46,40 +45,40 @@ final class QuarantineTests: XCTestCase {
         }
     }
 
-    func testOtherParametersKeepTheirOrderAndSpelling() {
+    @MainActor func testOtherParametersKeepTheirOrderAndSpelling() {
         XCTAssertEqual(stripped("https://a.test/p?a=1&gclid=x&b=two%20words&utm_source=y&c"),
                        "https://a.test/p?a=1&b=two%20words&c")
         XCTAssertEqual(stripped("https://a.test/search?q=utm_source%3Dx&id=7"), "https://a.test/search?q=utm_source%3Dx&id=7",
                        "a value that mentions a tracking name is not one")
     }
 
-    func testNamesAreComparedWithoutCase() {
+    @MainActor func testNamesAreComparedWithoutCase() {
         XCTAssertEqual(stripped("https://a.test/?GCLID=1&UTM_Source=x&keep=1"), "https://a.test/?keep=1")
     }
 
-    func testLookalikeNamesAreKept() {
+    @MainActor func testLookalikeNamesAreKept() {
         XCTAssertEqual(stripped("https://a.test/?utm=1&xutm_source=2&gclid_extra=3&fbclid2=4"),
                        "https://a.test/?utm=1&xutm_source=2&gclid_extra=3&fbclid2=4")
         XCTAssertFalse(Quarantine.isTrackingParameter("utm"))
         XCTAssertFalse(Quarantine.isTrackingParameter("id"))
     }
 
-    func testRepeatedAndValuelessTrackingParametersGo() {
+    @MainActor func testRepeatedAndValuelessTrackingParametersGo() {
         XCTAssertEqual(stripped("https://a.test/?utm_source=a&x=1&utm_source=b&gclid"), "https://a.test/?x=1")
     }
 
-    func testTheFragmentIsKeptAndAnEmptyQueryDropped() {
+    @MainActor func testTheFragmentIsKeptAndAnEmptyQueryDropped() {
         XCTAssertEqual(stripped("https://a.test/doc?fbclid=1#section-2"), "https://a.test/doc#section-2")
         XCTAssertEqual(stripped("https://a.test/doc?utm_source=x"), "https://a.test/doc")
     }
 
-    func testAURLWithoutTrackingParametersIsUnchanged() {
+    @MainActor func testAURLWithoutTrackingParametersIsUnchanged() {
         for s in ["https://a.test/", "https://a.test/p?q=1", "http://a.test:8080/p?x=1#y", "https://a.test/p?"] {
             XCTAssertEqual(stripped(s), s)
         }
     }
 
-    func testOnlyWebURLsAreTouched() {
+    @MainActor func testOnlyWebURLsAreTouched() {
         for s in ["mailto:someone@a.test?utm_source=x", "detour://history?utm_source=x", "data:text/plain,utm_source=x"] {
             XCTAssertEqual(stripped(s), s)
         }
@@ -87,7 +86,7 @@ final class QuarantineTests: XCTestCase {
 
     // MARK: - Which navigations are reloaded without them
 
-    func testAGetNavigationCarryingTrackingParametersIsReloadedWithout() {
+    @MainActor func testAGetNavigationCarryingTrackingParametersIsReloadedWithout() {
         let url = URL(string: "https://a.test/p?utm_campaign=x&id=1")!
         XCTAssertEqual(Quarantine.trackingFreeURL(for: url, httpMethod: "GET", isBackForwardOrReload: false),
                        URL(string: "https://a.test/p?id=1")!)
@@ -95,7 +94,7 @@ final class QuarantineTests: XCTestCase {
                        URL(string: "https://a.test/p?id=1")!, "no method is a GET")
     }
 
-    func testOtherNavigationsGoThrough() {
+    @MainActor func testOtherNavigationsGoThrough() {
         let tracked = URL(string: "https://a.test/p?gclid=1")!
         XCTAssertNil(Quarantine.trackingFreeURL(for: tracked, httpMethod: "POST", isBackForwardOrReload: false),
                      "a form post cannot be replayed")
@@ -109,7 +108,7 @@ final class QuarantineTests: XCTestCase {
     /// A download keeps its request: loading it again would drop the link's
     /// `download` attribute (the file would show as a page) and its Referer
     /// (code review, TASK-194 follow-up).
-    func testADownloadGoesThrough() {
+    @MainActor func testADownloadGoesThrough() {
         let tracked = URL(string: "https://a.test/report.pdf?utm_source=x")!
         XCTAssertNil(Quarantine.trackingFreeURL(for: tracked, httpMethod: "GET", isBackForwardOrReload: false,
                                                 shouldPerformDownload: true))
@@ -117,7 +116,7 @@ final class QuarantineTests: XCTestCase {
 
     /// A jump to an anchor of the page shown is not a load: removing the
     /// parameters would turn it into one (code review, TASK-194 follow-up).
-    func testASameDocumentNavigationGoesThrough() {
+    @MainActor func testASameDocumentNavigationGoesThrough() {
         let page = URL(string: "https://a.test/p?utm_source=x")!
         XCTAssertNil(Quarantine.trackingFreeURL(for: URL(string: "https://a.test/p?utm_source=x#section")!,
                                                 httpMethod: "GET", isBackForwardOrReload: false, currentURL: page))
@@ -138,7 +137,7 @@ final class QuarantineTests: XCTestCase {
     /// A page or server that sends the clean address straight back to its
     /// parameters (a redirect, `location.replace`) is let through the second
     /// time; it cannot loop the page (code review, TASK-194 follow-up).
-    func testTheSameCleanAddressIsRewrittenOnceUntilTheUserNavigates() {
+    @MainActor func testTheSameCleanAddressIsRewrittenOnceUntilTheUserNavigates() {
         var rewrites = QuarantineTrackingRewrites()
         let clean = URL(string: "https://a.test/p")!
         XCTAssertTrue(rewrites.allows(clean))
@@ -152,7 +151,7 @@ final class QuarantineTests: XCTestCase {
 
     /// A page that keeps inventing new addresses is let through after a
     /// fixed number of rewrites, whatever WebKit tells the policy.
-    func testRewritesHaveABudgetPerUserNavigation() {
+    @MainActor func testRewritesHaveABudgetPerUserNavigation() {
         var rewrites = QuarantineTrackingRewrites()
         for n in 0..<QuarantineTrackingRewrites.limit {
             XCTAssertTrue(rewrites.allows(URL(string: "https://a.test/p?n=\(n)")!), "rewrite \(n)")
@@ -164,7 +163,7 @@ final class QuarantineTests: XCTestCase {
 
     // MARK: - User agent
 
-    func testTheUserAgentIsSafarisWithTheFrozenOSVersionAndNoDetourToken() {
+    @MainActor func testTheUserAgentIsSafarisWithTheFrozenOSVersionAndNoDetourToken() {
         XCTAssertEqual(Quarantine.userAgent(safariVersion: "26.1"),
                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
                        + "Version/26.1 Safari/605.1.15")
@@ -173,7 +172,7 @@ final class QuarantineTests: XCTestCase {
 
     // MARK: - WebKit's privacy protections
 
-    func testThePrivacyProtectionsAreSetOnThePreferencesWhenWebKitHasThem() throws {
+    @MainActor func testThePrivacyProtectionsAreSetOnThePreferencesWhenWebKitHasThem() throws {
         let preferences = WKWebpagePreferences()
         guard Quarantine.privacyProtectionsAvailable(on: preferences) else {
             throw XCTSkip("this WebKit has no _networkConnectionIntegrityPolicy")
@@ -185,7 +184,7 @@ final class QuarantineTests: XCTestCase {
                        "baseline, fingerprinting protections and link decoration filtering, in WebKit's SPI names")
     }
 
-    func testApplyingThemKeepsWhatWasAlreadySet() throws {
+    @MainActor func testApplyingThemKeepsWhatWasAlreadySet() throws {
         let preferences = WKWebpagePreferences()
         guard Quarantine.privacyProtectionsAvailable(on: preferences) else {
             throw XCTSkip("this WebKit has no _networkConnectionIntegrityPolicy")
@@ -203,11 +202,11 @@ final class QuarantineTests: XCTestCase {
     private let privateProfile = QuickDetourProfileSnapshot(id: TabStore.incognitoProfileID, name: "Private",
                                                             isPrivate: true, isDeleted: false)
 
-    private func space(_ name: String, _ profile: QuickDetourProfileSnapshot, isPrivate: Bool = false) -> QuickDetourSpaceSnapshot {
+    @MainActor private func space(_ name: String, _ profile: QuickDetourProfileSnapshot, isPrivate: Bool = false) -> QuickDetourSpaceSnapshot {
         QuickDetourSpaceSnapshot(id: UUID(), name: name, emoji: "•", profileID: profile.id, isPrivate: isPrivate)
     }
 
-    func testOpenInListsEverySpaceOfEveryProfileAndEachReloads() {
+    @MainActor func testOpenInListsEverySpaceOfEveryProfileAndEachReloads() {
         let home = space("Home", personal)
         let desk = space("Desk", work)
         let lab = space("Lab", work)
@@ -221,7 +220,7 @@ final class QuarantineTests: XCTestCase {
         XCTAssertTrue(menu.showsSectionHeaders)
     }
 
-    func testOpenInNamesTheSpaceTheLinkWasClickedIn() {
+    @MainActor func testOpenInNamesTheSpaceTheLinkWasClickedIn() {
         let home = space("Home", personal)
         let desk = space("Desk", work)
         let menu = QuickDetour.quarantineOpenInMenu(sourceSpaceID: desk.id, spaces: [home, desk],
@@ -231,7 +230,7 @@ final class QuarantineTests: XCTestCase {
         XCTAssertEqual(menu.sections.flatMap(\.items).filter(\.isDefault).map(\.spaceID), [desk.id])
     }
 
-    func testWithoutASourceOpenInNamesTheMostRecentlyUsedSpace() {
+    @MainActor func testWithoutASourceOpenInNamesTheMostRecentlyUsedSpace() {
         let home = space("Home", personal)
         let desk = space("Desk", work)
         let menu = QuickDetour.quarantineOpenInMenu(sourceSpaceID: nil, spaces: [home, desk],
@@ -242,7 +241,7 @@ final class QuarantineTests: XCTestCase {
         XCTAssertEqual(unused.defaultTarget, .space(home.id), "none used: the first space")
     }
 
-    func testOpenInNeverListsPrivateOrDeletedProfilesSpaces() {
+    @MainActor func testOpenInNeverListsPrivateOrDeletedProfilesSpaces() {
         let home = space("Home", personal)
         let privateSpace = space("Private", privateProfile, isPrivate: true)
         let orphan = space("Orphan", gone)
@@ -254,7 +253,7 @@ final class QuarantineTests: XCTestCase {
         XCTAssertFalse(menu.showsSectionHeaders, "one profile: no headers")
     }
 
-    func testWithNoNormalSpaceOpenInHasNoTarget() {
+    @MainActor func testWithNoNormalSpaceOpenInHasNoTarget() {
         let menu = QuickDetour.quarantineOpenInMenu(sourceSpaceID: nil, spaces: [], profiles: [personal], useOrder: [])
         XCTAssertNil(menu.defaultTarget)
         XCTAssertNil(menu.destinationName)
@@ -263,7 +262,7 @@ final class QuarantineTests: XCTestCase {
 
     // MARK: - The store: isolation
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let store: TabStore
         let appDB: AppDatabase
         let historyDB: HistoryDatabase
@@ -271,7 +270,7 @@ final class QuarantineTests: XCTestCase {
         let privateProfile: Profile
     }
 
-    private func makeFixture() throws -> Fixture {
+    @MainActor private func makeFixture() throws -> Fixture {
         var config = Configuration()
         config.foreignKeysEnabled = true
         let historyDB = try HistoryDatabase(dbQueue: try DatabaseQueue(configuration: config))
@@ -283,7 +282,7 @@ final class QuarantineTests: XCTestCase {
                        privateProfile: store.ensureIncognitoProfile())
     }
 
-    private func openQuarantine(_ f: Fixture, session: QuarantineSession? = nil,
+    @MainActor private func openQuarantine(_ f: Fixture, session: QuarantineSession? = nil,
                                 openedWith configuration: WKWebViewConfiguration? = nil) -> BrowserTab {
         let session = session ?? QuarantineSession(originalURL: nil)
         let tab = f.store.openQuickDetourTab(profile: f.privateProfile, openedWith: configuration, quarantine: session)
@@ -291,7 +290,7 @@ final class QuarantineTests: XCTestCase {
         return tab
     }
 
-    func testTheQuarantinePageHasAFreshStoreOfItsOwn() throws {
+    @MainActor func testTheQuarantinePageHasAFreshStoreOfItsOwn() throws {
         let f = try makeFixture()
         let session = QuarantineSession(originalURL: nil)
         let tab = openQuarantine(f, session: session)
@@ -306,14 +305,14 @@ final class QuarantineTests: XCTestCase {
         XCTAssertTrue(tab.isQuarantined)
     }
 
-    func testEachQuarantineHasItsOwnStore() throws {
+    @MainActor func testEachQuarantineHasItsOwnStore() throws {
         let f = try makeFixture()
         let first = openQuarantine(f)
         let second = openQuarantine(f)
         XCTAssertFalse(first.webView?.configuration.websiteDataStore === second.webView?.configuration.websiteDataStore)
     }
 
-    func testAWindowThePageOpensSharesItsStore() throws {
+    @MainActor func testAWindowThePageOpensSharesItsStore() throws {
         // A `window.open` child must keep its opener, so WebKit hands over a
         // copy of the opener's configuration, store included.
         let f = try makeFixture()
@@ -325,7 +324,7 @@ final class QuarantineTests: XCTestCase {
         XCTAssertTrue(child.quarantine === session)
     }
 
-    func testItIsAPrivateQuickDetourWithThePrivateExtensionController() throws {
+    @MainActor func testItIsAPrivateQuickDetourWithThePrivateExtensionController() throws {
         let f = try makeFixture()
         let tab = openQuarantine(f)
         XCTAssertTrue(tab.quickDetourProfile === f.privateProfile)
@@ -335,14 +334,14 @@ final class QuarantineTests: XCTestCase {
         XCTAssertNil(tab.spaceID)
     }
 
-    func testItSendsSafarisUserAgent() throws {
+    @MainActor func testItSendsSafarisUserAgent() throws {
         let f = try makeFixture()
         let tab = openQuarantine(f)
         tab.load(URL(string: "https://quarantine-ua.invalid/")!)
         XCTAssertEqual(tab.webView?.customUserAgent, Quarantine.userAgent)
     }
 
-    func testTheSessionGoesWithItsLastPage() throws {
+    @MainActor func testTheSessionGoesWithItsLastPage() throws {
         let f = try makeFixture()
         weak var weakSession: QuarantineSession?
         var first: BrowserTab!
@@ -360,7 +359,7 @@ final class QuarantineTests: XCTestCase {
         XCTAssertNil(weakSession, "no page left: the store and its data go")
     }
 
-    func testItRecordsNoHistory() async throws {
+    @MainActor func testItRecordsNoHistory() async throws {
         let f = try makeFixture()
         let base = try await serve(["/": "<html><head><title>Lookup</title></head><body>x</body></html>"])
         let tab = openQuarantine(f)
@@ -376,7 +375,7 @@ final class QuarantineTests: XCTestCase {
         XCTAssertEqual(everything, 0)
     }
 
-    func testClosingItArchivesNothing() async throws {
+    @MainActor func testClosingItArchivesNothing() async throws {
         let f = try makeFixture()
         let tab = openQuarantine(f)
         tab.load(URL(string: "https://quarantine-archive.invalid/")!)
@@ -384,7 +383,7 @@ final class QuarantineTests: XCTestCase {
         XCTAssertTrue(f.store.archiveEntries().isEmpty)
     }
 
-    func testItFetchesNoFavicon() async throws {
+    @MainActor func testItFetchesNoFavicon() async throws {
         // A favicon is fetched with the app's own URL session, outside the
         // quarantine's store: a quarantine page has none.
         let f = try makeFixture()
@@ -410,14 +409,14 @@ final class QuarantineTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func serve(_ routes: [String: String]) async throws -> URL {
+    @MainActor private func serve(_ routes: [String: String]) async throws -> URL {
         let server = try LoopbackHTTPServer(routes: routes)
         servers.append(server)
         let port = try await server.start()
         return URL(string: "http://127.0.0.1:\(port)/")!
     }
 
-    private func pump(_ seconds: TimeInterval) {
+    @MainActor private func pump(_ seconds: TimeInterval) {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))

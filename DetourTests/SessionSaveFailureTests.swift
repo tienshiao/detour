@@ -18,16 +18,16 @@ import GRDB
 /// test-only hook. `SessionSaveAtomicityTests` covers the other kind of
 /// failure, one that is not about a row, which must leave the previous save
 /// whole.
-final class SessionSaveFailureTests: XCTestCase {
+nonisolated final class SessionSaveFailureTests: XCTestCase {
 
     // MARK: - Fixture
 
-    private func makeSleepingTab(spaceID: UUID, url: String) -> BrowserTab {
+    @MainActor private func makeSleepingTab(spaceID: UUID, url: String) -> BrowserTab {
         BrowserTab(id: UUID(), title: "Tab", url: URL(string: url), faviconURL: nil,
                    cachedInteractionState: Data([1, 2, 3]), spaceID: spaceID)
     }
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let db: AppDatabase
         let store: TabStore
         let work: Profile
@@ -44,7 +44,7 @@ final class SessionSaveFailureTests: XCTestCase {
     /// nested folder and a live entry, a dormant entry at the root, a live and
     /// a dormant favourite. Home: one tab, one dormant entry, one dormant
     /// favourite. Saved once, so the database holds this state.
-    private func makeSavedFixture() throws -> Fixture {
+    @MainActor private func makeSavedFixture() throws -> Fixture {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         let store = TabStore(appDB: db)
         let work = store.addProfile(name: "Work")
@@ -84,7 +84,7 @@ final class SessionSaveFailureTests: XCTestCase {
     // MARK: - Reading the database back
 
     /// The rows `sql` selects, as text.
-    private func rows(_ db: AppDatabase, _ sql: String, _ arguments: StatementArguments = []) throws -> [String] {
+    @MainActor private func rows(_ db: AppDatabase, _ sql: String, _ arguments: StatementArguments = []) throws -> [String] {
         try db.dbQueue.read { conn in
             try Row.fetchAll(conn, sql: sql, arguments: arguments).map { row in
                 row.map { column, value in "\(column)=\(value)" }.joined(separator: " | ")
@@ -94,7 +94,7 @@ final class SessionSaveFailureTests: XCTestCase {
 
     /// Every row that belongs to one space: the space, its tabs, its pinned
     /// folders and entries.
-    private func spaceRows(_ db: AppDatabase, _ space: Space) throws -> [String: [String]] {
+    @MainActor private func spaceRows(_ db: AppDatabase, _ space: Space) throws -> [String: [String]] {
         let id = space.id.uuidString
         return [
             "space": try rows(db, "SELECT * FROM space WHERE id = ?", [id]),
@@ -105,7 +105,7 @@ final class SessionSaveFailureTests: XCTestCase {
     }
 
     /// Every row of every table a save writes.
-    private func sessionRows(_ db: AppDatabase) throws -> [String: [String]] {
+    @MainActor private func sessionRows(_ db: AppDatabase) throws -> [String: [String]] {
         var tables: [String: [String]] = [:]
         for table in ["profile", "space", "tab", "pinnedFolder", "pinnedTab", "favorite"] {
             tables[table] = try rows(db, "SELECT * FROM \(table) ORDER BY id")
@@ -114,20 +114,20 @@ final class SessionSaveFailureTests: XCTestCase {
         return tables
     }
 
-    private func strings(_ db: AppDatabase, _ sql: String, _ arguments: StatementArguments = []) throws -> [String] {
+    @MainActor private func strings(_ db: AppDatabase, _ sql: String, _ arguments: StatementArguments = []) throws -> [String] {
         try db.dbQueue.read { conn in try String.fetchAll(conn, sql: sql, arguments: arguments) }
     }
 
-    private func optionalString(_ db: AppDatabase, _ sql: String, _ arguments: StatementArguments = []) throws -> String? {
+    @MainActor private func optionalString(_ db: AppDatabase, _ sql: String, _ arguments: StatementArguments = []) throws -> String? {
         try db.dbQueue.read { conn in try String.fetchOne(conn, sql: sql, arguments: arguments) }
     }
 
-    private func count(_ db: AppDatabase, _ sql: String, _ arguments: StatementArguments = []) throws -> Int {
+    @MainActor private func count(_ db: AppDatabase, _ sql: String, _ arguments: StatementArguments = []) throws -> Int {
         try db.dbQueue.read { conn in try Int.fetchOne(conn, sql: sql, arguments: arguments) ?? 0 }
     }
 
     /// What the next launch holds.
-    private func relaunch(_ db: AppDatabase) -> TabStore {
+    @MainActor private func relaunch(_ db: AppDatabase) -> TabStore {
         let store = TabStore(appDB: db)
         _ = store.restoreSession()
         return store
@@ -138,7 +138,7 @@ final class SessionSaveFailureTests: XCTestCase {
     /// Makes the insert of the one row `id` of `table` fail the way a foreign
     /// key or uniqueness violation does: a constraint error from inside the
     /// statement, for that row only, on every save until it is removed.
-    private func refuseRow(_ id: UUID, of table: String, in db: AppDatabase) throws {
+    @MainActor private func refuseRow(_ id: UUID, of table: String, in db: AppDatabase) throws {
         try db.dbQueue.write { conn in
             try conn.execute(sql: """
                 CREATE TRIGGER refusedRow BEFORE INSERT ON \(table) WHEN NEW.id = '\(id.uuidString)'
@@ -147,13 +147,13 @@ final class SessionSaveFailureTests: XCTestCase {
         }
     }
 
-    private func acceptRowsAgain(in db: AppDatabase) throws {
+    @MainActor private func acceptRowsAgain(in db: AppDatabase) throws {
         try db.dbQueue.write { conn in try conn.execute(sql: "DROP TRIGGER refusedRow") }
     }
 
     /// Makes every insert into `table` fail the way a full disk would: an
     /// error that is not a constraint failure.
-    private func failEveryInsert(into table: String, in db: AppDatabase) throws {
+    @MainActor private func failEveryInsert(into table: String, in db: AppDatabase) throws {
         try db.dbQueue.write { conn in
             conn.add(function: DatabaseFunction("injected_failure", argumentCount: 0) { _ in
                 throw DatabaseError(resultCode: .SQLITE_FULL, message: "injected failure")
@@ -167,14 +167,14 @@ final class SessionSaveFailureTests: XCTestCase {
 
     /// The units a save reported as not written; nil when it reported
     /// anything else.
-    private func unitsNotSaved(_ outcome: TabStore.SessionSaveOutcome) -> [AppDatabase.SessionSaveFailure.Unit]? {
+    @MainActor private func unitsNotSaved(_ outcome: TabStore.SessionSaveOutcome) -> [AppDatabase.SessionSaveFailure.Unit]? {
         guard case .savedExcept(let failures) = outcome else { return nil }
         return failures.map(\.unit)
     }
 
     // MARK: - Rows that cannot be made valid are repaired
 
-    func testAPinnedFolderWhoseParentIsMissingIsSavedAtTheRoot() throws {
+    @MainActor func testAPinnedFolderWhoseParentIsMissingIsSavedAtTheRoot() throws {
         let fixture = try makeSavedFixture()
         let added = makeSleepingTab(spaceID: fixture.homeSpace.id, url: "https://home.example.com/added")
         fixture.homeSpace.tabs.append(added)
@@ -199,7 +199,7 @@ final class SessionSaveFailureTests: XCTestCase {
         XCTAssertEqual(restored.pinnedEntries.count, 2)
     }
 
-    func testAPinnedFolderParentCycleIsBrokenAndSaved() throws {
+    @MainActor func testAPinnedFolderParentCycleIsBrokenAndSaved() throws {
         let fixture = try makeSavedFixture()
         let added = makeSleepingTab(spaceID: fixture.homeSpace.id, url: "https://home.example.com/added")
         fixture.homeSpace.tabs.append(added)
@@ -220,7 +220,7 @@ final class SessionSaveFailureTests: XCTestCase {
         XCTAssertEqual(restored.pinnedEntries.first { $0.id == fixture.liveEntry.id }?.folderID, outer.id)
     }
 
-    func testAPinnedEntryWhoseFolderIsMissingIsSavedAtTheRoot() throws {
+    @MainActor func testAPinnedEntryWhoseFolderIsMissingIsSavedAtTheRoot() throws {
         let fixture = try makeSavedFixture()
         let added = makeSleepingTab(spaceID: fixture.homeSpace.id, url: "https://home.example.com/added")
         fixture.homeSpace.tabs.append(added)
@@ -246,7 +246,7 @@ final class SessionSaveFailureTests: XCTestCase {
 
     /// Changes in every part of the save: both spaces, the profiles, the
     /// favourites of both profiles, the active space.
-    private func changeEveryPart(_ fixture: Fixture) throws -> (workTab: BrowserTab, homeTab: BrowserTab) {
+    @MainActor private func changeEveryPart(_ fixture: Fixture) throws -> (workTab: BrowserTab, homeTab: BrowserTab) {
         let store = fixture.store
         let workTab = makeSleepingTab(spaceID: fixture.workSpace.id, url: "https://work.example.com/new")
         fixture.workSpace.tabs.append(workTab)
@@ -269,7 +269,7 @@ final class SessionSaveFailureTests: XCTestCase {
         return (workTab, homeTab)
     }
 
-    func testAConstraintFailureInOneSpaceStillSavesEveryOtherPart() throws {
+    @MainActor func testAConstraintFailureInOneSpaceStillSavesEveryOtherPart() throws {
         let fixture = try makeSavedFixture()
         let workRowsBefore = try spaceRows(fixture.db, fixture.workSpace)
         let tabs = try changeEveryPart(fixture)
@@ -339,7 +339,7 @@ final class SessionSaveFailureTests: XCTestCase {
 
     /// A failing pinned row is part of its space's unit: the space keeps its
     /// previous pinned rows instead of losing them to the cascade.
-    func testAConstraintFailureInAPinnedRowKeepsThatSpacesPinnedRows() throws {
+    @MainActor func testAConstraintFailureInAPinnedRowKeepsThatSpacesPinnedRows() throws {
         let fixture = try makeSavedFixture()
         let workRowsBefore = try spaceRows(fixture.db, fixture.workSpace)
         let tabs = try changeEveryPart(fixture)
@@ -356,7 +356,7 @@ final class SessionSaveFailureTests: XCTestCase {
 
     /// A space that was never saved and cannot be is missing after the save;
     /// the spaces that were there are written.
-    func testANewSpaceThatCannotBeSavedDoesNotStopTheOthers() throws {
+    @MainActor func testANewSpaceThatCannotBeSavedDoesNotStopTheOthers() throws {
         let fixture = try makeSavedFixture()
         let tabs = try changeEveryPart(fixture)
         let extra = fixture.store.addSpace(name: "Extra", emoji: "E", colorHex: "34C759", profileID: fixture.home.id)
@@ -374,7 +374,7 @@ final class SessionSaveFailureTests: XCTestCase {
     }
 
     /// A space the user deleted is deleted even when another space fails.
-    func testADeletedSpaceIsRemovedWhileAnotherSpaceFails() throws {
+    @MainActor func testADeletedSpaceIsRemovedWhileAnotherSpaceFails() throws {
         let fixture = try makeSavedFixture()
         let tabs = try changeEveryPart(fixture)
         fixture.store.deleteSpace(id: fixture.homeSpace.id)
@@ -395,7 +395,7 @@ final class SessionSaveFailureTests: XCTestCase {
 
     /// A tab that left the failing space is in its new space only: the row the
     /// failing space kept for it would otherwise collide with the new one.
-    func testATabMovedOutOfTheFailingSpaceIsSavedInItsNewSpace() throws {
+    @MainActor func testATabMovedOutOfTheFailingSpaceIsSavedInItsNewSpace() throws {
         let fixture = try makeSavedFixture()
         let tabs = try changeEveryPart(fixture)
         // Work is written first and fails; Home, written after it, receives the tab.
@@ -416,7 +416,7 @@ final class SessionSaveFailureTests: XCTestCase {
 
     /// The same when the failing space is written after the space that
     /// receives the tab.
-    func testATabMovedOutOfASpaceThatFailsLaterIsSavedInItsNewSpace() throws {
+    @MainActor func testATabMovedOutOfASpaceThatFailsLaterIsSavedInItsNewSpace() throws {
         let fixture = try makeSavedFixture()
         let tabs = try changeEveryPart(fixture)
         // Work is written first and receives the tab; Home, written after it, fails.
@@ -439,7 +439,7 @@ final class SessionSaveFailureTests: XCTestCase {
     /// A favourite made live since the last good save has its backing tab's
     /// row in the space that hosts it. When that space fails, the favourites
     /// are still written, with that one dormant.
-    func testAFavouriteWhoseBackingTabWasNotSavedIsSavedDormant() throws {
+    @MainActor func testAFavouriteWhoseBackingTabWasNotSavedIsSavedDormant() throws {
         let fixture = try makeSavedFixture()
         let tabs = try changeEveryPart(fixture)
         let backing = makeSleepingTab(spaceID: fixture.workSpace.id, url: "https://fav.example.com/new-live")
@@ -462,7 +462,7 @@ final class SessionSaveFailureTests: XCTestCase {
 
     /// The unit-by-unit save is one transaction too: an error that is not a
     /// refused row, met after some units were written, undoes all of them.
-    func testAFailureThatIsNotARefusedRowDuringTheUnitByUnitSaveWritesNothing() throws {
+    @MainActor func testAFailureThatIsNotARefusedRowDuringTheUnitByUnitSaveWritesNothing() throws {
         let fixture = try makeSavedFixture()
         let before = try sessionRows(fixture.db)
         let tabs = try changeEveryPart(fixture)
@@ -481,7 +481,7 @@ final class SessionSaveFailureTests: XCTestCase {
 
     /// A failure that is not a refused row is not retried unit by unit: the
     /// same error would stop every unit.
-    func testAFailureThatIsNotARefusedRowKeepsTheLastGoodSave() throws {
+    @MainActor func testAFailureThatIsNotARefusedRowKeepsTheLastGoodSave() throws {
         let fixture = try makeSavedFixture()
         let before = try sessionRows(fixture.db)
         _ = try changeEveryPart(fixture)

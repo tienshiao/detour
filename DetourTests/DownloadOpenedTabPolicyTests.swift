@@ -1,21 +1,21 @@
 import XCTest
 @testable import Detour
 
-final class DownloadOpenedTabPolicyTests: XCTestCase {
+nonisolated final class DownloadOpenedTabPolicyTests: XCTestCase {
 
     private typealias Policy = DownloadOpenedTabPolicy
 
     // MARK: - Which tab closes
 
-    func testANormalTabThatNeverShowedAPageCloses() {
+    @MainActor func testANormalTabThatNeverShowedAPageCloses() {
         XCTAssertTrue(Policy.closesTab(.init(isNormalTab: true, hasCommittedPage: false)))
     }
 
-    func testATabThatShowedAPageStaysOnIt() {
+    @MainActor func testATabThatShowedAPageStaysOnIt() {
         XCTAssertFalse(Policy.closesTab(.init(isNormalTab: true, hasCommittedPage: true)))
     }
 
-    func testAPinnedOrFavouriteBackingTabNeverCloses() {
+    @MainActor func testAPinnedOrFavouriteBackingTabNeverCloses() {
         XCTAssertFalse(Policy.closesTab(.init(isNormalTab: false, hasCommittedPage: false)))
         XCTAssertFalse(Policy.closesTab(.init(isNormalTab: false, hasCommittedPage: true)))
     }
@@ -27,12 +27,12 @@ final class DownloadOpenedTabPolicyTests: XCTestCase {
     private let spaceA = UUID()
     private let spaceB = UUID()
 
-    private func windows(open: Set<String>, key: String?, spaces: [String: UUID]) -> Policy.Windows<String> {
+    @MainActor private func windows(open: Set<String>, key: String?, spaces: [String: UUID]) -> Policy.Windows<String> {
         .init(open: open, key: key, activeSpaceID: spaces)
     }
 
     /// The route switched the clicked window itself to another space.
-    func testTheClickedWindowSwitchedToTheRoutedSpaceSwitchesBack() {
+    @MainActor func testTheClickedWindowSwitchedToTheRoutedSpaceSwitchesBack() {
         let open = Policy.RoutedOpen(sourceWindow: source, placedWindow: source, placedWindowWasCreated: false, placedWindowIsPrivate: false,
                                      placedWindowPreviousSpaceID: spaceA, routedSpaceID: spaceB)
         XCTAssertEqual(Policy.restoration(of: open, windows: windows(open: [source], key: source, spaces: [source: spaceB])),
@@ -40,7 +40,7 @@ final class DownloadOpenedTabPolicyTests: XCTestCase {
     }
 
     /// Another window was switched and brought forward.
-    func testAnotherWindowSwitchedSwitchesBackAndTheClickedWindowComesForward() {
+    @MainActor func testAnotherWindowSwitchedSwitchesBackAndTheClickedWindowComesForward() {
         let open = Policy.RoutedOpen(sourceWindow: source, placedWindow: other, placedWindowWasCreated: false, placedWindowIsPrivate: false,
                                      placedWindowPreviousSpaceID: spaceA, routedSpaceID: spaceB)
         XCTAssertEqual(Policy.restoration(of: open, windows: windows(open: [source, other], key: other,
@@ -49,7 +49,7 @@ final class DownloadOpenedTabPolicyTests: XCTestCase {
     }
 
     /// Another window already on the routed space was only brought forward.
-    func testAWindowOnlyBroughtForwardGoesBehindTheClickedWindowAgain() {
+    @MainActor func testAWindowOnlyBroughtForwardGoesBehindTheClickedWindowAgain() {
         let open = Policy.RoutedOpen(sourceWindow: source, placedWindow: other, placedWindowWasCreated: false, placedWindowIsPrivate: false,
                                      placedWindowPreviousSpaceID: nil, routedSpaceID: spaceB)
         XCTAssertEqual(Policy.restoration(of: open, windows: windows(open: [source, other], key: other,
@@ -58,7 +58,7 @@ final class DownloadOpenedTabPolicyTests: XCTestCase {
     }
 
     /// A window (or Private window) opened for the tab closes.
-    func testAWindowOpenedForTheTabCloses() {
+    @MainActor func testAWindowOpenedForTheTabCloses() {
         let open = Policy.RoutedOpen(sourceWindow: source, placedWindow: other, placedWindowWasCreated: true, placedWindowIsPrivate: false,
                                      placedWindowPreviousSpaceID: nil, routedSpaceID: spaceB)
         XCTAssertEqual(Policy.restoration(of: open, windows: windows(open: [source, other], key: other,
@@ -68,7 +68,7 @@ final class DownloadOpenedTabPolicyTests: XCTestCase {
 
     /// A Private window opened for the tab holds the download's only listing:
     /// closing it would cancel the download, so it stays, in front.
-    func testAPrivateWindowOpenedForTheTabStays() {
+    @MainActor func testAPrivateWindowOpenedForTheTabStays() {
         let open = Policy.RoutedOpen(sourceWindow: source, placedWindow: other, placedWindowWasCreated: true,
                                      placedWindowIsPrivate: true, placedWindowPreviousSpaceID: nil, routedSpaceID: spaceB)
         XCTAssertEqual(Policy.restoration(of: open, windows: windows(open: [source, other], key: other,
@@ -77,7 +77,7 @@ final class DownloadOpenedTabPolicyTests: XCTestCase {
 
     /// An existing Private window the link was sent to goes behind the
     /// clicked window again; its download goes on there.
-    func testAnExistingPrivateWindowGoesBehindTheClickedWindowAgain() {
+    @MainActor func testAnExistingPrivateWindowGoesBehindTheClickedWindowAgain() {
         let open = Policy.RoutedOpen(sourceWindow: source, placedWindow: other, placedWindowWasCreated: false,
                                      placedWindowIsPrivate: true, placedWindowPreviousSpaceID: nil, routedSpaceID: spaceB)
         XCTAssertEqual(Policy.restoration(of: open, windows: windows(open: [source, other], key: other,
@@ -86,7 +86,7 @@ final class DownloadOpenedTabPolicyTests: XCTestCase {
     }
 
     /// The user moved on before the response came: nothing is put back.
-    func testNothingIsPutBackOnceTheUserMovedOn() {
+    @MainActor func testNothingIsPutBackOnceTheUserMovedOn() {
         let switched = Policy.RoutedOpen(sourceWindow: source, placedWindow: other, placedWindowWasCreated: false, placedWindowIsPrivate: false,
                                          placedWindowPreviousSpaceID: spaceA, routedSpaceID: spaceB)
         XCTAssertEqual(Policy.restoration(of: switched, windows: windows(open: [source, other], key: source,
@@ -101,7 +101,7 @@ final class DownloadOpenedTabPolicyTests: XCTestCase {
     }
 
     /// The clicked window closed meanwhile: the placed window is still put back.
-    func testAClosedSourceWindowIsNotBroughtForward() {
+    @MainActor func testAClosedSourceWindowIsNotBroughtForward() {
         let open = Policy.RoutedOpen(sourceWindow: source, placedWindow: other, placedWindowWasCreated: false, placedWindowIsPrivate: false,
                                      placedWindowPreviousSpaceID: spaceA, routedSpaceID: spaceB)
         XCTAssertEqual(Policy.restoration(of: open, windows: windows(open: [other], key: other, spaces: [other: spaceB])),

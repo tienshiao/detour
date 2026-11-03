@@ -1,3 +1,4 @@
+import Synchronization
 import XCTest
 import GRDB
 @testable import Detour
@@ -5,29 +6,29 @@ import GRDB
 /// TASK-191.1: the link routes and the Default target, kept in the
 /// session database (`linkRoute`, `linkRouteDefault`, migration v20), and the
 /// rule that a space they target cannot be deleted.
-final class LinkRouteStoreTests: XCTestCase {
+nonisolated final class LinkRouteStoreTests: XCTestCase {
 
     private let work = UUID()
     private let personal = UUID()
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         try AppDatabase(dbQueue: DatabaseQueue())
     }
 
-    private func route(_ kind: LinkRouteMatchKind?, _ pattern: String = "", app: String? = nil,
+    @MainActor private func route(_ kind: LinkRouteMatchKind?, _ pattern: String = "", app: String? = nil,
                        to target: LinkRouteTarget) -> LinkRoute {
         LinkRoute(match: kind.map { LinkRouteMatch(kind: $0, pattern: pattern) }, sourceApp: app, target: target)
     }
 
     // MARK: - Store
 
-    func testAFreshStoreHasNoRoutesAndTheMostRecentSpaceDefault() throws {
+    @MainActor func testAFreshStoreHasNoRoutesAndTheMostRecentSpaceDefault() throws {
         let store = LinkRouteStore(database: try makeDatabase())
         XCTAssertEqual(store.routes, [])
         XCTAssertEqual(store.defaultTarget, .mostRecentSpace)
     }
 
-    func testAddedRoutesAreAppendedInOrderAndSurviveANewStore() throws {
+    @MainActor func testAddedRoutesAreAppendedInOrderAndSurviveANewStore() throws {
         let db = try makeDatabase()
         let store = LinkRouteStore(database: db)
         let a = try XCTUnwrap(store.add(route(.domainIs, "work.test", to: .space(work))))
@@ -44,7 +45,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertEqual(db.loadLinkRoutes().count, 6)
     }
 
-    func testARouteWithoutAConditionIsRefused() throws {
+    @MainActor func testARouteWithoutAConditionIsRefused() throws {
         let db = try makeDatabase()
         let store = LinkRouteStore(database: db)
         XCTAssertNil(store.add(route(nil, to: .space(work))))
@@ -53,7 +54,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertEqual(db.loadLinkRoutes(), [])
     }
 
-    func testUpdateReplacesTheConditionAndTargetAndKeepsThePlace() throws {
+    @MainActor func testUpdateReplacesTheConditionAndTargetAndKeepsThePlace() throws {
         let db = try makeDatabase()
         let store = LinkRouteStore(database: db)
         let a = try XCTUnwrap(store.add(route(.domainIs, "a.test", to: .space(work))))
@@ -74,7 +75,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertEqual(LinkRouteStore(database: db).routes, store.routes)
     }
 
-    func testUpdateRefusesAnUnknownRouteOrOneLeftWithoutACondition() throws {
+    @MainActor func testUpdateRefusesAnUnknownRouteOrOneLeftWithoutACondition() throws {
         let db = try makeDatabase()
         let store = LinkRouteStore(database: db)
         let a = try XCTUnwrap(store.add(route(.domainIs, "a.test", to: .space(work))))
@@ -86,7 +87,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertEqual(LinkRouteStore(database: db).routes, [a])
     }
 
-    func testMoveRouteReordersAndRenumbers() throws {
+    @MainActor func testMoveRouteReordersAndRenumbers() throws {
         let db = try makeDatabase()
         let store = LinkRouteStore(database: db)
         let a = try XCTUnwrap(store.add(route(.domainIs, "a.test", to: .space(work))))
@@ -106,7 +107,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertEqual(store.routes.map(\.id), [a.id, b.id, c.id])
     }
 
-    func testRemoveRouteDeletesItsRow() throws {
+    @MainActor func testRemoveRouteDeletesItsRow() throws {
         let db = try makeDatabase()
         let store = LinkRouteStore(database: db)
         let a = try XCTUnwrap(store.add(route(.domainIs, "a.test", to: .space(work))))
@@ -118,7 +119,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertGreaterThan(next.sortOrder, b.sortOrder, "a new route goes after the last one")
     }
 
-    func testTheDefaultTargetPersists() throws {
+    @MainActor func testTheDefaultTargetPersists() throws {
         let db = try makeDatabase()
         let store = LinkRouteStore(database: db)
         for target: LinkRouteTarget in [.space(work), .privateWindow, .quarantine, .quickDetour, .mostRecentSpace] {
@@ -128,11 +129,11 @@ final class LinkRouteStoreTests: XCTestCase {
         }
     }
 
-    func testChangesPostTheNotification() throws {
+    @MainActor func testChangesPostTheNotification() throws {
         let store = LinkRouteStore(database: try makeDatabase())
-        var count = 0
+        let count = Mutex<Int>(0)
         let token = NotificationCenter.default.addObserver(forName: LinkRouteStore.didChangeNotification,
-                                                           object: store, queue: nil) { _ in count += 1 }
+                                                           object: store, queue: nil) { _ in count.withLock { $0 += 1 } }
         defer { NotificationCenter.default.removeObserver(token) }
         let a = try XCTUnwrap(store.add(route(.domainIs, "a.test", to: .space(work))))
         _ = store.add(route(.domainIs, "b.test", to: .space(work)))
@@ -142,10 +143,10 @@ final class LinkRouteStoreTests: XCTestCase {
         store.moveRoute(id: a.id, to: 1)
         store.removeRoute(id: a.id)
         store.setDefaultTarget(.quarantine)
-        XCTAssertEqual(count, 6)
+        XCTAssertEqual(count.withLock { $0 }, 6)
     }
 
-    func testRowsANewerBuildWroteAreSkippedAndLeftInTheTable() throws {
+    @MainActor func testRowsANewerBuildWroteAreSkippedAndLeftInTheTable() throws {
         let db = try makeDatabase()
         db.saveLinkRoute(LinkRouteRecord(id: UUID().uuidString, matchKind: "regex", matchPattern: ".*",
                                          sourceApp: nil, targetKind: "space", targetSpaceID: work.uuidString, sortOrder: 0))
@@ -166,7 +167,7 @@ final class LinkRouteStoreTests: XCTestCase {
 
     // MARK: - Validation (TASK-191.3)
 
-    func testPatternsAreCheckedForTheirKind() {
+    @MainActor func testPatternsAreCheckedForTheirKind() {
         func valid(_ kind: LinkRouteMatchKind, _ pattern: String) -> Bool {
             linkRoutePatternIsValid(LinkRouteMatch(kind: kind, pattern: pattern))
         }
@@ -192,7 +193,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertFalse(valid(.contains, "  \n"))
     }
 
-    func testProblemsNameEachThingWrongWithARoute() {
+    @MainActor func testProblemsNameEachThingWrongWithARoute() {
         let context = LinkRouteContext(spaceIDs: [work], privateSpaceIDs: [personal])
         XCTAssertEqual(linkRouteProblems(route(.domainIs, "a.test", to: .space(work)), context: context), [])
         XCTAssertEqual(linkRouteProblems(route(nil, app: "com.apple.mail", to: .privateWindow), context: context), [],
@@ -214,7 +215,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertNil(linkRouteTargetProblem(.space(UUID()), context: nil), "no context: spaces are not checked")
     }
 
-    func testAddRefusesAnEmptyOrInvalidPattern() throws {
+    @MainActor func testAddRefusesAnEmptyOrInvalidPattern() throws {
         let db = try makeDatabase()
         let store = LinkRouteStore(database: db)
         XCTAssertNil(store.add(route(.domainIs, "", app: "com.apple.mail", to: .space(work))))
@@ -225,14 +226,14 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertEqual(store.problems(for: route(.isEqualTo, "example.com", to: .space(work))), [.invalidPattern])
     }
 
-    private func storeWithSpaces(normal: Set<UUID>, private privateIDs: Set<UUID> = []) throws -> (LinkRouteStore, AppDatabase) {
+    @MainActor private func storeWithSpaces(normal: Set<UUID>, private privateIDs: Set<UUID> = []) throws -> (LinkRouteStore, AppDatabase) {
         let db = try makeDatabase()
         let store = LinkRouteStore(database: db)
         store.spaceContext = { LinkRouteContext(spaceIDs: normal, privateSpaceIDs: privateIDs) }
         return (store, db)
     }
 
-    func testAddRefusesAMissingOrPrivateSpace() throws {
+    @MainActor func testAddRefusesAMissingOrPrivateSpace() throws {
         let privateSpace = UUID()
         let (store, db) = try storeWithSpaces(normal: [work], private: [privateSpace])
         XCTAssertNil(store.add(route(.domainIs, "a.test", to: .space(personal))))
@@ -244,7 +245,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertEqual(db.loadLinkRoutes().count, 2)
     }
 
-    func testUpdateRefusesAnInvalidEditAndKeepsTheSavedRoute() throws {
+    @MainActor func testUpdateRefusesAnInvalidEditAndKeepsTheSavedRoute() throws {
         let (store, db) = try storeWithSpaces(normal: [work, personal])
         let a = try XCTUnwrap(store.add(route(.domainIs, "a.test", to: .space(work))))
         for bad in [route(.domainIs, "", to: .space(work)), route(.isEqualTo, "a.test", to: .space(work)),
@@ -260,7 +261,7 @@ final class LinkRouteStoreTests: XCTestCase {
     /// A route whose space went some other way (sync, migration) stays
     /// editable: an edit that leaves its target alone is saved, and so is one
     /// that points it at a space that exists.
-    func testABrokenRouteCanBeEditedAndRepaired() throws {
+    @MainActor func testABrokenRouteCanBeEditedAndRepaired() throws {
         let gone = UUID()
         let db = try makeDatabase()
         let broken = try XCTUnwrap(LinkRouteStore(database: db).add(route(.domainIs, "a.test", to: .space(gone))))
@@ -282,7 +283,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertEqual(store.routes.map { store.problems(for: $0) }, [[]])
     }
 
-    func testTheDefaultRefusesAMissingOrPrivateSpace() throws {
+    @MainActor func testTheDefaultRefusesAMissingOrPrivateSpace() throws {
         let privateSpace = UUID()
         let (store, db) = try storeWithSpaces(normal: [work], private: [privateSpace])
         XCTAssertFalse(store.setDefaultTarget(.space(personal)))
@@ -294,7 +295,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertEqual(LinkRouteStore(database: db).defaultTarget, .privateWindow)
     }
 
-    func testTheDefaultReportsAMissingSpace() throws {
+    @MainActor func testTheDefaultReportsAMissingSpace() throws {
         let gone = UUID()
         let db = try makeDatabase()
         LinkRouteStore(database: db).setDefaultTarget(.space(gone))
@@ -306,22 +307,22 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertNil(store.defaultTargetProblem)
     }
 
-    func testRefusedChangesPostNoNotification() throws {
+    @MainActor func testRefusedChangesPostNoNotification() throws {
         let (store, _) = try storeWithSpaces(normal: [work])
         let a = try XCTUnwrap(store.add(route(.domainIs, "a.test", to: .space(work))))
-        var count = 0
+        let count = Mutex<Int>(0)
         let token = NotificationCenter.default.addObserver(forName: LinkRouteStore.didChangeNotification,
-                                                           object: store, queue: nil) { _ in count += 1 }
+                                                           object: store, queue: nil) { _ in count.withLock { $0 += 1 } }
         defer { NotificationCenter.default.removeObserver(token) }
         _ = store.add(route(.domainIs, "", to: .space(work)))
         var bad = a
         bad.target = .space(personal)
         store.update(bad)
         store.setDefaultTarget(.space(personal))
-        XCTAssertEqual(count, 0)
+        XCTAssertEqual(count.withLock { $0 }, 0)
     }
 
-    func testATabStoreChecksTargetsAgainstItsSpaces() throws {
+    @MainActor func testATabStoreChecksTargetsAgainstItsSpaces() throws {
         let (store, a, _) = try makeTabStore()
         let privateSpace = store.addIncognitoSpace()
         XCTAssertNil(store.linkRoutes.add(route(.domainIs, "x.test", to: .space(UUID()))))
@@ -333,7 +334,7 @@ final class LinkRouteStoreTests: XCTestCase {
 
     // MARK: - What targets a space
 
-    func testReferencesNameTheRoutesAndTheDefaultTargetingASpace() throws {
+    @MainActor func testReferencesNameTheRoutesAndTheDefaultTargetingASpace() throws {
         let store = LinkRouteStore(database: try makeDatabase())
         let a = try XCTUnwrap(store.add(route(.domainIs, "a.test", to: .space(work))))
         _ = store.add(route(.domainIs, "b.test", to: .space(personal)))
@@ -345,7 +346,7 @@ final class LinkRouteStoreTests: XCTestCase {
 
     // MARK: - Space deletion
 
-    private func makeTabStore() throws -> (TabStore, Space, Space) {
+    @MainActor private func makeTabStore() throws -> (TabStore, Space, Space) {
         let db = try makeDatabase()
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Test")
@@ -354,7 +355,7 @@ final class LinkRouteStoreTests: XCTestCase {
         return (store, a, b)
     }
 
-    func testASpaceARouteTargetsCannotBeDeleted() throws {
+    @MainActor func testASpaceARouteTargetsCannotBeDeleted() throws {
         let (store, a, b) = try makeTabStore()
         let r = try XCTUnwrap(store.linkRoutes.add(route(.domainIs, "a.test", to: .space(a.id))))
 
@@ -365,7 +366,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertNil(store.space(withID: b.id))
     }
 
-    func testASpaceTheDefaultTargetsCannotBeDeleted() throws {
+    @MainActor func testASpaceTheDefaultTargetsCannotBeDeleted() throws {
         let (store, a, _) = try makeTabStore()
         store.linkRoutes.setDefaultTarget(.space(a.id))
         XCTAssertEqual(store.deleteSpace(id: a.id),
@@ -373,7 +374,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertNotNil(store.space(withID: a.id))
     }
 
-    func testABlockedDeleteChangesNothingAndRegistersNoUndo() throws {
+    @MainActor func testABlockedDeleteChangesNothingAndRegistersNoUndo() throws {
         let (store, a, _) = try makeTabStore()
         let tab = BrowserTab(id: UUID(), title: "T", url: URL(string: "https://a.test/"), faviconURL: nil,
                              cachedInteractionState: nil, spaceID: a.id)
@@ -388,7 +389,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertFalse(store.undoManager.canUndo)
     }
 
-    func testOnceTheRouteIsRemovedTheSpaceDeletes() throws {
+    @MainActor func testOnceTheRouteIsRemovedTheSpaceDeletes() throws {
         let (store, a, _) = try makeTabStore()
         let r = try XCTUnwrap(store.linkRoutes.add(route(.domainIs, "a.test", to: .space(a.id))))
         XCTAssertNotEqual(store.deleteSpace(id: a.id), .deleted)
@@ -397,14 +398,14 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertNil(store.space(withID: a.id))
     }
 
-    func testTheLastSpaceAndAnUnknownSpaceAreNotDeleted() throws {
+    @MainActor func testTheLastSpaceAndAnUnknownSpaceAreNotDeleted() throws {
         let (store, a, b) = try makeTabStore()
         XCTAssertEqual(store.deleteSpace(id: UUID()), .notDeleted)
         XCTAssertEqual(store.deleteSpace(id: b.id), .deleted)
         XCTAssertEqual(store.deleteSpace(id: a.id), .notDeleted)
     }
 
-    func testTheLastNormalSpaceIsNotDeletedWhileAPrivateWindowIsOpen() throws {
+    @MainActor func testTheLastNormalSpaceIsNotDeletedWhileAPrivateWindowIsOpen() throws {
         let (store, a, b) = try makeTabStore()
         _ = store.addIncognitoSpace()
         XCTAssertEqual(store.deleteSpace(id: b.id), .deleted)
@@ -412,7 +413,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertNotNil(store.space(withID: a.id))
     }
 
-    func testClosingAPrivateWindowsSpaceIsUnaffectedByRoutes() throws {
+    @MainActor func testClosingAPrivateWindowsSpaceIsUnaffectedByRoutes() throws {
         let (store, _, _) = try makeTabStore()
         let privateSpace = store.addIncognitoSpace()
         // Not reachable from the UI (the store refuses it, so the check is
@@ -426,7 +427,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertNil(store.space(withID: privateSpace.id))
     }
 
-    func testTheResolverContextListsTheNormalSpacesOnly() throws {
+    @MainActor func testTheResolverContextListsTheNormalSpacesOnly() throws {
         let (store, a, b) = try makeTabStore()
         let privateSpace = store.addIncognitoSpace()
         XCTAssertEqual(store.linkRouteContext.spaceIDs, [a.id, b.id])
@@ -438,7 +439,7 @@ final class LinkRouteStoreTests: XCTestCase {
     /// A store with spaces "Keeper" and "Routed" and an empty undo stack.
     /// Event grouping is off and every action runs in its own group (`act`),
     /// as in `UndoAfterDeleteSpaceTests`: a test body never turns the run loop.
-    private func makeUndoFixture() throws -> (TabStore, keeper: Space, routed: Space) {
+    @MainActor private func makeUndoFixture() throws -> (TabStore, keeper: Space, routed: Space) {
         let store = TabStore(appDB: try makeDatabase())
         store.undoManager.groupsByEvent = false
         let profile = store.addProfile(name: "Test")
@@ -451,7 +452,7 @@ final class LinkRouteStoreTests: XCTestCase {
         return (store, keeper, routed)
     }
 
-    private func act(_ store: TabStore, _ body: () -> Void) {
+    @MainActor private func act(_ store: TabStore, _ body: () -> Void) {
         store.undoManager.beginUndoGrouping()
         body()
         store.undoManager.endUndoGrouping()
@@ -459,21 +460,21 @@ final class LinkRouteStoreTests: XCTestCase {
 
     /// Runs what is already queued on the main queue: the store puts a refused
     /// undo or redo entry back from there.
-    private func drainMainQueue() {
+    @MainActor private func drainMainQueue() {
         let drained = expectation(description: "main queue drained")
         DispatchQueue.main.async { drained.fulfill() }
         wait(for: [drained], timeout: 2)
     }
 
-    private func expectBlockedNotification(_ store: TabStore, space: Space,
+    @MainActor private func expectBlockedNotification(_ store: TabStore, space: Space,
                                            references: LinkRouteReferences) -> XCTestExpectation {
-        expectation(forNotification: TabStore.spaceDeletionBlockedNotification, object: store) { note in
-            let block = TabStore.spaceDeletionBlock(from: note)
-            return block == TabStore.SpaceDeletionBlock(spaceID: space.id, spaceName: space.name, references: references)
+        let expected = TabStore.SpaceDeletionBlock(spaceID: space.id, spaceName: space.name, references: references)
+        return expectation(forNotification: TabStore.spaceDeletionBlockedNotification, object: store) { note in
+            TabStore.spaceDeletionBlock(from: note) == expected
         }
     }
 
-    func testABlockedUndoOfAddSpacePostsTheNotificationAndKeepsTheUndo() throws {
+    @MainActor func testABlockedUndoOfAddSpacePostsTheNotificationAndKeepsTheUndo() throws {
         let (store, keeper, _) = try makeUndoFixture()
         var added: Space!
         act(store) { added = store.addSpace(name: "Added", emoji: "A", colorHex: "34C759", profileID: keeper.profileID) }
@@ -501,7 +502,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertNil(store.space(withID: added.id), "with the route gone, the same undo deletes the space")
     }
 
-    func testABlockedRedoOfDeleteSpacePostsTheNotificationAndKeepsTheRedo() throws {
+    @MainActor func testABlockedRedoOfDeleteSpacePostsTheNotificationAndKeepsTheRedo() throws {
         let (store, _, routed) = try makeUndoFixture()
         act(store) { XCTAssertEqual(store.deleteSpace(id: routed.id), .deleted) }
         store.undoManager.undo()
@@ -527,7 +528,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertNil(store.space(withID: routed.id), "with the Default moved, the same redo deletes the space")
     }
 
-    func testABlockedUndoCanBeRefusedAgain() throws {
+    @MainActor func testABlockedUndoCanBeRefusedAgain() throws {
         let (store, keeper, _) = try makeUndoFixture()
         var added: Space!
         act(store) { added = store.addSpace(name: "Added", emoji: "A", colorHex: "34C759", profileID: keeper.profileID) }
@@ -543,7 +544,7 @@ final class LinkRouteStoreTests: XCTestCase {
         }
     }
 
-    func testADirectBlockedDeletePostsNoNotification() throws {
+    @MainActor func testADirectBlockedDeletePostsNoNotification() throws {
         // The sidebar and the Settings pane show the alert themselves.
         let (store, _, routed) = try makeUndoFixture()
         _ = store.linkRoutes.add(route(.domainIs, "a.test", to: .space(routed.id)))
@@ -553,7 +554,7 @@ final class LinkRouteStoreTests: XCTestCase {
         wait(for: [posted], timeout: 0.2)
     }
 
-    func testTheBlockedAlertNamesTheRoutesAndTheDefault() {
+    @MainActor func testTheBlockedAlertNamesTheRoutesAndTheDefault() {
         let routes = [
             route(.domainIs, "work.test", to: .space(work)),
             route(.contains, "jira", app: "com.tinyspeck.slackmacgap", to: .space(work)),
@@ -578,7 +579,7 @@ final class LinkRouteStoreTests: XCTestCase {
     }
 
     /// TASK-191.3: OK stays the default; the second button opens the Links pane.
-    func testTheBlockedAlertOffersToOpenTheLinksPane() {
+    @MainActor func testTheBlockedAlertOffersToOpenTheLinksPane() {
         let alert = SpaceDeletionBlockedAlert.makeAlert(
             spaceName: "Work", references: LinkRouteReferences(routes: [route(.domainIs, "a.test", to: .space(work))],
                                                                isDefaultTarget: false))
@@ -586,7 +587,7 @@ final class LinkRouteStoreTests: XCTestCase {
         XCTAssertEqual(alert.messageText, "“Work” can’t be deleted")
     }
 
-    func testTheSharedTabStoreUsesTheSharedRouteStore() {
+    @MainActor func testTheSharedTabStoreUsesTheSharedRouteStore() {
         XCTAssertTrue(TabStore.shared.linkRoutes === LinkRouteStore.shared)
     }
 
@@ -594,7 +595,7 @@ final class LinkRouteStoreTests: XCTestCase {
 
     /// v20 adds the two tables to a database at v19: no routes, and the
     /// Default reads as Most Recent Space. Existing rows are untouched.
-    func testMigrationV20AddsTheRouteTablesToAV19Database() throws {
+    @MainActor func testMigrationV20AddsTheRouteTablesToAV19Database() throws {
         let dbQueue = try DatabaseQueue()
         try AppDatabase.migrator.migrate(dbQueue, upTo: "v19")
         try dbQueue.write { d in
@@ -622,7 +623,7 @@ final class LinkRouteStoreTests: XCTestCase {
     }
 
     /// `linkRouteDefault` holds one row at most.
-    func testTheDefaultTableHoldsOneRow() throws {
+    @MainActor func testTheDefaultTableHoldsOneRow() throws {
         let dbQueue = try DatabaseQueue()
         let db = try AppDatabase(dbQueue: dbQueue)
         db.saveLinkRouteDefault(LinkRouteDefaultRecord(targetKind: "privateWindow", targetSpaceID: nil))
@@ -636,7 +637,7 @@ final class LinkRouteStoreTests: XCTestCase {
 
     /// The session save deletes and re-inserts every space row; routes have
     /// no foreign key to `space`, so they survive it.
-    func testRoutesSurviveASessionSave() throws {
+    @MainActor func testRoutesSurviveASessionSave() throws {
         let db = try makeDatabase()
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Test")

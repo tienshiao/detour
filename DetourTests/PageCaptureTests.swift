@@ -8,21 +8,21 @@ import WebKit
 /// name, PNG encoding and delivery are pure or local; the captures themselves
 /// run against a real WKWebView, at 2x through WebKit's device scale override
 /// so the Retina path is covered on a 1x display too.
-final class PageCaptureGeometryTests: XCTestCase {
+nonisolated final class PageCaptureGeometryTests: XCTestCase {
 
     // MARK: - Pixel size
 
-    func testAt1xThePixelSizeIsThePointSize() {
+    @MainActor func testAt1xThePixelSizeIsThePointSize() {
         XCTAssertEqual(CaptureGeometry.pixelSize(points: CGSize(width: 1000, height: 700), scale: 1),
                        .init(pixelWidth: 1000, pixelHeight: 700, scale: 1))
     }
 
-    func testAt2xThePixelSizeIsTwiceThePointSize() {
+    @MainActor func testAt2xThePixelSizeIsTwiceThePointSize() {
         XCTAssertEqual(CaptureGeometry.pixelSize(points: CGSize(width: 1000, height: 700), scale: 2),
                        .init(pixelWidth: 2000, pixelHeight: 1400, scale: 2))
     }
 
-    func testATallPageIsScaledDownToTheLongEdgeCap() throws {
+    @MainActor func testATallPageIsScaledDownToTheLongEdgeCap() throws {
         // 2000 x 40000 px raw: the long edge comes down to 16384.
         let out = try XCTUnwrap(CaptureGeometry.pixelSize(points: CGSize(width: 1000, height: 20000), scale: 2))
         XCTAssertEqual(out.pixelHeight, 16384)
@@ -30,13 +30,13 @@ final class PageCaptureGeometryTests: XCTestCase {
         XCTAssertEqual(out.scale, 0.8192, accuracy: 0.0001)
     }
 
-    func testAWidePageIsScaledDownByItsWidth() throws {
+    @MainActor func testAWidePageIsScaledDownByItsWidth() throws {
         let out = try XCTUnwrap(CaptureGeometry.pixelSize(points: CGSize(width: 30000, height: 800), scale: 1))
         XCTAssertEqual(out.pixelWidth, 16384)
         XCTAssertEqual(out.pixelHeight, 437, "800 x 0.5461 = 436.9, rounded")
     }
 
-    func testABigSquarePageIsScaledDownByArea() throws {
+    @MainActor func testABigSquarePageIsScaledDownByArea() throws {
         // 12000 x 12000 px is under the edge cap but over 2^26 px.
         let out = try XCTUnwrap(CaptureGeometry.pixelSize(points: CGSize(width: 6000, height: 6000), scale: 2))
         XCTAssertEqual(out.pixelWidth, 8192)
@@ -44,7 +44,7 @@ final class PageCaptureGeometryTests: XCTestCase {
         XCTAssertLessThanOrEqual(out.pixelWidth * out.pixelHeight, CaptureGeometry.maxPixelArea)
     }
 
-    func testScaledDownSizesNeverExceedTheCaps() throws {
+    @MainActor func testScaledDownSizesNeverExceedTheCaps() throws {
         for points in [CGSize(width: 1234.5, height: 98765.4), CGSize(width: 7777, height: 9999), CGSize(width: 50000, height: 3)] {
             let out = try XCTUnwrap(CaptureGeometry.pixelSize(points: points, scale: 2))
             XCTAssertLessThanOrEqual(max(out.pixelWidth, out.pixelHeight), CaptureGeometry.maxPixelEdge, "\(points)")
@@ -53,17 +53,17 @@ final class PageCaptureGeometryTests: XCTestCase {
         }
     }
 
-    func testAPageWithinTheCapsIsNeverScaledUpOrDown() {
+    @MainActor func testAPageWithinTheCapsIsNeverScaledUpOrDown() {
         XCTAssertEqual(CaptureGeometry.pixelSize(points: CGSize(width: 100, height: 50), scale: 3, maxEdge: 1000, maxArea: 1 << 20),
                        .init(pixelWidth: 300, pixelHeight: 150, scale: 3))
     }
 
-    func testFractionalPointSizesRound() {
+    @MainActor func testFractionalPointSizesRound() {
         XCTAssertEqual(CaptureGeometry.pixelSize(points: CGSize(width: 1000.6, height: 700.4), scale: 1),
                        .init(pixelWidth: 1001, pixelHeight: 700, scale: 1))
     }
 
-    func testAnEmptySizeHasNoImage() {
+    @MainActor func testAnEmptySizeHasNoImage() {
         XCTAssertNil(CaptureGeometry.pixelSize(points: .zero, scale: 2))
         XCTAssertNil(CaptureGeometry.pixelSize(points: CGSize(width: 0, height: 700), scale: 2))
         XCTAssertNil(CaptureGeometry.pixelSize(points: CGSize(width: 1000, height: 700), scale: 0))
@@ -71,7 +71,7 @@ final class PageCaptureGeometryTests: XCTestCase {
 
     // MARK: - Full-page method
 
-    func testAFullPageWithinTheRawLimitUsesWebKitsContentsSnapshot() {
+    @MainActor func testAFullPageWithinTheRawLimitUsesWebKitsContentsSnapshot() {
         XCTAssertEqual(CaptureGeometry.fullPageMethod(points: CGSize(width: 1000, height: 5320), scale: 2,
                                                       contentsRectAvailable: true), .contentsRect)
         // Over the edge cap but not the raw area: still the contents snapshot,
@@ -80,37 +80,37 @@ final class PageCaptureGeometryTests: XCTestCase {
                                                       contentsRectAvailable: true), .contentsRect)
     }
 
-    func testAFullPageOverTheRawLimitIsDrawnFromAPDF() {
+    @MainActor func testAFullPageOverTheRawLimitIsDrawnFromAPDF() {
         XCTAssertEqual(CaptureGeometry.fullPageMethod(points: CGSize(width: 1440, height: 30000), scale: 2,
                                                       contentsRectAvailable: true), .pdf)
     }
 
-    func testWithoutWebKitsContentsSnapshotTheFullPageIsDrawnFromAPDF() {
+    @MainActor func testWithoutWebKitsContentsSnapshotTheFullPageIsDrawnFromAPDF() {
         XCTAssertEqual(CaptureGeometry.fullPageMethod(points: CGSize(width: 100, height: 100), scale: 1,
                                                       contentsRectAvailable: false), .pdf)
     }
 
     // MARK: - Document size and resolution
 
-    func testTheDocumentSizeIsTheScrollSize() {
+    @MainActor func testTheDocumentSizeIsTheScrollSize() {
         XCTAssertEqual(CaptureGeometry.documentPoints(scrollWidth: 1000, scrollHeight: 5320,
                                                       viewportWidth: 1000, viewportHeight: 700, pageZoom: 1),
                        CGSize(width: 1000, height: 5320))
     }
 
-    func testAShortPageIsAtLeastTheViewport() {
+    @MainActor func testAShortPageIsAtLeastTheViewport() {
         XCTAssertEqual(CaptureGeometry.documentPoints(scrollWidth: 1000, scrollHeight: 300,
                                                       viewportWidth: 1000, viewportHeight: 700, pageZoom: 1),
                        CGSize(width: 1000, height: 700))
     }
 
-    func testPageZoomScalesCSSPixelsToPoints() {
+    @MainActor func testPageZoomScalesCSSPixelsToPoints() {
         XCTAssertEqual(CaptureGeometry.documentPoints(scrollWidth: 800, scrollHeight: 2000,
                                                       viewportWidth: 800, viewportHeight: 600, pageZoom: 1.5),
                        CGSize(width: 1200, height: 3000))
     }
 
-    func testTheDPIMakesThePNGPreviewAtItsPointSize() {
+    @MainActor func testTheDPIMakesThePNGPreviewAtItsPointSize() {
         XCTAssertEqual(CaptureGeometry.dpi(pixelWidth: 2000, pointWidth: 1000), 144)
         XCTAssertEqual(CaptureGeometry.dpi(pixelWidth: 1000, pointWidth: 1000), 72)
         XCTAssertEqual(CaptureGeometry.dpi(pixelWidth: 819, pointWidth: 1000), 58.968, accuracy: 0.001)
@@ -122,35 +122,35 @@ final class PageCaptureGeometryTests: XCTestCase {
     private let date = ISO8601DateFormatter().date(from: "2026-10-24T21:05:03Z")!
     private let utc = TimeZone(identifier: "UTC")!
 
-    func testTheFileNameNamesTheHostAndTheTime() {
+    @MainActor func testTheFileNameNamesTheHostAndTheTime() {
         XCTAssertEqual(CaptureFileName.make(host: "localhost:3000", date: date, fullPage: false, timeZone: utc),
                        "Screenshot localhost-3000 2026-10-24 at 21.05.03.png")
     }
 
-    func testAFullPageCaptureSaysSo() {
+    @MainActor func testAFullPageCaptureSaysSo() {
         XCTAssertEqual(CaptureFileName.make(host: "app.test", date: date, fullPage: true, timeZone: utc),
                        "Screenshot app.test 2026-10-24 at 21.05.03 (full page).png")
     }
 
-    func testTheTimeIsLocal() {
+    @MainActor func testTheTimeIsLocal() {
         let tokyo = TimeZone(identifier: "Asia/Tokyo")!
         XCTAssertEqual(CaptureFileName.make(host: "localhost", date: date, fullPage: false, timeZone: tokyo),
                        "Screenshot localhost 2026-10-25 at 06.05.03.png")
     }
 
-    func testTheNameHasNoPathOrFinderSeparators() {
+    @MainActor func testTheNameHasNoPathOrFinderSeparators() {
         let name = CaptureFileName.make(host: "[::1]:8080", date: date, fullPage: false, timeZone: utc)
         XCTAssertFalse(name.contains(":"), name)
         XCTAssertFalse(name.contains("/"), name)
         XCTAssertTrue(name.hasPrefix("Screenshot "), name)
     }
 
-    func testWithoutAHostTheNameIsJustTheTime() {
+    @MainActor func testWithoutAHostTheNameIsJustTheTime() {
         XCTAssertEqual(CaptureFileName.make(host: "", date: date, fullPage: false, timeZone: utc),
                        "Screenshot 2026-10-24 at 21.05.03.png")
     }
 
-    func testAUniqueNameNeverOverwrites() {
+    @MainActor func testAUniqueNameNeverOverwrites() {
         let dir = URL(fileURLWithPath: "/captures", isDirectory: true)
         let name = "Screenshot a 2026-10-24 at 21.05.03.png"
         XCTAssertEqual(CaptureFileName.unique(name, in: dir, exists: { _ in false }).lastPathComponent, name)
@@ -196,9 +196,9 @@ struct DecodedPNG {
     }
 }
 
-final class PageCaptureImageTests: XCTestCase {
+nonisolated final class PageCaptureImageTests: XCTestCase {
 
-    private func solidImage(width: Int, height: Int, red: CGFloat, green: CGFloat, blue: CGFloat) -> CGImage {
+    @MainActor private func solidImage(width: Int, height: Int, red: CGFloat, green: CGFloat, blue: CGFloat) -> CGImage {
         let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                                 space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
@@ -207,7 +207,7 @@ final class PageCaptureImageTests: XCTestCase {
         return context.makeImage()!
     }
 
-    func testThePNGKeepsThePixelSizeAndRecordsTheDPI() throws {
+    @MainActor func testThePNGKeepsThePixelSizeAndRecordsTheDPI() throws {
         let data = try XCTUnwrap(CaptureImage.pngData(solidImage(width: 20, height: 10, red: 1, green: 0, blue: 0), dpi: 144))
         let png = try XCTUnwrap(DecodedPNG(data))
         XCTAssertEqual(png.width, 20)
@@ -216,14 +216,14 @@ final class PageCaptureImageTests: XCTestCase {
         XCTAssertEqual(png.color(x: 10, y: 5), "ff0000")
     }
 
-    func testScalingRedrawsAtTheNewPixelSize() throws {
+    @MainActor func testScalingRedrawsAtTheNewPixelSize() throws {
         let scaled = try XCTUnwrap(CaptureImage.scaled(solidImage(width: 20, height: 10, red: 0, green: 0, blue: 1), width: 10, height: 5))
         XCTAssertEqual(scaled.width, 10)
         XCTAssertEqual(scaled.height, 5)
     }
 
     /// A 100 x 300 pt PDF page: red on top, blue at the bottom.
-    private func twoBandPDF() -> Data {
+    @MainActor private func twoBandPDF() -> Data {
         let data = NSMutableData()
         var box = CGRect(x: 0, y: 0, width: 100, height: 300)
         let context = CGContext(consumer: CGDataConsumer(data: data)!, mediaBox: &box, nil)!
@@ -237,7 +237,7 @@ final class PageCaptureImageTests: XCTestCase {
         return data as Data
     }
 
-    func testAPDFPageIsRasterisedAtTheOutputSizeTheRightWayUp() throws {
+    @MainActor func testAPDFPageIsRasterisedAtTheOutputSizeTheRightWayUp() throws {
         let pdf = twoBandPDF()
         XCTAssertEqual(CaptureImage.pdfPageSize(pdf), CGSize(width: 100, height: 300))
         let image = try XCTUnwrap(CaptureImage.rasterizePDF(pdf, output: .init(pixelWidth: 200, pixelHeight: 600, scale: 2)))
@@ -248,12 +248,12 @@ final class PageCaptureImageTests: XCTestCase {
         XCTAssertEqual(png.color(x: 100, y: 590), "0000ff")
     }
 
-    func testNotAPDFHasNoPage() {
+    @MainActor func testNotAPDFHasNoPage() {
         XCTAssertNil(CaptureImage.pdfPageSize(Data("nope".utf8)))
         XCTAssertNil(CaptureImage.rasterizePDF(Data("nope".utf8), output: .init(pixelWidth: 10, pixelHeight: 10, scale: 1)))
     }
 
-    func testCopyPutsThePNGOnThePasteboardAndTIFFOnDemand() throws {
+    @MainActor func testCopyPutsThePNGOnThePasteboardAndTIFFOnDemand() throws {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("DetourTests.capture.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
         let png = try XCTUnwrap(CaptureImage.pngData(solidImage(width: 30, height: 20, red: 0, green: 1, blue: 0), dpi: 144))
@@ -266,7 +266,7 @@ final class PageCaptureImageTests: XCTestCase {
         XCTAssertEqual(rep.size, NSSize(width: 15, height: 10), "the TIFF keeps the 2x point size")
     }
 
-    func testSavingTwiceKeepsBothFiles() throws {
+    @MainActor func testSavingTwiceKeepsBothFiles() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("PageCaptureTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -283,16 +283,15 @@ final class PageCaptureImageTests: XCTestCase {
 
 // MARK: - Captures of a real web view
 
-@MainActor
-final class PageCaptureWebViewTests: XCTestCase, WKNavigationDelegate {
+nonisolated final class PageCaptureWebViewTests: XCTestCase, WKNavigationDelegate {
 
     private var window: NSWindow?
     private var loaded: XCTestExpectation?
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         window?.close()
         window = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Red, green, blue bands of 500 px and a 50 px magenta marker at the
@@ -310,7 +309,7 @@ final class PageCaptureWebViewTests: XCTestCase, WKNavigationDelegate {
 
     /// A 400 x 300 pt web view in a window, at `scale` through WebKit's
     /// device scale override.
-    private func makeWebView(scale: CGFloat, html: String?) throws -> WKWebView {
+    @MainActor private func makeWebView(scale: CGFloat, html: String?) throws -> WKWebView {
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: WKWebViewConfiguration())
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled],
                               backing: .buffered, defer: false)
@@ -331,11 +330,12 @@ final class PageCaptureWebViewTests: XCTestCase, WKNavigationDelegate {
         return webView
     }
 
-    nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        MainActor.assumeIsolated { loaded?.fulfill() }
+    /// Main-actor isolated, as `WKNavigationDelegate` is.
+    @MainActor func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        loaded?.fulfill()
     }
 
-    private func evaluate(_ webView: WKWebView, _ script: String) -> Any? {
+    @MainActor private func evaluate(_ webView: WKWebView, _ script: String) -> Any? {
         let done = expectation(description: "evaluated")
         var value: Any?
         webView.evaluateJavaScript(script) { result, _ in
@@ -346,7 +346,7 @@ final class PageCaptureWebViewTests: XCTestCase, WKNavigationDelegate {
         return value
     }
 
-    private func capture(_ kind: PageCapture.Kind, _ webView: WKWebView,
+    @MainActor private func capture(_ kind: PageCapture.Kind, _ webView: WKWebView,
                          method: CaptureGeometry.FullPageMethod? = nil) -> Result<PageCapture.Result, PageCapture.Failure> {
         let done = expectation(description: "captured")
         var outcome: Result<PageCapture.Result, PageCapture.Failure>?
@@ -358,7 +358,7 @@ final class PageCaptureWebViewTests: XCTestCase, WKNavigationDelegate {
         return outcome ?? .failure(.snapshotFailed)
     }
 
-    func testTheVisibleAreaIsCapturedAtDevicePixels() throws {
+    @MainActor func testTheVisibleAreaIsCapturedAtDevicePixels() throws {
         let webView = try makeWebView(scale: 2, html: tallPage)
         _ = evaluate(webView, "window.scrollTo(0, 600); 0")
         let result = try capture(.visible, webView).get()
@@ -373,7 +373,7 @@ final class PageCaptureWebViewTests: XCTestCase, WKNavigationDelegate {
         XCTAssertEqual(png.color(x: 200, y: 590), "00ff00")
     }
 
-    func testTheVisibleAreaAt1x() throws {
+    @MainActor func testTheVisibleAreaAt1x() throws {
         let webView = try makeWebView(scale: 1, html: tallPage)
         let result = try capture(.visible, webView).get()
         let png = try XCTUnwrap(DecodedPNG(result.png))
@@ -382,7 +382,7 @@ final class PageCaptureWebViewTests: XCTestCase, WKNavigationDelegate {
         XCTAssertEqual(png.color(x: 200, y: 150), "ff0000")
     }
 
-    private func assertWholeTallPage(_ result: PageCapture.Result, file: StaticString = #filePath, line: UInt = #line) throws {
+    @MainActor private func assertWholeTallPage(_ result: PageCapture.Result, file: StaticString = #filePath, line: UInt = #line) throws {
         let png = try XCTUnwrap(DecodedPNG(result.png), file: file, line: line)
         XCTAssertEqual(png.width, 800, file: file, line: line)
         XCTAssertEqual(png.height, 3100, "the whole 1550 pt document at 2x", file: file, line: line)
@@ -394,7 +394,7 @@ final class PageCaptureWebViewTests: XCTestCase, WKNavigationDelegate {
         XCTAssertEqual(png.color(x: 200, y: 3090), "ff00ff", "the bottom marker", file: file, line: line)
     }
 
-    func testTheFullPageHoldsTheWholeDocumentWhereverItIsScrolled() throws {
+    @MainActor func testTheFullPageHoldsTheWholeDocumentWhereverItIsScrolled() throws {
         let webView = try makeWebView(scale: 2, html: tallPage)
         _ = evaluate(webView, "window.scrollTo(0, 700); 0")
         try assertWholeTallPage(try capture(.fullPage, webView).get())
@@ -402,13 +402,13 @@ final class PageCaptureWebViewTests: XCTestCase, WKNavigationDelegate {
         XCTAssertEqual(scrollY, 700, "the capture leaves the page where it was")
     }
 
-    func testTheFullPageFromAPDFHoldsTheWholeDocument() throws {
+    @MainActor func testTheFullPageFromAPDFHoldsTheWholeDocument() throws {
         let webView = try makeWebView(scale: 2, html: tallPage)
         _ = evaluate(webView, "window.scrollTo(0, 700); 0")
         try assertWholeTallPage(try capture(.fullPage, webView, method: .pdf).get())
     }
 
-    func testAWebViewWithNoPageFails() throws {
+    @MainActor func testAWebViewWithNoPageFails() throws {
         let webView = try makeWebView(scale: 2, html: nil)
         XCTAssertEqual(capture(.visible, webView), .failure(.noPage))
         XCTAssertEqual(capture(.fullPage, webView), .failure(.noPage))
@@ -417,10 +417,9 @@ final class PageCaptureWebViewTests: XCTestCase, WKNavigationDelegate {
 
 // MARK: - The toolbar's capture group
 
-@MainActor
-final class DevToolbarCaptureGroupTests: XCTestCase {
+nonisolated final class DevToolbarCaptureGroupTests: XCTestCase {
 
-    func testTheGroupSitsBetweenTheLinkAndTheInspector() throws {
+    @MainActor func testTheGroupSitsBetweenTheLinkAndTheInspector() throws {
         let toolbar = DevToolbarView(frame: NSRect(x: 0, y: 0, width: 800, height: DevToolbarLayout.height))
         DevToolbarInspectorGroup.install(in: toolbar, capabilities: [.console])
         let group = DevToolbarCaptureGroup.install(in: toolbar)
@@ -440,7 +439,7 @@ final class DevToolbarCaptureGroupTests: XCTestCase {
     /// Two groups, two separators: each stays a 1 pt vertical hairline and
     /// the stack stays packed at the right (an unconstrained NSBox separator
     /// once stretched across the bar and pulled the link button left).
-    func testTheSeparatorsStayHairlinesAndTheButtonsStayAtTheRight() throws {
+    @MainActor func testTheSeparatorsStayHairlinesAndTheButtonsStayAtTheRight() throws {
         let toolbar = DevToolbarView(frame: NSRect(x: 0, y: 0, width: 900, height: DevToolbarLayout.height))
         toolbar.url = URL(string: "http://localhost:8863/a.html")
         DevToolbarInspectorGroup.install(in: toolbar, capabilities: [.console, .network, .elementPicker])
@@ -458,7 +457,7 @@ final class DevToolbarCaptureGroupTests: XCTestCase {
         XCTAssertGreaterThan(copy.minX, 600, "the trailing stack is packed at the right")
     }
 
-    func testAClickCopiesAndAnOptionClickSaves() throws {
+    @MainActor func testAClickCopiesAndAnOptionClickSaves() throws {
         let toolbar = DevToolbarView(frame: NSRect(x: 0, y: 0, width: 800, height: DevToolbarLayout.height))
         let group = DevToolbarCaptureGroup.install(in: toolbar)
         var calls: [String] = []
@@ -474,7 +473,7 @@ final class DevToolbarCaptureGroupTests: XCTestCase {
         XCTAssertEqual(calls, ["visible clipboard", "full clipboard", "visible file", "full file"])
     }
 
-    func testTheButtonsAreDisabledWhileACaptureIsInFlight() throws {
+    @MainActor func testTheButtonsAreDisabledWhileACaptureIsInFlight() throws {
         let toolbar = DevToolbarView(frame: NSRect(x: 0, y: 0, width: 800, height: DevToolbarLayout.height))
         let group = DevToolbarCaptureGroup.install(in: toolbar)
         group.isCapturing = true

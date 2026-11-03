@@ -17,10 +17,9 @@ import WebKit
 /// stack-clearing tests go through `deleteProfile` with a fake remover; the
 /// guard tests remove the profile with `forceRemoveProfile`, which leaves the
 /// undo stack alone, to reach the closures.
-@MainActor
-final class ProfileDeletionUndoTests: XCTestCase {
+nonisolated final class ProfileDeletionUndoTests: XCTestCase {
 
-    private final class FakeRemover {
+    @MainActor private final class FakeRemover {
         var removedIDs: [UUID] = []
         var remover: ProfileDataRemoval.Remover {
             ProfileDataRemoval.Remover(
@@ -30,7 +29,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
         }
     }
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let db: AppDatabase
         let fake: FakeRemover
         let store: TabStore
@@ -42,7 +41,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
 
     /// A store with two profiles, Keeper and Doomed, and one space on Keeper.
     /// Returns ids only, so the test does not retain the doomed profile.
-    private func makeFixture() throws -> Fixture {
+    @MainActor private func makeFixture() throws -> Fixture {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         let fake = FakeRemover()
         let scope = WebKitStorageScope(dataDirectoryName: defaultDetourDataDirectoryName, registry: db,
@@ -59,7 +58,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
 
     /// A profile the test does build web views for gets throwaway WebKit objects,
     /// so the test leaves no persistent storage behind.
-    private func useNonPersistentStorage(_ profile: Profile) {
+    @MainActor private func useNonPersistentStorage(_ profile: Profile) {
         profile.dataStore = .nonPersistent()
         profile.extensionController = WKWebExtensionController(configuration: .nonPersistent())
     }
@@ -67,7 +66,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
     /// Adds a space on `profileID` with one selected tab (undoing its deletion
     /// rebuilds that tab live, through `makeWebViewConfiguration`) and returns
     /// its id.
-    private func addSpaceWithSelectedTab(to store: TabStore, profileID: UUID) -> UUID {
+    @MainActor private func addSpaceWithSelectedTab(to store: TabStore, profileID: UUID) -> UUID {
         let space = store.addSpace(name: "Doomed space", emoji: "D", colorHex: "FF0000", profileID: profileID)
         let tab = BrowserTab(id: UUID(), title: "Tab", url: URL(string: "https://example.com/")!,
                              faviconURL: nil, cachedInteractionState: nil, spaceID: space.id)
@@ -80,12 +79,12 @@ final class ProfileDeletionUndoTests: XCTestCase {
     /// `profileID`. Profiles create their storage through
     /// `WebKitStorageScope.current`, which records every identifier before WebKit
     /// creates it, in any data directory but the production one.
-    private func recordedStorage(forProfile profileID: UUID) -> Bool {
+    @MainActor private func recordedStorage(forProfile profileID: UUID) -> Bool {
         let scope = WebKitStorageScope.current
         return scope.registry.recordedWebKitStorageIdentifiers().contains(scope.identifier(forProfile: profileID))
     }
 
-    private func assertProfileGone(_ id: UUID, _ f: Fixture, file: StaticString = #filePath, line: UInt = #line) {
+    @MainActor private func assertProfileGone(_ id: UUID, _ f: Fixture, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertNil(f.store.profile(withID: id), "the profile is not resurrected in memory", file: file, line: line)
         XCTAssertFalse(f.db.loadProfiles().contains { $0.id == id.uuidString },
                        "the profile row is not resurrected", file: file, line: line)
@@ -97,7 +96,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
 
     // MARK: - deleteProfile clears the undo stack
 
-    func testUndoDeleteSpaceAfterItsProfileWasDeletedDoesNothing() async throws {
+    @MainActor func testUndoDeleteSpaceAfterItsProfileWasDeletedDoesNothing() async throws {
         let f = try makeFixture()
         let spaceID = addSpaceWithSelectedTab(to: f.store, profileID: f.doomedID)
         f.store.undoManager.removeAllActions()
@@ -115,7 +114,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
         assertProfileGone(f.doomedID, f)
     }
 
-    func testUndoEditSpaceAfterItsOldProfileWasDeletedLeavesTheSpaceOnItsCurrentProfile() async throws {
+    @MainActor func testUndoEditSpaceAfterItsOldProfileWasDeletedLeavesTheSpaceOnItsCurrentProfile() async throws {
         let f = try makeFixture()
         let spaceID = addSpaceWithSelectedTab(to: f.store, profileID: f.doomedID)
         f.store.undoManager.removeAllActions()
@@ -138,7 +137,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
 
     /// The reverse: the space was moved to a profile, the move was undone, and
     /// that profile was deleted. Redo must not move the space onto it.
-    func testRedoEditSpaceOntoAProfileDeletedSinceDoesNothing() async throws {
+    @MainActor func testRedoEditSpaceOntoAProfileDeletedSinceDoesNothing() async throws {
         let f = try makeFixture()
         let spaceID = addSpaceWithSelectedTab(to: f.store, profileID: f.keeperID)
         f.store.undoManager.removeAllActions()
@@ -157,7 +156,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
         assertProfileGone(f.doomedID, f)
     }
 
-    func testDeleteProfileClearsTheUndoStack() throws {
+    @MainActor func testDeleteProfileClearsTheUndoStack() throws {
         let f = try makeFixture()
         let home = try XCTUnwrap(f.store.space(withID: f.homeSpaceID))
         _ = f.store.addPinnedFolder(name: "Folder", in: home)
@@ -169,7 +168,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
         XCTAssertFalse(f.store.undoManager.canRedo)
     }
 
-    func testDeleteProfileRefusedByItsGuardsKeepsTheUndoStack() throws {
+    @MainActor func testDeleteProfileRefusedByItsGuardsKeepsTheUndoStack() throws {
         let f = try makeFixture()
         let home = try XCTUnwrap(f.store.space(withID: f.homeSpaceID))
         _ = f.store.addPinnedFolder(name: "Folder", in: home)
@@ -181,7 +180,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
 
     /// Undo actions retained the spaces they act on, and so their profiles: a
     /// deleted profile, and its data store, stayed alive until the app quit.
-    func testTheDeletedProfileIsDeallocated() async throws {
+    @MainActor func testTheDeletedProfileIsDeallocated() async throws {
         let f = try makeFixture()
         weak var weakProfile = f.store.profile(withID: f.doomedID)
         XCTAssertNotNil(weakProfile, "precondition")
@@ -200,7 +199,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
 
     // MARK: - The undo closures refuse a missing profile
 
-    func testDeleteSpaceUndoIsANoOpWhenItsProfileIsGone() throws {
+    @MainActor func testDeleteSpaceUndoIsANoOpWhenItsProfileIsGone() throws {
         let f = try makeFixture()
         let spaceID = addSpaceWithSelectedTab(to: f.store, profileID: f.doomedID)
         f.store.undoManager.removeAllActions()
@@ -224,7 +223,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
         }
     }
 
-    func testEditSpaceUndoIsANoOpWhenTheOldProfileIsGone() throws {
+    @MainActor func testEditSpaceUndoIsANoOpWhenTheOldProfileIsGone() throws {
         let f = try makeFixture()
         let spaceID = addSpaceWithSelectedTab(to: f.store, profileID: f.doomedID)
         f.store.undoManager.removeAllActions()
@@ -241,7 +240,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
         XCTAssertFalse(f.store.undoManager.canRedo)
     }
 
-    func testEditSpaceRefusesAProfileThatDoesNotExist() throws {
+    @MainActor func testEditSpaceRefusesAProfileThatDoesNotExist() throws {
         let f = try makeFixture()
         f.store.undoManager.removeAllActions()
 
@@ -255,7 +254,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
 
     // MARK: - A space without a usable profile never crashes or creates storage
 
-    func testASpaceWithoutAProfileGetsANonPersistentConfiguration() {
+    @MainActor func testASpaceWithoutAProfileGetsANonPersistentConfiguration() {
         let space = Space(name: "Orphan", emoji: "O", colorHex: "007AFF", profileID: UUID())
         XCTAssertNil(space.profile)
 
@@ -265,7 +264,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
         XCTAssertNil(config.webExtensionController)
     }
 
-    func testASpaceStillHoldingADeletedProfileNeverCreatesItsStorage() async throws {
+    @MainActor func testASpaceStillHoldingADeletedProfileNeverCreatesItsStorage() async throws {
         let f = try makeFixture()
         let doomed = try XCTUnwrap(f.store.profile(withID: f.doomedID))
         let orphan = Space(name: "Orphan", emoji: "O", colorHex: "007AFF", profileID: doomed.id)
@@ -286,7 +285,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
 
     // MARK: - Ordinary undo
 
-    func testUndoDeleteSpaceStillRestoresTheSpaceWhenNoProfileWasDeleted() throws {
+    @MainActor func testUndoDeleteSpaceStillRestoresTheSpaceWhenNoProfileWasDeleted() throws {
         let f = try makeFixture()
         let spaceID = addSpaceWithSelectedTab(to: f.store, profileID: f.keeperID)
         f.store.undoManager.removeAllActions()
@@ -303,7 +302,7 @@ final class ProfileDeletionUndoTests: XCTestCase {
         for tab in restored.tabs { tab.teardown() }
     }
 
-    func testUndoEditSpaceStillMovesTheSpaceBackWhenNoProfileWasDeleted() throws {
+    @MainActor func testUndoEditSpaceStillMovesTheSpaceBackWhenNoProfileWasDeleted() throws {
         let f = try makeFixture()
         let spaceID = addSpaceWithSelectedTab(to: f.store, profileID: f.keeperID)
         let doomed = try XCTUnwrap(f.store.profile(withID: f.doomedID))

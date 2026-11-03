@@ -10,8 +10,7 @@ import GRDB
 /// from, that per-space lookups key on, and that its history visits are recorded
 /// under. Once A was reassigned to another profile or deleted, the tab woke with
 /// no extension controller and no content scripts.
-@MainActor
-final class FavoriteSpaceHandoffTests: XCTestCase {
+nonisolated final class FavoriteSpaceHandoffTests: XCTestCase {
 
     /// Nothing listens on port 1: a wake navigates nowhere real.
     private let favoriteURL = URL(string: "http://127.0.0.1:1/calendar")!
@@ -20,16 +19,16 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
     /// Lent to `TabStore.shared` by the wake test, taken back in tearDown.
     private var sharedSpaceIDs: [UUID] = []
     private var sharedProfiles: [Profile] = []
-    private var defaultFaviconFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         defaultFaviconFetch = FaviconLoader.shared.fetch
         FaviconLoader.shared.resetForTesting()
         FaviconLoader.shared.fetch = { _, completion in completion(nil) }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
         for id in sharedSpaceIDs {
@@ -46,7 +45,7 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
         TabStore.shared.undoManager.removeAllActions()
         FaviconLoader.shared.fetch = defaultFaviconFetch
         FaviconLoader.shared.resetForTesting()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixture
@@ -54,7 +53,7 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
     /// A private store (its own in-memory database) with one profile and two
     /// spaces on it — a favourite is per-profile, so both spaces have to share
     /// the profile for the move to be possible at all.
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let db: AppDatabase
         let store: TabStore
         let profile: Profile
@@ -62,7 +61,7 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
         let b: Space
     }
 
-    private func makeFixture() throws -> Fixture {
+    @MainActor private func makeFixture() throws -> Fixture {
         let db = try AppDatabase(dbQueue: try DatabaseQueue())
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Handoff")
@@ -72,7 +71,7 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
     }
 
     /// A favourite with a live backing tab, activated in `space`.
-    private func liveFavorite(in store: TabStore, profile: Profile,
+    @MainActor private func liveFavorite(in store: TabStore, profile: Profile,
                               activatedIn space: Space) throws -> (Favorite, BrowserTab) {
         XCTAssertTrue(store.addFavoriteFromEntry(url: favoriteURL, title: "Calendar", faviconURL: nil,
                                                  favicon: nil, profileID: profile.id, at: 0))
@@ -86,7 +85,7 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
 
     // MARK: - Rehoming
 
-    func testRestoreFavoriteAsTabRehomesTheBackingTabOntoTheDestinationSpace() throws {
+    @MainActor func testRestoreFavoriteAsTabRehomesTheBackingTabOntoTheDestinationSpace() throws {
         let f = try makeFixture()
         let (favorite, tab) = try liveFavorite(in: f.store, profile: f.profile, activatedIn: f.a)
 
@@ -98,7 +97,7 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
         XCTAssertTrue(f.profile.favorites.isEmpty)
     }
 
-    func testRestoreFavoriteAsPinnedRehomesTheBackingTabOntoTheDestinationSpace() throws {
+    @MainActor func testRestoreFavoriteAsPinnedRehomesTheBackingTabOntoTheDestinationSpace() throws {
         let f = try makeFixture()
         let (favorite, tab) = try liveFavorite(in: f.store, profile: f.profile, activatedIn: f.a)
 
@@ -112,7 +111,7 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
 
     /// The session row follows the section the tab is in, so the move must not
     /// leave a row under the old space.
-    func testSessionSaveRecordsAMovedFavoriteTabUnderTheDestinationSpace() throws {
+    @MainActor func testSessionSaveRecordsAMovedFavoriteTabUnderTheDestinationSpace() throws {
         let f = try makeFixture()
         let (favorite, tab) = try liveFavorite(in: f.store, profile: f.profile, activatedIn: f.a)
         XCTAssertTrue(f.store.restoreFavoriteAsTab(id: favorite.id, profileID: f.profile.id,
@@ -133,7 +132,7 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
     /// still resolve after the space it was activated in is gone, or the wake
     /// falls back to a bare configuration — no data store of the profile, and no
     /// extension controller, so no content scripts.
-    func testAMovedFavoriteTabWakesFromItsNewSpaceAfterTheOldOneIsDeleted() throws {
+    @MainActor func testAMovedFavoriteTabWakesFromItsNewSpaceAfterTheOldOneIsDeleted() throws {
         let store = TabStore.shared
         let profile = store.addProfile(name: "Handoff Wake")
         sharedProfiles.append(profile)
@@ -162,7 +161,7 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
 
     /// The same stale id without any move: a favourite activated in A is still
     /// shown in B after A is deleted, so its tab has to belong to B by then.
-    func testDeletingTheSpaceAFavoriteWasActivatedInRehomesItsTab() throws {
+    @MainActor func testDeletingTheSpaceAFavoriteWasActivatedInRehomesItsTab() throws {
         let f = try makeFixture()
         let (favorite, tab) = try liveFavorite(in: f.store, profile: f.profile, activatedIn: f.a)
 
@@ -177,7 +176,7 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
     /// With no space of the profile left to show the tile, the favourite goes
     /// back to a dormant tile rather than keeping a live web view off-list —
     /// the same outcome as a profile swap (`updateSpace`).
-    func testDeletingTheLastSpaceOfAProfileReturnsItsLiveFavoritesToDormant() throws {
+    @MainActor func testDeletingTheLastSpaceOfAProfileReturnsItsLiveFavoritesToDormant() throws {
         let f = try makeFixture()
         let other = f.store.addProfile(name: "Other")
         _ = f.store.addSpace(name: "Other", emoji: "🅾️", colorHex: "000000", profileID: other.id)
@@ -196,7 +195,7 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
     /// A favourite only moves into a space of its own profile: rehoming a live
     /// tab onto another profile's space would rebuild it, on its next wake, from
     /// that profile's data store and extension controller.
-    func testRestoreFavoriteRefusesASpaceOfAnotherProfile() throws {
+    @MainActor func testRestoreFavoriteRefusesASpaceOfAnotherProfile() throws {
         let f = try makeFixture()
         let other = f.store.addProfile(name: "Other")
         let c = f.store.addSpace(name: "C", emoji: "©️", colorHex: "000000", profileID: other.id)
@@ -214,7 +213,7 @@ final class FavoriteSpaceHandoffTests: XCTestCase {
     /// A tab with no URL yet cannot be favourited; the refusal comes *before*
     /// the detach, so the tab stays in its list instead of being stranded in no
     /// section (still live, still registered with the extension contexts).
-    func testMoveTabToFavoritesRefusesATabWithNoURLBeforeDetaching() throws {
+    @MainActor func testMoveTabToFavoritesRefusesATabWithNoURLBeforeDetaching() throws {
         let f = try makeFixture()
         let tab = f.store.addTab(in: f.a)
         createdTabs.append(tab)

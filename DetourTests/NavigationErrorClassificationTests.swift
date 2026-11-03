@@ -13,42 +13,42 @@ import Foundation
 /// offscreen document host asks "will another callback still follow?"
 /// (`isSupersededNavigationError`). 204 answers them differently: no error
 /// page, but also no `didFinish` to wait for.
-final class NavigationErrorClassificationTests: XCTestCase {
-    private func webKitError(_ code: Int) -> Error {
+nonisolated final class NavigationErrorClassificationTests: XCTestCase {
+    @MainActor private func webKitError(_ code: Int) -> Error {
         NSError(domain: "WebKitErrorDomain", code: code)
     }
 
-    private func urlError(_ code: Int) -> Error {
+    @MainActor private func urlError(_ code: Int) -> Error {
         NSError(domain: NSURLErrorDomain, code: code)
     }
 
-    func testFrameLoadInterruptedByPolicyChangeIsIgnored() {
+    @MainActor func testFrameLoadInterruptedByPolicyChangeIsIgnored() {
         XCTAssertTrue(webKitError(102).isIgnoredNavigationError)
     }
 
-    func testPlugInWillHandleLoadIsIgnored() {
+    @MainActor func testPlugInWillHandleLoadIsIgnored() {
         XCTAssertTrue(webKitError(204).isIgnoredNavigationError)
     }
 
-    func testURLCancelledIsIgnored() {
+    @MainActor func testURLCancelledIsIgnored() {
         XCTAssertTrue(urlError(NSURLErrorCancelled).isIgnoredNavigationError)
     }
 
-    func testCannotConnectToHostIsNotIgnored() {
+    @MainActor func testCannotConnectToHostIsNotIgnored() {
         XCTAssertFalse(urlError(NSURLErrorCannotConnectToHost).isIgnoredNavigationError)
     }
 
-    func testWebKitCannotShowURLIsNotIgnored() {
+    @MainActor func testWebKitCannotShowURLIsNotIgnored() {
         XCTAssertFalse(webKitError(101).isIgnoredNavigationError)
     }
 
-    func testCode204InAnotherDomainIsNotIgnored() {
+    @MainActor func testCode204InAnotherDomainIsNotIgnored() {
         XCTAssertFalse(urlError(204).isIgnoredNavigationError)
     }
 
     // MARK: - Superseded vs. ended
 
-    func testPolicyChangeAndCancellationAreSuperseded() {
+    @MainActor func testPolicyChangeAndCancellationAreSuperseded() {
         XCTAssertTrue(webKitError(102).isSupersededNavigationError)
         XCTAssertTrue(urlError(NSURLErrorCancelled).isSupersededNavigationError)
     }
@@ -56,12 +56,12 @@ final class NavigationErrorClassificationTests: XCTestCase {
     /// The offscreen host keeps a load pending on a superseded error. 204 must
     /// not qualify: WebKit sends no `didFinish` after it, so a host waiting on
     /// one would never settle `createDocument`.
-    func testPlugInWillHandleLoadIsNotSuperseded() {
+    @MainActor func testPlugInWillHandleLoadIsNotSuperseded() {
         XCTAssertFalse(webKitError(204).isSupersededNavigationError)
         XCTAssertTrue(webKitError(204).isPlugInHandledLoadError)
     }
 
-    func testRealFailuresAreNeitherSupersededNorPlugInHandled() {
+    @MainActor func testRealFailuresAreNeitherSupersededNorPlugInHandled() {
         for error in [urlError(NSURLErrorCannotConnectToHost), webKitError(101), urlError(204)] {
             XCTAssertFalse(error.isSupersededNavigationError, "\(error)")
             XCTAssertFalse(error.isPlugInHandledLoadError, "\(error)")

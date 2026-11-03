@@ -1,3 +1,4 @@
+import Synchronization
 import XCTest
 import GRDB
 @testable import Detour
@@ -10,11 +11,11 @@ import GRDB
 /// them — SQL triggers on `historyVisit` do — so what these tests are really
 /// about is that every write path in the file goes through those triggers and
 /// leaves the table, the refcounts and the FTS index agreeing with the visits.
-final class HistoryTitleIndexTests: XCTestCase {
+nonisolated final class HistoryTitleIndexTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func makeDatabase() throws -> HistoryDatabase {
+    @MainActor private func makeDatabase() throws -> HistoryDatabase {
         var config = Configuration()
         config.foreignKeysEnabled = true
         return try HistoryDatabase(dbQueue: try DatabaseQueue(configuration: config))
@@ -24,7 +25,7 @@ final class HistoryTitleIndexTests: XCTestCase {
     /// caller-chosen time, and a `visitTitle` of nil for a visit as the database
     /// held them before per-visit titles existed (TASK-91).
     @discardableResult
-    private func seedVisit(_ db: HistoryDatabase, url: String, title: String = "Page",
+    @MainActor private func seedVisit(_ db: HistoryDatabase, url: String, title: String = "Page",
                            visitTitle: String? = nil, spaceID: String,
                            visitTime: Double) throws -> Int64 {
         try db.dbQueue.write { conn in
@@ -44,19 +45,19 @@ final class HistoryTitleIndexTests: XCTestCase {
         }
     }
 
-    private func recordVisitAwaitingID(_ db: HistoryDatabase, url: String, title: String,
+    @MainActor private func recordVisitAwaitingID(_ db: HistoryDatabase, url: String, title: String,
                                        spaceID: String) -> Int64? {
-        var visitID: Int64?
+        let visitID = Mutex<Int64?>(nil)
         let done = expectation(description: "record visit")
         db.recordVisit(url: url, title: title, faviconURL: nil, spaceID: spaceID) { id in
-            visitID = id
+            visitID.withLock { $0 = id }
             done.fulfill()
         }
         wait(for: [done], timeout: 10)
-        return visitID
+        return visitID.withLock { $0 }
     }
 
-    private func awaitDeletion(_ perform: (@escaping (Result<HistoryDeletionResult, Error>) -> Void) -> Void) {
+    @MainActor private func awaitDeletion(_ perform: (@escaping @Sendable (Result<HistoryDeletionResult, Error>) -> Void) -> Void) {
         let done = expectation(description: "history delete")
         perform { _ in done.fulfill() }
         wait(for: [done], timeout: 10)
@@ -65,7 +66,7 @@ final class HistoryTitleIndexTests: XCTestCase {
     // MARK: - Reading the index back
 
     /// `(urlID, spaceID, title, n)` for every row, in a stable order.
-    private func indexRows(_ db: HistoryDatabase) throws -> [String] {
+    @MainActor private func indexRows(_ db: HistoryDatabase) throws -> [String] {
         try db.dbQueue.read { conn in
             try Row.fetchAll(conn, sql: """
                 SELECT urlID, spaceID, title, n FROM historyTitle
@@ -77,7 +78,7 @@ final class HistoryTitleIndexTests: XCTestCase {
     /// The titles the FTS index answers `query` with, through the same
     /// quoted-prefix expression every lookup in `HistoryDatabase` builds — over
     /// *folded* tokens, because `historyTitleSearch` indexes folded text.
-    private func ftsTitles(_ db: HistoryDatabase, _ query: String,
+    @MainActor private func ftsTitles(_ db: HistoryDatabase, _ query: String,
                            spaceID: String? = nil) throws -> Set<String> {
         let tokens = HistoryDatabase.folded(query)
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
@@ -110,7 +111,7 @@ final class HistoryTitleIndexTests: XCTestCase {
     /// reads the index's rowids out of `fts5vocab`, which is the only way to see
     /// entries the content table no longer has a row for — the failure a
     /// hand-written delete trigger is most likely to produce.
-    private func assertIndexIsConsistent(_ db: HistoryDatabase,
+    @MainActor private func assertIndexIsConsistent(_ db: HistoryDatabase,
                                          file: StaticString = #filePath, line: UInt = #line) throws {
         try db.dbQueue.write { conn in
             let recomputed = try Row.fetchAll(conn, sql: """
@@ -156,7 +157,7 @@ final class HistoryTitleIndexTests: XCTestCase {
     /// always on h5) or the migration built it afterwards from what was already
     /// there. Both databases get titled, empty-titled and title-less visits, two
     /// spaces, a title two visits share, and a URL one space retitled.
-    private func seedTheSameHistory(_ conn: Database) throws {
+    @MainActor private func seedTheSameHistory(_ conn: Database) throws {
         try conn.execute(sql: """
             INSERT INTO historyURL (url, title, visitCount, lastVisitTime) VALUES
                 ('https://mail.example/', 'Dashboard', 5, 5000),
@@ -175,7 +176,7 @@ final class HistoryTitleIndexTests: XCTestCase {
             """)
     }
 
-    func testTheMigrationBuildsTheIndexExistingHistoryWouldHaveProduced() throws {
+    @MainActor func testTheMigrationBuildsTheIndexExistingHistoryWouldHaveProduced() throws {
         var config = Configuration()
         config.foreignKeysEnabled = true
 
@@ -222,7 +223,7 @@ final class HistoryTitleIndexTests: XCTestCase {
 
     // MARK: - Trigger lifecycle (AC #4)
 
-    func testRepeatedVisitsUnderOneTitleShareOneRow() throws {
+    @MainActor func testRepeatedVisitsUnderOneTitleShareOneRow() throws {
         let db = try makeDatabase()
         for _ in 0 ..< 4 {
             _ = recordVisitAwaitingID(db, url: "https://news.example/", title: "Morning Edition",
@@ -237,7 +238,7 @@ final class HistoryTitleIndexTests: XCTestCase {
     /// A single-page app settling its title (TASK-88) is a `historyVisit` UPDATE,
     /// which has to move the count from one row to the other — and take the FTS
     /// entry with it in both directions.
-    func testARetitleMovesTheCountAndTheIndexFollowsBothWays() throws {
+    @MainActor func testARetitleMovesTheCountAndTheIndexFollowsBothWays() throws {
         let db = try makeDatabase()
         let first = try XCTUnwrap(recordVisitAwaitingID(db, url: "https://app.example/",
                                                         title: "Loading", spaceID: "A"))
@@ -267,7 +268,7 @@ final class HistoryTitleIndexTests: XCTestCase {
     /// A legacy visit gaining a title has no old row to decrement, and a visit
     /// moved to another space is a different index row. Both are the `UPDATE`
     /// triggers' edge cases.
-    func testATitlelessVisitGainingATitleAndAVisitChangingSpace() throws {
+    @MainActor func testATitlelessVisitGainingATitleAndAVisitChangingSpace() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://old.example/", title: "Legacy", spaceID: "A", visitTime: 1000)
         XCTAssertTrue(try indexRows(db).isEmpty, "a title-less visit is not indexed")
@@ -295,7 +296,7 @@ final class HistoryTitleIndexTests: XCTestCase {
 
     /// Every delete path in the file, each against a freshly seeded corpus: what
     /// they have in common is that none of them knows the title index exists.
-    func testEveryDeletePathLeavesTheIndexConsistent() throws {
+    @MainActor func testEveryDeletePathLeavesTheIndexConsistent() throws {
         // (what to do, what should be left)
         let cases: [(name: String, run: (HistoryDatabase, [Int64]) -> Void)] = [
             ("one visit by id", { db, ids in
@@ -360,7 +361,7 @@ final class HistoryTitleIndexTests: XCTestCase {
     /// The expiry and the launch sweep delete through paths that never name a
     /// single visit; this pins what they actually leave behind rather than only
     /// that it is self-consistent.
-    func testTheSweepAndTheExpiryTakeTheirTitlesWithThem() throws {
+    @MainActor func testTheSweepAndTheExpiryTakeTheirTitlesWithThem() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         try seedVisit(db, url: "https://gone.example/", title: "Deleted space page",
@@ -386,14 +387,14 @@ final class HistoryTitleIndexTests: XCTestCase {
     /// The reported case. Personal saw "Budget 2026"; work later retitled the
     /// shared `historyURL` row "Dashboard", so the word survives only in
     /// personal's own visit title.
-    private func seedRetitledAcrossProfiles(_ db: HistoryDatabase) throws {
+    @MainActor private func seedRetitledAcrossProfiles(_ db: HistoryDatabase) throws {
         try seedVisit(db, url: "https://ledger.example/", title: "Budget 2026",
                       visitTitle: "Budget 2026", spaceID: "personal", visitTime: 1000)
         try seedVisit(db, url: "https://ledger.example/", title: "Dashboard",
                       visitTitle: "Dashboard", spaceID: "work", visitTime: 2000)
     }
 
-    func testTheOwnTitleIsFoundInItsOwnSpaceAndNowhereElse() throws {
+    @MainActor func testTheOwnTitleIsFoundInItsOwnSpaceAndNowhereElse() throws {
         let db = try makeDatabase()
         try seedRetitledAcrossProfiles(db)
 
@@ -408,7 +409,7 @@ final class HistoryTitleIndexTests: XCTestCase {
                       "and the shared title stays the other profile's")
     }
 
-    func testTheHistoryPageSeesTheSameSplitAtProfileScope() throws {
+    @MainActor func testTheHistoryPageSeesTheSameSplitAtProfileScope() throws {
         let db = try makeDatabase()
         try seedRetitledAcrossProfiles(db)
         // A sibling space of the personal profile, to prove the gate is scoped
@@ -431,7 +432,7 @@ final class HistoryTitleIndexTests: XCTestCase {
     /// be reached through the shared URL-level title — and only while no other
     /// space has visited the URL (TASK-94). Both halves, so the legacy arm of
     /// the candidate union is pinned in the positive *and* the negative.
-    func testALegacyVisitIsStillReachableAndStillGuarded() throws {
+    @MainActor func testALegacyVisitIsStillReachableAndStillGuarded() throws {
         let alone = try makeDatabase()
         try seedVisit(alone, url: "https://old.example/", title: "Legacy fallback title",
                       spaceID: "A", visitTime: 1000)
@@ -457,7 +458,7 @@ final class HistoryTitleIndexTests: XCTestCase {
     /// searches, from either direction. Before the titles were folded, the
     /// candidate gate dropped every one of the `strasse`/`file` queries —
     /// `unicode61` had indexed `straße` and `ﬁle` unchanged.
-    func testAFoldedSpellingFindsTheTitleInBothSearches() throws {
+    @MainActor func testAFoldedSpellingFindsTheTitleInBothSearches() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://karte.example/", title: "Straße nach Köln",
                       visitTitle: "Straße nach Köln", spaceID: "A", visitTime: 1000)
@@ -486,7 +487,7 @@ final class HistoryTitleIndexTests: XCTestCase {
     /// only through `historySearch`, which indexes the raw URL-level title. The
     /// ASCII spelling therefore does not find it — the behaviour that arm has
     /// always had — while the title's own spelling still does.
-    func testALegacyVisitKeepsTheUnfoldedBehaviourOfTheSharedIndex() throws {
+    @MainActor func testALegacyVisitKeepsTheUnfoldedBehaviourOfTheSharedIndex() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://karte.example/", title: "Straße nach Köln",
                       spaceID: "A", visitTime: 1000)
@@ -534,7 +535,7 @@ final class HistoryTitleIndexTests: XCTestCase {
     /// divergence, or this list going stale — fails here.
     private static let knownDivergences: Set<String> = []
 
-    func testTheGateNeverHidesWhatTheMatcherAcceptsExceptWhereRecorded() throws {
+    @MainActor func testTheGateNeverHidesWhatTheMatcherAcceptsExceptWhereRecorded() throws {
         let db = try makeDatabase()
         for (index, title) in Self.awkwardTitles.enumerated() {
             try seedVisit(db, url: "https://t\(index).invalid/", title: title, visitTitle: title,

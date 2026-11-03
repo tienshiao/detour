@@ -1,10 +1,11 @@
+import Synchronization
 import XCTest
 import GRDB
 @testable import Detour
 
-final class HistoryDatabaseTests: XCTestCase {
+nonisolated final class HistoryDatabaseTests: XCTestCase {
 
-    private func makeDatabase() throws -> HistoryDatabase {
+    @MainActor private func makeDatabase() throws -> HistoryDatabase {
         var config = Configuration()
         config.foreignKeysEnabled = true
         let dbQueue = try DatabaseQueue(configuration: config) // in-memory
@@ -22,7 +23,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// the default — seeds a visit as the database held them before per-visit
     /// titles existed, so it reads back with the URL-level title.
     @discardableResult
-    private func seedVisit(_ db: HistoryDatabase,
+    @MainActor private func seedVisit(_ db: HistoryDatabase,
                            url: String,
                            title: String = "Page",
                            visitTitle: String? = nil,
@@ -50,20 +51,20 @@ final class HistoryDatabaseTests: XCTestCase {
     /// Records a visit and returns the id its completion hands back. The write
     /// lands on GRDB's writer queue, so the test waits for the callback rather
     /// than guessing.
-    private func recordVisitAwaitingID(_ db: HistoryDatabase, url: String, title: String,
+    @MainActor private func recordVisitAwaitingID(_ db: HistoryDatabase, url: String, title: String,
                                        spaceID: String, typed: Bool = false,
                                        file: StaticString = #filePath, line: UInt = #line) -> Int64? {
-        var visitID: Int64?
+        let visitID = Mutex<Int64?>(nil)
         let done = expectation(description: "record visit")
         db.recordVisit(url: url, title: title, faviconURL: nil, spaceID: spaceID, typed: typed) { id in
-            visitID = id
+            visitID.withLock { $0 = id }
             done.fulfill()
         }
         wait(for: [done], timeout: 10)
-        return visitID
+        return visitID.withLock { $0 }
     }
 
-    private func visitTitles(_ db: HistoryDatabase, _ url: String) throws -> [String?] {
+    @MainActor private func visitTitles(_ db: HistoryDatabase, _ url: String) throws -> [String?] {
         try db.dbQueue.read { conn in
             try Optional<String>.fetchAll(conn, sql: """
                 SELECT v.title FROM historyVisit v
@@ -78,7 +79,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// with no scope at all. No reader in the app asks this any more (the
     /// unscoped `chrome.history.search` query that did went with TASK-138), so
     /// the tests that need the index itself as a premise read it here.
-    private func sharedIndexURLs(_ db: HistoryDatabase, matching word: String) throws -> [String] {
+    @MainActor private func sharedIndexURLs(_ db: HistoryDatabase, matching word: String) throws -> [String] {
         try db.dbQueue.read { conn in
             try String.fetchAll(conn, sql: """
                 SELECT h.url FROM historySearch s
@@ -92,21 +93,21 @@ final class HistoryDatabaseTests: XCTestCase {
     /// Runs one of the TASK-87 delete APIs and returns how it settled. The
     /// deletes complete on GRDB's writer queue, so the test has to wait for the
     /// callback rather than read straight after the call.
-    private func awaitDeletionOutcome(
-        _ perform: (@escaping (Result<HistoryDeletionResult, Error>) -> Void) -> Void
+    @MainActor private func awaitDeletionOutcome(
+        _ perform: (@escaping @Sendable (Result<HistoryDeletionResult, Error>) -> Void) -> Void
     ) -> Result<HistoryDeletionResult, Error> {
-        var captured: Result<HistoryDeletionResult, Error> = .success(.empty)
+        let captured = Mutex<Result<HistoryDeletionResult, Error>>(.success(.empty))
         let done = expectation(description: "history delete")
         perform { result in
-            captured = result
+            captured.withLock { $0 = result }
             done.fulfill()
         }
         wait(for: [done], timeout: 10)
-        return captured
+        return captured.withLock { $0 }
     }
 
     /// The same, for the deletes that are expected to succeed.
-    private func awaitDeletion(_ perform: (@escaping (Result<HistoryDeletionResult, Error>) -> Void) -> Void,
+    @MainActor private func awaitDeletion(_ perform: (@escaping @Sendable (Result<HistoryDeletionResult, Error>) -> Void) -> Void,
                                file: StaticString = #filePath, line: UInt = #line) -> HistoryDeletionResult {
         switch awaitDeletionOutcome(perform) {
         case .success(let result):
@@ -119,7 +120,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Makes every `historyVisit` delete fail, so a test can see what a failed
     /// write does without a corrupt file or a read-only queue.
-    private func blockVisitDeletes(_ db: HistoryDatabase) throws {
+    @MainActor private func blockVisitDeletes(_ db: HistoryDatabase) throws {
         try db.dbQueue.write { conn in
             try conn.execute(sql: """
                 CREATE TRIGGER refuseVisitDelete BEFORE DELETE ON historyVisit
@@ -128,7 +129,7 @@ final class HistoryDatabaseTests: XCTestCase {
         }
     }
 
-    private func urlRow(_ db: HistoryDatabase, _ url: String) throws -> Row? {
+    @MainActor private func urlRow(_ db: HistoryDatabase, _ url: String) throws -> Row? {
         try db.dbQueue.read { conn in
             try Row.fetchOne(conn, sql: "SELECT * FROM historyURL WHERE url = ?", arguments: [url])
         }
@@ -136,7 +137,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Walks every page of `visits` with the given page size, following the
     /// keyset cursor, and returns the concatenation.
-    private func walkVisits(_ db: HistoryDatabase, spaceIDs: [String], pageSize: Int) -> [HistoryVisitEntry] {
+    @MainActor private func walkVisits(_ db: HistoryDatabase, spaceIDs: [String], pageSize: Int) -> [HistoryVisitEntry] {
         var all: [HistoryVisitEntry] = []
         var cursor: HistoryCursor?
         while true {
@@ -154,7 +155,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     // MARK: - bestURLCompletion
 
-    func testBestURLCompletionMatchesPrefixIgnoringSchemeAndWWW() throws {
+    @MainActor func testBestURLCompletionMatchesPrefixIgnoringSchemeAndWWW() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://www.youtube.com/", title: "YouTube", faviconURL: nil, spaceID: "space1")
 
@@ -163,7 +164,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(match?.url, "https://www.youtube.com/")
     }
 
-    func testBestURLCompletionPrefersTypedVisits() throws {
+    @MainActor func testBestURLCompletionPrefersTypedVisits() throws {
         let db = try makeDatabase()
         // 3 link visits (3 × 100 = 300) vs 2 typed visits (2 × 2.0 × 100 = 400):
         // the typed bonus outweighs the higher visit count.
@@ -179,7 +180,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(match?.url, "https://appfigures.com")
     }
 
-    func testBestURLCompletionPrefersRecentOverOldFrequent() throws {
+    @MainActor func testBestURLCompletionPrefersRecentOverOldFrequent() throws {
         let db = try makeDatabase()
         // 5 visits ~60 days ago (5 × 30 = 150) vs 2 today (2 × 100 = 200):
         // recency decay outweighs the higher visit count.
@@ -202,7 +203,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(match?.url, "https://appfigures.com")
     }
 
-    func testBestURLCompletionIgnoresVisitsOlderThan90Days() throws {
+    @MainActor func testBestURLCompletionIgnoresVisitsOlderThan90Days() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://apple.com", title: "Apple", faviconURL: nil, spaceID: "space1")
         let hundredDaysAgo = Date().timeIntervalSince1970 - 100 * 24 * 3600
@@ -220,7 +221,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     // MARK: - recordVisit
 
-    func testRecordVisitStoresTypedFlag() throws {
+    @MainActor func testRecordVisitStoresTypedFlag() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1", typed: true)
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
@@ -233,7 +234,7 @@ final class HistoryDatabaseTests: XCTestCase {
         }
     }
 
-    func testRecordVisitCreatesURLAndVisit() throws {
+    @MainActor func testRecordVisitCreatesURLAndVisit() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com", title: "Example", faviconURL: nil, spaceID: "space1")
 
@@ -251,7 +252,7 @@ final class HistoryDatabaseTests: XCTestCase {
         }
     }
 
-    func testRepeatVisitIncrementsCount() throws {
+    @MainActor func testRepeatVisitIncrementsCount() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com", title: "Example", faviconURL: nil, spaceID: "space1")
         db.recordVisit(url: "https://example.com", title: "Example - Updated", faviconURL: "https://example.com/favicon.ico", spaceID: "space1")
@@ -270,7 +271,7 @@ final class HistoryDatabaseTests: XCTestCase {
         }
     }
 
-    func testDifferentURLsCreateSeparateRows() throws {
+    @MainActor func testDifferentURLsCreateSeparateRows() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
         db.recordVisit(url: "https://b.com", title: "B", faviconURL: nil, spaceID: "space1")
@@ -281,7 +282,7 @@ final class HistoryDatabaseTests: XCTestCase {
         }
     }
 
-    func testVisitRecordsSpaceID() throws {
+    @MainActor func testVisitRecordsSpaceID() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com", title: "Example", faviconURL: nil, spaceID: "space-abc")
 
@@ -293,7 +294,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     // MARK: - updateTitle(visitID:url:title:) — TASK-88, retargeted by TASK-91
 
-    func testUpdateTitleCorrectsOnlyTheVisitItNames() throws {
+    @MainActor func testUpdateTitleCorrectsOnlyTheVisitItNames() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://www.youtube.com/", title: "a video - YouTube",
                       visitTitle: "a video - YouTube", spaceID: "space1", visitTime: 1000)
@@ -319,7 +320,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// The whole point of the retarget (TASK-91): an older tab settling its
     /// title must not relabel the URL for a newer visit made since.
-    func testUpdateTitleLeavesTheURLTitleAloneWhenANewerVisitExists() throws {
+    @MainActor func testUpdateTitleLeavesTheURLTitleAloneWhenANewerVisitExists() throws {
         let db = try makeDatabase()
         let older = try seedVisit(db, url: "https://news.example/", title: "Morning Edition",
                                   visitTitle: "Morning Edition", spaceID: "space1", visitTime: 1000)
@@ -339,7 +340,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// The id and the URL have to name the same row: a stale id — the visit was
     /// deleted and the row id reused, say — must write nothing rather than
     /// rename a stranger's visit.
-    func testUpdateTitleIsANoOpWhenTheIDAndURLDisagree() throws {
+    @MainActor func testUpdateTitleIsANoOpWhenTheIDAndURLDisagree() throws {
         let db = try makeDatabase()
         let mine = try seedVisit(db, url: "https://mine.example/", title: "Mine",
                                  visitTitle: "Mine", spaceID: "space1", visitTime: 1000)
@@ -354,7 +355,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(urlRow(db, "https://mine.example/"))["title"] as String, "Mine")
     }
 
-    func testUpdateTitleIsANoOpForAnUnknownVisit() throws {
+    @MainActor func testUpdateTitleIsANoOpForAnUnknownVisit() throws {
         let db = try makeDatabase()
 
         db.updateTitle(visitID: 9999, url: "https://never.visited/", title: "Never Visited")
@@ -367,7 +368,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// AC #5: `historySearch` is synchronized with `historyURL`, so the FTS
     /// index has to follow the URL-level title — the old one must stop matching.
-    func testUpdateTitleIsReflectedInFTSSearch() throws {
+    @MainActor func testUpdateTitleIsReflectedInFTSSearch() throws {
         let db = try makeDatabase()
         let visit = try XCTUnwrap(recordVisitAwaitingID(db, url: "https://www.youtube.com/",
                                                         title: "neighbourly baking", spaceID: "space1"))
@@ -385,7 +386,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// AC #1: the migration lands on a database that already holds visits, and
     /// those visits — which never had a title of their own — keep reading back
     /// with the URL-level one.
-    func testMigrationAddsPerVisitTitlesToAnExistingDatabase() throws {
+    @MainActor func testMigrationAddsPerVisitTitlesToAnExistingDatabase() throws {
         var config = Configuration()
         config.foreignKeysEnabled = true
         let queue = try DatabaseQueue(configuration: config)
@@ -417,7 +418,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// AC #3: the user's complaint — 68 visits to youtube.com all showing one
     /// video's title. Each visit keeps what the page was called at the time.
-    func testTwoVisitsOfOneURLKeepTheirOwnTitles() throws {
+    @MainActor func testTwoVisitsOfOneURLKeepTheirOwnTitles() throws {
         let db = try makeDatabase()
         _ = recordVisitAwaitingID(db, url: "https://www.youtube.com/", title: "a video - YouTube",
                                   spaceID: "A")
@@ -431,7 +432,7 @@ final class HistoryDatabaseTests: XCTestCase {
     }
 
     /// AC #3: recording a newer visit is not a rename of the older ones.
-    func testALaterVisitNeverChangesAnEarlierVisitsTitle() throws {
+    @MainActor func testALaterVisitNeverChangesAnEarlierVisitsTitle() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://dash.example/", title: "All quiet", visitTitle: "All quiet",
                       spaceID: "A", visitTime: 1000)
@@ -445,7 +446,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// AC #4, the privacy case: `historyURL` is one row per URL shared by every
     /// profile, so before TASK-91 a Work-profile visit titled "(3) Inbox —
     /// you@work" became the title the Personal profile's History page showed.
-    func testAnotherProfilesTitleNeverReachesThisProfilesVisits() throws {
+    @MainActor func testAnotherProfilesTitleNeverReachesThisProfilesVisits() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://mail.example/", title: "Inbox", visitTitle: "Inbox",
                       spaceID: "personal", visitTime: 1000)
@@ -467,7 +468,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// `searchVisits` shows one row per URL, represented by the latest in-scope
     /// visit — so the title it shows is that visit's own.
-    func testSearchVisitsShowsTheRepresentativeVisitsOwnTitle() throws {
+    @MainActor func testSearchVisitsShowsTheRepresentativeVisitsOwnTitle() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://news.example/", title: "Morning Edition",
                       visitTitle: "Morning Edition", spaceID: "A", visitTime: 1000)
@@ -481,7 +482,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// Decision D's limitation — only the latest known title is indexed, so a
     /// title a page used to have was not searchable — is gone since TASK-93:
     /// titles are matched against each visit's own title, not the index.
-    func testAPreviousVisitTitleIsSearchable() throws {
+    @MainActor func testAPreviousVisitTitleIsSearchable() throws {
         let db = try makeDatabase()
         _ = recordVisitAwaitingID(db, url: "https://news.example/", title: "Morning Edition",
                                   spaceID: "A")
@@ -494,7 +495,7 @@ final class HistoryDatabaseTests: XCTestCase {
                        ["Evening Edition"])
     }
 
-    func testRecordVisitHandsBackTheInsertedVisitID() throws {
+    @MainActor func testRecordVisitHandsBackTheInsertedVisitID() throws {
         let db = try makeDatabase()
 
         let first = recordVisitAwaitingID(db, url: "https://a.com", title: "A", spaceID: "A")
@@ -507,7 +508,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// AC #8 / decision F: the latest visit goes, so the URL's latest known
     /// title falls back to the newest visit still there.
-    func testDeletingTheLatestVisitFallsBackToTheNewestRemainingTitle() throws {
+    @MainActor func testDeletingTheLatestVisitFallsBackToTheNewestRemainingTitle() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://news.example/", title: "Morning Edition",
                       visitTitle: "Morning Edition", spaceID: "A", visitTime: 1000)
@@ -524,7 +525,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Across profiles, because `historyURL` is shared: the newest remaining
     /// visit wins wherever it lives.
-    func testTheURLTitleFallsBackAcrossProfiles() throws {
+    @MainActor func testTheURLTitleFallsBackAcrossProfiles() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://shared.example/", title: "B's title", visitTitle: "B's title",
                       spaceID: "B", visitTime: 1500)
@@ -541,7 +542,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// naming the URL in search, suggestions and completion after the user
     /// deleted the page it came from. The URL is left with no title, which every
     /// reader falls back from (the History page and the palette show the URL).
-    func testDeletingTheOnlyTitledVisitClearsTheURLTitle() throws {
+    @MainActor func testDeletingTheOnlyTitledVisitClearsTheURLTitle() throws {
         let db = try makeDatabase()
         // A visit from before per-visit titles existed, plus a new titled one
         // whose title is what the URL row currently carries.
@@ -563,7 +564,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// Deleting a visit that never had a title of its own cannot be where the
     /// URL's title came from — blanking it would lose a legitimate title for
     /// nothing.
-    func testDeletingAnUntitledLegacyVisitLeavesTheURLTitleAlone() throws {
+    @MainActor func testDeletingAnUntitledLegacyVisitLeavesTheURLTitleAlone() throws {
         let db = try makeDatabase()
         let older = try seedVisit(db, url: "https://old.example/", title: "Legacy Title",
                                   spaceID: "A", visitTime: 1000)
@@ -579,7 +580,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     // MARK: - expireOldVisits
 
-    func testExpireDeletesOldVisitsAndOrphanedURLs() throws {
+    @MainActor func testExpireDeletesOldVisitsAndOrphanedURLs() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         let old = now - (91 * 24 * 3600) // 91 days ago
@@ -613,7 +614,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     // MARK: - recentHistory
 
-    func testRecentHistoryReturnsEntriesOrderedByVisitTime() throws {
+    @MainActor func testRecentHistoryReturnsEntriesOrderedByVisitTime() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
         Thread.sleep(forTimeInterval: 0.01)
@@ -625,7 +626,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.map(\.url), ["https://c.com", "https://b.com", "https://a.com"])
     }
 
-    func testRecentHistoryRespectsLimit() throws {
+    @MainActor func testRecentHistoryRespectsLimit() throws {
         let db = try makeDatabase()
         for i in 1...5 {
             db.recordVisit(url: "https://\(i).com", title: "\(i)", faviconURL: nil, spaceID: "space1")
@@ -635,7 +636,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.count, 3)
     }
 
-    func testRecentHistoryFiltersbySpaceID() throws {
+    @MainActor func testRecentHistoryFiltersbySpaceID() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
         db.recordVisit(url: "https://b.com", title: "B", faviconURL: nil, spaceID: "space2")
@@ -645,7 +646,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.first?.url, "https://a.com")
     }
 
-    func testRecentHistoryDeduplicatesURL() throws {
+    @MainActor func testRecentHistoryDeduplicatesURL() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
@@ -654,7 +655,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.count, 1)
     }
 
-    func testRecentHistoryReturnsEmptyForUnknownSpace() throws {
+    @MainActor func testRecentHistoryReturnsEmptyForUnknownSpace() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
 
@@ -664,7 +665,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     // MARK: - searchHistory
 
-    func testSearchHistoryMatchesTitle() throws {
+    @MainActor func testSearchHistoryMatchesTitle() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com", title: "Swift Programming", faviconURL: nil, spaceID: "space1")
         db.recordVisit(url: "https://other.com", title: "Cooking Recipes", faviconURL: nil, spaceID: "space1")
@@ -674,7 +675,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.first?.url, "https://example.com")
     }
 
-    func testSearchHistoryMatchesURL() throws {
+    @MainActor func testSearchHistoryMatchesURL() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://github.com/swift", title: "GitHub", faviconURL: nil, spaceID: "space1")
 
@@ -682,7 +683,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.count, 1)
     }
 
-    func testSearchHistoryPrefixMatch() throws {
+    @MainActor func testSearchHistoryPrefixMatch() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com", title: "Programming Guide", faviconURL: nil, spaceID: "space1")
 
@@ -690,7 +691,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.count, 1)
     }
 
-    func testSearchHistoryMultipleTokens() throws {
+    @MainActor func testSearchHistoryMultipleTokens() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "Swift Programming Guide", faviconURL: nil, spaceID: "space1")
         db.recordVisit(url: "https://b.com", title: "Swift Reference", faviconURL: nil, spaceID: "space1")
@@ -701,7 +702,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.first?.url, "https://a.com")
     }
 
-    func testSearchHistoryFiltersbySpaceID() throws {
+    @MainActor func testSearchHistoryFiltersbySpaceID() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "Swift", faviconURL: nil, spaceID: "space1")
         db.recordVisit(url: "https://b.com", title: "Swift", faviconURL: nil, spaceID: "space2")
@@ -711,7 +712,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.first?.url, "https://a.com")
     }
 
-    func testSearchHistoryRespectsLimit() throws {
+    @MainActor func testSearchHistoryRespectsLimit() throws {
         let db = try makeDatabase()
         for i in 1...10 {
             db.recordVisit(url: "https://swift\(i).com", title: "Swift \(i)", faviconURL: nil, spaceID: "space1")
@@ -721,7 +722,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.count, 3)
     }
 
-    func testSearchHistoryReturnsEmptyForEmptyQuery() throws {
+    @MainActor func testSearchHistoryReturnsEmptyForEmptyQuery() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
 
@@ -729,7 +730,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertTrue(results.isEmpty)
     }
 
-    func testSearchHistoryReturnsEmptyForWhitespaceQuery() throws {
+    @MainActor func testSearchHistoryReturnsEmptyForWhitespaceQuery() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "A", faviconURL: nil, spaceID: "space1")
 
@@ -737,7 +738,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertTrue(results.isEmpty)
     }
 
-    func testSearchHistorySanitizesSpecialChars() throws {
+    @MainActor func testSearchHistorySanitizesSpecialChars() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "Test", faviconURL: nil, spaceID: "space1")
 
@@ -746,7 +747,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.count, 1)
     }
 
-    func testSearchHistoryDotsInQuery() throws {
+    @MainActor func testSearchHistoryDotsInQuery() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://github.com", title: "GitHub", faviconURL: nil, spaceID: "space1")
 
@@ -756,7 +757,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.first?.url, "https://github.com")
     }
 
-    func testSearchHistoryColonsAndSlashes() throws {
+    @MainActor func testSearchHistoryColonsAndSlashes() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com/page", title: "Example Page", faviconURL: nil, spaceID: "space1")
 
@@ -765,7 +766,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertFalse(results.isEmpty)
     }
 
-    func testSearchHistoryHyphens() throws {
+    @MainActor func testSearchHistoryHyphens() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://stackoverflow.com", title: "Stack Overflow", faviconURL: nil, spaceID: "space1")
 
@@ -773,7 +774,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertFalse(results.isEmpty, "Should match on 'stack' and 'overflow' tokens")
     }
 
-    func testSearchHistoryFTSOperators() throws {
+    @MainActor func testSearchHistoryFTSOperators() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://cplusplus.com", title: "C++ Reference test", faviconURL: nil, spaceID: "space1")
 
@@ -782,7 +783,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertFalse(results.isEmpty, "Should match on 'C' and 'test' tokens")
     }
 
-    func testSearchHistoryAllSpecialInput() throws {
+    @MainActor func testSearchHistoryAllSpecialInput() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com", title: "Example", faviconURL: nil, spaceID: "space1")
 
@@ -791,7 +792,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertTrue(results.isEmpty)
     }
 
-    func testSearchHistoryMixedSpecialAndAlpha() throws {
+    @MainActor func testSearchHistoryMixedSpecialAndAlpha() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://github.com/repo", title: "GitHub Repo", faviconURL: nil, spaceID: "space1")
 
@@ -801,7 +802,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertFalse(results.isEmpty, "Should match on 'github', 'com', 'repo' tokens")
     }
 
-    func testSearchHistoryIncludesFaviconURL() throws {
+    @MainActor func testSearchHistoryIncludesFaviconURL() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://a.com", title: "Test", faviconURL: "https://a.com/favicon.ico", spaceID: "space1")
 
@@ -815,7 +816,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// one last — so the shared `historyURL.title` (and the FTS index built from
     /// it) carries the work title for both. Times are recent because
     /// `bestURLCompletion` ignores visits older than 90 days.
-    private func seedTwoProfileVisit(_ db: HistoryDatabase,
+    @MainActor private func seedTwoProfileVisit(_ db: HistoryDatabase,
                                      url: String = "https://mail.example/",
                                      ownTitle: String,
                                      otherTitle: String) throws {
@@ -826,7 +827,7 @@ final class HistoryDatabaseTests: XCTestCase {
                       spaceID: "B", visitTime: now - 100)
     }
 
-    func testRecentHistoryShowsTheSpacesOwnTitle() throws {
+    @MainActor func testRecentHistoryShowsTheSpacesOwnTitle() throws {
         let db = try makeDatabase()
         try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
 
@@ -835,7 +836,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(db.recentHistory(spaceIDs: ["B"]).map(\.title), ["Secret budget"])
     }
 
-    func testBestURLCompletionShowsTheSpacesOwnTitle() throws {
+    @MainActor func testBestURLCompletionShowsTheSpacesOwnTitle() throws {
         let db = try makeDatabase()
         try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
 
@@ -843,7 +844,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(db.bestURLCompletion(prefix: "mail", spaceIDs: ["B"])?.title, "Secret budget")
     }
 
-    func testSearchHistoryShowsTheSpacesOwnTitle() throws {
+    @MainActor func testSearchHistoryShowsTheSpacesOwnTitle() throws {
         let db = try makeDatabase()
         try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
 
@@ -854,7 +855,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// The leak proper: a word only the *other* profile's title has must not
     /// produce a suggestion here, even though the shared row carries that title.
-    func testSearchHistoryNeverMatchesThroughAnotherProfilesTitle() throws {
+    @MainActor func testSearchHistoryNeverMatchesThroughAnotherProfilesTitle() throws {
         let db = try makeDatabase()
         try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
 
@@ -867,7 +868,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// The reported case, both directions: the shared title is the work one, so
     /// FTS offers the URL as a candidate for "inbox" *and* for "work". Only the
     /// first is a match for the personal profile, and it is labelled "Inbox".
-    func testSearchHistoryMatchesTheOwnTitleBehindASharedOne() throws {
+    @MainActor func testSearchHistoryMatchesTheOwnTitleBehindASharedOne() throws {
         let db = try makeDatabase()
         try seedTwoProfileVisit(db, ownTitle: "Inbox", otherTitle: "(3) Inbox - you@work")
 
@@ -880,7 +881,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Which of this space's own visits labels the row: the latest one, not the
     /// latest visit overall (which is another profile's here).
-    func testTheLatestInScopeVisitProvidesTheTitle() throws {
+    @MainActor func testTheLatestInScopeVisitProvidesTheTitle() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         try seedVisit(db, url: "https://news.example/", title: "Morning Edition",
@@ -900,7 +901,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// Visits recorded before per-visit titles existed have none of their own,
     /// so the URL-level title still stands in — nothing else ever knew what that
     /// page was called, and no other space has a claim on it here.
-    func testALegacyVisitWithoutATitleFallsBackToTheURLTitle() throws {
+    @MainActor func testALegacyVisitWithoutATitleFallsBackToTheURLTitle() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         try seedVisit(db, url: "https://old.example/", title: "Legacy Title",
@@ -916,7 +917,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// The label is this space's latest *usable* title, not its latest visit: a
     /// later visit that arrived with no title, or with an empty one, must not
     /// blank out a title this space does have.
-    func testAnUntitledLaterVisitDoesNotHideThisSpacesOwnTitle() throws {
+    @MainActor func testAnUntitledLaterVisitDoesNotHideThisSpacesOwnTitle() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         // The shared title keeps the token, so FTS still offers the candidate
@@ -940,7 +941,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// from the newer. (`searchVisits`, where a row *is* a visit, never does
     /// this; see the contrast in `searchHistory`'s doc comment.) Nothing
     /// crosses a profile either way: both visits are this space's own.
-    func testTheMatchingVisitAndTheLabellingVisitCanDiffer() throws {
+    @MainActor func testTheMatchingVisitAndTheLabellingVisitCanDiffer() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         try seedVisit(db, url: "https://mail.example/", title: "Inbox", visitTitle: "Inbox",
@@ -960,7 +961,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// has since overwritten the shared title. Falling back to it would display
     /// exactly the title TASK-94 removes, so the row is left unlabelled and
     /// `SuggestionProvider.displayTitle` shows the URL instead.
-    func testALegacyVisitNeverFallsBackToAnotherProfilesTitle() throws {
+    @MainActor func testALegacyVisitNeverFallsBackToAnotherProfilesTitle() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         try seedVisit(db, url: "https://mail.example/", title: "Inbox",
@@ -985,7 +986,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// row "Secret budget", and "alpha" found nothing in A. `historyTitle`
     /// indexes every title a space gave a URL, so A's own word finds it now —
     /// and only from A.
-    func testAnOwnTitleAloneIsFoundThroughTheTitleIndex() throws {
+    @MainActor func testAnOwnTitleAloneIsFoundThroughTheTitleIndex() throws {
         let db = try makeDatabase()
         try seedTwoProfileVisit(db, ownTitle: "Alpha page", otherTitle: "Secret budget")
 
@@ -1001,7 +1002,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// `NOT* OR found*` this built was a syntax error: the statement threw, the
     /// catch logged it, and the user saw no results at all for "not found"
     /// (TASK-94). Tokens are quoted now, in every lookup that builds a MATCH.
-    func testFTSKeywordTokensAreSearchableRatherThanASyntaxError() throws {
+    @MainActor func testFTSKeywordTokensAreSearchableRatherThanASyntaxError() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://found.example/page", title: "Found it",
                        faviconURL: nil, spaceID: "A")
@@ -1017,7 +1018,7 @@ final class HistoryDatabaseTests: XCTestCase {
     }
 
     /// A URL this space never visited stays out, however well it matches.
-    func testALookupNeverReturnsAURLTheSpaceNeverVisited() throws {
+    @MainActor func testALookupNeverReturnsAURLTheSpaceNeverVisited() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         try seedVisit(db, url: "https://swiftshop.example/", title: "Swiftshop",
@@ -1031,7 +1032,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Nothing about ordering or limiting moved: the rows are still picked and
     /// sorted by the inner select the old statement was, and only then labelled.
-    func testRecentHistoryOrderingAndLimitAreUnchanged() throws {
+    @MainActor func testRecentHistoryOrderingAndLimitAreUnchanged() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         for (index, host) in ["a", "b", "c", "d", "e"].enumerated() {
@@ -1052,7 +1053,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// visitCount come back in ascending id, and `limit: k` returns exactly the
     /// first k of that order. The URLs are seeded in reverse alphabetical order,
     /// so the expected answer is id order and not URL order.
-    func testSearchHistoryTiebreaksOnIDAndLimitsToThatSameOrder() throws {
+    @MainActor func testSearchHistoryTiebreaksOnIDAndLimitsToThatSameOrder() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         // Identical token structure in both columns and one visit each, so
@@ -1076,7 +1077,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// The same contract for `recentHistory`, whose last key is `id DESC`: two
     /// URLs whose latest in-scope visit is the same instant come back
     /// newest-id-first, and the limit cuts that order rather than another one.
-    func testRecentHistoryTiebreaksOnIDAndLimitsToThatSameOrder() throws {
+    @MainActor func testRecentHistoryTiebreaksOnIDAndLimitsToThatSameOrder() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         try seedVisit(db, url: "https://first.example/", title: "First",
@@ -1092,7 +1093,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// `rank` decides, and the row matching in both indexed columns wins: the
     /// full order is asserted, so a lost or reversed sort key fails here.
-    func testSearchHistoryOrdersBetterFTSRankFirst() throws {
+    @MainActor func testSearchHistoryOrdersBetterFTSRankFirst() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         // Same visit count on both, so only rank can separate them.
@@ -1107,7 +1108,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// `-visitCount` is the second sort key. Two rows built to tie on rank —
     /// same column, same token counts — are separated by it, most-visited first.
-    func testSearchHistoryOrdersByVisitCountWhenRankTies() throws {
+    @MainActor func testSearchHistoryOrdersByVisitCountWhenRankTies() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         try seedVisit(db, url: "https://one.example/", title: "Swift alpha",
@@ -1125,7 +1126,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// Filtering happens *inside* the inner select, before LIMIT: the
     /// better-ranked candidate is one this space only ever titled differently,
     /// so asking for one row returns the next candidate, not nothing.
-    func testSearchHistoryFiltersBeforeApplyingTheLimit() throws {
+    @MainActor func testSearchHistoryFiltersBeforeApplyingTheLimit() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         try seedVisit(db, url: "https://one.example/", title: "Zebra notes and more words",
@@ -1155,7 +1156,7 @@ final class HistoryDatabaseTests: XCTestCase {
     private let workScope = ["W1", "W2", "WQ"]
     private let homeScope = ["H1"]
 
-    func testThePaletteLookupsReadEverySpaceOfTheProfile() throws {
+    @MainActor func testThePaletteLookupsReadEverySpaceOfTheProfile() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         try seedVisit(db, url: "https://mail.example/", title: "Acme mail", visitTitle: "Acme mail",
@@ -1185,7 +1186,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// The same URL in both profiles, the home visit last, so the shared row
     /// and its FTS entry carry the home title. Each profile is labelled and
     /// matched by its own latest titled visit, whichever of its spaces made it.
-    func testTwoProfilesOverTheSameURLEachSeeOnlyTheirOwnTitles() throws {
+    @MainActor func testTwoProfilesOverTheSameURLEachSeeOnlyTheirOwnTitles() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         let url = "https://mail.example/"
@@ -1218,7 +1219,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// The legacy fallback asks whether anyone *outside the scope* visited the
     /// URL. A sibling space of the same profile is not outside it: under the
     /// TASK-94 space scope it was, and the profile's own legacy title was lost.
-    func testALegacyTitleSharedOnlyWithinTheProfileStillLabelsAndMatches() throws {
+    @MainActor func testALegacyTitleSharedOnlyWithinTheProfileStillLabelsAndMatches() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         try seedVisit(db, url: "https://old.example/", title: "Legacy ledger", spaceID: "W1", visitTime: now - 200)
@@ -1239,7 +1240,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Frecency sums over the profile's visits, whichever space made them, and
     /// never over another profile's.
-    func testCompletionFrecencySumsTheProfilesVisitsOnly() throws {
+    @MainActor func testCompletionFrecencySumsTheProfilesVisitsOnly() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         for i in 0..<2 {
@@ -1265,7 +1266,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// One row per URL across the profile, ordered by its newest visit in any
     /// of the profile's spaces, and the limit cuts that order.
-    func testRecentHistoryMergesTheProfilesSpacesNewestFirst() throws {
+    @MainActor func testRecentHistoryMergesTheProfilesSpacesNewestFirst() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         try seedVisit(db, url: "https://a.example/", visitTitle: "A", spaceID: "W1", visitTime: now - 500)
@@ -1283,7 +1284,7 @@ final class HistoryDatabaseTests: XCTestCase {
                        ["https://d.example/", "https://a.example/"])
     }
 
-    func testAnEmptyScopeFindsNothing() throws {
+    @MainActor func testAnEmptyScopeFindsNothing() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         try seedVisit(db, url: "https://mail.example/", visitTitle: "Mail", spaceID: "W1", visitTime: now - 100)
@@ -1296,7 +1297,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     // MARK: - faviconURL(for:)
 
-    func testFaviconURLExactMatch() throws {
+    @MainActor func testFaviconURLExactMatch() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com/page", title: "Page", faviconURL: "https://example.com/favicon.ico", spaceID: "space1")
 
@@ -1304,7 +1305,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(result, "https://example.com/favicon.ico")
     }
 
-    func testFaviconURLHostFallback() throws {
+    @MainActor func testFaviconURLHostFallback() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com/other", title: "Other", faviconURL: "https://example.com/fav.png", spaceID: "space1")
 
@@ -1313,7 +1314,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(result, "https://example.com/fav.png")
     }
 
-    func testFaviconURLReturnsNilWhenNoFavicon() throws {
+    @MainActor func testFaviconURLReturnsNilWhenNoFavicon() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com", title: "Example", faviconURL: nil, spaceID: "space1")
 
@@ -1321,7 +1322,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertNil(result)
     }
 
-    func testFaviconURLReturnsNilForUnknownHost() throws {
+    @MainActor func testFaviconURLReturnsNilForUnknownHost() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com", title: "Example", faviconURL: "https://example.com/fav.ico", spaceID: "space1")
 
@@ -1329,7 +1330,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertNil(result)
     }
 
-    func testFaviconURLPrefersMostRecentForHost() throws {
+    @MainActor func testFaviconURLPrefersMostRecentForHost() throws {
         let db = try makeDatabase()
         db.recordVisit(url: "https://example.com/old", title: "Old", faviconURL: "https://example.com/old.ico", spaceID: "space1")
         db.recordVisit(url: "https://example.com/new", title: "New", faviconURL: "https://example.com/new.ico", spaceID: "space1")
@@ -1341,7 +1342,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     // MARK: - expireOldVisits
 
-    func testExpireKeepsURLWithRecentVisits() throws {
+    @MainActor func testExpireKeepsURLWithRecentVisits() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         let old = now - (91 * 24 * 3600)
@@ -1372,7 +1373,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     // MARK: - visits(spaceIDs:before:limit:)
 
-    func testVisitsScopedToGivenSpaces() throws {
+    @MainActor func testVisitsScopedToGivenSpaces() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://b.com", spaceID: "B", visitTime: 200)
@@ -1383,7 +1384,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertTrue(db.visits(spaceIDs: [], limit: 10).isEmpty)
     }
 
-    func testVisitsReturnsOneEntryPerVisitNewestFirst() throws {
+    @MainActor func testVisitsReturnsOneEntryPerVisitNewestFirst() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 300)
@@ -1394,7 +1395,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.map(\.visitTime), [300, 200, 100])
     }
 
-    func testVisitsCarryPageMetadata() throws {
+    @MainActor func testVisitsCarryPageMetadata() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", title: "Alpha", faviconURL: "https://a.com/f.ico",
                       spaceID: "A", visitTime: 100)
@@ -1407,7 +1408,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// The URL row is shared by every profile: its `lastVisitTime` is whenever
     /// *anyone* last visited. A profile-scoped query must report its own visit.
-    func testVisitsNeverLeakAnotherProfilesVisitTime() throws {
+    @MainActor func testVisitsNeverLeakAnotherProfilesVisitTime() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://shared.com", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://shared.com", spaceID: "B", visitTime: 900)
@@ -1422,7 +1423,7 @@ final class HistoryDatabaseTests: XCTestCase {
         }
     }
 
-    func testSearchVisitsNeverLeakAnotherProfilesVisitTime() throws {
+    @MainActor func testSearchVisitsNeverLeakAnotherProfilesVisitTime() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "B", visitTime: 900)
@@ -1432,7 +1433,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.first?.visitTime, 100)
     }
 
-    func testVisitsPaginationCoversEveryRowExactlyOnce() throws {
+    @MainActor func testVisitsPaginationCoversEveryRowExactlyOnce() throws {
         let db = try makeDatabase()
         for i in 1...17 {
             try seedVisit(db, url: "https://\(i).com", spaceID: "A", visitTime: Double(i))
@@ -1448,7 +1449,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Identical timestamps are common (a redirect chain lands in the same
     /// millisecond); the visit id has to break the tie or paging loops or skips.
-    func testVisitsPaginationHandlesIdenticalVisitTimes() throws {
+    @MainActor func testVisitsPaginationHandlesIdenticalVisitTimes() throws {
         let db = try makeDatabase()
         for i in 1...9 {
             // Three groups of three visits sharing a timestamp.
@@ -1463,7 +1464,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(Set(walked.map(\.visitID)).count, 9)
     }
 
-    func testVisitsPaginationIsUndisturbedByANewerVisit() throws {
+    @MainActor func testVisitsPaginationIsUndisturbedByANewerVisit() throws {
         let db = try makeDatabase()
         for i in 1...10 {
             try seedVisit(db, url: "https://\(i).com", spaceID: "A", visitTime: Double(i))
@@ -1480,7 +1481,7 @@ final class HistoryDatabaseTests: XCTestCase {
                        "Keyset paging must not shift later pages when new rows land at the head")
     }
 
-    func testVisitsLimitClamping() throws {
+    @MainActor func testVisitsLimitClamping() throws {
         let db = try makeDatabase()
         try db.dbQueue.write { conn in
             for i in 1...520 {
@@ -1501,7 +1502,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     // MARK: - searchVisits(query:spaceIDs:before:limit:)
 
-    func testSearchVisitsMatchesTitleAndURL() throws {
+    @MainActor func testSearchVisitsMatchesTitleAndURL() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://example.com", title: "Swift Programming", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://github.com/repo", title: "Repo", spaceID: "A", visitTime: 200)
@@ -1513,14 +1514,14 @@ final class HistoryDatabaseTests: XCTestCase {
                        ["https://github.com/repo"])
     }
 
-    func testSearchVisitsPrefixMatch() throws {
+    @MainActor func testSearchVisitsPrefixMatch() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://example.com", title: "Programming Guide", spaceID: "A", visitTime: 100)
 
         XCTAssertEqual(db.searchVisits(query: "prog", spaceIDs: ["A"], limit: 10).count, 1)
     }
 
-    func testSearchVisitsReturnsLatestInScopeVisitPerURL() throws {
+    @MainActor func testSearchVisitsReturnsLatestInScopeVisitPerURL() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
         let latestInA = try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 300)
@@ -1536,7 +1537,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Two visits of the same URL at the same instant: the entry must be one of
     /// them, with its own id — not a `MAX()` time glued to an arbitrary row.
-    func testSearchVisitsPicksHighestIDOnTiedVisitTimes() throws {
+    @MainActor func testSearchVisitsPicksHighestIDOnTiedVisitTimes() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
         let second = try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
@@ -1547,7 +1548,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(results.first?.visitTime, 100)
     }
 
-    func testSearchVisitsIgnoresOutOfScopeSpaces() throws {
+    @MainActor func testSearchVisitsIgnoresOutOfScopeSpaces() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://b.com", title: "Swift", spaceID: "B", visitTime: 200)
@@ -1559,7 +1560,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertTrue(db.searchVisits(query: "swift", spaceIDs: [], limit: 10).isEmpty)
     }
 
-    func testSearchVisitsReturnsEmptyForUnusableQuery() throws {
+    @MainActor func testSearchVisitsReturnsEmptyForUnusableQuery() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
 
@@ -1570,7 +1571,7 @@ final class HistoryDatabaseTests: XCTestCase {
                        "Punctuation around a real token must not break the FTS query")
     }
 
-    func testSearchVisitsPaginationCoversEveryURLExactlyOnce() throws {
+    @MainActor func testSearchVisitsPaginationCoversEveryURLExactlyOnce() throws {
         let db = try makeDatabase()
         for i in 1...11 {
             try seedVisit(db, url: "https://swift\(i).com", title: "Swift \(i)", spaceID: "A", visitTime: Double(i))
@@ -1594,7 +1595,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(Set(walked.map(\.url)).count, 11)
     }
 
-    func testSearchVisitsLimitClamping() throws {
+    @MainActor func testSearchVisitsLimitClamping() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://b.com", title: "Swift", spaceID: "A", visitTime: 200)
@@ -1607,7 +1608,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// The pure matcher behind `history_title_matches`, tested without SQL. It
     /// has to behave like the FTS side it replaced: folded, alphanumeric
     /// tokens, each query term prefix-matched, terms OR'd.
-    func testTitleMatcherFollowsTheFTSSemantics() {
+    @MainActor func testTitleMatcherFollowsTheFTSSemantics() {
         XCTAssertTrue(HistoryDatabase.titleMatches("Inbox", query: "inb"), "prefix, like inb*")
         XCTAssertTrue(HistoryDatabase.titleMatches("Inbox", query: "inbox"))
         XCTAssertFalse(HistoryDatabase.titleMatches("Inbox", query: "box"),
@@ -1634,7 +1635,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// case is asserted twice: once as written (ASCII, so the fast path) and
     /// once with a non-ASCII, non-alphanumeric character appended, which
     /// changes no token but forces the general path.
-    func testTitleMatcherAgreesOnItsASCIIAndFoldingPaths() {
+    @MainActor func testTitleMatcherAgreesOnItsASCIIAndFoldingPaths() {
         let cases: [(title: String, query: String, expected: Bool)] = [
             ("Inbox", "inbox", true),
             ("Inbox", "INB", true),
@@ -1672,7 +1673,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// what `searchVisits` returns must be exactly what the matcher alone
     /// selects — which also checks the SQL function's cached tokens against the
     /// uncached pure entry point.
-    func testSearchVisitsAgreesWithTheMatcherOverANastyCorpus() throws {
+    @MainActor func testSearchVisitsAgreesWithTheMatcherOverANastyCorpus() throws {
         let db = try makeDatabase()
         // (URL-level title, the visit's own title or nil for a legacy visit)
         let corpus: [(String, String?)] = [
@@ -1718,7 +1719,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Every visit matches under the title it was recorded with, so the title a
     /// page used to have finds the visit that had it — and the row shows it.
-    func testAnEarlierTitleFindsTheVisitThatCarriedIt() throws {
+    @MainActor func testAnEarlierTitleFindsTheVisitThatCarriedIt() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://example.com/p7", title: "First name",
                       visitTitle: "First name", spaceID: "A", visitTime: 100)
@@ -1734,7 +1735,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// `historyURL.title` is one row per URL shared by every profile, so the
     /// latest known title can be one only another profile's visit ever gave the
     /// page. A title match now has to be earned by a visit *in scope*.
-    func testATitleOnlyAnotherProfileSawDoesNotMatchInThisProfile() throws {
+    @MainActor func testATitleOnlyAnotherProfileSawDoesNotMatchInThisProfile() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://ledger.example/x1", title: "Alpha overview",
                       visitTitle: "Alpha overview", spaceID: "A", visitTime: 100)
@@ -1750,7 +1751,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// The URL column is the same text whoever visited it, so a match on it
     /// still qualifies every visit — and the row shows this profile's own title.
-    func testAURLMatchStillCrossesProfilesAndShowsTheOwnTitle() throws {
+    @MainActor func testAURLMatchStillCrossesProfilesAndShowsTheOwnTitle() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://ledger.example/x1", title: "Alpha overview",
                       visitTitle: "Alpha overview", spaceID: "A", visitTime: 100)
@@ -1765,7 +1766,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// The row stands for the latest in-scope visit that *itself* matched, not
     /// the latest in-scope visit of a matching URL — and which visit that is
     /// depends on the query, not on what the shared row happens to hold.
-    func testTheRepresentativeIsTheLatestMatchingVisit() throws {
+    @MainActor func testTheRepresentativeIsTheLatestMatchingVisit() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://example.com/z9", title: "Topic", visitTitle: "Topic",
                       spaceID: "A", visitTime: 100)
@@ -1787,7 +1788,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// A visit from before per-visit titles existed carries no title of its own
     /// and already displays the URL-level one, so it matches through it.
-    func testALegacyUntitledVisitMatchesThroughTheURLTitle() throws {
+    @MainActor func testALegacyUntitledVisitMatchesThroughTheURLTitle() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://example.com/q3", title: "Quarterly memo", spaceID: "A",
                       visitTime: 100)
@@ -1801,7 +1802,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// The window and the title rule compose: the qualifying visit has to be
     /// inside the period too, and an in-period visit that did not match cannot
     /// stand in for it.
-    func testATitleMatchMustAlsoBeInsideTheRange() throws {
+    @MainActor func testATitleMatchMustAlsoBeInsideTheRange() throws {
         let db = try makeDatabase()
         // Two visits of one URL: only the older one was called "Nightly report".
         try seedVisit(db, url: "https://example.com/r4", title: "Nightly report",
@@ -1820,7 +1821,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Half-open `[from, until)`: a visit exactly on the lower bound is in the
     /// period, one exactly on the upper bound belongs to the next.
-    func testVisitsWithinARangeAreHalfOpen() throws {
+    @MainActor func testVisitsWithinARangeAreHalfOpen() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://before.com", spaceID: "A", visitTime: 199)
         try seedVisit(db, url: "https://onfrom.com", spaceID: "A", visitTime: 200)
@@ -1840,7 +1841,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// A period nothing was recorded in is an empty list, not an error — what an
     /// out-of-window day asks for.
-    func testAnEmptyRangeReturnsNothing() throws {
+    @MainActor func testAnEmptyRangeReturnsNothing() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
 
@@ -1851,7 +1852,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Paging has to stay inside the period: the cursor walks the same keyset,
     /// and every page carries the same bounds.
-    func testVisitsPaginationInsideARangeCoversItExactlyOnce() throws {
+    @MainActor func testVisitsPaginationInsideARangeCoversItExactlyOnce() throws {
         let db = try makeDatabase()
         for i in 1...17 {
             try seedVisit(db, url: "https://\(i).com", spaceID: "A", visitTime: Double(i))
@@ -1876,7 +1877,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// AC #2: a search row stands for the URL's latest visit *inside* the
     /// period — the bounds sit in the inner select, so `ROW_NUMBER` never picks
     /// a visit the user cannot see.
-    func testSearchVisitsRepresentsAURLByItsLatestInRangeVisit() throws {
+    @MainActor func testSearchVisitsRepresentsAURLByItsLatestInRangeVisit() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 100)
         let inRange = try seedVisit(db, url: "https://a.com", title: "Swift", spaceID: "A", visitTime: 300)
@@ -1889,7 +1890,7 @@ final class HistoryDatabaseTests: XCTestCase {
     }
 
     /// And a URL whose every visit is outside the period does not appear at all.
-    func testSearchVisitsDropsURLsWithNoInRangeVisit() throws {
+    @MainActor func testSearchVisitsDropsURLsWithNoInRangeVisit() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://recent.com", title: "Swift Recent", spaceID: "A", visitTime: 300)
         try seedVisit(db, url: "https://old.com", title: "Swift Old", spaceID: "A", visitTime: 100)
@@ -1903,7 +1904,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// The range narrows the fan-out, so deleting a search row while a period is
     /// showing takes the URL's visits *in that period* and leaves the rest —
     /// and the shared `historyURL` row is repaired from what actually went.
-    func testRangedDeleteOfAllVisitsOfURLLeavesTheOutOfRangeVisits() throws {
+    @MainActor func testRangedDeleteOfAllVisitsOfURLLeavesTheOutOfRangeVisits() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
         let named = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 200)
@@ -1929,7 +1930,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// The row the user clicked always goes, even if the period it was rendered
     /// under no longer contains it — otherwise the page takes it off screen and
     /// the next refresh brings it back.
-    func testARangedDeleteStillTakesTheVisitItNames() throws {
+    @MainActor func testARangedDeleteStillTakesTheVisitItNames() throws {
         let db = try makeDatabase()
         let named = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 200)
@@ -1949,7 +1950,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Without the fan-out there is nothing for a range to narrow: the named
     /// visit is deleted exactly as before.
-    func testARangeIsIgnoredWhenAllVisitsOfURLIsFalse() throws {
+    @MainActor func testARangeIsIgnoredWhenAllVisitsOfURLIsFalse() throws {
         let db = try makeDatabase()
         let named = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 300)
@@ -1964,7 +1965,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Scope still comes first: a range cannot be used to reach another
     /// profile's visits of the same URL.
-    func testARangedDeleteStaysInsideTheScope() throws {
+    @MainActor func testARangedDeleteStaysInsideTheScope() throws {
         let db = try makeDatabase()
         let named = try seedVisit(db, url: "https://shared.com", spaceID: "A", visitTime: 200)
         try seedVisit(db, url: "https://shared.com", spaceID: "B", visitTime: 250)
@@ -1980,7 +1981,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     // MARK: - deleteVisits(ids:spaceIDs:allVisitsOfURL:) — TASK-87
 
-    func testDeleteVisitRemovesOnlyThatVisit() throws {
+    @MainActor func testDeleteVisitRemovesOnlyThatVisit() throws {
         let db = try makeDatabase()
         let oldest = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 300)
@@ -1997,7 +1998,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// The shared `historyURL` row caches the newest visit time; deleting that
     /// visit has to move it back to the newest survivor.
-    func testDeleteVisitRecomputesLastVisitTimeAndCount() throws {
+    @MainActor func testDeleteVisitRecomputesLastVisitTimeAndCount() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
         let newest = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 300)
@@ -2013,7 +2014,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// deletes rows without decrementing it). A delete subtracts what it removed
     /// instead of recounting, so the surplus survives — recounting would demote
     /// the URL for every other profile sharing the row.
-    func testDeleteVisitSubtractsFromHistoricalVisitCountSurplus() throws {
+    @MainActor func testDeleteVisitSubtractsFromHistoricalVisitCountSurplus() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
         let second = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 200)
@@ -2029,7 +2030,7 @@ final class HistoryDatabaseTests: XCTestCase {
     }
 
     /// The floor: when the subtraction would undercount, the remaining rows win.
-    func testDeleteVisitFloorsVisitCountAtTheRemainingRows() throws {
+    @MainActor func testDeleteVisitFloorsVisitCountAtTheRemainingRows() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 200)
@@ -2048,7 +2049,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// AC #4: one profile's delete must leave another profile's visits of the
     /// same URL — and the shared row — intact.
-    func testDeleteVisitLeavesAnotherProfilesVisitsAlone() throws {
+    @MainActor func testDeleteVisitLeavesAnotherProfilesVisitsAlone() throws {
         let db = try makeDatabase()
         let inA = try seedVisit(db, url: "https://shared.com", title: "Shared Page",
                                 spaceID: "A", visitTime: 100)
@@ -2072,7 +2073,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// A forged id (another profile's visit) must delete nothing — scope is
     /// enforced in SQL, not by the caller.
-    func testDeleteVisitWithForgedOutOfScopeIDDeletesNothing() throws {
+    @MainActor func testDeleteVisitWithForgedOutOfScopeIDDeletesNothing() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "A", visitTime: 100)
         let inB = try seedVisit(db, url: "https://shared.com", title: "Shared Page",
@@ -2089,7 +2090,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// The `allVisitsOfURL` fan-out is derived only from in-scope ids, so a
     /// forged id cannot be used as a pointer to delete the caller's *own* visits
     /// of that URL either.
-    func testDeleteAllVisitsOfURLWithForgedIDDeletesNothing() throws {
+    @MainActor func testDeleteAllVisitsOfURLWithForgedIDDeletesNothing() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "A", visitTime: 200)
@@ -2107,7 +2108,7 @@ final class HistoryDatabaseTests: XCTestCase {
         }
     }
 
-    func testDeleteVisitWithUnknownIDDeletesNothing() throws {
+    @MainActor func testDeleteVisitWithUnknownIDDeletesNothing() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
 
@@ -2120,7 +2121,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// AC #5: the last visit anywhere goes → the `historyURL` row goes, and with
     /// it the FTS entry, the command-palette suggestion and the URL completion.
-    func testDeletingTheLastVisitRemovesTheURLEverywhere() throws {
+    @MainActor func testDeletingTheLastVisitRemovesTheURLEverywhere() throws {
         let db = try makeDatabase()
         let now = Date().timeIntervalSince1970
         let visit = try seedVisit(db, url: "https://gone.com", title: "Vanishing Page",
@@ -2157,7 +2158,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Search mode shows one row per URL, so deleting that row takes every
     /// in-scope visit of the URL — and nothing else.
-    func testDeleteAllVisitsOfURLRemovesEveryInScopeVisit() throws {
+    @MainActor func testDeleteAllVisitsOfURLRemovesEveryInScopeVisit() throws {
         let db = try makeDatabase()
         let day = 24.0 * 3600
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
@@ -2182,7 +2183,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     // MARK: - deleteVisits(spaceIDs:since:)
 
-    func testDeleteSinceIsInclusiveOfTheBoundary() throws {
+    @MainActor func testDeleteSinceIsInclusiveOfTheBoundary() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://before.com", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://onboundary.com", spaceID: "A", visitTime: 200)
@@ -2195,7 +2196,7 @@ final class HistoryDatabaseTests: XCTestCase {
         XCTAssertEqual(db.visits(spaceIDs: ["A"], limit: 10).map(\.url), ["https://before.com"])
     }
 
-    func testDeleteSinceNilClearsTheScopeOnly() throws {
+    @MainActor func testDeleteSinceNilClearsTheScopeOnly() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://shared.com", title: "Shared Page", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://onlya.com", spaceID: "A", visitTime: 200)
@@ -2215,7 +2216,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// Several spaces in scope — a profile with more than one space clears all
     /// of them at once, and only them.
-    func testDeleteSinceCoversEverySpaceInScope() throws {
+    @MainActor func testDeleteSinceCoversEverySpaceInScope() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://a2.com", spaceID: "A2", visitTime: 200)
@@ -2229,7 +2230,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     // MARK: - deleteVisits(notInSpaceIDs:) — launch sweep
 
-    func testSweepDeletesVisitsOfSpacesThatNoLongerExist() throws {
+    @MainActor func testSweepDeletesVisitsOfSpacesThatNoLongerExist() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://live.com", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://ghost.com", spaceID: "DELETED", visitTime: 200)
@@ -2243,7 +2244,7 @@ final class HistoryDatabaseTests: XCTestCase {
     }
 
     /// Guard 1: a store that failed to load its spaces must not wipe the history.
-    func testSweepWithNoExistingSpacesDeletesNothing() throws {
+    @MainActor func testSweepWithNoExistingSpacesDeletesNothing() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://live.com", spaceID: "A", visitTime: 100)
 
@@ -2254,7 +2255,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// Guard 2: if the session DB was reset or replaced, the store comes up with
     /// a fresh space whose id matches no visit — every visit would look orphaned.
     /// Nothing is swept until at least one existing space is recognized here.
-    func testSweepDoesNothingWhenNoExistingSpaceHasVisits() throws {
+    @MainActor func testSweepDoesNothingWhenNoExistingSpaceHasVisits() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", spaceID: "OLD", visitTime: 100)
         try seedVisit(db, url: "https://b.com", spaceID: "OLDER", visitTime: 200)
@@ -2268,7 +2269,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// TASK-193.1: a Quick Detour scope is kept but is no proof — it is derived
     /// from a profile id, not restored with the session — so a session that
     /// came up with a fresh space still sweeps nothing.
-    func testSweepIsNotRecognizedByAKeptScopeAlone() throws {
+    @MainActor func testSweepIsNotRecognizedByAKeptScopeAlone() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", spaceID: "OLD", visitTime: 100)
         try seedVisit(db, url: "https://quick.com", spaceID: "QUICK", visitTime: 200)
@@ -2282,7 +2283,7 @@ final class HistoryDatabaseTests: XCTestCase {
     }
 
     /// A kept scope's visits survive a sweep that does run.
-    func testSweepKeepsTheVisitsOfAKeptScope() throws {
+    @MainActor func testSweepKeepsTheVisitsOfAKeptScope() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://live.com", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://quick.com", spaceID: "QUICK", visitTime: 200)
@@ -2297,7 +2298,7 @@ final class HistoryDatabaseTests: XCTestCase {
     }
 
     /// One recognized space is enough to prove the two databases belong together.
-    func testSweepRunsWhenAtLeastOneExistingSpaceHasVisits() throws {
+    @MainActor func testSweepRunsWhenAtLeastOneExistingSpaceHasVisits() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://live.com", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://ghost.com", spaceID: "DELETED", visitTime: 200)
@@ -2312,7 +2313,7 @@ final class HistoryDatabaseTests: XCTestCase {
     // MARK: - Chunking and empty input
 
     /// More ids than fit in one `IN (…)` list (chunk size 500).
-    func testDeleteChunksLargeIDLists() throws {
+    @MainActor func testDeleteChunksLargeIDLists() throws {
         let db = try makeDatabase()
         var ids: [Int64] = []
         try db.dbQueue.write { conn in
@@ -2344,7 +2345,7 @@ final class HistoryDatabaseTests: XCTestCase {
         }
     }
 
-    func testDeleteWithEmptyInputsReturnsAnEmptyResult() throws {
+    @MainActor func testDeleteWithEmptyInputsReturnsAnEmptyResult() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
 
@@ -2362,7 +2363,7 @@ final class HistoryDatabaseTests: XCTestCase {
     /// The one thing worse than a delete that fails is one that says it worked:
     /// the page would take rows off screen, and `TabStore` would forget cache
     /// entries, for visits that are still in the database.
-    func testAFailedWriteIsReportedAsAFailure() throws {
+    @MainActor func testAFailedWriteIsReportedAsAFailure() throws {
         let db = try makeDatabase()
         let visit = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
         try seedVisit(db, url: "https://b.com", spaceID: "A", visitTime: 200)
@@ -2387,7 +2388,7 @@ final class HistoryDatabaseTests: XCTestCase {
 
     /// The staging table is per delete: a failure that rolls one back must not
     /// leave counts behind for the next one to repair `historyURL` from.
-    func testADeleteAfterAFailedOneIsUnaffectedByIt() throws {
+    @MainActor func testADeleteAfterAFailedOneIsUnaffectedByIt() throws {
         let db = try makeDatabase()
         try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 100)
         let second = try seedVisit(db, url: "https://a.com", spaceID: "A", visitTime: 200)

@@ -11,14 +11,13 @@ import GRDB
 /// These tests use the real shared `AppDatabase` (the test scheme points
 /// `DETOUR_DATA_DIR` at an isolated directory) and a real `Profile`, so they
 /// exercise exactly what production runs: `Profile.loadExtensionContext`.
-@MainActor
-final class ExtensionPermissionRestoreTests: XCTestCase {
+nonisolated final class ExtensionPermissionRestoreTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
     private var createdProfiles: [Profile] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for profile in createdProfiles {
             profile.unloadAllExtensions()
             TabStore.shared.forceRemoveProfile(id: profile.id)
@@ -27,7 +26,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
         for id in registeredExtensionIDs {
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
             // The shared DB outlives the test; drop every row this extension left.
-            try? AppDatabase.shared.dbQueue.write { db in
+            try? await AppDatabase.shared.dbQueue.write { db in
                 _ = try ExtensionPermissionRecord
                     .filter(Column("extensionID") == id)
                     .deleteAll(db)
@@ -39,7 +38,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
@@ -48,7 +47,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// `host_permissions` and their `optional_` counterparts are *requested*,
     /// never granted: nothing is granted unless a test saves a permission row
     /// for it.
-    private func makeTestExtension(
+    @MainActor private func makeTestExtension(
         permissions: [String] = [],
         optionalPermissions: [String] = [],
         hostPermissions: [String] = ["<all_urls>"],
@@ -108,13 +107,13 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
         return ext
     }
 
-    private func makeProfile(_ name: String) -> Profile {
+    @MainActor private func makeProfile(_ name: String) -> Profile {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         return profile
     }
 
-    private func savePermission(
+    @MainActor private func savePermission(
         _ ext: WebExtension, key: String,
         type: ExtensionPermissionType, status: ExtensionPermissionStatus
     ) {
@@ -123,20 +122,20 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     }
 
     /// Exactly what production does on launch and on recovery.
-    private func loadContext(_ profile: Profile, _ ext: WebExtension) throws -> WKWebExtensionContext {
+    @MainActor private func loadContext(_ profile: Profile, _ ext: WebExtension) throws -> WKWebExtensionContext {
         _ = profile.extensionController
         _ = profile.loadExtensionContext(ext)
         return try XCTUnwrap(profile.extensionContexts[ext.id],
                              "the context should be loaded in the profile's controller")
     }
 
-    private func url(_ string: String) throws -> URL {
+    @MainActor private func url(_ string: String) throws -> URL {
         try XCTUnwrap(URL(string: string))
     }
 
     // MARK: - AC #1 / #3: positive
 
-    func testGrantedURLIsAccessibleAfterLoad() async throws {
+    @MainActor func testGrantedURLIsAccessibleAfterLoad() async throws {
         let ext = try await makeTestExtension()
         savePermission(ext, key: "https://granted.example/", type: .url, status: .granted)
 
@@ -153,7 +152,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     // MARK: - AC #1 / #3: negative
 
-    func testDeniedURLStaysDeniedAfterLoad() async throws {
+    @MainActor func testDeniedURLStaysDeniedAfterLoad() async throws {
         let ext = try await makeTestExtension()
         savePermission(ext, key: "https://denied.example/", type: .url, status: .denied)
 
@@ -170,7 +169,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// `recoverFromBackgroundLoadFailure` unloads the context and loads a fresh
     /// one, which WebKit gives a brand new `webkit-extension://<UUID>/` base URL.
     /// The decisions must ride along, so the user is not re-prompted.
-    func testURLDecisionsSurviveContextReload() async throws {
+    @MainActor func testURLDecisionsSurviveContextReload() async throws {
         let ext = try await makeTestExtension()
         savePermission(ext, key: "https://granted.example/", type: .url, status: .granted)
         savePermission(ext, key: "https://denied.example/", type: .url, status: .denied)
@@ -197,7 +196,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     // MARK: - AC #3: interaction with broader grants
 
     /// A specific denial must not be washed out by a broad `<all_urls>` grant.
-    func testDeniedURLWinsOverGrantedAllURLs() async throws {
+    @MainActor func testDeniedURLWinsOverGrantedAllURLs() async throws {
         let ext = try await makeTestExtension()
         savePermission(ext, key: "<all_urls>", type: .matchPattern, status: .granted)
         savePermission(ext, key: "https://denied.example/", type: .url, status: .denied)
@@ -212,7 +211,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     }
 
     /// The mirror case: a denied host pattern plus a per-URL grant inside it.
-    func testGrantedURLInsideDeniedPattern() async throws {
+    @MainActor func testGrantedURLInsideDeniedPattern() async throws {
         let ext = try await makeTestExtension(hostPermissions: ["https://*.example.com/*"])
         savePermission(ext, key: "https://*.example.com/*", type: .matchPattern, status: .denied)
         savePermission(ext, key: "https://app.example.com/", type: .url, status: .granted)
@@ -245,7 +244,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// manifest, and rows are never purged on extension update, so a grant for
     /// an origin a newer manifest no longer asks about must not be silently
     /// re-applied.
-    func testURLGrantOutsideRequestedPatternsIsNotApplied() async throws {
+    @MainActor func testURLGrantOutsideRequestedPatternsIsNotApplied() async throws {
         let ext = try await makeTestExtension(hostPermissions: ["https://a.example/*"])
         savePermission(ext, key: "https://b.other/", type: .url, status: .granted)
         savePermission(ext, key: "https://a.example/", type: .url, status: .granted)
@@ -261,7 +260,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     /// The gate accepts optional host permissions too — the extension may ask
     /// for those at runtime, which is exactly how such a prompt row is created.
-    func testURLGrantInsideOptionalHostPatternIsApplied() async throws {
+    @MainActor func testURLGrantInsideOptionalHostPatternIsApplied() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["https://opt.example/*"])
@@ -279,7 +278,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// The predicate itself, shared by the restore loop and the Settings
     /// site-access list so the two can never disagree about which stored `.url`
     /// decisions are live.
-    func testCanAskForAccessCoversRequestedAndOptionalPatternsOnly() async throws {
+    @MainActor func testCanAskForAccessCoversRequestedAndOptionalPatternsOnly() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["https://opt.example/*"])
@@ -303,7 +302,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// contract. Pinned here because `Profile.loadExtensionContext` no longer
     /// special-cases `<all_urls>`: it relies on WebKit reporting it verbatim in
     /// whichever set the manifest lists it in.
-    func testWebKitReportsAllURLsVerbatimInBothPatternSets() async throws {
+    @MainActor func testWebKitReportsAllURLsVerbatimInBothPatternSets() async throws {
         let allURLs = try XCTUnwrap(try? WKWebExtension.MatchPattern(string: "<all_urls>"))
         XCTAssertEqual(allURLs.string, "<all_urls>",
                        "the literal pattern round-trips as its own string, not as an expansion")
@@ -333,7 +332,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     // MARK: - TASK-19 AC #1 / #2: optional API permissions
 
-    func testGrantedOptionalAPIPermissionIsRestored() async throws {
+    @MainActor func testGrantedOptionalAPIPermissionIsRestored() async throws {
         let ext = try await makeTestExtension(
             permissions: ["tabs"], optionalPermissions: ["cookies"])
         savePermission(ext, key: "cookies", type: .apiPermission, status: .granted)
@@ -348,7 +347,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
                        "an undecided required permission stays for WebKit to prompt")
     }
 
-    func testDeniedOptionalAPIPermissionStaysDenied() async throws {
+    @MainActor func testDeniedOptionalAPIPermissionStaysDenied() async throws {
         let ext = try await makeTestExtension(
             permissions: ["tabs"], optionalPermissions: ["cookies"])
         savePermission(ext, key: "cookies", type: .apiPermission, status: .denied)
@@ -364,7 +363,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     /// A required (non-optional) API permission decision keeps working — the
     /// union must not drop what the pre-TASK-19 loop already restored.
-    func testRequiredAPIPermissionDecisionsStillRestore() async throws {
+    @MainActor func testRequiredAPIPermissionDecisionsStillRestore() async throws {
         let ext = try await makeTestExtension(
             permissions: ["tabs", "storage"], optionalPermissions: ["cookies"])
         savePermission(ext, key: "tabs", type: .apiPermission, status: .granted)
@@ -379,7 +378,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     // MARK: - TASK-19 AC #3: optional host patterns
 
-    func testGrantedOptionalHostPatternIsRestored() async throws {
+    @MainActor func testGrantedOptionalHostPatternIsRestored() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["https://opt.example/*"])
@@ -394,7 +393,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
                        "the undecided required pattern is not granted as a side effect")
     }
 
-    func testDeniedOptionalHostPatternStaysDenied() async throws {
+    @MainActor func testDeniedOptionalHostPatternStaysDenied() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["https://opt.example/*"])
@@ -410,7 +409,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     /// The recovery path for the optional decisions: `unloadExtension` +
     /// `loadExtensionContext`, as `recoverFromBackgroundLoadFailure` does.
-    func testOptionalDecisionsSurviveContextReload() async throws {
+    @MainActor func testOptionalDecisionsSurviveContextReload() async throws {
         let ext = try await makeTestExtension(
             optionalPermissions: ["cookies", "webNavigation"],
             hostPermissions: ["https://a.example/*"],
@@ -437,7 +436,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     // MARK: - TASK-19 AC #4: <all_urls>, both statuses
 
-    func testGrantedAllURLsIsRestored() async throws {
+    @MainActor func testGrantedAllURLsIsRestored() async throws {
         let ext = try await makeTestExtension(hostPermissions: ["<all_urls>"])
         savePermission(ext, key: "<all_urls>", type: .matchPattern, status: .granted)
 
@@ -449,7 +448,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
                       "the grant is applied once, as the <all_urls> pattern itself")
     }
 
-    func testDeniedAllURLsIsRestoredAsDenied() async throws {
+    @MainActor func testDeniedAllURLsIsRestoredAsDenied() async throws {
         let ext = try await makeTestExtension(hostPermissions: ["<all_urls>"])
         savePermission(ext, key: "<all_urls>", type: .matchPattern, status: .denied)
 
@@ -465,7 +464,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     /// `<all_urls>` listed only under optional_host_permissions: the decision
     /// lives in the optional set, which the restore now walks too.
-    func testOptionalAllURLsDecisionsAreRestored() async throws {
+    @MainActor func testOptionalAllURLsDecisionsAreRestored() async throws {
         let granted = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"], optionalHostPermissions: ["<all_urls>"])
         savePermission(granted, key: "<all_urls>", type: .matchPattern, status: .granted)
@@ -485,7 +484,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// Rows are never purged when an extension updates, so a decision for a key
     /// the current manifest asks for in neither list must stay inert — applying
     /// a stale grant would widen access the manifest no longer justifies.
-    func testStaleAPIPermissionRowIsNotApplied() async throws {
+    @MainActor func testStaleAPIPermissionRowIsNotApplied() async throws {
         let ext = try await makeTestExtension(
             permissions: ["tabs"], optionalPermissions: ["cookies"])
         // An older manifest asked for webNavigation; this one does not.
@@ -502,7 +501,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
                       "the optional permission the manifest does ask for is still restored")
     }
 
-    func testStaleHostPatternRowIsNotApplied() async throws {
+    @MainActor func testStaleHostPatternRowIsNotApplied() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["https://opt.example/*"])
@@ -531,7 +530,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// "https://mail.google.com/"), which must not be widened into an origin
     /// grant. Outside the manifest's host patterns it stays inert, exactly like
     /// any other stale pattern row; the cost is at most one re-prompt.
-    func testLegacyRowsAreNotAppliedAsPatterns() async throws {
+    @MainActor func testLegacyRowsAreNotAppliedAsPatterns() async throws {
         let ext = try await makeTestExtension(hostPermissions: ["https://a.example/*"])
         savePermission(ext, key: "https://legacy.example/page", type: .matchPattern, status: .granted)
 
@@ -546,7 +545,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// key, the match gate accepts it and it is applied as its own (exact-path)
     /// pattern — narrower than the origin-wide grant a `.url` row produces, so
     /// this is no widening beyond what the user was prompted for.
-    func testLegacyRowCoveredByTheManifestIsAppliedAsItsOwnPattern() async throws {
+    @MainActor func testLegacyRowCoveredByTheManifestIsAppliedAsItsOwnPattern() async throws {
         let ext = try await makeTestExtension(hostPermissions: ["<all_urls>"])
         savePermission(ext, key: "https://legacy.example/page", type: .matchPattern, status: .granted)
 
@@ -562,7 +561,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     /// The implicit activeTab content-script grant is applied before the DB
     /// restore, so a saved denial for the same pattern wins.
-    func testRestoredDenialWinsOverActiveTabContentScriptGrant() async throws {
+    @MainActor func testRestoredDenialWinsOverActiveTabContentScriptGrant() async throws {
         let ext = try await makeTestExtension(
             permissions: ["activeTab"],
             hostPermissions: ["<all_urls>"],
@@ -590,7 +589,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     }
 
     /// The positive companion: with no saved decision the implicit grant stands.
-    func testActiveTabContentScriptGrantStillAppliesWithoutASavedDecision() async throws {
+    @MainActor func testActiveTabContentScriptGrantStillAppliesWithoutASavedDecision() async throws {
         let ext = try await makeTestExtension(
             permissions: ["activeTab"],
             hostPermissions: ["<all_urls>"],
@@ -610,7 +609,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// manifest pattern matches it — and the answer is saved under that
     /// sub-pattern's own string, which is in neither manifest set. The restore
     /// must therefore gate by match, not by exact membership.
-    func testRequestedSubPatternDecisionIsRestoredUnderOptionalAllURLs() async throws {
+    @MainActor func testRequestedSubPatternDecisionIsRestoredUnderOptionalAllURLs() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["<all_urls>"])
@@ -625,7 +624,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
                       "the row is applied as its own pattern, verbatim")
     }
 
-    func testRequestedSubPatternDenialIsRestoredUnderOptionalAllURLs() async throws {
+    @MainActor func testRequestedSubPatternDenialIsRestoredUnderOptionalAllURLs() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["<all_urls>"])
@@ -640,7 +639,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     }
 
     /// The negative: no manifest pattern matches the row, so it stays inert.
-    func testSubPatternOutsideEveryManifestPatternIsNotApplied() async throws {
+    @MainActor func testSubPatternOutsideEveryManifestPatternIsNotApplied() async throws {
         let ext = try await makeTestExtension(hostPermissions: ["https://a.example/*"])
         savePermission(ext, key: "https://mail.example/*", type: .matchPattern, status: .granted)
 
@@ -658,7 +657,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// origin overlap: the later write erases the earlier entry from the
     /// opposite dictionary. Denials go last, so the origin ends up denied
     /// regardless of the order the rows were saved in.
-    func testOppositeSiteAccessDecisionsOnOneOriginFailClosed() async throws {
+    @MainActor func testOppositeSiteAccessDecisionsOnOneOriginFailClosed() async throws {
         let grantFirst = try await makeTestExtension(hostPermissions: ["<all_urls>"])
         savePermission(grantFirst, key: "https://a.example/x", type: .url, status: .granted)
         savePermission(grantFirst, key: "https://a.example/y", type: .url, status: .denied)
@@ -677,7 +676,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// Pins the mechanism the ordering defends against: setting a broad pattern
     /// REMOVES a narrower entry from the opposite dictionary, so a grant applied
     /// after a denial would silently drop it.
-    func testBroadGrantDoesNotEraseNarrowDenial() async throws {
+    @MainActor func testBroadGrantDoesNotEraseNarrowDenial() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["*://*.example.com/*", "https://sub.example.com/*"])
         savePermission(ext, key: "*://*.example.com/*", type: .matchPattern, status: .granted)
@@ -694,12 +693,12 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     // MARK: - TASK-25: Settings rows for optional host permissions
 
-    private func savedStatus(_ ext: WebExtension, _ key: String,
+    @MainActor private func savedStatus(_ ext: WebExtension, _ key: String,
                              _ type: ExtensionPermissionType) -> ExtensionPermissionStatus? {
         AppDatabase.shared.permissionStatus(extensionID: ext.id, key: key, type: type)
     }
 
-    func testManifestParsesOptionalHostPermissions() async throws {
+    @MainActor func testManifestParsesOptionalHostPermissions() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["https://opt.example/*", "<all_urls>"])
@@ -708,7 +707,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     /// POSITIVE: turning an optional host pattern on writes the row and grants it
     /// on the already-loaded context — no reload.
-    func testGrantingOptionalHostPatternAppliesToLoadedContext() async throws {
+    @MainActor func testGrantingOptionalHostPatternAppliesToLoadedContext() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["https://opt.example/*"])
@@ -726,7 +725,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     }
 
     /// NEGATIVE: turning it off writes a denial and revokes access live.
-    func testDenyingOptionalHostPatternAppliesToLoadedContext() async throws {
+    @MainActor func testDenyingOptionalHostPatternAppliesToLoadedContext() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["https://opt.example/*"])
@@ -746,7 +745,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     /// The reversal the task exists for: a Deny taken at a prompt is undone from
     /// Settings, and the grant survives a reload (it is the saved row).
-    func testReversingDeniedSubPatternFromSettingsSurvivesReload() async throws {
+    @MainActor func testReversingDeniedSubPatternFromSettingsSurvivesReload() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["<all_urls>"])
@@ -771,7 +770,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// removes an existing `<all_urls>` denial, and the denial keeps winning;
     /// only replacing the denied dictionary does. If this starts failing, WebKit
     /// changed and the dictionary filtering there may be unnecessary.
-    func testWebKitAllHostsGrantDoesNotEraseAllHostsDenial() async throws {
+    @MainActor func testWebKitAllHostsGrantDoesNotEraseAllHostsDenial() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["<all_urls>"])
@@ -793,7 +792,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     /// `<all_urls>` is WebKit's all-hosts pattern, which it special-cases; the
     /// toggle must still flip it both ways on a live context.
-    func testTogglingOptionalAllURLsBothWaysOnLoadedContext() async throws {
+    @MainActor func testTogglingOptionalAllURLsBothWaysOnLoadedContext() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["<all_urls>"])
@@ -816,7 +815,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// NEGATIVE: the live state after a toggle is the post-relaunch state. A
     /// broad grant toggled on must not erase a narrower saved denial for the
     /// session (setting the key alone would: WebKit's broad write subsumes it).
-    func testBroadGrantToggleKeepsNarrowSavedDenialLive() async throws {
+    @MainActor func testBroadGrantToggleKeepsNarrowSavedDenialLive() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["*://*.example.com/*"])
@@ -834,7 +833,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     /// NEGATIVE: a pattern outside every manifest pattern is saved but stays
     /// inert — the toggle obeys the restore's gate.
-    func testTogglingPatternOutsideManifestDoesNotGrant() async throws {
+    @MainActor func testTogglingPatternOutsideManifestDoesNotGrant() async throws {
         let ext = try await makeTestExtension(hostPermissions: ["https://a.example/*"])
         let profile = makeProfile("Toggle Stale Pattern Profile")
         let context = try loadContext(profile, ext)
@@ -847,7 +846,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     }
 
     /// Every profile that has the extension loaded is updated.
-    func testToggleAppliesToEveryProfilesContext() async throws {
+    @MainActor func testToggleAppliesToEveryProfilesContext() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["https://opt.example/*"])
@@ -862,7 +861,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     }
 
     /// A site-access (`.url`) toggle still applies live through the same path.
-    func testSiteAccessURLToggleAppliesToLoadedContext() async throws {
+    @MainActor func testSiteAccessURLToggleAppliesToLoadedContext() async throws {
         let ext = try await makeTestExtension(hostPermissions: ["<all_urls>"])
         savePermission(ext, key: "https://site.example/page", type: .url, status: .granted)
         let profile = makeProfile("Toggle URL Profile")
@@ -877,7 +876,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     }
 
     /// An API permission toggle is applied to the context directly.
-    func testOptionalAPIPermissionToggleAppliesToLoadedContext() async throws {
+    @MainActor func testOptionalAPIPermissionToggleAppliesToLoadedContext() async throws {
         let ext = try await makeTestExtension(optionalPermissions: ["cookies"])
         let profile = makeProfile("Toggle API Profile")
         let context = try loadContext(profile, ext)
@@ -895,7 +894,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
     /// NEGATIVE: denying nativeMessaging never reaches the context — the context
     /// keeps it so Detour's built-in hosts work, and the denial is enforced at
     /// host dispatch instead (see NativeMessagingEnforcementTests).
-    func testNativeMessagingDenialIsNotAppliedToTheContext() async throws {
+    @MainActor func testNativeMessagingDenialIsNotAppliedToTheContext() async throws {
         let ext = try await makeTestExtension(permissions: ["nativeMessaging"])
         let profile = makeProfile("Toggle Native Messaging Profile")
         let context = try loadContext(profile, ext)
@@ -914,7 +913,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     // MARK: TASK-25: which saved sub-pattern rows Settings lists
 
-    func testSavedSubPatternKeysListRestorableRowsNotInTheManifest() async throws {
+    @MainActor func testSavedSubPatternKeysListRestorableRowsNotInTheManifest() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["<all_urls>"])
@@ -929,7 +928,7 @@ final class ExtensionPermissionRestoreTests: XCTestCase {
 
     /// NEGATIVE: rows outside every manifest pattern, and keys that do not parse,
     /// are stale — listing one would offer a switch the next launch ignores.
-    func testSavedSubPatternKeysOmitStaleAndInvalidRows() async throws {
+    @MainActor func testSavedSubPatternKeysOmitStaleAndInvalidRows() async throws {
         let ext = try await makeTestExtension(
             hostPermissions: ["https://a.example/*"],
             optionalHostPermissions: ["https://*.opt.example/*"])
