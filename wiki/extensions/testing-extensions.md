@@ -36,6 +36,9 @@ sources:
   - id: task-15
     resource: backlog:TASK-15
     title: The polyfill must not replace the chrome/browser globals
+  - id: task-245
+    resource: backlog:TASK-245
+    title: waitUntil stops the test on timeout
   - id: task-62
     resource: backlog:TASK-62
     title: Keep-alive in background pages (measurement legs, the user-script loop incident)
@@ -93,6 +96,7 @@ All in `ExtensionTestSupport.swift` unless noted.
 | Fixture | Use |
 |---|---|
 | `makeTestExtension(id:manifestJSON:files:)`, `installTestExtension`, `loadTestContext` | Write an unpacked extension to a temp directory, save it, load it into a profile. Tests generate their extensions; they do not load `TestExtensions/` |
+| `waitUntil(_:timeout:pollInterval:_:)`, `pollUntil(timeout:pollInterval:_:)` | `waitUntil` polls a condition the test needs (used across ~57 files, not only extension tests). On timeout it records `XCTFail` at the waiting line *and* throws `WaitTimedOut`, so the test body stops there; before TASK-245 it only recorded the failure and returned, and the test went on with stale state. The `XCTFail` stays so a `do`/`catch` or `try?` around the wait cannot hide the timeout. A wait whose timeout is an expected outcome (the closed-gate leg of `ExtensionPrivateStoreTests`) uses `pollUntil`, which returns `false` and never fails |
 | `registerProbeTab(for:in:)` / `unregisterProbeTab` | Make a plain web view a tab WebKit knows. **Call it before the page loads** |
 | `askWorker(from:message:transport:)` | One round trip to the worker, returning both `reply` and `lastError`. `.direct` from an extension page, `.contentScriptRelay` from a web page |
 | `workerReplyIsEmpty` | A null reply means either "the worker answered nothing" or "WebKit could not reach it"; `"timeout"` means the callback never fired |

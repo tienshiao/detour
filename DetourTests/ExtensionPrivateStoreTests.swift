@@ -372,19 +372,17 @@ nonisolated final class ExtensionPrivateStoreTests: XCTestCase {
             context.loadBackgroundContent { error in
                 if let error { print("private-store \(label): loadBackgroundContent failed: \(error)") }
             }
-            // Polled by hand rather than with `waitUntil`, which fails the test
+            // Polled with `pollUntil` rather than `waitUntil`, which fails the test
             // when it times out: the closed-gate leg *expects* to run out, and
             // needs the last outcome rather than a failure. Long enough that a
             // reachable worker answers many times over — with the gate open it
             // replies in well under a second once it is up.
-            let deadline = Date().addingTimeInterval(20)
-            repeat {
+            // `empty` comes back at once: without the pause between pings the
+            // closed-gate leg would flood the context with messages for 20 s.
+            _ = try await pollUntil(timeout: 20, pollInterval: 0.25) {
                 outcome = await ping(page, timeout: 5)
-                if outcome.answered { break }
-                // `empty` comes back at once: without a pause the closed-gate
-                // leg would flood the context with messages for 20 s.
-                try? await Task.sleep(nanoseconds: 250_000_000)
-            } while Date() < deadline
+                return outcome.answered
+            }
         } catch {
             print("private-store \(label): \(error)")
         }

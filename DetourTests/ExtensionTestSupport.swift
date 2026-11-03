@@ -82,21 +82,45 @@ func loadHTMLStringAndWait(
     }
 }
 
-/// Poll `condition` until it holds, failing the test if `timeout` elapses first.
-/// `what` names the thing being waited for, so the failure says what never
-/// happened.
+/// What `waitUntil` throws when its condition never held: the test body stops
+/// at the wait instead of going on with stale state.
+struct WaitTimedOut: Error, CustomStringConvertible {
+    let what: String
+    let timeout: TimeInterval
+    var description: String { "timed out after \(timeout) s waiting for \(what)" }
+}
+
+/// Poll `condition` until it holds. If `timeout` elapses first, the test fails
+/// at the call site and the wait throws `WaitTimedOut`, so the rest of the test
+/// body does not run. `what` names the thing being waited for, so the failure
+/// says what never happened.
+///
+/// The failure is recorded with `XCTFail` as well as thrown: the recorded one
+/// points at the waiting line, and it still fails the test when a caller's
+/// `do`/`catch` or `try?` swallows the error. A test that *expects* a condition
+/// may never hold polls with `pollUntil(timeout:pollInterval:_:)` instead.
 @MainActor
 func waitUntil(_ what: String, timeout: TimeInterval = 10, pollInterval: TimeInterval = 0.1,
                file: StaticString = #filePath, line: UInt = #line,
                _ condition: () async throws -> Bool) async throws {
+    if try await pollUntil(timeout: timeout, pollInterval: pollInterval, condition) { return }
+    let timedOut = WaitTimedOut(what: what, timeout: timeout)
+    XCTFail(timedOut.description, file: file, line: line)
+    throw timedOut
+}
+
+/// Poll `condition` until it holds or `timeout` elapses, and say which: `true`
+/// once it held, `false` on timeout. Never fails the test; it is for a wait whose
+/// timeout is an expected outcome. Use `waitUntil` for anything the test needs.
+@MainActor
+func pollUntil(timeout: TimeInterval, pollInterval: TimeInterval = 0.1,
+               _ condition: () async throws -> Bool) async throws -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while try await !condition() {
-        if Date() >= deadline {
-            XCTFail("timed out after \(timeout) s waiting for \(what)", file: file, line: line)
-            return
-        }
+        if Date() >= deadline { return false }
         try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
     }
+    return true
 }
 
 /// How a test page reaches the background worker.

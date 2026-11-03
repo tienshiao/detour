@@ -137,21 +137,6 @@ nonisolated final class ExtensionPageRehostTests: XCTestCase {
         Set(config.userContentController.userScripts.map(\.source))
     }
 
-    @MainActor private func waitUntil(
-        _ what: String, timeout: TimeInterval = 3,
-        _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line
-    ) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            guard Date() < deadline else {
-                XCTFail("timed out waiting for \(what)", file: file, line: line)
-                return
-            }
-            await Task.yield()
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-    }
-
     // MARK: - AC #1: the recovery path rehosts the open page
 
     @MainActor func testRecoveryRehostsOpenExtensionPageOntoTheNewOrigin() async throws {
@@ -349,7 +334,7 @@ nonisolated final class ExtensionPageRehostTests: XCTestCase {
 
         ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: false)
 
-        await waitUntil("the extension page tab to be closed") {
+        try await waitUntil("the extension page tab to be closed") {
             !space.tabs.contains { $0.id == tab.id }
         }
         XCTAssertNil(tab.webView, "the closed tab must have released its web view")
@@ -391,7 +376,7 @@ nonisolated final class ExtensionPageRehostTests: XCTestCase {
 
         ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: false)
 
-        await waitUntil("the pinned extension page to go dormant") {
+        try await waitUntil("the pinned extension page to go dormant") {
             space.pinnedEntries.first?.tab == nil
         }
         XCTAssertEqual(space.pinnedEntries.count, 1, "the pinned tile itself must stay")
@@ -410,7 +395,7 @@ nonisolated final class ExtensionPageRehostTests: XCTestCase {
         TabStore.shared.undoManager.removeAllActions()
 
         ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: false)
-        await waitUntil("the extension page tab to be closed") {
+        try await waitUntil("the extension page tab to be closed") {
             !space.tabs.contains { $0.id == tab.id }
         }
 
@@ -530,13 +515,13 @@ nonisolated final class ExtensionPageRehostTests: XCTestCase {
         let entry = try XCTUnwrap(space.pinnedEntries.first)
 
         ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: false)
-        await waitUntil("the pinned extension page to go dormant") { entry.tab == nil }
+        try await waitUntil("the pinned extension page to go dormant") { entry.tab == nil }
         XCTAssertEqual(entry.pinnedURL, pageURL, "precondition: the tile stays on the dead origin")
         XCTAssertEqual(profile.extensionID(forPageURL: entry.pinnedURL), ext.id,
                        "the dormant tile keeps its identity while the extension is disabled")
 
         ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: true)
-        await waitUntil("the context to come back") { profile.extensionContexts[ext.id] != nil }
+        try await waitUntil("the context to come back") { profile.extensionContexts[ext.id] != nil }
         let second = try XCTUnwrap(profile.extensionContexts[ext.id])
         XCTAssertEqual(entry.pinnedURL, rewriteExtensionPageURL(pageURL, from: first.baseURL, to: second.baseURL),
                        "the re-enable moves the tile onto the new origin")
@@ -560,7 +545,7 @@ nonisolated final class ExtensionPageRehostTests: XCTestCase {
         space.tabs.append(restored)
 
         ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: false)
-        await waitUntil("the waiting page to be closed") { !space.tabs.contains { $0.id == restored.id } }
+        try await waitUntil("the waiting page to be closed") { !space.tabs.contains { $0.id == restored.id } }
         XCTAssertEqual(profile.pendingExtensionOrigins, [deadHost: ext.id],
                        "a disable keeps the origin so the extension's tiles keep their identity")
 
@@ -606,7 +591,11 @@ nonisolated final class ExtensionPageRehostTests: XCTestCase {
 
         let ext = try ExtensionManager.shared.install(from: source, publicKey: publicKey)
         registeredExtensionIDs.append(ext.id)
-        await waitUntil("the first install to load its context") {
+        // tearDown only unloads the profiles this suite made; an install also
+        // reaches the host app's own, so the uninstall must run even when a
+        // wait below throws.
+        defer { ExtensionManager.shared.uninstall(id: ext.id) }
+        try await waitUntil("the first install to load its context") {
             profile.extensionContexts[ext.id] != nil
         }
         let first = try XCTUnwrap(profile.extensionContexts[ext.id])
@@ -623,13 +612,11 @@ nonisolated final class ExtensionPageRehostTests: XCTestCase {
         XCTAssertEqual(profile.extensionID(forPageURL: entry.pinnedURL), ext.id,
                        "the tile on the old origin keeps its identity while the replacement loads")
 
-        await waitUntil("the replacement context to load") { profile.extensionContexts[ext.id] != nil }
+        try await waitUntil("the replacement context to load") { profile.extensionContexts[ext.id] != nil }
         let second = try XCTUnwrap(profile.extensionContexts[ext.id])
         XCTAssertEqual(entry.pinnedURL,
                        rewriteExtensionPageURL(pageURL, from: first.baseURL, to: second.baseURL),
                        "and is moved onto the replacement's origin once it is loaded")
-        await waitUntil("the pending origin to be resolved") { profile.pendingExtensionOrigins.isEmpty }
-
-        ExtensionManager.shared.uninstall(id: ext.id)
+        try await waitUntil("the pending origin to be resolved") { profile.pendingExtensionOrigins.isEmpty }
     }
 }
