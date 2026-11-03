@@ -39,6 +39,9 @@ sources:
   - id: task-235
     resource: backlog:TASK-235
     title: Tests - SettingsPaneColumnsTests depends on the shared DetourTests data directory being empty of link routes
+  - id: notes-locked-run
+    resource: "Agent session notes, 2026-11-02 (not in the repository)"
+    title: Session notes on two full test runs that failed while the screen was locked
 ---
 
 The commands are in [CLAUDE.md](../../CLAUDE.md), and so is the policy: what
@@ -235,6 +238,23 @@ Match the executable path `…/Detour.app/Contents/MacOS/Detour` and exclude
 - **Shell differences.** An agent's tool shell may be zsh while the
   interactive shell is something else. Quote globs (`--include='*.swift'`)
   and put multi-line recipes in a script file run with `bash`.
+- **A locked screen fails the web-view suites.** With the screen locked
+  and the display asleep, the test host's WebKit GPU process stops taking
+  new web processes a few minutes in (its log shows no
+  `GPUProcess::createGPUConnectionToWebProcess` until the display wakes).
+  Every web view created after that point never finishes its load, so
+  suites that load pages time out at 10 s per test, while suites without
+  web views, and suites that ran before the stall, pass. On wake the host
+  logs `Too many messages (129) in the queue to remote PID … (most common:
+  GPUProcess_SetScreenProperties)`, and the failures stop. Two full runs
+  failed this way, with about 175 failures in `ExtensionWindowsCreatePrivateTests`,
+  `FaviconLinkBridgeTests` and `HistoryDeletionIntegrationTests`, and
+  looked like a regression. That kind of failure is not one: compare its
+  window with `pmset -g log | grep "Display is turned"` and with the
+  `loginwindow` `enqueueLockScreenRequest` lines in `log show` before you
+  bisect. Keep the display awake for a long run with `caffeinate -d -i -w
+  <xcodebuild pid>`.[^notes-locked-run] See also the locked-screen note in
+  [Runtime verification](./runtime-verification.md).
 - **WebKit storage.** The test host shares
   `~/Library/WebKit/com.detourbrowser.mac/` with the installed app (the
   directory is keyed by bundle id); isolation there comes from
@@ -259,3 +279,4 @@ Match the executable path `…/Detour.app/Contents/MacOS/Detour` and exclude
 [^notes-harness]: Session notes on the runtime debug harness
 [^notes-crash]: Session notes on test host crashes
 [^task-235]: TASK-235
+[^notes-locked-run]: Session notes on two full test runs that failed while the screen was locked
