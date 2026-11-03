@@ -183,7 +183,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
             }
 
             superview?.layoutSubtreeIfNeeded()
-        } completionHandler: { [weak self] in
+        } onMain: { [weak self] in
             self?.isAnimatingTileUpdate = false
             for id in removedIDs {
                 oldTilesByID[id]?.removeFromSuperview()

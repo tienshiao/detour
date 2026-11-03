@@ -335,8 +335,9 @@ final class NewProfileExtensionLoadTests: XCTestCase {
         // Before the woken worker's claim can be handled (it needs the main
         // queue): what this profile had delivered before this version.
         if let deliveredBefore {
+            let extensionID = ext.id
             try await AppDatabase.shared.dbQueue.write { db in
-                try ExtensionInstalledEventRecord(extensionID: ext.id, profileID: profileID,
+                try ExtensionInstalledEventRecord(extensionID: extensionID, profileID: profileID,
                                                   deliveredVersion: deliveredBefore, deliveredAt: 1).save(db)
             }
         }

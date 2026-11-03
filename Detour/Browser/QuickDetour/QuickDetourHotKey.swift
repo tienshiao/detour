@@ -92,13 +92,15 @@ final class QuickDetourHotKey {
         }
         // The menu item follows the settings whether or not this process
         // registers anything (a Debug build without the opt-in, the test host).
-        settingsObserver = NotificationCenter.default.addObserver(
-            forName: QuickDetourHotKeySettings.didChangeNotification, object: settings, queue: .main) { [weak self] _ in
+        settingsObserver = NotificationCenter.default.addMainObserver(
+            forName: QuickDetourHotKeySettings.didChangeNotification, object: settings) { [weak self] _ in
             self?.apply()
         }
     }
 
-    deinit {
+    /// Isolated: it tears down main-actor state; the object is released on
+    /// the main thread in practice, and the teardown hops there otherwise.
+    isolated deinit {
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
     }
@@ -116,8 +118,8 @@ final class QuickDetourHotKey {
         isStarted = true
         registrar.onPress = onPress
         // Another app may have let go of a refused shortcut since.
-        observers.append(NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+        observers.append(NotificationCenter.default.addMainObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil) { [weak self] _ in
             self?.registration.retryIfFailed()
         })
         apply()
@@ -206,7 +208,9 @@ final class CarbonHotKeyRegistrar: HotKeyRegistrar {
 
     /// The handler holds an unretained pointer to this registrar, so both it
     /// and the hotkeys go with it.
-    deinit {
+    /// Isolated: it tears down main-actor state; the object is released on
+    /// the main thread in practice, and the teardown hops there otherwise.
+    isolated deinit {
         for ref in hotKeys.values { UnregisterEventHotKey(ref) }
         if let handler { RemoveEventHandler(handler) }
     }
@@ -241,12 +245,15 @@ final class CarbonHotKeyRegistrar: HotKeyRegistrar {
             let status = GetEventParameter(event, EventParamName(kEventParamDirectObject),
                                            EventParamType(typeEventHotKeyID), nil,
                                            MemoryLayout<EventHotKeyID>.size, nil, &id)
-            let registrar = Unmanaged<CarbonHotKeyRegistrar>.fromOpaque(context).takeUnretainedValue()
-            guard status == noErr, id.signature == CarbonHotKeyRegistrar.signature,
-                  registrar.hotKeys[id.id] != nil else { return OSStatus(eventNotHandledErr) }
-            log.notice("Quick Detour hotkey pressed")
-            registrar.onPress?()
-            return noErr
+            // The application event target dispatches on the main run loop.
+            return MainActor.assumeIsolated {
+                let registrar = Unmanaged<CarbonHotKeyRegistrar>.fromOpaque(context).takeUnretainedValue()
+                guard status == noErr, id.signature == CarbonHotKeyRegistrar.signature,
+                      registrar.hotKeys[id.id] != nil else { return OSStatus(eventNotHandledErr) }
+                log.notice("Quick Detour hotkey pressed")
+                registrar.onPress?()
+                return noErr
+            }
         }, 1, &pressed, context, &handler)
     }
 }

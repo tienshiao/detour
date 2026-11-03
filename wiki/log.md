@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-11-02
+* **Update**: TASK-231.6 — the app target is in the Swift 6 language mode. [Swift concurrency checking](platform/swift-concurrency-checking.md) (now stable): what Swift 6 adds at runtime, the audit of Objective-C entry points before the switch, `MainActorCallbacks.swift`, and the test target needing the app's default isolation once the app module is Swift 6 (4,439 errors → 5). CLAUDE.md states the isolation rules. Harness: `docs/harness/task231-6-harness.patch`.
 * **Update**: TASK-231.5 — [Internal pages](features/internal-pages.md): scheme handlers answer late through `SchemeTaskTable` tickets (identity + serial), because WebKit can reuse a stopped task's address and identity alone misdelivered a late answer. Harness: `docs/harness/task231-5-harness.patch` with `task231-5-fixture-server.py`.
 * **Update**: TASK-231.3 — [Content blocking](features/content-blocking.md) Threading: rules are `ContentRule = [String: any Sendable]` so the parse-queue → main → work-queue hand-offs are compiler-checked; parser and encoding helpers nonisolated; `encodedRuleList` checks `isValidJSONObject` first.
 * **Update**: TASK-231.2 — [History database](architecture/history-database.md) and [Session database](architecture/session-database.md): both database types are nonisolated and `Sendable`, write completions `@Sendable`, the lock-guarded caches `Mutex`es, record types nonisolated with `TabRecord.init(tab:…)` main-actor isolated. Harness: `docs/harness/task231-2-harness.patch`.

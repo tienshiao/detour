@@ -480,8 +480,8 @@ class Profile {
             // is logged when it is not among them. Rebuilt from the current array
             // each time, so it is bounded by the array and a WebKit clear drops
             // the old keys by itself (a recurring failure is logged again).
-            var loggedErrorKeys = Set<String>()
-            extensionErrorObservers[extID] = NotificationCenter.default.addObserver(forName: WKWebExtensionContext.errorsDidUpdateNotification, object: context, queue: .main) { [weak self, weak context] _ in
+            let loggedErrorKeys = ErrorKeysLogged()
+            extensionErrorObservers[extID] = NotificationCenter.default.addMainObserver(forName: WKWebExtensionContext.errorsDidUpdateNotification, object: context) { [weak self, weak context] _ in
                 guard let context else { return }
                 let errors = context.errors
                 var currentKeys = Set<String>()
@@ -494,10 +494,10 @@ class Profile {
                     }
                     let key = "\(nsError.domain)#\(nsError.code)#\(nsError.localizedDescription)"
                     currentKeys.insert(key)
-                    guard !loggedErrorKeys.contains(key) else { continue }
+                    guard !loggedErrorKeys.keys.contains(key) else { continue }
                     log.error("Extension error [\(extID, privacy: .public)]: domain=\(nsError.domain, privacy: .public) code=\(nsError.code) \(nsError.localizedDescription, privacy: .public)")
                 }
-                loggedErrorKeys = currentKeys
+                loggedErrorKeys.keys = currentKeys
                 if backgroundLoadFailed, let self {
                     // A `runtime.onInstalled` claim this context made with no
                     // listener was made by a script that never ran to the end:
@@ -985,4 +985,10 @@ class Profile {
             isMalwareFilterEnabled: record.isMalwareFilterEnabled
         )
     }
+}
+
+/// The extension error keys already logged for one context, shared by the
+/// errors observer's runs (the observer block cannot mutate a captured `var`).
+private final class ErrorKeysLogged {
+    var keys = Set<String>()
 }

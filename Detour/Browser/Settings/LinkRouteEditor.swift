@@ -129,11 +129,14 @@ final class LinkRouteEditor {
         // a route that comes back.
         storeObserver = NotificationCenter.default.addObserver(
             forName: LinkRouteStore.didChangeNotification, object: store, queue: nil) { [weak self] _ in
-            self?.dropEditsOfRemovedRoutes()
+            // Delivered on the posting thread; the store is main-actor isolated.
+            MainActor.assumeIsolated { self?.dropEditsOfRemovedRoutes() }
         }
     }
 
-    deinit {
+    /// Isolated: it tears down main-actor state; the object is released on
+    /// the main thread in practice, and the teardown hops there otherwise.
+    isolated deinit {
         if let storeObserver { NotificationCenter.default.removeObserver(storeObserver) }
     }
 

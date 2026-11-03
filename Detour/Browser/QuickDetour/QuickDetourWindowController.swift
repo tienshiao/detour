@@ -87,7 +87,7 @@ final class QuickDetourWindowController: NSWindowController {
     /// Asks whether a quarantine page may download a file (TASK-194: ask
     /// each time), on `window`; `answer` gets true for Download. A test
     /// answers it.
-    static var askQuarantineDownload: (QuarantineDownloadQuestion, NSWindow?, @escaping (Bool) -> Void) -> Void =
+    static var askQuarantineDownload: @MainActor (QuarantineDownloadQuestion, NSWindow?, @escaping (Bool) -> Void) -> Void =
         runQuarantineDownloadAlert
 
     /// The quarantine this window shows (TASK-194): its page's own store,
@@ -545,7 +545,7 @@ final class QuickDetourWindowController: NSWindowController {
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.15
             findBar.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             self?.findBar.isHidden = true
         })
     }
@@ -852,12 +852,12 @@ final class QuickDetourWindowController: NSWindowController {
 
     /// The question asked before leaving Private would cancel Private
     /// downloads; a test answers it.
-    static var runProfileSwitchAlert: (PrivateDownloadClosePolicy.Prompt) -> Bool =
+    static var runProfileSwitchAlert: @MainActor (PrivateDownloadClosePolicy.Prompt) -> Bool =
         BrowserWindowController.runPrivateDownloadCloseAlert
 
     /// The question asked before closing the window (or a quarantine's Open
     /// in, TASK-194) would cancel Private downloads; a test answers it.
-    static var runPrivateDownloadCloseAlert: (PrivateDownloadClosePolicy.Prompt) -> Bool =
+    static var runPrivateDownloadCloseAlert: @MainActor (PrivateDownloadClosePolicy.Prompt) -> Bool =
         BrowserWindowController.runPrivateDownloadCloseAlert
 
     /// The pill's menu model, from the store's profiles as they are now.

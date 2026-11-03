@@ -88,24 +88,31 @@ class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     // MARK: - UNUserNotificationCenterDelegate
 
-    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+    // Nonisolated: UserNotifications does not say which thread it calls the
+    // delegate on. The maps are main-actor state, so the bookkeeping hops there.
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
         let identifier = response.notification.request.identifier
-
-        if let mapping = notificationMap[identifier] {
-            if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
-                log.info("Notification clicked: \(mapping.notificationID, privacy: .public) for extension \(mapping.extensionID, privacy: .public)")
-            } else if response.actionIdentifier == UNNotificationDismissActionIdentifier {
-                log.info("Notification closed: \(mapping.notificationID, privacy: .public) for extension \(mapping.extensionID, privacy: .public)")
-                notificationMap.removeValue(forKey: identifier)
-                activeNotifications[mapping.extensionID]?.remove(mapping.notificationID)
-            }
-            // Native WKWebExtension handles chrome.notifications event dispatch
+        let action = response.actionIdentifier
+        DispatchQueue.main.async {
+            self.handleResponse(identifier: identifier, action: action)
         }
-
         completionHandler()
     }
 
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound])
+    }
+
+    private func handleResponse(identifier: String, action: String) {
+        guard let mapping = notificationMap[identifier] else { return }
+        if action == UNNotificationDefaultActionIdentifier {
+            log.info("Notification clicked: \(mapping.notificationID, privacy: .public) for extension \(mapping.extensionID, privacy: .public)")
+        } else if action == UNNotificationDismissActionIdentifier {
+            log.info("Notification closed: \(mapping.notificationID, privacy: .public) for extension \(mapping.extensionID, privacy: .public)")
+            notificationMap.removeValue(forKey: identifier)
+            activeNotifications[mapping.extensionID]?.remove(mapping.notificationID)
+        }
+        // Native WKWebExtension handles chrome.notifications event dispatch
     }
 }

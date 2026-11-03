@@ -268,7 +268,7 @@ final class NowPlayingBarView: NSView {
             context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             apply()
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self, !self.isExpanded else { return }
             self.titleRow.isHidden = true
         })

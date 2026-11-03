@@ -209,14 +209,16 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
         routeRowHeight = LinkRouteCellView.measuredHeight(width: Self.estimatedRowWidth)
         tableView.rowHeight = routeRowHeight
         TabStore.shared.addObserver(self)
-        storeObserver = NotificationCenter.default.addObserver(
-            forName: LinkRouteStore.didChangeNotification, object: store, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refresh() }
+        storeObserver = NotificationCenter.default.addMainObserver(
+            forName: LinkRouteStore.didChangeNotification, object: store) { [weak self] _ in
+            self?.refresh()
         }
         refresh()
     }
 
-    deinit {
+    /// Isolated: it tears down main-actor state; the object is released on
+    /// the main thread in practice, and the teardown hops there otherwise.
+    isolated deinit {
         if let storeObserver { NotificationCenter.default.removeObserver(storeObserver) }
     }
 

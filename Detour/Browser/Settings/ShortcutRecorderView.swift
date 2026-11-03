@@ -174,13 +174,15 @@ final class ShortcutRecorderView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard let window else { return }
-        resignKeyObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.endRecording() }
+        resignKeyObserver = NotificationCenter.default.addMainObserver(
+            forName: NSWindow.didResignKeyNotification, object: window) { [weak self] _ in
+            self?.endRecording()
         }
     }
 
-    deinit {
+    /// Isolated: it tears down main-actor state; the object is released on
+    /// the main thread in practice, and the teardown hops there otherwise.
+    isolated deinit {
         if let resignKeyObserver { NotificationCenter.default.removeObserver(resignKeyObserver) }
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
     }

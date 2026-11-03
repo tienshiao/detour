@@ -1,10 +1,10 @@
 ---
 type: Platform Quirk
 title: Swift concurrency checking in an AppKit and WebKit app
-description: What turning on complete concurrency checking and main-actor default isolation does to Detour — WebKit delegate methods that silently stop being called because the SDK's closure types change, the implicit-deinit isolation error, build settings that leak into Swift packages from the xcodebuild command line, and why the settings change almost nothing at runtime until the Swift 6 language mode.
+description: What turning on complete concurrency checking, main-actor default isolation and the Swift 6 language mode does to Detour — WebKit delegate methods that silently stop being called because the SDK's closure types change, the implicit-deinit isolation error, build settings that leak into Swift packages, which settings carry runtime meaning in each language mode, how the Objective-C entry points were audited before Swift 6 could trap on them, and why the test target had to follow.
 tags: [swift, concurrency, webkit, build]
-status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T01:00:00Z }
+status: stable
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T03:25:41Z }
 sources:
   - id: task-231
     resource: backlog:TASK-231
@@ -12,6 +12,12 @@ sources:
   - id: task-231-1
     resource: backlog:TASK-231.1
     title: Main-actor default isolation and complete checking for the app target
+  - id: task-231-6
+    resource: backlog:TASK-231.6
+    title: The app target builds in Swift 6 language mode
+  - id: main-actor-callbacks
+    resource: ../../Detour/Browser/Shared/MainActorCallbacks.swift
+    title: MainActorCallbacks.swift
   - id: reachability-tests
     resource: ../../DetourTests/WebKitDelegateReachabilityTests.swift
     title: WebKitDelegateReachabilityTests.swift
@@ -82,29 +88,67 @@ in `GRDB/Core`). To measure the effect on the app alone, set the values per
 target in `project.yml` (a scratch worktree plus `xcodegen generate` is
 enough).[^task-231]
 
-## In the Swift 5 mode these settings are almost all static
+## What changes at runtime, and when
 
-Swift inserts the runtime checks that trap when main-actor code runs off the
-main thread only in the Swift 6 language mode, or with the
-`DynamicActorIsolation` upcoming feature (SE-0423).[^se-0423] Until
-`SWIFT_VERSION` becomes 6, code the compiler warns about keeps running as it
-did before; the default-isolation change does move `async` functions on
-previously nonisolated types onto the main actor (SE-0466),[^se-0466] which
-in Detour affected nothing that does CPU work.[^task-231-1] Two of the
-upcoming features `SWIFT_APPROACHABLE_CONCURRENCY` turns on also carry
-runtime meaning: `NonisolatedNonsendingByDefault` runs a `nonisolated`
-`async` function on its caller's actor instead of the global executor (Detour
-has no such function today), and `InferIsolatedConformances` makes a
-main-actor type's conformances main-actor isolated, so a dynamic cast through
-one (`as? SomeProtocol`, `String(describing:)` looking for
-`CustomStringConvertible`) fails when it runs off the main thread.[^se-0470]
-The build reports the static uses as `#IsolatedConformances` warnings; a
-dynamic cast gets no warning. When the settings went on, the only casts to
-an app protocol were `windowController as? (any ExtensionListedWindow)`, all
-in AppKit code on the main thread; string interpolation of app types inside
-background closures can still lose a custom description (log text only).[^task-231-1] The switch to
-Swift 6 mode is the step that can start trapping at runtime, so it needs its
-own runtime pass.
+In the Swift 5 language mode these settings are almost all static: Swift
+inserts the runtime checks that trap when main-actor code runs off the main
+thread only in the Swift 6 language mode, or with the `DynamicActorIsolation`
+upcoming feature (SE-0423).[^se-0423] The default-isolation change does move
+`async` functions on previously nonisolated types onto the main actor
+(SE-0466),[^se-0466] which in Detour affected nothing that does CPU
+work.[^task-231-1] Two of the upcoming features
+`SWIFT_APPROACHABLE_CONCURRENCY` turns on also carry runtime meaning:
+`NonisolatedNonsendingByDefault` runs a `nonisolated` `async` function on its
+caller's actor instead of the global executor, and `InferIsolatedConformances`
+makes a main-actor type's conformances main-actor isolated, so a dynamic cast
+through one (`as? SomeProtocol`, `String(describing:)` looking for
+`CustomStringConvertible`) fails off the main thread.[^se-0470] The build
+reports the static uses as `#IsolatedConformances` warnings; a dynamic cast
+gets no warning. The only casts to an app protocol are
+`windowController as? (any ExtensionListedWindow)`, all on the main
+thread.[^task-231-1]
+
+The Swift 6 language mode (the Detour target since TASK-231.6) adds the
+checks: an Objective-C entry point of a main-actor method (a delegate method,
+a selector-based notification observer, a target/action) traps if it is
+called off the main thread. Before the switch every such entry point was
+audited:[^task-231-6]
+
+- Selector-based notification observers are only safe when every post is on
+  the main thread. Every post in the app comes from main-actor code, which
+  Swift 6 itself guarantees runs on main; system notifications observed this
+  way (frame, scroll, screen, popover, workspace) are main-thread ones.
+- Framework delegates that do not promise a thread are `nonisolated` and hop
+  to main: `UNUserNotificationCenterDelegate`, the URLSession delegates
+  (`WebSocketRelaySession.Delegate`, the artwork fetcher). A protocol the SDK
+  marks `NS_SWIFT_UI_ACTOR` (`AVAudioPlayerDelegate`) is already main-actor
+  and stays so: hopping would let a player started in between be torn down by
+  the old one's completion.
+- Callbacks AppKit runs on main but types as nonisolated `@Sendable` closures
+  go through `MainActorCallbacks.swift` (`NSAnimationContext.runAnimationGroup(_:onMain:)`,
+  `Timer.scheduledMainTimer`, `NotificationCenter.addMainObserver`) or an
+  inline, commented `MainActor.assumeIsolated` (KVO change handlers, a
+  `Timer` added to the main run loop, `RunLoop.main.perform`, the Carbon
+  hot-key handler on the application event target). `assumeIsolated` traps if
+  the assumption is ever wrong, in either language mode.
+- `observeValue(forKeyPath:…)` overrides are `nonisolated` (NSObject's is),
+  read the change there and apply it on main.
+
+The full suite (3371 tests) and a runtime pass (split, web-view hand-off
+between two windows, palette, extension popup, History page) ran on the
+Swift 6 build with no trap.[^task-231-6]
+
+## A Swift 6 app module makes its test target strict too
+
+While the app was in the Swift 5 mode, a test target in the Swift 5 mode could
+call its main-actor API from nonisolated `XCTestCase` methods without a
+diagnostic. Once the app module is in the Swift 6 mode its declarations are no
+longer treated leniently, and the same calls are errors: 4,439 of them in
+DetourTests. Giving the test target the app's default isolation
+(`SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor`, approachable concurrency), still
+in the Swift 5 mode, made the test methods main-actor isolated and left 5
+errors, all closures and default arguments; XCTest runs synchronous tests on
+the main thread anyway.[^task-231-6]
 
 # Why it matters here
 
@@ -139,3 +183,4 @@ without a failing build.
 [^se-0423]: SE-0423
 [^se-0466]: SE-0466
 [^se-0470]: SE-0470
+[^task-231-6]: TASK-231.6

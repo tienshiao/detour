@@ -23,7 +23,7 @@ final class QuickDetourLauncher: NSObject {
     private var resignObserver: NSObjectProtocol?
 
     /// What submitting does: opens the window. Replaced by tests.
-    var openWindow: (_ profile: Profile, _ sourceSpace: Space?, _ url: URL, _ typed: Bool) -> Void = defaultOpenWindow
+    var openWindow: @MainActor (_ profile: Profile, _ sourceSpace: Space?, _ url: URL, _ typed: Bool) -> Void = defaultOpenWindow
 
     /// Opens the window, then activates Detour, for the panel the global
     /// hotkey showed over another app (TASK-193.2). Only the Quick Detour
@@ -72,8 +72,8 @@ final class QuickDetourLauncher: NSObject {
         panel.setFrame(QuickDetour.panelFrame(size: panel.frame.size, in: Self.targetScreen().visibleFrame),
                        display: false)
         self.panel = panel
-        resignObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self, weak panel] _ in
+        resignObserver = NotificationCenter.default.addMainObserver(
+            forName: NSWindow.didResignKeyNotification, object: panel) { [weak self, weak panel] _ in
             guard let self, let panel, self.panel === panel else { return }
             self.close()
         }

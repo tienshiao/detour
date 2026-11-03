@@ -618,10 +618,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func observeWindowClose(_ wc: BrowserWindowController) {
-        NotificationCenter.default.addObserver(
+        _ = NotificationCenter.default.addMainObserver(
             forName: NSWindow.willCloseNotification,
-            object: wc.window,
-            queue: .main
+            object: wc.window
         ) { [weak self] notification in
             guard let self else { return }
             self.windowControllers.removeAll { $0.window === notification.object as? NSWindow }

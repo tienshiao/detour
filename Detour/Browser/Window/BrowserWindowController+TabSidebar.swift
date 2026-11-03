@@ -634,8 +634,10 @@ extension BrowserWindowController: TabSidebarDelegate {
         // inside a main-queue block holds that queue, and every main-queue
         // block and main-actor job with it, until the alert is dismissed.
         RunLoop.main.perform(inModes: [.default]) {
-            SpaceDeletionBlockedAlert.run(spaceName: block.spaceName, spaceID: block.spaceID,
-                                          references: block.references)
+            MainActor.assumeIsolated {
+                SpaceDeletionBlockedAlert.run(spaceName: block.spaceName, spaceID: block.spaceID,
+                                              references: block.references)
+            }
         }
     }
 

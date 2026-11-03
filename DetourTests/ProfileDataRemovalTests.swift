@@ -242,8 +242,9 @@ final class ProfileDataRemovalTests: XCTestCase {
         // profile, a profile alive only in memory, the Private profile (which
         // recordPendingProfileDataRemoval refuses), a lower-case spelling of the
         // stored id, and an unparsable id.
+        let storedID = stored.id.uuidString
         try await db.dbQueue.write { d in
-            for (i, key) in [stored.id.uuidString, stored.id.uuidString.lowercased(), inMemoryOnly.uuidString,
+            for (i, key) in [storedID, storedID.lowercased(), inMemoryOnly.uuidString,
                              incognito, deleted.uuidString, "not-a-uuid"].enumerated() {
                 try d.execute(sql: "INSERT INTO pendingProfileDataRemoval (profileID, requestedAt) VALUES (?, ?)",
                               arguments: [key, Double(i)])

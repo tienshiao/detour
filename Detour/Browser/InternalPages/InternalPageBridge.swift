@@ -34,7 +34,7 @@ final class InternalPageBridge: NSObject, WKScriptMessageHandlerWithReply {
         }
     }
 
-    private static let userScriptSources = InternalPage.allCases.map(userScriptSource(for:))
+    private static let userScriptSources = InternalPage.allCases.map { userScriptSource(for: $0) }
 
     /// The page's script, inert everywhere but on its own page. `location` is
     /// read through this world's own bindings, which page script cannot patch.

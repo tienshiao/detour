@@ -283,8 +283,9 @@ final class QuarantineTests: XCTestCase {
                        privateProfile: store.ensureIncognitoProfile())
     }
 
-    private func openQuarantine(_ f: Fixture, session: QuarantineSession = QuarantineSession(originalURL: nil),
+    private func openQuarantine(_ f: Fixture, session: QuarantineSession? = nil,
                                 openedWith configuration: WKWebViewConfiguration? = nil) -> BrowserTab {
+        let session = session ?? QuarantineSession(originalURL: nil)
         let tab = f.store.openQuickDetourTab(profile: f.privateProfile, openedWith: configuration, quarantine: session)
         openedTabs.append((f.store, tab))
         return tab

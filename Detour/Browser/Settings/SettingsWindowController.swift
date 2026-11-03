@@ -243,7 +243,7 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
             if frame.maxY > visible.maxY { frame.origin.y = visible.maxY - frame.height }
             if frame.minY < visible.minY { frame.origin.y = min(visible.minY, visible.maxY - frame.height) }
         }
-        let finish = { [weak self] in
+        let finish: @MainActor @Sendable () -> Void = { [weak self] in
             // A later fit (another switch mid-animation) owns the bounds.
             guard let self, self.currentFit == fit, window.contentViewController === pane,
                   self.animationTargetHeight == nil || self.animationTargetHeight == height else { return }
@@ -263,7 +263,7 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = window.animationResizeTime(frame)
                 window.animator().setFrame(frame, display: true)
-            }, completionHandler: finish)
+            }, onMain: finish)
         } else {
             animationTargetHeight = nil
             window.setFrame(frame, display: true)

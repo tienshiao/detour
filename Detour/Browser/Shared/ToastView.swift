@@ -38,7 +38,7 @@ class ToastManager {
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = 0.3
                 toast.animator().alphaValue = 0
-            }, completionHandler: { [weak self] in
+            }, onMain: { [weak self] in
                 guard let self, self.hideGeneration == gen else { return }
                 toast.removeFromSuperview()
                 if self.currentToast === toast { self.currentToast = nil }

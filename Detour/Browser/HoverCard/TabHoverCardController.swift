@@ -57,7 +57,9 @@ final class TabHoverCardController {
 
     var isShowing: Bool { shownTarget != nil }
 
-    deinit {
+    /// Isolated: it tears down main-actor state; the object is released on
+    /// the main thread in practice, and the teardown hops there otherwise.
+    isolated deinit {
         showTimer?.invalidate()
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
         if let panel {
@@ -91,8 +93,11 @@ final class TabHoverCardController {
             show()
         } else {
             let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
-                self?.showTimer = nil
-                self?.show()
+                // Added to the main run loop below, so this runs on the main thread.
+                MainActor.assumeIsolated {
+                    self?.showTimer = nil
+                    self?.show()
+                }
             }
             RunLoop.main.add(timer, forMode: .common)
             showTimer = timer

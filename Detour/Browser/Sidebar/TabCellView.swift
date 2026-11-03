@@ -516,7 +516,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
 
             self.titleLeadingConstraint.animator().constant = targetConstant
             self.speakerButton.animator().alphaValue = self.audioPlaying ? 1 : 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self else { return }
             if !self.audioPlaying {
                 self.speakerButton.isHidden = true
@@ -764,7 +764,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             splitFaviconImageView.animator().alphaValue = 0
             splitTitleLabel.animator().alphaValue = 0
             splitDivider.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             // The generation check kills completions from superseded collapses
             // (a newer collapse re-armed the flag, so the flag alone lies).
             guard let self, self.isCollapsingSplitSegment,
@@ -985,7 +985,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.3
             progressView.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self else { return }
             self.progressView.frame.size.width = 0
         })
@@ -1073,7 +1073,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             ctx.duration = 0.4
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             hoverBackground.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self else { return }
             if !self.isHovered {
                 self.hoverBackground.isHidden = true

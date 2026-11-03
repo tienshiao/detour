@@ -69,7 +69,8 @@ extension BrowserWindowController {
                                                windowIsPrivate: isIncognito, now: now)
         if let expiry = NowPlayingRule.nextExpiry(candidates, now: now) {
             let timer = Timer(fire: expiry.addingTimeInterval(0.05), interval: 0, repeats: false) { [weak self] _ in
-                self?.scheduleNowPlayingUpdate()
+                // Added to the main run loop below.
+                MainActor.assumeIsolated { self?.scheduleNowPlayingUpdate() }
             }
             RunLoop.main.add(timer, forMode: .common)
             nowPlaying.expiryTimer = timer

@@ -778,14 +778,17 @@ class BrowserTab: NSObject {
         webView.evaluateJavaScript(js)
     }
 
-    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+    /// Nonisolated, as NSObject's is: KVO calls it on the thread that changed
+    /// the property. The value is read here and the change applied on main.
+    nonisolated override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
         if keyPath == "_isPlayingAudio" {
             let source = object as? WKWebView
+            let playing = change?[.newKey] as? Bool ?? false
             DispatchQueue.main.async { [weak self] in
                 // A change queued before `releaseWebView` removed the observer
                 // must not mark a sleeping (or re-woken) tab audible.
                 guard let self, let source, self.webView === source else { return }
-                self.isPlayingAudio = change?[.newKey] as? Bool ?? false
+                self.isPlayingAudio = playing
             }
         } else {
             super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)

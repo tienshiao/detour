@@ -168,15 +168,17 @@ final class QuickDetourSettingsViewController: SettingsPaneViewController {
         super.viewDidLoad()
         for name in [QuickDetourHotKeySettings.didChangeNotification, QuickDetourHotKey.stateDidChangeNotification,
                      QuickDetourSettings.didChangeNotification] {
-            observers.append(NotificationCenter.default.addObserver(
-                forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.updateControls() }
+            observers.append(NotificationCenter.default.addMainObserver(
+                forName: name, object: nil) { [weak self] _ in
+                self?.updateControls()
             })
         }
         updateControls()
     }
 
-    deinit {
+    /// Isolated: it tears down main-actor state; the object is released on
+    /// the main thread in practice, and the teardown hops there otherwise.
+    isolated deinit {
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
     }
 

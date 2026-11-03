@@ -257,7 +257,7 @@ class PeekOverlayView: NSView {
         }
     }
 
-    func animateClose(completion: @escaping () -> Void) {
+    func animateClose(completion: @escaping @MainActor @Sendable () -> Void) {
         isClosing = true
 
         guard let toTransform = scaledDownTransform(), let layer = shadowContainer.layer else {
@@ -281,7 +281,7 @@ class PeekOverlayView: NSView {
             closeButton.alphaValue = 0
             expandButton.alphaValue = 0
             splitButton.alphaValue = 0
-        }, completionHandler: completion)
+        }, onMain: completion)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {

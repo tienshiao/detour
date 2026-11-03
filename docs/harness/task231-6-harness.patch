@@ -1,0 +1,124 @@
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,9 @@
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runVerifyHarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+--- a/Detour/Browser/CommandPalette/CommandPaletteView.swift
++++ b/Detour/Browser/CommandPalette/CommandPaletteView.swift
+@@ -57,6 +57,7 @@
+     /// Replaced in tests with a provider over an in-memory history database.
+     var suggestionProvider = SuggestionProvider()
+     private var suggestions: [SuggestionItem] = []
++    var debugSuggestionCount: Int { suggestions.count }   // TEMP — DO NOT COMMIT
+     /// The query the current suggestion list was built for; nil when showing
+     /// defaults. Used to reject stale async search-suggestion responses.
+     private var suggestionsQuery: String?
+--- /dev/null
++++ b/Detour/App/Harness2316.swift
+@@ -0,0 +1,99 @@
++// TEMP verify harness for TASK-231.6 — DO NOT COMMIT
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runVerifyHarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"],
++              let repo = ProcessInfo.processInfo.environment["DETOUR_VERIFY_REPO"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let log: @Sendable (String) -> Void = { line in
++            let data = Data((line + "\n").utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) { h.seekToEndOfFile(); h.write(data); try? h.close() }
++            else { try? data.write(to: logURL) }
++        }
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier)")
++        let base = "http://127.0.0.1:\(port)"
++        Task { @MainActor in
++            func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++            func poll<T>(_ timeout: Double = 10, _ f: () async -> T?) async -> T? {
++                let end = Date().addingTimeInterval(timeout)
++                while Date() < end { if let v = await f() { return v }; await sleep(0.1) }
++                return nil
++            }
++            await sleep(2)
++            NSApp.activate(ignoringOtherApps: true)
++            guard let space = wc.activeSpace, let windowA = wc.window else { log("no space"); log("done"); return }
++            windowA.orderFrontRegardless()
++
++            // Two tabs, then a split of them.
++            let a = TabStore.shared.addTab(in: space, url: URL(string: "\(base)/page?a")!)
++            let b = TabStore.shared.addTab(in: space, url: URL(string: "\(base)/page?b")!)
++            wc.selectTab(id: a.id)
++            _ = await poll(15) { a.webView?.isLoading == false && a.webView?.url != nil ? true : nil }
++            TabStore.shared.createSplit(draggedTabID: b.id, targetTabID: a.id, edge: .right, in: space)
++            wc.selectTab(id: a.id)
++            let split = await poll(10) { () -> Bool? in
++                a.splitGroupID != nil && a.splitGroupID == b.splitGroupID
++                    && a.webView?.window === windowA && b.webView?.window === windowA ? true : nil }
++            log("split hosted both panes in window A=\(split == true) \(split == true ? "PASS" : "FAIL")")
++
++            // A second window showing the same space takes the web view when it is key.
++            let wcB = self.createNewWindow(showing: space)
++            wcB.selectTab(id: a.id)
++            wcB.window?.makeKeyAndOrderFront(nil)
++            let ownedB = await poll(10) { a.webView?.window === wcB.window ? true : nil }
++            log("window B owns tab A's web view=\(ownedB == true) \(ownedB == true ? "PASS" : "FAIL")")
++            windowA.makeKeyAndOrderFront(nil)
++            let ownedA = await poll(10) { a.webView?.window === windowA ? true : nil }
++            log("ownership back to window A=\(ownedA == true) \(ownedA == true ? "PASS" : "FAIL")")
++            wcB.window?.close()
++            await sleep(1)
++
++            // Command palette with history suggestions (background pass).
++            HistoryDatabase.shared.recordVisit(url: "\(base)/page?hist", title: "Swift six fixture", faviconURL: nil,
++                                               spaceID: space.id.uuidString)
++            await sleep(0.5)
++            wc.showCommandPalette(initialText: "swift six")
++            let rows = await poll(10) { () -> Int? in
++                guard let palette = wc.commandPaletteView else { return nil }
++                let n = palette.debugSuggestionCount
++                return n > 1 ? n : nil
++            }
++            log("palette suggestions=\(rows ?? 0) \(rows != nil ? "PASS" : "FAIL")")
++            wc.commandPaletteView?.dismiss()
++            await sleep(0.5)
++
++            // Extension popup through the real sidebar request.
++            do {
++                let ext = try ExtensionManager.shared.install(from: URL(fileURLWithPath: repo).appendingPathComponent("TestExtensions/hello-world"))
++                let loaded = await poll(10) { ExtensionManager.shared.context(for: ext.id) != nil ? true : nil }
++                log("hello-world installed, context=\(loaded == true)")
++                wc.tabSidebarDidRequestShowExtensionPopup(wc.tabSidebar, extensionID: ext.id, sourceButton: wc.tabSidebar.fauxAddressBar)
++                let shown = await poll(10) { () -> String? in
++                    for w in NSApp.windows where w.isVisible && String(describing: type(of: w)).contains("Popover") {
++                        func webViews(_ v: NSView) -> [WKWebView] { (v as? WKWebView).map { [$0] } ?? v.subviews.flatMap(webViews) }
++                        if let web = w.contentView.map(webViews)?.first, web.isLoading == false, let url = web.url {
++                            return url.lastPathComponent
++                        }
++                    }
++                    return nil
++                }
++                log("extension popup page=\(shown ?? "none") \(shown == "popup.html" ? "PASS" : "FAIL")")
++            } catch { log("extension install FAIL \(error)") }
++
++            // History page.
++            let history = TabStore.shared.addTab(in: space, internalPage: .history)
++            wc.selectTab(id: history.id)
++            if let hv = await poll(15, { wc.selectedTab?.webView }) {
++                let n = await poll(15) { () -> Int? in
++                    let c: Int = await withCheckedContinuation { k in hv.evaluateJavaScript("document.querySelectorAll('.item').length") { r, _ in k.resume(returning: (r as? Int) ?? 0) } }
++                    return c > 0 ? c : nil
++                }
++                log("history page rows=\(n ?? 0) \(n != nil ? "PASS" : "FAIL")")
++            } else { log("history page FAIL no web view") }
++            log("done")
++        }
++    }
++}

@@ -311,7 +311,7 @@ final class ContentRuleStoreThreadingTests: XCTestCase {
         var outcomes: [String] = []
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let group = DispatchGroup()
-            func record(_ name: String) -> (ContentRuleStore.CompileOutcome) -> Void {
+            @MainActor func record(_ name: String) -> (ContentRuleStore.CompileOutcome) -> Void {
                 group.enter()
                 return { outcome in
                     outcomes.append("\(name) \(self.isSuperseded(outcome) ? "superseded" : "\(outcome.lists.count)")")

@@ -138,7 +138,7 @@ class SpacePageView: NSView {
             context.duration = 0.15
             favoriteDropHint.animator().alphaValue = showHint ? 1 : 0
             header.animator().alphaValue = showHint ? 0 : 1
-        } completionHandler: { [weak self] in
+        } onMain: { [weak self] in
             // Hidden, not just transparent: a visible view keeps taking drags.
             guard let self, !self.isShowingFavoriteDropHint else { return }
             self.favoriteDropHint.isHidden = true

@@ -143,7 +143,7 @@ class BrowserWindowController: NSWindowController {
     /// Asks whether to close this Private window although downloads of its
     /// own are still running; true goes ahead and cancels them (TASK-156). A
     /// variable so a test answers instead of a modal alert.
-    var confirmClosingWithPrivateDownloads: (PrivateDownloadClosePolicy.Prompt) -> Bool =
+    var confirmClosingWithPrivateDownloads: @MainActor (PrivateDownloadClosePolicy.Prompt) -> Bool =
         BrowserWindowController.runPrivateDownloadCloseAlert
 
     enum ContextMenuLinkAction {
@@ -520,7 +520,9 @@ class BrowserWindowController: NSWindowController {
         removeSplitRevealOverlay()
     }
 
-    deinit {
+    /// Isolated: it tears down main-actor state; the object is released on
+    /// the main thread in practice, and the teardown hops there otherwise.
+    isolated deinit {
         store.removeObserver(self)
         DownloadManager.shared.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
@@ -725,8 +727,9 @@ class BrowserWindowController: NSWindowController {
         splitViewController.splitView.autosaveName = BrowserWindowController.splitViewAutosaveName
 
         sidebarCollapseObservation = sidebarItem.observe(\.isCollapsed, options: [.new]) { [weak self] _, change in
-            guard let self, let collapsed = change.newValue else { return }
-            self.sidebarCollapsedStateChanged(collapsed, animated: true)
+            guard let collapsed = change.newValue else { return }
+            // AppKit collapses split view items on the main thread.
+            MainActor.assumeIsolated { self?.sidebarCollapsedStateChanged(collapsed, animated: true) }
         }
 
         // Loading the split view applies the autosave, which can restore a
@@ -842,8 +845,8 @@ class BrowserWindowController: NSWindowController {
                 sidebarAutoHideTimer = nil
             case .startHoverGrace:
                 sidebarHoverGraceTimer?.invalidate()
-                sidebarHoverGraceTimer = Timer.scheduledTimer(withTimeInterval: sidebarHoverDelay,
-                                                              repeats: false) { [weak self] _ in
+                sidebarHoverGraceTimer = Timer.scheduledMainTimer(withTimeInterval: sidebarHoverDelay,
+                                                                  repeats: false) { [weak self] _ in
                     guard let self else { return }
                     self.sidebarHoverGraceTimer = nil
                     // With a button down the sidebar is kept for now; the
@@ -862,8 +865,8 @@ class BrowserWindowController: NSWindowController {
     /// from where the pointer is when the delay elapses.
     private func scheduleSidebarAutoHide() {
         sidebarAutoHideTimer?.invalidate()
-        sidebarAutoHideTimer = Timer.scheduledTimer(withTimeInterval: sidebarHoverDelay,
-                                                    repeats: false) { [weak self] _ in
+        sidebarAutoHideTimer = Timer.scheduledMainTimer(withTimeInterval: sidebarHoverDelay,
+                                                        repeats: false) { [weak self] _ in
             guard let self else { return }
             self.sidebarAutoHideTimer = nil
             self.refreshSidebarPopoverHold()
@@ -887,8 +890,8 @@ class BrowserWindowController: NSWindowController {
             return
         }
         guard sidebarPointerSampleTimer == nil else { return }
-        let timer = Timer.scheduledTimer(withTimeInterval: sidebarPointerSampleInterval,
-                                         repeats: true) { [weak self] timer in
+        let timer = Timer.scheduledMainTimer(withTimeInterval: sidebarPointerSampleInterval,
+                                             repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
             self.sampleSidebarPointer()
         }
@@ -1133,7 +1136,7 @@ class BrowserWindowController: NSWindowController {
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.15
             findBar.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             self?.findBar.isHidden = true
         })
     }
@@ -1761,7 +1764,7 @@ class BrowserWindowController: NSWindowController {
             ctx.allowsImplicitAnimation = true
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             animations()
-        }, completionHandler: { [weak self, weak overlay] in
+        }, onMain: { [weak self, weak overlay] in
             guard let self, let overlay else { return }
             self.fadeOutSplitRevealOverlay(overlay)
         })
@@ -1820,7 +1823,7 @@ class BrowserWindowController: NSWindowController {
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.12
             overlay.animator().alphaValue = 0
-        }, completionHandler: { [weak self, weak overlay] in
+        }, onMain: { [weak self, weak overlay] in
             guard let overlay else { return }
             overlay.removeFromSuperview()
             if let self, self.splitRevealOverlay === overlay {
@@ -3125,7 +3128,7 @@ class BrowserWindowController: NSWindowController {
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             context.allowsImplicitAnimation = true
             peekTab?.webView?.alphaValue = 0
-        }, completionHandler: {
+        }, onMain: {
             peekTab?.teardown()
         })
         // Safety net: tear down even if animation completion doesn't fire
@@ -3189,7 +3192,7 @@ class BrowserWindowController: NSWindowController {
             self?.peekWebViewBottomConstraint?.animator().constant = 0
             self?.peekWebViewLeadingConstraint?.animator().constant = 0
             self?.peekWebViewTrailingConstraint?.animator().constant = 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self else { return }
             webView.layer?.masksToBounds = false
             // Finalize: select the tab (sets up delegates, ownership, subscriptions)
@@ -3274,7 +3277,7 @@ class BrowserWindowController: NSWindowController {
             self?.peekWebViewBottomConstraint?.animator().constant = bounds.minY - target.minY
             self?.peekWebViewLeadingConstraint?.animator().constant = target.minX - bounds.minX
             self?.peekWebViewTrailingConstraint?.animator().constant = target.maxX - bounds.maxX
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self else { return }
             // The pane's container gives it its corners from here on.
             webView.layer?.cornerRadius = 0

@@ -233,7 +233,11 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHand
 
     // MARK: - AVAudioPlayerDelegate
 
+    /// Main-actor isolated, as the SDK declares `AVAudioPlayerDelegate`
+    /// (`NS_SWIFT_UI_ACTOR`). Handled in place, not after a hop: a player
+    /// started in between would otherwise be released and its node ended.
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard player === audioPlayer else { return }
         log.info("Audio bridge: playback finished (success=\(flag)) for \(self.extensionID, privacy: .public)")
         audioPlayer = nil
         // Fire the JS sourceNode.onended callback so the extension knows playback completed

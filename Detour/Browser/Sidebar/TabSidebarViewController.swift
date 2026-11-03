@@ -718,7 +718,7 @@ class TabSidebarViewController: NSViewController {
             ctx.duration = Self.dropLandingDuration
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             proxy.animator().frame = destination
-        } completionHandler: { [weak self, weak rowView] in
+        } onMain: { [weak self, weak rowView] in
             rowView?.alphaValue = 1
             self?.fadeOutDropProxy(proxy)
             self?.recheckHoverForVisibleCells()
@@ -731,7 +731,7 @@ class TabSidebarViewController: NSViewController {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.12
             proxy.animator().alphaValue = 0
-        } completionHandler: {
+        } onMain: {
             proxy.removeFromSuperview()
         }
     }
@@ -1067,7 +1067,7 @@ class TabSidebarViewController: NSViewController {
                 context.timingFunction = CAMediaTimingFunction(name: .easeIn)
                 nowPlayingBar.animator().alphaValue = 0
                 pageClipBottomConstraint.animator().constant = 0
-            }, completionHandler: { [weak self] in
+            }, onMain: { [weak self] in
                 guard let self, self.nowPlayingBarIsHiding else { return }
                 self.nowPlayingBarIsHiding = false
                 self.nowPlayingBar.isHidden = true
@@ -1570,14 +1570,14 @@ class TabSidebarViewController: NSViewController {
             if let targetColor {
                 view.animator().layer?.backgroundColor = targetColor.withAlphaComponent(0.1).cgColor
             }
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self, self.stripAnimationGeneration == generation else { return }
             self.isAnimatingSwipe = false
             completion()
         })
 
         let startTime = CACurrentMediaTime()
-        let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
+        let timer = Timer.scheduledMainTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
             let elapsed = CACurrentMediaTime() - startTime
             let rawT = (elapsed / duration).clamped(to: 0...1)
@@ -2281,7 +2281,7 @@ class TabSidebarViewController: NSViewController {
             var spaceFrame = spaceStripView.frame
             spaceFrame.origin.x = spaceTargetX
             spaceStripView.animator().frame = spaceFrame
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self, self.stripAnimationGeneration == generation else { return }
             self.isAnimatingSwipe = false
             self.isSwipingSpaces = false

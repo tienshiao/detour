@@ -80,7 +80,9 @@ class DownloadPopoverViewController: NSViewController {
         manager.addObserver(self)
     }
 
-    deinit {
+    /// Isolated: it tears down main-actor state; the object is released on
+    /// the main thread in practice, and the teardown hops there otherwise.
+    isolated deinit {
         manager.removeObserver(self)
     }
 

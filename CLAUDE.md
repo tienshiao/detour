@@ -20,9 +20,11 @@ xcodebuild -scheme DetourTests -configuration Debug test -only-testing:DetourTes
 
 ## Architecture
 
-macOS native browser (Swift 5.10, macOS 15.4+) using WebKit. Organized around **Profiles** (which own cookies, history, and extensions via `WKWebsiteDataStore`) and **Spaces** (workspaces that group tabs). Each Space references a Profile; multiple Spaces can share the same Profile and thus share cookies.
+macOS native browser (Swift 6 language mode, macOS 15.4+) using WebKit. Organized around **Profiles** (which own cookies, history, and extensions via `WKWebsiteDataStore`) and **Spaces** (workspaces that group tabs). Each Space references a Profile; multiple Spaces can share the same Profile and thus share cookies.
 
 ### Key Architectural Decisions
+
+**Concurrency**: the app target is Swift 6 with main-actor default isolation (`SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor`, approachable concurrency, complete checking; the test target has the same default isolation in Swift 5.10 mode). Everything is main-actor unless marked otherwise. Code that runs off the main thread is `nonisolated`, and what it shares is `Sendable`: shared mutable state goes behind a `Synchronization.Mutex`, never an `NSLock` plus `@unchecked Sendable`. Callbacks AppKit always runs on the main thread but the SDK types as nonisolated (`NSAnimationContext` completions, main-run-loop timers, main-queue notification blocks) use the helpers in `Browser/Shared/MainActorCallbacks.swift`. Every `@unchecked Sendable`, `nonisolated(unsafe)` and `MainActor.assumeIsolated` carries a comment saying why it holds. A delegate callback a framework may make off the main thread (UserNotifications, URLSession on its own queue) is `nonisolated` and hops to main; a delegate protocol the SDK marks main-actor (`NS_SWIFT_UI_ACTOR`, e.g. `AVAudioPlayerDelegate`) is handled in place. A new optional WebKit or UserNotifications delegate method gets a row in `WebKitDelegateReachabilityTests`: a signature that drifts from the SDK's stops being called, with only a warning. Background: `wiki/platform/swift-concurrency-checking.md`.
 
 **State management**: `TabStore` singleton owns all spaces and tabs. Controllers observe changes via `TabStoreObserver` protocol (not Combine). `BrowserTab` exposes `@Published` properties for per-tab reactive updates consumed by `BrowserWindowController`.
 

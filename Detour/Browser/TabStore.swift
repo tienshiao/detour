@@ -2254,7 +2254,9 @@ class TabStore {
             var droppedTabIDs = Set<UUID>()
             // One availability for the whole rebuild, like a restore.
             let availability = ExtensionAvailability(appDB: self.appDB)
-            func rebuild(_ s: TabSnapshot) -> BrowserTab? {
+            // Main-actor isolated, as the undo handler it runs in is: a local
+            // function in a closure is otherwise inferred nonisolated.
+            @MainActor func rebuild(_ s: TabSnapshot) -> BrowserTab? {
                 let page = self.classifyCapturedPage(url: s.url, extensionID: s.extensionID, in: restored,
                                                      availability: availability)
                 let tab: BrowserTab
@@ -5055,7 +5057,7 @@ class TabStore {
 
     func startArchiveTimer() {
         archiveTimer?.invalidate()
-        archiveTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+        archiveTimer = Timer.scheduledMainTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             self?.sleepStaleTabs()
             self?.archiveStaleTabs()
         }
