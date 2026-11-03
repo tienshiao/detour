@@ -18,6 +18,9 @@ sources:
   - id: task-231-7
     resource: backlog:TASK-231.7
     title: The test target builds in Swift 6 language mode
+  - id: task-244
+    resource: backlog:TASK-244
+    title: "Tests: FakeRelayPort and InteractionRecorder keep their state in a Mutex"
   - id: main-actor-callbacks
     resource: ../../Detour/Browser/Shared/MainActorCallbacks.swift
     title: MainActorCallbacks.swift
@@ -182,6 +185,19 @@ Two fake `WKNavigationDelegate`s (in `ContentBlockerWhitelistTests` and
 closure type, so under complete checking WebKit had stopped calling them —
 the same silent loss as in the app, found in test code.[^task-231-7]
 
+A test double that only main-actor code calls needs no lock at all. Under
+the default isolation it is main-actor isolated, and so `Sendable` without
+`@unchecked`. `FakeRelayPort` (the worker side of a WebSocket relay port)
+and `InteractionRecorder` (the ITP interaction hook) had an `NSLock` and
+`@unchecked Sendable` left over from before the migration. Their protocol and
+hook are main-actor, so the lock went and the classes kept non-`Sendable`
+state (`[[String: Any]]`, `WKWebsiteDataStore`) that a `Mutex` could not hand
+out. Use a `Mutex` only when a double is reached from a server's or
+framework's own queue, as the loopback servers are. One `NSLock` is left in
+DetourTests: `TestEnvironmentSetup` guards property-list `NSObject` values
+written from `UserDefaults.didChangeNotification` on the writing thread. Its
+comment explains why a `Mutex` cannot hold them.[^task-244]
+
 # Why it matters here
 
 Most of Detour runs on the main thread because AppKit, `WKWebView` and
@@ -218,3 +234,4 @@ without a failing build.
 [^se-0470]: SE-0470
 [^task-231-6]: TASK-231.6
 [^task-231-7]: TASK-231.7
+[^task-244]: TASK-244

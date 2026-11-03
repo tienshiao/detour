@@ -347,41 +347,30 @@ nonisolated final class WebSocketRelaySessionTests: XCTestCase {
 // MARK: - Fake worker port
 
 /// The worker side of a relay port, driven by the test: it records what the
-/// session sent and injects what the worker would say.
-final class FakeRelayPort: WebSocketRelayPort, @unchecked Sendable {
+/// session sent and injects what the worker would say. Main-actor, like the
+/// session that drives it and the protocol it conforms to: every call reaches
+/// it on the main actor, so its state needs no lock and the class is Sendable
+/// by isolation (the `[String: Any]` messages never leave the main actor).
+@MainActor
+final class FakeRelayPort: WebSocketRelayPort {
 
-    private let lock = NSLock()
-    private var _sent: [[String: Any]] = []
-    private var _disconnectCount = 0
+    /// Everything the session sent the worker, in order.
+    private(set) var sent: [[String: Any]] = []
+    private(set) var disconnectCount = 0
 
     var onMessage: (([String: Any]) -> Void)?
     var onDisconnect: (() -> Void)?
 
-    /// Everything the session sent the worker, in order.
-    var sent: [[String: Any]] {
-        lock.lock(); defer { lock.unlock() }
-        return _sent
-    }
-
     /// Just the `op` of each message, for failure messages.
-    @MainActor var sentOps: [String] { sent.compactMap { $0["op"] as? String } }
-
-    var disconnectCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _disconnectCount
-    }
+    var sentOps: [String] { sent.compactMap { $0["op"] as? String } }
 
     func send(_ message: [String: Any], completion: (() -> Void)?) {
-        lock.lock()
-        _sent.append(message)
-        lock.unlock()
+        sent.append(message)
         completion?()
     }
 
     func disconnect() {
-        lock.lock()
-        _disconnectCount += 1
-        lock.unlock()
+        disconnectCount += 1
     }
 
     // MARK: Test drivers

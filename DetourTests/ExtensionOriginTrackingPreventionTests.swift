@@ -2,38 +2,28 @@ import XCTest
 import WebKit
 @testable import Detour
 
-/// Records every interaction the production path hands to WebKit. A file-scope
-/// class rather than a captured local so the recording closure — which WebKit's
-/// caller invokes with no actor of its own — has something plain to touch.
-private final class InteractionRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var recorded: [URL] = []
-    private var recordedStores: [WKWebsiteDataStore] = []
-
-    var urls: [URL] {
-        lock.lock(); defer { lock.unlock() }
-        return recorded
-    }
-
+/// Records every interaction the production path hands to WebKit. Main-actor:
+/// `interactionLogHookForTesting` is a main-actor static whose closure
+/// `ExtensionOriginInteractionKeeper.logInteraction` calls synchronously on
+/// the main actor, so the recording needs no lock and the class is Sendable
+/// by isolation.
+@MainActor
+private final class InteractionRecorder {
+    private(set) var urls: [URL] = []
     /// The store each interaction was logged into, in call order.
-    var stores: [WKWebsiteDataStore] {
-        lock.lock(); defer { lock.unlock() }
-        return recordedStores
-    }
+    private(set) var stores: [WKWebsiteDataStore] = []
 
     func install() {
         ExtensionOriginInteractionKeeper.interactionLogHookForTesting = { [weak self] url, store in
             guard let self else { return }
-            self.lock.lock(); defer { self.lock.unlock() }
-            self.recorded.append(url)
-            self.recordedStores.append(store)
+            self.urls.append(url)
+            self.stores.append(store)
         }
     }
 
     func reset() {
-        lock.lock(); defer { lock.unlock() }
-        recorded = []
-        recordedStores = []
+        urls = []
+        stores = []
     }
 }
 
