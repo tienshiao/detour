@@ -1296,4 +1296,119 @@ nonisolated final class ExtensionPermissionRestoreTests: XCTestCase {
         }
         XCTAssertNil(try loadContext(profile, ext).grantedPermissions[Self.notifications])
     }
+
+    // MARK: - TASK-259: required polyfill-gated permissions switched off
+
+    /// A required `history` / `notifications` switched off in Settings is a
+    /// saved denial. The restore applies it although WebKit leaves `history`
+    /// out of its requested set, and the handler's rule then refuses, as
+    /// WebKit's own `permissionState` puts a denial before everything else.
+    /// A saved grant of a required one is applied too and stays active.
+    @MainActor func testSavedDenialOfARequiredPolyfillGatedPermissionIsRestoredAndRefused() async throws {
+        let ext = try await makeTestExtension(permissions: ["history", "notifications", "management"])
+        XCTAssertFalse(ext.askablePermissions.contains(WKWebExtension.Permission(rawValue: "history")),
+                       "WebKit does not parse history; the restore must add it itself")
+        XCTAssertTrue(ext.restorablePermissions.contains(WKWebExtension.Permission(rawValue: "history")))
+        savePermission(ext, key: "history", type: .apiPermission, status: .denied)
+        savePermission(ext, key: "notifications", type: .apiPermission, status: .denied)
+        savePermission(ext, key: "management", type: .apiPermission, status: .granted)
+
+        let context = try loadContext(makeProfile("Required Polyfill Denial Profile"), ext)
+        let history = WKWebExtension.Permission(rawValue: "history")
+        XCTAssertNotNil(context.deniedPermissions[history])
+        XCTAssertNotNil(context.deniedPermissions[Self.notifications])
+        XCTAssertNotNil(context.grantedPermissions[WKWebExtension.Permission(rawValue: "management")])
+        XCTAssertFalse(ExtensionPolyfillHandler.permissionIsActive("history", manifest: ext.manifest, context: context))
+        XCTAssertFalse(ExtensionPolyfillHandler.permissionIsActive("notifications", manifest: ext.manifest, context: context))
+        XCTAssertTrue(ExtensionPolyfillHandler.permissionIsActive("management", manifest: ext.manifest, context: context))
+
+        context.setPermissionStatus(.grantedExplicitly, for: history)
+        XCTAssertTrue(ExtensionPolyfillHandler.permissionIsActive("history", manifest: ext.manifest, context: context),
+                      "switched on again, active at once")
+        XCTAssertTrue(ExtensionPolyfillHandler.permissionIsActive("notifications", manifest: ext.manifest, context: nil),
+                      "no context, no denial to read")
+    }
+
+    /// TASK-258's rule still never deletes the saved row of a required
+    /// permission, now that required polyfill-gated names are restorable.
+    @MainActor func testRemovalRuleKeepsARequiredPolyfillGatedRow() async throws {
+        let ext = try await makeTestExtension(permissions: ["history"], optionalPermissions: ["management"])
+        savePermission(ext, key: "history", type: .apiPermission, status: .granted)
+        savePermission(ext, key: "management", type: .apiPermission, status: .granted)
+        let context = try loadContext(makeProfile("Required Polyfill Removal Profile"), ext)
+        let removed: Set<WKWebExtension.Permission> = [WKWebExtension.Permission(rawValue: "history"),
+                                                       WKWebExtension.Permission(rawValue: "management")]
+        for permission in removed { context.setPermissionStatus(.unknown, for: permission) }
+        let revoked = ExtensionManager.savedGrantsRevoked(
+            removedPermissions: removed, removedPatterns: [],
+            saved: AppDatabase.shared.loadPermissions(extensionID: ext.id), for: ext, in: context)
+        XCTAssertEqual(revoked.map(\.permissionKey), ["management"], "the required history row is kept")
+    }
+
+    // MARK: - TASK-259: an open Settings pane follows the saved rows
+
+    /// The switch the Extensions pane shows for an API permission row.
+    @MainActor private func paneSwitch(_ pane: NSViewController, _ ext: WebExtension, _ key: String) -> NSSwitch? {
+        let id = "\(ext.id)\t\(key)\t\(ExtensionPermissionType.apiPermission.rawValue)"
+        func find(_ view: NSView) -> NSSwitch? {
+            if let toggle = view as? NSSwitch, toggle.identifier?.rawValue == id { return toggle }
+            for sub in view.subviews { if let hit = find(sub) { return hit } }
+            return nil
+        }
+        return find(pane.view)
+    }
+
+    /// AC #3: every write of a saved decision posts
+    /// `permissionDecisionsDidChangeNotification` for its extension — a
+    /// `permissions.request` prompt's answer, the extension's own
+    /// `permissions.remove` (TASK-258) and a Settings toggle — and an open
+    /// Extensions pane rebuilds its rows from it, so each switch reads the
+    /// row as it is now.
+    @MainActor func testPermissionDecisionChangesArePostedAndTheOpenPaneFollowsThem() async throws {
+        let ext = try await makeTestExtension(
+            permissions: ["storage"], optionalPermissions: ["notifications"],
+            hostPermissions: ["https://a.example/*"])
+        let previousList = ExtensionManager.shared.extensions
+        ExtensionManager.shared.extensions = [ext]  // the pane shows the first one
+        defer { ExtensionManager.shared.extensions = previousList }
+        final class PostLog { var ids: [String] = [] }
+        let log = PostLog()
+        let observer = NotificationCenter.default.addMainObserver(
+            forName: ExtensionManager.permissionDecisionsDidChangeNotification, object: nil
+        ) { note in
+            // Only this extension's: a late removal post for another test's
+            // extension must not shift the counts below.
+            guard let id = note.userInfo?[ExtensionManager.extensionIDUserInfoKey] as? String,
+                  id == ext.id else { return }
+            log.ids.append(id)
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        var posted: [String] { log.ids }
+
+        let context = try loadContext(makeProfile("Pane Refresh Profile"), ext)
+        let pane = ExtensionsSettingsViewController()
+        pane.view.setFrameSize(NSSize(width: SettingsMetrics.windowWidth, height: 600))
+        pane.viewWillAppear()
+        XCTAssertEqual(paneSwitch(pane, ext, "notifications")?.state, .off, "precondition: no row")
+
+        let prompts = allowPrompts()
+        let page = try await openPage(context)
+        let granted = try await callPermissions(page, "request", ["permissions": ["notifications"]])
+        XCTAssertEqual(granted, true)
+        XCTAssertEqual(prompts(), 1)
+        XCTAssertEqual(posted, [ext.id], "the prompt's answer is posted")
+        XCTAssertEqual(paneSwitch(pane, ext, "notifications")?.state, .on, "the pane shows the prompt's answer")
+
+        let removed = try await callPermissions(page, "remove", ["permissions": ["notifications"]])
+        XCTAssertEqual(removed, true)
+        try await waitUntil("the pane to show the removal") {
+            paneSwitch(pane, ext, "notifications")?.state == .off
+        }
+        XCTAssertEqual(posted, [ext.id, ext.id], "the removal is posted")
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "notifications", type: .apiPermission, granted: true)
+        XCTAssertEqual(posted.count, 3, "a Settings toggle is posted")
+        XCTAssertEqual(paneSwitch(pane, ext, "notifications")?.state, .on)
+    }
 }

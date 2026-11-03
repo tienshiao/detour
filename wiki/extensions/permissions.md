@@ -45,6 +45,9 @@ sources:
   - id: task-258
     resource: backlog:TASK-258
     title: "Extensions: permissions.remove is not saved, so the revoked permission comes back at the next launch"
+  - id: task-259
+    resource: backlog:TASK-259
+    title: "Extensions: a required notifications, history or management permission switched off in Settings still works"
   - id: polyfill-handler
     resource: ../../Detour/Extensions/Runtime/ExtensionPolyfillHandler.swift
     title: ExtensionPolyfillHandler.swift (permissionIsActive)
@@ -171,7 +174,9 @@ launch drops.
 ## Settings toggles
 
 `ExtensionManager.setPermissionDecision` is the single entry point. It saves
-the row and applies it to every loaded context in every profile at once. For a
+the row and applies it to every loaded context in every profile at once.
+Every switch can be turned off, a required permission's too: the pane asks
+"Revoke Permission?" first, then saves a denied row like any other.[^task-259] For a
 host row it does not set the one key: it clears the key from the context and
 re-runs `applySavedHostAccessDecisions`, so the live state is exactly what the
 next launch would restore.
@@ -217,10 +222,22 @@ rows the removal revoked (`savedGrantsRevoked`).[^task-258]
 - A post that arrives after the context was unloaded (disable, update) still
   counts: the extension is found by the context's `uniqueIdentifier`, and
   unloading touches no permission.
-- An open Settings pane is not refreshed; it reads the rows when the
-  extension is selected again.
+- An open Settings pane follows (below).
 - Grants are not observed: every grant WebKit makes from `permissions.request`
   comes from a prompt answer, which `handlePermissionPrompt` saves.
+
+## The open Settings pane
+
+Every write of a saved decision posts
+`ExtensionManager.permissionDecisionsDidChangeNotification` with the
+extension's ID: `setPermissionDecision`, a prompt answer
+(`handlePermissionPrompt`) and a removal (`contextDidLoseGrants`). The
+Extensions pane rebuilds its detail when the ID is the shown extension's, so a
+switch never reads a row that has since changed. Its own toggle ends in the
+same rebuild, and a switch that had keyboard focus hands it to the switch
+rebuilt for the same row. Install's `recordDeclaredPermissions` does not post; install
+posts `extensionsDidChangeNotification`, which reloads the whole
+list.[^task-259]
 
 ## Updates
 
@@ -266,11 +283,21 @@ All measured against real contexts and pinned in
 
 `notifications`, `history` and `management` are implemented by Detour's
 polyfill, which gates them itself (`WebExtension.polyfillGatedPermissions`).
-The handler's rule is `ExtensionPolyfillHandler.permissionIsActive`:
+The handler's rule is `ExtensionPolyfillHandler.permissionIsActive`, in
+WebKit's own order for the APIs it implements
+(`WebExtensionContext::permissionState`: denied, then granted, then
+requested):
 
-- listed in the manifest's `permissions`: always active;
-- listed only in `optional_permissions`: active while the asking profile's
-  context holds an unexpired entry in `grantedPermissions`. A Settings switch
+- an unexpired entry in the asking profile's context's `deniedPermissions`
+  refuses, whichever list declares it. For a required permission that is the
+  Settings switch turned off, or its saved denial restored at
+  load.[^task-259]
+- listed in the manifest's `permissions`: otherwise active, even with no
+  decision. WebKit would leave an undecided required permission at
+  "requested" and prompt, but it never prompts for `history` or
+  `management`, and install saves every required permission as granted.
+- listed only in `optional_permissions`: active while the context holds an
+  unexpired entry in `grantedPermissions`. A Settings switch
   (`setPermissionDecision`), WebKit's `permissions.request` prompt
   (`notifications` only) and the restore at load put it there;
   `permissions.remove` and a switch turned off take it out, and the next call
@@ -282,8 +309,11 @@ The grant dictionary is read, not `hasPermission(_:)`. WebKit's
 outside it (`notifications` is inside). `setPermissionStatus` still stores
 such a name in the grant dictionary and fires `permissions.onAdded` /
 `onRemoved` for it in the extension's contexts. WebKit also drops those names
-from `optionalPermissions`, so the restore adds
-`polyfillGatedOptionalPermissions` to `askablePermissions`.[^task-250]
+from `requestedPermissions` and `optionalPermissions`, so the restore adds
+`polyfillGatedDeclaredPermissions` (the gated names in either manifest list)
+to `askablePermissions`.[^task-250] [^task-259] The removal rule
+(`savedGrantsRevoked`) reads the same set but still skips every required
+key, so the row of a required permission is never deleted.
 
 In the web process, `permissions.request` / `contains` / `remove` reject any
 name outside that set ("'history' is not a valid permission") before Detour
@@ -358,3 +388,4 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 [^task-75]: Origin patterns with a port make chrome.permissions calls throw in WebKit
 [^task-258]: Extensions: permissions.remove is not saved, so the revoked permission comes back at the next launch
 [^task-250]: Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions
+[^task-259]: Extensions: a required notifications, history or management permission switched off in Settings still works

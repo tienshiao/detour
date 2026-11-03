@@ -1129,4 +1129,63 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         XCTAssertNotNil(((outcomeB["directSearch"] as? [String: Any])?["resolved"] as? [String: Any])?["results"],
                         "the grant in B serves B: \(outcomeB)")
     }
+
+    // MARK: - 6. Required permissions switched off in Settings (TASK-259)
+
+    /// POSITIVE, NEGATIVE, POSITIVE, NEGATIVE: an extension that requires
+    /// `history` and `management` is served while their install-time grants
+    /// stand, refused from the page and the worker once the Settings switch
+    /// (`setPermissionDecision`, the call the pane makes) turns them off,
+    /// served again when it turns them back on, and still refused after a
+    /// context reload once switched off, because the saved denial is restored.
+    /// The saved row of a required permission is never deleted (TASK-258).
+    @MainActor func testRequiredHistoryAndManagementFollowTheSettingsSwitch() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["history", "management"])
+        // What install records for the manifest's permissions.
+        saveDecisions(["history", "management"], of: ext, status: .granted)
+        let a = try makeProfile("Required Gate Switch", database: db)
+        let page = try await loadPage(ext, in: a.profile)
+
+        try await assertOptionalGate(served: true, in: page, "install-time grant")
+
+        func setSwitch(_ on: Bool) {
+            for key in ["history", "management"] {
+                ExtensionManager.shared.setPermissionDecision(extensionID: ext.id, key: key,
+                                                              type: .apiPermission, granted: on)
+            }
+        }
+        setSwitch(false)
+        try await assertOptionalGate(served: false, in: page, "switched off")
+        assertRejected(try await pagePromise("{ text: '' }", in: page),
+                       containing: "history permission not declared", "promise, switched off")
+        assertCallbackFailed(try await pageCallback("{ text: '' }", in: page),
+                             containing: "history permission not declared", "callback, switched off")
+
+        setSwitch(true)
+        try await assertOptionalGate(served: true, in: page, "switched on again")
+
+        setSwitch(false)
+        a.profile.unloadExtension(id: ext.id)
+        let reloaded = try await loadPage(ext, in: a.profile)
+        try await assertOptionalGate(served: false, in: reloaded, "switched off, after a reload")
+        for key in ["history", "management"] {
+            XCTAssertEqual(AppDatabase.shared.permissionStatus(extensionID: ext.id, key: key, type: .apiPermission),
+                           .denied, "the denial of required \(key) is kept")
+        }
+    }
+
+    /// NEGATIVE, new context: a required permission's saved denial is restored
+    /// into a context loaded later, while an extension with the same manifest
+    /// and no decision at all is served, as before.
+    @MainActor func testSavedDenialOfRequiredHistoryIsRefusedInANewContext() async throws {
+        let db = try makeDatabase()
+        let denied = try await makeExtension(permissions: ["history", "management"])
+        saveDecisions(["history", "management"], of: denied, status: .denied)
+        let undecided = try await makeExtension(permissions: ["history", "management"])
+        let a = try makeProfile("Required Gate Denied", database: db)
+
+        try await assertOptionalGate(served: false, in: try await loadPage(denied, in: a.profile), "saved denial")
+        try await assertOptionalGate(served: true, in: try await loadPage(undecided, in: a.profile), "no decision")
+    }
 }

@@ -51,23 +51,25 @@ class WebExtension {
     /// WebKit.
     static let polyfillGatedPermissions: Set<String> = ["history", "management", "notifications"]
 
-    /// The polyfill-gated permissions this manifest lists under
-    /// `optional_permissions`. WebKit drops `history` and `management` from
-    /// its own `optionalPermissions` (they are outside its permission set), so
-    /// `askablePermissions` misses them; the restore adds these so a saved
-    /// grant reaches the context, where the handler reads it (TASK-250).
-    var polyfillGatedOptionalPermissions: Set<WKWebExtension.Permission> {
-        Set((manifest.optionalPermissions ?? [])
+    /// The polyfill-gated permissions this manifest lists under `permissions`
+    /// or `optional_permissions`. WebKit drops `history` and `management` from
+    /// its own `requestedPermissions` and `optionalPermissions` (they are
+    /// outside its permission set), so `askablePermissions` misses them; the
+    /// restore adds these so a saved decision reaches the context, where the
+    /// handler reads it: an optional grant (TASK-250), or a required one
+    /// switched off in Settings (TASK-259).
+    var polyfillGatedDeclaredPermissions: Set<WKWebExtension.Permission> {
+        Set(((manifest.permissions ?? []) + (manifest.optionalPermissions ?? []))
             .filter(Self.polyfillGatedPermissions.contains)
             .map(WKWebExtension.Permission.init(rawValue:)))
     }
 
     /// The API permissions a saved decision is restored for: the askable
-    /// ones plus the polyfill-gated optional ones. Shared by the restore at
+    /// ones plus the polyfill-gated declared ones. Shared by the restore at
     /// load and by the removal rule (TASK-258), so a row the restore would not
     /// apply is never taken as revoked.
     var restorablePermissions: Set<WKWebExtension.Permission> {
-        askablePermissions.union(polyfillGatedOptionalPermissions)
+        askablePermissions.union(polyfillGatedDeclaredPermissions)
     }
 
     /// The host match patterns a prompt can come from: the manifest's

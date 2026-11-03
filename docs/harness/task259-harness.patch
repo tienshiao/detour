@@ -1,0 +1,202 @@
+TASK-259 runtime harness: a required history permission switched off through
+the Settings pane. Temporary code, never committed to Detour/. Gated on
+DETOUR_VERIFY_DIR and DETOUR_VERIFY_EXT (an unpacked extension: permissions
+history + storage, optional notifications, a worker answering
+{type:'search'} with chrome.history.search). Data dir DetourVerify2590.
+Installs the extension through ExtensionManager.install (unpacked), opens an
+extension page, queries history.search from the page and through the worker,
+opens Settings > Extensions, clicks the history switch (answering the
+"Revoke Permission?" alert from a .modalPanel run-loop timer), queries again,
+answers a permissions.request prompt (permissionPromptAnswerOverride) and
+calls permissions.remove while logging the pane's notifications switch,
+clicks history back on, then off, disables + enables the extension (context
+reload) and queries a fresh page. Runner: launch with the two env vars,
+serve SHOOT lines with screencapture -l, kill only the launched PID.
+
+Results (2026-11-03): installed rows history/storage granted; page and
+worker ok; pane history ON. After the click: row denied, pane OFF, page
+"history permission not declared", worker "History permission not
+declared". Prompt answer: row granted, pane notifications ON without a
+reselect; remove: row gone, pane OFF. Switched on: row granted, ok from
+both. Off + reload: row denied, pane OFF, refused from both.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 68ac340..af10332 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -149,6 +149,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        runTask259HarnessIfRequested(wc)
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task259Harness.swift b/Detour/App/Task259Harness.swift
+new file mode 100644
+index 0000000..792634f
+--- /dev/null
++++ b/Detour/App/Task259Harness.swift
+@@ -0,0 +1,162 @@
++// TEMP TASK-259 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask259HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"], let extDir = env["DETOUR_VERIFY_EXT"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func findSwitch(_ v: NSView, _ id: String) -> NSSwitch? {
++            if let s = v as? NSSwitch, s.identifier?.rawValue == id { return s }
++            for sub in v.subviews { if let hit = findSwitch(sub, id) { return hit } }
++            return nil
++        }
++        func allTexts(_ v: NSView) -> [String] {
++            var out: [String] = []
++            if let t = v as? NSTextField, !t.stringValue.isEmpty { out.append(t.stringValue) }
++            return out + v.subviews.flatMap(allTexts)
++        }
++        func findButton(_ v: NSView, _ title: String) -> NSButton? {
++            if let b = v as? NSButton, b.title == title { return b }
++            for sub in v.subviews { if let hit = findButton(sub, title) { return hit } }
++            return nil
++        }
++        final class Keep { var webViews: [WKWebView] = [] }
++        let keep = Keep()
++
++        Task { @MainActor in
++            await sleep(2.5)
++            log("start")
++            let manager = ExtensionManager.shared
++            var options = ExtensionInstaller.Options()
++            options.source = .unpacked
++            options.sourcePath = URL(fileURLWithPath: extDir)
++            let ext: WebExtension
++            do {
++                ext = try manager.install(from: URL(fileURLWithPath: extDir), options: options)
++            } catch { return log("install failed: \(error)") }
++            log("installed \(ext.id); rows: \(AppDatabase.shared.loadPermissions(extensionID: ext.id).map { "\($0.permissionKey)=\($0.status)" })")
++            guard let profile = TabStore.shared.nonIncognitoSpaces.first?.profile else { return log("no profile") }
++
++            @MainActor func openPage() async -> WKWebView? {
++                for _ in 0..<40 {
++                    if let ctx = profile.extensionContext(for: ext.id), let config = ctx.webViewConfiguration {
++                        let page = WKWebView(frame: NSRect(x: 0, y: 0, width: 300, height: 200), configuration: config)
++                        keep.webViews.append(page)
++                        page.load(URLRequest(url: ctx.baseURL.appendingPathComponent("test.html")))
++                        await sleep(1.5)
++                        return page
++                    }
++                    await sleep(0.5)
++                }
++                log("no context")
++                return nil
++            }
++            @MainActor func query(_ page: WKWebView, _ label: String) async {
++                let pageJS = "return await chrome.history.search({ text: '' }).then(r => 'ok ' + r.length, e => 'refused: ' + e.message);"
++                let workerJS = "return JSON.stringify(await chrome.runtime.sendMessage({ type: 'search' }));"
++                let p = try? await page.callAsyncJavaScript(pageJS, arguments: [:], contentWorld: .page)
++                let w = try? await page.callAsyncJavaScript(workerJS, arguments: [:], contentWorld: .page)
++                log("\(label): page=\(p.map { "\($0)" } ?? "nil") worker=\(w.map { "\($0)" } ?? "nil")")
++            }
++            @MainActor func row(_ key: String) -> String {
++                AppDatabase.shared.permissionStatus(extensionID: ext.id, key: key, type: .apiPermission)
++                    .map { "\($0)" } ?? "none"
++            }
++
++            guard var page = await openPage() else { return }
++            await query(page, "1 installed (expect ok)")
++
++            let swc = SettingsWindowController.shared
++            swc.showWindow(nil)
++            guard let sw = swc.window else { return log("no settings window") }
++            await sleep(1.0)
++            if let item = sw.toolbar?.items.first(where: { $0.itemIdentifier.rawValue == "extensions" }),
++               let action = item.action {
++                NSApp.sendAction(action, to: item.target, from: item)
++            }
++            await sleep(1.2)
++            guard let pane = sw.contentViewController else { return log("no pane") }
++            @MainActor func state(_ key: String) -> String {
++                guard let s = findSwitch(pane.view, "\(ext.id)\t\(key)\t0") else { return "missing" }
++                return s.state == .on ? "ON" : "OFF"
++            }
++            log("pane: history=\(state("history")) notifications=\(state("notifications"))")
++
++            // Switch history off with a click; answer the "Revoke Permission?" alert.
++            guard let historySwitch = findSwitch(pane.view, "\(ext.id)\thistory\t0") else { return log("no history switch") }
++            let timer = Timer(timeInterval: 1.0, repeats: false) { _ in
++                MainActor.assumeIsolated {
++                    let alert = NSApp.modalWindow
++                    log("modal: \(alert?.title ?? "-") texts=\(alert.map { w in w.contentView.map { allTexts($0) } ?? [] } ?? [])")
++                    if let revoke = alert?.contentView.flatMap({ findButton($0, "Revoke") }) {
++                        revoke.performClick(nil)
++                    } else { NSApp.abortModal() }
++                }
++            }
++            RunLoop.main.add(timer, forMode: .modalPanel)
++            historySwitch.performClick(nil)
++            await sleep(0.5)
++            log("2 after the Settings click: row=\(row("history")) pane history=\(state("history"))")
++            await query(page, "2 switched off (expect refused)")
++            log("SHOOT off \(sw.windowNumber)")
++            await sleep(2.0)
++
++            // Pane follows a prompt answer and a permissions.remove.
++            manager.permissionPromptAnswerOverride = { _ in true }
++            let req = try? await page.callAsyncJavaScript(
++                "return await chrome.permissions.request({ permissions: ['notifications'] });",
++                arguments: [:], contentWorld: .page)
++            await sleep(0.5)
++            log("3 request=\(req.map { "\($0)" } ?? "nil") row=\(row("notifications")) pane notifications=\(state("notifications"))")
++            log("SHOOT granted \(sw.windowNumber)")
++            await sleep(2.0)
++            let rem = try? await page.callAsyncJavaScript(
++                "return await chrome.permissions.remove({ permissions: ['notifications'] });",
++                arguments: [:], contentWorld: .page)
++            await sleep(0.8)
++            log("4 remove=\(rem.map { "\($0)" } ?? "nil") row=\(row("notifications")) pane notifications=\(state("notifications"))")
++            manager.permissionPromptAnswerOverride = nil
++
++            // Switch history on with a click (no alert when granting).
++            findSwitch(pane.view, "\(ext.id)\thistory\t0")?.performClick(nil)
++            await sleep(0.5)
++            log("5 switched on: row=\(row("history")) pane history=\(state("history"))")
++            await query(page, "5 switched on (expect ok)")
++
++            // Off again, then a context reload (disable + enable).
++            let timer2 = Timer(timeInterval: 1.0, repeats: false) { _ in
++                MainActor.assumeIsolated {
++                    if let revoke = NSApp.modalWindow?.contentView.flatMap({ findButton($0, "Revoke") }) {
++                        revoke.performClick(nil)
++                    } else { NSApp.abortModal() }
++                }
++            }
++            RunLoop.main.add(timer2, forMode: .modalPanel)
++            findSwitch(pane.view, "\(ext.id)\thistory\t0")?.performClick(nil)
++            await sleep(0.5)
++            manager.setEnabled(id: ext.id, enabled: false)
++            await sleep(1.0)
++            manager.setEnabled(id: ext.id, enabled: true)
++            await sleep(1.0)
++            guard let reloaded = await openPage() else { return }
++            page = reloaded
++            log("6 reloaded: row=\(row("history")) pane history=\(state("history"))")
++            await query(page, "6 off after a reload (expect refused)")
++            log("done")
++        }
++
++    }
++}
++#endif

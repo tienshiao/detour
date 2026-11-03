@@ -186,6 +186,11 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         // "Last checked" and any update a background check installed.
         NotificationCenter.default.addObserver(self, selector: #selector(extensionsDidChange),
                                                 name: ExtensionUpdater.didFinishCheckNotification, object: nil)
+        // A permission row that changes while the pane is open: a prompt's
+        // answer, the extension's own `permissions.remove` (TASK-259).
+        NotificationCenter.default.addObserver(self, selector: #selector(permissionDecisionsDidChange(_:)),
+                                                name: ExtensionManager.permissionDecisionsDidChangeNotification,
+                                                object: nil)
         return container
     }
 
@@ -200,6 +205,33 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
 
     @objc private func extensionsDidChange() {
         reloadList()
+    }
+
+    /// Rebuild the detail when the shown extension's saved decisions changed,
+    /// so every switch reads the row as it is now. A toggle made here ends in
+    /// the same rebuild, which reads back what it saved. The rebuild replaces
+    /// every switch, so a focused one (a toggle made from the keyboard) hands
+    /// its focus to the switch rebuilt for the same row.
+    @objc private func permissionDecisionsDidChange(_ notification: Notification) {
+        guard let id = notification.userInfo?[ExtensionManager.extensionIDUserInfoKey] as? String,
+              id == selectedExtension?.id else { return }
+        let window = view.window
+        let focusedRow = (window?.firstResponder as? NSView)
+            .flatMap { $0.isDescendant(of: detailContainer) ? $0 as? NSSwitch : nil }?.identifier
+        updateDetail()
+        if let focusedRow, let window,
+           let toggle = Self.firstSwitch(withIdentifier: focusedRow, in: detailContainer) {
+            window.makeFirstResponder(toggle)
+        }
+    }
+
+    private static func firstSwitch(withIdentifier identifier: NSUserInterfaceItemIdentifier,
+                                    in view: NSView) -> NSSwitch? {
+        if let toggle = view as? NSSwitch, toggle.identifier == identifier { return toggle }
+        for subview in view.subviews {
+            if let hit = firstSwitch(withIdentifier: identifier, in: subview) { return hit }
+        }
+        return nil
     }
 
     private func reloadList() {

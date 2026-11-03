@@ -425,6 +425,18 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     static let popupOpenURLNotification = Notification.Name("extensionPopupOpenURL")
     static let extensionActionDidChangeNotification = Notification.Name("extensionActionDidChange")
     static let extensionPinStateDidChangeNotification = Notification.Name("extensionPinStateDidChange")
+    /// A saved permission decision of one extension changed: a Settings
+    /// toggle, a permission prompt's answer, or the extension's own
+    /// `permissions.remove` (TASK-258). Posted on the main thread after the
+    /// write, with the extension's ID under `extensionIDUserInfoKey`, so an
+    /// open Settings pane can show the new rows (TASK-259).
+    static let permissionDecisionsDidChangeNotification = Notification.Name("ExtensionManagerPermissionDecisionsDidChange")
+    static let extensionIDUserInfoKey = "extensionID"
+
+    private func postPermissionDecisionsDidChange(extensionID: String) {
+        NotificationCenter.default.post(name: Self.permissionDecisionsDidChangeNotification, object: self,
+                                        userInfo: [Self.extensionIDUserInfoKey: extensionID])
+    }
 
     // MARK: - Init
 
@@ -1990,6 +2002,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         let status: ExtensionPermissionStatus = granted ? .granted : .denied
         AppDatabase.shared.savePermission(ExtensionPermissionRecord(
             extensionID: extensionID, key: key, type: type, status: status))
+        defer { postPermissionDecisionsDidChange(extensionID: extensionID) }
 
         if type == .apiPermission, key == ExtensionPermissionRecord.nativeMessagingKey {
             if !granted {
@@ -2127,6 +2140,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             AppDatabase.shared.revokePermission(extensionID: extensionID, key: key, type: type)
         }
         applySavedDecisions(extensionID: extensionID, keys: keys, to: contexts)
+        postPermissionDecisionsDidChange(extensionID: extensionID)
     }
 
     /// The saved grants that a removal of `removedPermissions` /
@@ -2567,6 +2581,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 ExtensionPermissionRecord(extensionID: extID, key: recordKey($0), type: recordType, status: status)
             }
             AppDatabase.shared.savePermissions(records)
+            postPermissionDecisionsDidChange(extensionID: extID)
         }
         completionHandler(granted ? items : Set(), nil)
     }

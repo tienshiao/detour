@@ -1045,29 +1045,42 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                                        context: profile?.extensionContext(for: extensionID))
     }
 
-    /// The rule behind `hasPermission`. A permission the manifest requires is
-    /// always active. One it lists only under `optional_permissions` is active
-    /// while `context` — the extension's context in the asking profile —
-    /// holds an unexpired grant for it, and Chrome makes it available as soon
-    /// as it is granted and takes it away on revocation (TASK-250). The grant
-    /// gets there from WebKit's `permissions.request` prompt (`notifications`),
-    /// from the Settings switch (`ExtensionManager.setPermissionDecision`) and
-    /// from the restore of a saved decision at load (`Profile.loadExtensionContext`).
-    /// A switch turned off takes it out again, and so does `permissions.remove`
-    /// for `notifications`. WebKit refuses `permissions.request`, `contains` and
-    /// `remove` for `history` and `management` in the web process ("is not a
-    /// valid permission"), so for those two the Settings switch is the only
-    /// way in or out.
+    /// The rule behind `hasPermission`, WebKit's own order for the APIs it
+    /// implements (`WebExtensionContext::permissionState`): a denial in
+    /// `context` refuses first, then a grant serves.
     ///
-    /// The grant dictionary is read rather than `hasPermission(_:)`, because
-    /// WebKit answers `.unknown` for every name outside its own permission set
-    /// (`history`, `management`) while still storing the grant it is given.
-    /// No context means no grant.
+    /// - A permission the manifest requires is active unless `context` holds
+    ///   an unexpired denial of it: the Settings switch turned off
+    ///   (`ExtensionManager.setPermissionDecision`), or that saved denial
+    ///   restored at load (`Profile.loadExtensionContext`). Switched on again,
+    ///   it is active at once (TASK-259). With no decision at all it stays
+    ///   active: install saves the required permissions as granted, and
+    ///   WebKit never prompts for `history` or `management`, so an undecided
+    ///   required one has no way to become granted. No context, no denial to
+    ///   read: active, as before.
+    /// - One listed only under `optional_permissions` is active while
+    ///   `context` holds an unexpired grant for it, and Chrome makes it
+    ///   available as soon as it is granted and takes it away on revocation
+    ///   (TASK-250). The grant gets there from WebKit's `permissions.request`
+    ///   prompt (`notifications`), from the Settings switch and from the
+    ///   restore of a saved decision at load. A switch turned off takes it out
+    ///   again, and so does `permissions.remove` for `notifications`. WebKit
+    ///   refuses `permissions.request`, `contains` and `remove` for `history`
+    ///   and `management` in the web process ("is not a valid permission"), so
+    ///   for those two the Settings switch is the only way in or out. No
+    ///   context means no grant.
+    ///
+    /// The grant and denial dictionaries are read rather than
+    /// `hasPermission(_:)`, because WebKit answers `.unknown` for every name
+    /// outside its own permission set (`history`, `management`) while still
+    /// storing the status it is given.
     static func permissionIsActive(_ permission: String, manifest: ExtensionManifest,
                                    context: WKWebExtensionContext?, now: Date = Date()) -> Bool {
+        let key = WKWebExtension.Permission(rawValue: permission)
+        if let deniedUntil = context?.deniedPermissions[key], deniedUntil > now { return false }
         if manifest.permissions?.contains(permission) == true { return true }
         guard manifest.optionalPermissions?.contains(permission) == true,
-              let expiry = context?.grantedPermissions[WKWebExtension.Permission(rawValue: permission)]
+              let expiry = context?.grantedPermissions[key]
         else { return false }
         return expiry > now
     }

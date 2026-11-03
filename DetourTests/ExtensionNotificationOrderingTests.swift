@@ -843,6 +843,47 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         }
     }
 
+    // MARK: - Required permission switched off in Settings (TASK-259)
+
+    /// POSITIVE, NEGATIVE, POSITIVE, NEGATIVE: a required `notifications` is
+    /// served while its install-time grant stands, refused from the page and
+    /// the worker once the Settings switch (`setPermissionDecision`) turns it
+    /// off, served again once it is back on, and still refused after a context
+    /// reload once switched off. Nothing is shown while it is off.
+    @MainActor func testRequiredNotificationsFollowTheSettingsSwitch() async throws {
+        let ext = try await makeExtension(permissions: ["notifications"])
+        let (profile, center) = try makeProfile("Required Notifications Switch")
+        center.holdsAdds = false
+        installTestExtension(ext, in: AppDatabase.shared)
+        databaseExtensionIDs.append(ext.id)
+        // What install records for the manifest's permissions.
+        AppDatabase.shared.savePermission(ExtensionPermissionRecord(
+            extensionID: ext.id, key: "notifications", type: .apiPermission, status: .granted))
+        let page = try await loadPage(ext, in: profile)
+
+        try await assertOptionalGate(served: true, "install grant", in: page)
+        XCTAssertEqual(center.addedIdentifiers.count, 2, "one from each transport")
+
+        func setSwitch(_ on: Bool) {
+            ExtensionManager.shared.setPermissionDecision(
+                extensionID: ext.id, key: "notifications", type: .apiPermission, granted: on)
+        }
+        setSwitch(false)
+        try await assertOptionalGate(served: false, "switched off", in: page)
+        XCTAssertEqual(center.addedIdentifiers.count, 2, "nothing is shown while it is off")
+
+        setSwitch(true)
+        try await assertOptionalGate(served: true, "switched on again", in: page)
+        XCTAssertEqual(center.addedIdentifiers.count, 4)
+
+        setSwitch(false)
+        profile.unloadExtension(id: ext.id)
+        try await assertOptionalGate(served: false, "switched off, after a reload",
+                                     in: try await loadPage(ext, in: profile))
+        XCTAssertEqual(AppDatabase.shared.permissionStatus(extensionID: ext.id, key: "notifications",
+                                                           type: .apiPermission), .denied)
+    }
+
     // MARK: - Profile isolation (TASK-238)
 
     @MainActor func testTwoPersistentProfilesKeepTheirNotificationsApart() async throws {
