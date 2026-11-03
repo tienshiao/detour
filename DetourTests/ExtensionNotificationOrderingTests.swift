@@ -153,13 +153,43 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     }
     """
 
-    @MainActor private static let workerJS = ExtensionAPIPolyfill.polyfillJS + "\n" + raceJS + "\n" + opJS + """
+    /// What the extension can see of the API, and what a request made past
+    /// the namespace — straight to the polyfill's transport — is answered, for
+    /// the permission gate (TASK-239). Run the same way from the page and the
+    /// worker.
+    private static let gateJS = """
+    async function notificationGate(id) {
+        const out = {
+            chrome: typeof chrome.notifications,
+            browser: typeof browser === 'undefined' ? 'no browser' : typeof browser.notifications,
+            diag: __detourPolyfillDiag.apis.notifications
+        };
+        try {
+            const reply = await globalThis.__detourPolyfillRequest('notifications.create', {
+                notificationId: id,
+                options: { type: 'basic', title: 'Gate', message: 'gate test' }
+            });
+            out.direct = { resolved: reply };
+        } catch (e) {
+            out.direct = { rejected: String(e && e.message ? e.message : e) };
+        }
+        return out;
+    }
+    """
+
+    @MainActor private static let workerJS = ExtensionAPIPolyfill.polyfillJS + "\n" + raceJS + "\n" + opJS + "\n" + gateJS + """
 
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!message) { return false; }
         if (message.type === 'ping') { sendResponse({ type: 'pong' }); return true; }
         if (message.type === 'notificationRace') {
             notificationRace(message.mode, message.id).then(
+                (outcome) => sendResponse(outcome),
+                (e) => sendResponse({ error: String(e && e.message ? e.message : e) }));
+            return true;
+        }
+        if (message.type === 'notificationGate') {
+            notificationGate(message.id).then(
                 (outcome) => sendResponse(outcome),
                 (e) => sendResponse({ error: String(e && e.message ? e.message : e) }));
             return true;
@@ -174,8 +204,10 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     });
     """
 
-    @MainActor private func makeExtension() async throws -> WebExtension {
+    /// An extension with the polyfill in its worker, declaring `permissions`.
+    @MainActor private func makeExtension(permissions: [String] = ["notifications"]) async throws -> WebExtension {
         let id = "notif-ordering-\(UUID().uuidString.prefix(8))"
+        let permissionsJSON = String(decoding: try JSONSerialization.data(withJSONObject: permissions), as: UTF8.self)
         let ext = try await makeTestExtension(
             id: id,
             manifestJSON: """
@@ -183,7 +215,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
                 "manifest_version": 3,
                 "name": "Notification Ordering Test",
                 "version": "1.0.0",
-                "permissions": ["notifications"],
+                "permissions": \(permissionsJSON),
                 "background": { "service_worker": "background.js", "type": "module" }
             }
             """,
@@ -508,6 +540,80 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         XCTAssertEqual(center.shown[identifier("shared-id", of: extA, in: profile)], "A")
     }
 
+    // MARK: - Permission gate (TASK-239)
+
+    /// `notificationGate` from `transport`.
+    @MainActor private func gate(_ id: String, via transport: Transport, in page: WKWebView,
+                                 file: StaticString = #filePath, line: UInt = #line) async throws -> [String: Any] {
+        let object: [String: Any]
+        switch transport {
+        case .page:
+            let js = Self.gateJS + "\nreturn JSON.stringify(await notificationGate(id));"
+            let json = try await page.callAsyncJavaScript(js, arguments: ["id": id], contentWorld: .page) as? String
+            object = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(try XCTUnwrap(json).utf8)) as? [String: Any],
+                                   file: file, line: line)
+        case .worker:
+            let envelope = try await askWorker(
+                from: page, message: ["type": "notificationGate", "id": id], timeout: 20)
+            XCTAssertTrue(envelope["lastError"] is NSNull || envelope["lastError"] == nil,
+                          "the page could not reach the worker: \(envelope)", file: file, line: line)
+            object = try XCTUnwrap(envelope["reply"] as? [String: Any], "the worker must answer: \(envelope)",
+                                   file: file, line: line)
+        }
+        XCTAssertNil(object["error"], "\(transport): \(object)", file: file, line: line)
+        return object
+    }
+
+    /// NEGATIVE: an extension that does not declare `notifications` gets no
+    /// `chrome.notifications` or `browser.notifications` in its page or its
+    /// worker, and a request it makes past the namespace is refused before
+    /// anything is shown. A worker's refusal crosses
+    /// `runtime.sendNativeMessage`, which rewrites the text, so it is matched
+    /// as a substring, ignoring case.
+    @MainActor func testWithoutThePermissionThereIsNoNotificationsAPI() async throws {
+        let ext = try await makeExtension(permissions: ["storage"])
+        let (profile, center) = try makeProfile("Notification Gate Denied")
+        center.holdsAdds = false
+        let page = try await loadPage(ext, in: profile)
+
+        for transport in [Transport.page, .worker] {
+            let outcome = try await gate("gate-\(transport)", via: transport, in: page)
+            XCTAssertEqual(outcome["chrome"] as? String, "undefined", "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["browser"] as? String, "undefined", "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["diag"] as? String, "absent", "\(transport): \(outcome)")
+            let direct = try XCTUnwrap(outcome["direct"] as? [String: Any], "\(transport): \(outcome)")
+            XCTAssertNil(direct["resolved"], "\(transport): the request must be refused: \(outcome)")
+            let rejected = try XCTUnwrap(direct["rejected"] as? String, "\(transport): \(outcome)")
+            XCTAssertTrue(rejected.lowercased().contains("notifications permission not declared"),
+                          "\(transport): \(rejected)")
+        }
+        XCTAssertTrue(center.addedIdentifiers.isEmpty, "nothing was shown")
+    }
+
+    /// POSITIVE: an extension that declares `notifications` gets Detour's
+    /// namespace under both names in its page and its worker, and its
+    /// requests are served.
+    @MainActor func testWithThePermissionTheNotificationsAPIIsThere() async throws {
+        let ext = try await makeExtension()
+        let (profile, center) = try makeProfile("Notification Gate Allowed")
+        center.holdsAdds = false
+        let page = try await loadPage(ext, in: profile)
+
+        for transport in [Transport.page, .worker] {
+            let id = "gate-\(transport)"
+            let outcome = try await gate(id, via: transport, in: page)
+            XCTAssertEqual(outcome["chrome"] as? String, "object", "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["browser"] as? String, "object", "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["diag"] as? String, "function", "\(transport): \(outcome)")
+            let direct = try XCTUnwrap(outcome["direct"] as? [String: Any], "\(transport): \(outcome)")
+            XCTAssertEqual((direct["resolved"] as? [String: Any])?["notificationId"] as? String, id,
+                           "\(transport): \(outcome)")
+            let created = try await call("create", "\(id)-api", title: "Through the API", via: transport, in: page)
+            XCTAssertEqual(created as? String, "\(id)-api", "\(transport)")
+        }
+        XCTAssertEqual(center.shown.values.sorted(), ["Gate", "Gate", "Through the API", "Through the API"])
+    }
+
     // MARK: - Profile isolation (TASK-238)
 
     @MainActor func testTwoPersistentProfilesKeepTheirNotificationsApart() async throws {
@@ -671,6 +777,9 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     @MainActor func testRequestsAfterTheProfileIsGoneAreRefused() async throws {
         let (manager, center) = makeManager()
         center.holdsAdds = false
+        // Declares the permission, so what refuses the requests is the
+        // missing profile, not the gate (TASK-239).
+        let ext = try await makeExtension()
         var profile: Profile? = Profile(name: "Notification Profile Gone")
         let handler = ExtensionPolyfillHandler(profile: try XCTUnwrap(profile))
         handler.notificationManagerOverride = manager
@@ -683,7 +792,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             let params: [String: Any] = ["notificationId": "gone", "options": ["title": "t"]]
             handler.handleNativeMessage(
                 ["type": type, "params": params],
-                verifiedExtensionID: "notif-gone-ext"
+                verifiedExtensionID: ext.id
             ) { result, error in
                 reply = (result, error)
                 answered.fulfill()

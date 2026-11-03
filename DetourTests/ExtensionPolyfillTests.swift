@@ -48,9 +48,11 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
 
         // The injected shim sets chrome.runtime.id = 'test-polyfill-extension'.
         // Register a matching extension declaring the permission-gated APIs
-        // (history, management, privacy) so the JS-path tests exercise the happy
-        // path; dedicated positive/negative gate tests live further below.
-        try registerExtension(id: "test-polyfill-extension", permissions: ["history", "management", "privacy"])
+        // (history, management, notifications, privacy) so the JS-path tests
+        // exercise the happy path; dedicated positive/negative gate tests live
+        // further below.
+        try registerExtension(id: "test-polyfill-extension",
+                              permissions: ["history", "management", "notifications", "privacy"])
 
         // The manifest the shim reports also declares `webRequest`, the other
         // permission-gated polyfill module, so the default web view exercises
@@ -58,7 +60,7 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         // keep-alive installs nothing at all (TASK-16); the
         // absent-without-permission cases build their own view.
         webView = try await makeWebView(
-            manifestPermissions: ["history", "management", "privacy", "webRequest", "nativeMessaging"])
+            manifestPermissions: ["history", "management", "notifications", "privacy", "webRequest", "nativeMessaging"])
     }
 
     /// Build a web view configured the way an extension context is: the shared
@@ -231,9 +233,32 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(exists, "object")
     }
 
+    /// POSITIVE: with the `notifications` permission declared, the namespace
+    /// is Detour's (TASK-239).
     @MainActor func testNotificationsNamespaceExists() async throws {
         let exists = try await eval("return typeof chrome.notifications") as? String
         XCTAssertEqual(exists, "object")
+        let diag = try await eval("return __detourPolyfillDiag.apis.notifications") as? String
+        XCTAssertEqual(diag, "function")
+    }
+
+    /// NEGATIVE: without the permission the namespace stays absent, the way
+    /// Chrome leaves it out, so a feature detection on chrome.notifications is
+    /// honest (TASK-239).
+    @MainActor func testNotificationsAbsentWithoutPermission() async throws {
+        let unprivileged = try await makeWebView(manifestPermissions: ["history", "management", "privacy"])
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            chrome: typeof chrome.notifications,
+            browser: typeof browser.notifications,
+            clicked: typeof globalThis.__extensionDispatchNotificationClicked,
+            diag: __detourPolyfillDiag.apis.notifications
+        });
+        """, on: unprivileged)
+        XCTAssertEqual(result["chrome"] as? String, "undefined")
+        XCTAssertEqual(result["browser"] as? String, "undefined")
+        XCTAssertEqual(result["clicked"] as? String, "undefined", "no event dispatchers without the namespace")
+        XCTAssertEqual(result["diag"] as? String, "absent")
     }
 
     @MainActor func testHistoryNamespaceExists() async throws {
@@ -1392,6 +1417,56 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(promise["message"] as? String, "history permission not declared")
     }
 
+    /// NEGATIVE: a manifest that reports `notifications` installs the
+    /// namespace, but the native gate answers from the registered extension's
+    /// own manifest: without the permission every call is refused, as
+    /// lastError in the callback form and as a rejection in the promise form
+    /// (TASK-239).
+    @MainActor func testNotificationsCallsGetLastErrorWithoutPermission() async throws {
+        ExtensionManager.shared.extensions.removeAll { $0.id == "test-polyfill-extension" }
+        try registerExtension(id: "test-polyfill-extension", permissions: ["history", "management", "privacy"])
+        let options = "{ type: 'basic', title: 'Denied', message: 'no permission' }"
+
+        let calls = [
+            "chrome.notifications.create('denied', \(options), cb)",
+            "chrome.notifications.update('denied', \(options), cb)",
+            "chrome.notifications.clear('denied', cb)",
+            "chrome.notifications.getAll(cb)",
+        ]
+        for call in calls {
+            let outcome = try await callbackOutcome(call: "return \(call);")
+            XCTAssertEqual(outcome["timedOut"] as? Bool, false, call)
+            XCTAssertEqual(outcome["argc"] as? Int, 0, "a failed call passes no result: \(call) \(outcome)")
+            XCTAssertEqual(outcome["lastErrorInCallback"] as? String, "notifications permission not declared", call)
+            XCTAssertEqual(outcome["lastErrorAfter"] as? String, "undefined", call)
+            XCTAssertEqual(outcome["unhandled"] as? [String], [], call)
+        }
+
+        let promises = [
+            "chrome.notifications.create('denied', \(options))",
+            "chrome.notifications.update('denied', \(options))",
+            "chrome.notifications.clear('denied')",
+            "chrome.notifications.getAll()",
+        ]
+        for call in promises {
+            let promise = try await evalDictionary(promiseOutcomeJS(call))
+            XCTAssertEqual(promise["settled"] as? String, "rejected", call)
+            XCTAssertEqual(promise["message"] as? String, "notifications permission not declared", call)
+        }
+    }
+
+    /// POSITIVE: with the permission, the callback form gets its answer and no
+    /// lastError.
+    @MainActor func testNotificationsGetAllCallbackReceivesResultWithPermission() async throws {
+        // A held center, so the call never reaches the system's.
+        handler.notificationManagerOverride = ExtensionNotificationManager(center: HeldNotificationCenter())
+        let outcome = try await callbackOutcome(call: "return chrome.notifications.getAll(cb);")
+        XCTAssertEqual(outcome["timedOut"] as? Bool, false)
+        XCTAssertEqual(outcome["argc"] as? Int, 1, "\(outcome)")
+        XCTAssertNil(outcome["lastErrorInCallback"] as? String)
+        XCTAssertEqual(outcome["consoleErrors"] as? [String], [])
+    }
+
     /// An exception thrown by the callback surfaces as an uncaught error (as
     /// in Chrome), not as an unhandled rejection, and lastError is still
     /// cleared behind it.
@@ -1632,7 +1707,7 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         wait(for: [expectation], timeout: 5)
     }
 
-    // MARK: - Permission Gating (history / management)
+    // MARK: - Permission Gating (history / management / notifications)
 
     /// history.search POSITIVE: an extension that declared the "history"
     /// permission is allowed through and gets a results array.
@@ -1672,6 +1747,68 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         }
 
         wait(for: [expectation], timeout: 5)
+    }
+
+    /// notifications.* POSITIVE: an extension that declared the
+    /// "notifications" permission is served by the manager (TASK-239).
+    @MainActor func testNotificationsAllowedWithPermission() async throws {
+        try registerExtension(id: "notifperm-ext", permissions: ["notifications"])
+        let center = HeldNotificationCenter()
+        center.holdsAdds = false
+        handler.notificationManagerOverride = ExtensionNotificationManager(center: center)
+
+        let created = expectation(description: "notifications.create allowed with permission")
+        handler.handleNativeMessage(
+            ["type": "notifications.create", "extensionID": "notifperm-ext",
+             "params": ["notificationId": "allowed", "options": ["title": "Allowed", "message": "m"]]],
+            verifiedExtensionID: "notifperm-ext"
+        ) { result, error in
+            XCTAssertNil(error)
+            XCTAssertEqual((result as? [String: Any])?["notificationId"] as? String, "allowed")
+            created.fulfill()
+        }
+        await fulfillment(of: [created], timeout: 5)
+        XCTAssertEqual(center.shown.values.sorted(), ["Allowed"])
+
+        let listed = expectation(description: "notifications.getAll allowed with permission")
+        handler.handleNativeMessage(
+            ["type": "notifications.getAll", "extensionID": "notifperm-ext", "params": [:]],
+            verifiedExtensionID: "notifperm-ext"
+        ) { result, error in
+            XCTAssertNil(error)
+            XCTAssertEqual((result as? [String: Any])?.keys.sorted(), ["allowed"])
+            listed.fulfill()
+        }
+        await fulfillment(of: [listed], timeout: 5)
+    }
+
+    /// notifications.* NEGATIVE: a registered extension that did NOT declare
+    /// "notifications", and an id with no manifest at all, are refused every
+    /// call before the manager is reached (TASK-239).
+    @MainActor func testNotificationsDeniedWithoutPermission() async throws {
+        try registerExtension(id: "nonotif-ext", permissions: ["storage"])
+        let center = HeldNotificationCenter()
+        center.holdsAdds = false
+        handler.notificationManagerOverride = ExtensionNotificationManager(center: center)
+
+        for extensionID in ["nonotif-ext", "unregistered-notif-ext"] {
+            for type in ["notifications.create", "notifications.update", "notifications.clear", "notifications.getAll"] {
+                let answered = expectation(description: "\(type) from \(extensionID) refused")
+                handler.handleNativeMessage(
+                    ["type": type, "extensionID": extensionID,
+                     "params": ["notificationId": "denied", "options": ["title": "Denied"]]],
+                    verifiedExtensionID: extensionID
+                ) { result, error in
+                    XCTAssertNil(result, "\(type) from \(extensionID)")
+                    XCTAssertEqual((error as NSError?)?.localizedDescription,
+                                   "notifications permission not declared", "\(type) from \(extensionID)")
+                    answered.fulfill()
+                }
+                await fulfillment(of: [answered], timeout: 5)
+            }
+        }
+        XCTAssertTrue(center.addedIdentifiers.isEmpty, "nothing was shown")
+        XCTAssertTrue(center.removals.isEmpty, "nothing was taken away")
     }
 
     /// management.getAll POSITIVE: an extension that declared the "management"
@@ -3684,7 +3821,7 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
     @MainActor private func reregisterSuiteExtension(background: [String: Any]) throws {
         ExtensionManager.shared.extensions.removeAll { $0.id == "test-polyfill-extension" }
         try registerExtension(id: "test-polyfill-extension",
-                              permissions: ["history", "management", "privacy"],
+                              permissions: ["history", "management", "notifications", "privacy"],
                               background: background)
     }
 

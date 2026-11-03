@@ -100,7 +100,7 @@ struct ExtensionAPIPolyfill {
         __detourPolyfillDiag.apis = {};
         try { __detourPolyfillDiag.apis.idle = typeof chrome.idle.queryState; } catch(e) { __detourPolyfillDiag.apis.idle = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.history = typeof chrome.history.search; } catch(e) { __detourPolyfillDiag.apis.history = 'error: ' + e.message; }
-        try { __detourPolyfillDiag.apis.notifications = typeof chrome.notifications.create; } catch(e) { __detourPolyfillDiag.apis.notifications = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.notifications = chrome.notifications ? typeof chrome.notifications.create : 'absent'; } catch(e) { __detourPolyfillDiag.apis.notifications = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.offscreen = typeof chrome.offscreen.hasDocument; } catch(e) { __detourPolyfillDiag.apis.offscreen = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.management = typeof chrome.management.getSelf; } catch(e) { __detourPolyfillDiag.apis.management = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.sessions = typeof chrome.sessions.restore; } catch(e) { __detourPolyfillDiag.apis.sessions = 'error: ' + e.message; }
@@ -2299,9 +2299,15 @@ struct ExtensionAPIPolyfill {
 
     // MARK: - chrome.notifications
 
+    /// chrome.notifications, installed only when the manifest declares the
+    /// `notifications` permission: Chrome leaves the namespace out otherwise,
+    /// so a feature detection stays truthful (TASK-239). The handler refuses
+    /// the requests of an extension without it as well, so a caller that
+    /// reaches `__detourPolyfillRequest` directly gets nothing either. With the
+    /// permission it is always Detour's, whatever WebKit vends.
     private static let notificationsJS = """
     (function() {
-        // Always install — WebKit may provide stubs that don't work
+        if (__detourManifestPermissions().indexOf('notifications') === -1) return;
         const chrome = globalThis.chrome;
 
         const _onClickedListeners = [];

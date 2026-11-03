@@ -78,6 +78,18 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         return ExtensionNotificationManager.Owner(profileID: profileID, extensionID: extensionID)
     }
 
+    /// Whether `extensionID` declared the `notifications` permission, as
+    /// Chrome gates the namespace (TASK-239). If not, answers the request with
+    /// the refusal and returns false.
+    private func notificationsPermitted(_ extensionID: String,
+                                        orRefuse replyHandler: (Any?, String?) -> Void) -> Bool {
+        guard hasPermission("notifications", extensionID: extensionID) else {
+            replyHandler(nil, "notifications permission not declared")
+            return false
+        }
+        return true
+    }
+
     /// This handler's profile id: every owner it names. Kept rather than read
     /// from `profile`, because the removals below run while the profile is
     /// being torn down.
@@ -587,10 +599,12 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             replyHandler(true, nil)
 
         // MARK: - Notifications
-        // Scoped by this handler's profile as well as the extension: the same
-        // extension in another profile, Private included, is another owner
-        // (TASK-238).
+        // Gated on the manifest's `notifications` permission, as Chrome gates
+        // the namespace (TASK-239), and scoped by this handler's profile as
+        // well as the extension: the same extension in another profile,
+        // Private included, is another owner (TASK-238).
         case "notifications.create":
+            guard notificationsPermitted(extensionID, orRefuse: replyHandler) else { return }
             guard let owner = notificationOwner(extensionID, orRefuse: replyHandler) else { return }
             let notificationId = params["notificationId"] as? String
             let options = params["options"] as? [String: Any] ?? [:]
@@ -599,6 +613,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             }
 
         case "notifications.update":
+            guard notificationsPermitted(extensionID, orRefuse: replyHandler) else { return }
             guard let notificationId = params["notificationId"] as? String else {
                 replyHandler(nil, "notificationId required")
                 return
@@ -610,6 +625,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             }
 
         case "notifications.clear":
+            guard notificationsPermitted(extensionID, orRefuse: replyHandler) else { return }
             guard let notificationId = params["notificationId"] as? String else {
                 replyHandler(nil, "notificationId required")
                 return
@@ -620,6 +636,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             }
 
         case "notifications.getAll":
+            guard notificationsPermitted(extensionID, orRefuse: replyHandler) else { return }
             guard let owner = notificationOwner(extensionID, orRefuse: replyHandler) else { return }
             replyHandler(notificationManager.getAll(owner: owner), nil)
 
@@ -1017,7 +1034,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     }
 
     /// Whether the extension declared a given manifest permission. Used to gate
-    /// polyfilled APIs (history, management) that WKWebExtension doesn't itself
+    /// polyfilled APIs (history, management, notifications) that WKWebExtension doesn't itself
     /// permission-check because they're implemented natively here.
     private func hasPermission(_ permission: String, extensionID: String) -> Bool {
         ExtensionManager.shared.extension(withID: extensionID)?.manifest.permissions?.contains(permission) ?? false

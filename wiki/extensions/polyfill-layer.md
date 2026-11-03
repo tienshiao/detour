@@ -73,6 +73,9 @@ sources:
   - id: task-238
     resource: backlog:TASK-238
     title: "Extensions: one profile's notifications are visible to and clearable by the same extension in another profile"
+  - id: task-239
+    resource: backlog:TASK-239
+    title: "Extensions: the notifications API is available without the notifications permission"
 ---
 
 `ExtensionAPIPolyfill` generates one JavaScript bundle (`polyfillJS`) that runs
@@ -180,8 +183,10 @@ Other consequences:
 WebKit does not permission-check APIs it does not implement, so the handler
 does:
 
-- `history.search`, `management.getAll`, `management.setEnabled` require the
-  manifest permission (`hasPermission`).
+- `history.search`, `management.getAll`, `management.setEnabled` and every
+  `notifications.*` request require the manifest permission
+  (`hasPermission`), checked before anything else the request is
+  answered with.[^task-239]
 - `history.search` answers from the handler's own profile only; see
   [chrome.history](#chromehistory-is-profile-scoped) below.
 - `runtime.getURL('/_favicon/…')` is not a handler request at all: the
@@ -195,8 +200,15 @@ does:
   before, the global last active space when it was this profile's, else the
   profile's first). See [opening a tab](./tab-and-window-bridge.md#opening-a-tab).
 - Gap-filling namespaces that Chrome leaves undefined without a permission
-  (`privacy`, `webRequest`) are installed only when the manifest declares it,
-  so feature detection stays truthful.[^task-3]
+  (`privacy`, `webRequest`, `notifications`) are installed only when the
+  manifest declares it, so feature detection stays truthful.[^task-3] Before
+  TASK-239 `notifications` was installed for every extension and the handler
+  served it unchecked. Both sides gate: the bundle gate is what the extension
+  sees, the handler's is what holds against a caller that goes straight to
+  `__detourPolyfillRequest`. Without the permission WebKit vends no
+  `notifications` namespace of its own either (measured from a page and a
+  worker in `ExtensionNotificationOrderingTests`).[^task-239] `history` and `management`
+  are still installed for every extension; only their handlers gate.
 
 ## chrome.history is profile-scoped
 
@@ -495,3 +507,4 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-234]: notifications.clear issued while notifications.create is still adding the notification is lost
 [^notification-manager]: ExtensionNotificationManager.swift
 [^task-238]: Extensions: one profile's notifications are visible to and clearable by the same extension in another profile
+[^task-239]: Extensions: the notifications API is available without the notifications permission
