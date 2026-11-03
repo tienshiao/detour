@@ -88,6 +88,9 @@ sources:
   - id: task-240
     resource: backlog:TASK-240
     title: "Extensions: notifications.clear and notifications.update diverge from Chrome"
+  - id: task-254
+    resource: backlog:TASK-254
+    title: "Extensions: notifications.create(null, options) is treated as create(options) with empty options"
   - id: chrome-notifications-api
     resource: https://developer.chrome.com/docs/extensions/reference/api/notifications
     title: chrome.notifications API reference
@@ -408,6 +411,12 @@ extension notification of any build:[^task-248]
   Center, and one would take the other's live notifications for leftovers.
   A run that skips it says so in a `notice` log line.
 
+`create(notificationId?, options, callback?)` follows Chrome's signature: a
+`null` or `undefined` id counts as absent, so the options are used and an id is
+generated. Only a non-null object in the first slot means the id was left out
+(`typeof null` is `'object'`, which once made `create(null, options)` create
+an empty notification).[^task-254]
+
 ## chrome.notifications asks for authorization at the first create
 
 Detour asks for notification authorization the first time any extension calls
@@ -642,6 +651,7 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-251]: Extensions: the history and management namespaces exist for extensions without the permission
 [^task-250]: Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions
 [^task-240]: Extensions: notifications.clear and notifications.update diverge from Chrome
+[^task-254]: Extensions: notifications.create(null, options) is treated as create(options) with empty options
 [^chrome-notifications-api]: chrome.notifications API reference
 [^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared
 [^task-253]: Extensions: Detour never requests notification permission, so extension notifications may never be shown

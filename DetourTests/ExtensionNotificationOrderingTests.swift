@@ -153,6 +153,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     async function notificationOp(op, id, title) {
         const options = { type: 'basic', title: title || '', message: 'isolation test' };
         if (op === 'create') { return { result: await chrome.notifications.create(id, options) }; }
+        if (op === 'createNullID') { return { result: await chrome.notifications.create(null, options) }; }
         if (op === 'update') { return { result: await chrome.notifications.update(id, options) }; }
         if (op === 'clear') { return { result: await chrome.notifications.clear(id) }; }
         if (op === 'getAll') { return { result: await chrome.notifications.getAll() }; }
@@ -616,6 +617,26 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             XCTAssertEqual(Set(requests.map(\.content.subtitle)), ["Context"],
                            "\(label): contextMessage is the subtitle, never the icon URL")
             XCTAssertTrue(center.shown.isEmpty, "\(label): every notification was cleared")
+        }
+    }
+
+    /// create(null, options) treats the null id as absent: the options are
+    /// used and an id is generated (TASK-254), from the page and the worker.
+    @MainActor func testCreateWithANullIDUsesTheOptionsFromBothTransports() async throws {
+        let ext = try await makeExtension()
+        let (profile, center) = try makeProfile("Notification Null ID")
+        center.holdsAdds = false
+        let page = try await loadPage(ext, in: profile)
+
+        for transport in [Transport.page, .worker] {
+            let title = "Null id \(transport)"
+            let id = try await call("createNullID", title: title, via: transport, in: page) as? String
+            let generated = try XCTUnwrap(id, "\(transport): create answers an id")
+            XCTAssertFalse(generated.isEmpty, "\(transport): a generated id")
+            XCTAssertEqual(center.addedRequests.last?.content.title, title, "\(transport): the given options show")
+            XCTAssertEqual(center.shown[identifier(generated, of: ext, in: profile)], title, "\(transport)")
+            let all = try await call("getAll", via: transport, in: page) as? [String: Any]
+            XCTAssertNotNil(all?[generated], "\(transport): getAll lists it: \(all ?? [:])")
         }
     }
 

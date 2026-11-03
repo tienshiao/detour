@@ -471,6 +471,53 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertTrue(center.shown.isEmpty)
     }
 
+    /// TASK-254: Chrome's create(notificationId?, options, callback?) treats a
+    /// null or undefined id as absent and still uses the options; only an
+    /// options object in the first slot means the id was left out. Each form
+    /// shows the given title, from the promise and the callback form alike.
+    @MainActor func testNotificationsCreateArgumentForms() async throws {
+        let center = HeldNotificationCenter()
+        center.holdsAdds = false
+        handler.notificationManagerOverride = ExtensionNotificationManager(center: center)
+        let forms: [(name: String, args: (String) -> String, expectedID: String?)] = [
+            ("null id", { "null, { type: 'basic', title: '\($0)', message: 'm' }" }, nil),
+            ("undefined id", { "undefined, { type: 'basic', title: '\($0)', message: 'm' }" }, nil),
+            ("string id", { "'form-\($0)', { type: 'basic', title: '\($0)', message: 'm' }" }, "form-%@"),
+            ("options only", { "{ type: 'basic', title: '\($0)', message: 'm' }" }, nil),
+        ]
+        for (index, form) in forms.enumerated() {
+            let promiseTitle = "promise-\(index)"
+            let promiseID = try await eval(
+                "return await chrome.notifications.create(\(form.args(promiseTitle)));") as? String
+            assertCreated(form.name + " (promise)", id: promiseID, title: promiseTitle,
+                          expectedID: form.expectedID, center: center)
+
+            let callbackTitle = "callback-\(index)"
+            let outcome = try await callbackOutcome(
+                call: "return chrome.notifications.create(\(form.args(callbackTitle)), cb);")
+            XCTAssertEqual(outcome["timedOut"] as? Bool, false, "\(form.name): \(outcome)")
+            XCTAssertEqual(outcome["returnedType"] as? String, "undefined", form.name)
+            XCTAssertTrue(outcome["lastErrorInCallback"] is NSNull, "\(form.name): \(outcome)")
+            let callbackID = (outcome["arg0"] as? String).flatMap {
+                try? JSONSerialization.jsonObject(with: Data($0.utf8), options: .fragmentsAllowed) as? String
+            }
+            assertCreated(form.name + " (callback)", id: callbackID, title: callbackTitle,
+                          expectedID: form.expectedID, center: center)
+        }
+    }
+
+    @MainActor private func assertCreated(_ form: String, id: String?, title: String, expectedID: String?,
+                                          center: HeldNotificationCenter,
+                                          file: StaticString = #filePath, line: UInt = #line) {
+        if let expectedID {
+            XCTAssertEqual(id, expectedID.replacingOccurrences(of: "%@", with: title), form, file: file, line: line)
+        } else {
+            XCTAssertFalse(id?.isEmpty ?? true, "\(form): a generated id", file: file, line: line)
+        }
+        XCTAssertEqual(center.addedRequests.last?.content.title, title, "\(form): the given options are used",
+                       file: file, line: line)
+    }
+
     @MainActor func testNotificationsEventEmitters() async throws {
         let onClicked = try await eval("return typeof chrome.notifications.onClicked.addListener") as? String
         XCTAssertEqual(onClicked, "function")

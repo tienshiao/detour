@@ -2336,9 +2336,15 @@ struct ExtensionAPIPolyfill {
 
         __detourDefine(chrome, 'notifications', {
             create: function(notificationId, options, callback) {
-                if (typeof notificationId === 'object') {
+                // Chrome's signature is create(notificationId?, options, callback?).
+                // A null or undefined id counts as absent, so only a real
+                // options object in the first slot means the id was left out
+                // (typeof null is 'object' too).
+                if (notificationId !== null && typeof notificationId === 'object') {
                     callback = options;
                     options = notificationId;
+                    notificationId = null;
+                } else if (notificationId === undefined) {
                     notificationId = null;
                 }
                 const promise = __detourPolyfillRequest('notifications.create', {
