@@ -22,6 +22,12 @@ sources:
   - id: task-241
     resource: backlog:TASK-241
     title: "Native messaging: a host that ignores SIGTERM is never killed"
+  - id: chromium-runtime
+    resource: https://github.com/chromium/chromium/blob/f0ba36023a040e2260f145ac7fa33a9f3e8e1db7/extensions/common/api/runtime.json
+    title: Chromium extensions/common/api/runtime.json and extensions/renderer/bindings/argument_spec.cc
+  - id: task-242
+    resource: backlog:TASK-242
+    title: A one-shot sendNativeMessage with a non-object message leaks the host and never settles
   - id: chromium-kill
     resource: https://github.com/chromium/chromium/blob/1a95d4d76ab47c2ff9b914eaa98d3f35b7f1fce1/base/process/kill_mac.cc
     title: Chromium base/process/kill_mac.cc (EnsureProcessTerminated, kWaitBeforeKillSeconds = 2)
@@ -282,9 +288,31 @@ evidence for. There is no level between notice and error to use:
   [service worker unload rules](../platform/service-worker-unload-rules.md).
   The supersede teardown in the [keep-alive](./native-port-keep-alive.md)
   exists for this.
-- **Only JSON objects pass.** A message that is not a dictionary is dropped
-  on the way out, and a host reply that is not a JSON object is logged as a
-  parse failure and not delivered. Chrome allows any JSON value.
+- **What a message may be differs by entry point, as in Chrome.** Chrome's
+  `runtime.json` declares `sendNativeMessage`'s message `type: object`, and
+  its argument check (`argument_spec.cc`, `ArgumentType::OBJECT`) refuses an
+  array, a function, null and every primitive before anything is sent;
+  `Port.postMessage` is `type: any`.[^chromium-runtime] Detour matches: a
+  one-shot message that is not a dictionary is refused in the delegate with
+  "The 'message' value is invalid, because an object is expected" before any
+  host object exists (until TASK-242 it started the host, never wrote to it,
+  and left the request unanswered and the process running). A port, and a
+  host's reply on either path, carries any JSON value (`sendMessage(Any)`,
+  `onMessage(Any)`, fragments allowed). `jsonBody(for:)` checks
+  `isValidJSONObject([value])` first, because `data(withJSONObject:)` raises
+  an uncatchable Objective-C exception for NaN, infinity or a non-JSON type.
+  The `sendNativeMessage` signature cannot be enforced in JS: WebKit
+  re-materializes the runtime functions, so the refusal is a rejection or
+  `lastError`, not Chrome's synchronous TypeError.[^task-242]
+- **WebKit refuses a JS null itself.** Its `[Serialization=JSON] any`
+  bindings throw "The 'message' value is invalid, because an object is
+  expected" for `port.postMessage(null)` and for
+  `sendNativeMessage(host, null, callback)`, before Detour is asked.
+  `sendNativeMessage(host, null)` in the promise form reaches the delegate
+  with the host name as the message (WebKit shifts its optional arguments)
+  and is refused there. Every other value arrives as the JSON-parsed
+  Foundation object (`NSString`, `NSNumber`, `__NSCFBoolean`, `NSArray`),
+  measured 2026-11-03.
 - **A manifest without `allowed_origins` is accepted.** The origin check only
   runs when the key is present. The manifest's `type` is decoded but not
   checked.
@@ -322,7 +350,18 @@ evidence for. There is no level between notice and error to use:
   script that `exec`s `sleep <unique token>`: a real process that stays
   connected and silent. Whether a host was spawned is read off the process
   table by that token. Because of the `exec`, `pgrep` for the script name
-  finds nothing.
+  finds nothing. `.echoesCounted` is an echoing host the token can see:
+  `exec cat - '<dir>/sleep <token>'` (an empty file, read after stdin).
+- Messages that are not objects (TASK-242), from an extension page
+  (`NativeMessagingEnforcementTests`) and a service worker
+  (`ExtensionPolyfillProfileWiringTests`): a string, a number, an array and
+  null from `sendNativeMessage`'s promise and callback forms are refused with
+  no process started (a `.silent` host, so a mistaken spawn would be
+  counted); a port round-trips a string, a number, an array and a boolean
+  through `.echoesCounted` and the host is gone after the disconnect; a
+  one-shot host's string or array reply settles the request; the framing
+  suite pins the fragments' JSON text and the refusal of NaN, infinity, a
+  `Date` and a non-string key.
 - `NativeConnectLogLimiterTests`: the limiter with an injected clock.
 - `NativeMessagingFramingTests`: the wire bytes of the prefix, and the read
   loop against a real host process — a prefix that claims more than the
@@ -371,3 +410,5 @@ evidence for. There is no level between notice and error to use:
 [^lifecycle-tests]: NativeMessagingHostLifecycleTests.swift
 [^task-241]: Native messaging: a host that ignores SIGTERM is never killed
 [^chromium-kill]: Chromium base/process/kill_mac.cc (EnsureProcessTerminated, kWaitBeforeKillSeconds = 2)
+[^chromium-runtime]: Chromium extensions/common/api/runtime.json and extensions/renderer/bindings/argument_spec.cc
+[^task-242]: A one-shot sendNativeMessage with a non-object message leaks the host and never settles

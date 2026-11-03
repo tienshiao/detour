@@ -250,6 +250,10 @@ final class FakeNativeMessagingHost {
         /// exits when its stdin closes, so it carries no sleep token and
         /// `processCount()` does not see it.
         case echoes
+        /// As `echoes`, but visible to `processCount()`: `cat` is given an empty
+        /// file named `sleep <token>` to read after stdin, so the token is on
+        /// its command line (TASK-242).
+        case echoesCounted
         /// Waits for the first byte of input (the request), writes these
         /// bytes to stdout and exits with `status` straight away: a one-shot
         /// `sendNativeMessage` host. The process is gone by the time the
@@ -296,6 +300,10 @@ final class FakeNativeMessagingHost {
             body = "/bin/cat '\(outputFile.path)'\nexec 1>&-\nexec sleep \(sleepToken)\n"
         case .echoes:
             body = "exec /bin/cat\n"
+        case .echoesCounted:
+            let tokenFile = dir.appendingPathComponent("sleep \(sleepToken)")
+            try Data().write(to: tokenFile)
+            body = "exec /bin/cat - '\(tokenFile.path)'\n"
         case .answersThenExits(let output, let status):
             let outputFile = dir.appendingPathComponent("stdout.bin")
             try output.write(to: outputFile)

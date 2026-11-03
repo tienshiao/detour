@@ -1322,6 +1322,116 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         }
     }
 
+    // MARK: - TASK-242: native messages that are not objects, from a worker
+
+    /// The worker transport for what `NativeMessagingEnforcementTests` checks
+    /// from an extension page: a one-shot `sendNativeMessage` whose message is
+    /// a string, a number, an array or null is refused before any host starts,
+    /// from the promise and the callback forms, and a `connectNative` port
+    /// round-trips a string, a number, an array and a boolean through an
+    /// echoing host (WebKit's bindings throw for a null) and lets the host go
+    /// on disconnect.
+    @MainActor func testNonObjectNativeMessagesFromAServiceWorker() async throws {
+        let id = measurementExtensionID("task242-worker")
+        let silent = try FakeNativeMessagingHost(allowing: [id], behavior: .silent)
+        fakeNativeHosts.append(silent)
+        let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+
+
+        const describe = (error) => String(error && error.message !== undefined ? error.message : error);
+        function oneShot(host, value, form) {
+            return new Promise((resolve) => {
+                const timer = setTimeout(() => resolve({ outcome: 'pending' }), 3000);
+                const settle = (v) => { clearTimeout(timer); resolve(v); };
+                try {
+                    if (form === 'promise') {
+                        chrome.runtime.sendNativeMessage(host, value).then(
+                            (reply) => settle({ outcome: 'reply' }),
+                            (error) => settle({ outcome: 'error', error: describe(error) }));
+                    } else {
+                        chrome.runtime.sendNativeMessage(host, value, () => {
+                            const error = chrome.runtime.lastError;
+                            settle(error ? { outcome: 'error', error: describe(error) } : { outcome: 'reply' });
+                        });
+                    }
+                } catch (error) { settle({ outcome: 'thrown', error: describe(error) }); }
+            });
+        }
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (!message) return false;
+            if (message.type === 'ping') { sendResponse({ type: 'pong' }); return true; }
+            if (message.type === 'oneShots') {
+                (async () => {
+                    const out = {};
+                    for (const json of message.values) {
+                        for (const form of ['promise', 'callback']) {
+                            out[json + ' ' + form] = await oneShot(message.host, JSON.parse(json), form);
+                        }
+                    }
+                    sendResponse(out);
+                })();
+                return true;
+            }
+            if (message.type === 'portEcho') {
+                const values = message.values.map((json) => JSON.parse(json));
+                const received = [];
+                const port = chrome.runtime.connectNative(message.host);
+                const finish = (extra) => { port.disconnect(); sendResponse(Object.assign({ received }, extra)); };
+                const timer = setTimeout(() => finish({ timedOut: true }), 5000);
+                port.onMessage.addListener((m) => {
+                    received.push(JSON.stringify(m));
+                    if (received.length === values.length) { clearTimeout(timer); finish({ nullError: nullError }); }
+                });
+                let nullError = null;
+                try { port.postMessage(null); } catch (error) { nullError = describe(error); }
+                for (const value of values) port.postMessage(value);
+                return true;
+            }
+            return false;
+        });
+        """
+        let ext = try await makeWorkerExtension(id: id, permissions: ["nativeMessaging"], backgroundJS: backgroundJS)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+        let started = try await startMeasurement(ext, profileName: "TASK-242 Worker")
+        let controller = started.profile.extensionController
+        try await waitUntil("the background worker to wake", timeout: 20) {
+            let ping = try await askWorker(from: started.page, message: ["type": "ping"], timeout: 5)
+            return (ping["reply"] as? [String: Any])?["type"] as? String == "pong"
+        }
+
+        let nonObjects = [#""hello""#, "42", #"[1,"two",null]"#, "null"]
+        let answer = try await askWorker(
+            from: started.page, message: ["type": "oneShots", "host": silent.name, "values": nonObjects], timeout: 30)
+        let outcomes = try XCTUnwrap(answer["reply"] as? [String: Any], "\(answer)")
+        for json in nonObjects {
+            for form in ["promise", "callback"] {
+                let label = "\(json) \(form)"
+                let outcome = try XCTUnwrap(outcomes[label] as? [String: Any], "\(label): \(outcomes)")
+                // As from a page, WebKit throws for a null in the callback form
+                // itself; everything else is refused by Detour's delegate.
+                XCTAssertEqual(outcome["outcome"] as? String,
+                               json == "null" && form == "callback" ? "thrown" : "error", "\(label): \(outcome)")
+                XCTAssertTrue((outcome["error"] as? String ?? "").contains("an object is expected"), "\(label): \(outcome)")
+            }
+        }
+        XCTAssertEqual(silent.processCount(), 0, "no host may be started for a refused message")
+        XCTAssertEqual(ExtensionManager.shared.pendingOneShotNativeMessageCountForTesting(extensionID: ext.id), 0)
+
+        // The echo fixture takes over the hosts directory for the port leg.
+        let echo = try FakeNativeMessagingHost(allowing: [id], behavior: .echoesCounted)
+        fakeNativeHosts.append(echo)
+        let portValues = [#""hello""#, "42", #"[1,"two",null]"#, "true"]
+        let portAnswer = try await askWorker(
+            from: started.page, message: ["type": "portEcho", "host": echo.name, "values": portValues], timeout: 15)
+        let port = try XCTUnwrap(portAnswer["reply"] as? [String: Any], "\(portAnswer)")
+        XCTAssertEqual(port["received"] as? [String], portValues, "\(port)")
+        XCTAssertTrue((port["nullError"] as? String ?? "").contains("an object is expected"), "\(port)")
+        try await waitUntil("the disconnected port's echo host to exit", timeout: 5) {
+            echo.processCount() == 0
+                && ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id) == 0
+        }
+    }
+
     // MARK: - TASK-67: a background context replaced without its ports closing
 
     /// An MV3 extension whose background content is a *service worker*, built at

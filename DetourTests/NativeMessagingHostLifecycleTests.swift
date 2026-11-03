@@ -39,7 +39,7 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
         self.fixture = fixture
         let host = NativeMessagingHost(hostName: fixture.name, extensionID: Self.extensionID,
                                        endTiming: endTiming, termination: termination)
-        host.onMessage = { [weak self] in self?.events.append("message:\($0["n"] as? Int ?? -1)") }
+        host.onMessage = { [weak self] in self?.events.append("message:\(($0 as? [String: Any])?["n"] as? Int ?? -1)") }
         host.onDisconnect = { [weak self] in self?.events.append("disconnect:\($0 ?? "nil")") }
         self.host = host
         try host.connect()

@@ -650,4 +650,138 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
         }
         XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 0)
     }
+
+    // MARK: - Messages that are not objects (TASK-242)
+
+    /// Values that are not JSON objects, as JSON text for the page to parse.
+    private static let nonObjectMessages = [#""hello""#, "42", #"[1,"two",null]"#, "null"]
+
+    /// What a port test posts: no null, which WebKit refuses itself.
+    private static let portMessages = [#""hello""#, "42", #"[1,"two",null]"#, "true"]
+
+    /// A one-shot `sendNativeMessage` whose message is a string, a number, an
+    /// array or null is refused with an error before any host is started, from
+    /// the promise and the callback forms alike: Chrome's signature declares
+    /// the message an object and rejects anything else before sending. Before
+    /// the fix the host was started, never written to, and the request never
+    /// settled. The silent host carries the fixture's token, so a host started
+    /// by mistake would be counted.
+    @MainActor func testASendNativeMessageThatIsNotAnObjectIsRefusedBeforeAnyHostStarts() async throws {
+        let ext = try await makeExtension()
+        try installFakeHost(allowing: [ext.id], behavior: .silent)
+        let loaded = try await load(ext, profileName: "NM Non-Object Send Profile")
+
+        for messageJSON in Self.nonObjectMessages {
+            for form in ["promise", "callback"] {
+                let result = try await evalJSON("""
+                    const message = JSON.parse(messageJSON);
+                    return await new Promise((resolve) => {
+                        const timer = setTimeout(() => resolve({ outcome: 'pending' }), 3000);
+                        const settle = (value) => { clearTimeout(timer); resolve(value); };
+                        try {
+                            if (form === 'promise') {
+                                chrome.runtime.sendNativeMessage(host, message).then(
+                                    (reply) => settle({ outcome: 'reply', reply: reply ?? null }),
+                                    (error) => settle({ outcome: 'error', error: String(error && error.message ? error.message : error) }));
+                            } else {
+                                chrome.runtime.sendNativeMessage(host, message, (reply) => {
+                                    const error = chrome.runtime.lastError;
+                                    settle(error ? { outcome: 'error', error: String(error.message) }
+                                                 : { outcome: 'reply', reply: reply ?? null });
+                                });
+                            }
+                        } catch (error) {
+                            settle({ outcome: 'thrown', error: String(error && error.message ? error.message : error) });
+                        }
+                    });
+                    """, in: loaded.webView,
+                    arguments: ["host": Self.hostName, "messageJSON": messageJSON, "form": form])
+
+                let label = "\(messageJSON) (\(form))"
+                // WebKit's bindings refuse a null in the callback form themselves,
+                // with a synchronous throw, before Detour is asked; every other
+                // value reaches the delegate and is refused there.
+                let expected = messageJSON == "null" && form == "callback" ? "thrown" : "error"
+                XCTAssertEqual(result["outcome"] as? String, expected, "\(label): \(result)")
+                XCTAssertTrue((result["error"] as? String ?? "").contains("an object is expected"),
+                              "\(label): expected the non-object refusal, got \(result)")
+                XCTAssertEqual(fakeHostProcessCount(), 0, "\(label): no host may be started for a refused message")
+                XCTAssertEqual(ExtensionManager.shared.pendingOneShotNativeMessageCountForTesting(extensionID: ext.id), 0,
+                               "\(label): a refused request must not be left pending")
+            }
+        }
+    }
+
+    /// A `connectNative` port carries any JSON value, as Chrome's
+    /// `Port.postMessage` (`any`) does: a string, a number, an array and a
+    /// boolean reach an echoing host and come back on `onMessage` unchanged,
+    /// in order. Before the fix they were dropped without a word. A null never
+    /// reaches Detour: WebKit's bindings throw for it ("an object is
+    /// expected"), and the port stays usable. The host is counted while the
+    /// port is open and is gone once the page disconnects.
+    @MainActor func testAConnectNativePortCarriesValuesThatAreNotObjects() async throws {
+        let ext = try await makeExtension()
+        try installFakeHost(allowing: [ext.id], behavior: .echoesCounted)
+        let loaded = try await load(ext, profileName: "NM Non-Object Port Profile")
+        let controller = loaded.profile.extensionController
+
+        let result = try await evalJSON("""
+            const messages = messageJSONs.map((json) => JSON.parse(json));
+            return await new Promise((resolve) => {
+                const received = [];
+                const timer = setTimeout(() => resolve({ received, timedOut: true }), 5000);
+                const port = chrome.runtime.connectNative(host);
+                window.__valuePort = port;
+                port.onDisconnect.addListener(() => {
+                    clearTimeout(timer);
+                    resolve({ received, disconnected: chrome.runtime.lastError ? chrome.runtime.lastError.message : true });
+                });
+                port.onMessage.addListener((message) => {
+                    received.push(JSON.stringify(message));
+                    if (received.length === messages.length) { clearTimeout(timer); resolve({ received }); }
+                });
+                let nullError = null;
+                try { port.postMessage(null); } catch (error) { nullError = String(error && error.message ? error.message : error); }
+                window.__valuePortNullError = nullError;
+                for (const message of messages) port.postMessage(message);
+            });
+            """, in: loaded.webView, arguments: ["host": Self.hostName, "messageJSONs": Self.portMessages])
+
+        XCTAssertEqual(result["received"] as? [String], Self.portMessages, "\(result)")
+        let nullError = try await evalJSON("return { error: window.__valuePortNullError };", in: loaded.webView, arguments: [:])
+        XCTAssertTrue((nullError["error"] as? String ?? "").contains("an object is expected"), "\(nullError)")
+        XCTAssertNil(result["timedOut"], "\(result)")
+        XCTAssertNil(result["disconnected"], "\(result)")
+        XCTAssertEqual(fakeHostProcessCount(), 1, "the port's echo host runs while the port is open")
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 1)
+
+        _ = try await evalJSON("window.__valuePort.disconnect(); return { ok: true };",
+                               in: loaded.webView, arguments: [:])
+        try await waitUntil("the disconnected port's echo host to exit", timeout: 5) {
+            self.fakeHostProcessCount() == 0
+        }
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 0)
+    }
+
+    /// A host may answer with any JSON value, as Chrome's response is `any`: a
+    /// one-shot request whose host replies with a string or an array settles
+    /// with that value. Before the fix the read loop dropped it and the
+    /// request settled with "Native host has exited." instead.
+    @MainActor func testASendNativeMessageSettlesWithAReplyThatIsNotAnObject() async throws {
+        for (replyJSON, label) in [(#""pong""#, "string"), (#"[1,"two",null]"#, "array")] {
+            let ext = try await makeExtension()
+            try installFakeHost(allowing: [ext.id], behavior: .answersThenExits(
+                NativeMessagingHost.encodeMessage(Data(replyJSON.utf8)), status: 0))
+            let loaded = try await load(ext, profileName: "NM Non-Object Reply Profile \(label)")
+
+            let result = try await sendNativeMessage(Self.hostName, ["ping": 1], in: loaded.webView)
+            XCTAssertEqual(result["outcome"] as? String, "reply", "\(label): \(result)")
+            let reply = try XCTUnwrap(result["reply"], "\(label): \(result)")
+            let encoded = try JSONSerialization.data(withJSONObject: reply, options: .fragmentsAllowed)
+            XCTAssertEqual(String(decoding: encoded, as: UTF8.self), replyJSON, label)
+            XCTAssertEqual(ExtensionManager.shared.pendingOneShotNativeMessageCountForTesting(extensionID: ext.id), 0)
+            fakeHost?.tearDown()
+            fakeHost = nil
+        }
+    }
 }

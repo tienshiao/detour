@@ -98,7 +98,7 @@ All in `ExtensionTestSupport.swift` unless noted.
 | `workerReplyIsEmpty` | A null reply means either "the worker answered nothing" or "WebKit could not reach it"; `"timeout"` means the callback never fired |
 | `postRawPolyfillEnvelope` | Post to the bridge bypassing the polyfill, so a test can claim any extension id |
 | `callbackOutcomeJS`, `promiseOutcomeJS` | Record how a call settled in callback form (`runtime.lastError`) and promise form |
-| `FakeNativeMessagingHost` | A host process found through `DETOUR_NATIVE_MESSAGING_HOSTS_DIR`: silent by default; its `Behavior` writes fixed bytes, echoes, or answers one request and then exits or stays alive, or ignores SIGTERM (see [native messaging](./native-messaging.md#tests)) |
+| `FakeNativeMessagingHost` | A host process found through `DETOUR_NATIVE_MESSAGING_HOSTS_DIR`: silent by default; its `Behavior` writes fixed bytes, echoes (`.echoesCounted` with its process visible to `processCount()`), or answers one request and then exits or stays alive, or ignores SIGTERM (see [native messaging](./native-messaging.md#tests)) |
 | `LoopbackHTTPServer` | Real http documents for frame tests; a different port is a different origin. A `pending`/`stalled`/`truncated` route's connection is held in the same critical section that records its path, so once a path shows up in `requestedPaths`, `release(_:)` finds its connection (before TASK-237 a release could slip in between and leave the load hanging) |
 | `LoopbackWebSocketServer` | An echo server for the [relay](./websocket-relay.md) |
 | `CRX3TestSupport.swift` | Builds signed CRX3 files in the test |

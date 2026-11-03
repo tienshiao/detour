@@ -59,8 +59,10 @@ class NativeMessagingHost {
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
 
-    /// Called on the main queue when a message is received from the native host.
-    var onMessage: (([String: Any]) -> Void)?
+    /// Called on the main queue when a message is received from the native
+    /// host: any JSON value, not only an object, as in Chrome, where a native
+    /// port's message and a `sendNativeMessage` response are both `any`.
+    var onMessage: ((Any) -> Void)?
     /// Called on the main queue when the native host disconnects (process exit or error),
     /// after every message it wrote before going away.
     var onDisconnect: ((String?) -> Void)?
@@ -229,12 +231,17 @@ class NativeMessagingHost {
     /// in the read loop: native hosts such as 1Password exchange account secrets,
     /// vault items and session tokens over this channel, and the unified log is
     /// readable by anything on the machine. Byte counts and the host name only.
-    func sendMessage(_ message: [String: Any]) throws {
+    ///
+    /// `message` is any JSON value: Chrome's `Port.postMessage` takes `any`,
+    /// and a native port writes it to the host as is (TASK-242). The one-shot
+    /// `sendNativeMessage` refuses anything but an object before it gets here,
+    /// as Chrome's signature check does.
+    func sendMessage(_ message: Any) throws {
         guard let connection, connection.isOpen, let stdinPipe, process?.isRunning == true else {
             throw NativeMessagingError.notConnected
         }
 
-        guard let data = try? JSONSerialization.data(withJSONObject: message) else {
+        guard let data = Self.jsonBody(for: message) else {
             throw NativeMessagingError.invalidMessage
         }
 
@@ -362,7 +369,7 @@ class NativeMessagingHost {
     /// A message the read loop read, unless the connection it came from has
     /// been closed since: an owner that called `disconnect()`, or saw
     /// `onDisconnect`, hears nothing more.
-    private func deliver(_ message: [String: Any], from source: Connection) {
+    private func deliver(_ message: Any, from source: Connection) {
         guard source === connection, source.isOpen else { return }
         onMessage?(message)
     }
@@ -461,11 +468,24 @@ class NativeMessagingHost {
         }
     }
 
-    /// A message body parsed as a JSON object, or nil. `sending`: the result
-    /// is a fresh object graph nothing else refers to, so the read loop can
-    /// hand it to the main actor.
-    nonisolated private static func parsedMessage(_ data: Data) -> sending [String: Any]? {
-        try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    /// A message body parsed as any JSON value (a string, number, array or
+    /// null as well as an object, TASK-242), or nil when it is not JSON.
+    /// `sending`: the result is a fresh object graph nothing else refers to,
+    /// so the read loop can hand it to the main actor.
+    nonisolated private static func parsedMessage(_ data: Data) -> sending Any? {
+        try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
+    }
+
+    /// The JSON body for `message`, any JSON value, or nil when it is not one.
+    /// Validated first, wrapped in an array (the one top-level value
+    /// `isValidJSONObject` accepts that can hold a fragment), because
+    /// `data(withJSONObject:)` raises an Objective-C exception, which Swift
+    /// cannot catch, for a value it cannot encode: NaN or infinity, a
+    /// non-string key, a type that is not JSON. An object encodes exactly as it
+    /// did before fragments were allowed.
+    static func jsonBody(for message: Any) -> Data? {
+        guard JSONSerialization.isValidJSONObject([message]) else { return nil }
+        return try? JSONSerialization.data(withJSONObject: message, options: .fragmentsAllowed)
     }
 
     // MARK: - Errors

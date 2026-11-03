@@ -364,6 +364,14 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 userInfo: [NSLocalizedDescriptionKey: message])
     }
 
+    /// A one-shot `sendNativeMessage` whose message is not an object (TASK-242).
+    /// Chrome throws "No matching signature" for it; this is the wording
+    /// WebKit's own bindings use when they refuse a JS null as the message,
+    /// and WebKit prefixes it with "Invalid call to runtime.sendNativeMessage().".
+    static func nonObjectNativeMessageError() -> NSError {
+        extensionError("The 'message' value is invalid, because an object is expected")
+    }
+
     /// A `javascript:` URL, which `windows.create`, `tabs.create` and
     /// `tabs.update` refuse before anything opens or loads (TASK-225), as
     /// Chrome's MV3 does. Shipped WebKit (macOS 26, Darwin 25.6) hands such a
@@ -2524,6 +2532,18 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             return
         }
 
+        // Chrome declares the message an object and its signature check refuses
+        // a string, number, array or null before anything is sent (TASK-242).
+        // WebKit hands over whatever JSON value the page passed and offers no
+        // way to wrap `sendNativeMessage` in JS, so the refusal is here, before
+        // any host object exists: nothing is looked up or spawned. (Until then
+        // such a message started the host, was never written, and left the
+        // request unanswered and the process running.)
+        guard let messageObject = message as? [String: Any] else {
+            replyHandler(nil, Self.nonObjectNativeMessageError())
+            return
+        }
+
         let host = NativeMessagingHost(hostName: hostName, extensionID: extID)
         let hostKey = ObjectIdentifier(host)
         let request = OneShotNativeRequest(host: host, replyHandler: replyHandler)
@@ -2549,9 +2569,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
         do {
             try host.connect()
-            if let msgDict = message as? [String: Any] {
-                try host.sendMessage(msgDict)
-            }
+            try host.sendMessage(messageObject)
         } catch {
             activeMessagingHosts.removeValue(forKey: hostKey)
             request.finish(nil, error)
@@ -2809,10 +2827,14 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             releaseHost()
             port.disconnect(throwing: nil)
         }
-        port.messageHandler = { message, _ in
-            if let msgDict = message as? [String: Any] {
-                try? host.sendMessage(msgDict)
-            }
+        // Any JSON value goes to the host, as Chrome's `Port.postMessage`
+        // (`any`) sends it: a non-object used to be dropped without a word
+        // (TASK-242). WebKit's bindings refuse a JS null before it gets here;
+        // nil is sent as null all the same. A delivery WebKit reports as an
+        // error carries no message, and nothing is written for it.
+        port.messageHandler = { message, error in
+            guard error == nil else { return }
+            try? host.sendMessage(message ?? NSNull())
         }
         port.disconnectHandler = { _ in
             releaseHost()

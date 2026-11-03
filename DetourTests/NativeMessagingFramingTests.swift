@@ -15,7 +15,7 @@ nonisolated final class NativeMessagingFramingTests: XCTestCase {
 
     private var fixture: FakeNativeMessagingHost?
     private var host: NativeMessagingHost?
-    private var received: [[String: Any]] = []
+    private var received: [Any] = []
     private var disconnects: [String?] = []
 
     @MainActor override func tearDown() async throws {
@@ -108,7 +108,7 @@ nonisolated final class NativeMessagingFramingTests: XCTestCase {
         let output = frame(#"{"n":1}"#) + frame(#"{"n":2}"#) + Data(littleEndianBytesOf: 64) + Data("{".utf8)
         try connect(.writesThenClosesStdout(output))
         try await waitForDisconnect()
-        XCTAssertEqual(received.map { $0["n"] as? Int }, [1, 2])
+        XCTAssertEqual(received.map { ($0 as? [String: Any])?["n"] as? Int }, [1, 2])
         XCTAssertEqual(disconnects, ["Incomplete message read"])
     }
 
@@ -142,8 +142,61 @@ nonisolated final class NativeMessagingFramingTests: XCTestCase {
         try host?.sendMessage(small)
         try host?.sendMessage(large)
         try await waitUntil("both messages to come back") { self.received.count == 2 }
-        XCTAssertEqual(received.first.map { NSDictionary(dictionary: $0) }, NSDictionary(dictionary: small))
-        XCTAssertEqual(received.last.map { NSDictionary(dictionary: $0) }, NSDictionary(dictionary: large))
+        XCTAssertEqual(received.first as? NSDictionary, NSDictionary(dictionary: small))
+        XCTAssertEqual(received.last as? NSDictionary, NSDictionary(dictionary: large))
         XCTAssertTrue(disconnects.isEmpty)
+    }
+
+    // MARK: - Values that are not objects (TASK-242)
+
+    /// A native port carries any JSON value, as Chrome's `Port.postMessage`
+    /// (`any`) does: a string, a number, a boolean, an array or null is written
+    /// as that JSON fragment, framed like an object. An object's bytes are
+    /// unchanged by allowing fragments.
+    @MainActor func testAnyJSONValueEncodesAsItsJSONText() {
+        let cases: [(Any, String)] = [
+            ("hello", #""hello""#), (42, "42"), (1.5, "1.5"), (true, "true"),
+            ([1, "two", NSNull()] as [Any], #"[1,"two",null]"#), (NSNull(), "null"),
+            (["a": "b"], #"{"a":"b"}"#),
+        ]
+        for (value, json) in cases {
+            XCTAssertEqual(NativeMessagingHost.jsonBody(for: value).map { String(decoding: $0, as: UTF8.self) }, json)
+        }
+    }
+
+    /// A value JSON cannot hold is refused (nil), rather than raising the
+    /// Objective-C exception `data(withJSONObject:)` throws for it.
+    @MainActor func testAValueThatIsNotJSONIsRefused() {
+        XCTAssertNil(NativeMessagingHost.jsonBody(for: Double.nan))
+        XCTAssertNil(NativeMessagingHost.jsonBody(for: Double.infinity))
+        XCTAssertNil(NativeMessagingHost.jsonBody(for: Date()))
+        XCTAssertNil(NativeMessagingHost.jsonBody(for: [1: "non-string key"]))
+        XCTAssertNil(NativeMessagingHost.jsonBody(for: ["nested": [Double.nan]]))
+    }
+
+    /// A string, a number, an array and null go out and come back through the
+    /// read loop as the same values.
+    @MainActor func testAnEchoingHostRoundTripsValuesThatAreNotObjects() async throws {
+        try connect(.echoes)
+        for value: Any in ["hello", 42, [1, "two", NSNull()] as [Any], NSNull()] {
+            try host?.sendMessage(value)
+        }
+        try await waitUntil("all four values to come back") { self.received.count == 4 }
+        XCTAssertEqual(received[0] as? String, "hello")
+        XCTAssertEqual(received[1] as? Int, 42)
+        XCTAssertEqual(received[2] as? NSArray, [1, "two", NSNull()] as NSArray)
+        XCTAssertTrue(received[3] is NSNull)
+        XCTAssertTrue(disconnects.isEmpty)
+    }
+
+    /// `sendMessage` with a value that is not JSON throws, writes nothing and
+    /// leaves the connection open.
+    @MainActor func testSendingAValueThatIsNotJSONThrowsAndKeepsTheConnection() async throws {
+        try connect(.echoes)
+        XCTAssertThrowsError(try host?.sendMessage(Double.nan))
+        try host?.sendMessage(["n": 1])
+        try await waitUntil("the message after the refused one to come back") { self.received.count == 1 }
+        XCTAssertEqual((received.first as? [String: Any])?["n"] as? Int, 1)
+        XCTAssertTrue(host?.isConnected ?? false)
     }
 }
