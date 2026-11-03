@@ -61,11 +61,13 @@ final class DevToolbarInspectorGroup: NSObject {
     }
 
     private var pickerTimer: Timer?
+    /// Whether the followed picker has been seen on since `followElementPicker`.
+    private var pickerSeenActive = false
     private static let pickerStartGrace: TimeInterval = 5
 
     /// Reads the picker's state now and follows it if it is on: for a pane
     /// hosted again, whose follower stopped when it left the window.
-    func syncElementPicker(_ isActive: @escaping () -> Bool) {
+    func syncElementPicker(_ isActive: @escaping @MainActor @Sendable () -> Bool) {
         guard elementPickerButton != nil, pickerTimer == nil else { return }
         isElementPickerActive = isActive()
         if isElementPickerActive { followElementPicker(isActive) }
@@ -80,24 +82,28 @@ final class DevToolbarInspectorGroup: NSObject {
     /// which can take seconds on a busy Mac. Following also stops when the
     /// toolbar leaves its window; the window resyncs it when it hosts the
     /// pane again (`syncElementPicker`).
-    func followElementPicker(_ isActive: @escaping () -> Bool) {
+    func followElementPicker(_ isActive: @escaping @MainActor @Sendable () -> Bool) {
         pickerTimer?.invalidate()
         let started = Date()
-        var seenActive = false
+        pickerSeenActive = false
         let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] timer in
-            guard let self else { return timer.invalidate() }
-            guard self.elementPickerButton?.window != nil else {
-                timer.invalidate()
-                self.pickerTimer = nil
-                return
+            // Added to the main run loop below, so this runs on the main thread.
+            let keepFollowing = MainActor.assumeIsolated { () -> Bool in
+                guard let self else { return false }
+                guard self.elementPickerButton?.window != nil else {
+                    self.pickerTimer = nil
+                    return false
+                }
+                let active = isActive()
+                self.isElementPickerActive = active
+                self.pickerSeenActive = self.pickerSeenActive || active
+                if !active, self.pickerSeenActive || Date().timeIntervalSince(started) > Self.pickerStartGrace {
+                    self.pickerTimer = nil
+                    return false
+                }
+                return true
             }
-            let active = isActive()
-            self.isElementPickerActive = active
-            seenActive = seenActive || active
-            if !active, seenActive || Date().timeIntervalSince(started) > Self.pickerStartGrace {
-                timer.invalidate()
-                self.pickerTimer = nil
-            }
+            if !keepFollowing { timer.invalidate() }
         }
         RunLoop.main.add(timer, forMode: .common)
         pickerTimer = timer

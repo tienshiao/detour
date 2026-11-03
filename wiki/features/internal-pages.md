@@ -5,8 +5,11 @@ description: "How Detour serves its own privileged pages into ordinary tabs: sin
 resource: ../../Detour/Browser/InternalPages
 tags: [internal-pages, security, webkit, bridge, navigation]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T02:52:40Z }
 sources:
+  - id: task-231-5
+    resource: backlog:TASK-231.5
+    title: Image loaders, GPU process monitors and dev-mode capture are compiler-checked across threads
   - id: internal-page
     resource: ../../Detour/Browser/InternalPages/InternalPage.swift
     title: InternalPage.swift (InternalPage, InternalPageNavigationPolicy)
@@ -130,6 +133,16 @@ page script toggles classes and the `hidden` property.
 Resources are Swift string literals (`HistoryPageContent.html`, `.css`,
 `.script`); the project bundles no web resources. A nil resource is a 404.
 
+A resource can be answered later from another queue (the favicon route reads
+the history database and may fetch). WebKit raises an Objective-C exception
+when a finished or stopped task is answered, so the handler keeps its live
+tasks in a `SchemeTaskTable` (shared with `FaviconSchemeHandler`), and only a
+`Sendable` ticket crosses to the answering queue. The ticket carries a serial
+as well as the task's identity: a stopped task is released, WebKit can
+allocate the next task at the same address, and identity alone handed the
+old request's late answer to the new one (found in review, TASK-231.5;
+`SchemeTaskTableTests`).[^task-231-5]
+
 ## Layer 3: the bridge
 
 The page's logic is a `WKUserScript` in a private content world
@@ -239,3 +252,4 @@ derived natively from the tab that sent the message, never from the message.
 - [Tab and window bridge](../extensions/tab-and-window-bridge.md) - the extension tab API that refuses `detour://`.
 
 [^delegate-spike]: WKWebView delegate and custom-scheme spike
+[^task-231-5]: TASK-231.5

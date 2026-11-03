@@ -14,7 +14,7 @@ final class TabThumbnailCache {
 
     private let directory: URL
     private let queue = DispatchQueue(label: "com.detourbrowser.mac.tab-thumbnails", qos: .utility)
-    private static let fileExtension = "jpg"
+    nonisolated private static let fileExtension = "jpg"
 
     init(directory: URL) {
         self.directory = directory
@@ -38,7 +38,7 @@ final class TabThumbnailCache {
 
     /// Reads the thumbnail for `key` off the main thread; `completion` runs on
     /// the main thread, with nil when there is none.
-    func image(for key: UUID, completion: @escaping (NSImage?) -> Void) {
+    func image(for key: UUID, completion: @escaping @MainActor @Sendable (NSImage?) -> Void) {
         let url = fileURL(for: key)
         queue.async {
             let image = (try? Data(contentsOf: url)).flatMap(NSImage.init(data:))
@@ -73,7 +73,7 @@ final class TabThumbnailCache {
     /// The thumbnail files in `files` (name → modification date) to delete:
     /// `<uuid>.jpg` files whose key is not live and that predate `cutoff`.
     /// Anything else in the folder is left alone.
-    static func orphans(in files: [String: Date], keeping liveKeys: Set<UUID>, olderThan cutoff: Date) -> [String] {
+    nonisolated static func orphans(in files: [String: Date], keeping liveKeys: Set<UUID>, olderThan cutoff: Date) -> [String] {
         files.compactMap { name, modified in
             let url = URL(fileURLWithPath: name)
             guard url.pathExtension == fileExtension,

@@ -118,7 +118,7 @@ extension BrowserWindowController {
             let name = CaptureFileName.make(host: host, date: date, fullPage: kind == .fullPage)
             // A tall page's PNG is tens of MB: written off the main thread, on
             // one serial queue so two saves never pick the same free name.
-            CaptureDelivery.saveQueue.async {
+            CaptureDelivery.saveQueue.async { [weak self, weak group] in
                 let saved = Swift.Result { try CaptureDelivery.save(png: capture.png, name: name, in: directory) }
                 DispatchQueue.main.async { [weak self, weak group] in
                     group?.isCapturing = false
@@ -149,7 +149,7 @@ extension BrowserWindowController {
             self.webInspectorToggler.toggle(inspectorTab, for: webView)
         }
         let toggler = webInspectorToggler
-        let pickerState: (WKWebView) -> () -> Bool = { webView in
+        let pickerState: (WKWebView) -> @MainActor @Sendable () -> Bool = { webView in
             { [weak webView] in webView.map { toggler.isElementSelectionActive(for: $0) } ?? false }
         }
         group.onPickElement = { [weak self, weak tab, weak group] in

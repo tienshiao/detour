@@ -3,7 +3,8 @@ import UniformTypeIdentifiers
 import WebKit
 
 /// Encoding and scaling for the dev toolbar's captures (TASK-186.3).
-enum CaptureImage {
+/// Nonisolated: run off the main thread (`PageCapture.encode`).
+nonisolated enum CaptureImage {
     /// PNG data for `image` at its own pixel size, with `dpi` recorded so it
     /// previews at the page's size in points.
     static func pngData(_ image: CGImage, dpi: CGFloat) -> Data? {
@@ -73,11 +74,11 @@ enum CaptureDelivery {
     }
 
     /// Where the window runs `save`, off the main thread and one at a time.
-    static let saveQueue = DispatchQueue(label: "com.detourbrowser.capture-save", qos: .userInitiated)
+    nonisolated static let saveQueue = DispatchQueue(label: "com.detourbrowser.capture-save", qos: .userInitiated)
 
     /// Writes `png` to `directory` under `name`, made unique so nothing is
     /// overwritten, and returns where it went.
-    static func save(png: Data, name: String, in directory: URL) throws -> URL {
+    nonisolated static func save(png: Data, name: String, in directory: URL) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = CaptureFileName.unique(name, in: directory)
         try png.write(to: url, options: .withoutOverwriting)
@@ -147,7 +148,7 @@ enum PageCapture {
         case encodingFailed
     }
 
-    typealias Completion = (Swift.Result<Result, Failure>) -> Void
+    typealias Completion = @MainActor @Sendable (Swift.Result<Result, Failure>) -> Void
 
     /// WebKit can drop a snapshot or PDF request without answering (no
     /// local main frame); the capture then fails after this long instead of
@@ -273,7 +274,7 @@ enum PageCapture {
     /// Makes the image (`make` scales or rasterises it, if need be) and its
     /// PNG in one trip off the main thread: both take a while for a tall page.
     private static func encode(dpi: CGFloat, scaledDown: Bool, completion: @escaping Completion,
-                               image make: @escaping () -> CGImage?) {
+                               image make: @escaping @Sendable () -> CGImage?) {
         DispatchQueue.global(qos: .userInitiated).async {
             let image = make()
             let png = image.flatMap { CaptureImage.pngData($0, dpi: dpi) }

@@ -1,4 +1,5 @@
 import AppKit
+import Synchronization
 import ImageIO
 
 /// Fetches the artwork a page names in its Media Session metadata, for the
@@ -27,9 +28,9 @@ final class MediaArtworkLoader {
 
     static let maxResponseBytes = 2 * 1024 * 1024
     /// The widest image decoded at all; larger ones are refused from their header.
-    static let maxPixelSide = 4096
+    nonisolated static let maxPixelSide = 4096
     /// The decoded size: the pixels `MediaSessionReport` picks an image for.
-    static let thumbnailPixels = MediaSessionReport.preferredArtworkPixels
+    nonisolated static let thumbnailPixels = MediaSessionReport.preferredArtworkPixels
     static let defaultDebounce: TimeInterval = 0.25
 
     static func makeSessionConfiguration() -> URLSessionConfiguration {
@@ -49,7 +50,7 @@ final class MediaArtworkLoader {
     /// Decodes `data` to an image at most `thumbnailPixels` on its longer
     /// side. Nil for anything ImageIO cannot read, and for an image whose
     /// header names a side over `maxPixelSide` (never decoded).
-    static func decodeArtwork(_ data: Data, maxPixelSide: Int = maxPixelSide,
+    nonisolated static func decodeArtwork(_ data: Data, maxPixelSide: Int = maxPixelSide,
                               thumbnailPixels: Int = thumbnailPixels) -> NSImage? {
         let noCache = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(data as CFData, noCache), CGImageSourceGetCount(source) > 0,
@@ -71,7 +72,7 @@ final class MediaArtworkLoader {
     /// returns a function that cancels it. The completion gets the body, or
     /// nil (error, non-200, over the cap, cancelled), on any thread. A test
     /// seam: tests replace it to finish fetches by hand.
-    typealias Fetch = (URL, Bool, @escaping (Data?) -> Void) -> () -> Void
+    typealias Fetch = (URL, Bool, @escaping @Sendable (Data?) -> Void) -> () -> Void
     var fetch: Fetch
     var debounce: TimeInterval
 
@@ -165,17 +166,20 @@ final class MediaArtworkLoader {
 
 /// Downloads into memory up to a byte limit: a declared length over it is
 /// refused at the response, and a body that grows past it is cancelled.
+///
+/// Its callbacks run on the session's own serial queue; the downloads are
+/// behind a mutex, read and changed only inside it.
 private final class CappedDataFetcher: NSObject, URLSessionDataDelegate {
     private let limit: Int
-    private let lock = NSLock()
-    private var downloads: [Int: Download] = [:]
-    private var session: URLSession!
+    private let downloads = Mutex<[Int: Download]>([:])
+    /// Set once in `init`, before the fetcher is shared, and only read after:
+    /// the session needs the fetcher as its delegate, so it cannot be a `let`.
+    nonisolated(unsafe) private var session: URLSession!
 
-    private final class Download {
+    private struct Download {
         var data = Data()
         var refused = false
-        let completion: (Data?) -> Void
-        init(completion: @escaping (Data?) -> Void) { self.completion = completion }
+        let completion: @Sendable (Data?) -> Void
     }
 
     init(configuration: URLSessionConfiguration, limit: Int) {
@@ -187,27 +191,23 @@ private final class CappedDataFetcher: NSObject, URLSessionDataDelegate {
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
     }
 
-    func start(_ url: URL, completion: @escaping (Data?) -> Void) -> () -> Void {
+    func start(_ url: URL, completion: @escaping @Sendable (Data?) -> Void) -> () -> Void {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         request.httpShouldHandleCookies = false
         let task = session.dataTask(with: request)
-        lock.withLock { downloads[task.taskIdentifier] = Download(completion: completion) }
+        downloads.withLock { $0[task.taskIdentifier] = Download(completion: completion) }
         task.resume()
         return { [weak task] in task?.cancel() }
     }
 
     func invalidate() { session.invalidateAndCancel() }
 
-    private func download(for task: URLSessionTask) -> Download? {
-        lock.withLock { downloads[task.taskIdentifier] }
-    }
-
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         let status = (response as? HTTPURLResponse)?.statusCode
         // -1 when the length is not declared: the body is counted instead.
         guard status == 200, response.expectedContentLength <= Int64(limit) else {
-            download(for: dataTask)?.refused = true
+            downloads.withLock { $0[dataTask.taskIdentifier]?.refused = true }
             completionHandler(.cancel)
             return
         }
@@ -215,17 +215,23 @@ private final class CappedDataFetcher: NSObject, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard let download = download(for: dataTask), !download.refused else { return }
-        download.data.append(data)
-        if download.data.count > limit {
-            download.refused = true
-            download.data = Data()
-            dataTask.cancel()
+        let limit = limit
+        let id = dataTask.taskIdentifier
+        let overLimit = downloads.withLock { downloads -> Bool in
+            // In place through the subscript: copying the record out would copy
+            // its buffer for every chunk.
+            guard downloads[id]?.refused == false else { return false }
+            downloads[id]?.data.append(data)
+            guard let count = downloads[id]?.data.count, count > limit else { return false }
+            downloads[id]?.refused = true
+            downloads[id]?.data = Data()
+            return true
         }
+        if overLimit { dataTask.cancel() }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let download = lock.withLock({ downloads.removeValue(forKey: task.taskIdentifier) }) else { return }
+        guard let download = downloads.withLock({ $0.removeValue(forKey: task.taskIdentifier) }) else { return }
         download.completion(error == nil && !download.refused ? download.data : nil)
     }
 }

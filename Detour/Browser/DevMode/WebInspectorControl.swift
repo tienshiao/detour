@@ -48,7 +48,7 @@ enum InspectorToggle {
 @MainActor
 struct WebInspectorControl {
     /// What this WebKit supports; the toolbar shows a button only for these.
-    struct Capabilities: OptionSet {
+    nonisolated struct Capabilities: OptionSet, Sendable {
         let rawValue: Int
         static let console = Capabilities(rawValue: 1 << 0)
         static let network = Capabilities(rawValue: 1 << 1)
@@ -56,7 +56,7 @@ struct WebInspectorControl {
     }
 
     /// Built from strings: the SPI is not in the SDK headers.
-    enum Selectors {
+    nonisolated enum Selectors {
         static let inspector = NSSelectorFromString("_inspector")
         static let show = NSSelectorFromString("show")
         static let close = NSSelectorFromString("close")

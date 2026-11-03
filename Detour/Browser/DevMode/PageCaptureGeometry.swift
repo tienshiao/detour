@@ -3,7 +3,7 @@ import AppKit
 /// The pixel math of the dev toolbar's captures (TASK-186.3): the PNG is at
 /// device pixels (a 1000 x 700 pt pane on a 2x display gives 2000 x 1400 px),
 /// scaled down, never up, to fit `maxPixelEdge` and `maxPixelArea`.
-enum CaptureGeometry {
+nonisolated enum CaptureGeometry {
     /// The longest edge a capture may have. 16384 px is the texture limit of
     /// most GPUs and about the largest image browsers, chat clients and
     /// design tools take on paste without refusing or shrinking it; a longer
@@ -81,7 +81,7 @@ enum CaptureGeometry {
 /// The name of a capture saved to Downloads: "Screenshot localhost-3000
 /// 2026-10-24 at 21.05.03.png", "... (full page).png", made unique with
 /// " (2)", " (3)" ... so a capture never overwrites a file.
-enum CaptureFileName {
+nonisolated enum CaptureFileName {
     static func make(host: String, date: Date, fullPage: Bool, timeZone: TimeZone = .current) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

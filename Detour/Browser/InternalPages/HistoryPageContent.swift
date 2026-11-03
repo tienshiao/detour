@@ -9,7 +9,7 @@ enum HistoryPageContent {
 
     /// Serves one resource of `detour://history/`. The completion may be called
     /// on any queue — the favicon route answers from a background queue.
-    static func resource(for url: URL, completion: @escaping (InternalPageResource?) -> Void) {
+    static func resource(for url: URL, completion: @escaping @Sendable (InternalPageResource?) -> Void) {
         switch url.path {
         case "", "/": completion(.text(html, mimeType: "text/html; charset=utf-8"))
         case "/page.css": completion(.text(css, mimeType: "text/css; charset=utf-8"))
@@ -24,7 +24,7 @@ enum HistoryPageContent {
     /// gets fetched is the one Detour already recorded for that page, so this
     /// route cannot be used to reach an arbitrary host. Unknown pages 404, which
     /// the page renders as a blank placeholder (no image, no second request).
-    private static func favicon(for url: URL, completion: @escaping (InternalPageResource?) -> Void) {
+    private static func favicon(for url: URL, completion: @escaping @Sendable (InternalPageResource?) -> Void) {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         guard let pageURL = items.first(where: { $0.name == "pageUrl" })?.value, !pageURL.isEmpty else {
             completion(nil)

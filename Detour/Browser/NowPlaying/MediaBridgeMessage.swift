@@ -20,7 +20,7 @@ struct MediaSessionReport: Equatable {
     /// The longest text the bar keeps from a page.
     static let maxTextLength = 200
     /// The artwork the bar draws, in pixels (its 28 pt square at 2x is 56).
-    static let preferredArtworkPixels = 64
+    nonisolated static let preferredArtworkPixels = 64
 }
 
 /// A message from `MediaSessionBridge`'s isolated-world script, validated.
