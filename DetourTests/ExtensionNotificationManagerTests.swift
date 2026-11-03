@@ -28,6 +28,8 @@ final class HeldNotificationCenter: ExtensionNotificationCenter {
     private(set) var addedRequests: [UNNotificationRequest] = []
 
     var heldCount: Int { held.count }
+    /// The titles of the adds still held, in call order.
+    var heldTitles: [String] { held.map(\.request.content.title) }
 
     /// False: every `add` answers at once and shows its notification, for a
     /// test about who sees what rather than about ordering.
@@ -67,6 +69,47 @@ final class HeldNotificationCenter: ExtensionNotificationCenter {
     /// Answers every held `add` in call order.
     func releaseAll() {
         while !held.isEmpty { release() }
+    }
+
+    // MARK: Authorization (TASK-253)
+
+    /// What `authorizationStatus()` answers. Authorized by default, so a test
+    /// not about authorization sees every `add`.
+    var authorization: ExtensionNotificationAuthorization = .authorized
+    /// How many times the manager asked for the status.
+    private(set) var statusQueries = 0
+    /// How many times the manager asked the user (the system prompt).
+    private(set) var authorizationRequests = 0
+    /// What the user answers when `holdsAuthorizationRequests` is false.
+    var grantsAuthorization = true
+    /// True: a request waits until `answerAuthorizationRequests` is called,
+    /// as the system prompt waits for the user.
+    var holdsAuthorizationRequests = false
+    private var heldAuthorizationRequests: [CheckedContinuation<Bool, Never>] = []
+
+    var heldAuthorizationRequestCount: Int { heldAuthorizationRequests.count }
+
+    func authorizationStatus() async -> ExtensionNotificationAuthorization {
+        statusQueries += 1
+        return authorization
+    }
+
+    func requestAuthorization() async -> Bool {
+        authorizationRequests += 1
+        if !holdsAuthorizationRequests {
+            authorization = grantsAuthorization ? .authorized : .denied
+            return grantsAuthorization
+        }
+        return await withCheckedContinuation { heldAuthorizationRequests.append($0) }
+    }
+
+    /// The user answers every held prompt; the status follows, as the
+    /// system's does.
+    func answerAuthorizationRequests(granting: Bool) {
+        authorization = granting ? .authorized : .denied
+        let waiting = heldAuthorizationRequests
+        heldAuthorizationRequests.removeAll()
+        for continuation in waiting { continuation.resume(returning: granting) }
     }
 }
 
@@ -183,6 +226,212 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         XCTAssertNil(TestHostNotificationCenter.shared.shown[identifier])
     }
 
+    // MARK: - Authorization (TASK-253)
+
+    /// The manager awaits the authorization check from a task, so wait for
+    /// the prompt to reach the center.
+    @MainActor private func waitForPrompt(file: StaticString = #filePath, line: UInt = #line) async throws {
+        try await waitUntil("the authorization prompt is up", timeout: 5, pollInterval: 0.01,
+                            file: file, line: line) { center.heldAuthorizationRequestCount >= 1 }
+    }
+
+    @MainActor func testAuthorizedCreateIsShownWithoutAsking() async throws {
+        center.holdsAdds = false
+        let create = startCreate("ok", title: "Hello")
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(create.answeredID(), "ok")
+        XCTAssertEqual(center.shown[identifier("ok")], "Hello")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["ok": true])
+        XCTAssertEqual(center.authorizationRequests, 0, "an authorized app is never prompted")
+        XCTAssertEqual(center.statusQueries, 1)
+    }
+
+    /// Denied earlier: the create answers its id, as Chrome's does when the
+    /// OS blocks notifications, but nothing is shown or listed, and clear and
+    /// update find nothing.
+    @MainActor func testDeniedCreateAnswersItsIDButIsNeitherShownNorListed() async throws {
+        center.authorization = .denied
+        center.holdsAdds = false
+        let create = startCreate("blocked", title: "Hello")
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(create.answeredID(), "blocked", "create succeeds silently with the id")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:], "a notification never shown is not listed")
+        XCTAssertTrue(center.addedIdentifiers.isEmpty)
+        XCTAssertEqual(center.authorizationRequests, 0, "a denied app is not prompted again")
+        XCTAssertNil(manager.identifier(for: Self.ownerA, notificationID: "blocked"))
+
+        XCTAssertEqual(clear("blocked"), false, "the denied notification does not exist")
+        let update = startUpdate("blocked", title: "After")
+        await fulfillment(of: [update.done], timeout: 5)
+        XCTAssertEqual(update.result(), false)
+        XCTAssertTrue(center.addedIdentifiers.isEmpty)
+    }
+
+    /// Not determined: the first create asks and waits for the answer; once
+    /// granted, later creates are shown without asking. When the user then
+    /// turns notifications off in System Settings, the next create is dropped.
+    @MainActor func testNotDeterminedAsksAtTheFirstCreateThenFollowsTheStatus() async throws {
+        center.authorization = .notDetermined
+        center.holdsAuthorizationRequests = true
+        center.holdsAdds = false
+        let first = startCreate("first", title: "First")
+        try await waitForPrompt()
+        XCTAssertNil(first.answeredID(), "the create waits for the user's answer")
+        XCTAssertTrue(center.addedIdentifiers.isEmpty, "nothing is added before the answer")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["first": true],
+                       "a create waiting for authorization is listed, as one whose add is in flight")
+
+        center.answerAuthorizationRequests(granting: true)
+        await fulfillment(of: [first.done], timeout: 5)
+        XCTAssertEqual(first.answeredID(), "first")
+        XCTAssertEqual(center.shown[identifier("first")], "First")
+
+        let second = startCreate("second", title: "Second")
+        await fulfillment(of: [second.done], timeout: 5)
+        XCTAssertEqual(center.shown[identifier("second")], "Second")
+        XCTAssertEqual(center.authorizationRequests, 1, "granted once, never asked again")
+        XCTAssertEqual(center.statusQueries, 2, "the status is asked afresh for each create")
+
+        // The user turns Detour's notifications off in System Settings.
+        center.authorization = .denied
+        let third = startCreate("third", title: "Third")
+        await fulfillment(of: [third.done], timeout: 5)
+        XCTAssertEqual(third.answeredID(), "third")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["first": true, "second": true],
+                       "the denied create is not listed; the ones shown before stay")
+        XCTAssertEqual(center.authorizationRequests, 1)
+        XCTAssertEqual(center.addedIdentifiers.count, 2)
+    }
+
+    @MainActor func testNotDeterminedThenDeclinedDropsTheWaitingCreates() async throws {
+        center.authorization = .notDetermined
+        center.holdsAuthorizationRequests = true
+        center.holdsAdds = false
+        let a = startCreate("a", title: "A")
+        let b = startCreate("b", title: "B")
+        try await waitForPrompt()
+
+        center.answerAuthorizationRequests(granting: false)
+        await fulfillment(of: [a.done, b.done], timeout: 5)
+        XCTAssertEqual(a.answeredID(), "a", "a declined create still answers its id")
+        XCTAssertEqual(b.answeredID(), "b")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertTrue(center.addedIdentifiers.isEmpty)
+        XCTAssertEqual(clear("a"), false)
+
+        let later = startCreate("later", title: "Later")
+        await fulfillment(of: [later.done], timeout: 5)
+        XCTAssertEqual(center.authorizationRequests, 1, "a declined prompt is not shown again")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+    }
+
+    /// Creates arriving before the user answers — from any extension and
+    /// profile — wait on the one prompt.
+    @MainActor func testConcurrentFirstCreatesShareOnePrompt() async throws {
+        center.authorization = .notDetermined
+        center.holdsAuthorizationRequests = true
+        center.holdsAdds = false
+        let a = startCreate("x", title: "A's")
+        let b = startCreate("x", title: "B's", owner: Self.ownerB)
+        let a2 = startCreate("x", title: "A2's", owner: Self.ownerA2)
+        try await waitForPrompt()
+        let late = startCreate("late", title: "Late")
+        // Give the late create's task time to run and join the waiting check.
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(center.authorizationRequests, 1, "one prompt for every waiting create")
+        XCTAssertEqual(center.statusQueries, 1, "the waiting creates share one status check")
+
+        center.answerAuthorizationRequests(granting: true)
+        await fulfillment(of: [a.done, b.done, a2.done, late.done], timeout: 5)
+        XCTAssertEqual(center.authorizationRequests, 1)
+        // A late create that had missed the check would have asked afresh.
+        XCTAssertEqual(center.statusQueries, 1, "the late create joined the check in flight")
+        XCTAssertEqual(Set(center.shown.values), ["A's", "B's", "A2's", "Late"])
+    }
+
+    /// A clear during the wait answers true and drops the entry, and once the
+    /// user allows notifications the cleared create adds nothing.
+    @MainActor func testClearDuringTheAuthorizationWaitMeansNothingIsShown() async throws {
+        center.authorization = .notDetermined
+        center.holdsAuthorizationRequests = true
+        center.holdsAdds = false
+        let create = startCreate("x", title: "Hello")
+        try await waitForPrompt()
+        XCTAssertEqual(clear("x"), true, "a create waiting for authorization counts as existing")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+
+        center.answerAuthorizationRequests(granting: true)
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(create.answeredID(), "x")
+        XCTAssertTrue(center.addedIdentifiers.isEmpty, "the cleared create never reaches the center")
+        XCTAssertTrue(center.shown.isEmpty)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+    }
+
+    /// An update during the wait merges into the waiting create; once
+    /// allowed, only the updated notification is added.
+    @MainActor func testUpdateDuringTheAuthorizationWaitShowsTheUpdatedNotification() async throws {
+        center.authorization = .notDetermined
+        center.holdsAuthorizationRequests = true
+        center.holdsAdds = false
+        let create = startCreate("u", title: "Before")
+        try await waitForPrompt()
+        let update = startUpdate("u", title: "After")
+
+        center.answerAuthorizationRequests(granting: true)
+        await fulfillment(of: [create.done, update.done], timeout: 5)
+        XCTAssertEqual(create.answeredID(), "u")
+        XCTAssertEqual(update.result(), true)
+        XCTAssertEqual(center.addedIdentifiers, [identifier("u")],
+                       "the superseded create adds nothing, so a stale add cannot land after the update's")
+        XCTAssertEqual(center.shown[identifier("u")], "After")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["u": true])
+        XCTAssertEqual(center.authorizationRequests, 1)
+    }
+
+    @MainActor func testUpdateDuringTheAuthorizationWaitAnswersFalseWhenDeclined() async throws {
+        center.authorization = .notDetermined
+        center.holdsAuthorizationRequests = true
+        center.holdsAdds = false
+        let create = startCreate("u", title: "Before")
+        try await waitForPrompt()
+        let update = startUpdate("u", title: "After")
+
+        center.answerAuthorizationRequests(granting: false)
+        await fulfillment(of: [create.done, update.done], timeout: 5)
+        XCTAssertEqual(create.answeredID(), "u", "the create still answers its id")
+        XCTAssertEqual(update.result(), false, "the notification was never shown, so the update did not apply")
+        XCTAssertTrue(center.addedIdentifiers.isEmpty)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertEqual(clear("u"), false)
+    }
+
+    /// Notifications turned off after one was shown: re-creating or updating
+    /// its id is dropped, and the one on screen goes with it, since the
+    /// extension no longer has it.
+    @MainActor func testDeniedCreateOrUpdateOfAShownIDTakesTheOldOneAway() async throws {
+        center.holdsAdds = false
+        let shown = startCreate("x", title: "Shown")
+        let other = startCreate("y", title: "Other")
+        await fulfillment(of: [shown.done, other.done], timeout: 5)
+        let xIdentifier = identifier("x")
+        let yIdentifier = identifier("y")
+
+        center.authorization = .denied
+        let again = startCreate("x", title: "Again")
+        await fulfillment(of: [again.done], timeout: 5)
+        XCTAssertEqual(again.answeredID(), "x")
+        XCTAssertNil(center.shown[xIdentifier], "the earlier notification under the id is taken away")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["y": true])
+
+        let update = startUpdate("y", title: "Updated")
+        await fulfillment(of: [update.done], timeout: 5)
+        XCTAssertEqual(update.result(), false)
+        XCTAssertNil(center.shown[yIdentifier])
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertEqual(center.addedIdentifiers.count, 2, "nothing is added once denied")
+    }
+
     // MARK: - Clear while the create is in flight
 
     @MainActor func testClearWhileCreateInFlightRemovesTheNotification() async throws {
@@ -203,14 +452,16 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
                        "once by the clear, once more when the add returns")
     }
 
-    /// The clear is issued before the task that calls `add` has even run.
+    /// The clear is issued before the task that calls `add` has even run, so
+    /// while the create still waits for authorization: no add is made at all
+    /// (TASK-253).
     @MainActor func testClearBeforeAddIsCalledRemovesTheNotification() async throws {
         let create = startCreate("early", title: "Hello")
         XCTAssertEqual(clear("early"), true)
-        try await waitForHeldAdds(1)
-        center.release()
         await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(create.answeredID(), "early")
         XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertTrue(center.addedIdentifiers.isEmpty, "a create cleared before its add never reaches the center")
         XCTAssertTrue(center.shown.isEmpty)
     }
 
@@ -270,10 +521,8 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         await fulfillment(of: [update.done], timeout: 5)
         XCTAssertEqual(update.result(), false, "a cleared notification cannot be updated")
 
-        try await waitForHeldAdds(1)
-        center.releaseAll()
         await fulfillment(of: [create.done], timeout: 5)
-        XCTAssertEqual(center.addedIdentifiers, [identifier("gone")], "the update added nothing")
+        XCTAssertEqual(center.addedIdentifiers, [], "neither the cleared create nor the update added anything")
         XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
         XCTAssertTrue(center.shown.isEmpty)
     }
@@ -289,6 +538,7 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
 
     @MainActor func testCreateClearCreateShowsTheSecondNotification() async throws {
         let first = startCreate("again", title: "First")
+        try await waitForHeldAdds(1)
         XCTAssertEqual(clear("again"), true)
         let second = startCreate("again", title: "Second")
         try await waitForHeldAdds(2)
@@ -305,8 +555,8 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
 
     @MainActor func testCreateClearCreateWithTheFirstAddAnsweringLast() async throws {
         let first = startCreate("swap", title: "First")
-        XCTAssertEqual(clear("swap"), true)
         try await waitForHeldAdds(1)
+        XCTAssertEqual(clear("swap"), true)
         let second = startCreate("swap", title: "Second")
         try await waitForHeldAdds(2)
 
@@ -322,8 +572,8 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
     /// The first add answers before the second create is even made.
     @MainActor func testCreateClearSettleThenCreateAgain() async throws {
         let first = startCreate("seq", title: "First")
-        XCTAssertEqual(clear("seq"), true)
         try await waitForHeldAdds(1)
+        XCTAssertEqual(clear("seq"), true)
         center.release()
         await fulfillment(of: [first.done], timeout: 5)
         XCTAssertTrue(center.shown.isEmpty)
@@ -366,10 +616,10 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
     /// answer false.
     @MainActor func testClearAnswersOnlyForTheOwnersNotification() async throws {
         let create = startCreate("mine", title: "A's")
+        try await waitForHeldAdds(1)
         XCTAssertEqual(clear("mine", owner: Self.ownerB), false)
         XCTAssertEqual(clear("mine", owner: Self.ownerA2), false)
         XCTAssertEqual(clear("mine"), true, "in flight counts as existing")
-        try await waitForHeldAdds(1)
         center.release()
         await fulfillment(of: [create.done], timeout: 5)
     }
@@ -419,9 +669,12 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         manager.update(owner: Self.ownerA, notificationID: "inflight", options: ["message": "Changed"]) { _ in
             updated.fulfill()
         }
-        try await waitForHeldAdds(2)
+        // The update supersedes the create before its authorization check
+        // finishes, so only the update adds (TASK-253).
+        try await waitForHeldAdds(1)
         center.releaseAll()
         await fulfillment(of: [create.done, updated], timeout: 5)
+        XCTAssertEqual(center.addedRequests.count, 1)
         let content = try XCTUnwrap(center.addedRequests.last?.content)
         XCTAssertEqual(content.title, "Kept")
         XCTAssertEqual(content.body, "Changed")

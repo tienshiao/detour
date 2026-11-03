@@ -360,14 +360,17 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         case page, worker
     }
 
-    /// Runs one ordering from `transport`. Once the center holds `adds` adds
-    /// and has seen `removals` removals — so every call the ordering makes has
-    /// arrived while the first create is still in flight — releases them in
-    /// call order and returns what the extension saw.
+    /// Runs one ordering from `transport`. Once the center holds an add for
+    /// each of `heldTitles` and has seen `removals` removals — so every call
+    /// the ordering makes has arrived while the first create is still in
+    /// flight — releases the held adds in call order and returns what the
+    /// extension saw. Whether the first create's own add is among them
+    /// depends on timing: a clear or update that arrives while it still waits
+    /// for authorization means it never adds (TASK-253), so only the adds the
+    /// ordering always makes are waited for.
     @MainActor private func race(_ mode: String, id: String, via transport: Transport, in page: WKWebView,
-                                 center: HeldNotificationCenter, adds: Int, removals: Int,
+                                 center: HeldNotificationCenter, heldTitles: [String], removals: Int,
                                  file: StaticString = #filePath, line: UInt = #line) async throws -> [String: Any] {
-        let addsBefore = center.addedIdentifiers.count
         let removalsBefore = center.removals.count
         // Both legs hand back JSON text: a task's result has to be Sendable.
         let outcome: Task<String?, any Error>
@@ -385,10 +388,9 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
                 return String(decoding: try JSONSerialization.data(withJSONObject: envelope), as: UTF8.self)
             }
         }
-        try await waitUntil("\(transport) \(mode): \(adds) add(s) held and \(removals) removal(s)",
+        try await waitUntil("\(transport) \(mode): adds \(heldTitles) held and \(removals) removal(s)",
                             timeout: 10, pollInterval: 0.02, file: file, line: line) {
-            center.addedIdentifiers.count - addsBefore >= adds
-                && center.heldCount >= adds
+            Set(heldTitles).isSubset(of: center.heldTitles)
                 && center.removals.count - removalsBefore >= removals
         }
         center.releaseAll()
@@ -518,7 +520,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         for transport in [Transport.page, .worker] {
             let id = "clear-\(transport)"
             let outcome = try await race("clear", id: id, via: transport, in: page, center: center,
-                                         adds: 1, removals: 1)
+                                         heldTitles: [], removals: 1)
             XCTAssertNil(outcome["error"], "\(transport): \(outcome)")
             XCTAssertEqual(outcome["createdID"] as? String, id, "\(transport): create still answers its id")
             XCTAssertEqual(outcome["cleared"] as? Bool, true, "\(transport)")
@@ -537,7 +539,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         for transport in [Transport.page, .worker] {
             let id = "clear-cb-\(transport)"
             let outcome = try await race("clearCallback", id: id, via: transport, in: page, center: center,
-                                         adds: 1, removals: 1)
+                                         heldTitles: [], removals: 1)
             XCTAssertNil(outcome["error"], "\(transport): \(outcome)")
             XCTAssertEqual(outcome["cleared"] as? Bool, true, "\(transport): in flight counts as existing")
             XCTAssertTrue(outcome["lastError"] is NSNull, "\(transport): \(outcome)")
@@ -621,7 +623,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         for transport in [Transport.page, .worker] {
             let id = "update-\(transport)"
             let outcome = try await race("update", id: id, via: transport, in: page, center: center,
-                                         adds: 2, removals: 0)
+                                         heldTitles: ["After"], removals: 0)
             XCTAssertNil(outcome["error"], "\(transport): \(outcome)")
             XCTAssertEqual(outcome["updated"] as? Bool, true,
                            "\(transport): the notification being created exists, so the update applies")
@@ -638,7 +640,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         for transport in [Transport.page, .worker] {
             let id = "again-\(transport)"
             let outcome = try await race("clearThenCreate", id: id, via: transport, in: page, center: center,
-                                         adds: 2, removals: 1)
+                                         heldTitles: ["Second"], removals: 1)
             XCTAssertNil(outcome["error"], "\(transport): \(outcome)")
             XCTAssertEqual(outcome["cleared"] as? Bool, true, "\(transport)")
             XCTAssertEqual(outcome["secondID"] as? String, id, "\(transport)")
@@ -908,6 +910,54 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         XCTAssertEqual(center.shown.values.sorted(), ["Second", "Second"])
         let secondListed = try await listed("unload-", via: .worker, in: secondPage)
         XCTAssertEqual(secondListed, ["unload-page", "unload-worker"])
+    }
+
+    /// With notifications denied (TASK-253), `create` from the page and the
+    /// worker resolves with its id as Chrome's does when the OS blocks
+    /// notifications, while nothing is shown, `getAll` does not list it, and
+    /// `clear` and `update` answer false for it.
+    @MainActor func testDeniedCreateAnswersItsIDFromBothTransportsAndIsNotListed() async throws {
+        let ext = try await makeExtension()
+        let (profile, center) = try makeProfile("Notification Denied")
+        center.holdsAdds = false
+        center.authorization = .denied
+        let page = try await loadPage(ext, in: profile)
+
+        for transport in [Transport.page, .worker] {
+            let id = "denied-\(transport)"
+            let created = try await call("create", id, title: "Blocked", via: transport, in: page)
+            XCTAssertEqual(created as? String, id, "\(transport): create succeeds silently with its id")
+            let listedIDs = try await listed("denied-", via: transport, in: page)
+            XCTAssertEqual(listedIDs, [], "\(transport)")
+            let updated = try await call("update", id, title: "Still blocked", via: transport, in: page)
+            XCTAssertEqual(updated as? Bool, false, "\(transport)")
+            let cleared = try await call("clear", id, via: transport, in: page)
+            XCTAssertEqual(cleared as? Bool, false, "\(transport)")
+        }
+        XCTAssertTrue(center.addedIdentifiers.isEmpty, "nothing reaches the center")
+        XCTAssertEqual(center.authorizationRequests, 0, "a denied app is not prompted")
+    }
+
+    /// Not determined (TASK-253): the first `create`, from whichever
+    /// transport, asks the user once; once allowed, it and every later one
+    /// are shown and listed.
+    @MainActor func testNotDeterminedCreateAsksOnceThenShowsFromBothTransports() async throws {
+        let ext = try await makeExtension()
+        let (profile, center) = try makeProfile("Notification Not Determined")
+        center.holdsAdds = false
+        center.authorization = .notDetermined
+        center.grantsAuthorization = true
+        let page = try await loadPage(ext, in: profile)
+
+        for transport in [Transport.page, .worker] {
+            let id = "asked-\(transport)"
+            let created = try await call("create", id, title: "Allowed", via: transport, in: page)
+            XCTAssertEqual(created as? String, id, "\(transport)")
+            XCTAssertEqual(center.shown[identifier(id, of: ext, in: profile)], "Allowed", "\(transport)")
+            let listedIDs = try await listed("asked-\(transport)", via: transport, in: page)
+            XCTAssertEqual(listedIDs, [id], "\(transport)")
+        }
+        XCTAssertEqual(center.authorizationRequests, 1, "the user is asked once, at the first create")
     }
 
     /// A request that reaches a handler whose profile has been released names

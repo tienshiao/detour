@@ -82,6 +82,9 @@ sources:
   - id: chrome-notifications-api
     resource: https://developer.chrome.com/docs/extensions/reference/api/notifications
     title: chrome.notifications API reference
+  - id: task-253
+    resource: backlog:TASK-253
+    title: "Extensions: Detour never requests notification permission, so extension notifications may never be shown"
 ---
 
 `ExtensionAPIPolyfill` generates one JavaScript bundle (`polyfillJS`) that runs
@@ -339,13 +342,45 @@ calls apply in order, but it needs a queue per id, makes `clear` wait for the
 `add`, and still has to decide what `getAll` says in between.
 
 The manager talks to the center through `ExtensionNotificationCenter` (`add`,
-`removeNotifications`), a seam for tests: `HeldNotificationCenter` holds every
-`add` until the test releases it. Nothing in Detour calls
-`requestPermission()`, so whether the system shows anything depends on an
-authorization the app never asks for. On the development machine the
-`com.detourbrowser.mac` bundle id is authorized (a Debug build's `add`
-succeeded in the TASK-234 `/verify` run); without that authorization every
-`add` would fail and `getAll` would stay empty.[^notification-manager]
+`removeNotifications`, `authorizationStatus`, `requestAuthorization`), a seam
+for tests: `HeldNotificationCenter` holds every `add`, and optionally every
+authorization prompt, until the test releases it.[^notification-manager]
+
+## chrome.notifications asks for authorization at the first create
+
+Detour asks for notification authorization the first time any extension calls
+`notifications.create` (a product decision; at install or from Settings were
+the alternatives), and that create waits for the user's answer. Before
+TASK-253 nothing asked, so on a fresh install `create` reported success and
+nothing appeared.[^task-253]
+
+- Every create and update asks the center for the status first, so a change
+  the user makes in System Settings applies to the next call. `provisional`
+  counts as allowed (`ephemeral` is unavailable on macOS).
+- One check at a time: creates and updates arriving while the status query or
+  the prompt is in flight wait on that check, so one prompt answers them all.
+  They resume in call order (a list of continuations; awaiting a shared
+  `Task`'s `value` resumed four waiters in reverse order, which reorders the
+  adds).
+- The entry is recorded before the wait, as before the `add`, so a `clear`
+  during the wait answers true and an `update` merges into the waiting
+  create. A create cleared or superseded during the wait never calls `add`:
+  the superseding update or create adds its own, and skipping the stale one
+  keeps it from landing after the newer content.
+- Not allowed (declined now or earlier): `create` answers its id, as Chrome
+  does when the OS blocks notifications, but nothing is shown and the entry
+  goes, so `getAll` does not list it and `clear` and `update` answer false
+  for it. A notification shown earlier under that identifier is taken away,
+  since the extension no longer has it.
+- The prompt is a banner ("“Detour” Notifications", Allow / Don't Allow). The
+  unified log shows it as a NotificationCenter record with
+  `app:"com.apple.notificationcenter.askpermissions" req:"com.detourbrowser.mac"`.
+  Until the user answers, every create and update waits, with no timeout;
+  a prompt the user ignores into Notification Center keeps them waiting. On
+  the development Mac the bundle id was still not determined in the TASK-253
+  run, which is why earlier runs saw `add` succeed with nothing on screen.
+  A Debug build shares `com.detourbrowser.mac` with the installed app, so
+  answering a Debug build's prompt sets the installed app's permission too.
 
 ## chrome.notifications is scoped by profile
 
@@ -544,3 +579,4 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-239]: Extensions: the notifications API is available without the notifications permission
 [^task-240]: Extensions: notifications.clear and notifications.update diverge from Chrome
 [^chrome-notifications-api]: chrome.notifications API reference
+[^task-253]: Extensions: Detour never requests notification permission, so extension notifications may never be shown

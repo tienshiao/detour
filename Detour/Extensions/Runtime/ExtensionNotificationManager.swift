@@ -11,6 +11,23 @@ protocol ExtensionNotificationCenter: AnyObject {
     func add(_ request: UNNotificationRequest) async throws
     /// Takes the notifications with these identifiers away, delivered or still pending.
     func removeNotifications(withIdentifiers identifiers: [String])
+    /// Whether Detour may show notifications now. Asked afresh for every
+    /// create: the user can change it in System Settings at any time.
+    func authorizationStatus() async -> ExtensionNotificationAuthorization
+    /// Asks the user (the system prompt) and answers whether they allowed it.
+    /// Only called while the status is `.notDetermined`.
+    func requestAuthorization() async -> Bool
+}
+
+/// The part of `UNAuthorizationStatus` the manager acts on (TASK-253).
+enum ExtensionNotificationAuthorization: Equatable {
+    /// Notifications may be shown (provisional counts too; `.ephemeral` is
+    /// iOS-only).
+    case authorized
+    /// The user turned Detour's notifications off, now or earlier.
+    case denied
+    /// Nobody has asked yet: the next create asks.
+    case notDetermined
 }
 
 /// The real center: `UNUserNotificationCenter.current()`.
@@ -23,6 +40,24 @@ final class SystemExtensionNotificationCenter: ExtensionNotificationCenter {
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: identifiers)
         center.removeDeliveredNotifications(withIdentifiers: identifiers)
+    }
+
+    func authorizationStatus() async -> ExtensionNotificationAuthorization {
+        switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
+        case .authorized, .provisional: return .authorized
+        case .notDetermined: return .notDetermined
+        case .denied: return .denied
+        @unknown default: return .denied
+        }
+    }
+
+    func requestAuthorization() async -> Bool {
+        do {
+            return try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+        } catch {
+            log.error("Notification authorization request failed: \(error.localizedDescription)")
+            return false
+        }
     }
 }
 
@@ -57,6 +92,16 @@ final class SystemExtensionNotificationCenter: ExtensionNotificationCenter {
 /// the same identifier. Each `create` carries a generation, so an `add` that a
 /// later `create` for the same id has superseded leaves the newer entry alone:
 /// the newer `add` replaces what it showed.
+///
+/// Before its `add`, each create or update waits for authorization
+/// (TASK-253): the first one asks the user, and every one arriving before
+/// they answer waits on that same prompt. The entry is recorded first all the
+/// same, so a `clear` or `update` issued during the wait applies as it does
+/// while an `add` is in flight; a create cleared or superseded during the wait
+/// never reaches the center. When notifications are not allowed, the create
+/// answers its id as Chrome's does when the OS blocks them, but nothing is
+/// shown and the entry goes: `getAll` does not list it, and `clear` and
+/// `update` answer false for it.
 final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDelegate {
     private static var sharedInstance: ExtensionNotificationManager?
 
@@ -173,9 +218,45 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         identifiers.removeValue(forKey: Key(owner: entry.owner, notificationID: entry.notificationID))
     }
 
-    /// Request notification permission if needed.
-    func requestPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    /// The shows waiting on the authorization check in flight, in call
+    /// order; nil when no check is in flight. See `authorize()`.
+    private var authorizationWaiters: [CheckedContinuation<Bool, Never>]?
+
+    /// Whether the center may show notifications, asking the user the first
+    /// time (TASK-253: Detour asks at the first `notifications.create` of any
+    /// extension, and that create waits for the answer). Shows that arrive
+    /// while a check is in flight wait on the same one, so the user sees one
+    /// prompt however many creates come in before they answer; they resume
+    /// in call order, so their adds reach the center in the order the
+    /// extensions made them. The status is asked afresh once a check has
+    /// finished, as the user can turn notifications on or off in System
+    /// Settings at any time.
+    private func authorize() async -> Bool {
+        if authorizationWaiters != nil {
+            return await withCheckedContinuation { authorizationWaiters?.append($0) }
+        }
+        authorizationWaiters = []
+        let authorized: Bool
+        switch await center.authorizationStatus() {
+        case .authorized:
+            authorized = true
+        case .denied:
+            authorized = false
+        case .notDetermined:
+            authorized = await center.requestAuthorization()
+            log.info("Notification authorization \(authorized ? "granted" : "declined", privacy: .public)")
+        }
+        let waiters = authorizationWaiters ?? []
+        authorizationWaiters = nil
+        for waiter in waiters { waiter.resume(returning: authorized) }
+        return authorized
+    }
+
+    /// Whether `identifier`'s entry is still the one `generation` recorded:
+    /// not cleared, removed with its owner, or superseded by a later create
+    /// or update meanwhile.
+    private func isCurrent(identifier: String, generation: Int) -> Bool {
+        entries[identifier]?.generation == generation
     }
 
     /// What a notification with these options shows (TASK-240). Chrome's
@@ -214,12 +295,15 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// Create a notification. A create for an id the owner already has
     /// replaces that notification outright, as Chrome's does: unlike `update`,
     /// nothing is merged. `completion` runs once the center's `add` has
-    /// returned, with the notification id, whether or not it succeeded.
+    /// returned, or once it is known there will be none (notifications not
+    /// allowed, or the create cleared or superseded while authorization was
+    /// pending), with the notification id, whether or not it was shown.
     func create(owner: Owner, notificationID: String?, options: [String: Any], completion: @escaping (String) -> Void) {
         show(owner: owner, notificationID: notificationID, options: options) { id, _ in completion(id) }
     }
 
-    /// `create`, also telling `completion` whether the center's `add` succeeded.
+    /// `create`, also telling `completion` whether the notification was
+    /// shown: false when notifications are not allowed or the `add` failed.
     private func show(owner: Owner, notificationID: String?, options: [String: Any],
                       completion: @escaping (_ id: String, _ succeeded: Bool) -> Void) {
         let id = notificationID ?? UUID().uuidString
@@ -229,7 +313,8 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         // An update, or a create for an id the owner already has, keeps the
         // identifier, so the center replaces the banner rather than adding one.
         let key = Key(owner: owner, notificationID: id)
-        let identifier = identifiers[key] ?? Self.newIdentifier()
+        let existingIdentifier = identifiers[key]
+        let identifier = existingIdentifier ?? Self.newIdentifier()
 
         let request = UNNotificationRequest(identifier: identifier, content: Self.content(for: options), trigger: nil)
 
@@ -243,15 +328,48 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         // calls back on a background queue, and the entries are main-actor state.
         let center = self.center
         Task { [weak self] in
+            guard let self else {
+                completion(id, false)
+                return
+            }
+            let authorized = await self.authorize()
+            // Cleared or superseded while authorization was pending: nothing
+            // has been shown for this generation, so there is nothing to add
+            // or take away. A superseding create or update adds its own, and
+            // skipping this one keeps a stale add from landing after it.
+            guard self.isCurrent(identifier: identifier, generation: generation) else {
+                completion(id, authorized)
+                return
+            }
+            guard authorized else {
+                self.notAuthorized(identifier: identifier, mayBeShown: existingIdentifier != nil)
+                completion(id, false)
+                return
+            }
             var failure: (any Error)?
             do {
                 try await center.add(request)
             } catch {
                 failure = error
             }
-            self?.addFinished(identifier: identifier, generation: generation, failure: failure)
+            self.addFinished(identifier: identifier, generation: generation, failure: failure)
             completion(id, failure == nil)
         }
+    }
+
+    /// Settles the entry of a `show` the user has not allowed notifications
+    /// for (TASK-253). Nothing was shown, so the entry goes, as Chrome lists
+    /// no notification the OS blocked: `getAll` leaves it out, and `clear` and
+    /// `update` answer false for its id. `create` still answers the id.
+    /// `mayBeShown`: the identifier was an earlier create's, so something may
+    /// be on screen under it; a fresh one has never reached the center.
+    private func notAuthorized(identifier: String, mayBeShown: Bool) {
+        log.info("Notifications are not allowed; dropping \(identifier, privacy: .private)")
+        removeEntry(identifier: identifier)
+        // An earlier create may have shown a notification under this
+        // identifier while notifications were allowed; the extension no
+        // longer has it.
+        if mayBeShown { center.removeNotifications(withIdentifiers: [identifier]) }
     }
 
     /// Settles the entry an `add` was for, now that the center has answered.
@@ -281,7 +399,8 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// `create` has not finished yet. The given options are merged into the
     /// notification's, as Chrome does: an update that sets only `message`
     /// keeps the title. Answers false when the owner has no such notification,
-    /// or when the center refuses the updated one.
+    /// when notifications are not allowed (which drops it), or when the
+    /// center refuses the updated one.
     func update(owner: Owner, notificationID: String, options: [String: Any], completion: @escaping (Bool) -> Void) {
         guard let identifier = identifier(for: owner, notificationID: notificationID),
               let entry = entries[identifier] else {
