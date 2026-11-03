@@ -1,7 +1,8 @@
 import Foundation
 import os
+import Synchronization
 
-private let log = Logger(subsystem: "com.detourbrowser.mac", category: "native-messaging")
+nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", category: "native-messaging")
 
 /// Represents a native messaging host manifest (e.g. `com.1password.1password.json`).
 struct NativeHostManifest: Codable {
@@ -46,7 +47,7 @@ class NativeMessagingHost {
         return directories
     }
 
-    static let maxMessageSize = 1_048_576 // 1 MB
+    nonisolated static let maxMessageSize = 1_048_576 // 1 MB
 
     private let hostName: String
     let extensionID: String
@@ -61,11 +62,11 @@ class NativeMessagingHost {
     /// Called on the main queue when the native host disconnects (process exit or error).
     var onDisconnect: ((String?) -> Void)?
 
-    private let lock = NSLock()
-    private var _isConnected = false
-    private(set) var isConnected: Bool {
-        get { lock.withLock { _isConnected } }
-        set { lock.withLock { _isConnected = newValue } }
+    /// Read by the stdout read loop off the main thread, so behind a mutex.
+    private let connected = Mutex(false)
+    nonisolated private(set) var isConnected: Bool {
+        get { connected.withLock { $0 } }
+        set { connected.withLock { $0 = newValue } }
     }
 
     init(hostName: String, extensionID: String) {
@@ -73,7 +74,14 @@ class NativeMessagingHost {
         self.extensionID = extensionID
     }
 
-    deinit {
+    /// Isolated: the process and pipes are main-actor state. The read loop
+    /// holds a strong reference for each iteration, including while it is
+    /// blocked reading, so while the host process is alive and quiet this does
+    /// not run when the owner lets go: it runs once the loop's next read
+    /// returns (a message, EOF or an error). The loop's reference is then
+    /// usually the last one, released on the read queue, and the teardown hops
+    /// to the main actor. Owners that need the process gone call `disconnect()`.
+    isolated deinit {
         disconnect()
     }
 
@@ -221,8 +229,14 @@ class NativeMessagingHost {
     /// from any queue and from multiple failure paths racing each other — the
     /// first reason to arrive wins. Paths that already tore down (write
     /// failure, disconnect()) are fine: teardownProcess is idempotent.
-    private func handleDisconnect(_ message: String?) {
-        DispatchQueue.main.async {
+    nonisolated private func handleDisconnect(_ message: String?) {
+        // A main-actor task, as the read loop's message deliveries are, so a
+        // disconnect the loop reports is delivered after the messages it read
+        // before it. The termination handler runs on its own thread and is not
+        // ordered against the loop: a host that writes and exits at once can
+        // have its exit reported before the loop has read (or delivered) its
+        // last message.
+        Task { @MainActor in
             guard self.isConnected else { return }
             self.isConnected = false
             self.teardownProcess()
@@ -294,11 +308,15 @@ class NativeMessagingHost {
                 }
 
                 // Parse JSON and deliver
-                if let json = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any] {
+                if let json = Self.parsedMessage(messageData) {
                     // Payload contents are deliberately never logged: native hosts
                     // send secrets over this channel. Byte count only.
                     log.notice("[1PW-DEBUG] ← NM RECV [\(self.hostName, privacy: .public)] (\(messageData.count) bytes)")
-                    DispatchQueue.main.async {
+                    // A task rather than a dispatch block: `json` is a fresh
+                    // value nothing here touches again, so it can be sent to
+                    // the main actor; tasks reach it in the order they are
+                    // made, as `handleDisconnect`'s do.
+                    Task { @MainActor in
                         self.onMessage?(json)
                     }
                 } else {
@@ -306,6 +324,13 @@ class NativeMessagingHost {
                 }
             }
         }
+    }
+
+    /// A message body parsed as a JSON object, or nil. `sending`: the result
+    /// is a fresh object graph nothing else refers to, so the read loop can
+    /// hand it to the main actor.
+    nonisolated private static func parsedMessage(_ data: Data) -> sending [String: Any]? {
+        try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     // MARK: - Errors

@@ -39,20 +39,19 @@ class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
 
-        UNUserNotificationCenter.current().add(request) { [weak self] error in
-            if let error {
+        // Awaited from a main-actor task: the completion-handler form of `add`
+        // calls back on a background queue, and the maps below are read on
+        // the main thread (`getAll`, `clear`, `update`). They used to be
+        // mutated from that callback.
+        Task { [weak self] in
+            do {
+                try await UNUserNotificationCenter.current().add(request)
+                self?.notificationMap[identifier] = (extensionID, id)
+                self?.activeNotifications[extensionID, default: []].insert(id)
+            } catch {
                 log.error("Failed to create notification for extension \(extensionID, privacy: .public): \(error.localizedDescription)")
             }
-            if error == nil {
-                self?.notificationMap[identifier] = (extensionID, id)
-                if self?.activeNotifications[extensionID] == nil {
-                    self?.activeNotifications[extensionID] = []
-                }
-                self?.activeNotifications[extensionID]?.insert(id)
-            }
-            DispatchQueue.main.async {
-                completion(id)
-            }
+            completion(id)
         }
     }
 

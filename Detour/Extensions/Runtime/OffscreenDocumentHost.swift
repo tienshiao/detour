@@ -306,11 +306,6 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHand
         settleLoad(.failure(LoadError.navigationFailed(path: requestedPath, underlying: error)))
     }
 
-    /// Evaluate JavaScript in the offscreen document.
-    func evaluateJavaScript(_ js: String, completionHandler: ((Any?, Error?) -> Void)? = nil) {
-        webView?.evaluateJavaScript(js, completionHandler: completionHandler)
-    }
-
     // MARK: - WKNavigationDelegate
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

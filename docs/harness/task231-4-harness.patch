@@ -1,0 +1,45 @@
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 334c0df..1542326 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runVerifyHarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Harness2314.swift b/Detour/App/Harness2314.swift
+new file mode 100644
+index 0000000..cccb1e6
+--- /dev/null
++++ b/Detour/App/Harness2314.swift
+@@ -0,0 +1,25 @@
++// TEMP verify harness for TASK-231.4 — DO NOT COMMIT
++import AppKit
++
++extension AppDelegate {
++    func runVerifyHarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let repo = ProcessInfo.processInfo.environment["DETOUR_VERIFY_INSTALL_FROM"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        func log(_ line: String) {
++            let data = Data((line + "\n").utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) { h.seekToEndOfFile(); h.write(data); try? h.close() }
++            else { try? data.write(to: logURL) }
++        }
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier)")
++        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
++            for name in ["hello-world", "api-explorer"] {
++                do {
++                    let ext = try ExtensionManager.shared.install(from: URL(fileURLWithPath: repo).appendingPathComponent("TestExtensions/\(name)"))
++                    log("installed \(name) id=\(ext.id) enabled=\(ext.isEnabled)")
++                } catch { log("install \(name) FAIL \(error)") }
++            }
++            log("done")
++        }
++    }
++}

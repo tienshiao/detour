@@ -273,7 +273,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
 
     /// A `chrome.history.search` query that passed validation (TASK-138), with
     /// Chrome's defaults applied.
-    struct HistorySearchQuery: Equatable {
+    nonisolated struct HistorySearchQuery: Equatable, Sendable {
         var text: String
         var maxResults: Int
         /// Seconds since 1970, as the history database stores visit times
@@ -593,13 +593,18 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             // read on the main thread waits for it: the default range above
             // and `searchURLs`' listing path are what keep that wait short
             // (TASK-153).
+            // The read runs on a global queue; the reply, a dictionary of
+            // non-Sendable values, is built back on the main actor.
             let database = historyDatabase
-            DispatchQueue.global(qos: .userInitiated).async {
-                let items = database.searchURLs(
-                    query: query.text, spaceIDs: spaceIDs,
-                    from: query.startTime, until: query.endTime, limit: query.maxResults
-                ).map(Self.historyItem)
-                DispatchQueue.main.async { replyHandler(["results": items], nil) }
+            Task {
+                let entries = await withCheckedContinuation { continuation in
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        continuation.resume(returning: database.searchURLs(
+                            query: query.text, spaceIDs: spaceIDs,
+                            from: query.startTime, until: query.endTime, limit: query.maxResults))
+                    }
+                }
+                replyHandler(["results": entries.map(Self.historyItem)], nil)
             }
 
         // MARK: - Font Settings

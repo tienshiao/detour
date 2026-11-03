@@ -124,8 +124,10 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKUIDelegate {
             presentPopover()
             return
         }
-        loadingObservation = webView.observe(\.isLoading, options: [.new]) { [weak self] webView, _ in
-            guard !webView.isLoading else { return }
+        loadingObservation = webView.observe(\.isLoading, options: [.new]) { [weak self] _, change in
+            // The change's value, not `webView.isLoading`: the handler is not
+            // main-actor isolated (WebKit changes the property on the main thread).
+            guard change.newValue == false else { return }
             DispatchQueue.main.async { self?.presentPopover() }
         }
         let timeout = DispatchWorkItem { [weak self] in self?.presentPopover() }

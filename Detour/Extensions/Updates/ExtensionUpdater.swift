@@ -189,7 +189,8 @@ final class ExtensionUpdater {
         var outcomes: [String: ExtensionUpdateOutcome] = [:]
         await withTaskGroup(of: (String, ExtensionUpdateOutcome).self) { group in
             for ext in extensions {
-                group.addTask { @MainActor in (ext.id, await self.checkForUpdate(extensionID: ext.id)) }
+                let id = ext.id
+                group.addTask { (id, await self.checkForUpdate(extensionID: id)) }
             }
             for await (id, outcome) in group {
                 outcomes[id] = outcome

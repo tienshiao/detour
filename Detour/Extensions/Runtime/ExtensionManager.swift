@@ -2,7 +2,7 @@ import Foundation
 import WebKit
 import os
 
-private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extension-manager")
+nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extension-manager")
 
 /// Singleton lifecycle manager for web extensions.
 /// Each `Profile` owns its own `WKWebExtensionController`; this class coordinates
@@ -495,19 +495,24 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
 
         // Load WKWebExtension resources in parallel (async I/O)
-        await withTaskGroup(of: (WebExtension, WKWebExtension?).self) { group in
-            for ext in pendingExtensions {
-                group.addTask { @MainActor in
+        // The child tasks carry only Sendable values (the index, the path and
+        // id, the loaded WKWebExtension) and await the main-actor load; the
+        // WebExtension is looked up again by index once its load finishes.
+        await withTaskGroup(of: (Int, WKWebExtension?).self) { group in
+            for (index, ext) in pendingExtensions.enumerated() {
+                let basePath = ext.basePath
+                let id = ext.id
+                group.addTask {
                     do {
-                        let wkExt = try await WKWebExtension(resourceBaseURL: ext.basePath)
-                        return (ext, wkExt)
+                        return (index, try await WKWebExtension(resourceBaseURL: basePath))
                     } catch {
-                        log.error("Failed to load WKWebExtension for \(ext.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                        return (ext, nil)
+                        log.error("Failed to load WKWebExtension for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                        return (index, nil)
                     }
                 }
             }
-            for await (ext, wkExt) in group {
+            for await (index, wkExt) in group {
+                let ext = pendingExtensions[index]
                 ext.wkExtension = wkExt
                 extensions.append(ext)
                 log.info("Loaded extension \(ext.manifest.name, privacy: .public) (\(ext.id, privacy: .public)), enabled: \(ext.isEnabled)")
@@ -1209,8 +1214,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             guard let self, let port else { return }
             // The keep-alive bookkeeping is main-thread only (see `applyKeepAlive`);
             // WebKit calls this back on the main queue, but do not rely on it.
-            let recover = { self.handleKeepAliveControlFailure(for: key, on: port) }
-            if Thread.isMainThread { recover() } else { DispatchQueue.main.async(execute: recover) }
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { self.handleKeepAliveControlFailure(for: key, on: port) }
+            } else {
+                DispatchQueue.main.async { self.handleKeepAliveControlFailure(for: key, on: port) }
+            }
         })
     }
 
