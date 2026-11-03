@@ -75,6 +75,31 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// ending does not set up the system center.
     static var sharedIfCreated: ExtensionNotificationManager? { sharedInstance }
 
+    #if DEBUG
+    /// Makes `shared` a manager around `center`, which never becomes the
+    /// system center's delegate. For the test host only (TASK-249): it shares
+    /// the app's bundle id, so a test reaching `shared` would otherwise post
+    /// real banners on the developer's Mac. `TestEnvironmentSetup` calls it at
+    /// bundle start.
+    ///
+    /// A manager that already existed (something reached `shared` before the
+    /// bundle started) posted to the system center and is its delegate: its
+    /// notifications are taken away and it stops being the delegate, so none
+    /// is left on screen with no manager to clear it.
+    static func installSharedForTesting(center: any ExtensionNotificationCenter) {
+        if let previous = sharedInstance {
+            previous.removeAll { _ in true }
+            let system = UNUserNotificationCenter.current()
+            if system.delegate === previous { system.delegate = nil }
+        }
+        sharedInstance = ExtensionNotificationManager(center: center)
+    }
+
+    /// The center this manager posts to, so the test host can check `shared`
+    /// is not the system one.
+    var centerForTesting: any ExtensionNotificationCenter { center }
+    #endif
+
     /// Who a notification belongs to. The polyfill handler builds it from its
     /// own profile and the request's verified extension id, never from the
     /// request body.

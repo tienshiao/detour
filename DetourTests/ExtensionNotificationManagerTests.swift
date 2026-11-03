@@ -161,6 +161,28 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         createdIdentifiers[Self.key(id, owner)] ?? "never created \(id)"
     }
 
+    // MARK: - The test host never posts to the system center (TASK-249)
+
+    /// `shared` is what every handler without an override uses. In the test
+    /// host it must be the bundle-start fake, or a run delivers real banners.
+    @MainActor func testTestHostSharedManagerPostsToTheTestCenter() async throws {
+        let shared = ExtensionNotificationManager.shared
+        XCTAssertTrue(shared.centerForTesting === TestHostNotificationCenter.shared,
+                      "shared must use the test-host center installed at bundle start")
+        XCTAssertFalse(shared.centerForTesting is SystemExtensionNotificationCenter)
+
+        let owner = ExtensionNotificationManager.Owner(profileID: UUID(), extensionID: "task249")
+        let done = expectation(description: "create answers")
+        shared.create(owner: owner, notificationID: "probe", options: ["title": "T", "message": "m"]) { _ in
+            done.fulfill()
+        }
+        await fulfillment(of: [done], timeout: 5)
+        let identifier = try XCTUnwrap(shared.identifier(for: owner, notificationID: "probe"))
+        XCTAssertNotNil(TestHostNotificationCenter.shared.shown[identifier])
+        shared.removeAll(for: owner)
+        XCTAssertNil(TestHostNotificationCenter.shared.shown[identifier])
+    }
+
     // MARK: - Clear while the create is in flight
 
     @MainActor func testClearWhileCreateInFlightRemovesTheNotification() async throws {

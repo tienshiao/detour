@@ -120,6 +120,15 @@ private final class TestObserver: NSObject, XCTestObservation {
         // new-profile load tests opt back in (NewProfileExtensionLoadTests).
         ExtensionManager.shared.loadsExtensionsIntoAddedProfiles = false
 
+        // The test host shares the app's bundle id, so a notification posted to
+        // the system center shows as a real Detour banner (TASK-249). Every
+        // handler without an override uses `shared`; make it a fake before any
+        // test reaches it. `ExtensionNotificationManagerTests` checks it holds.
+        if ExtensionNotificationManager.sharedIfCreated != nil {
+            print("⚠️  ExtensionNotificationManager.shared existed before the test bundle started; removing its notifications and replacing it with the test center")
+        }
+        ExtensionNotificationManager.installSharedForTesting(center: TestHostNotificationCenter.shared)
+
         cleanTestExtensions()
         resetTabStore()
         clearPendingProfileDataRemovals()
@@ -348,4 +357,16 @@ private final class TestObserver: NSObject, XCTestObservation {
         assert(nonIncognitoProfiles.count == 1, "Test environment should start with exactly 1 profile")
         assert(totalTabs == 0, "Test environment should start with 0 tabs")
     }
+}
+
+/// The center `ExtensionNotificationManager.shared` posts to in the test host
+/// (TASK-249): a `HeldNotificationCenter` that answers every `add` at once, so
+/// a test that reaches `shared` sees its notifications shown here and nothing
+/// reaches the developer's Notification Center.
+enum TestHostNotificationCenter {
+    static let shared: HeldNotificationCenter = {
+        let center = HeldNotificationCenter()
+        center.holdsAdds = false
+        return center
+    }()
 }

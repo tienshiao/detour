@@ -107,6 +107,7 @@ All in `ExtensionTestSupport.swift` unless noted.
 | `LoopbackWebSocketServer` | An echo server for the [relay](./websocket-relay.md) |
 | `CRX3TestSupport.swift` | Builds signed CRX3 files in the test |
 | `HeldNotificationCenter` (`ExtensionNotificationManagerTests.swift`) | A notification center that holds every `add` until `release` (or answers at once with `holdsAdds = false`), for `ExtensionNotificationManager(center:)` or a profile handler's `notificationManagerOverride`. Hand one manager to two profiles' handlers to test isolation the way production shares `shared`; set the override back to nil in tearDown, since the built-in Private profile's handler outlives the test |
+| `TestHostNotificationCenter.shared` (`TestEnvironmentSetup.swift`) | The center `ExtensionNotificationManager.shared` posts to in the test host: a non-holding `HeldNotificationCenter` installed at bundle start through the DEBUG-only `installSharedForTesting(center:)` (TASK-249). The host shares the app's bundle id, so before this every `notifications.create` from a handler without an override showed a real Detour banner. A test may read its `shown`; `testTestHostSharedManagerPostsToTheTestCenter` fails if `shared` is ever the system center |
 
 The loopback servers run on their own dispatch queues and keep all their
 mutable state in one `Mutex`-guarded struct each, so they are plain
