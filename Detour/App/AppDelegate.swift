@@ -132,6 +132,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Open Quick Detours go to the archive at quit (TASK-193.1's decision,
         // TASK-193.5); nothing restores them as windows.
         TabStore.shared.archiveOpenQuickDetours()
+        // Quitting ends the Private session without closing its windows, so
+        // `endPrivateSessionIfUnused` never runs: its extensions'
+        // notifications go here, or they stay in Notification Center (TASK-238).
+        TabStore.shared.removePrivateProfileNotifications()
         TabStore.shared.undoManager.removeAllActions()
         TabStore.shared.saveNow()
         // A download that ended inside the manager's 1 s save debounce would

@@ -740,6 +740,9 @@ class TabStore {
             // Extension contexts: background content, offscreen documents,
             // keep-alive ports, native hosts and relayed WebSockets.
             profile.unloadAllExtensions()
+            // Each unload took its extension's notifications; this catches any
+            // left under the profile (TASK-238).
+            profile.polyfillHandler?.removeAllNotifications()
         }
 
         profile?.isDeleted = true
@@ -2543,6 +2546,7 @@ class TabStore {
         let profile = ensureIncognitoProfile()
         let space = Space(name: "Private", emoji: "🔒", colorHex: "2C2C2E", profileID: profile.id)
         space.profile = profile
+        startPrivateSessionIfNeeded()
         spaces.append(space)
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
         return space
@@ -2566,8 +2570,41 @@ class TabStore {
         }
         // Keep the built-in incognito profile — it persists across sessions
         // A Private Quick Detour still uses the session (TASK-193.1).
-        if !hasLivePrivateSession { siteSettings?.discardPrivateSession() }
+        endPrivateSessionIfUnused()
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
+    }
+
+    /// Ends the Private session once nothing uses it (`hasLivePrivateSession`):
+    /// the last Private window's space is removed, or the last Private Quick
+    /// Detour closes or switches profile. The next session reuses the same
+    /// built-in profile (its id is a constant), so whatever the session kept
+    /// in memory goes here or it would carry over: the Private site settings,
+    /// and the notifications the Private profile's extensions created, which
+    /// are taken off screen too (TASK-238).
+    func endPrivateSessionIfUnused() {
+        guard !hasLivePrivateSession else { return }
+        siteSettings?.discardPrivateSession()
+        removePrivateProfileNotifications()
+    }
+
+    /// Takes the Private profile's extension notifications away, delivered
+    /// or pending. For the end of the Private session, and at quit, which
+    /// ends it without closing its windows: usernoted keeps a delivered
+    /// notification (its title and message included) past the app, and the
+    /// next launch can no longer map its identifier back to clear it.
+    /// Call just before something starts using the Private session (a Private
+    /// window's space, a Private Quick Detour). When none was live, a new
+    /// session starts: the Private profile's extension contexts stay loaded
+    /// between sessions, so a worker (an alarm, say) can create a notification
+    /// while no Private page is open, and it must not carry into this session
+    /// (TASK-238).
+    func startPrivateSessionIfNeeded() {
+        guard !hasLivePrivateSession else { return }
+        removePrivateProfileNotifications()
+    }
+
+    func removePrivateProfileNotifications() {
+        profile(withID: Self.incognitoProfileID)?.polyfillHandler?.removeAllNotifications()
     }
 
     // MARK: - Tab Mutations

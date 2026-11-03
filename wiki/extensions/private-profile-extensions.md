@@ -73,6 +73,7 @@ The third point cost a week of misdiagnosis and is the one to remember.
 | The incognito controller is `.nonPersistent()` and its `webViewConfiguration.websiteDataStore` is the profile's `dataStore` | `Profile.extensionController` |
 | The Private profile's worker never receives `runtime.onInstalled` | [runtime.onInstalled](./runtime-installed-event.md) |
 | `windows.create` from a Private context (a Private window's or a quarantine's) always opens a Private window, whatever `incognito` says | `ExtensionManager.opensPrivateWindow`; see [opening a window](./tab-and-window-bridge.md#opening-a-window) (TASK-214) |
+| `notifications.*` is scoped by profile: the Private copy of an extension and its normal-profile copy never list, clear, update or resolve clicks on each other's notifications. The Private profile's notifications go when the Private session ends (`TabStore.endPrivateSessionIfUnused`), and identifiers are opaque, so nothing the system stores names the Private profile | `ExtensionNotificationManager.Owner`; see [polyfill layer](./polyfill-layer.md#chromenotifications-is-scoped-by-profile) (TASK-238) |
 | `windows.create({incognito: true})` from a normal context is refused unless the extension is allowed in Private (missing row = not allowed) | `ExtensionManager.refusesPrivateWindow`; see [opening a window](./tab-and-window-bridge.md#opening-a-window) (TASK-224) |
 
 Consequences worth knowing:

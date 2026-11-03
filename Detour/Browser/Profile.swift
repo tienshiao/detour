@@ -549,6 +549,9 @@ class Profile {
         // The console rate-limit window too: a reloaded context starts its own
         // burst, and an extension that never comes back leaves no entry behind.
         polyfillHandler?.forgetConsoleRateLimit(for: id)
+        // And its notifications (TASK-238): nothing is left to hear about or
+        // clear them, and a reloaded context starts with none.
+        polyfillHandler?.removeNotifications(ofExtension: id)
         // Likewise the worker's keep-alive port: WebKit is not relied on to
         // report its disconnect once the context is gone.
         ExtensionManager.shared.closeExtensionPorts(for: id, in: extensionController)

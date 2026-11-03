@@ -63,6 +63,7 @@ extension TabStore {
             if !archived.title.isEmpty { tab.title = archived.title }
         }
         subscribeToTab(tab, inSession: false)
+        if profile.isIncognito { startPrivateSessionIfNeeded() }
         // Last: entering the list reports the tab open to the extension
         // contexts, whose `window(for:)` must already resolve its window.
         quickDetourTabs.append(tab)
@@ -89,8 +90,8 @@ extension TabStore {
         }
         quickDetourTabIDsArchivedAtQuit.remove(tab.id)
         takeDownQuickDetourTab(at: index)
-        if tab.quickDetourProfile?.isIncognito == true, !hasLivePrivateSession {
-            siteSettings?.discardPrivateSession()
+        if tab.quickDetourProfile?.isIncognito == true {
+            endPrivateSessionIfUnused()
         }
         notifyObservers { $0.tabStoreDidCloseQuickDetour(tab) }
     }
@@ -141,8 +142,8 @@ extension TabStore {
         takeDownQuickDetourTab(at: index)
         betweenPages()
         let replacement = openQuickDetourTab(profile: profile, id: id)
-        if oldProfile.isIncognito, !hasLivePrivateSession {
-            siteSettings?.discardPrivateSession()
+        if oldProfile.isIncognito {
+            endPrivateSessionIfUnused()
         }
         notifyObservers { $0.tabStoreDidReplaceQuickDetour(tab, with: replacement) }
         return replacement

@@ -28,11 +28,16 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// Longest relayed lastError message, in characters.
     static let lastErrorRelayMessageLimit = 2048
 
+    /// The answer to a `notifications.*` request whose profile has been
+    /// released, so no owner can be named for it.
+    static let notificationsProfileGone = "notifications: the profile is gone"
+
     /// The profile whose extension controller this handler serves.
     private(set) weak var profile: Profile?
 
     init(profile: Profile) {
         self.profile = profile
+        self.profileID = profile.id
         super.init()
     }
 
@@ -47,11 +52,59 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     var now: () -> Date = Date.init
 
     /// The manager behind `notifications.*`, as a test seam for the same
-    /// reason: a test hands it a fake notification center (TASK-234).
-    /// Production never assigns it. Lazy, so the shared manager (and with it
-    /// the system center's delegate) is set up at the first notification call,
-    /// not when a profile builds its handler.
-    lazy var notificationManager: ExtensionNotificationManager = .shared
+    /// reason: a test hands it a fake notification center (TASK-234), and
+    /// hands the same one to two profiles' handlers to check they stay apart
+    /// (TASK-238). Production never assigns it, and a test sets it back to nil.
+    var notificationManagerOverride: ExtensionNotificationManager?
+
+    /// One manager for every profile; requests are scoped by `profile` (see
+    /// `notificationOwner`). Read at the first notification call, so the
+    /// shared manager (and with it the system center's delegate) is not set
+    /// up when a profile builds its handler.
+    private var notificationManager: ExtensionNotificationManager {
+        notificationManagerOverride ?? .shared
+    }
+
+    /// Who a `notifications.*` request acts for: this handler's profile and the
+    /// verified extension id. Once the profile is gone there is no owner to
+    /// name, so this answers the request with `notificationsProfileGone` and
+    /// returns nil.
+    private func notificationOwner(_ extensionID: String,
+                                   orRefuse replyHandler: (Any?, String?) -> Void) -> ExtensionNotificationManager.Owner? {
+        guard profile != nil else {
+            replyHandler(nil, Self.notificationsProfileGone)
+            return nil
+        }
+        return ExtensionNotificationManager.Owner(profileID: profileID, extensionID: extensionID)
+    }
+
+    /// This handler's profile id: every owner it names. Kept rather than read
+    /// from `profile`, because the removals below run while the profile is
+    /// being torn down.
+    private let profileID: UUID
+
+    /// The manager whose notifications a removal takes away: the override, or
+    /// the shared one only if something created it this launch (otherwise
+    /// there is nothing to remove, and the system center stays untouched).
+    private var existingNotificationManager: ExtensionNotificationManager? {
+        notificationManagerOverride ?? .sharedIfCreated
+    }
+
+    /// Takes away the notifications `extensionID` created in this profile.
+    /// `Profile.unloadExtension` calls it: a context that is gone cannot hear
+    /// about them or clear them, and a reloaded one starts with none.
+    func removeNotifications(ofExtension extensionID: String) {
+        existingNotificationManager?.removeAll(
+            for: ExtensionNotificationManager.Owner(profileID: profileID, extensionID: extensionID))
+    }
+
+    /// Takes away every extension's notifications in this profile: when the
+    /// profile is deleted, and when the Private session ends
+    /// (`TabStore.endPrivateSessionIfUnused`) or the app quits, so none carries
+    /// over into the next one.
+    func removeAllNotifications() {
+        existingNotificationManager?.removeAll(profileID: profileID)
+    }
 
     /// Active offscreen document hosts, keyed by extensionID.
     var offscreenHosts: [String: OffscreenDocumentHost] = [:]
@@ -534,12 +587,14 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             replyHandler(true, nil)
 
         // MARK: - Notifications
+        // Scoped by this handler's profile as well as the extension: the same
+        // extension in another profile, Private included, is another owner
+        // (TASK-238).
         case "notifications.create":
+            guard let owner = notificationOwner(extensionID, orRefuse: replyHandler) else { return }
             let notificationId = params["notificationId"] as? String
             let options = params["options"] as? [String: Any] ?? [:]
-            notificationManager.create(
-                extensionID: extensionID, notificationID: notificationId, options: options
-            ) { id in
+            notificationManager.create(owner: owner, notificationID: notificationId, options: options) { id in
                 replyHandler(["notificationId": id], nil)
             }
 
@@ -548,10 +603,9 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler(nil, "notificationId required")
                 return
             }
+            guard let owner = notificationOwner(extensionID, orRefuse: replyHandler) else { return }
             let options = params["options"] as? [String: Any] ?? [:]
-            notificationManager.update(
-                extensionID: extensionID, notificationID: notificationId, options: options
-            ) { updated in
+            notificationManager.update(owner: owner, notificationID: notificationId, options: options) { updated in
                 replyHandler(["wasUpdated": updated], nil)
             }
 
@@ -560,15 +614,14 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 replyHandler(nil, "notificationId required")
                 return
             }
-            notificationManager.clear(
-                extensionID: extensionID, notificationID: notificationId
-            ) { cleared in
+            guard let owner = notificationOwner(extensionID, orRefuse: replyHandler) else { return }
+            notificationManager.clear(owner: owner, notificationID: notificationId) { cleared in
                 replyHandler(["wasCleared": cleared], nil)
             }
 
         case "notifications.getAll":
-            let all = notificationManager.getAll(extensionID: extensionID)
-            replyHandler(all, nil)
+            guard let owner = notificationOwner(extensionID, orRefuse: replyHandler) else { return }
+            replyHandler(notificationManager.getAll(owner: owner), nil)
 
         // MARK: - History
         case "history.search":

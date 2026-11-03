@@ -1,5 +1,6 @@
 import XCTest
 import WebKit
+import UserNotifications
 @testable import Detour
 
 /// TASK-234: from a real extension context, `notifications.clear` and
@@ -15,6 +16,16 @@ import WebKit
 /// it: the real center is never touched, and the test decides that the
 /// `create` is still in flight when the `clear` or `update` arrives. The
 /// orderings themselves are covered in `ExtensionNotificationManagerTests`.
+///
+/// TASK-238: the same extension loaded into two profiles — two persistent
+/// ones, or a persistent one and the built-in Private profile — never sees,
+/// clears or updates the other's notifications, from either transport, and a
+/// click or close resolves only to the profile that created the notification.
+/// Both profiles' handlers share one manager, as production's do (`shared`),
+/// so what keeps them apart is the profile in each request's owner.
+/// `ExtensionPolyfillIntegrationTests` cannot host these: its contexts are
+/// built by hand on one controller, served by one handler for one profile,
+/// so it has no second profile to load the extension into.
 nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
 
     // MARK: - Fixture bookkeeping
@@ -25,6 +36,17 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     private var createdSpaceIDs: [UUID] = []
     private var openWebViews: [WKWebView] = []
     private var centers: [HeldNotificationCenter] = []
+    /// Handlers whose manager a test swapped, set back to the shared one in
+    /// tearDown — the built-in Private profile's outlives the test.
+    private var overriddenHandlers: [ExtensionPolyfillHandler] = []
+    /// Extensions loaded into the built-in Private profile, which tearDown
+    /// unloads but does not delete.
+    private var privateLoadedExtensionIDs: [String] = []
+    /// Extensions saved in the shared database (for their Private row).
+    private var databaseExtensionIDs: [String] = []
+    /// Private windows' spaces a test opened in the shared store; tearDown
+    /// removes any still there, which ends the Private session.
+    private var incognitoSpaceIDs: [UUID] = []
     private var previousLastActiveSpaceID: UUID?
 
     /// Profiles whose extension controller hosted a web view are kept alive for
@@ -42,11 +64,19 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         // A failed test can leave an add held; answer it so its task finishes.
         for center in centers { center.releaseAll() }
         centers.removeAll()
+        for id in incognitoSpaceIDs { TabStore.shared.removeIncognitoSpace(id: id) }
+        incognitoSpaceIDs.removeAll()
         for webView in openWebViews {
             webView.stopLoading()
             webView.loadHTMLString("", baseURL: nil)
         }
         openWebViews.removeAll()
+        let privateProfile = TabStore.shared.profiles.first { $0.id == TabStore.incognitoProfileID }
+        for id in privateLoadedExtensionIDs { _ = privateProfile?.unloadExtension(id: id) }
+        privateLoadedExtensionIDs.removeAll()
+        // The row's deletion cascades to its `profileExtension` rows.
+        for id in databaseExtensionIDs { AppDatabase.shared.deleteExtension(id: id) }
+        databaseExtensionIDs.removeAll()
         for profile in createdProfiles {
             profile.unloadAllExtensions()
             TabStore.shared.forceRemoveProfile(id: profile.id)
@@ -54,6 +84,10 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             Self.retainedProfiles.append(profile)
         }
         createdProfiles.removeAll()
+        // After the unloads, so the notifications they take away are the test
+        // manager's, never the shared one's.
+        for handler in overriddenHandlers { handler.notificationManagerOverride = nil }
+        overriddenHandlers.removeAll()
         for id in createdSpaceIDs {
             TabStore.shared.forceRemoveSpace(id: id)
         }
@@ -106,13 +140,32 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     /// The worker: the polyfill (a test loads the context straight into the
     /// profile, so nothing has prepended it the way an install does), the
     /// orderings, and a listener that runs one and answers with its outcome.
-    @MainActor private static let workerJS = ExtensionAPIPolyfill.polyfillJS + "\n" + raceJS + """
+    /// One call, for the isolation tests: what the extension asked and what it
+    /// was answered, run the same way from the page and the worker.
+    private static let opJS = """
+    async function notificationOp(op, id, title) {
+        const options = { type: 'basic', title: title || '', message: 'isolation test' };
+        if (op === 'create') { return { result: await chrome.notifications.create(id, options) }; }
+        if (op === 'update') { return { result: await chrome.notifications.update(id, options) }; }
+        if (op === 'clear') { return { result: await chrome.notifications.clear(id) }; }
+        if (op === 'getAll') { return { result: await chrome.notifications.getAll() }; }
+        throw new Error('unknown op ' + op);
+    }
+    """
+
+    @MainActor private static let workerJS = ExtensionAPIPolyfill.polyfillJS + "\n" + raceJS + "\n" + opJS + """
 
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!message) { return false; }
         if (message.type === 'ping') { sendResponse({ type: 'pong' }); return true; }
         if (message.type === 'notificationRace') {
             notificationRace(message.mode, message.id).then(
+                (outcome) => sendResponse(outcome),
+                (e) => sendResponse({ error: String(e && e.message ? e.message : e) }));
+            return true;
+        }
+        if (message.type === 'notificationOp') {
+            notificationOp(message.op, message.id, message.title).then(
                 (outcome) => sendResponse(outcome),
                 (e) => sendResponse({ error: String(e && e.message ? e.message : e) }));
             return true;
@@ -144,28 +197,70 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         return ext
     }
 
-    /// A persistent profile with one space, its extension controller built and
-    /// its handler's notification manager running on a held center.
-    @MainActor private func makeProfile(_ name: String) throws -> (profile: Profile, center: HeldNotificationCenter) {
+    /// A manager around a held center, to hand to one or more profiles.
+    @MainActor private func makeManager() -> (manager: ExtensionNotificationManager, center: HeldNotificationCenter) {
+        let center = HeldNotificationCenter()
+        centers.append(center)
+        return (ExtensionNotificationManager(center: center), center)
+    }
+
+    /// Builds `profile`'s extension controller, and with it the polyfill
+    /// handler, and points the handler at `manager`.
+    @MainActor private func use(_ manager: ExtensionNotificationManager, in profile: Profile) throws {
+        _ = profile.extensionController
+        let handler = try XCTUnwrap(profile.polyfillHandler, "extensionController must build a polyfill handler")
+        handler.notificationManagerOverride = manager
+        overriddenHandlers.append(handler)
+    }
+
+    /// A persistent profile with one space, its handler on `manager`.
+    @MainActor private func makeProfile(_ name: String, manager: ExtensionNotificationManager) throws -> Profile {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         let space = TabStore.shared.addSpace(name: "\(name) Space", emoji: "N", colorHex: "#000000",
                                              profileID: profile.id)
         createdSpaceIDs.append(space.id)
         ExtensionManager.shared.lastActiveSpaceID = space.id
-        // Force the lazy controller, and with it the polyfill handler.
-        _ = profile.extensionController
-        let handler = try XCTUnwrap(profile.polyfillHandler, "extensionController must build a polyfill handler")
-        let center = HeldNotificationCenter()
-        centers.append(center)
-        handler.notificationManager = ExtensionNotificationManager(center: center)
-        return (profile, center)
+        try use(manager, in: profile)
+        return profile
+    }
+
+    /// A persistent profile whose handler's notification manager runs on a
+    /// held center of its own.
+    @MainActor private func makeProfile(_ name: String) throws -> (profile: Profile, center: HeldNotificationCenter) {
+        let (manager, center) = makeManager()
+        return (try makeProfile(name, manager: manager), center)
+    }
+
+    /// The built-in Private profile with `ext` allowed in it — installed, with
+    /// its Private `profileExtension` row on, as "Allow in Private" leaves it —
+    /// and its handler on `manager`. tearDown unloads the context and deletes
+    /// the row; the profile itself stays, as it does in the app.
+    @MainActor private func privateProfile(allowing ext: WebExtension,
+                                           manager: ExtensionNotificationManager) throws -> Profile {
+        let profile = TabStore.shared.ensureIncognitoProfile()
+        XCTAssertTrue(profile.isIncognito)
+        installTestExtension(ext, in: AppDatabase.shared,
+                             manifestJSON: (try? testExtensionManifestData(ext)) ?? Data("{}".utf8))
+        databaseExtensionIDs.append(ext.id)
+        // The row's foreign key wants the Private profile's own row first.
+        AppDatabase.shared.saveProfile(profile.toRecord())
+        AppDatabase.shared.setProfileExtensionEnabled(
+            extensionID: ext.id, profileID: TabStore.incognitoProfileID.uuidString, enabled: true)
+        XCTAssertTrue(AppDatabase.shared.isExtensionEnabled(extensionID: ext.id, profileID: profile.id.uuidString),
+                      "precondition: the extension is allowed in Private")
+        privateLoadedExtensionIDs.append(ext.id)
+        try use(manager, in: profile)
+        return profile
     }
 
     /// The extension loaded into `profile`, an extension page of it, and its
     /// worker awake.
     @MainActor private func loadPage(_ ext: WebExtension, in profile: Profile) async throws -> WKWebView {
         let context = try loadTestContext(ext, in: profile)
+        if profile.isIncognito {
+            XCTAssertTrue(context.hasAccessToPrivateData, "precondition: a Private-profile context")
+        }
         let config = try XCTUnwrap(context.webViewConfiguration,
                                    "webViewConfiguration is nil — context not loaded in a controller")
         let page = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
@@ -232,6 +327,98 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         }
     }
 
+    /// One `notifications` call from `transport`, answering what the extension
+    /// was told. The center must not be holding adds.
+    @MainActor private func call(_ op: String, _ id: String = "", title: String = "", via transport: Transport,
+                                 in page: WKWebView, file: StaticString = #filePath, line: UInt = #line) async throws -> Any? {
+        let object: [String: Any]
+        switch transport {
+        case .page:
+            let js = Self.opJS + "\nreturn JSON.stringify(await notificationOp(op, id, title));"
+            let json = try await page.callAsyncJavaScript(js, arguments: ["op": op, "id": id, "title": title],
+                                                          contentWorld: .page) as? String
+            object = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(try XCTUnwrap(json).utf8)) as? [String: Any],
+                                   file: file, line: line)
+        case .worker:
+            let envelope = try await askWorker(
+                from: page, message: ["type": "notificationOp", "op": op, "id": id, "title": title], timeout: 20)
+            XCTAssertTrue(envelope["lastError"] is NSNull || envelope["lastError"] == nil,
+                          "the page could not reach the worker: \(envelope)", file: file, line: line)
+            object = try XCTUnwrap(envelope["reply"] as? [String: Any], "the worker must answer: \(envelope)",
+                                   file: file, line: line)
+        }
+        XCTAssertNil(object["error"], "\(transport) \(op) \(id): \(object)", file: file, line: line)
+        return object["result"]
+    }
+
+    /// The ids `getAll` lists from `transport` that start with `prefix`.
+    @MainActor private func listed(_ prefix: String, via transport: Transport, in page: WKWebView,
+                                   file: StaticString = #filePath, line: UInt = #line) async throws -> [String] {
+        let all = try await call("getAll", via: transport, in: page, file: file, line: line) as? [String: Any]
+        return (all ?? [:]).keys.filter { $0.hasPrefix(prefix) }.sorted()
+    }
+
+    /// The identifier `ext`'s notification `id` in `profile` is shown under.
+    /// Identifiers are opaque, so only the profile's manager knows it, and
+    /// only while the notification exists.
+    @MainActor private func identifier(_ id: String, of ext: WebExtension, in profile: Profile) -> String {
+        profile.polyfillHandler?.notificationManagerOverride?.identifier(
+            for: .init(profileID: profile.id, extensionID: ext.id), notificationID: id) ?? "no notification \(id)"
+    }
+
+    /// From `transport`, `owner` creates two notifications and `other` — the
+    /// same extension in another profile — tries to see, update and clear
+    /// them, then creates and clears one with the same id as one of `owner`'s.
+    @MainActor private func assertIsolated(_ ext: WebExtension, owner: (profile: Profile, page: WKWebView),
+                                           other: (profile: Profile, page: WKWebView),
+                                           center: HeldNotificationCenter, via transport: Transport,
+                                           file: StaticString = #filePath, line: UInt = #line) async throws {
+        let label = "\(transport) \(owner.profile.name) vs \(other.profile.name)"
+        let prefix = "iso-\(transport)-\(owner.profile.id.uuidString.prefix(8))-"
+        let shared = prefix + "shared", ownerOnly = prefix + "owner-only"
+        _ = try await call("create", shared, title: "Owner", via: transport, in: owner.page, file: file, line: line)
+        _ = try await call("create", ownerOnly, title: "Owner only", via: transport, in: owner.page,
+                           file: file, line: line)
+        let ownerShared = identifier(shared, of: ext, in: owner.profile)
+        let ownerOnlyID = identifier(ownerOnly, of: ext, in: owner.profile)
+        var ownerListed = try await listed(prefix, via: transport, in: owner.page, file: file, line: line)
+        XCTAssertEqual(ownerListed, [ownerOnly, shared].sorted(), label, file: file, line: line)
+
+        var otherListed = try await listed(prefix, via: transport, in: other.page, file: file, line: line)
+        XCTAssertEqual(otherListed, [], "\(label): getAll must not list the other profile's notifications",
+                       file: file, line: line)
+
+        let updated = try await call("update", ownerOnly, title: "Hijacked", via: transport, in: other.page,
+                                     file: file, line: line)
+        XCTAssertEqual(updated as? Bool, false, "\(label): no such notification in this profile",
+                       file: file, line: line)
+        XCTAssertEqual(center.shown[ownerOnlyID], "Owner only", "\(label): the update must not apply",
+                       file: file, line: line)
+
+        _ = try await call("clear", ownerOnly, via: transport, in: other.page, file: file, line: line)
+        XCTAssertEqual(center.shown[ownerOnlyID], "Owner only", "\(label): the clear must not remove it",
+                       file: file, line: line)
+
+        _ = try await call("create", shared, title: "Other", via: transport, in: other.page, file: file, line: line)
+        XCTAssertEqual(center.shown[ownerShared], "Owner", "\(label): the same id must not replace the banner",
+                       file: file, line: line)
+        XCTAssertEqual(center.shown[identifier(shared, of: ext, in: other.profile)], "Other", label,
+                       file: file, line: line)
+        otherListed = try await listed(prefix, via: transport, in: other.page, file: file, line: line)
+        XCTAssertEqual(otherListed, [shared], label, file: file, line: line)
+
+        _ = try await call("clear", shared, via: transport, in: other.page, file: file, line: line)
+        XCTAssertEqual(center.shown[ownerShared], "Owner", "\(label): clearing its own copy leaves the owner's",
+                       file: file, line: line)
+
+        ownerListed = try await listed(prefix, via: transport, in: owner.page, file: file, line: line)
+        XCTAssertEqual(ownerListed, [ownerOnly, shared].sorted(), "\(label): the owner still has both",
+                       file: file, line: line)
+        XCTAssertFalse(center.removals.contains(ownerShared) || center.removals.contains(ownerOnlyID),
+                       "\(label): nothing the other profile did removed the owner's notifications",
+                       file: file, line: line)
+    }
+
     @MainActor private func listed(_ outcome: [String: Any]) -> [String] {
         ((outcome["all"] as? [String: Any]) ?? [:]).keys.sorted()
     }
@@ -251,7 +438,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             XCTAssertEqual(outcome["createdID"] as? String, id, "\(transport): create still answers its id")
             XCTAssertEqual(outcome["cleared"] as? Bool, true, "\(transport)")
             XCTAssertEqual(listed(outcome), [], "\(transport): getAll must not list a cleared notification")
-            XCTAssertNil(center.shown["\(ext.id):\(id)"], "\(transport): the notification must not stay on screen")
+            XCTAssertTrue(center.shown.isEmpty, "\(transport): the notification must not stay on screen")
         }
     }
 
@@ -268,7 +455,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             XCTAssertEqual(outcome["updated"] as? Bool, true,
                            "\(transport): the notification being created exists, so the update applies")
             XCTAssertTrue(listed(outcome).contains(id), "\(transport): \(listed(outcome))")
-            XCTAssertEqual(center.shown["\(ext.id):\(id)"], "After", "\(transport): the update's content shows")
+            XCTAssertEqual(center.shown[identifier(id, of: ext, in: profile)], "After", "\(transport): the update's content shows")
         }
     }
 
@@ -285,7 +472,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             XCTAssertEqual(outcome["cleared"] as? Bool, true, "\(transport)")
             XCTAssertEqual(outcome["secondID"] as? String, id, "\(transport)")
             XCTAssertTrue(listed(outcome).contains(id), "\(transport): the second create stands: \(listed(outcome))")
-            XCTAssertEqual(center.shown["\(ext.id):\(id)"], "Second", "\(transport)")
+            XCTAssertEqual(center.shown[identifier(id, of: ext, in: profile)], "Second", "\(transport)")
         }
     }
 
@@ -307,7 +494,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         let clearedByB = try await pageB.callAsyncJavaScript(
             "return await chrome.notifications.clear('shared-id');", arguments: [:], contentWorld: .page)
         XCTAssertEqual(clearedByB as? Bool, true)
-        XCTAssertEqual(center.removals, ["\(extB.id):shared-id"], "B's clear names only B's notification")
+        XCTAssertEqual(center.removals, [], "B has no such notification, so its clear takes nothing away")
 
         center.releaseAll()
         let createdID = try await created.value
@@ -318,6 +505,195 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         let listedForB = try await pageB.callAsyncJavaScript(
             "return JSON.stringify(await chrome.notifications.getAll());", arguments: [:], contentWorld: .page)
         XCTAssertEqual(listedForB as? String, "{}")
-        XCTAssertEqual(center.shown["\(extA.id):shared-id"], "A")
+        XCTAssertEqual(center.shown[identifier("shared-id", of: extA, in: profile)], "A")
+    }
+
+    // MARK: - Profile isolation (TASK-238)
+
+    @MainActor func testTwoPersistentProfilesKeepTheirNotificationsApart() async throws {
+        let ext = try await makeExtension()
+        let (manager, center) = makeManager()
+        center.holdsAdds = false
+        let first = try makeProfile("Notification Isolation One", manager: manager)
+        let second = try makeProfile("Notification Isolation Two", manager: manager)
+        let firstPage = try await loadPage(ext, in: first)
+        let secondPage = try await loadPage(ext, in: second)
+
+        for transport in [Transport.page, .worker] {
+            try await assertIsolated(ext, owner: (first, firstPage), other: (second, secondPage),
+                                     center: center, via: transport)
+            try await assertIsolated(ext, owner: (second, secondPage), other: (first, firstPage),
+                                     center: center, via: transport)
+        }
+    }
+
+    @MainActor func testPersistentAndPrivateProfilesKeepTheirNotificationsApart() async throws {
+        let ext = try await makeExtension()
+        let (manager, center) = makeManager()
+        center.holdsAdds = false
+        let persistent = try makeProfile("Notification Isolation Persistent", manager: manager)
+        let privateProfile = try privateProfile(allowing: ext, manager: manager)
+        let persistentPage = try await loadPage(ext, in: persistent)
+        let privatePage = try await loadPage(ext, in: privateProfile)
+
+        for transport in [Transport.page, .worker] {
+            try await assertIsolated(ext, owner: (persistent, persistentPage), other: (privateProfile, privatePage),
+                                     center: center, via: transport)
+            try await assertIsolated(ext, owner: (privateProfile, privatePage), other: (persistent, persistentPage),
+                                     center: center, via: transport)
+        }
+    }
+
+    /// A click or close on a notification resolves to the profile that created
+    /// it, and a close drops only that profile's entry. (Nothing delivers it to
+    /// `onClicked` / `onClosed` yet; see `handleResponse`.)
+    @MainActor func testResponsesResolveOnlyToTheCreatingProfile() async throws {
+        let ext = try await makeExtension()
+        let (manager, center) = makeManager()
+        center.holdsAdds = false
+        let persistent = try makeProfile("Notification Response Persistent", manager: manager)
+        let privateProfile = try privateProfile(allowing: ext, manager: manager)
+        let persistentPage = try await loadPage(ext, in: persistent)
+        let privatePage = try await loadPage(ext, in: privateProfile)
+
+        for transport in [Transport.page, .worker] {
+            let id = "response-\(transport)"
+            _ = try await call("create", id, title: "Persistent", via: transport, in: persistentPage)
+            _ = try await call("create", id, title: "Private", via: transport, in: privatePage)
+
+            let closed = manager.handleResponse(identifier: identifier(id, of: ext, in: persistent),
+                                                action: UNNotificationDismissActionIdentifier)
+            XCTAssertEqual(closed?.owner.profileID, persistent.id, "\(transport): the close is the persistent profile's")
+            XCTAssertEqual(closed?.owner.extensionID, ext.id)
+            XCTAssertEqual(closed?.notificationID, id)
+            let persistentListed = try await listed(id, via: transport, in: persistentPage)
+            XCTAssertEqual(persistentListed, [], "\(transport): the close drops the persistent profile's entry")
+            var privateListed = try await listed(id, via: transport, in: privatePage)
+            XCTAssertEqual(privateListed, [id], "\(transport): and leaves the Private one's")
+
+            let clicked = manager.handleResponse(identifier: identifier(id, of: ext, in: privateProfile),
+                                                 action: UNNotificationDefaultActionIdentifier)
+            XCTAssertEqual(clicked, .init(owner: .init(profileID: TabStore.incognitoProfileID, extensionID: ext.id),
+                                          notificationID: id, kind: .clicked), "\(transport)")
+
+            // A notification a build before TASK-238 delivered carries no
+            // profile and matches no entry.
+            XCTAssertNil(manager.handleResponse(identifier: "\(ext.id):\(id)",
+                                                action: UNNotificationDismissActionIdentifier))
+            privateListed = try await listed(id, via: transport, in: privatePage)
+            XCTAssertEqual(privateListed, [id], "\(transport)")
+        }
+    }
+
+    // MARK: - Lifecycle (TASK-238)
+
+    /// The Private profile's id is a constant and its extension contexts stay
+    /// loaded between sessions, so when the last Private window closes its
+    /// notifications go — from `getAll` and off screen — and the next Private
+    /// session starts with none. The persistent profile's stay.
+    @MainActor func testThePrivateSessionEndingTakesItsNotifications() async throws {
+        let ext = try await makeExtension()
+        let (manager, center) = makeManager()
+        center.holdsAdds = false
+        let persistent = try makeProfile("Notification Session Persistent", manager: manager)
+        let privateProfile = try privateProfile(allowing: ext, manager: manager)
+        let persistentPage = try await loadPage(ext, in: persistent)
+        let privatePage = try await loadPage(ext, in: privateProfile)
+
+        XCTAssertFalse(TabStore.shared.hasLivePrivateSession, "precondition: no Private session yet")
+        let window = TabStore.shared.addIncognitoSpace()
+        incognitoSpaceIDs.append(window.id)
+        var privateIdentifiers: [String] = []
+        for transport in [Transport.page, .worker] {
+            let id = "session-\(transport)"
+            _ = try await call("create", id, title: "Private", via: transport, in: privatePage)
+            _ = try await call("create", id, title: "Persistent", via: transport, in: persistentPage)
+            privateIdentifiers.append(identifier(id, of: ext, in: privateProfile))
+        }
+        let privateListed = try await listed("session-", via: .worker, in: privatePage)
+        XCTAssertEqual(privateListed, ["session-page", "session-worker"], "precondition")
+
+        TabStore.shared.removeIncognitoSpace(id: window.id)
+        incognitoSpaceIDs.removeAll()
+        XCTAssertFalse(TabStore.shared.hasLivePrivateSession)
+
+        for transport in [Transport.page, .worker] {
+            let privateAfter = try await listed("session-", via: transport, in: privatePage)
+            XCTAssertEqual(privateAfter, [], "\(transport): the ended session's notifications are gone")
+            let persistentAfter = try await listed("session-", via: transport, in: persistentPage)
+            XCTAssertEqual(persistentAfter, ["session-page", "session-worker"], "\(transport)")
+        }
+        for identifier in privateIdentifiers {
+            XCTAssertTrue(center.removals.contains(identifier), "taken off screen")
+        }
+        XCTAssertEqual(center.shown.values.sorted(), ["Persistent", "Persistent"])
+
+        // The next session: the same ids are new notifications, under new
+        // identifiers, and nothing of the last session's is listed.
+        let next = TabStore.shared.addIncognitoSpace()
+        incognitoSpaceIDs.append(next.id)
+        _ = try await call("create", "session-page", title: "Next", via: .page, in: privatePage)
+        XCTAssertFalse(privateIdentifiers.contains(identifier("session-page", of: ext, in: privateProfile)))
+        let nextListed = try await listed("session-", via: .worker, in: privatePage)
+        XCTAssertEqual(nextListed, ["session-page"])
+    }
+
+    /// Unloading the extension from one profile (as disabling it there does)
+    /// takes its notifications in that profile, and leaves the same
+    /// extension's in another profile.
+    @MainActor func testUnloadingTheExtensionFromAProfileTakesItsNotifications() async throws {
+        let ext = try await makeExtension()
+        let (manager, center) = makeManager()
+        center.holdsAdds = false
+        let first = try makeProfile("Notification Unload One", manager: manager)
+        let second = try makeProfile("Notification Unload Two", manager: manager)
+        let firstPage = try await loadPage(ext, in: first)
+        let secondPage = try await loadPage(ext, in: second)
+
+        for transport in [Transport.page, .worker] {
+            _ = try await call("create", "unload-\(transport)", title: "First", via: transport, in: firstPage)
+            _ = try await call("create", "unload-\(transport)", title: "Second", via: transport, in: secondPage)
+        }
+        let firstIdentifiers = ["unload-page", "unload-worker"].map { identifier($0, of: ext, in: first) }
+
+        XCTAssertNotNil(first.unloadExtension(id: ext.id), "precondition: the context was loaded")
+        let firstOwner = ExtensionNotificationManager.Owner(profileID: first.id, extensionID: ext.id)
+        XCTAssertEqual(manager.getAll(owner: firstOwner), [:])
+        XCTAssertEqual(Set(center.removals), Set(firstIdentifiers))
+        XCTAssertEqual(center.shown.values.sorted(), ["Second", "Second"])
+        let secondListed = try await listed("unload-", via: .worker, in: secondPage)
+        XCTAssertEqual(secondListed, ["unload-page", "unload-worker"])
+    }
+
+    /// A request that reaches a handler whose profile has been released names
+    /// no owner, so every `notifications.*` call is refused rather than acted
+    /// on for nobody (TASK-238).
+    @MainActor func testRequestsAfterTheProfileIsGoneAreRefused() async throws {
+        let (manager, center) = makeManager()
+        center.holdsAdds = false
+        var profile: Profile? = Profile(name: "Notification Profile Gone")
+        let handler = ExtensionPolyfillHandler(profile: try XCTUnwrap(profile))
+        handler.notificationManagerOverride = manager
+        profile = nil
+        XCTAssertNil(handler.profile, "precondition: nothing else holds the profile")
+
+        for type in ["notifications.create", "notifications.update", "notifications.clear", "notifications.getAll"] {
+            let answered = expectation(description: "\(type) answers")
+            var reply: (result: Any?, error: (any Error)?) = (nil, nil)
+            let params: [String: Any] = ["notificationId": "gone", "options": ["title": "t"]]
+            handler.handleNativeMessage(
+                ["type": type, "params": params],
+                verifiedExtensionID: "notif-gone-ext"
+            ) { result, error in
+                reply = (result, error)
+                answered.fulfill()
+            }
+            await fulfillment(of: [answered], timeout: 5)
+            XCTAssertNil(reply.result, type)
+            XCTAssertEqual((reply.error as NSError?)?.localizedDescription,
+                           ExtensionPolyfillHandler.notificationsProfileGone, type)
+        }
+        XCTAssertTrue(center.addedIdentifiers.isEmpty, "nothing was shown")
+        XCTAssertTrue(center.removals.isEmpty, "nothing was taken away")
     }
 }

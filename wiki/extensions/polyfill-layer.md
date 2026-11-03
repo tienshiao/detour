@@ -70,6 +70,9 @@ sources:
   - id: notification-manager
     resource: ../../Detour/Extensions/Runtime/ExtensionNotificationManager.swift
     title: ExtensionNotificationManager.swift
+  - id: task-238
+    resource: backlog:TASK-238
+    title: "Extensions: one profile's notifications are visible to and clearable by the same extension in another profile"
 ---
 
 `ExtensionAPIPolyfill` generates one JavaScript bundle (`polyfillJS`) that runs
@@ -295,8 +298,8 @@ handler's dispatch is API surface.
 
 ## chrome.notifications applies calls in the order they were made
 
-`ExtensionNotificationManager` (one shared instance; the handler reaches it
-through `notificationManager`) records a notification when `create` is
+`ExtensionNotificationManager` (one shared instance for every profile; each
+profile's handler reaches it through `notificationManager`) records a notification when `create` is
 called, before `UNUserNotificationCenter.add` returns. An extension that does
 not await `create` before `clear` or `update` therefore gets what it asked
 for:[^task-234]
@@ -325,6 +328,65 @@ authorization the app never asks for. On the development machine the
 `com.detourbrowser.mac` bundle id is authorized (a Debug build's `add`
 succeeded in the TASK-234 `/verify` run); without that authorization every
 `add` would fail and `getAll` would stay empty.[^notification-manager]
+
+## chrome.notifications is scoped by profile
+
+The system center has one delegate, so one manager serves every profile, and
+every notification belongs to an `Owner`: the handler's profile plus the
+verified extension id, never anything from the request body. The same
+extension installed in two profiles, the Private one included, is two owners.
+Before TASK-238 the key was the extension id alone, so a normal-profile copy
+listed, cleared and updated what its Private copy had created, and the reverse
+also held.[^task-238]
+
+| What | Scoped how |
+|---|---|
+| `getAll` | lists only the calling owner's entries |
+| `clear`, `update` | find the owner's own notification; another profile's notification with the same id is untouched (`update` answers false, `clear` takes nothing away) |
+| The UNNotification identifier | opaque: `detour-ext-notification.v3\|<random UUID>`, one per notification, mapped back to (owner, id) by the manager only. Each owner's notification has its own, so one profile's `create` never replaces the other's banner and one profile's `clear` never takes it away. An `update` keeps the identifier (the center replaces the banner); a notification cleared and created again gets a new one |
+| A click or close | `handleResponse` resolves the identifier to its owner and id and returns it; a close drops only that entry |
+
+The identifier is opaque because usernoted keeps delivered identifiers on
+disk. The first TASK-238 draft used
+`detour-ext-notification.v2|<profile UUID>|<extension id>|<id>`; for Private
+the profile UUID is the well-known constant `TabStore.incognitoProfileID`, so
+the system's store would have recorded which notifications came from Private,
+and what the extension called them. The content handed to the center carries
+only title, body and subtitle: no `threadIdentifier`, no `userInfo`.[^task-238]
+
+Identifiers from earlier builds (`<extensionID>:<notificationID>` before
+TASK-238, the v2 form) match no entry, so a click or close on one still on
+screen is ignored. The map lives in memory only, so the same holds for a v3
+identifier left over from an earlier launch.
+
+### An owner's notifications go with its scope
+
+Entries would otherwise outlive what created them, and the Private profile's
+id is a constant, so a Private session's notifications would carry over into
+the next one. They are taken away, from `getAll` and off screen (delivered
+and pending), when:
+
+| When | Called from | Manager call |
+|---|---|---|
+| The extension is unloaded from a profile: disabled there, uninstalled, updated, or its context reloaded by background recovery | `Profile.unloadExtension` → handler `removeNotifications(ofExtension:)` | `removeAll(for: owner)` |
+| The profile is deleted | `TabStore.deleteProfile`, after `unloadAllExtensions` → handler `removeAllNotifications()` | `removeAll(profileID:)` |
+| The Private session ends: the last Private window's space is removed, or the last Private Quick Detour closes or switches profile | `TabStore.endPrivateSessionIfUnused()`, the one place that also calls `siteSettings.discardPrivateSession()` | `removeAll(profileID: incognitoProfileID)` on the Private profile's handler |
+| A Private session starts (a Private window's space or a Private Quick Detour, when none was live): the Private profile's contexts stay loaded between sessions, so a worker can create one while no Private page is open | `TabStore.startPrivateSessionIfNeeded()`, from `addIncognitoSpace` and `openQuickDetourTab` | the same |
+| The app quits, which ends the Private session without closing its windows | `applicationWillTerminate` → `TabStore.removePrivateProfileNotifications()`; best effort, the request may not reach usernoted before exit | the same |
+
+A notification whose `add` is still in flight when its owner goes is taken
+away again when the `add` returns, as after a `clear`. The handler's removals
+use the shared manager only if something created it this launch
+(`sharedIfCreated`), so ending a session never sets up the system center.
+A persistent profile's notifications still on screen when the app quits stay
+there until dismissed; the next launch cannot map their identifiers back, so
+a click on one is ignored and `clear` or `create` with the same id no longer
+reaches it (before TASK-238 the fixed `<extensionID>:<id>` identifier did,
+by accident).
+
+`handleResponse` returns the resolved response, and nothing delivers it yet:
+`notifications.onClicked` and `onClosed` never fire (see Gotchas). Delivery
+would start there and go to the returned owner's profile only.
 
 ## Callback form and `runtime.lastError`
 
@@ -408,8 +470,8 @@ uncaught error rather than an unhandled rejection.
 | [ExtensionPolyfillIntegrationTests](../../DetourTests/ExtensionPolyfillIntegrationTests.swift) | A real `WKWebExtensionContext`: what WebKit's wrappers actually do, garbage-collection survival, real origins |
 | [ExtensionPolyfillProfileWiringTests](../../DetourTests/ExtensionPolyfillProfileWiringTests.swift) | The production wiring in `Profile.extensionController`, with no test-side setup: deleting the wiring fails it |
 | [ExtensionHistoryScopeTests](../../DetourTests/ExtensionHistoryScopeTests.swift) | `chrome.history.search` through the same production wiring, one extension in two profiles: isolation, the permission gate, bad arguments and the default range from an extension page and a worker, promise and callback form |
-| [ExtensionNotificationManagerTests](../../DetourTests/ExtensionNotificationManagerTests.swift) | The `notifications` call orderings above against `HeldNotificationCenter`: clear or update while the `add` is in flight, create–clear–create, an `add` answering out of order or failing, another extension's clear |
-| [ExtensionNotificationOrderingTests](../../DetourTests/ExtensionNotificationOrderingTests.swift) | The same orderings from an extension page and its worker through the production wiring, with the profile's handler on a held center |
+| [ExtensionNotificationManagerTests](../../DetourTests/ExtensionNotificationManagerTests.swift) | The `notifications` call orderings above against `HeldNotificationCenter`: clear or update while the `add` is in flight, create–clear–create, an `add` answering out of order or failing, another extension's clear; the same extension in another profile (getAll, clear, update, click and close resolution, legacy identifiers); opaque identifiers; `removeAll` and its hooks (Private session end in a `TabStore` of its own, profile deletion) |
+| [ExtensionNotificationOrderingTests](../../DetourTests/ExtensionNotificationOrderingTests.swift) | The same orderings from an extension page and its worker through the production wiring, with the profile's handler on a held center; one extension in two persistent profiles, and in a persistent profile plus the built-in Private profile, sharing one manager, from both transports and in both directions; the Private session ending in the shared store, and unloading the extension from one profile |
 | [ExtensionFaviconScopeTests](../../DetourTests/ExtensionFaviconScopeTests.swift) | `_favicon` through the same wiring: one extension in two profiles, another profile's WebKit host, a tab's handler, the `favicon` permission, the Private profile, what a worker's `fetch` gets, and the removed `favicon.lookup` message from a page and a worker |
 
 A new or changed API needs all three kinds, from both transports; the policy is
@@ -432,3 +494,4 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^chrome-history-api]: Chromium, history_api.cc (HistorySearchFunction)
 [^task-234]: notifications.clear issued while notifications.create is still adding the notification is lost
 [^notification-manager]: ExtensionNotificationManager.swift
+[^task-238]: Extensions: one profile's notifications are visible to and clearable by the same extension in another profile
