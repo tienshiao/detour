@@ -43,6 +43,9 @@ sources:
   - id: task-153
     resource: backlog:TASK-153
     title: chrome.history.search with empty text scans every visit of the profile
+  - id: task-246
+    resource: backlog:TASK-246
+    title: "Memory safety: history title matching over page titles uses no unchecked unsafe access"
   - id: url-search-bench
     resource: ../../DetourTests/HistoryURLSearchBenchmarkTests.swift
     title: HistoryURLSearchBenchmarkTests.swift
@@ -159,6 +162,14 @@ The matcher has three paths with one answer: a byte walk for ASCII titles
 tokenising into strings for everything else. A single-entry cache keeps the
 folded query tokens, because one keystroke can call the function tens of
 thousands of times with the same query.
+
+The byte walk reads a title, which is website text, through a `Span<UInt8>`
+made from the string's contiguous UTF-8, so every read is bounds-checked
+in release builds too; a string with no contiguous UTF-8 (a bridged
+`NSString`, as one holding a lone surrogate is) skips the walk and the
+general path answers. Invalid UTF-8 stored in SQLite reaches the function
+already repaired to U+FFFD by GRDB. The cost of the checks is recorded on
+[strict memory safety](../platform/strict-memory-safety.md).[^task-246]
 
 ## The title index and its triggers
 
@@ -482,4 +493,5 @@ test against the windowed select and the step-count test described above;
 [^task-138]: chrome.history.search returns history from every profile
 [^task-152]: favicon.lookup answers from every profile's history, without a permission check
 [^task-153]: chrome.history.search with empty text scans every visit of the profile
+[^task-246]: TASK-246
 [^history-notes]: Session notes on the History feature

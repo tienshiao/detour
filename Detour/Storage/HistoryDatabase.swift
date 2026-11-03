@@ -165,25 +165,40 @@ nonisolated struct HistoryDatabase: Sendable {
 
     /// `asciiMatch` over a string's UTF-8, or `.notASCII` when that storage is
     /// not contiguous (a bridged `NSString`) and the general path must answer.
+    ///
+    /// Titles come from websites, so the matcher reads them through a `Span`,
+    /// whose every subscript is bounds-checked in release builds too, rather
+    /// than through the `UnsafeBufferPointer` (unchecked when optimized) it is
+    /// made from (TASK-246). `UTF8View.span` would need no `unsafe` at all, but
+    /// it is macOS 26 and later.
     private static func scanASCII(_ text: String, _ tokens: [[UInt8]]) -> ASCIIScan {
-        text.utf8.withContiguousStorageIfAvailable { asciiMatch($0, tokens) } ?? .notASCII
+        text.utf8.withContiguousStorageIfAvailable { buffer in
+            // unsafe: the buffer is the string's own UTF-8, valid for the
+            // closure. The span borrows it, so it cannot outlive the closure,
+            // and it covers exactly `buffer.count` bytes; nothing else touches
+            // the buffer.
+            unsafe asciiMatch(Span(_unsafeElements: buffer), tokens)
+        } ?? .notASCII
     }
 
     private enum ASCIIScan { case matched, rejected, notASCII }
 
     /// Walks an all-ASCII title once: maximal `[0-9A-Za-z]` runs, each compared
-    /// case-insensitively against the (already lowercased) query tokens. The
-    /// whole buffer is checked for ASCII first, so a match is never declared on
-    /// the strength of a prefix that `folding` might have reshaped later on.
-    private static func asciiMatch(_ bytes: UnsafeBufferPointer<UInt8>,
-                                   _ tokens: [[UInt8]]) -> ASCIIScan {
-        for byte in bytes where byte >= 0x80 { return .notASCII }
-        guard !tokens.isEmpty else { return .rejected }
-
+    /// case-insensitively against the (already lowercased) query tokens. A
+    /// match is only reported once the walk has seen every byte to be ASCII, so
+    /// it is never declared on the strength of a prefix that `folding` might
+    /// have reshaped later on. One pass does both, so each byte is read (and,
+    /// through the span, bounds-checked) once rather than once per check.
+    private static func asciiMatch(_ bytes: Span<UInt8>, _ tokens: [[UInt8]]) -> ASCIIScan {
         let count = bytes.count
+        var matched = false
         var index = 0
         while index < count {
-            guard isASCIIAlphanumeric(bytes[index]) else {
+            let byte = bytes[index]
+            guard byte < 0x80 else { return .notASCII }
+            // Once matched, only the rest of the ASCII check is left. The bytes
+            // a run skips below are alphanumeric, so ASCII by construction.
+            guard !matched, isASCIIAlphanumeric(byte) else {
                 index += 1
                 continue
             }
@@ -195,10 +210,13 @@ nonisolated struct HistoryDatabase: Sendable {
                 while offset < token.count, asciiLowercase(bytes[start + offset]) == token[offset] {
                     offset += 1
                 }
-                if offset == token.count { return .matched }
+                if offset == token.count {
+                    matched = true
+                    break
+                }
             }
         }
-        return .rejected
+        return matched ? .matched : .rejected
     }
 
     private static func isASCIIAlphanumeric(_ byte: UInt8) -> Bool {

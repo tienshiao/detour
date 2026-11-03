@@ -1667,6 +1667,92 @@ nonisolated final class HistoryDatabaseTests: XCTestCase {
         }
     }
 
+    /// Titles come from websites, so the matcher's byte walk (TASK-246) is
+    /// pinned on the inputs that stress its bounds: nothing, a token that ends
+    /// exactly at the last byte, a token cut short by the end, a megabyte of
+    /// title, and non-ASCII bytes at either end of an otherwise ASCII title.
+    @MainActor func testTitleMatcherOverNonASCIIEmptyAndLongTitles() {
+        // Non-ASCII: folds to ASCII (second walk), or stays non-ASCII (tokens).
+        XCTAssertTrue(HistoryDatabase.titleMatches("Résumé", query: "resum"))
+        XCTAssertTrue(HistoryDatabase.titleMatches("ÅNGSTRÖM", query: "angstrom"))
+        XCTAssertTrue(HistoryDatabase.titleMatches("Привет мир", query: "мир"))
+        XCTAssertFalse(HistoryDatabase.titleMatches("Привет мир", query: "ир"))
+        XCTAssertTrue(HistoryDatabase.titleMatches("東京 tokyo", query: "tokyo"))
+        XCTAssertTrue(HistoryDatabase.titleMatches("emoji 🎉 party", query: "part"))
+        XCTAssertFalse(HistoryDatabase.titleMatches("🎉", query: "party"))
+        XCTAssertTrue(HistoryDatabase.titleMatches("é inbox", query: "inbox"), "non-ASCII first byte")
+        XCTAssertTrue(HistoryDatabase.titleMatches("inbox é", query: "inbox"), "non-ASCII last byte")
+
+        // Empty and near-empty.
+        XCTAssertFalse(HistoryDatabase.titleMatches("", query: ""))
+        XCTAssertFalse(HistoryDatabase.titleMatches(" ", query: "a"))
+        XCTAssertFalse(HistoryDatabase.titleMatches("a", query: "я"), "a non-ASCII token never matches ASCII")
+        XCTAssertTrue(HistoryDatabase.titleMatches("a", query: "A"))
+
+        // A token at the very end, and one the end cuts short.
+        XCTAssertTrue(HistoryDatabase.titleMatches("find the needle", query: "needle"))
+        XCTAssertFalse(HistoryDatabase.titleMatches("find the needl", query: "needle"))
+        XCTAssertFalse(HistoryDatabase.titleMatches("n", query: "needle"))
+
+        // About a megabyte, past any inline or small-string storage.
+        let padding = String(repeating: "hay ", count: 250_000)
+        XCTAssertTrue(HistoryDatabase.titleMatches(padding + "needle", query: "needle"))
+        XCTAssertTrue(HistoryDatabase.titleMatches("needle " + padding, query: "need"))
+        XCTAssertFalse(HistoryDatabase.titleMatches(padding + "needl", query: "needle"))
+        XCTAssertFalse(HistoryDatabase.titleMatches(padding, query: "needle"))
+        XCTAssertTrue(HistoryDatabase.titleMatches(padding + "needle é", query: "needle"),
+                      "one non-ASCII byte at the end of a long title sends it down the folding path")
+        XCTAssertTrue(HistoryDatabase.titleMatches(String(repeating: "x", count: 1_000_000), query: "xxx"),
+                      "one token a megabyte long")
+    }
+
+    /// Invalid text from a page cannot reach the matcher as a `String` — Swift
+    /// strings are valid Unicode — but it can arrive in two shapes that are
+    /// not plain native UTF-8: a bridged `NSString` holding a lone UTF-16
+    /// surrogate (whose UTF-8 is not contiguous, so the byte walk is skipped),
+    /// and SQLite text that is not valid UTF-8, which GRDB repairs to U+FFFD on
+    /// the way into the SQL function. Both must match on their valid tokens
+    /// and neither may trap.
+    @MainActor func testTitleMatcherOverLoneSurrogatesAndInvalidUTF8() throws {
+        func bridged(_ units: [UInt16]) -> String {
+            NSString(characters: units, length: units.count) as String
+        }
+        let loneHigh: UInt16 = 0xD800, loneLow: UInt16 = 0xDC00
+        XCTAssertTrue(HistoryDatabase.titleMatches(bridged(Array("Inbox ".utf16) + [loneHigh]), query: "inbox"))
+        XCTAssertTrue(HistoryDatabase.titleMatches(bridged([loneLow] + Array(" Inbox".utf16)), query: "inb"))
+        XCTAssertTrue(HistoryDatabase.titleMatches(bridged(Array("In".utf16) + [loneHigh] + Array("box".utf16)),
+                                                   query: "box"),
+                      "a lone surrogate splits tokens like any other non-alphanumeric")
+        XCTAssertFalse(HistoryDatabase.titleMatches(bridged([loneHigh, loneLow, loneHigh]), query: "inbox"))
+        XCTAssertFalse(HistoryDatabase.titleMatches(bridged([loneHigh]), query: ""))
+
+        let queue = try DatabaseQueue()
+        queue.writeWithoutTransaction { HistoryDatabase.registerFunctions(on: $0) }
+        // (title bytes as hex, query, expected): a CESU-8 surrogate, a lead byte
+        // with no continuation, a stray continuation byte, a byte never valid.
+        let cases: [(hex: String, query: String, expected: Bool)] = [
+            ("496E626F78EDA080", "inbox", true),
+            ("EDA080496E626F78", "inbox", true),
+            ("496E626F78C3", "inbox", true),
+            ("80496E626F78", "inbox", true),
+            ("496EFF626F78", "inbox", false),
+            ("496EFF626F78", "box", true),
+            ("FF", "inbox", false),
+            ("", "inbox", false),
+        ]
+        try queue.read { conn in
+            for (hex, query, expected) in cases {
+                let matched = try Bool.fetchOne(conn, sql: """
+                    SELECT history_title_matches(CAST(X'\(hex)' AS TEXT), ?)
+                    """, arguments: [query])
+                XCTAssertEqual(matched, expected, "title bytes \(hex) / \(query)")
+                // The folded form the title index stores must survive the same bytes.
+                XCTAssertNotNil(try String.fetchOne(conn, sql: "SELECT history_fold(CAST(X'\(hex)' AS TEXT))"),
+                                "history_fold over title bytes \(hex)")
+            }
+        }
+    }
+
     /// The SQL prefilter (`LIKE`/`GLOB`) in front of `history_title_matches`
     /// only ever saves work if it is a strict superset of the matcher. Over a
     /// corpus chosen to stress folding, tokenizing and LIKE's own wildcards,

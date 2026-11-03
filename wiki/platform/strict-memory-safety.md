@@ -21,6 +21,9 @@ sources:
   - id: framing-tests
     resource: ../../DetourTests/NativeMessagingFramingTests.swift
     title: NativeMessagingFramingTests.swift
+  - id: task-246
+    resource: backlog:TASK-246
+    title: "Memory safety: history title matching over page titles uses no unchecked unsafe access"
   - id: se-0458
     resource: https://github.com/swiftlang/swift-evolution/blob/main/proposals/0458-strict-memory-safety.md
     title: "SE-0458: Opt-in Strict Memory Safety Checking"
@@ -53,7 +56,7 @@ so the split is approximate; the totals are exact):
 | Raw bytes and pointers | 24 | `withUnsafeBytes`/`loadUnaligned` (UUID hashing, a `pid_t` out of `Data`), `stop.pointee` in enumeration blocks |
 | Carbon hot-key API | 21 | `RegisterEventHotKey`, `InstallEventHandler`, `EventHotKeyRef` storage |
 | `String(format:)` (`CVarArg`) | 4 | colour hex strings |
-| Other | 32 | C pointer parameters passed `nil` (`CGPath(…transform: nil)`, `cgImage(forProposedRect: nil…)`, KVO `context: nil`), `Unmanaged` CF results, `withContiguousStorageIfAvailable` in the history title matcher |
+| Other | 32 | C pointer parameters passed `nil` (`CGPath(…transform: nil)`, `cgImage(forProposedRect: nil…)`, KVO `context: nil`), `Unmanaged` CF results, `withContiguousStorageIfAvailable` in the history title matcher (made safe in TASK-246, below) |
 
 # Why it matters here
 
@@ -98,6 +101,42 @@ What was left in those three files after the rewrite, and why:
   standalone program on macOS 26) sees a later `setenv`/`unsetenv`, as the
   tests that point it at a fake host need.[^host]
 
+## The history title matcher (TASK-246)
+
+The next most exposed parser is the matcher behind `history_title_matches`
+(see [History database](../architecture/history-database.md)), which walks
+page titles — website text — byte by byte. It read the title's UTF-8 through
+the `UnsafeBufferPointer` `withContiguousStorageIfAvailable` hands over, whose
+subscript is unchecked in optimized builds; the six warnings it drew were the
+only ones in `HistoryDatabase.swift` (GRDB wraps the SQLite function
+registration and `sqlite3_value_*` reads, so none come from there). Every
+index was in bounds by construction, so this too was hardening, not a
+bug.[^task-246]
+
+The buffer is now wrapped at once in a `Span<UInt8>`
+(`Span(_unsafeElements:)`, the one `unsafe` marker left, inside the closure:
+the span borrows the buffer, so it cannot outlive it) and the walk reads only
+the span, whose subscript traps on an out-of-bounds index in release builds
+too. `Span` itself back-deploys to macOS 10.14.4, but `String.UTF8View.span`,
+which would need no `unsafe` at all, is macOS 26 and later, past the app's
+15.4 target.[^task-246]
+
+What the checks cost, measured on 55,000 ASCII titles of about 80 bytes
+with a query that matches none (the worst case, every byte walked; a
+standalone `swiftc` program, best of 15). A straight translation of the old
+walk to `Span` read every byte twice, once for the ASCII check and once for
+the tokens, each read now checked: 3.6 → 4.6 ms at `-O` and 181 → 627 ms at
+`-Onone`, where `Span`'s generic accessors are not inlined; in the app's
+Debug benchmark the History page's title search (`ascii/page/title-token`)
+went from 34 to 66 ms. Slicing each run once (`extracting`), driving the
+compare by `token.indices`, or `@_optimize(speed)` did not help. Doing the
+ASCII check and the token walk in **one pass** did: a match is only
+reported once every byte has been seen to be ASCII, and the bytes a run
+skips are alphanumeric, so ASCII by construction. That is **3.6 ms before,
+3.6 ms after at `-O`, 181 → 193 ms at `-Onone`**, and in the Debug
+benchmark `ascii/page/title-token` 33.5 → 35.6 ms, the other legs within
+noise.[^task-246]
+
 ## Why the setting is not left on
 
 It was a one-time audit; `project.yml` does not set it.[^task-231-8]
@@ -123,7 +162,9 @@ into `.derived` (a changed setting rebuilds every file), and collect
 `grep -E '^/.*: warning: .*#StrictMemorySafety' | sort -u`. Remove the
 setting and regenerate afterwards. `CRX3Verifier.swift`,
 `CRXUnpacker.swift`, `NativeMessagingHost.swift` and
-`Data+LittleEndian.swift` should report nothing.
+`Data+LittleEndian.swift` should report nothing, and since TASK-246 neither
+should `HistoryDatabase.swift` (199 warnings in 54 files before it, 193 in
+53 after).
 
 For new code that parses bytes from outside the app: read fixed-width
 fields with `littleEndianUInt32(at:)` (or a sibling written the same way),
@@ -142,4 +183,5 @@ and count offsets from `startIndex`.
 [^verifier]: CRX3Verifier.swift
 [^host]: NativeMessagingHost.swift
 [^framing-tests]: NativeMessagingFramingTests.swift
+[^task-246]: TASK-246
 [^se-0458]: SE-0458
