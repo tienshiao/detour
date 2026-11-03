@@ -62,6 +62,14 @@ class WebExtension {
             .map(WKWebExtension.Permission.init(rawValue:)))
     }
 
+    /// The API permissions a saved decision is restored for: the askable
+    /// ones plus the polyfill-gated optional ones. Shared by the restore at
+    /// load and by the removal rule (TASK-258), so a row the restore would not
+    /// apply is never taken as revoked.
+    var restorablePermissions: Set<WKWebExtension.Permission> {
+        askablePermissions.union(polyfillGatedOptionalPermissions)
+    }
+
     /// The host match patterns a prompt can come from: the manifest's
     /// `host_permissions` plus its `optional_host_permissions`, the only two
     /// sources a site-access or `permissions.request` prompt can come from.

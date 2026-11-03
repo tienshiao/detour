@@ -42,6 +42,9 @@ sources:
   - id: task-250
     resource: backlog:TASK-250
     title: "Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions"
+  - id: task-258
+    resource: backlog:TASK-258
+    title: "Extensions: permissions.remove is not saved, so the revoked permission comes back at the next launch"
   - id: polyfill-handler
     resource: ../../Detour/Extensions/Runtime/ExtensionPolyfillHandler.swift
     title: ExtensionPolyfillHandler.swift (permissionIsActive)
@@ -88,6 +91,7 @@ interact, which makes the order of the restore part of the contract.
 |---|---|---|
 | Install, reinstall, update | `recordDeclaredPermissions` — every manifest `permissions` and `host_permissions` entry as granted | Left alone (insert-or-ignore) |
 | A prompt answer, a Settings toggle | `savePermission(s)` | Overwritten |
+| The extension's own `permissions.remove` | `revokePermission`, from `contextDidLoseGrants` | A granted row is deleted |
 
 The first row is why a denial made in Settings survives an update, while a
 permission an update newly declares is recorded as granted.[^task-63]
@@ -172,6 +176,52 @@ host row it does not set the one key: it clears the key from the context and
 re-runs `applySavedHostAccessDecisions`, so the live state is exactly what the
 next launch would restore.
 
+## The extension's own permissions.remove
+
+WebKit applies `permissions.remove` to the context only. Detour learns of it
+from `WKWebExtensionContext.grantedPermissionsWereRemovedNotification` and
+`grantedPermissionMatchPatternsWereRemovedNotification`, which
+`ExtensionManager` observes for every context, and deletes the saved granted
+rows the removal revoked (`savedGrantsRevoked`).[^task-258]
+
+- **The row is deleted, not saved as denied.** A saved denial is restored as
+  `deniedExplicitly`, and WebKit never prompts for an explicitly denied
+  permission (`needsPermission` is false for it), so a later
+  `permissions.request` would be refused without asking. With no row, Settings
+  reads OFF and the next request prompts; the prompt saves the new answer.
+  This is Chrome's state after a removal.
+- **The rule is on state, not on who wrote.** WebKit posts these
+  notifications for every write that takes a grant out, Detour's own
+  included (a restored denial, a Settings clear-and-reapply), and posts them
+  with `dispatch_async` to the main queue after the write. So a flag around
+  Detour's writes would not cover them. Instead, at delivery a saved
+  granted row whose key was removed is deleted only when the context neither
+  grants it nor denies it, and no denied pattern covers it. Detour's own
+  writes always leave the key granted or denied.
+  `permissionStatus(for:)` of a pattern under a broader denied pattern does
+  not read as denied, which is why the covering-denial check is separate.
+- Skipped: rows outside the restore's manifest gate (inert), required keys
+  (WebKit refuses to remove a required permission or an origin a required
+  pattern covers; a broader optional origin still sweeps a narrower required
+  grant out of the context, and the row keeps the next load correct), and
+  `nativeMessaging`.
+- A removed origin also clears the `.url` rows it covers: WebKit removes
+  every granted pattern the removed one matches, the URL's widened origin
+  pattern included.
+- The cleared rows are then applied to every loaded context of the
+  extension, in every profile (`applySavedDecisions`, shared with
+  `setPermissionDecision`), since the decision belongs to the extension. In
+  the context that removed, the restore re-run puts back the required grants
+  WebKit's sweep took. Those writes post again and end there, because the rows
+  are already gone.
+- A post that arrives after the context was unloaded (disable, update) still
+  counts: the extension is found by the context's `uniqueIdentifier`, and
+  unloading touches no permission.
+- An open Settings pane is not refreshed; it reads the rows when the
+  extension is selected again.
+- Grants are not observed: every grant WebKit makes from `permissions.request`
+  comes from a prompt answer, which `handlePermissionPrompt` saves.
+
 ## Updates
 
 An update or unpacked reload that adds permissions installs disabled until the
@@ -202,6 +252,13 @@ All measured against real contexts and pinned in
 - `WKWebExtension` drops permission names it does not implement from
   `optionalPermissions` (`bookmarks` was dropped, `cookies` kept), so such a
   row is never applied and never prompted for.[^task-19]
+- Setting a match pattern the context already holds with the same status
+  adds a second entry for the same string, so `permissions.getAll` lists the
+  origin twice. The bridged Swift dictionary hides it (one key). So
+  `applySavedHostAccessDecisions`, which Settings and a removal re-run on a
+  loaded context, skips a pattern already held with its status. Measured in
+  the running app and pinned through `getAll` in
+  `testRemovedOptionalOriginStaysRevokedAfterReload`.[^task-258]
 - `permissions.contains` answers from granted patterns only: an explicit
   denial under a granted `<all_urls>` still answers `true`.[^task-75]
 
@@ -272,9 +329,6 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 - `permissions.request`, `contains` and `remove` cannot name `history` or
   `management`: WebKit refuses them in the web process (below), so the only
   runtime grant for those two is the Settings switch.[^task-250]
-- `permissions.remove` of a WebKit-parsed optional permission (e.g.
-  `notifications`) clears the context's grant but not the saved row, so the
-  next load restores the grant and Settings still reads ON.[^task-250]
 - A legacy full-URL row saved as `.matchPattern` before `.url` existed is
   applied as an exact-path pattern when the manifest covers it, which is
   narrower than the origin-wide grant a `.url` row gives. No migration was
@@ -287,7 +341,7 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 - [ExtensionManager.swift](../../Detour/Extensions/Runtime/ExtensionManager.swift) — prompts, Settings toggles, `nativeHostAccess`.
 - [ExtensionPermissionRecord.swift](../../Detour/Extensions/Storage/Models/ExtensionPermissionRecord.swift) and `AppDatabase` — storage.
 - `ExtensionsSettingsViewController` — the rows: required, `Optional:`, `Requested sites:`, `Site access:` ([Settings](../features/settings.md)).
-- Tests: `ExtensionPermissionRestoreTests` (context level), `ExtensionPermissionTests` (database level), `NativeMessagingEnforcementTests` (real fake-host spawns); optional polyfill-gated permissions in a real context in `ExtensionHistoryScopeTests` and `ExtensionNotificationOrderingTests`.
+- Tests: `ExtensionPermissionRestoreTests` (context level, and `permissions.remove` from a real extension page), `ExtensionPermissionTests` (database level), `NativeMessagingEnforcementTests` (real fake-host spawns); optional polyfill-gated permissions in a real context in `ExtensionHistoryScopeTests` and `ExtensionNotificationOrderingTests`.
 
 # Related
 
@@ -302,4 +356,5 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 [^task-44]: nativeMessaging denials saved before TASK-25 become enforced on upgrade
 [^task-63]: Reinstalling or updating an extension overwrites a saved nativeMessaging denial
 [^task-75]: Origin patterns with a port make chrome.permissions calls throw in WebKit
+[^task-258]: Extensions: permissions.remove is not saved, so the revoked permission comes back at the next launch
 [^task-250]: Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions

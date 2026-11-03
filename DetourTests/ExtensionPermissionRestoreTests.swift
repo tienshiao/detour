@@ -16,8 +16,11 @@ nonisolated final class ExtensionPermissionRestoreTests: XCTestCase {
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
     private var createdProfiles: [Profile] = []
+    private var openWebViews: [WKWebView] = []
 
     @MainActor override func tearDown() async throws {
+        ExtensionManager.shared.permissionPromptAnswerOverride = nil
+        openWebViews.removeAll()
         for profile in createdProfiles {
             profile.unloadAllExtensions()
             TabStore.shared.forceRemoveProfile(id: profile.id)
@@ -86,6 +89,9 @@ nonisolated final class ExtensionPermissionRestoreTests: XCTestCase {
         """
         try manifestJSON.write(to: dir.appendingPathComponent("manifest.json"),
                                atomically: true, encoding: .utf8)
+        // An extension page, for the tests that call chrome.permissions.
+        try "<html><body>permission restore page</body></html>"
+            .write(to: dir.appendingPathComponent("test.html"), atomically: true, encoding: .utf8)
 
         let wkExt = try await WKWebExtension(resourceBaseURL: dir)
         let manifest = try ExtensionManifest.parse(at: dir.appendingPathComponent("manifest.json"))
@@ -988,5 +994,306 @@ nonisolated final class ExtensionPermissionRestoreTests: XCTestCase {
             "not a pattern": .denied,
         ])
         XCTAssertEqual(keys, ["https://mail.opt.example/*"])
+    }
+
+    // MARK: - TASK-258: the extension's own permissions.remove
+
+    /// Not a member of `WKWebExtension.Permission`, though WebKit implements it.
+    private static let notifications = WKWebExtension.Permission(rawValue: "notifications")
+
+    /// An extension page of `context`, loaded.
+    @MainActor private func openPage(_ context: WKWebExtensionContext) async throws -> WKWebView {
+        let config = try XCTUnwrap(context.webViewConfiguration, "the context must be loaded")
+        let page = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200), configuration: config)
+        openWebViews.append(page)
+        try await loadAndWait(page, URLRequest(url: context.baseURL.appendingPathComponent("test.html")))
+        return page
+    }
+
+    /// `chrome.permissions[method](details)` from `page`, as the extension calls it.
+    @MainActor private func callPermissions(_ page: WKWebView, _ method: String,
+                                            _ details: [String: [String]]) async throws -> Bool? {
+        try await page.callAsyncJavaScript(
+            "return await chrome.permissions[method](details);",
+            arguments: ["method": method, "details": details], contentWorld: .page) as? Bool
+    }
+
+    /// Answer every permission prompt with Allow, and count the prompts.
+    @MainActor private func allowPrompts() -> () -> Int {
+        var prompts = 0
+        ExtensionManager.shared.permissionPromptAnswerOverride = { _ in
+            prompts += 1
+            return true
+        }
+        return { prompts }
+    }
+
+    /// AC #1-#3, an API permission: `notifications` is removed through WebKit's
+    /// own path. The saved grant is cleared, a reload leaves it revoked (and not
+    /// denied, so a request prompts again), and the next grant is saved again.
+    @MainActor func testRemovedOptionalAPIPermissionStaysRevokedAfterReload() async throws {
+        let ext = try await makeTestExtension(
+            permissions: ["storage"], optionalPermissions: ["notifications"],
+            hostPermissions: ["https://a.example/*"])
+        savePermission(ext, key: "notifications", type: .apiPermission, status: .granted)
+        let profile = makeProfile("Remove API Permission Profile")
+        let context = try loadContext(profile, ext)
+        XCTAssertEqual(context.permissionStatus(for: Self.notifications), .grantedExplicitly, "precondition")
+
+        let removed = try await callPermissions(try await openPage(context), "remove",
+                                                ["permissions": ["notifications"]])
+        XCTAssertEqual(removed, true)
+        try await waitUntil("the saved notifications grant to be cleared") {
+            savedStatus(ext, "notifications", .apiPermission) == nil
+        }
+
+        profile.unloadExtension(id: ext.id)
+        let reloaded = try loadContext(profile, ext)
+        XCTAssertNil(reloaded.grantedPermissions[Self.notifications], "the removal must survive the reload")
+        XCTAssertNil(reloaded.deniedPermissions[Self.notifications],
+                     "not a denial: WebKit never prompts for a denied permission")
+
+        let prompts = allowPrompts()
+        let granted = try await callPermissions(try await openPage(reloaded), "request",
+                                                ["permissions": ["notifications"]])
+        XCTAssertEqual(granted, true)
+        XCTAssertEqual(prompts(), 1, "the request prompts again")
+        XCTAssertEqual(savedStatus(ext, "notifications", .apiPermission), .granted, "the new grant is saved")
+
+        profile.unloadExtension(id: ext.id)
+        XCTAssertEqual(try loadContext(profile, ext).permissionStatus(for: Self.notifications), .grantedExplicitly,
+                       "and restored at the next load")
+    }
+
+    /// AC #1-#3, a host permission: an optional origin.
+    @MainActor func testRemovedOptionalOriginStaysRevokedAfterReload() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["https://opt.example/*"])
+        savePermission(ext, key: "https://a.example/*", type: .matchPattern, status: .granted)
+        savePermission(ext, key: "https://opt.example/*", type: .matchPattern, status: .granted)
+        let profile = makeProfile("Remove Origin Profile")
+        let context = try loadContext(profile, ext)
+        XCTAssertTrue(context.hasAccess(to: try url("https://opt.example/page")), "precondition")
+
+        let page = try await openPage(context)
+        let removed = try await callPermissions(page, "remove",
+                                                ["origins": ["https://opt.example/*"]])
+        XCTAssertEqual(removed, true)
+        try await waitUntil("the saved origin grant to be cleared") {
+            savedStatus(ext, "https://opt.example/*", .matchPattern) == nil
+        }
+        XCTAssertEqual(savedStatus(ext, "https://a.example/*", .matchPattern), .granted,
+                       "the required origin is untouched")
+        // The restore re-run on this context must not add a second entry for
+        // a grant it already holds; WebKit's own dictionary then lists it
+        // twice (the bridged Swift dictionary hides that).
+        let origins = try await page.callAsyncJavaScript(
+            "return (await chrome.permissions.getAll()).origins;", arguments: [:], contentWorld: .page) as? [String]
+        XCTAssertEqual(origins, ["https://a.example/*"])
+
+        profile.unloadExtension(id: ext.id)
+        let reloaded = try loadContext(profile, ext)
+        XCTAssertFalse(reloaded.hasAccess(to: try url("https://opt.example/page")),
+                       "the removal must survive the reload")
+        XCTAssertTrue(reloaded.deniedPermissionMatchPatterns.isEmpty, "not a denial")
+        XCTAssertTrue(reloaded.hasAccess(to: try url("https://a.example/page")))
+
+        let prompts = allowPrompts()
+        let granted = try await callPermissions(try await openPage(reloaded), "request",
+                                                ["origins": ["https://opt.example/*"]])
+        XCTAssertEqual(granted, true)
+        XCTAssertEqual(prompts(), 1, "the request prompts again")
+        XCTAssertEqual(savedStatus(ext, "https://opt.example/*", .matchPattern), .granted)
+
+        profile.unloadExtension(id: ext.id)
+        XCTAssertTrue(try loadContext(profile, ext).hasAccess(to: try url("https://opt.example/page")),
+                      "and restored at the next load")
+    }
+
+    /// A site-access (`.url`) grant inside an optional origin the extension
+    /// removes goes with it: WebKit sweeps the URL's origin pattern.
+    @MainActor func testRemovedOptionalOriginClearsTheSiteAccessGrantsUnderIt() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["*://*.site.example/*"])
+        savePermission(ext, key: "https://www.site.example/page", type: .url, status: .granted)
+        let profile = makeProfile("Remove Origin URL Profile")
+        let context = try loadContext(profile, ext)
+        XCTAssertTrue(context.hasAccess(to: try url("https://www.site.example/other")), "precondition")
+
+        let removed = try await callPermissions(try await openPage(context), "remove",
+                                                ["origins": ["*://*.site.example/*"]])
+        XCTAssertEqual(removed, true)
+        try await waitUntil("the saved site-access grant to be cleared") {
+            savedStatus(ext, "https://www.site.example/page", .url) == nil
+        }
+        profile.unloadExtension(id: ext.id)
+        XCTAssertFalse(try loadContext(profile, ext).hasAccess(to: try url("https://www.site.example/other")))
+    }
+
+    /// NEGATIVE: Detour's own writes also make WebKit post grant removals: a
+    /// saved denial that subsumes a saved grant at load, a Settings toggle's
+    /// clear-and-reapply. None of them may delete a row. A removal the
+    /// extension makes afterwards is the sentinel: WebKit posts in order, so
+    /// once it is handled the earlier posts were too.
+    @MainActor func testDetoursOwnWritesKeepTheSavedRows() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["*://*.example.com/*", "https://opt.example/*", "https://sentinel.example/*"])
+        savePermission(ext, key: "https://mail.example.com/*", type: .matchPattern, status: .granted)
+        savePermission(ext, key: "*://*.example.com/*", type: .matchPattern, status: .denied)
+        savePermission(ext, key: "https://opt.example/*", type: .matchPattern, status: .granted)
+        savePermission(ext, key: "https://sentinel.example/*", type: .matchPattern, status: .granted)
+        let profile = makeProfile("Own Writes Profile")
+        let context = try loadContext(profile, ext)
+        XCTAssertFalse(context.hasAccess(to: try url("https://mail.example.com/")),
+                       "precondition: the broader saved denial wins over the narrower grant")
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "https://opt.example/*", type: .matchPattern, granted: true)
+
+        let removed = try await callPermissions(try await openPage(context), "remove",
+                                                ["origins": ["https://sentinel.example/*"]])
+        XCTAssertEqual(removed, true)
+        try await waitUntil("the sentinel removal to be handled") {
+            savedStatus(ext, "https://sentinel.example/*", .matchPattern) == nil
+        }
+        XCTAssertEqual(savedStatus(ext, "https://mail.example.com/*", .matchPattern), .granted,
+                       "a grant the restore's own denial subsumed is not a removal")
+        XCTAssertEqual(savedStatus(ext, "*://*.example.com/*", .matchPattern), .denied)
+        XCTAssertEqual(savedStatus(ext, "https://opt.example/*", .matchPattern), .granted,
+                       "a Settings toggle is not a removal")
+        XCTAssertTrue(context.hasAccess(to: try url("https://opt.example/page")))
+    }
+
+    /// A broad optional origin also sweeps a narrower *required* grant out of
+    /// the context (WebKit refuses only a removal a required pattern covers).
+    /// The required row stays, and the restore re-run puts the grant back.
+    @MainActor func testRemovingABroadOptionalOriginKeepsTheRequiredRowUnderIt() async throws {
+        let ext = try await makeTestExtension(
+            hostPermissions: ["https://a.example.com/*"],
+            optionalHostPermissions: ["*://*.example.com/*"])
+        savePermission(ext, key: "https://a.example.com/*", type: .matchPattern, status: .granted)
+        savePermission(ext, key: "*://*.example.com/*", type: .matchPattern, status: .granted)
+        let profile = makeProfile("Remove Broad Origin Profile")
+        let context = try loadContext(profile, ext)
+
+        let removed = try await callPermissions(try await openPage(context), "remove",
+                                                ["origins": ["*://*.example.com/*"]])
+        XCTAssertEqual(removed, true)
+        try await waitUntil("the optional grant to be cleared") {
+            savedStatus(ext, "*://*.example.com/*", .matchPattern) == nil
+        }
+        XCTAssertEqual(savedStatus(ext, "https://a.example.com/*", .matchPattern), .granted)
+        XCTAssertTrue(context.hasAccess(to: try url("https://a.example.com/page")),
+                      "the swept required grant is restored in the same context at once")
+        XCTAssertFalse(context.hasAccess(to: try url("https://b.example.com/page")))
+
+        profile.unloadExtension(id: ext.id)
+        let reloaded = try loadContext(profile, ext)
+        XCTAssertTrue(reloaded.hasAccess(to: try url("https://a.example.com/page")))
+        XCTAssertFalse(reloaded.hasAccess(to: try url("https://b.example.com/page")))
+    }
+
+    /// The decision is the extension's, not the profile's: a removal in one
+    /// profile is applied at once to the context loaded in another, as a
+    /// Settings toggle is.
+    @MainActor func testRemovalAppliesToTheOtherProfilesContexts() async throws {
+        let ext = try await makeTestExtension(
+            optionalPermissions: ["notifications"],
+            hostPermissions: ["https://a.example/*"],
+            optionalHostPermissions: ["https://opt.example/*"])
+        savePermission(ext, key: "notifications", type: .apiPermission, status: .granted)
+        savePermission(ext, key: "https://opt.example/*", type: .matchPattern, status: .granted)
+        let first = try loadContext(makeProfile("Remove Profile One"), ext)
+        let second = try loadContext(makeProfile("Remove Profile Two"), ext)
+        XCTAssertTrue(second.hasAccess(to: try url("https://opt.example/page")), "precondition")
+
+        let removed = try await callPermissions(try await openPage(first), "remove",
+                                                ["permissions": ["notifications"], "origins": ["https://opt.example/*"]])
+        XCTAssertEqual(removed, true)
+        try await waitUntil("both saved grants to be cleared") {
+            savedStatus(ext, "notifications", .apiPermission) == nil
+                && savedStatus(ext, "https://opt.example/*", .matchPattern) == nil
+        }
+        XCTAssertFalse(second.hasAccess(to: try url("https://opt.example/page")))
+        XCTAssertNil(second.grantedPermissions[Self.notifications])
+        XCTAssertNil(second.deniedPermissions[Self.notifications])
+    }
+
+    /// The rule's gates, on a context the test empties by hand: only a granted,
+    /// askable, optional row that the context neither grants nor denies is
+    /// revoked.
+    @MainActor func testOnlyAPlainlyRemovedOptionalGrantIsRevoked() async throws {
+        let ext = try await makeTestExtension(
+            permissions: ["storage"], optionalPermissions: ["notifications", "tabs", "webNavigation"],
+            hostPermissions: ["https://a.example/*"])
+        let rows: [(String, ExtensionPermissionStatus)] = [
+            ("storage", .granted),        // required
+            ("notifications", .granted),  // optional, plainly removed
+            ("tabs", .granted),           // optional, granted again
+            ("webNavigation", .denied),   // a saved denial
+            ("cookies", .granted),        // stale: not in the manifest
+            ("nativeMessaging", .granted),
+        ]
+        for (key, status) in rows {
+            savePermission(ext, key: key, type: .apiPermission, status: status)
+        }
+        let profile = makeProfile("Removal Rule Profile")
+        let context = try loadContext(profile, ext)
+        for key in ["storage", "notifications", "cookies", "webNavigation"] {
+            context.setPermissionStatus(.unknown, for: WKWebExtension.Permission(rawValue: key))
+        }
+        let revoked = ExtensionManager.savedGrantsRevoked(
+            removedPermissions: Set(rows.map { WKWebExtension.Permission(rawValue: $0.0) }),
+            removedPatterns: [],
+            saved: AppDatabase.shared.loadPermissions(extensionID: ext.id),
+            for: ext, in: context)
+        XCTAssertEqual(revoked.map(\.permissionKey), ["notifications"])
+    }
+
+    /// ISOLATION: one extension's removal clears only its own saved grant; an
+    /// extension holding the same grant keeps the row and the live grant.
+    @MainActor func testRemovalLeavesAnotherExtensionsGrant() async throws {
+        let remover = try await makeTestExtension(
+            optionalPermissions: ["notifications"], hostPermissions: ["https://a.example/*"])
+        let bystander = try await makeTestExtension(
+            optionalPermissions: ["notifications"], hostPermissions: ["https://a.example/*"])
+        savePermission(remover, key: "notifications", type: .apiPermission, status: .granted)
+        savePermission(bystander, key: "notifications", type: .apiPermission, status: .granted)
+        let profile = makeProfile("Remove Isolation Profile")
+        let removerContext = try loadContext(profile, remover)
+        let bystanderContext = try loadContext(profile, bystander)
+
+        let removed = try await callPermissions(try await openPage(removerContext), "remove",
+                                                ["permissions": ["notifications"]])
+        XCTAssertEqual(removed, true)
+        try await waitUntil("the remover's saved grant to be cleared") {
+            savedStatus(remover, "notifications", .apiPermission) == nil
+        }
+        XCTAssertEqual(savedStatus(bystander, "notifications", .apiPermission), .granted)
+        XCTAssertEqual(bystanderContext.permissionStatus(for: Self.notifications), .grantedExplicitly)
+    }
+
+    /// WebKit posts the removal after the write, so the context can be
+    /// unloaded before it arrives; the removal still reaches the saved row.
+    @MainActor func testRemovalPostedAfterTheContextUnloadsIsStillSaved() async throws {
+        let ext = try await makeTestExtension(
+            optionalPermissions: ["notifications"], hostPermissions: ["https://a.example/*"])
+        savePermission(ext, key: "notifications", type: .apiPermission, status: .granted)
+        let profile = makeProfile("Remove Then Unload Profile")
+        let context = try loadContext(profile, ext)
+
+        // The state `permissions.remove` leaves, then an unload in the same turn,
+        // before the main queue delivers the post.
+        context.setPermissionStatus(.unknown, for: Self.notifications)
+        profile.unloadExtension(id: ext.id)
+        XCTAssertFalse(context.isLoaded, "precondition")
+
+        try await waitUntil("the saved notifications grant to be cleared") {
+            savedStatus(ext, "notifications", .apiPermission) == nil
+        }
+        XCTAssertNil(try loadContext(profile, ext).grantedPermissions[Self.notifications])
     }
 }

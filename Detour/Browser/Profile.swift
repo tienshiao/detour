@@ -339,6 +339,14 @@ class Profile {
                     log.debug("Skipping stale pattern decision \(key, privacy: .public) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
                     continue
                 }
+                // Already there with this status: WebKit keys its dictionaries
+                // by pattern object, so setting it again adds a second entry
+                // for the same string (`permissions.getAll` then lists it
+                // twice). The Settings toggle and TASK-258 re-run this restore
+                // on a loaded context.
+                let current = status == .granted ? context.grantedPermissionMatchPatterns
+                                                 : context.deniedPermissionMatchPatterns
+                if current.keys.contains(where: { $0.string == pattern.string }) { continue }
                 context.setPermissionStatus(status.contextStatus, for: pattern)
             }
         }
@@ -454,7 +462,7 @@ class Profile {
         // The optional permissions only Detour's polyfill implements (history,
         // management) are added: WebKit leaves them out of its sets but stores
         // a grant for them, which is what the polyfill handler reads (TASK-250).
-        for permission in ext.askablePermissions.union(ext.polyfillGatedOptionalPermissions) {
+        for permission in ext.restorablePermissions {
             // nativeMessaging is granted unconditionally above so the polyfill
             // bridge works; a saved denial is enforced at host dispatch instead.
             if permission == .nativeMessaging { continue }

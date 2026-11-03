@@ -28,6 +28,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Tests of the new-profile path turn it back on for their duration.
     var loadsExtensionsIntoAddedProfiles = true
 
+    /// Answers the permission prompt in place of the modal alert, given the
+    /// items' descriptions: true is Allow. Tests set it to drive a real
+    /// `permissions.request` through the prompt path; nil in the app.
+    var permissionPromptAnswerOverride: (([String]) -> Bool)?
+
     /// Set once `loadInstalledExtensions` reaches its per-profile load. A profile
     /// added before then is loaded by that loop, so `profileWasAdded` leaves it
     /// alone (and never loads a half-populated `extensions` list).
@@ -425,6 +430,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     override init() {
         super.init()
+        observeGrantRemovals()
     }
 
     // MARK: - Initialize
@@ -1993,43 +1999,219 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
 
         let contexts = TabStore.shared.profiles.compactMap { $0.extensionContext(for: extensionID) }
-        guard !contexts.isEmpty else { return }
+        applySavedDecisions(extensionID: extensionID, keys: [(key, type)], to: contexts)
+    }
 
-        switch type {
-        case .apiPermission:
-            let permission = WKWebExtension.Permission(rawValue: key)
+    /// Make `contexts` hold what the saved rows for `keys` say now, the state
+    /// the next load restores: the saved status, or `.unknown` with no row.
+    /// Shared by a Settings toggle (one key) and by an extension's own
+    /// `permissions.remove` (TASK-258, every key it revoked), so both reach
+    /// every profile the same way.
+    @MainActor
+    private func applySavedDecisions(extensionID: String,
+                                     keys: [(key: String, type: ExtensionPermissionType)],
+                                     to contexts: [WKWebExtensionContext]) {
+        guard !contexts.isEmpty, !keys.isEmpty else { return }
+
+        for entry in keys where entry.type == .apiPermission {
+            let permission = WKWebExtension.Permission(rawValue: entry.key)
+            let status = AppDatabase.shared.permissionStatus(extensionID: extensionID, key: entry.key, type: entry.type)
             for context in contexts {
-                context.setPermissionStatus(status.contextStatus, for: permission)
+                context.setPermissionStatus(status?.contextStatus ?? .unknown, for: permission)
             }
-        case .matchPattern, .url:
-            guard let ext = self.extension(withID: extensionID) else { return }
-            let saved = AppDatabase.shared.loadPermissions(extensionID: extensionID)
-            for context in contexts {
-                // Forget the context's previous status for the toggled key first:
-                // the restore only ever *adds* entries, and not every WebKit write
-                // replaces its opposite. For the all-hosts pattern neither a grant
-                // nor `.unknown` removes an earlier `<all_urls>` denial, which
-                // then keeps winning (pinned by
-                // ExtensionPermissionRestoreTests.testWebKitAllHostsGrantDoesNotEraseAllHostsDenial),
-                // so a pattern key is dropped from both dictionaries directly.
-                // A `.url` key widens to a non-all-hosts origin pattern, which
-                // `.unknown` does clear.
-                switch type {
+        }
+
+        let hostKeys = keys.filter { $0.type != .apiPermission }
+        guard !hostKeys.isEmpty, let ext = self.extension(withID: extensionID) else { return }
+        let saved = AppDatabase.shared.loadPermissions(extensionID: extensionID)
+        for context in contexts {
+            // Forget the context's previous status for each key first: the
+            // restore only ever *adds* entries, and not every WebKit write
+            // replaces its opposite. For the all-hosts pattern neither a grant
+            // nor `.unknown` removes an earlier `<all_urls>` denial, which then
+            // keeps winning (pinned by
+            // ExtensionPermissionRestoreTests.testWebKitAllHostsGrantDoesNotEraseAllHostsDenial),
+            // so a pattern key is dropped from both dictionaries directly.
+            // A `.url` key widens to a non-all-hosts origin pattern, which
+            // `.unknown` does clear. One restore then covers every key.
+            for entry in hostKeys {
+                switch entry.type {
                 case .matchPattern:
-                    context.grantedPermissionMatchPatterns = context.grantedPermissionMatchPatterns
-                        .filter { $0.key.string != key }
-                    context.deniedPermissionMatchPatterns = context.deniedPermissionMatchPatterns
-                        .filter { $0.key.string != key }
+                    // Only when the key is there: each assignment rewrites the
+                    // whole dictionary and posts a change for it.
+                    if context.grantedPermissionMatchPatterns.keys.contains(where: { $0.string == entry.key }) {
+                        context.grantedPermissionMatchPatterns = context.grantedPermissionMatchPatterns
+                            .filter { $0.key.string != entry.key }
+                    }
+                    if context.deniedPermissionMatchPatterns.keys.contains(where: { $0.string == entry.key }) {
+                        context.deniedPermissionMatchPatterns = context.deniedPermissionMatchPatterns
+                            .filter { $0.key.string != entry.key }
+                    }
                 case .url:
-                    if let url = URL(string: key) {
+                    if let url = URL(string: entry.key) {
                         context.setPermissionStatus(.unknown, for: url)
                     }
                 case .apiPermission:
                     break
                 }
-                Profile.applySavedHostAccessDecisions(saved, for: ext, to: context)
+            }
+            Profile.applySavedHostAccessDecisions(saved, for: ext, to: context)
+        }
+    }
+
+    // MARK: - Grants the extension removes (TASK-258)
+
+    /// Listen for every context losing a grant, so an extension's own
+    /// `permissions.remove` reaches the saved decisions. WebKit applies the
+    /// removal to the context only; without this the saved grant came back at
+    /// the next load and Settings kept reading ON.
+    ///
+    /// Grants are not observed: every grant WebKit makes from
+    /// `permissions.request` comes from a prompt answer, which
+    /// `handlePermissionPrompt` already saves.
+    private func observeGrantRemovals() {
+        let center = NotificationCenter.default
+        for name in [WKWebExtensionContext.grantedPermissionsWereRemovedNotification,
+                     WKWebExtensionContext.grantedPermissionMatchPatternsWereRemovedNotification] {
+            _ = center.addMainObserver(forName: name, object: nil) { [weak self] notification in
+                self?.contextDidLoseGrants(notification)
             }
         }
+    }
+
+    /// Delete the saved grants a context lost through a removal, then bring
+    /// every loaded context of the extension to what the next load restores.
+    ///
+    /// WebKit posts this notification for every write that takes a grant out,
+    /// Detour's own included: the restore's denials (and the grants a broader
+    /// denial subsumes), a Settings toggle's clear-and-reapply. The post is
+    /// dispatched to the main queue after the write returns, so a flag set
+    /// around Detour's writes would not line up with it. The rule is on state
+    /// instead, read at delivery (`savedGrantsRevoked`), and Detour's own
+    /// writes leave the context in a state that rule never deletes for. The
+    /// writes below post again, for rows already gone, so they end there.
+    @MainActor
+    private func contextDidLoseGrants(_ notification: Notification) {
+        guard let context = notification.object as? WKWebExtensionContext else { return }
+        // The post comes after the write, so the context may have been
+        // unloaded in between (the extension disabled or updated, its profile
+        // removed). It is out of every controller then, but the removal was
+        // still the extension's: `Profile.loadExtensionContext` set its
+        // `uniqueIdentifier` to the extension's ID, and unloading touches no
+        // permission.
+        guard let extensionID = extensionIDFromContext(context)
+                ?? (context.isLoaded ? nil : context.uniqueIdentifier),
+              let ext = self.extension(withID: extensionID) else { return }
+        let info = notification.userInfo ?? [:]
+        let permissions = info[WKWebExtensionContext.NotificationUserInfoKey.permissions]
+            as? Set<WKWebExtension.Permission> ?? []
+        let patterns = info[WKWebExtensionContext.NotificationUserInfoKey.matchPatterns]
+            as? Set<WKWebExtension.MatchPattern> ?? []
+
+        let revoked = Self.savedGrantsRevoked(
+            removedPermissions: permissions, removedPatterns: patterns,
+            saved: AppDatabase.shared.loadPermissions(extensionID: extensionID),
+            for: ext, in: context)
+        guard !revoked.isEmpty else { return }
+
+        // Every loaded context, the one that removed included: WebKit's sweep
+        // under a broad origin also took out grants whose rows are kept (a
+        // required pattern under it), and re-running the restore there puts
+        // them back now rather than at the next load.
+        let contexts = TabStore.shared.profiles.compactMap { $0.extensionContext(for: extensionID) }
+        let keys: [(key: String, type: ExtensionPermissionType)] = revoked.compactMap { record in
+            ExtensionPermissionType(rawValue: record.permissionType).map { (record.permissionKey, $0) }
+        }
+        for (key, type) in keys {
+            log.info("\(extensionID, privacy: .public) removed its grant of \(key, privacy: .public); the saved decision is cleared")
+            AppDatabase.shared.revokePermission(extensionID: extensionID, key: key, type: type)
+        }
+        applySavedDecisions(extensionID: extensionID, keys: keys, to: contexts)
+    }
+
+    /// The saved grants that a removal of `removedPermissions` /
+    /// `removedPatterns` from `context` revoked, which are to be deleted.
+    ///
+    /// A saved granted row qualifies when its key was removed and, at the time
+    /// of asking, `context` neither grants nor denies it: only a plain removal
+    /// leaves that. A saved denial applied at load, or a Settings toggle, ends
+    /// with the key denied or granted again; a grant a broader saved denial
+    /// subsumed counts as denied (a denied pattern covers it). The row is also
+    /// skipped when:
+    /// - it is outside what the manifest may ask for (the restore's gate). Such
+    ///   a row is inert, and a removal is no decision about it;
+    /// - the manifest requires it: WebKit refuses `permissions.remove` of a
+    ///   required permission or of an origin a required pattern covers, but a
+    ///   broader optional origin still sweeps the narrower grants under it;
+    /// - it is `nativeMessaging`, which the context always holds.
+    ///
+    /// The row is deleted, not saved as denied. A saved denial is restored as
+    /// an explicit denial, and WebKit never prompts for one, so a later
+    /// `permissions.request` would be refused without asking. With no row the
+    /// permission is back where it started: off in Settings, and the next
+    /// request prompts. That is Chrome's state after `permissions.remove`.
+    @MainActor
+    static func savedGrantsRevoked(removedPermissions: Set<WKWebExtension.Permission>,
+                                   removedPatterns: Set<WKWebExtension.MatchPattern>,
+                                   saved: [ExtensionPermissionRecord],
+                                   for ext: WebExtension,
+                                   in context: WKWebExtensionContext) -> [ExtensionPermissionRecord] {
+        guard let wkExt = ext.wkExtension else { return [] }
+        let grantedRows = saved.filter {
+            ExtensionPermissionStatus(rawValue: $0.status) == .granted
+        }
+        var revoked: [ExtensionPermissionRecord] = []
+
+        if !removedPermissions.isEmpty {
+            let askable = ext.restorablePermissions
+            let required = Set(ext.manifest.permissions ?? [])
+            for record in grantedRows where record.permissionType == ExtensionPermissionType.apiPermission.rawValue {
+                let permission = WKWebExtension.Permission(rawValue: record.permissionKey)
+                guard removedPermissions.contains(permission), askable.contains(permission),
+                      permission != .nativeMessaging, !required.contains(record.permissionKey),
+                      context.grantedPermissions[permission] == nil,
+                      context.deniedPermissions[permission] == nil else { continue }
+                revoked.append(record)
+            }
+        }
+
+        if !removedPatterns.isEmpty {
+            let askable = ext.askableMatchPatterns
+            let required = wkExt.requestedPermissionMatchPatterns
+            // A denied pattern that covers the key counts as a denial of it:
+            // `permissionStatus(for:)` of a pattern under a broader denial does
+            // not read as denied.
+            let denied = Array(context.deniedPermissionMatchPatterns.keys)
+            func isPlainlyRemoved(_ status: WKWebExtensionContext.PermissionStatus) -> Bool {
+                switch status {
+                case .grantedExplicitly, .grantedImplicitly, .deniedExplicitly: false
+                default: true
+                }
+            }
+            for record in grantedRows {
+                switch ExtensionPermissionType(rawValue: record.permissionType) {
+                case .matchPattern:
+                    guard let pattern = try? WKWebExtension.MatchPattern(string: record.permissionKey),
+                          removedPatterns.contains(where: { $0.string == pattern.string }),
+                          askable.contains(where: { $0.matches(pattern) }),
+                          !required.contains(where: { $0.matches(pattern) }),
+                          !denied.contains(where: { $0.matches(pattern) }),
+                          isPlainlyRemoved(context.permissionStatus(for: pattern)) else { continue }
+                    revoked.append(record)
+                case .url:
+                    guard let url = URL(string: record.permissionKey),
+                          removedPatterns.contains(where: { $0.matches(url) }),
+                          askable.contains(where: { $0.matches(url) }),
+                          !required.contains(where: { $0.matches(url) }),
+                          !denied.contains(where: { $0.matches(url) }),
+                          isPlainlyRemoved(context.permissionStatus(for: url)) else { continue }
+                    revoked.append(record)
+                case .apiPermission, nil:
+                    break
+                }
+            }
+        }
+        return revoked
     }
 
     /// Find the extension ID for a context by searching the owning profile.
@@ -2407,6 +2589,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         itemDescriptions: [String],
         category: String = "permissions"
     ) -> Bool {
+        if let answer = permissionPromptAnswerOverride {
+            return answer(itemDescriptions)
+        }
         let alert = NSAlert()
         alert.messageText = "\"\(extensionName)\" is requesting additional \(category)"
         alert.informativeText = itemDescriptions.map { "\u{2022} \($0)" }.joined(separator: "\n")

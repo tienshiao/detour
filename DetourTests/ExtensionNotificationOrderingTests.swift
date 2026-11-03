@@ -815,6 +815,14 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         XCTAssertEqual(removed, #"{"removed":true,"still":false}"#)
         try await assertOptionalGate(served: false, "removed", in: page)
         XCTAssertEqual(center.addedIdentifiers.count, 2, "nothing more is shown after the removal")
+
+        // TASK-258: the removal is saved, so a reloaded context stays refused.
+        try await waitUntil("the saved notifications grant to be cleared") {
+            AppDatabase.shared.permissionStatus(extensionID: ext.id, key: "notifications",
+                                                type: .apiPermission) == nil
+        }
+        profile.unloadExtension(id: ext.id)
+        try await assertOptionalGate(served: false, "after a reload", in: try await loadPage(ext, in: profile))
     }
 
     /// POSITIVE, new context: a saved grant of the optional permission is
