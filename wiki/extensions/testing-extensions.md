@@ -39,6 +39,9 @@ sources:
   - id: task-245
     resource: backlog:TASK-245
     title: waitUntil stops the test on timeout
+  - id: task-252
+    resource: backlog:TASK-252
+    title: testStorageManagedInRealExtensionContextSurvivesGarbageCollection fails its own garbage-collection precondition
   - id: task-62
     resource: backlog:TASK-62
     title: Keep-alive in background pages (measurement legs, the user-script loop incident)
@@ -182,12 +185,19 @@ API Explorer details that show up in logs and are easy to misread:
 - **`runtime.onInstalled` never arrives from WebKit in a test** that loads a
   context straight into a new controller; see
   [runtime.onInstalled](./runtime-installed-event.md).
-- **Garbage-collection tests need a collection to happen.** They churn
-  garbage in escalating rounds until a control `WeakRef` is cleared, and fail
-  their own precondition ("no collection observed in N rounds") when none
-  happens within 10 rounds. That failure is about the run, not the patch
-  under test. The deterministic guard is the separate check that the object
-  the polyfill holds is the one the API answers with.
+- **Garbage-collection tests force the collection.** Allocation churn in
+  the page (escalating rounds until a control `WeakRef` cleared) went 10
+  rounds without an observed collection about one run in three.[^task-252]
+  `forceCollection(in:)` in `ExtensionPolyfillIntegrationTests` calls
+  WebKit's private `WKProcessPool _garbageCollectJavaScriptObjectsForTesting`
+  (reachable from the test host; the pool through KVC on the web view's
+  configuration), which asks the pool's WebContent processes for a full,
+  synchronous collection. The message is asynchronous, so it polls the
+  control `WeakRef` (made in an earlier script, so no live job keeps it)
+  across macrotasks; in 20 of 20 runs the first attempt cleared it. A test
+  skips, rather than fails, if the hook is gone or nothing is observed. The
+  deterministic guard is still the separate check that the object the
+  polyfill holds is the one the API answers with.
 - **Never mutate `WKUserContentController.userScripts` while iterating it.**
   The bridged array tracks the controller; a helper that re-added scripts in
   the loop never terminated and the test host reached 36 GB in 90 s.[^task-62]
@@ -237,3 +247,4 @@ API Explorer details that show up in logs and are easy to misread:
 [^task-15]: The polyfill must not replace the chrome/browser globals
 [^task-62]: Keep-alive in background pages (measurement legs, the user-script loop incident)
 [^notes-testing]: Session notes on test runs and extension seeding
+[^task-252]: testStorageManagedInRealExtensionContextSurvivesGarbageCollection fails its own garbage-collection precondition

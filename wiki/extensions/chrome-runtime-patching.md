@@ -149,8 +149,9 @@ the static getter; the probes showed otherwise, and it now says so.
   (`wrapper._detourNative`) and mark the wrapper (`_detourPortWrapper`), so a
   second run of the polyfill does not wrap its own wrapper.
 - Guard a patch with a test that forces a collection.
-  `testActionGetUserSettingsSurvivesGarbageCollection` churns garbage until a
-  control `WeakRef` clears, then reads the API back.
+  `testActionGetUserSettingsSurvivesGarbageCollection` forces a full
+  collection through WebKit's test hook, checks a control `WeakRef` cleared,
+  then reads the API back (see [Testing extensions](./testing-extensions.md)).
 - Treat every reading here as a measurement of one WebKit build. The
   integration tests pin several of them (which gap-filling modules report
   `polyfill`, that `getAllFrames` is native), so a WebKit change is noticed.

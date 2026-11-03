@@ -390,6 +390,49 @@ nonisolated final class ExtensionPolyfillIntegrationTests: XCTestCase {
         try await webView.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
     }
 
+    /// Forces a full JavaScript collection in `webView`'s WebContent process and
+    /// reports whether one was observed, by a control `WeakRef` whose target is
+    /// unreachable from the moment the setup script returns.
+    ///
+    /// Allocation churn inside the page (the TASK-60/80 approach) failed to
+    /// trigger an observable collection about one run in three (TASK-252), so
+    /// this uses WebKit's private test hook: `WKProcessPool
+    /// _garbageCollectJavaScriptObjectsForTesting` asks every WebContent process
+    /// of the pool for a synchronous full collection. The message is
+    /// asynchronous, so each attempt polls the control across a few macrotasks
+    /// (a `WeakRef` target stays alive until the end of the job that dereffed it).
+    /// Being a full collection, it also reaches old objects such as WebKit's
+    /// cached API wrappers, which an eden collection clearing a young control
+    /// would not. Skips when the hook is gone or ten attempts observed nothing,
+    /// since the read-back after it would then prove nothing.
+    @MainActor private func forceCollection(in webView: WKWebView) async throws {
+        let selector = NSSelectorFromString("_garbageCollectJavaScriptObjectsForTesting")
+        let configuration = webView.configuration
+        // KVC rather than `configuration.processPool`, which is deprecated API.
+        // `value(forKey:)` raises an Objective-C exception (crashing the test
+        // host) for an unknown key, so check the getter exists first.
+        guard configuration.responds(to: NSSelectorFromString("processPool")),
+              let pool = configuration.value(forKey: "processPool") as? NSObject,
+              pool.responds(to: selector) else {
+            throw XCTSkip("WKProcessPool has no _garbageCollectJavaScriptObjectsForTesting on this WebKit, "
+                          + "so no collection can be forced")
+        }
+        _ = try await eval("globalThis.__detourGCControl = new WeakRef({ marker: 'control' }); return true;",
+                           in: webView)
+        for _ in 0..<10 {
+            pool.perform(selector)
+            let cleared = try await eval("""
+                for (let i = 0; i < 5; i++) {
+                    await new Promise(resolve => setTimeout(resolve, 20));
+                    if (globalThis.__detourGCControl.deref() === undefined) return true;
+                }
+                return false;
+            """, in: webView) as? Bool
+            if cleared == true { return }
+        }
+        throw XCTSkip("no JavaScript collection observed after 10 forced attempts, so the read-back would prove nothing")
+    }
+
     @MainActor private func evalJSON(_ js: String, in webView: WKWebView) async throws -> Any? {
         let result = try await webView.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
         if let jsonString = result as? String,
@@ -566,13 +609,8 @@ nonisolated final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// a failure that surfaced only as a rare flake in
     /// `testGapFillingModulesInRealExtensionContext`. Two guards: the deterministic
     /// one is that the root the polyfill keeps (`__detourHeldWrappers.action`) is
-    /// the object `chrome.action` answers with; the measured one churns garbage
-    /// until a control `WeakRef` is cleared and reads the API back afterwards.
-    /// The control is a young object, which an eden collection can clear without
-    /// touching the older wrapper, so the root check is what guards a deletion of
-    /// the hold; the churn guards the mechanism itself. The churn escalates each
-    /// round on purpose: after the rest of the suite has grown the heap, a flat
-    /// 1M allocations a round went 10 rounds without a collection (2026-09-13).
+    /// the object `chrome.action` answers with; the measured one forces a full
+    /// collection (`forceCollection`) and reads the API back afterwards.
     @MainActor func testActionGetUserSettingsSurvivesGarbageCollection() async throws {
         let wv = try await makeExtensionWebView()
         let install = try await eval("return __detourPolyfillDiag.apis.actionGetUserSettings;", in: wv) as? String
@@ -581,45 +619,31 @@ nonisolated final class ExtensionPolyfillIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(install, "polyfill", "unexpected action.getUserSettings install mode")
 
+        let before = try await evalJSON("""
+            return JSON.stringify({
+                type: typeof chrome.action.getUserSettings,
+                held: __detourHeldWrappers.action === chrome.action
+            });
+        """, in: wv) as? [String: Any]
+        XCTAssertEqual(before?["type"] as? String, "function")
+        XCTAssertEqual(before?["held"] as? Bool, true,
+                       "the polyfill must root the very wrapper chrome.action answers with")
+
+        try await forceCollection(in: wv)
+
         let result = try await evalJSON("""
-            const before = typeof chrome.action.getUserSettings;
-            const heldBefore = __detourHeldWrappers.action === chrome.action;
-            // Unreachable the moment it is created: once a collection runs, the
-            // WeakRef is cleared, which is the proof that one did.
-            const control = new WeakRef({ marker: 'control' });
-            let collected = false;
-            let rounds = 0;
-            while (!collected && rounds < 10) {
-                rounds += 1;
-                for (let i = 0; i < 20 * rounds; i++) {
-                    const junk = [];
-                    for (let k = 0; k < 50000; k++) junk.push({ i: i, k: k, s: 'x' + k });
-                }
-                await new Promise(resolve => setTimeout(resolve, 25));
-                collected = control.deref() === undefined;
-            }
             // Read the API back rather than calling it blind, so losing the patch
             // reports as the assertion below and not as an opaque TypeError.
             const after = typeof chrome.action.getUserSettings;
             const heldAfter = __detourHeldWrappers.action === chrome.action;
             const settings = after === 'function' ? await chrome.action.getUserSettings() : null;
             return JSON.stringify({
-                before: before,
-                heldBefore: heldBefore,
-                collected: collected,
-                rounds: rounds,
                 after: after,
                 heldAfter: heldAfter,
                 isOnToolbar: settings ? settings.isOnToolbar : null
             });
         """, in: wv) as? [String: Any]
 
-        XCTAssertEqual(result?["before"] as? String, "function")
-        XCTAssertEqual(result?["heldBefore"] as? Bool, true,
-                       "the polyfill must root the very wrapper chrome.action answers with")
-        XCTAssertEqual(result?["collected"] as? Bool, true,
-                       "no collection observed in \(result?["rounds"] ?? "nil") rounds, so the read-back below "
-                       + "proves nothing — churn more garbage")
         XCTAssertEqual(result?["after"] as? String, "function",
                        "the patch on WebKit's weakly cached chrome.action wrapper did not survive a collection")
         XCTAssertEqual(result?["heldAfter"] as? Bool, true,
@@ -631,7 +655,7 @@ nonisolated final class ExtensionPolyfillIntegrationTests: XCTestCase {
     /// TASK-80: what a real extension context gets for `chrome.storage.managed`.
     /// Observed on macOS 27 (2026-09-14): WebKit provides no managed area, so the
     /// polyfill installs; a future WebKit that ships one is a passing test.
-    /// Then the same collection churn as the getUserSettings guard, because
+    /// Then a forced collection, as in the getUserSettings guard, because
     /// `chrome.storage` is a weakly cached wrapper too.
     @MainActor func testStorageManagedInRealExtensionContextSurvivesGarbageCollection() async throws {
         let wv = try await makeExtensionWebView()
@@ -641,39 +665,36 @@ nonisolated final class ExtensionPolyfillIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(install, "polyfill", "unexpected storage.managed install mode")
 
+        let before = try await evalJSON("""
+            globalThis.__task80Listener = () => {};
+            chrome.storage.managed.onChanged.addListener(globalThis.__task80Listener);
+            return JSON.stringify({
+                registered: chrome.storage.managed.onChanged.hasListener(globalThis.__task80Listener),
+                localNative: __detourNativeness(chrome.storage.local.get)
+            });
+        """, in: wv) as? [String: Any]
+        XCTAssertEqual(before?["registered"] as? Bool, true)
+        XCTAssertEqual(before?["localNative"] as? String, "native", "storage.local must stay WebKit's")
+
+        try await forceCollection(in: wv)
+
         let result = try await evalJSON("""
-            const listener = () => {};
-            chrome.storage.managed.onChanged.addListener(listener);
-            const registered = chrome.storage.managed.onChanged.hasListener(listener);
-            const localNative = __detourNativeness(chrome.storage.local.get);
-            const control = new WeakRef({ marker: 'control' });
-            let collected = false;
-            let rounds = 0;
-            while (!collected && rounds < 10) {
-                rounds += 1;
-                for (let i = 0; i < 20 * rounds; i++) {
-                    const junk = [];
-                    for (let k = 0; k < 50000; k++) junk.push({ i: i, k: k, s: 'x' + k });
-                }
-                await new Promise(resolve => setTimeout(resolve, 25));
-                collected = control.deref() === undefined;
-            }
             const after = typeof chrome.storage.managed;
             const held = __detourHeldWrappers.storage === chrome.storage;
+            const stillRegistered = after === 'object'
+                && chrome.storage.managed.onChanged.hasListener(globalThis.__task80Listener);
             const got = after === 'object' ? await chrome.storage.managed.get(null) : null;
             // The native areas must still work on the patched wrapper.
             await chrome.storage.local.set({ __task80: 'ok' });
             const local = await chrome.storage.local.get('__task80');
-            return JSON.stringify({ registered, localNative, collected, rounds, after, held, got, local: local.__task80 });
+            return JSON.stringify({ after, held, stillRegistered, got, local: local.__task80 });
         """, in: wv) as? [String: Any]
 
-        XCTAssertEqual(result?["registered"] as? Bool, true)
-        XCTAssertEqual(result?["localNative"] as? String, "native", "storage.local must stay WebKit's")
-        XCTAssertEqual(result?["collected"] as? Bool, true,
-                       "no collection observed in \(result?["rounds"] ?? "nil") rounds — churn more garbage")
         XCTAssertEqual(result?["after"] as? String, "object",
                        "chrome.storage.managed did not survive a collection")
         XCTAssertEqual(result?["held"] as? Bool, true)
+        XCTAssertEqual(result?["stillRegistered"] as? Bool, true,
+                       "the onChanged listener must survive a collection with the patched wrapper")
         XCTAssertEqual((result?["got"] as? [String: Any])?.count, 0)
         XCTAssertEqual(result?["local"] as? String, "ok")
     }
