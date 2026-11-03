@@ -114,6 +114,31 @@ class NativeMessagingHost {
         }
     }
 
+    /// A host process Detour started and has not seen exit, with the
+    /// SIGKILL timer of a teardown that is waiting on it.
+    nonisolated private struct SpawnedProcess: Sendable {
+        let process: Process
+        var killTimer: (any DispatchSourceTimer)?
+    }
+
+    /// The host processes Detour started and has not seen exit, and whether
+    /// a quit has ended them, after which no host starts.
+    nonisolated private struct Registry: Sendable {
+        var processes: [ObjectIdentifier: SpawnedProcess] = [:]
+        /// Set by a quit's sweep: a host started after it (an extension
+        /// reconnecting when its host exits on the SIGTERM, while the main
+        /// thread still runs) would be left running once Detour exits.
+        var isQuitting = false
+    }
+
+    /// Every host process Detour started that has not exited yet, whether an
+    /// owner still holds its host or not (a torn-down host waiting out its
+    /// SIGKILL grace is here too), so quitting can end them all (TASK-243).
+    /// Added under the lock that `run()` is called under, so the sweep never
+    /// sees a host that is not yet running, and removed by its termination
+    /// handler, which runs on a thread of its own, hence the mutex.
+    nonisolated private static let spawned = Mutex(Registry())
+
     private let endTiming: NativeHostEnding.Timing
     private let termination: Termination
     private var connection: Connection?
@@ -212,12 +237,20 @@ class NativeMessagingHost {
         // end of stream, so a reply still in the pipe is delivered first.
         proc.terminationHandler = { [weak self] process in
             log.notice("[1PW-DEBUG] NM EXIT [\(hostNameCopy, privacy: .public)] status=\(process.terminationStatus) reason=\(process.terminationReason.rawValue)")
+            Self.forget(process)
             stderr.fileHandleForReading.readabilityHandler = nil
             Self.record(.processExited(status: process.terminationStatus), on: connection,
                         hostName: hostNameCopy, reportingTo: self)
         }
 
-        try proc.run()
+        // Run and tracked under the lock: an exit straight after `run()`
+        // waits in `forget` for the entry it removes, and a quit's sweep
+        // either sees this host running or has already refused it.
+        try Self.spawned.withLock { registry in
+            guard !registry.isQuitting else { throw NativeMessagingError.quitting }
+            try proc.run()
+            registry.processes[ObjectIdentifier(proc)] = SpawnedProcess(process: proc)
+        }
         self.connection = connection
         log.info("Connected to native host \(self.hostName, privacy: .public) at \(hostPath, privacy: .public) for extension \(self.extensionID, privacy: .public)")
 
@@ -311,7 +344,9 @@ class NativeMessagingHost {
         _ process: Process, after termination: Termination, hostName: String
     ) {
         let onKill = termination.onKill
-        DispatchQueue.global().asyncAfter(deadline: .now() + termination.grace) {
+        let timer = DispatchSource.makeTimerSource(queue: .global())
+        timer.schedule(deadline: .now() + termination.grace)
+        timer.setEventHandler {
             guard process.isRunning else { return }
             let pid = process.processIdentifier
             log.notice("[1PW-DEBUG] NM KILL [\(hostName, privacy: .public)] still running \(termination.grace)s after SIGTERM; sending SIGKILL")
@@ -321,6 +356,108 @@ class NativeMessagingHost {
             }
             onKill?(pid)
         }
+        // Kept with the process, so its exit cancels the timer and lets go of
+        // the `Process` and its pipes at once rather than after the grace
+        // period. No entry means the termination handler has run (the host
+        // exited between the teardown's `isRunning` and here): it needs no
+        // timer, which is cancelled. Resumed either way: releasing a source
+        // that was never activated crashes libdispatch.
+        let tracked = spawned.withLock { registry in
+            guard registry.processes[ObjectIdentifier(process)] != nil else { return false }
+            registry.processes[ObjectIdentifier(process)]?.killTimer = timer
+            return true
+        }
+        if !tracked { timer.cancel() }
+        timer.resume()
+    }
+
+    /// Stops tracking `process`, which has exited, and cancels the SIGKILL
+    /// timer waiting on it.
+    nonisolated private static func forget(_ process: Process) {
+        let entry = spawned.withLock { $0.processes.removeValue(forKey: ObjectIdentifier(process)) }
+        entry?.killTimer?.cancel()
+    }
+
+    /// What `terminateAllSpawnedHosts` did: the pids sent SIGTERM, and those
+    /// of them still running at the deadline and sent SIGKILL.
+    struct QuitReport: Sendable, Equatable {
+        var terminated: [pid_t] = []
+        var killed: [pid_t] = []
+    }
+
+    /// Ends every host process Detour started that is still running, owned
+    /// or torn down: SIGTERM to each, a wait of at most `timeout` for them all
+    /// together, then SIGKILL to the rest (TASK-243). For quitting: the app
+    /// is about to exit, which ends no host by itself (a host is not in a
+    /// process group that dies with Detour, and one that does not read its
+    /// stdin never sees the pipe close), and takes every SIGKILL timer with
+    /// it. Blocks the calling thread, which may be the main thread: the
+    /// reaping that makes `isRunning` false happens on Foundation's own
+    /// queue. The owners hear nothing: their reports are main-actor tasks,
+    /// and the app exits first. The pid reasoning is `killIfStillRunning`'s.
+    /// `refusingNewHosts` (the quit paths; tests pass false) makes every
+    /// later `connect()` throw, so no host starts after the sweep.
+    @discardableResult
+    nonisolated static func terminateAllSpawnedHosts(
+        within timeout: TimeInterval, refusingNewHosts: Bool
+    ) -> QuitReport {
+        let running = spawned.withLock { registry in
+            if refusingNewHosts { registry.isQuitting = true }
+            return registry.processes.values.map(\.process)
+        }.filter(\.isRunning)
+        var report = QuitReport()
+        guard !running.isEmpty else { return report }
+        for process in running {
+            let pid = process.processIdentifier
+            if Darwin.kill(pid, SIGTERM) == 0 { report.terminated.append(pid) }
+        }
+        let deadline = Date().addingTimeInterval(timeout)
+        while running.contains(where: \.isRunning), Date() < deadline {
+            usleep(5_000)
+        }
+        for process in running where process.isRunning {
+            let pid = process.processIdentifier
+            if Darwin.kill(pid, SIGKILL) == 0 { report.killed.append(pid) }
+        }
+        log.notice("NM QUIT: \(report.terminated.count) host(s) sent SIGTERM, \(report.killed.count) still running after \(timeout)s sent SIGKILL")
+        return report
+    }
+
+    /// How long quitting waits for the hosts to exit on SIGTERM, all of them
+    /// together, before it kills the rest (TASK-243). Shorter than a
+    /// teardown's 2 s grace because it delays the quit; hosts that exit on
+    /// SIGTERM (1Password's) take milliseconds, so it is spent only on one
+    /// that ignores it.
+    nonisolated static let quitGrace: TimeInterval = 1
+
+    /// The SIGTERM source, made and started once, by the first
+    /// `installSIGTERMHandler` call.
+    nonisolated private static let sigtermSource: any DispatchSourceSignal = {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+        source.setEventHandler {
+            log.notice("SIGTERM: ending native hosts before exiting")
+            terminateAllSpawnedHosts(within: quitGrace, refusingNewHosts: true)
+            // Then die of the SIGTERM, as without the handler: no quit
+            // path runs, the exit status is unchanged. Cancelled first: the
+            // source sees the re-sent signal too, whatever its disposition.
+            source.cancel()
+            signal(SIGTERM, SIG_DFL)
+            kill(getpid(), SIGTERM)
+        }
+        source.resume()
+        return source
+    }()
+
+    /// Makes a SIGTERM to Detour end its native hosts first (TASK-243): by
+    /// default the signal ends the app at once, leaving every host running,
+    /// reparented to launchd. The handler runs on a global queue, so it works
+    /// with the main thread busy or hung, and then lets the signal take its
+    /// default course. SIGTERM is ignored so the dispatch source sees it; a
+    /// child does not inherit that (Foundation's `Process` resets signal
+    /// dispositions when it spawns), so hosts still exit on SIGTERM.
+    nonisolated static func installSIGTERMHandler() {
+        _ = sigtermSource
     }
 
     /// Feeds one end-of-connection signal into `connection`'s join and acts
@@ -497,6 +634,8 @@ class NativeMessagingHost {
         case notConnected
         case invalidMessage
         case messageTooLarge(Int)
+        /// Detour is quitting and has ended its hosts (TASK-243).
+        case quitting
 
         var errorDescription: String? {
             switch self {
@@ -506,6 +645,7 @@ class NativeMessagingHost {
             case .notConnected: return "Not connected to native messaging host"
             case .invalidMessage: return "Failed to serialize message as JSON"
             case .messageTooLarge(let size): return "Message size \(size) exceeds 1MB limit"
+            case .quitting: return "Detour is quitting"
             }
         }
     }

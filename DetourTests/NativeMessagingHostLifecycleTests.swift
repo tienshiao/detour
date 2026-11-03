@@ -16,6 +16,10 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
 
     private var fixture: FakeNativeMessagingHost?
     private var host: NativeMessagingHost?
+    /// A second host, for the quit tests; made after `fixture`, so torn down
+    /// first (each fixture restores the hosts directory it replaced).
+    private var otherFixture: FakeNativeMessagingHost?
+    private var otherHost: NativeMessagingHost?
     /// What the host delivered, in order: "message:<n>" or "disconnect:<reason or nil>".
     private var events: [String] = []
 
@@ -25,6 +29,10 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
     }
 
     @MainActor private func reset() {
+        otherHost?.disconnect()
+        otherHost = nil
+        otherFixture?.tearDown()
+        otherFixture = nil
         host?.disconnect()
         host = nil
         fixture?.tearDown()
@@ -234,6 +242,79 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
         try await waitForDisconnect()
         try await Task.sleep(nanoseconds: 400_000_000)
         XCTAssertEqual(killed.all, [])
+    }
+
+    // MARK: - TASK-243: quitting ends every host
+
+    /// The quit path: a live host that exits on SIGTERM and one that ignores
+    /// it are both gone, the first by SIGTERM, the second by SIGKILL once the
+    /// bounded wait is over, and the call returns soon after that wait.
+    @MainActor func testQuitEndsEveryLiveHostIncludingOneIgnoringSIGTERM() async throws {
+        try connect(.silent)
+        let fixture = try XCTUnwrap(fixture)
+        let silentPID = try await runningHostPID()
+        let stubborn = try FakeNativeMessagingHost(name: "com.detour.fake_host_test_stubborn",
+                                                   allowing: [Self.extensionID], behavior: .silentIgnoringSIGTERM)
+        otherFixture = stubborn
+        let stubbornHost = NativeMessagingHost(hostName: stubborn.name, extensionID: Self.extensionID)
+        otherHost = stubbornHost
+        try stubbornHost.connect()
+        try await waitUntil("the second host process to be running") { stubborn.processCount() == 1 }
+        let stubbornPID = try XCTUnwrap(stubborn.processIDs().first)
+
+        let start = Date()
+        let report = NativeMessagingHost.terminateAllSpawnedHosts(within: 0.5, refusingNewHosts: false)
+        let elapsed = Date().timeIntervalSince(start)
+
+        // Supersets: a process an earlier test's tearDown killed may not be
+        // reaped yet.
+        XCTAssertTrue(Set(report.terminated).isSuperset(of: [silentPID, stubbornPID]), "\(report)")
+        XCTAssertTrue(report.killed.contains(stubbornPID), "the host ignoring SIGTERM is killed: \(report)")
+        XCTAssertFalse(report.killed.contains(silentPID), "the host that exits on SIGTERM is not killed: \(report)")
+        XCTAssertGreaterThanOrEqual(elapsed, 0.45, "it waits for the host ignoring SIGTERM")
+        XCTAssertLessThan(elapsed, 3, "the wait is bounded (loose: a loaded machine oversleeps)")
+        try await waitUntil("both host processes to be gone", timeout: 5) {
+            fixture.processCount() == 0 && stubborn.processCount() == 0
+        }
+        XCTAssertEqual(killed.all, [], "the teardown's own SIGKILL timer played no part")
+    }
+
+    /// A host torn down moments before the quit, still inside its SIGKILL
+    /// grace period, is killed by the quit rather than left to a timer that
+    /// dies with the app.
+    @MainActor func testQuitKillsAHostTornDownWithinItsGracePeriod() async throws {
+        try connect(.silentIgnoringSIGTERM, termination: recordingKills(grace: 30))
+        let fixture = try XCTUnwrap(fixture)
+        let pid = try await runningHostPID()
+        host?.disconnect()
+        host = nil
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(fixture.processCount(), 1, "SIGTERM alone does not end this host")
+
+        let report = NativeMessagingHost.terminateAllSpawnedHosts(within: 0.3, refusingNewHosts: false)
+
+        XCTAssertTrue(report.killed.contains(pid), "\(report)")
+        try await waitUntil("the host process to be gone", timeout: 5) { fixture.processCount() == 0 }
+        XCTAssertEqual(killed.all, [], "the 30 s timer has not fired")
+    }
+
+    /// A host that exits lets go of its SIGKILL timer, and with it the
+    /// `Process` and its pipes, at once rather than once the grace period is
+    /// over: the timer's handler, which holds `onKill`, is released.
+    @MainActor func testAnExitedHostReleasesItsSIGKILLTimer() async throws {
+        nonisolated final class Token: Sendable {}
+        weak var released: Token?
+        do {
+            let token = Token()
+            released = token
+            try connect(.silent, termination: .init(grace: 30) { _ in _ = token })
+        }
+        let fixture = try XCTUnwrap(fixture)
+        _ = try await runningHostPID()
+        host?.disconnect()
+        host = nil
+        try await waitUntil("the host process to exit", timeout: 5) { fixture.processCount() == 0 }
+        try await waitUntil("the SIGKILL timer to be released", timeout: 3) { released == nil }
     }
 
     // MARK: - The join, without a process

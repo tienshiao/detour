@@ -28,6 +28,9 @@ sources:
   - id: task-242
     resource: backlog:TASK-242
     title: A one-shot sendNativeMessage with a non-object message leaks the host and never settles
+  - id: task-243
+    resource: backlog:TASK-243
+    title: "Native messaging: quitting Detour may leave live port hosts running"
   - id: chromium-kill
     resource: https://github.com/chromium/chromium/blob/1a95d4d76ab47c2ff9b914eaa98d3f35b7f1fce1/base/process/kill_mac.cc
     title: Chromium base/process/kill_mac.cc (EnsureProcessTerminated, kWaitBeforeKillSeconds = 2)
@@ -253,6 +256,79 @@ sends SIGKILL; it sends no SIGTERM. The Linux path (`kill_posix.cc`,
 `BackgroundReaper`) also waits 2 s and then kills.[^chromium-kill] Detour
 keeps its SIGTERM first, so a host that exits on it is unaffected.
 
+### Quitting
+
+Exiting ends no host by itself. A host is a child of Detour but not in a
+process group that dies with it; the exit closes the host's stdin, which
+ends a host that reads it, and one that does not read it (a silent host
+holding the keep-alive) carries on, reparented to launchd. The exit also
+takes every pending SIGKILL timer with it. Measured before TASK-243 with two
+fake port hosts (`exec sleep`, one with `trap '' TERM`): after a normal quit
+and after a SIGTERM to the app, both were still running with ppid 1. No
+teardown ran at quit at all.[^task-243]
+
+So `NativeMessagingHost` keeps a registry of every host process it started
+and has not seen exit (`spawned`, a `Mutex` keyed by the `Process`). It
+covers hosts an owner still holds as well as torn-down ones still inside
+their grace period. `connect()` calls `run()` and adds the entry under the
+same lock, so a sweep sees a host either running or not at all. The
+termination handler removes the entry, waiting on the lock if the exit
+comes straight after `run()`. A sweep from a quit path sets `isQuitting`,
+after which `connect()` throws (`NativeMessagingError.quitting`). Without
+that, on the SIGTERM path, where the main thread keeps running, an extension
+reconnecting when its host exits on the sweep's SIGTERM would start a host
+that outlives Detour. The tests pass `refusingNewHosts: false`, since the
+flag cannot be cleared.
+`terminateAllSpawnedHosts(within:)` sends SIGTERM to each running one, waits
+for them all together, polling `isRunning`, then sends SIGKILL to the
+rest. It logs `NM QUIT: N host(s) sent SIGTERM, M … sent SIGKILL`. It blocks
+the calling thread, which may be the main thread: Foundation reaps the child
+on a queue of its own, so `isRunning` changes while the main thread waits
+(checked with a standalone probe). The owners hear nothing, since their
+reports are main-actor tasks and the app exits first.
+
+- **Normal quit**: called last in `applicationWillTerminate`, after the
+  session and download saves. It goes there and not in
+  `applicationShouldTerminate`, whose quit alert can still cancel. Every
+  `terminate` that goes ahead (the alert, no windows, a Sparkle relaunch)
+  ends there.
+- **The wait** is `quitGrace` = 1 s for all hosts together, against 2 s per
+  host for a teardown, because it delays the quit. A host that exits on
+  SIGTERM takes milliseconds (measured: 2 ms), so the second is only spent
+  on a host that ignores SIGTERM.
+- **SIGTERM to Detour**: `installSIGTERMHandler()` (the first thing in
+  `applicationDidFinishLaunching`) sets SIGTERM to `SIG_IGN` and handles it
+  with a `DispatchSource` on a global queue. That works even when the main
+  thread is busy or hung. The handler ends the hosts in the same way, then
+  cancels the source (it sees the re-sent signal too, whatever the
+  disposition), restores `SIG_DFL` and sends SIGTERM to itself again. The app
+  still dies of the signal, with exit status 143, and runs no quit path: no
+  quit alert, no save. Worth doing because SIGTERM is what a `kill`, a
+  launchd job or a test runner sends. Logout and Activity Monitor's Quit send
+  a quit Apple Event, which goes through `terminate`. A child does not
+  inherit the ignored SIGTERM: Foundation's `Process` resets signal
+  dispositions when it spawns (a `sleep` started with SIGTERM ignored in the
+  parent died on SIGTERM), so hosts still exit on the teardown's SIGTERM.
+- **SIGKILL** leaves nothing to do. A host killed while in uninterruptible
+  sleep would linger until it wakes; nothing has done that.
+
+The TASK-241 timer is now a `DispatchSourceTimer` kept in the host's
+registry entry, so the termination handler cancels it and the `Process` and
+its pipes go as soon as the host exits, rather than once the grace period is
+over. Removing the entry alone releases the handler: a resumed timer source
+with no references left is freed. The cancel makes that explicit. A timer
+made for a host whose entry is already gone (it exited between the
+teardown's `isRunning` and the registry lock) is cancelled and still
+resumed: libdispatch crashes when a source that was never activated is
+released ("Release of an inactive object").
+
+Measured after the change, Debug build, isolated profile, a keep-alive port
+on a silent host and a port on a SIGTERM-ignoring one: a normal quit
+(`NSApp.terminate`, the quit alert answered) logged the silent host's exit
+(status 15) 2 ms into `applicationWillTerminate`, and killed the other (status
+9) at the 1 s deadline; both were gone after the quit. A SIGTERM to the app
+did the same and exited with status 143.
+
 # Logging
 
 Native hosts exchange secrets. `NativeMessagingHost` used to log 500-byte
@@ -409,6 +485,7 @@ evidence for. There is no level between notice and error to use:
 [^ending]: NativeHostEnding.swift (the join of end of stream and process exit)
 [^lifecycle-tests]: NativeMessagingHostLifecycleTests.swift
 [^task-241]: Native messaging: a host that ignores SIGTERM is never killed
+[^task-243]: Native messaging: quitting Detour may leave live port hosts running
 [^chromium-kill]: Chromium base/process/kill_mac.cc (EnsureProcessTerminated, kWaitBeforeKillSeconds = 2)
 [^chromium-runtime]: Chromium extensions/common/api/runtime.json and extensions/renderer/bindings/argument_spec.cc
 [^task-242]: A one-shot sendNativeMessage with a non-object message leaks the host and never settles

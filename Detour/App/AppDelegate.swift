@@ -31,6 +31,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         !AppDelegate.isRunningUnitTests && WebKitStorageScope.currentIsDefaultDataDirectory
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A SIGTERM to Detour ends its native hosts before the app dies
+        // (TASK-243); without it they are left running.
+        NativeMessagingHost.installSIGTERMHandler()
         setupMainMenu()
 
         // The Quick Detour hotkey (TASK-193.2): the menu item mirrors the
@@ -141,6 +144,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // A download that ended inside the manager's 1 s save debounce would
         // otherwise be missing after the relaunch (TASK-143).
         DownloadManager.shared.flushPendingSave()
+        // Last, as it can wait: exiting ends no native host by itself, nor
+        // a torn-down one's pending SIGKILL. Every host still running gets
+        // SIGTERM, then SIGKILL if it outlasts the bounded wait (TASK-243).
+        NativeMessagingHost.terminateAllSpawnedHosts(within: NativeMessagingHost.quitGrace, refusingNewHosts: true)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
