@@ -388,6 +388,46 @@ struct ExtensionAPIPolyfill {
             g.__detourContextInstance = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
         }
 
+        // MARK: Error text across transports (TASK-255)
+        //
+        // A page's request rejects with the handler's text as is. A worker's
+        // crosses `runtime.sendNativeMessage`, and WebKit rewrites every error
+        // there: "Invalid call to runtime.sendNativeMessage(). " + the text
+        // with its first letter capitalised, dots trimmed and one full stop
+        // appended. That is lossy, so the worker asks for the error in the
+        // reply instead (`errorEnvelope`): the handler answers a failure with
+        // `{ __detourPolyfillError: text }` and it is rejected here verbatim.
+        // An error WebKit still delivers as one (a refusal before the handler,
+        // WebKit's own limits) loses exactly that prefix and the full stop
+        // WebKit appended; any other text is left alone.
+        const nativeMessageErrorPrefix = 'Invalid call to runtime.sendNativeMessage(). ';
+        const polyfillErrorKey = '\(ExtensionPolyfillHandler.errorEnvelopeKey)';
+
+        const stripNativeMessagePrefix = function(message) {
+            if (typeof message !== 'string' || message.indexOf(nativeMessageErrorPrefix) !== 0) return message;
+            let rest = message.slice(nativeMessageErrorPrefix.length);
+            if (rest.length > 1 && rest.charAt(rest.length - 1) === '.') rest = rest.slice(0, -1);
+            return rest || message;
+        };
+
+        const unwrapPolyfillReply = function(response) {
+            let text;
+            try {
+                if (response && typeof response === 'object' && Object.prototype.hasOwnProperty.call(response, polyfillErrorKey)) {
+                    text = response[polyfillErrorKey];
+                }
+            } catch (e) {}
+            if (typeof text === 'string') throw new Error(text || 'Unknown error');
+            return response;
+        };
+
+        const unwrapNativeMessageError = function(error) {
+            let message;
+            try { message = error && error.message; } catch (e) {}
+            const stripped = stripNativeMessagePrefix(message);
+            throw stripped === message ? error : new Error(stripped);
+        };
+
         g.__detourPolyfillRequest = function(type, params) {
             const msg = { type: type, params: params || {}, extensionID: currentExtensionID() };
 
@@ -397,22 +437,31 @@ struct ExtensionAPIPolyfill {
 
             // Service worker fallback: use native messaging bridge.
             // Try browser.runtime (returns Promise) first, then chrome.runtime (callback-based).
+            msg.errorEnvelope = true;
             if (typeof browser !== 'undefined' && browser.runtime && browser.runtime.sendNativeMessage) {
-                return browser.runtime.sendNativeMessage('detourPolyfill', msg);
+                return browser.runtime.sendNativeMessage('detourPolyfill', msg)
+                    .then(unwrapPolyfillReply, unwrapNativeMessageError);
             }
             if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendNativeMessage) {
                 return new Promise(function(resolve, reject) {
                     chrome.runtime.sendNativeMessage('detourPolyfill', msg, function(response) {
-                        if (chrome.runtime.lastError) {
-                            reject(new Error(chrome.runtime.lastError.message));
+                        const lastError = chrome.runtime.lastError;
+                        if (lastError) {
+                            reject(new Error(lastError.message));
                         } else {
                             resolve(response);
                         }
                     });
-                });
+                }).then(unwrapPolyfillReply, unwrapNativeMessageError);
             }
             return Promise.reject(new Error('Polyfill bridge unavailable: no webkit handler or sendNativeMessage'));
         };
+
+        // For tests: the pure pieces of the normalisation above.
+        g.__detourPolyfillErrorText = Object.freeze({
+            stripNativeMessagePrefix: stripNativeMessagePrefix,
+            unwrapPolyfillReply: unwrapPolyfillReply
+        });
 
         // MARK: Callback settlement (TASK-23)
         //
@@ -441,9 +490,12 @@ struct ExtensionAPIPolyfill {
         //    Detour's polyfill host through the native, callback-style
         //    `runtime.sendNativeMessage`: the host always answers with that
         //    message as the error, and WebKit runs the callback inside its own
-        //    lastError scope (set, cleared, unchecked reporting). WebKit
-        //    prefixes the text: "Invalid call to runtime.sendNativeMessage().
-        //    <message>." The namespace is re-read here, never cached (TASK-15).
+        //    lastError scope (set, cleared). WebKit prefixes the text
+        //    ("Invalid call to runtime.sendNativeMessage(). <Message>."), so
+        //    the relay callback puts the original message back on WebKit's
+        //    lastError object (TASK-255); reading it there costs WebKit's
+        //    unchecked report. The namespace is re-read here, never cached
+        //    (TASK-15).
         //  - 'console': neither is possible; the callback runs without
         //    lastError and the message goes to console.error.
         const lastErrorRelayType = '\(ExtensionPolyfillHandler.lastErrorRelayType)';
@@ -531,9 +583,28 @@ struct ExtensionAPIPolyfill {
             } catch (e) {}
             if (runtime) {
                 try {
+                    const relayRuntime = runtime;
                     runtime.sendNativeMessage('detourPolyfill', {
                         type: lastErrorRelayType, params: { message: message }, extensionID: currentExtensionID()
-                    }, function() { invokeCallback(callback, []); });
+                    }, function() {
+                        // WebKit's lastError is an Error carrying its prefixed
+                        // rewrite of the text; give it the original back
+                        // (TASK-255). Reading it here tells WebKit it was
+                        // checked, so WebKit reports no unchecked error. The
+                        // polyfill does not report one either: it cannot see
+                        // a read of WebKit's native getter, so a callback that
+                        // only tests `if (chrome.runtime.lastError)` would be
+                        // reported falsely.
+                        try {
+                            const error = relayRuntime.lastError;
+                            if (error && typeof error === 'object') {
+                                Object.defineProperty(error, 'message', {
+                                    value: message, writable: true, configurable: true, enumerable: false
+                                });
+                            }
+                        } catch (e) {}
+                        invokeCallback(callback, []);
+                    });
                     lastErrorMode = 'native-relay';
                     return;
                 } catch (e) {}

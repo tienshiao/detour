@@ -94,7 +94,11 @@ the static getter; the probes showed otherwise, and it now says so.
 - `runtime.lastError` reports as `{ value: null, writable: false,
   configurable: true }`, and `defineProperty`, assignment and `delete` all
   complete with no effect (probed 2026-09-12 in an extension page and a module
-  worker). A write must be verified by reading it back.[^task-23]
+  worker). A write must be verified by reading it back.[^task-23] The value
+  WebKit sets inside a failing callback is an ordinary JS `Error`, though, and
+  its `message` can be redefined: that is how the relay hands the callback the
+  original text instead of WebKit's prefixed one (see
+  [Polyfill layer](./polyfill-layer.md#error-text-from-both-transports)).
 - `runtime.reload` cannot be shadowed: the TASK-123 work found it to be a
   read-only static value of the runtime wrapper, where an own property is
   masked.[^task-123] WebKit's reload unloads and reloads the same context

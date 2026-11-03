@@ -217,8 +217,12 @@ back. WebKit's own callbacks do set it: inside a failing native callback it is
 cannot be installed from JS, they bounce the message off Detour's polyfill host with the
 callback form of `runtime.sendNativeMessage` (message type `runtime.lastErrorRelay`, which always
 fails with the text it was given), and run the extension's callback from inside WebKit's callback.
-The extension then sees `"Invalid call to runtime.sendNativeMessage(). <message>."`: WebKit's
-prefix is the one visible difference from Chrome.
+WebKit hands the callback `"Invalid call to runtime.sendNativeMessage(). <Message>."`, but the
+lastError value is an ordinary JS `Error` whose `message` is configurable, so the relay callback
+redefines it to the original text before calling the extension's callback (TASK-255). Reading
+lastError there marks it checked for WebKit, so no "Unchecked runtime.lastError" is reported on
+this path: the polyfill cannot observe a read of WebKit's getter, and reporting on reads of
+`message` alone would flag callbacks that only test `if (chrome.runtime.lastError)`.
 
 Pinning a *different* object under `chrome.runtime` (Option 1 with a proxy instead of the real
 wrapper) is accepted by `defineProperty` but ignored on reads: the static getter keeps returning

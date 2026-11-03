@@ -595,18 +595,18 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             XCTAssertEqual((object["callbackAgain"] as? [String: Any])?["answer"] as? Bool, false, label)
 
             // Without a notification id: the promise rejects and the callback
-            // gets runtime.lastError. WebKit prefixes a native error with
-            // "Invalid call to runtime.sendNativeMessage()." on some legs (twice
-            // on the worker's callback leg), so only the reason is matched.
+            // gets runtime.lastError, with the handler's text on every leg
+            // (no WebKit "Invalid call to runtime.sendNativeMessage()."
+            // prefix since TASK-255).
             for key in ["promiseClearNoID", "promiseUpdateNoID"] {
                 let outcome = try XCTUnwrap(object[key] as? [String: Any], "\(label) \(key): \(object)")
                 let message = try XCTUnwrap(outcome["rejected"] as? String, "\(label) \(key): \(outcome)")
-                XCTAssertTrue(message.lowercased().contains("notificationid required"), "\(label) \(key): \(message)")
+                XCTAssertEqual(message, "notificationId required", "\(label) \(key)")
             }
             for key in ["callbackClearNoID", "callbackUpdateNoID"] {
                 let outcome = try XCTUnwrap(object[key] as? [String: Any], "\(label) \(key): \(object)")
                 let message = try XCTUnwrap(outcome["lastError"] as? String, "\(label) \(key): \(outcome)")
-                XCTAssertTrue(message.lowercased().contains("notificationid required"), "\(label) \(key): \(message)")
+                XCTAssertEqual(message, "notificationId required", "\(label) \(key)")
             }
 
             // create p, update p, create c, update c: each update kept the
@@ -750,8 +750,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             let direct = try XCTUnwrap(outcome["direct"] as? [String: Any], "\(transport): \(outcome)")
             XCTAssertNil(direct["resolved"], "\(transport): the request must be refused: \(outcome)")
             let rejected = try XCTUnwrap(direct["rejected"] as? String, "\(transport): \(outcome)")
-            XCTAssertTrue(rejected.lowercased().contains("notifications permission not declared"),
-                          "\(transport): \(rejected)")
+            XCTAssertEqual(rejected, "notifications permission not declared", "\(transport)")
         }
         XCTAssertTrue(center.addedIdentifiers.isEmpty, "nothing was shown")
     }
@@ -799,8 +798,8 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
                                where_, file: file, line: line)
             } else {
                 XCTAssertNil(direct["resolved"], "must be refused: \(where_)", file: file, line: line)
-                XCTAssertTrue((direct["rejected"] as? String ?? "").lowercased()
-                                .contains("notifications permission not declared"), where_, file: file, line: line)
+                XCTAssertEqual(direct["rejected"] as? String, "notifications permission not declared",
+                               where_, file: file, line: line)
             }
         }
     }

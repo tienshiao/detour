@@ -25,6 +25,27 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// `runtime.lastError` for a failed callback-style call (TASK-23).
     static let lastErrorRelayType = "runtime.lastErrorRelay"
 
+    /// A worker's polyfill request sets `errorEnvelope: true`, and a failure
+    /// is then answered as a successful reply `{ errorEnvelopeKey: text }`
+    /// rather than an error: WebKit rewrites any error crossing
+    /// `runtime.sendNativeMessage` ("Invalid call to
+    /// runtime.sendNativeMessage(). <Text>."), and the polyfill rejects with
+    /// the text exactly as a page would see it (TASK-255).
+    static let errorEnvelopeKey = "__detourPolyfillError"
+
+    /// Answers a failed native-message request from a worker: as the
+    /// `errorEnvelopeKey` reply when the request asked for it, otherwise as
+    /// an error (which WebKit rewrites).
+    static func replyFailure(_ text: String, to body: [String: Any],
+                             replyHandler: (Any?, (any Error)?) -> Void) {
+        if body["errorEnvelope"] as? Bool == true {
+            replyHandler([errorEnvelopeKey: text], nil)
+        } else {
+            replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
+                                      userInfo: [NSLocalizedDescriptionKey: text]))
+        }
+    }
+
     /// Longest relayed lastError message, in characters.
     static let lastErrorRelayMessageLimit = 2048
 
@@ -540,8 +561,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                                           userInfo: [NSLocalizedDescriptionKey: errorString]))
             } else if let errorString {
                 log.error("Polyfill error for \(type, privacy: .public): \(errorString, privacy: .public)")
-                replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
-                                          userInfo: [NSLocalizedDescriptionKey: errorString]))
+                Self.replyFailure(errorString, to: body, replyHandler: replyHandler)
             } else {
                 log.debug("Polyfill success for \(type, privacy: .public)")
                 replyHandler(result, nil)

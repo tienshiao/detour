@@ -2654,8 +2654,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             let profile = profile(for: controller)
             guard let handler = profile?.polyfillHandler else {
                 log.error("No polyfill handler for profile")
-                replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
-                                          userInfo: [NSLocalizedDescriptionKey: "No polyfill handler for profile"]))
+                ExtensionPolyfillHandler.replyFailure("No polyfill handler for profile", to: body, replyHandler: replyHandler)
                 return
             }
             // The sender's identity comes from the context, never from the body:
@@ -2663,8 +2662,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             // flight across a reload) is rejected rather than trusted.
             guard let verifiedExtensionID = extensionIDFromContext(extensionContext) else {
                 log.error("Rejecting polyfill native message \(body["type"] as? String ?? "(unknown)", privacy: .public) from a context not loaded in profile \(profile?.name ?? "?", privacy: .public)")
-                replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
-                                          userInfo: [NSLocalizedDescriptionKey: "Unrecognized extension context"]))
+                ExtensionPolyfillHandler.replyFailure("Unrecognized extension context", to: body, replyHandler: replyHandler)
                 return
             }
             handler.handleNativeMessage(body, verifiedExtensionID: verifiedExtensionID, replyHandler: replyHandler)

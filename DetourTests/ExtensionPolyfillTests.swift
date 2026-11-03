@@ -1713,6 +1713,138 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(long.error?.count, ExtensionPolyfillHandler.lastErrorRelayMessageLimit)
     }
 
+    // MARK: - Error text across transports (TASK-255)
+
+    /// The relay as WebKit runs it: lastError is an Error carrying WebKit's
+    /// rewrite ("Invalid call to runtime.sendNativeMessage(). <Text>.") while
+    /// the callback runs. The callback reads the original text instead.
+    private static let webKitLikeRelaySetup = """
+        globalThis.__wkLastError = undefined;
+        Object.defineProperty(chrome.runtime, 'lastError', { get() { return globalThis.__wkLastError; }, configurable: false });
+        chrome.runtime.sendNativeMessage = function(application, message, callback) {
+            const text = message.params.message;
+            globalThis.__wkLastError = new Error('Invalid call to runtime.sendNativeMessage(). '
+                + text.charAt(0).toUpperCase() + text.slice(1) + '.');
+            try { callback(); } finally { globalThis.__wkLastError = undefined; }
+        };
+    """
+
+    @MainActor func testRelayedLastErrorCarriesTheOriginalTextWithoutWebKitsPrefix() async throws {
+        let outcome = try await callbackOutcome(
+            call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);",
+            setup: Self.webKitLikeRelaySetup,
+            teardown: "delete chrome.runtime.sendNativeMessage;")
+
+        XCTAssertEqual(outcome["mode"] as? String, "native-relay")
+        XCTAssertEqual(outcome["argc"] as? Int, 0)
+        XCTAssertEqual(outcome["lastErrorInCallback"] as? String, "Extension not found")
+        XCTAssertEqual(outcome["consoleErrors"] as? [String], [], "a read lastError is not reported")
+        XCTAssertEqual(outcome["unhandled"] as? [String], [])
+    }
+
+    /// Reading WebKit's lastError to rewrite it marks it checked for WebKit,
+    /// and the polyfill cannot see whether the extension's callback read it
+    /// (a bare `if (chrome.runtime.lastError)` touches only WebKit's getter),
+    /// so nothing is reported as unchecked rather than a handled error falsely.
+    @MainActor func testRelayedLastErrorIsNeverReportedAsUnchecked() async throws {
+        let outcome = try await callbackOutcome(
+            call: "return chrome.offscreen.createDocument(\(Self.offscreenParams), cb);",
+            setup: Self.webKitLikeRelaySetup,
+            teardown: "delete chrome.runtime.sendNativeMessage;",
+            readLastError: false)
+
+        XCTAssertEqual(outcome["mode"] as? String, "native-relay")
+        XCTAssertEqual(outcome["argc"] as? Int, 0)
+        XCTAssertEqual(outcome["consoleErrors"] as? [String], [])
+        XCTAssertEqual(outcome["unhandled"] as? [String], [])
+    }
+
+    /// Only WebKit's exact `runtime.sendNativeMessage()` prefix (and the full
+    /// stop it appends) is taken off; any other text is left as it is.
+    @MainActor func testNativeMessagePrefixStripOnlyTakesWebKitsExactPrefix() async throws {
+        let value = try await evalJSON("""
+            const strip = __detourPolyfillErrorText.stripNativeMessagePrefix;
+            return JSON.stringify([
+                strip('Invalid call to runtime.sendNativeMessage(). Unrecognized extension context.'),
+                strip('Invalid call to runtime.sendNativeMessage(). The message is too large'),
+                strip('Invalid call to tabs.query(). Something failed.'),
+                strip('see Invalid call to runtime.sendNativeMessage(). X.'),
+                strip('invalid call to runtime.sendNativeMessage(). X.'),
+                strip('Invalid call to runtime.sendNativeMessage(). '),
+                strip('history permission not declared'),
+            ]);
+        """)
+        XCTAssertEqual(value as? [String], [
+            "Unrecognized extension context",
+            "The message is too large",
+            "Invalid call to tabs.query(). Something failed.",
+            "see Invalid call to runtime.sendNativeMessage(). X.",
+            "invalid call to runtime.sendNativeMessage(). X.",
+            "Invalid call to runtime.sendNativeMessage(). ",
+            "history permission not declared",
+        ])
+    }
+
+    /// A worker reply carrying the error envelope rejects with its text
+    /// verbatim; any other reply, including one with a non-string envelope
+    /// value, is passed through.
+    @MainActor func testPolyfillReplyEnvelopeRejectsWithItsTextVerbatim() async throws {
+        let value = try await evalJSON("""
+            const unwrap = __detourPolyfillErrorText.unwrapPolyfillReply;
+            const key = '\(ExtensionPolyfillHandler.errorEnvelopeKey)';
+            const run = (reply) => {
+                try { return { passed: JSON.stringify(unwrap(reply)) }; }
+                catch (e) { return { threw: e.message, isError: e instanceof Error }; }
+            };
+            return JSON.stringify([
+                run({ [key]: 'history permission not declared' }),
+                run({ [key]: 42 }),
+                run({ results: [] }),
+                run(null),
+                run('text'),
+            ]);
+        """)
+        let outcomes = try XCTUnwrap(value as? [[String: Any]])
+        XCTAssertEqual(outcomes.count, 5)
+        XCTAssertEqual(outcomes[0]["threw"] as? String, "history permission not declared")
+        XCTAssertEqual(outcomes[0]["isError"] as? Bool, true)
+        XCTAssertNotNil(outcomes[1]["passed"], "a non-string value is not an envelope: \(outcomes[1])")
+        XCTAssertEqual(outcomes[2]["passed"] as? String, "{\"results\":[]}")
+        XCTAssertEqual(outcomes[3]["passed"] as? String, "null")
+        XCTAssertEqual(outcomes[4]["passed"] as? String, "\"text\"")
+    }
+
+    /// The native half: a failed request that asks for the envelope gets a
+    /// successful reply carrying the text; one that does not gets the error.
+    /// The relay still always fails, envelope or not.
+    @MainActor func testWorkerRequestFailureIsEnvelopedOnlyWhenAskedFor() async throws {
+        func send(_ body: [String: Any]) async -> (result: Any?, error: String?) {
+            let reply = await withCheckedContinuation { (continuation: CheckedContinuation<BridgeReply, Never>) in
+                handler.handleNativeMessage(body, verifiedExtensionID: "no-permissions-extension") { result, error in
+                    continuation.resume(returning: BridgeReply(result: result, error: (error as NSError?)?.localizedDescription))
+                }
+            }
+            return (reply.result, reply.error)
+        }
+        let request: [String: Any] = ["type": "history.search", "extensionID": "", "params": ["query": ["text": ""]]]
+
+        var enveloped = request
+        enveloped["errorEnvelope"] = true
+        let envelopeReply = await send(enveloped)
+        XCTAssertNil(envelopeReply.error)
+        XCTAssertEqual((envelopeReply.result as? [String: Any])?[ExtensionPolyfillHandler.errorEnvelopeKey] as? String,
+                       "history permission not declared")
+
+        let plainReply = await send(request)
+        XCTAssertNil(plainReply.result)
+        XCTAssertEqual(plainReply.error, "history permission not declared")
+
+        let relayReply = await send(["type": ExtensionPolyfillHandler.lastErrorRelayType, "extensionID": "",
+                                     "errorEnvelope": true, "params": ["message": "relayed"]])
+        XCTAssertNil(relayReply.result)
+        XCTAssertEqual(relayReply.error, "relayed")
+    }
+
 
     // MARK: - Event Emitter Utility
 

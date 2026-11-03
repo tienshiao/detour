@@ -418,20 +418,18 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         return try items(try JSONSerialization.jsonObject(with: Data(json.utf8)), file: file, line: line)
     }
 
-    /// Does `message` carry the native refusal `expected`? A substring test
-    /// that ignores case, because the text does not always arrive verbatim:
-    /// whatever travels through WebKit's `runtime.sendNativeMessage` — every
-    /// worker request, and the `runtime.lastError` relay from a page — comes
-    /// back as `Invalid call to runtime.sendNativeMessage(). <Text>.`, with
-    /// the first letter capitalised and a full stop added (seen 2026-10-04:
-    /// "History permission not declared.").
+    /// Does `message` read exactly as the native refusal `expected`? Every
+    /// leg — the page and the worker, the promise and the callback's
+    /// `runtime.lastError` — gets the handler's text verbatim, without the
+    /// "Invalid call to runtime.sendNativeMessage(). <Text>." rewrite WebKit
+    /// applies to errors crossing `runtime.sendNativeMessage` (TASK-255).
     @MainActor private func carries(_ message: String, _ expected: String) -> Bool {
-        message.range(of: expected, options: .caseInsensitive) != nil
+        message == expected
     }
 
     /// A callback-form call that must have failed: the callback ran with no
     /// arguments and `runtime.lastError` carried `expected`.
-    @MainActor private func assertCallbackFailed(_ outcome: [String: Any], containing expected: String, _ what: String,
+    @MainActor private func assertCallbackFailed(_ outcome: [String: Any], reading expected: String, _ what: String,
                                       file: StaticString = #filePath, line: UInt = #line) {
         if let timedOut = outcome["timedOut"] as? Bool {
             XCTAssertFalse(timedOut, "\(what): the callback must run on failure", file: file, line: line)
@@ -444,7 +442,7 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         XCTAssertEqual(outcome["unhandled"] as? [String], [], "\(what): no stray rejection", file: file, line: line)
     }
 
-    @MainActor private func assertRejected(_ outcome: [String: Any], containing expected: String, _ what: String,
+    @MainActor private func assertRejected(_ outcome: [String: Any], reading expected: String, _ what: String,
                                 file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(outcome["settled"] as? String, "rejected", "\(what): \(outcome)", file: file, line: line)
         let message = outcome["message"] as? String ?? ""
@@ -891,34 +889,77 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         // (JS arguments for the page, the same query as JSON for the worker — nil
         // sends none — and the refusal.)
         let cases: [(js: String, json: Any?, expected: String)] = [
-            ("{}", [String: Any](), "query.text must be a string"),
-            ("{ text: 5 }", ["text": 5] as [String: Any], "query.text must be a string"),
-            ("'notes'", "notes", "query must be an object"),
+            ("{}", [String: Any](), "history.search: query.text must be a string"),
+            ("{ text: 5 }", ["text": 5] as [String: Any], "history.search: query.text must be a string"),
+            ("'notes'", "notes", "history.search: query must be an object"),
             ("{ text: '', maxResults: -1 }", ["text": "", "maxResults": -1] as [String: Any],
-             "query.maxResults must be a non-negative integer"),
+             "history.search: query.maxResults must be a non-negative integer"),
             ("{ text: '', startTime: 'yesterday' }", ["text": "", "startTime": "yesterday"] as [String: Any],
-             "query.startTime must be a number"),
+             "history.search: query.startTime must be a number"),
         ]
         for (js, json, expected) in cases {
-            assertRejected(try await pagePromise(js, in: page), containing: expected, "page promise \(js)")
-            assertCallbackFailed(try await pageCallback(js, in: page), containing: expected, "page callback \(js)")
+            assertRejected(try await pagePromise(js, in: page), reading: expected, "page promise \(js)")
+            assertCallbackFailed(try await pageCallback(js, in: page), reading: expected, "page callback \(js)")
             assertRejected(try await workerOutcome("historyPromise", query: json, via: page),
-                           containing: expected, "worker promise \(js)")
+                           reading: expected, "worker promise \(js)")
             assertCallbackFailed(try await workerOutcome("historyCallback", query: json, via: page),
-                                 containing: expected, "worker callback \(js)")
+                                 reading: expected, "worker callback \(js)")
         }
 
         // No query at all: the polyfill sends an empty object in its place.
-        assertRejected(try await pagePromise("", in: page), containing: "query.text must be a string",
+        assertRejected(try await pagePromise("", in: page), reading: "history.search: query.text must be a string",
                        "page promise, no arguments")
         assertRejected(try await workerOutcome("historyPromise", query: nil, via: page),
-                       containing: "query.text must be a string", "worker promise, no arguments")
+                       reading: "history.search: query.text must be a string", "worker promise, no arguments")
 
         // POSITIVE control: the same page and worker answer a valid query.
         let good = try await pagePromise("{ text: 'notes', maxResults: 5 }", in: page)
         XCTAssertEqual(try items(good["value"]).map(\.url), [Self.onlyA])
         let goodWorker = try await workerOutcome("historyPromise", query: ["text": "notes", "maxResults": 5] as [String: Any], via: page)
         XCTAssertEqual(try items(goodWorker["value"]).map(\.url), [Self.onlyA])
+    }
+
+    /// TASK-255: one native error reads the same from the page and the worker,
+    /// in the promise rejection and in the callback's `runtime.lastError` —
+    /// the handler's own text, without WebKit's "Invalid call to
+    /// runtime.sendNativeMessage()." prefix, its capital or its full stop.
+    /// A permission refusal (history declared only as optional, not granted)
+    /// and a bad-argument refusal.
+    @MainActor func testANativeErrorReadsTheSameFromBothTransportsInBothForms() async throws {
+        let db = try makeDatabase()
+        let refused = try await makeExtension(permissions: ["storage"], optionalPermissions: ["history"])
+        let granted = try await makeExtension(permissions: ["history"])
+        let a = try makeProfile("History Scope Error Text", database: db)
+        installTestExtension(refused, in: AppDatabase.shared)
+        let refusedPage = try await loadPage(refused, in: a.profile)
+        let grantedPage = try await loadPage(granted, in: a.profile)
+
+        let cases: [(page: WKWebView, js: String, json: [String: Any], expected: String)] = [
+            (refusedPage, "{ text: '' }", ["text": ""], "history permission not declared"),
+            (grantedPage, "{ text: 5 }", ["text": 5], "history.search: query.text must be a string"),
+        ]
+        for (page, js, json, expected) in cases {
+            let pagePromiseOutcome = try await pagePromise(js, in: page)
+            let pageCallbackOutcome = try await pageCallback(js, in: page)
+            let workerPromiseOutcome = try await workerOutcome("historyPromise", query: json, via: page)
+            let workerCallbackOutcome = try await workerOutcome("historyCallback", query: json, via: page)
+            let texts = [
+                "page promise": pagePromiseOutcome["message"] as? String,
+                "page callback": pageCallbackOutcome["lastErrorInCallback"] as? String,
+                "worker promise": workerPromiseOutcome["message"] as? String,
+                "worker callback": workerCallbackOutcome["lastErrorInCallback"] as? String,
+            ]
+            for (leg, text) in texts {
+                XCTAssertEqual(text, expected, "\(leg) \(js): \(texts)")
+                XCTAssertFalse(text?.contains("Invalid call to") ?? false, "\(leg) \(js): \(texts)")
+            }
+            XCTAssertEqual(pagePromiseOutcome["settled"] as? String, "rejected", "page promise \(js)")
+            XCTAssertEqual(workerPromiseOutcome["settled"] as? String, "rejected", "worker promise \(js)")
+            for (leg, outcome) in [("page callback", pageCallbackOutcome), ("worker callback", workerCallbackOutcome)] {
+                XCTAssertEqual(outcome["argc"] as? Int, 0, "\(leg) \(js): \(outcome)")
+                XCTAssertEqual(outcome["unhandled"] as? [String], [], "\(leg) \(js): \(outcome)")
+            }
+        }
     }
 
     /// An extension running in the Private profile gets an empty list from
@@ -1079,9 +1120,9 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         // The namespace is there before the grant, so the public call itself
         // must refuse in both forms: a rejection, and a callback with lastError.
         assertRejected(try await pagePromise("{ text: '' }", in: page),
-                       containing: "history permission not declared", "promise, before the grant")
+                       reading: "history permission not declared", "promise, before the grant")
         assertCallbackFailed(try await pageCallback("{ text: '' }", in: page),
-                             containing: "history permission not declared", "callback, before the grant")
+                             reading: "history permission not declared", "callback, before the grant")
 
         for key in ["history", "management"] {
             ExtensionManager.shared.setPermissionDecision(extensionID: ext.id, key: key, type: .apiPermission, granted: true)
@@ -1158,9 +1199,9 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         setSwitch(false)
         try await assertOptionalGate(served: false, in: page, "switched off")
         assertRejected(try await pagePromise("{ text: '' }", in: page),
-                       containing: "history permission not declared", "promise, switched off")
+                       reading: "history permission not declared", "promise, switched off")
         assertCallbackFailed(try await pageCallback("{ text: '' }", in: page),
-                             containing: "history permission not declared", "callback, switched off")
+                             reading: "history permission not declared", "callback, switched off")
 
         setSwitch(true)
         try await assertOptionalGate(served: true, in: page, "switched on again")

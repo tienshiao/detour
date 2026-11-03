@@ -28,6 +28,9 @@ sources:
   - id: task-23
     resource: backlog:TASK-23
     title: Callback-form polyfill APIs must route rejections to runtime.lastError
+  - id: task-255
+    resource: backlog:TASK-255
+    title: "Extensions: native polyfill errors read differently from the worker and from a page"
   - id: task-3
     resource: backlog:TASK-3
     title: Polyfill stubs for privacy, onAuthRequired, management.setEnabled, getUserSettings
@@ -551,33 +554,62 @@ achieved depends on the runtime object (`__detourCallbackLastError.lastMode`):
 | Mode | When | What happens |
 |---|---|---|
 | `js` | `lastError` can be redefined, verified by reading it back | A getter is installed for the callback and the original restored; an unread error is reported as `Unchecked runtime.lastError: …` |
-| `native-relay` | WebKit's real runtime | The message is bounced off Detour through the callback form of `runtime.sendNativeMessage` with type `runtime.lastErrorRelay`. The native side always fails with that text, so WebKit runs the callback inside its own `lastError` scope |
+| `native-relay` | WebKit's real runtime | The message is bounced off Detour through the callback form of `runtime.sendNativeMessage` with type `runtime.lastErrorRelay`. The native side always fails with that text, so WebKit runs the callback inside its own `lastError` scope; the relay's callback first puts the original text back on WebKit's `lastError` object (below) |
 | `console` | Neither is possible | The callback runs without `lastError`; the message goes to `console.error` |
 
 WebKit's `runtime.lastError` reports as a configurable data property, yet
 `defineProperty`, assignment and `delete` all complete without effect and reads
 stay `null`. A "configurable" check is therefore not enough; the write has to
-be read back.[^task-23] In `native-relay` mode the extension sees
-`Invalid call to runtime.sendNativeMessage(). <Message>.` — WebKit's prefix is
-the visible difference from Chrome, and WebKit also capitalises the first
-letter of the text and ends it with a full stop. The relay needs no
-permission: it echoes the sender's own text (capped at 2048 characters) to the
-sender.
+be read back.[^task-23]
 
-The same rewriting applies to every failure that crosses
-`runtime.sendNativeMessage`, which is every polyfill request a **worker**
-makes. Measured with `history.search` refused for want of the permission
-(native text `history permission not declared`):[^task-138]
+## Error text from both transports
 
-| Caller | Form | Text the extension sees |
+WebKit rewrites every error that crosses `runtime.sendNativeMessage`
+(`toErrorString` in WebKit's `WebExtensionUtilities.cpp`): it trims dots from
+both ends of the text, capitalises the first letter, and makes it
+`Invalid call to runtime.sendNativeMessage(). <Text>.` Before TASK-255 the
+extension saw that rewrite on three of the four legs. Measured with
+`history.search` refused for want of the permission (native text
+`history permission not declared`):[^task-138]
+
+| Caller | Form | Text before TASK-255 |
 |---|---|---|
 | Extension page | promise | `history permission not declared` |
 | Extension page | callback | `Invalid call to runtime.sendNativeMessage(). History permission not declared.` |
 | Worker | promise | `Invalid call to runtime.sendNativeMessage(). History permission not declared.` |
 | Worker | callback | `Invalid call to runtime.sendNativeMessage(). Invalid call to runtime.sendNativeMessage(). History permission not declared.` |
 
-So a test, or an extension, that looks for a native error text has to search
-for it as a substring and ignore case.
+Now every leg reads `history permission not declared`, the handler's text
+verbatim:[^task-255]
+
+- **Worker requests** set `errorEnvelope: true`. `handleNativeMessage` then
+  answers a failure as a *successful* reply
+  `{ __detourPolyfillError: <text> }` (`ExtensionPolyfillHandler.errorEnvelopeKey`),
+  and `__detourPolyfillRequest` rejects with that text. Stripping the prefix
+  alone would not do: the capital letter and the trimmed dots cannot be undone.
+  The relay ignores the flag, since it must fail for WebKit to set `lastError`.
+  The delegate's own refusals before the handler (`Unrecognized extension
+  context`, `No polyfill handler for profile`) use the same
+  `ExtensionPolyfillHandler.replyFailure`.
+- **An error WebKit still delivers as one** (a non-object payload, WebKit's
+  own limits such as too many active native message requests) loses exactly
+  `Invalid call to runtime.sendNativeMessage(). ` and the full stop WebKit
+  appended. Any other text is left as it is. The capital stays.
+- **The callback form**: WebKit's `lastError` is a JS `Error` made per report
+  (`makeErrorValue` in `WebExtensionAPIRuntime.cpp`) whose `message` is an own,
+  configurable property. Inside the relay's callback the polyfill reads it and
+  redefines `message` as the original text, then runs the extension's
+  callback. Reading `lastError` marks it checked for WebKit, so **in
+  `native-relay` mode nothing reports an unchecked `lastError` any more**.
+  Reporting it from the polyfill, keyed on reads of `message`, was tried and
+  rejected: no read of WebKit's native getter can be observed, so a callback
+  that handles the error with `if (chrome.runtime.lastError) return;` would be
+  reported as unchecked. A false report on correct code was judged worse than
+  no report on code that ignores the error; the handler still logs every
+  failure on the Swift side.
+
+Real `runtime.sendNativeMessage` and `connectNative` calls to native hosts do
+not go through `__detourPolyfillRequest` and keep WebKit's text.
 
 An exception thrown by the callback is rethrown on a fresh task, so it is an
 uncaught error rather than an unhandled rejection.
@@ -641,6 +673,7 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-23]: Callback-form polyfill APIs must route rejections to runtime.lastError
 [^task-3]: Polyfill stubs for privacy, onAuthRequired, management.setEnabled, getUserSettings
 [^task-138]: chrome.history.search returns history from every profile
+[^task-255]: Extensions: native polyfill errors read differently from the worker and from a page
 [^task-152]: favicon.lookup answers from every profile's history, without a permission check
 [^task-153]: chrome.history.search with empty text scans every visit of the profile
 [^chrome-history-api]: Chromium, history_api.cc (HistorySearchFunction)
