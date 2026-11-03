@@ -53,7 +53,7 @@ nonisolated final class ExtensionPolyfillIntegrationTests: XCTestCase {
             "version": "1.0.0",
             "permissions": ["storage", "tabs", "idle", "notifications", "history",
                              "sessions", "search", "offscreen", "fontSettings", "nativeMessaging",
-                             "webRequest", "webNavigation"],
+                             "webRequest", "webNavigation", "management"],
             "host_permissions": ["<all_urls>"],
             "background": {"service_worker": "background.js", "type": "module"},
             "content_scripts": [
@@ -423,6 +423,9 @@ nonisolated final class ExtensionPolyfillIntegrationTests: XCTestCase {
                 notifications: typeof chrome.notifications === 'object',
                 history: typeof chrome.history === 'object',
                 management: typeof chrome.management === 'object',
+                // The full namespace, not the getSelf-only one an extension
+                // without the permission gets (TASK-251).
+                managementGetAll: typeof chrome.management.getAll === 'function',
                 fontSettings: typeof chrome.fontSettings === 'object',
                 sessions: typeof chrome.sessions === 'object',
                 search: typeof chrome.search === 'object',

@@ -602,6 +602,56 @@ nonisolated final class ExtensionPermissionRestoreTests: XCTestCase {
                       "content-script hosts are still granted implicitly under activeTab")
     }
 
+    // MARK: - TASK-250: polyfill-gated optional permissions
+
+    /// WebKit leaves `history` and `management` out of its optional set, but
+    /// the restore still applies their saved decisions, so the context holds
+    /// the grant the polyfill handler reads; `notifications` comes through
+    /// WebKit's own set.
+    @MainActor func testSavedPolyfillGatedOptionalDecisionsAreRestored() async throws {
+        let ext = try await makeTestExtension(
+            permissions: ["tabs"], optionalPermissions: ["history", "management", "notifications"])
+        XCTAssertFalse(ext.askablePermissions.contains(WKWebExtension.Permission(rawValue: "history")))
+        savePermission(ext, key: "history", type: .apiPermission, status: .granted)
+        savePermission(ext, key: "management", type: .apiPermission, status: .denied)
+        savePermission(ext, key: "notifications", type: .apiPermission, status: .granted)
+
+        let context = try loadContext(makeProfile("Polyfill Gated Restore Profile"), ext)
+
+        XCTAssertNotNil(context.grantedPermissions[WKWebExtension.Permission(rawValue: "history")])
+        XCTAssertNotNil(context.deniedPermissions[WKWebExtension.Permission(rawValue: "management")])
+        XCTAssertNotNil(context.grantedPermissions[WKWebExtension.Permission(rawValue: "notifications")])
+        XCTAssertTrue(ExtensionPolyfillHandler.permissionIsActive("history", manifest: ext.manifest, context: context))
+        XCTAssertFalse(ExtensionPolyfillHandler.permissionIsActive("management", manifest: ext.manifest, context: context))
+        XCTAssertTrue(ExtensionPolyfillHandler.permissionIsActive("notifications", manifest: ext.manifest, context: context))
+    }
+
+    /// The handler's rule: a required permission is always active; an
+    /// optional one only while the context grants it; a grant for a name the
+    /// manifest lists nowhere counts for nothing, and neither does a missing
+    /// context.
+    @MainActor func testPolyfillPermissionRuleReadsTheManifestAndTheLiveGrant() async throws {
+        let ext = try await makeTestExtension(permissions: ["notifications"], optionalPermissions: ["history"])
+        let context = try loadContext(makeProfile("Polyfill Rule Profile"), ext)
+        let history = WKWebExtension.Permission(rawValue: "history")
+        let management = WKWebExtension.Permission(rawValue: "management")
+
+        XCTAssertTrue(ExtensionPolyfillHandler.permissionIsActive("notifications", manifest: ext.manifest, context: nil),
+                      "required: active without consulting the context")
+        XCTAssertFalse(ExtensionPolyfillHandler.permissionIsActive("history", manifest: ext.manifest, context: context),
+                       "optional, undecided")
+        context.setPermissionStatus(.grantedExplicitly, for: history)
+        XCTAssertTrue(ExtensionPolyfillHandler.permissionIsActive("history", manifest: ext.manifest, context: context))
+        XCTAssertFalse(ExtensionPolyfillHandler.permissionIsActive("history", manifest: ext.manifest, context: nil),
+                       "no context, no grant")
+        context.setPermissionStatus(.unknown, for: history)
+        XCTAssertFalse(ExtensionPolyfillHandler.permissionIsActive("history", manifest: ext.manifest, context: context),
+                       "a removed grant is gone at once")
+        context.setPermissionStatus(.grantedExplicitly, for: management)
+        XCTAssertFalse(ExtensionPolyfillHandler.permissionIsActive("management", manifest: ext.manifest, context: context),
+                       "a grant the manifest never asked for does not count")
+    }
+
     // MARK: - TASK-19 review: permissions.request sub-patterns
 
     /// `permissions.request({origins: ["https://mail.example/*"]})` prompts with

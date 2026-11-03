@@ -79,6 +79,9 @@ sources:
   - id: task-251
     resource: backlog:TASK-251
     title: "Extensions: the history and management namespaces exist for extensions without the permission"
+  - id: task-250
+    resource: backlog:TASK-250
+    title: "Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions"
   - id: chromium-api-features
     resource: https://github.com/chromium/chromium/blob/main/extensions/common/api/_api_features.json
     title: "Chromium, extensions/common/api/_api_features.json (management.getSelf etc. have no dependency)"
@@ -151,6 +154,7 @@ Preamble helpers every module uses:
 | `__detourContextKind` | `'worker'`, `'background-page'` or `'page'`, decided once |
 | `__detourContextInstance` | A token minted per evaluation, so Swift can tell one start of a context from the next |
 | `__detourManifestPermissions()` | The manifest's declared permissions, for modules that must stay absent unless asked for |
+| `__detourDeclaresPermission(name)` | Whether `permissions` or `optional_permissions` lists `name`: the gate of the namespaces an extension may be granted at runtime (notifications, history, the full management) |
 | `__detourNativeness(fn)` | `'native'`, `'non-native'` or `'missing'`, by the `[native code]` check |
 
 `__detourContextKind` matters because a `ServiceWorkerGlobalScope` check alone
@@ -238,6 +242,13 @@ does:
   `getSelf`).[^task-251] In a plain `WKWebView` (the `ExtensionPolyfillTests`
   harness) `browser` is a separate object from `chrome`, so the alias can only
   be checked in a real context.
+- Since TASK-250 those three namespaces also install for a permission listed
+  only under `optional_permissions`, and the handler refuses each call until
+  the profile's context holds the grant, and again after a revocation. Chrome
+  adds a granted namespace to running contexts; installing ours on a later
+  event would leave a restarted worker's top-level code without it. The rule
+  and the WebKit behaviour behind it are in
+  [Permissions](./permissions.md#permissions-the-polyfill-gates).[^task-250]
 
 ## chrome.history is profile-scoped
 
@@ -629,6 +640,7 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-238]: Extensions: one profile's notifications are visible to and clearable by the same extension in another profile
 [^task-239]: Extensions: the notifications API is available without the notifications permission
 [^task-251]: Extensions: the history and management namespaces exist for extensions without the permission
+[^task-250]: Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions
 [^task-240]: Extensions: notifications.clear and notifications.update diverge from Chrome
 [^chrome-notifications-api]: chrome.notifications API reference
 [^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared

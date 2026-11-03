@@ -78,9 +78,10 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         return ExtensionNotificationManager.Owner(profileID: profileID, extensionID: extensionID)
     }
 
-    /// Whether `extensionID` declared the `notifications` permission, as
-    /// Chrome gates the namespace (TASK-239). If not, answers the request with
-    /// the refusal and returns false.
+    /// Whether `extensionID` holds the `notifications` permission — declared,
+    /// or optional and granted in this profile (TASK-250) — as Chrome gates
+    /// the namespace (TASK-239). If not, answers the request with the refusal
+    /// and returns false.
     private func notificationsPermitted(_ extensionID: String,
                                         orRefuse replyHandler: (Any?, String?) -> Void) -> Bool {
         guard hasPermission("notifications", extensionID: extensionID) else {
@@ -1033,11 +1034,42 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         return ExtensionManager.shared.newTabSpace(for: profile)
     }
 
-    /// Whether the extension declared a given manifest permission. Used to gate
-    /// polyfilled APIs (history, management, notifications) that WKWebExtension doesn't itself
-    /// permission-check because they're implemented natively here.
+    /// Whether the extension may use `permission` now, in this handler's
+    /// profile. Gates the polyfilled APIs (history, management,
+    /// notifications) that WKWebExtension doesn't itself permission-check
+    /// because they're implemented natively here. See
+    /// `permissionIsActive(_:manifest:context:now:)`.
     private func hasPermission(_ permission: String, extensionID: String) -> Bool {
-        ExtensionManager.shared.extension(withID: extensionID)?.manifest.permissions?.contains(permission) ?? false
+        guard let ext = ExtensionManager.shared.extension(withID: extensionID) else { return false }
+        return Self.permissionIsActive(permission, manifest: ext.manifest,
+                                       context: profile?.extensionContext(for: extensionID))
+    }
+
+    /// The rule behind `hasPermission`. A permission the manifest requires is
+    /// always active. One it lists only under `optional_permissions` is active
+    /// while `context` — the extension's context in the asking profile —
+    /// holds an unexpired grant for it, and Chrome makes it available as soon
+    /// as it is granted and takes it away on revocation (TASK-250). The grant
+    /// gets there from WebKit's `permissions.request` prompt (`notifications`),
+    /// from the Settings switch (`ExtensionManager.setPermissionDecision`) and
+    /// from the restore of a saved decision at load (`Profile.loadExtensionContext`).
+    /// A switch turned off takes it out again, and so does `permissions.remove`
+    /// for `notifications`. WebKit refuses `permissions.request`, `contains` and
+    /// `remove` for `history` and `management` in the web process ("is not a
+    /// valid permission"), so for those two the Settings switch is the only
+    /// way in or out.
+    ///
+    /// The grant dictionary is read rather than `hasPermission(_:)`, because
+    /// WebKit answers `.unknown` for every name outside its own permission set
+    /// (`history`, `management`) while still storing the grant it is given.
+    /// No context means no grant.
+    static func permissionIsActive(_ permission: String, manifest: ExtensionManifest,
+                                   context: WKWebExtensionContext?, now: Date = Date()) -> Bool {
+        if manifest.permissions?.contains(permission) == true { return true }
+        guard manifest.optionalPermissions?.contains(permission) == true,
+              let expiry = context?.grantedPermissions[WKWebExtension.Permission(rawValue: permission)]
+        else { return false }
+        return expiry > now
     }
 
     private func buildExtensionInfo(extensionID: String) -> [String: Any] {

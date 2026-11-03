@@ -451,7 +451,10 @@ class Profile {
         // A key in neither set is left alone (TASK-11's rule): rows are never
         // purged on extension update, and re-applying a grant the current
         // manifest no longer asks for would widen the extension's access.
-        for permission in ext.askablePermissions {
+        // The optional permissions only Detour's polyfill implements (history,
+        // management) are added: WebKit leaves them out of its sets but stores
+        // a grant for them, which is what the polyfill handler reads (TASK-250).
+        for permission in ext.askablePermissions.union(ext.polyfillGatedOptionalPermissions) {
             // nativeMessaging is granted unconditionally above so the polyfill
             // bridge works; a saved denial is enforced at host dispatch instead.
             if permission == .nativeMessaging { continue }

@@ -46,6 +46,22 @@ class WebExtension {
         return wkExt.requestedPermissions.union(wkExt.optionalPermissions)
     }
 
+    /// The permissions whose APIs Detour's polyfill implements and gates
+    /// itself (`ExtensionPolyfillHandler.permissionIsActive`), rather than
+    /// WebKit.
+    static let polyfillGatedPermissions: Set<String> = ["history", "management", "notifications"]
+
+    /// The polyfill-gated permissions this manifest lists under
+    /// `optional_permissions`. WebKit drops `history` and `management` from
+    /// its own `optionalPermissions` (they are outside its permission set), so
+    /// `askablePermissions` misses them; the restore adds these so a saved
+    /// grant reaches the context, where the handler reads it (TASK-250).
+    var polyfillGatedOptionalPermissions: Set<WKWebExtension.Permission> {
+        Set((manifest.optionalPermissions ?? [])
+            .filter(Self.polyfillGatedPermissions.contains)
+            .map(WKWebExtension.Permission.init(rawValue:)))
+    }
+
     /// The host match patterns a prompt can come from: the manifest's
     /// `host_permissions` plus its `optional_host_permissions`, the only two
     /// sources a site-access or `permissions.request` prompt can come from.

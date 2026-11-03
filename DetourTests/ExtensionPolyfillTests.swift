@@ -79,10 +79,14 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
     /// background-context-only requests are matched against (TASK-64), so a
     /// fixture standing in for the background context loads at the background
     /// document's path.
-    @MainActor private func makeWebView(manifestPermissions: [String], shimExtras: String = "",
+    @MainActor private func makeWebView(manifestPermissions: [String], optionalPermissions: [String] = [],
+                             shimExtras: String = "",
                              baseURL: URL = URL(string: "https://test.example.com")!) async throws -> WKWebView {
         let permissionsJSON = String(
             decoding: try JSONSerialization.data(withJSONObject: manifestPermissions), as: UTF8.self
+        )
+        let optionalJSON = String(
+            decoding: try JSONSerialization.data(withJSONObject: optionalPermissions), as: UTF8.self
         )
 
         let config = WKWebViewConfiguration()
@@ -105,7 +109,9 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
             if (!globalThis.chrome) globalThis.chrome = {};
             if (!globalThis.chrome.runtime) globalThis.chrome.runtime = {};
             if (!globalThis.chrome.runtime.id) globalThis.chrome.runtime.id = 'test-polyfill-extension';
-            globalThis.chrome.runtime.getManifest = () => ({ manifest_version: 3, permissions: \(permissionsJSON) });
+            globalThis.chrome.runtime.getManifest = () => ({
+                manifest_version: 3, permissions: \(permissionsJSON), optional_permissions: \(optionalJSON)
+            });
 
             globalThis.__detourKeepAliveReconnectBaseMs = 100;
             // Install the service-worker-only WebSocket relay and native port
@@ -296,6 +302,35 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["chrome"] as? String, "undefined")
         XCTAssertEqual(result["dispatch"] as? String, "undefined", "no event dispatcher without the namespace")
         XCTAssertEqual(result["diag"] as? String, "absent")
+    }
+
+    /// POSITIVE: a permission listed only under `optional_permissions` still
+    /// installs its namespace — whole, for `management` — because a grant can
+    /// arrive after the namespaces are built; the handler refuses the calls
+    /// until it does (TASK-250, the real-context halves are in
+    /// ExtensionHistoryScopeTests and ExtensionNotificationOrderingTests).
+    /// NEGATIVE: listed in neither list, they stay absent.
+    @MainActor func testOptionalPermissionsInstallTheirNamespaces() async throws {
+        let js = """
+        return JSON.stringify({
+            history: typeof chrome.history,
+            notifications: typeof chrome.notifications,
+            management: chrome.management ? Object.keys(chrome.management).sort() : null
+        });
+        """
+        let optional = try await makeWebView(manifestPermissions: ["storage"],
+                                             optionalPermissions: ["history", "management", "notifications"])
+        let withOptional = try await evalDictionary(js, on: optional)
+        XCTAssertEqual(withOptional["history"] as? String, "object")
+        XCTAssertEqual(withOptional["notifications"] as? String, "object")
+        XCTAssertEqual(withOptional["management"] as? [String],
+                       ["getAll", "getSelf", "onDisabled", "onEnabled", "onInstalled", "onUninstalled", "setEnabled"])
+
+        let neither = try await makeWebView(manifestPermissions: ["storage"], optionalPermissions: ["tabs"])
+        let withNeither = try await evalDictionary(js, on: neither)
+        XCTAssertEqual(withNeither["history"] as? String, "undefined")
+        XCTAssertEqual(withNeither["notifications"] as? String, "undefined")
+        XCTAssertEqual(withNeither["management"] as? [String], ["getSelf"])
     }
 
     /// The members `chrome.management` has, sorted, as JSON.

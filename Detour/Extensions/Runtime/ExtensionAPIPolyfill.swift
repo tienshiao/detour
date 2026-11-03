@@ -239,15 +239,32 @@ struct ExtensionAPIPolyfill {
 
         // The permissions the manifest declares, or [] when they cannot be read
         // (no readable manifest, or one without a permissions array). Modules
-        // that must stay absent unless the extension asked for them —
-        // chrome.privacy, chrome.webRequest, chrome.notifications,
-        // chrome.history, most of chrome.management — gate on this, the way
-        // Chrome leaves an undeclared namespace out entirely.
+        // that must stay absent unless the extension asked for them gate on
+        // this (chrome.privacy, chrome.webRequest) or on
+        // `__detourDeclaresPermission` below (chrome.notifications,
+        // chrome.history, most of chrome.management), the way Chrome leaves an
+        // undeclared namespace out entirely.
         if (!g.__detourManifestPermissions) {
             g.__detourManifestPermissions = function() {
                 const manifest = g.__detourManifest();
                 if (manifest && Array.isArray(manifest.permissions)) return manifest.permissions;
                 return [];
+            };
+        }
+
+        // Whether the manifest declares `name` in `permissions` or in
+        // `optional_permissions`. The modules whose permission an extension may
+        // be granted at runtime (chrome.notifications, chrome.history, the full
+        // chrome.management) install on this, because a namespace is built
+        // here, once per context, while a grant can come later; the handler
+        // then decides each call from the profile's live permission state
+        // (TASK-250).
+        if (!g.__detourDeclaresPermission) {
+            g.__detourDeclaresPermission = function(name) {
+                if (g.__detourManifestPermissions().indexOf(name) !== -1) return true;
+                const manifest = g.__detourManifest();
+                return !!(manifest && Array.isArray(manifest.optional_permissions)
+                    && manifest.optional_permissions.indexOf(name) !== -1);
             };
         }
 
@@ -2301,14 +2318,16 @@ struct ExtensionAPIPolyfill {
     // MARK: - chrome.notifications
 
     /// chrome.notifications, installed only when the manifest declares the
-    /// `notifications` permission: Chrome leaves the namespace out otherwise,
-    /// so a feature detection stays truthful (TASK-239). The handler refuses
-    /// the requests of an extension without it as well, so a caller that
-    /// reaches `__detourPolyfillRequest` directly gets nothing either. With the
-    /// permission it is always Detour's, whatever WebKit vends.
+    /// `notifications` permission, required or optional: Chrome leaves the
+    /// namespace out otherwise, so a feature detection stays truthful
+    /// (TASK-239). The handler refuses the requests of an extension without it
+    /// as well, so a caller that reaches `__detourPolyfillRequest` directly
+    /// gets nothing either; for an optional permission it refuses until the
+    /// grant and again after a revocation (TASK-250). With the permission it
+    /// is always Detour's, whatever WebKit vends.
     private static let notificationsJS = """
     (function() {
-        if (__detourManifestPermissions().indexOf('notifications') === -1) return;
+        if (!__detourDeclaresPermission('notifications')) return;
         const chrome = globalThis.chrome;
 
         const _onClickedListeners = [];
@@ -2377,15 +2396,17 @@ struct ExtensionAPIPolyfill {
     // MARK: - chrome.history
 
     /// chrome.history, installed only when the manifest declares the
-    /// `history` permission: Chrome leaves the namespace out otherwise, so a
-    /// feature detection stays truthful (TASK-251). The handler refuses
-    /// `history.search` from an extension without it as well, so a caller that
-    /// reaches `__detourPolyfillRequest` directly gets nothing either. WebKit
+    /// `history` permission, required or optional: Chrome leaves the namespace
+    /// out otherwise, so a feature detection stays truthful (TASK-251). The
+    /// handler refuses `history.search` from an extension without it as well,
+    /// so a caller that reaches `__detourPolyfillRequest` directly gets nothing
+    /// either; for an optional permission it refuses until the grant and again
+    /// after a revocation (TASK-250). WebKit
     /// vends no `history` namespace of its own (measured from a page and a
     /// worker in `ExtensionHistoryScopeTests`).
     private static let historyJS = """
     (function() {
-        if (__detourManifestPermissions().indexOf('history') === -1) return;
+        if (!__detourDeclaresPermission('history')) return;
         const chrome = globalThis.chrome;
 
         const onVisitedListeners = [];
@@ -2455,7 +2476,9 @@ struct ExtensionAPIPolyfill {
     /// implements `getSelf` of the three, so that is all such an extension gets
     /// here: no `getAll`, `setEnabled` or events (TASK-251). The handler
     /// refuses `management.getAll` and `management.setEnabled` without the
-    /// permission as well. WebKit vends no `management` namespace of its own
+    /// permission as well. An optional `management` installs the whole
+    /// namespace, and the handler refuses those two until the grant and again
+    /// after a revocation (TASK-250). WebKit vends no `management` namespace of its own
     /// (measured in `ExtensionHistoryScopeTests`).
     private static let managementJS = """
     (function() {
@@ -2466,7 +2489,7 @@ struct ExtensionAPIPolyfill {
             return __detourSettle(promise, callback);
         };
 
-        if (__detourManifestPermissions().indexOf('management') === -1) {
+        if (!__detourDeclaresPermission('management')) {
             __detourDefine(chrome, 'management', { getSelf: getSelf });
             return;
         }

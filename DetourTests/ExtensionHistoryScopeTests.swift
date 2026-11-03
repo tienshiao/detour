@@ -64,6 +64,8 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         ExtensionManager.shared.lastActiveSpaceID = previousLastActiveSpaceID
         for id in registeredExtensionIDs {
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
+            // Cascades to the permission rows a test saved (TASK-250).
+            AppDatabase.shared.deleteExtension(id: id)
         }
         registeredExtensionIDs.removeAll()
         for dir in tempDirs {
@@ -155,10 +157,13 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
     /// An MV3 extension with a module service worker and one page, registered
     /// in `ExtensionManager` the way an installed extension is (the handler's
     /// permission gate reads the manifest from there).
-    @MainActor private func makeExtension(permissions: [String]) async throws -> WebExtension {
+    @MainActor private func makeExtension(permissions: [String],
+                                          optionalPermissions: [String] = []) async throws -> WebExtension {
         let id = "history-scope-\(UUID().uuidString.prefix(8))"
         let permissionsJSON = String(decoding: try JSONSerialization.data(withJSONObject: permissions),
                                      as: UTF8.self)
+        let optionalJSON = String(decoding: try JSONSerialization.data(withJSONObject: optionalPermissions),
+                                  as: UTF8.self)
         let ext = try await makeTestExtension(
             id: id,
             manifestJSON: """
@@ -167,6 +172,7 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
                 "name": "History Scope Test",
                 "version": "1.0.0",
                 "permissions": \(permissionsJSON),
+                "optional_permissions": \(optionalJSON),
                 "background": { "service_worker": "background.js", "type": "module" }
             }
             """,
@@ -1008,5 +1014,119 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
             let getAll = try XCTUnwrap(outcome["directGetAll"] as? [String: Any], "\(transport): \(outcome)")
             XCTAssertNotNil(getAll["resolved"] as? [Any], "\(transport): \(outcome)")
         }
+    }
+
+    // MARK: - 5. Optional permissions granted at runtime (TASK-250)
+
+    /// The full management namespace, as `testDeclaredPermissionsInstallBothNamespaces` lists it.
+    private static let fullManagement =
+        ["getAll", "getSelf", "onDisabled", "onEnabled", "onInstalled", "onUninstalled", "setEnabled"]
+
+    /// Saved decisions for `keys`, as a prompt or the Settings switch leaves
+    /// them. The rows reference the extension's own row, so that is saved
+    /// first; tearDown's `deleteExtension` removes both.
+    @MainActor private func saveDecisions(_ keys: [String], of ext: WebExtension, status: ExtensionPermissionStatus) {
+        installTestExtension(ext, in: AppDatabase.shared)
+        AppDatabase.shared.savePermissions(keys.map {
+            ExtensionPermissionRecord(extensionID: ext.id, key: $0, type: .apiPermission, status: status)
+        })
+        XCTAssertEqual(AppDatabase.shared.loadPermissions(extensionID: ext.id).count, keys.count, "the rows were saved")
+    }
+
+    /// Both namespaces are there (they are built at injection, before any
+    /// grant can arrive) and the requests made past them are `served` or
+    /// refused, from the page and from the worker.
+    @MainActor private func assertOptionalGate(served: Bool, in page: WKWebView, _ label: String,
+                                               file: StaticString = #filePath, line: UInt = #line) async throws {
+        for transport in [GateTransport.page, .worker] {
+            let outcome = try await gate(via: transport, in: page, file: file, line: line)
+            let where_ = "\(label), \(transport): \(outcome)"
+            XCTAssertEqual(outcome["history"] as? String, "object", where_, file: file, line: line)
+            XCTAssertEqual(outcome["browserHistory"] as? String, "object", where_, file: file, line: line)
+            XCTAssertEqual(outcome["managementMembers"] as? [String], Self.fullManagement, where_, file: file, line: line)
+            let search = try XCTUnwrap(outcome["directSearch"] as? [String: Any], where_, file: file, line: line)
+            let getAll = try XCTUnwrap(outcome["directGetAll"] as? [String: Any], where_, file: file, line: line)
+            if served {
+                XCTAssertNotNil((search["resolved"] as? [String: Any])?["results"], where_, file: file, line: line)
+                XCTAssertNotNil(getAll["resolved"] as? [Any], where_, file: file, line: line)
+            } else {
+                XCTAssertNil(search["resolved"], "must be refused: \(where_)", file: file, line: line)
+                XCTAssertTrue(carries(search["rejected"] as? String ?? "", "history permission not declared"),
+                              where_, file: file, line: line)
+                XCTAssertNil(getAll["resolved"], "must be refused: \(where_)", file: file, line: line)
+                XCTAssertTrue(carries(getAll["rejected"] as? String ?? "", "management permission not declared"),
+                              where_, file: file, line: line)
+            }
+        }
+    }
+
+    /// NEGATIVE, then POSITIVE, then NEGATIVE in one running context: an
+    /// extension that lists `history` and `management` only as optional is
+    /// refused until the user grants them, is served from the same page and
+    /// worker as soon as the grant is made — through the Settings switch,
+    /// `setPermissionDecision`, the scriptable approval path, which applies the
+    /// grant to every loaded context — and is refused again once the switch is
+    /// turned off. Chrome likewise updates the bindings of running contexts on
+    /// a permission change.
+    @MainActor func testOptionalHistoryAndManagementFollowTheLiveGrant() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["storage"], optionalPermissions: ["history", "management"])
+        let a = try makeProfile("Optional Gate Live", database: db)
+        installTestExtension(ext, in: AppDatabase.shared)
+        let page = try await loadPage(ext, in: a.profile)
+
+        try await assertOptionalGate(served: false, in: page, "before the grant")
+        // The namespace is there before the grant, so the public call itself
+        // must refuse in both forms: a rejection, and a callback with lastError.
+        assertRejected(try await pagePromise("{ text: '' }", in: page),
+                       containing: "history permission not declared", "promise, before the grant")
+        assertCallbackFailed(try await pageCallback("{ text: '' }", in: page),
+                             containing: "history permission not declared", "callback, before the grant")
+
+        for key in ["history", "management"] {
+            ExtensionManager.shared.setPermissionDecision(extensionID: ext.id, key: key, type: .apiPermission, granted: true)
+        }
+        try await assertOptionalGate(served: true, in: page, "after the grant")
+        let granted = try await pagePromise("{ text: '' }", in: page)
+        XCTAssertEqual(granted["settled"] as? String, "resolved", "promise, after the grant: \(granted)")
+
+        for key in ["history", "management"] {
+            ExtensionManager.shared.setPermissionDecision(extensionID: ext.id, key: key, type: .apiPermission, granted: false)
+        }
+        try await assertOptionalGate(served: false, in: page, "after the revocation")
+    }
+
+    /// POSITIVE, new context: a grant saved earlier is restored when the
+    /// context loads, although WebKit leaves both names out of its own
+    /// optional permissions, so the page and the worker are served at once.
+    @MainActor func testSavedOptionalGrantIsRestoredIntoANewContext() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["storage"], optionalPermissions: ["history", "management"])
+        XCTAssertFalse(ext.askablePermissions.contains(WKWebExtension.Permission(rawValue: "history")),
+                       "WebKit does not parse history; the restore must add it itself")
+        saveDecisions(["history", "management"], of: ext, status: .granted)
+        let a = try makeProfile("Optional Gate Restored", database: db)
+        let page = try await loadPage(ext, in: a.profile)
+
+        try await assertOptionalGate(served: true, in: page, "restored grant")
+    }
+
+    /// NEGATIVE, new context: a saved denial is restored as a denial, and a
+    /// grant in another profile does not reach this one.
+    @MainActor func testSavedOptionalDenialIsRefusedInANewContext() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["storage"], optionalPermissions: ["history", "management"])
+        saveDecisions(["history", "management"], of: ext, status: .denied)
+        let a = try makeProfile("Optional Gate Denied A", database: db)
+        let pageA = try await loadPage(ext, in: a.profile)
+        let b = try makeProfile("Optional Gate Denied B", database: db)
+        let pageB = try await loadPage(ext, in: b.profile)
+        try XCTUnwrap(b.profile.extensionContext(for: ext.id))
+            .setPermissionStatus(.grantedExplicitly, for: WKWebExtension.Permission(rawValue: "history"))
+
+        try await assertOptionalGate(served: false, in: pageA, "saved denial")
+        let outcomeB = try await gate(via: .page, in: pageB)
+        XCTAssertNotNil(((outcomeB["directSearch"] as? [String: Any])?["resolved"] as? [String: Any])?["results"],
+                        "the grant in B serves B: \(outcomeB)")
     }
 }

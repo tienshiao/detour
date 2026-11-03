@@ -253,9 +253,12 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     """
 
     /// An extension with the polyfill in its worker, declaring `permissions`.
-    @MainActor private func makeExtension(permissions: [String] = ["notifications"]) async throws -> WebExtension {
+    @MainActor private func makeExtension(permissions: [String] = ["notifications"],
+                                          optionalPermissions: [String] = []) async throws -> WebExtension {
         let id = "notif-ordering-\(UUID().uuidString.prefix(8))"
         let permissionsJSON = String(decoding: try JSONSerialization.data(withJSONObject: permissions), as: UTF8.self)
+        let optionalJSON = String(decoding: try JSONSerialization.data(withJSONObject: optionalPermissions),
+                                  as: UTF8.self)
         let ext = try await makeTestExtension(
             id: id,
             manifestJSON: """
@@ -264,6 +267,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
                 "name": "Notification Ordering Test",
                 "version": "1.0.0",
                 "permissions": \(permissionsJSON),
+                "optional_permissions": \(optionalJSON),
                 "background": { "service_worker": "background.js", "type": "module" }
             }
             """,
@@ -753,6 +757,82 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             XCTAssertEqual(created as? String, "\(id)-api", "\(transport)")
         }
         XCTAssertEqual(center.shown.values.sorted(), ["Gate", "Gate", "Through the API", "Through the API"])
+    }
+
+    // MARK: - Optional permission granted at runtime (TASK-250)
+
+    /// `notificationGate` from both transports, refused or served. The
+    /// namespace is there either way: an optional permission installs it at
+    /// injection and the handler decides each call.
+    @MainActor private func assertOptionalGate(served: Bool, _ label: String, in page: WKWebView,
+                                               file: StaticString = #filePath, line: UInt = #line) async throws {
+        for transport in [Transport.page, .worker] {
+            let id = "optional-\(label.replacingOccurrences(of: " ", with: "-"))-\(transport)"
+            let outcome = try await gate(id, via: transport, in: page, file: file, line: line)
+            let where_ = "\(label), \(transport): \(outcome)"
+            XCTAssertEqual(outcome["chrome"] as? String, "object", where_, file: file, line: line)
+            XCTAssertEqual(outcome["browser"] as? String, "object", where_, file: file, line: line)
+            let direct = try XCTUnwrap(outcome["direct"] as? [String: Any], where_, file: file, line: line)
+            if served {
+                XCTAssertEqual((direct["resolved"] as? [String: Any])?["notificationId"] as? String, id,
+                               where_, file: file, line: line)
+            } else {
+                XCTAssertNil(direct["resolved"], "must be refused: \(where_)", file: file, line: line)
+                XCTAssertTrue((direct["rejected"] as? String ?? "").lowercased()
+                                .contains("notifications permission not declared"), where_, file: file, line: line)
+            }
+        }
+    }
+
+    /// NEGATIVE, POSITIVE, NEGATIVE in one running context: an optional
+    /// `notifications` is refused until granted, served by the same page and
+    /// worker once the grant lands (through `setPermissionDecision`, the
+    /// Settings path, which a test can script; WebKit's own
+    /// `permissions.request` prompt grants the same context entry), and
+    /// refused again after the extension gives it up with
+    /// `chrome.permissions.remove`.
+    @MainActor func testOptionalNotificationsFollowTheGrantAndPermissionsRemove() async throws {
+        let ext = try await makeExtension(permissions: ["storage"], optionalPermissions: ["notifications"])
+        let (profile, center) = try makeProfile("Optional Notifications Live")
+        center.holdsAdds = false
+        installTestExtension(ext, in: AppDatabase.shared)
+        databaseExtensionIDs.append(ext.id)
+        let page = try await loadPage(ext, in: profile)
+
+        try await assertOptionalGate(served: false, "before", in: page)
+        XCTAssertTrue(center.addedIdentifiers.isEmpty, "nothing is shown before the grant")
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "notifications", type: .apiPermission, granted: true)
+        try await assertOptionalGate(served: true, "granted", in: page)
+        XCTAssertEqual(center.addedIdentifiers.count, 2, "one from each transport")
+
+        let removed = try await page.callAsyncJavaScript("""
+            const removed = await chrome.permissions.remove({ permissions: ['notifications'] });
+            const still = await chrome.permissions.contains({ permissions: ['notifications'] });
+            return JSON.stringify({ removed, still });
+            """, arguments: [:], contentWorld: .page) as? String
+        XCTAssertEqual(removed, #"{"removed":true,"still":false}"#)
+        try await assertOptionalGate(served: false, "removed", in: page)
+        XCTAssertEqual(center.addedIdentifiers.count, 2, "nothing more is shown after the removal")
+    }
+
+    /// POSITIVE, new context: a saved grant of the optional permission is
+    /// restored when the context loads, so a fresh page and worker are served.
+    /// NEGATIVE: a saved denial is restored as a refusal.
+    @MainActor func testSavedOptionalNotificationsDecisionIsAppliedToANewContext() async throws {
+        for granted in [true, false] {
+            let ext = try await makeExtension(permissions: ["storage"], optionalPermissions: ["notifications"])
+            installTestExtension(ext, in: AppDatabase.shared)
+            databaseExtensionIDs.append(ext.id)
+            AppDatabase.shared.savePermission(ExtensionPermissionRecord(
+                extensionID: ext.id, key: "notifications", type: .apiPermission,
+                status: granted ? .granted : .denied))
+            let (profile, center) = try makeProfile("Optional Notifications Saved \(granted)")
+            center.holdsAdds = false
+            let page = try await loadPage(ext, in: profile)
+            try await assertOptionalGate(served: granted, granted ? "saved grant" : "saved denial", in: page)
+        }
     }
 
     // MARK: - Profile isolation (TASK-238)
