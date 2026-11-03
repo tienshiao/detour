@@ -558,7 +558,7 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
-                 completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+                 completionHandler: @escaping @MainActor @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         HTTPAuthenticationPrompt.handle(challenge, in: window, completionHandler: completionHandler)
     }
 }

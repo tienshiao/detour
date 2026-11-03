@@ -234,6 +234,7 @@ Match the executable path `…/Detour.app/Contents/MacOS/Detour` and exclude
 - [Parallel agent workflow](./parallel-agent-workflow.md) — several agents building on one machine.
 - [Testing extensions](../extensions/testing-extensions.md) — which extension suite proves what.
 - [WebKit test host traps](../platform/webkit-test-host-traps.md) — WebKit behaviour that crashes or pollutes the host.
+- [Swift concurrency checking](../platform/swift-concurrency-checking.md) — the target's concurrency settings, and why they belong in project.yml, not on the command line.
 - [App shell](../architecture/app-shell.md) — what the app skips when it is the test host.
 
 [^notes-memory]: Session notes on a runaway test host and test memory limits

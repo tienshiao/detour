@@ -1,0 +1,156 @@
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 334c0df..1542326 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runVerifyHarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Harness231.swift b/Detour/App/Harness231.swift
+new file mode 100644
+index 0000000..f90c4cf
+--- /dev/null
++++ b/Detour/App/Harness231.swift
+@@ -0,0 +1,136 @@
++// TEMP verify harness for TASK-231.1 — DO NOT COMMIT
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runVerifyHarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        func log(_ line: String) {
++            let data = Data((line + "\n").utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier)")
++        let base = "http://127.0.0.1:\(port)"
++        Task { @MainActor in
++            func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++            func poll<T>(_ timeout: Double = 8, _ f: () async -> T?) async -> T? {
++                let end = Date().addingTimeInterval(timeout)
++                while Date() < end { if let v = await f() { return v }; await sleep(0.1) }
++                return nil
++            }
++            func js(_ wv: WKWebView, _ s: String) async -> Any? {
++                await withCheckedContinuation { c in wv.evaluateJavaScript(s) { r, _ in c.resume(returning: r) } }
++            }
++            func buttons(_ v: NSView) -> [NSButton] { (v as? NSButton).map { [$0] } ?? [] + v.subviews.flatMap(buttons) }
++            func fields(_ v: NSView) -> [NSTextField] {
++                let me: [NSTextField] = (v as? NSTextField).flatMap { $0.isEditable ? [$0] : nil } ?? []
++                return me + v.subviews.flatMap(fields)
++            }
++            func sheet(_ w: NSWindow) async -> NSWindow? { await poll { w.attachedSheet } }
++            func click(_ sheet: NSWindow, _ title: String) -> Bool {
++                guard let b = buttons(sheet.contentView!).first(where: { $0.title == title }) else { return false }
++                b.performClick(nil); return true
++            }
++            func sheetText(_ sheet: NSWindow) -> String {
++                func labels(_ v: NSView) -> [String] {
++                    let me = (v as? NSTextField).flatMap { !$0.isEditable && !$0.stringValue.isEmpty ? [$0.stringValue] : nil } ?? []
++                    return me + v.subviews.flatMap(labels)
++                }
++                return labels(sheet.contentView!).joined(separator: " | ")
++            }
++
++            func run(_ label: String, _ window: NSWindow, _ wv: () -> WKWebView?) async {
++                guard let loaded = await poll(15, { () -> WKWebView? in
++                    guard let w = wv(), w.title == "dialogs", !w.isLoading else { return nil }; return w }) else {
++                    log("\(label) FAIL page never loaded (title=\(wv()?.title ?? "nil"))"); return }
++                let web = loaded
++                window.orderFrontRegardless()
++
++                // alert
++                _ = await js(web, "window.__a='pending'; setTimeout(()=>{alert('hello'); window.__a='done'},0); 1")
++                if let s = await sheet(window) {
++                    log("\(label) alert sheet: \(sheetText(s))")
++                    _ = click(s, "OK")
++                    let r = await poll { (await js(web, "window.__a")) as? String == "done" ? true : nil }
++                    log("\(label) alert returned=\(r == true ? "PASS" : "FAIL")")
++                } else { log("\(label) alert FAIL no sheet") }
++
++                // confirm -> OK => true
++                _ = await js(web, "window.__c='pending'; setTimeout(()=>{window.__c = String(confirm('sure?'))},0); 1")
++                if let s = await sheet(window) {
++                    log("\(label) confirm sheet: \(sheetText(s))")
++                    _ = click(s, "OK")
++                    let v2 = await poll { () -> String? in let x = (await js(web, "window.__c")) as? String; return x == "pending" ? nil : x }
++                    log("\(label) confirm value=\(v2 ?? "nil") \(v2 == "true" ? "PASS" : "FAIL")")
++                } else { log("\(label) confirm FAIL no sheet") }
++
++                // prompt -> typed value
++                _ = await js(web, "window.__p='pending'; setTimeout(()=>{window.__p = String(prompt('name?','def'))},0); 1")
++                if let s = await sheet(window) {
++                    let f = fields(s.contentView!)
++                    log("\(label) prompt sheet: \(sheetText(s)) default=\(f.first?.stringValue ?? "nil")")
++                    f.first?.stringValue = "typed-\(label)"
++                    _ = click(s, "OK")
++                    let v = await poll { () -> String? in let x = (await js(web, "window.__p")) as? String; return x == "pending" ? nil : x }
++                    log("\(label) prompt value=\(v ?? "nil") \(v == "typed-\(label)" ? "PASS" : "FAIL")")
++                } else { log("\(label) prompt FAIL no sheet") }
++
++                // microphone -> Deny
++                _ = await js(web, "window.__m='pending'; navigator.mediaDevices ? navigator.mediaDevices.getUserMedia({audio:true}).then(()=>window.__m='granted', e=>window.__m='rejected:'+e.name) : (window.__m='no mediaDevices'); 1")
++                if let s = await sheet(window) {
++                    log("\(label) media sheet: \(sheetText(s))")
++                    _ = click(s, "Deny")
++                    let v = await poll { () -> String? in let x = (await js(web, "window.__m")) as? String; return x == "pending" ? nil : x }
++                    log("\(label) media result=\(v ?? "nil") \(v?.hasPrefix("rejected") == true ? "PASS" : "FAIL")")
++                } else { log("\(label) media FAIL no sheet (__m=\((await js(web, "window.__m")) as? String ?? "nil"))") }
++
++                // file input -> open panel (user gesture via mouseDown/Up on the web view)
++                let p = web.convert(NSPoint(x: 160, y: 40), to: nil)
++                for t in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
++                    if let e = NSEvent.mouseEvent(with: t, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
++                                                  windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1,
++                                                  pressure: t == .leftMouseDown ? 1 : 0) {
++                        if t == .leftMouseDown { web.mouseDown(with: e) } else { web.mouseUp(with: e) }
++                    }
++                    await sleep(0.1)
++                }
++                if let s = await sheet(window) {
++                    log("\(label) file sheet class=\(type(of: s)) isOpenPanel=\(s is NSOpenPanel) PASS")
++                    (s as? NSOpenPanel)?.cancel(nil)
++                    if !(s is NSOpenPanel) { window.endSheet(s) }
++                    let gone = await poll { window.attachedSheet == nil ? true : nil }
++                    log("\(label) file sheet dismissed=\(gone == true)")
++                } else { log("\(label) file FAIL no sheet") }
++
++                // HTTP auth
++                let qd = label == "quickdetour"
++                web.load(URLRequest(url: URL(string: "\(base)/\(qd ? "authqd" : "auth")?\(label)")!))
++                if let s = await sheet(window) {
++                    let f = fields(s.contentView!)
++                    log("\(label) auth sheet: \(sheetText(s)) fields=\(f.count)")
++                    if f.count >= 2 { f[0].stringValue = qd ? "bob" : "alice"; f[1].stringValue = qd ? "pw2" : "s3cret" }
++                    _ = click(s, "Log In")
++                    let t = await poll(10) { web.title == "authed" ? web.title : nil }
++                    log("\(label) auth title=\(web.title ?? "nil") \(t != nil ? "PASS" : "FAIL")")
++                } else { log("\(label) auth FAIL no sheet (title=\(web.title ?? "nil"))") }
++            }
++
++            await sleep(2)
++            NSApp.activate(ignoringOtherApps: true)
++            guard let space = wc.activeSpace, let window = wc.window else { log("no space"); log("done"); return }
++            let tab = TabStore.shared.addTab(in: space, url: URL(string: "\(base)/dialogs")!)
++            wc.selectTab(id: tab.id)
++            await run("browser", window) { wc.selectedTab?.webView }
++
++            if let profile = space.profile {
++                let qd = QuickDetourWindowController.open(profile: profile, sourceSpace: space, url: URL(string: "\(base)/dialogs?qd")!)
++                if let w = qd.window { await run("quickdetour", w) { qd.tab?.webView } } else { log("quickdetour FAIL no window") }
++            } else { log("quickdetour FAIL no profile") }
++            log("done")
++        }
++    }
++}

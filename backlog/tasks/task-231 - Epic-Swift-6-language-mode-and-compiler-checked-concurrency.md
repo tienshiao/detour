@@ -1,9 +1,11 @@
 ---
 id: TASK-231
 title: 'Epic: Swift 6 language mode and compiler-checked concurrency'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-03T00:07:00Z'
+updated_date: '2026-11-03T00:10:00Z'
 labels:
   - concurrency
 dependencies: []

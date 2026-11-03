@@ -288,6 +288,7 @@ delegate order and the `_wantsPopup` values were.[^task-85]
 - [External apps](../features/external-apps.md) — custom-scheme navigations and the confirmation sheet.
 - [Error pages](../features/error-pages.md) — what happens after a failure is classified.
 - [BrowserTab](../architecture/browser-tab.md) — the tab's own delegate versus the window's.
+- [Swift concurrency checking](./swift-concurrency-checking.md) — why a delegate method whose closure types drift from the SDK's is silently never called.
 - [BrowserWindowController](../architecture/browser-window-controller.md) — where both delegates live.
 - [WebKit source lookup](./webkit-source-lookup.md) — reading the WebKit functions named above.
 - [AppKit gotchas](./appkit-gotchas.md) — the companion page for AppKit behaviour.

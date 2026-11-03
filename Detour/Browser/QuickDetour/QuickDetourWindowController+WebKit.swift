@@ -245,7 +245,7 @@ extension QuickDetourWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
-                 completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+                 completionHandler: @escaping @MainActor @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         HTTPAuthenticationPrompt.handle(challenge, in: window, completionHandler: completionHandler)
     }
 }
@@ -303,19 +303,19 @@ extension QuickDetourWindowController: WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
-                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable () -> Void) {
         runScriptDialog(in: webView, from: frame, message: message) { _ in completionHandler() }
     }
 
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
-                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable (Bool) -> Void) {
         runScriptDialog(in: webView, from: frame, message: message, showCancel: true) {
             completionHandler($0 == .alertFirstButtonReturn)
         }
     }
 
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?,
-                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable (String?) -> Void) {
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = defaultText ?? ""
         runScriptDialog(in: webView, from: frame, message: prompt, showCancel: true, accessoryView: field) {
@@ -324,7 +324,7 @@ extension QuickDetourWindowController: WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
-                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable ([URL]?) -> Void) {
         guard let window else { return completionHandler(nil) }
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = parameters.allowsMultipleSelection
@@ -334,7 +334,7 @@ extension QuickDetourWindowController: WKUIDelegate {
 
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                  initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
-                 decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+                 decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) {
         guard let window else { return decisionHandler(.deny) }
         let what: String
         switch type {

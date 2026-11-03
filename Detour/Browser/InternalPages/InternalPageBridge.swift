@@ -63,7 +63,7 @@ final class InternalPageBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     func userContentController(_ userContentController: WKUserContentController,
                                didReceive message: WKScriptMessage,
-                               replyHandler: @escaping (Any?, String?) -> Void) {
+                               replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let frame = message.frameInfo
         guard message.world == Self.contentWorld,
               let webView = message.webView,

@@ -25,6 +25,12 @@ class SettingsPaneViewController: NSViewController {
     /// Called when the pane's natural height may have changed.
     var onContentHeightChange: (() -> Void)?
 
+    /// Explicitly nonisolated, as NSViewController's is. With the module's
+    /// default main-actor isolation the implicit deinit here would be inferred
+    /// main-actor isolated, and a subclass's own (nonisolated) deinit could no
+    /// longer override it.
+    nonisolated deinit {}
+
     /// The text shown above the scroll area, or nil for none.
     var paneDescription: String? { nil }
 
