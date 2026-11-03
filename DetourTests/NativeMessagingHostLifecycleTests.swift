@@ -1,3 +1,4 @@
+import Synchronization
 import XCTest
 @testable import Detour
 
@@ -32,10 +33,12 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
     }
 
     @MainActor private func connect(_ behavior: FakeNativeMessagingHost.Behavior,
-                                    endTiming: NativeHostEnding.Timing = .init()) throws {
+                                    endTiming: NativeHostEnding.Timing = .init(),
+                                    termination: NativeMessagingHost.Termination = .init()) throws {
         let fixture = try FakeNativeMessagingHost(allowing: [Self.extensionID], behavior: behavior)
         self.fixture = fixture
-        let host = NativeMessagingHost(hostName: fixture.name, extensionID: Self.extensionID, endTiming: endTiming)
+        let host = NativeMessagingHost(hostName: fixture.name, extensionID: Self.extensionID,
+                                       endTiming: endTiming, termination: termination)
         host.onMessage = { [weak self] in self?.events.append("message:\($0["n"] as? Int ?? -1)") }
         host.onDisconnect = { [weak self] in self?.events.append("disconnect:\($0 ?? "nil")") }
         self.host = host
@@ -153,6 +156,84 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
         XCTAssertNil(released, "the read loop must not keep the host alive while it waits on a silent pipe")
         try await waitUntil("the host process to be terminated", timeout: 5) { fixture.processCount() == 0 }
         XCTAssertEqual(events, ["message:1"], "letting go is not the host going away: no onDisconnect")
+    }
+
+    // MARK: - TASK-241: a host that ignores SIGTERM is killed after the grace period
+
+    /// The pids `Termination.onKill` reported, from whatever thread it ran on.
+    nonisolated private final class KillLog: Sendable {
+        private let pids = Mutex<[pid_t]>([])
+        func append(_ pid: pid_t) { pids.withLock { $0.append(pid) } }
+        var all: [pid_t] { pids.withLock { $0 } }
+    }
+
+    private let killed = KillLog()
+
+    @MainActor private func recordingKills(grace: TimeInterval) -> NativeMessagingHost.Termination {
+        .init(grace: grace) { [killed] pid in killed.append(pid) }
+    }
+
+    @MainActor private func runningHostPID() async throws -> pid_t {
+        let fixture = try XCTUnwrap(fixture)
+        try await waitUntil("the host process to be running") { fixture.processCount() == 1 }
+        return try XCTUnwrap(fixture.processIDs().first)
+    }
+
+    /// `disconnect()` sends SIGTERM, which this host ignores: it is still
+    /// running partway through the grace period, and gone, by SIGKILL, soon
+    /// after it. The check comes a quarter of the way in, leaving most of the
+    /// grace period as margin for a loaded machine's late wake-up.
+    @MainActor func testAHostIgnoringSIGTERMIsKilledAfterTheGracePeriod() async throws {
+        try connect(.silentIgnoringSIGTERM, termination: recordingKills(grace: 1))
+        let fixture = try XCTUnwrap(fixture)
+        let pid = try await runningHostPID()
+        host?.disconnect()
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertEqual(fixture.processCount(), 1, "SIGTERM alone does not end this host")
+        XCTAssertEqual(killed.all, [])
+        // Both: `onKill` runs just after the `kill`, on another thread, so
+        // the process can be gone a moment before it is recorded.
+        try await waitUntil("the host process to be killed", timeout: 5) {
+            !killed.all.isEmpty && fixture.processCount() == 0
+        }
+        XCTAssertEqual(killed.all, [pid])
+    }
+
+    /// Releasing the host runs the teardown from `deinit`: the grace period's
+    /// wait does not keep the host alive, and still kills the process.
+    @MainActor func testReleasingAHostIgnoringSIGTERMKillsItsProcess() async throws {
+        try connect(.silentIgnoringSIGTERM, termination: recordingKills(grace: 0.3))
+        let fixture = try XCTUnwrap(fixture)
+        let pid = try await runningHostPID()
+        weak var released = host
+        host = nil
+        XCTAssertNil(released, "the SIGKILL wait must not keep the host alive")
+        try await waitUntil("the host process to be killed", timeout: 5) {
+            !killed.all.isEmpty && fixture.processCount() == 0
+        }
+        XCTAssertEqual(killed.all, [pid])
+    }
+
+    /// A host that exits on SIGTERM, as 1Password's does, is never sent
+    /// SIGKILL, even once the grace period is long over.
+    @MainActor func testAHostThatExitsOnSIGTERMIsNotKilled() async throws {
+        try connect(.silent, termination: recordingKills(grace: 0.3))
+        let fixture = try XCTUnwrap(fixture)
+        _ = try await runningHostPID()
+        host?.disconnect()
+        try await waitUntil("the host process to exit", timeout: 5) { fixture.processCount() == 0 }
+        try await Task.sleep(nanoseconds: 600_000_000)
+        XCTAssertEqual(killed.all, [])
+    }
+
+    /// A host that has already exited when the teardown runs (it answered and
+    /// went away) gets no signal at all.
+    @MainActor func testAHostThatAlreadyExitedIsNotKilled() async throws {
+        try connect(.answersThenExits(try frame(["n": 1]), status: 0), termination: recordingKills(grace: 0.1))
+        try host?.sendMessage(["request": 1])
+        try await waitForDisconnect()
+        try await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertEqual(killed.all, [])
     }
 
     // MARK: - The join, without a process

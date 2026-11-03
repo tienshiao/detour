@@ -263,6 +263,9 @@ final class FakeNativeMessagingHost {
         /// `exec`s `sleep <token>` with stdout still open: a host that stays
         /// alive and silent after answering.
         case answersThenStaysAlive(Data)
+        /// As `.silent`, but SIGTERM is ignored (`trap '' TERM`, which the
+        /// `exec`'d sleep inherits): only SIGKILL ends it (TASK-241).
+        case silentIgnoringSIGTERM
     }
 
     /// The host name an extension passes to `connectNative` / `sendNativeMessage`.
@@ -305,6 +308,8 @@ final class FakeNativeMessagingHost {
             let outputFile = dir.appendingPathComponent("stdout.bin")
             try output.write(to: outputFile)
             body = "/usr/bin/head -c 1 >/dev/null\n/bin/cat '\(outputFile.path)'\nexec sleep \(sleepToken)\n"
+        case .silentIgnoringSIGTERM:
+            body = "trap '' TERM\nexec sleep \(sleepToken)\n"
         }
         try ("#!/bin/sh\n" + body).write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
@@ -341,7 +346,7 @@ final class FakeNativeMessagingHost {
         } else {
             unsetenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR")
         }
-        runTool("/usr/bin/pkill", ["-f", "sleep \(sleepToken)"])
+        runTool("/usr/bin/pkill", ["-KILL", "-f", "sleep \(sleepToken)"])
         try? FileManager.default.removeItem(at: dir)
     }
 }

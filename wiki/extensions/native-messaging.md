@@ -19,6 +19,12 @@ sources:
   - id: task-233
     resource: backlog:TASK-233
     title: A quiet host process outlives the owner that released it
+  - id: task-241
+    resource: backlog:TASK-241
+    title: "Native messaging: a host that ignores SIGTERM is never killed"
+  - id: chromium-kill
+    resource: https://github.com/chromium/chromium/blob/1a95d4d76ab47c2ff9b914eaa98d3f35b7f1fce1/base/process/kill_mac.cc
+    title: Chromium base/process/kill_mac.cc (EnsureProcessTerminated, kWaitBeforeKillSeconds = 2)
   - id: task-231-8
     resource: backlog:TASK-231.8
     title: Memory safety audit of raw-pointer code and untrusted-byte parsing
@@ -221,6 +227,26 @@ keeps its host in `liveNativeHosts` and in the port's handlers for as long as
 the port is open, so the keep-alive's host is never released early; the port
 disconnecting, or a context teardown, calls `disconnect()` explicitly.
 
+### Ending the process
+
+The teardown closes the host's stdin and sends SIGTERM. A host still
+running `Termination.grace` (2 s) later is sent SIGKILL; before TASK-241 a
+host that ignored or blocked SIGTERM stayed running as a child of Detour
+after its port or request was gone.[^task-241] The wait runs on a global
+queue and holds the `Process`, never the host, so a teardown from `deinit`
+still escalates and the host is not kept alive. It checks
+`Process.isRunning` first: that goes false when Foundation reaps the child,
+and until the reap the pid is a zombie's and cannot be reused, so a host
+that exited on SIGTERM (1Password's does) is sent nothing more. A host that
+had already exited when the teardown ran gets no signal at all.
+
+Chrome does it differently on macOS: `~NativeMessageProcessHost` closes the
+pipes and posts `base::EnsureProcessTerminated`, which waits up to
+`kWaitBeforeKillSeconds = 2` for the exit (kqueue `NOTE_EXIT`) and then
+sends SIGKILL; it sends no SIGTERM. The Linux path (`kill_posix.cc`,
+`BackgroundReaper`) also waits 2 s and then kills.[^chromium-kill] Detour
+keeps its SIGTERM first, so a host that exits on it is unaffected.
+
 # Logging
 
 Native hosts exchange secrets. `NativeMessagingHost` used to log 500-byte
@@ -229,7 +255,7 @@ material into the unified log.[^plan] The rules since TASK-1:
 
 | What | Level | Content |
 |---|---|---|
-| `NM SEND`, `NM RECV`, `NM EOF`, `NM EXIT`, `NM WRITE FAILED` (prefix `[1PW-DEBUG]`, category `native-messaging`) | notice (persisted) | Host name and byte count only |
+| `NM SEND`, `NM RECV`, `NM EOF`, `NM EXIT`, `NM WRITE FAILED`, `NM KILL` (prefix `[1PW-DEBUG]`, category `native-messaging`) | notice (persisted) | Host name and byte count only |
 | `Connected to native host …` | info (not persisted) | Host name, binary path, extension id |
 | Host stderr | debug, `.private` | Host-controlled text; never persisted |
 | `connectNative from <ext> in profile <name> to '<host>': connected / refused: … / failed: …` (category `extension-manager`) | notice for a connect, error otherwise | Rate-limited |
@@ -311,7 +337,12 @@ evidence for. There is no level between notice and error to use:
   or stay alive (`answersThenStaysAlive`). The reply-then-exit leg runs 50
   times with a 256 KB reply, the size that lost the race before the fix (a
   small reply never did in 25 runs); `endTiming` shortens the waits. The
-  join's transitions are tested without a process.[^lifecycle-tests]
+  join's transitions are tested without a process.[^lifecycle-tests] A host
+  that ignores SIGTERM (`silentIgnoringSIGTERM`, `trap '' TERM` before
+  `exec sleep`) is still running partway through a shortened
+  `Termination.grace` and killed after it, by `disconnect()` and by release;
+  `Termination.onKill` shows a `.silent` host (which exits on SIGTERM) and a
+  host that already exited are never sent SIGKILL.
   `NativeMessagingEnforcementTests` repeats the reply-then-exit host through
   WebKit's `sendNativeMessage` (15 calls) and `connectNative` (8 ports).
   Releasing a live, silent host ends its process, at the host level and end
@@ -338,3 +369,5 @@ evidence for. There is no level between notice and error to use:
 [^task-233]: A quiet host process outlives the owner that released it
 [^ending]: NativeHostEnding.swift (the join of end of stream and process exit)
 [^lifecycle-tests]: NativeMessagingHostLifecycleTests.swift
+[^task-241]: Native messaging: a host that ignores SIGTERM is never killed
+[^chromium-kill]: Chromium base/process/kill_mac.cc (EnsureProcessTerminated, kWaitBeforeKillSeconds = 2)

@@ -95,16 +95,37 @@ class NativeMessagingHost {
         }
     }
 
+    /// How the teardown ends a host process that is still running: SIGTERM
+    /// (and stdin closed), then SIGKILL if it is still running `grace`
+    /// seconds later (TASK-241). Chrome closes the host's pipes and kills it
+    /// after 2 s (`base::EnsureProcessTerminated`); the SIGTERM first is
+    /// Detour's, and is what 1Password's host exits on.
+    struct Termination: Sendable {
+        var grace: TimeInterval
+        /// For tests: called off the main actor just after a SIGKILL, with
+        /// the pid it went to.
+        var onKill: (@Sendable (pid_t) -> Void)?
+
+        init(grace: TimeInterval = 2, onKill: (@Sendable (pid_t) -> Void)? = nil) {
+            self.grace = grace
+            self.onKill = onKill
+        }
+    }
+
     private let endTiming: NativeHostEnding.Timing
+    private let termination: Termination
     private var connection: Connection?
 
     var isConnected: Bool { connection?.isOpen ?? false }
 
-    /// `endTiming` is for tests; see `NativeHostEnding.Timing`.
-    init(hostName: String, extensionID: String, endTiming: NativeHostEnding.Timing = .init()) {
+    /// `endTiming` and `termination` are for tests; see
+    /// `NativeHostEnding.Timing` and `Termination`.
+    init(hostName: String, extensionID: String, endTiming: NativeHostEnding.Timing = .init(),
+         termination: Termination = .init()) {
         self.hostName = hostName
         self.extensionID = extensionID
         self.endTiming = endTiming
+        self.termination = termination
     }
 
     /// Isolated: the process and pipes are main-actor state. Letting go of
@@ -260,11 +281,39 @@ class NativeMessagingHost {
     private func teardownProcess() {
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
         stdinPipe?.fileHandleForWriting.closeFile()
-        process?.terminate()
+        if let process, process.isRunning {
+            process.terminate()
+            Self.killIfStillRunning(process, after: termination, hostName: hostName)
+        }
         process = nil
         stdinPipe = nil
         stdoutPipe = nil
         stderrPipe = nil
+    }
+
+    /// Sends SIGKILL to `process` if it is still running once the grace
+    /// period is over: a host that ignores or blocks SIGTERM would otherwise
+    /// outlive its port as a child of Detour. The wait holds the `Process`,
+    /// never the host, so it runs after a teardown from `deinit` and does not
+    /// keep the host alive. `isRunning` goes false when Foundation reaps the
+    /// child, and until the reap the pid cannot be reused (an exited child is
+    /// a zombie that keeps it), so a host that exited on SIGTERM is never sent
+    /// anything. Only a reap landing between the check and the `kill` (both
+    /// microseconds apart) and the pid being reused within it could misfire.
+    nonisolated private static func killIfStillRunning(
+        _ process: Process, after termination: Termination, hostName: String
+    ) {
+        let onKill = termination.onKill
+        DispatchQueue.global().asyncAfter(deadline: .now() + termination.grace) {
+            guard process.isRunning else { return }
+            let pid = process.processIdentifier
+            log.notice("[1PW-DEBUG] NM KILL [\(hostName, privacy: .public)] still running \(termination.grace)s after SIGTERM; sending SIGKILL")
+            if Darwin.kill(pid, SIGKILL) != 0 {
+                let code = errno
+                log.error("[1PW-DEBUG] NM KILL [\(hostName, privacy: .public)] failed: errno \(code)")
+            }
+            onKill?(pid)
+        }
     }
 
     /// Feeds one end-of-connection signal into `connection`'s join and acts
