@@ -1298,6 +1298,115 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertEqual(anchors().requested, 0, "a runtime port is the background's own to notice")
     }
 
+    /// A measurement of WebKit, pinned (TASK-256): a `runtime.connect` port
+    /// whose own context calls `disconnect()` gets its own `onDisconnect`,
+    /// from an extension page and from the worker, where Chrome fires it only
+    /// at the other end. It runs inside the `disconnect()` call, in the web
+    /// process, so it is WebKit's (fixed upstream in 325256@main, Oct 30
+    /// 2026), and Detour's native code plays no part in a runtime port. The
+    /// keep-alive's port watch relies on it to see the background close a port
+    /// itself: when a WebKit with the fix ships this test fails, and the watch
+    /// needs to wrap `port.disconnect` (see the native-port-keep-alive page).
+    @MainActor func testWebKitFiresTheCallersOwnOnDisconnectInsideRuntimePortDisconnect() async throws {
+        let ownDisconnectJS = """
+            const seen = { during: 0, after: 0 };
+            let inside = true;
+            port.onDisconnect.addListener(() => { if (inside) seen.during += 1; else seen.after += 1; });
+            port.disconnect();
+            inside = false;
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            """
+        let ext = try await makeKeepAliveTestExtension(extraBackgroundJS: """
+
+        globalThis.__task256Ports = [];
+        globalThis.__task256OtherEnd = 0;
+        chrome.runtime.onConnect.addListener((port) => {
+            if (port.name !== 'task256-page') return;
+            globalThis.__task256Ports.push(port);
+            port.onDisconnect.addListener(() => { globalThis.__task256OtherEnd += 1; });
+        });
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (!message) return false;
+            if (message.type === 'task256OtherEnd') {
+                sendResponse({ connected: globalThis.__task256Ports.length,
+                               otherEnd: globalThis.__task256OtherEnd });
+                return false;
+            }
+            if (message.type !== 'task256OwnDisconnect') return false;
+            (async () => {
+                const port = chrome.runtime.connect({ name: 'task256-worker' });
+                // Disconnect only once the page holds its end and has said so.
+                await new Promise((resolve) => {
+                    const timer = setTimeout(resolve, 5000);
+                    port.onMessage.addListener(() => { clearTimeout(timer); resolve(); });
+                });
+                \(ownDisconnectJS)
+                sendResponse(seen);
+            })();
+            return true;
+        });
+        """)
+        let profile = makeProfile("Own Disconnect Runtime Port Profile")
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let page = try await makeExtensionWebView(for: context)
+        // A round trip first, so the worker has started and holds its listeners.
+        _ = try await workerKeepAliveStatus(from: page)
+
+        // The page is the caller; the worker is the other end. Disconnect only
+        // once the worker holds its end, so the end measured is the page's own.
+        // On a warm test host WebKit can refuse a connect made just after the
+        // worker's first round trip ("No runtime.onConnect listeners found"):
+        // its listener registry lags the worker. Such a port is reopened.
+        let openPagePort = """
+            globalThis.__task256Port = chrome.runtime.connect({ name: 'task256-page' });
+            globalThis.__task256EarlyEnd = false;
+            globalThis.__task256Port.onDisconnect.addListener(() => { globalThis.__task256EarlyEnd = true; });
+            return true;
+            """
+        _ = try await page.callAsyncJavaScript(openPagePort, arguments: [:], contentWorld: .page)
+        func workerEnd() async throws -> [String: Any] {
+            let answer = try await askWorker(from: page, message: ["type": "task256OtherEnd"])
+            return answer["reply"] as? [String: Any] ?? [:]
+        }
+        try await waitUntil("the worker to hold the page's port") {
+            let refused = try await page.callAsyncJavaScript("return globalThis.__task256EarlyEnd;",
+                                                             arguments: [:], contentWorld: .page)
+            if refused as? Bool == true {
+                _ = try await page.callAsyncJavaScript(openPagePort, arguments: [:], contentWorld: .page)
+                return false
+            }
+            return try await workerEnd()["connected"] as? Int == 1
+        }
+        let pageRaw = try await page.callAsyncJavaScript("""
+            const port = globalThis.__task256Port;
+            \(ownDisconnectJS)
+            return seen;
+            """, arguments: [:], contentWorld: .page)
+        let fromPage = try XCTUnwrap(pageRaw as? [String: Any])
+        XCTAssertEqual(fromPage["during"] as? Int, 1,
+                       "WebKit runs the page's own onDisconnect inside disconnect(): \(fromPage)")
+        XCTAssertEqual(fromPage["after"] as? Int, 0, "\(fromPage)")
+        try await waitUntil("the worker's end to hear the disconnect") {
+            try await workerEnd()["otherEnd"] as? Int == 1
+        }
+
+        // The worker is the caller; the page is the other end.
+        _ = try await page.callAsyncJavaScript("""
+            globalThis.__task256PagePorts = [];
+            chrome.runtime.onConnect.addListener((port) => {
+                globalThis.__task256PagePorts.push(port);
+                port.postMessage('held');
+            });
+            return true;
+            """, arguments: [:], contentWorld: .page)
+        let fromWorker = try await askWorker(from: page, message: ["type": "task256OwnDisconnect"])
+        let workerSeen = try XCTUnwrap(fromWorker["reply"] as? [String: Any], "\(fromWorker)")
+        XCTAssertEqual(workerSeen["during"] as? Int, 1,
+                       "WebKit runs the worker's own onDisconnect inside disconnect(): \(workerSeen)")
+        XCTAssertEqual(workerSeen["after"] as? Int, 0, "\(workerSeen)")
+    }
+
     /// NEGATIVE: the polyfill adds no onConnect listener of its own, so a worker
     /// with none still refuses a connect as WebKit does ("no runtime.onConnect
     /// listeners found"), and the opener's port ends.

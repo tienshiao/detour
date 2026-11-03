@@ -167,6 +167,13 @@ API Explorer details that show up in logs and are easy to misread:
   this were wrong.[^task-4]
 - **A message sent while the worker sleeps can be silently lost** in a test
   that does not wait for the worker.[^task-4]
+- **A worker's first answer does not mean WebKit has its `onConnect`
+  listener.** On a warm test host a page's `runtime.connect` made just after
+  the worker answered a `sendMessage` round trip was refused with "No
+  runtime.onConnect listeners found" (alone the same test passed). Wait for
+  the worker to report it holds the port, and reopen a port refused this way
+  (`testWebKitFiresTheCallersOwnOnDisconnectInsideRuntimePortDisconnect`,
+  TASK-256).
 - **WebKit hides ungranted API namespaces.** A hand-loaded or hand-seeded
   extension with no permission grants sees `chrome.alarms` (and others) as
   undefined; a top-level access throws and the background fails to load with

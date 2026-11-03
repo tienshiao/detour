@@ -651,6 +651,45 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
         XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 0)
     }
 
+    /// A measurement of WebKit, pinned (TASK-256): a page that calls
+    /// `disconnect()` on its own `connectNative` port gets that port's
+    /// `onDisconnect`, where Chrome fires it only at the other end. It runs
+    /// inside the `disconnect()` call, in the web process, before anything
+    /// reaches Detour (its port handlers run in the UI process, over IPC), so
+    /// it is WebKit's `WebExtensionAPIPort::disconnect()`, fixed upstream in
+    /// 325256@main (Oct 30 2026). When a WebKit with that fix ships this test
+    /// fails: the keep-alive's port watch relies on the self-fired event, see
+    /// the wiki's native-port-keep-alive page.
+    @MainActor func testWebKitFiresAPagesOwnOnDisconnectInsideConnectNativeDisconnect() async throws {
+        let ext = try await makeExtension()
+        let reply = try JSONSerialization.data(withJSONObject: ["pong": 1])
+        try installFakeHost(allowing: [ext.id], behavior: .answersThenStaysAlive(NativeMessagingHost.encodeMessage(reply)))
+        let loaded = try await load(ext, profileName: "NM Own Disconnect Profile")
+
+        let result = try await evalJSON("""
+            const port = chrome.runtime.connectNative(host);
+            const answered = await new Promise((resolve) => {
+                const timer = setTimeout(() => resolve(false), 5000);
+                port.onMessage.addListener(() => { clearTimeout(timer); resolve(true); });
+                port.postMessage({ ping: 1 });
+            });
+            const seen = { answered, during: 0, after: 0 };
+            let inside = true;
+            port.onDisconnect.addListener(() => { if (inside) seen.during += 1; else seen.after += 1; });
+            port.disconnect();
+            inside = false;
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            return seen;
+            """, in: loaded.webView, arguments: ["host": Self.hostName])
+        XCTAssertEqual(result["answered"] as? Bool, true, "\(result)")
+        XCTAssertEqual(result["during"] as? Int, 1,
+                       "WebKit runs the caller's own onDisconnect inside disconnect(): \(result)")
+        XCTAssertEqual(result["after"] as? Int, 0, "and nothing fires it again later: \(result)")
+        try await waitUntil("the disconnected port's host process to be terminated", timeout: 5) {
+            self.fakeHostProcessCount() == 0
+        }
+    }
+
     // MARK: - Messages that are not objects (TASK-242)
 
     /// Values that are not JSON objects, as JSON text for the page to parse.

@@ -58,6 +58,9 @@ sources:
   - id: task-236
     resource: backlog:TASK-236
     title: testAnArmedWorkerHoldsOneAnchorAndADisarmStopsReanchoring is flaky under Thread Sanitizer
+  - id: task-256
+    resource: backlog:TASK-256
+    title: "Extensions: a port's onDisconnect fires in the context that called port.disconnect()"
 ---
 
 # Role
@@ -182,8 +185,14 @@ every listener a port of its own and counts one open port per listener, so
 it added a port nobody held, which kept the channel open after the
 extension disconnected its own and was collected unpredictably (measured: the
 extension's listener saw the end, Detour's never did). Shadowing
-`port.disconnect` was unnecessary: WebKit runs a port's own `onDisconnect`
-listeners when the page closes it. A faster ping instead of detection: a wipe
+`port.disconnect` was unnecessary: shipped WebKit runs a port's own
+`onDisconnect` listeners inside the page's `disconnect()` call (a WebKit bug:
+Chrome fires it only at the other end). WebKit fixed it upstream on
+2026-10-30 (325256@main); once that ships, a port the background closes
+itself goes unseen until the next ping, and the watch has to wrap
+`disconnect` on each port it watches. Two tests pin the current behaviour
+and fail on a WebKit with the fix (see
+[native messaging](./native-messaging.md#gotchas)).[^task-256] A faster ping instead of detection: a wipe
 just before a tick would still unload the page, a chance of the ping gap
 over 60 s per close.
 
@@ -390,3 +399,4 @@ in the 2026-09-21 run.[^task-21]
 [^task-141]: Does removePort drop a page's whole port entry when one port closes
 [^task-142]: The native-port keep-alive is defeated when any other port of the background closes
 [^task-236]: testAnArmedWorkerHoldsOneAnchorAndADisarmStopsReanchoring is flaky under Thread Sanitizer
+[^task-256]: Extensions: a port's onDisconnect fires in the context that called port.disconnect()

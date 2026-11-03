@@ -31,6 +31,12 @@ sources:
   - id: task-243
     resource: backlog:TASK-243
     title: "Native messaging: quitting Detour may leave live port hosts running"
+  - id: task-256
+    resource: backlog:TASK-256
+    title: "Extensions: a port's onDisconnect fires in the context that called port.disconnect()"
+  - id: webkit-325256
+    resource: https://github.com/WebKit/WebKit/commit/c78afbcefdb9
+    title: "WebKit 325256@main: Port.disconnect() fires onDisconnect on the port that called it"
   - id: chromium-kill
     resource: https://github.com/chromium/chromium/blob/1a95d4d76ab47c2ff9b914eaa98d3f35b7f1fce1/base/process/kill_mac.cc
     title: Chromium base/process/kill_mac.cc (EnsureProcessTerminated, kWaitBeforeKillSeconds = 2)
@@ -353,6 +359,25 @@ evidence for. There is no level between notice and error to use:
 
 # Gotchas
 
+- **A page's own `port.disconnect()` fires its own `onDisconnect`.** Chrome
+  fires `onDisconnect` only at the other end. Shipped WebKit (macOS 26.7)
+  runs the caller's listeners synchronously inside the `disconnect()` call,
+  for `connectNative` ports and `runtime.connect` ports alike, from a page
+  and from a worker, with no `port.error`. Nothing of Detour's is involved:
+  the call never leaves the web process before the listeners run, and
+  Detour's `disconnectHandler` (release the host, `host.disconnect()`) calls
+  nothing back on the port. The cause is `WebExtensionAPIPort::disconnect()`
+  calling `fireDisconnectEventIfNeeded()`; WebKit fixed it upstream on
+  2026-10-30 (325256@main), not yet in a shipped build.[^webkit-325256] An
+  extension that reconnects in `onDisconnect` therefore reconnects after its
+  own deliberate disconnect too, starting a fresh host. No workaround:
+  `connectNative` cannot be wrapped (see
+  [chrome.runtime patching](./chrome-runtime-patching.md)), and the
+  keep-alive's port watch relies on the self-fired event (see
+  [Native port keep-alive](./native-port-keep-alive.md#the-anchor-task-142)).
+  `testWebKitFiresAPagesOwnOnDisconnectInsideConnectNativeDisconnect` and
+  `testWebKitFiresTheCallersOwnOnDisconnectInsideRuntimePortDisconnect` pin
+  it, so a WebKit that ships the fix fails them.[^task-256]
 - **A host's exit reason never reaches the extension.** WebKit does not
   deliver a native port's disconnect error to an established port — neither
   `port.error` nor `runtime.lastError` (measured 2026-09-13).[^manager] The
@@ -489,3 +514,5 @@ evidence for. There is no level between notice and error to use:
 [^chromium-kill]: Chromium base/process/kill_mac.cc (EnsureProcessTerminated, kWaitBeforeKillSeconds = 2)
 [^chromium-runtime]: Chromium extensions/common/api/runtime.json and extensions/renderer/bindings/argument_spec.cc
 [^task-242]: A one-shot sendNativeMessage with a non-object message leaks the host and never settles
+[^task-256]: Extensions: a port's onDisconnect fires in the context that called port.disconnect()
+[^webkit-325256]: WebKit 325256@main: Port.disconnect() fires onDisconnect on the port that called it
