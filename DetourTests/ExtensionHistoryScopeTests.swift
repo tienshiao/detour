@@ -81,7 +81,7 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
     /// in the promise form or the callback form and reports how it settled.
     /// `message.query` travels as JSON; a message with no `query` key calls
     /// `search(undefined)`.
-    @MainActor private static let workerJS = ExtensionAPIPolyfill.polyfillJS + """
+    @MainActor private static let workerJS = ExtensionAPIPolyfill.polyfillJS + "\n" + gateJS + """
 
     const unhandled = [];
     self.addEventListener('unhandledrejection', (event) => {
@@ -90,6 +90,12 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!message) { return false; }
         if (message.type === 'ping') { sendResponse({ type: 'pong' }); return true; }
+        if (message.type === 'namespaceGate') {
+            namespaceGate().then(
+                (outcome) => sendResponse(outcome),
+                (e) => sendResponse({ error: String(e && e.message ? e.message : e) }));
+            return true;
+        }
         if (message.type === 'historyPromise') {
             let promise;
             try {
@@ -117,6 +123,33 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         }
         return false;
     });
+    """
+
+    /// What an extension can see of `chrome.history` and `chrome.management`,
+    /// and how requests made past the namespaces — straight to the polyfill's
+    /// transport — are answered, for the permission gates (TASK-251). Run the
+    /// same way from the page and the worker.
+    private static let gateJS = """
+    async function namespaceGate() {
+        const settle = async (promise) => {
+            try { return { resolved: await promise }; }
+            catch (e) { return { rejected: String(e && e.message ? e.message : e) }; }
+        };
+        const out = {
+            history: typeof chrome.history,
+            browserHistory: typeof browser === 'undefined' ? 'no browser' : typeof browser.history,
+            historyDiag: __detourPolyfillDiag.apis.history,
+            management: typeof chrome.management,
+            browserManagement: typeof browser === 'undefined' ? 'no browser' : typeof browser.management,
+            managementMembers: chrome.management ? Object.keys(chrome.management).sort() : null
+        };
+        out.getSelf = chrome.management && chrome.management.getSelf
+            ? await settle(chrome.management.getSelf().then((info) => info.id))
+            : null;
+        out.directSearch = await settle(globalThis.__detourPolyfillRequest('history.search', { query: { text: '' } }));
+        out.directGetAll = await settle(globalThis.__detourPolyfillRequest('management.getAll', {}));
+        return out;
+    }
     """
 
     /// An MV3 extension with a module service worker and one page, registered
@@ -814,8 +847,10 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
     }
 
     /// AC #3, permission gating: an extension that does not declare `history`
-    /// is refused from both transports and in both forms, in a profile whose
-    /// history has something to leak. The positive half is the test above.
+    /// has no `chrome.history` in its page or its worker (TASK-251), and a
+    /// request made past the namespace is refused from both transports, in a
+    /// profile whose history has something to leak. The positive half is the
+    /// test above, and `testDeclaredPermissionsInstallBothNamespaces`.
     @MainActor func testAnExtensionWithoutTheHistoryPermissionIsRefusedFromBothTransports() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["storage"])
@@ -823,14 +858,17 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         try seedVisit(db, url: Self.onlyA, title: "Only A notes", space: a.space.id.uuidString,
                       visitTime: Self.wholeSecondBase() - 100)
         let page = try await loadPage(ext, in: a.profile)
-        let refusal = "history permission not declared"
 
-        assertRejected(try await pagePromise("{ text: '' }", in: page), containing: refusal, "page promise")
-        assertCallbackFailed(try await pageCallback("{ text: '' }", in: page), containing: refusal, "page callback")
-        assertRejected(try await workerOutcome("historyPromise", query: ["text": ""], via: page),
-                       containing: refusal, "worker promise")
-        assertCallbackFailed(try await workerOutcome("historyCallback", query: ["text": ""], via: page),
-                             containing: refusal, "worker callback")
+        for transport in [GateTransport.page, .worker] {
+            let outcome = try await gate(via: transport, in: page)
+            XCTAssertEqual(outcome["history"] as? String, "undefined", "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["browserHistory"] as? String, "undefined", "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["historyDiag"] as? String, "absent", "\(transport): \(outcome)")
+            let direct = try XCTUnwrap(outcome["directSearch"] as? [String: Any], "\(transport): \(outcome)")
+            XCTAssertNil(direct["resolved"], "\(transport): the request must be refused: \(outcome)")
+            XCTAssertTrue(carries(direct["rejected"] as? String ?? "", "history permission not declared"),
+                          "\(transport): \(outcome)")
+        }
     }
 
     /// AC #3, bad arguments: rejected in the promise form, `runtime.lastError`
@@ -899,5 +937,76 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         let worker = try await workerOutcome("historyPromise", query: ["text": ""], via: page)
         XCTAssertEqual(worker["settled"] as? String, "resolved", "worker promise: \(worker)")
         XCTAssertEqual(try items(worker["value"]), [])
+    }
+
+    // MARK: - 4. Namespace gates (TASK-251)
+
+    private enum GateTransport { case page, worker }
+
+    /// `namespaceGate` from `transport`.
+    @MainActor private func gate(via transport: GateTransport, in page: WKWebView,
+                                 file: StaticString = #filePath, line: UInt = #line) async throws -> [String: Any] {
+        let object: [String: Any]
+        switch transport {
+        case .page:
+            object = try await evalObject(Self.gateJS + "\nreturn JSON.stringify(await namespaceGate());", in: page)
+        case .worker:
+            object = try await workerOutcome("namespaceGate", query: nil, via: page, file: file, line: line)
+        }
+        XCTAssertNil(object["error"], "\(transport): \(object)", file: file, line: line)
+        return object
+    }
+
+    /// NEGATIVE: without the `management` permission the page and the worker
+    /// see a `chrome.management` holding `getSelf` alone — the one
+    /// permission-free method (Chromium's `_api_features.json`) Detour
+    /// implements — and it answers; a `management.getAll` made past the
+    /// namespace is refused. With neither permission there is no history
+    /// namespace either, which also shows WebKit vends neither of its own.
+    @MainActor func testWithoutTheManagementPermissionOnlyGetSelfIsThere() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["storage"])
+        let a = try makeProfile("Management Gate Denied", database: db)
+        let page = try await loadPage(ext, in: a.profile)
+
+        for transport in [GateTransport.page, .worker] {
+            let outcome = try await gate(via: transport, in: page)
+            XCTAssertEqual(outcome["management"] as? String, "object", "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["browserManagement"] as? String, "object", "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["managementMembers"] as? [String], ["getSelf"], "\(transport): \(outcome)")
+            XCTAssertEqual((outcome["getSelf"] as? [String: Any])?["resolved"] as? String, ext.id,
+                           "\(transport): \(outcome)")
+            let direct = try XCTUnwrap(outcome["directGetAll"] as? [String: Any], "\(transport): \(outcome)")
+            XCTAssertNil(direct["resolved"], "\(transport): the request must be refused: \(outcome)")
+            XCTAssertTrue(carries(direct["rejected"] as? String ?? "", "management permission not declared"),
+                          "\(transport): \(outcome)")
+        }
+    }
+
+    /// POSITIVE: an extension that declares `history` and `management` gets
+    /// both whole namespaces under both names in its page and its worker, and
+    /// requests past them are served.
+    @MainActor func testDeclaredPermissionsInstallBothNamespaces() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["history", "management"])
+        let a = try makeProfile("Namespace Gate Allowed", database: db)
+        let page = try await loadPage(ext, in: a.profile)
+
+        for transport in [GateTransport.page, .worker] {
+            let outcome = try await gate(via: transport, in: page)
+            XCTAssertEqual(outcome["history"] as? String, "object", "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["browserHistory"] as? String, "object", "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["historyDiag"] as? String, "function", "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["management"] as? String, "object", "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["managementMembers"] as? [String],
+                           ["getAll", "getSelf", "onDisabled", "onEnabled", "onInstalled", "onUninstalled", "setEnabled"],
+                           "\(transport): \(outcome)")
+            XCTAssertEqual((outcome["getSelf"] as? [String: Any])?["resolved"] as? String, ext.id,
+                           "\(transport): \(outcome)")
+            let search = try XCTUnwrap(outcome["directSearch"] as? [String: Any], "\(transport): \(outcome)")
+            XCTAssertNotNil((search["resolved"] as? [String: Any])?["results"], "\(transport): \(outcome)")
+            let getAll = try XCTUnwrap(outcome["directGetAll"] as? [String: Any], "\(transport): \(outcome)")
+            XCTAssertNotNil(getAll["resolved"] as? [Any], "\(transport): \(outcome)")
+        }
     }
 }

@@ -261,14 +261,77 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["diag"] as? String, "absent")
     }
 
+    /// POSITIVE: with the `history` permission declared, the namespace is
+    /// Detour's (TASK-251). `browser` is a separate empty object in this plain
+    /// web view (WebKit vends one namespace object under both names only in a
+    /// real context), so the alias, present and absent, is checked in
+    /// ExtensionHistoryScopeTests, for `management` as well.
     @MainActor func testHistoryNamespaceExists() async throws {
-        let exists = try await eval("return typeof chrome.history") as? String
-        XCTAssertEqual(exists, "object")
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            chrome: typeof chrome.history,
+            search: typeof chrome.history.search,
+            dispatch: typeof globalThis.__extensionDispatchHistoryEvent,
+            diag: __detourPolyfillDiag.apis.history
+        });
+        """)
+        XCTAssertEqual(result["chrome"] as? String, "object")
+        XCTAssertEqual(result["search"] as? String, "function")
+        XCTAssertEqual(result["dispatch"] as? String, "function")
+        XCTAssertEqual(result["diag"] as? String, "function")
     }
 
+    /// NEGATIVE: without the `history` permission the namespace stays absent,
+    /// the way Chrome leaves it out, so `if (chrome.history)` is honest
+    /// (TASK-251).
+    @MainActor func testHistoryAbsentWithoutPermission() async throws {
+        let unprivileged = try await makeWebView(manifestPermissions: ["management", "notifications", "privacy"])
+        let result = try await evalDictionary("""
+        return JSON.stringify({
+            chrome: typeof chrome.history,
+            dispatch: typeof globalThis.__extensionDispatchHistoryEvent,
+            diag: __detourPolyfillDiag.apis.history
+        });
+        """, on: unprivileged)
+        XCTAssertEqual(result["chrome"] as? String, "undefined")
+        XCTAssertEqual(result["dispatch"] as? String, "undefined", "no event dispatcher without the namespace")
+        XCTAssertEqual(result["diag"] as? String, "absent")
+    }
+
+    /// The members `chrome.management` has, sorted, as JSON.
+    private static let managementMembersJS = """
+    return JSON.stringify({
+        chrome: typeof chrome.management,
+        members: chrome.management ? Object.keys(chrome.management).sort() : null
+    });
+    """
+
+    /// POSITIVE: with the `management` permission declared, the whole
+    /// namespace is there (TASK-251).
     @MainActor func testManagementNamespaceExists() async throws {
-        let exists = try await eval("return typeof chrome.management") as? String
-        XCTAssertEqual(exists, "object")
+        let result = try await evalDictionary(Self.managementMembersJS)
+        XCTAssertEqual(result["chrome"] as? String, "object")
+        XCTAssertEqual(result["members"] as? [String],
+                       ["getAll", "getSelf", "onDisabled", "onEnabled", "onInstalled", "onUninstalled", "setEnabled"])
+    }
+
+    /// NEGATIVE: without the `management` permission only the permission-free
+    /// methods are there. Chrome's `_api_features.json` gives `getSelf`,
+    /// `uninstallSelf` and `getPermissionWarningsByManifest` no dependency;
+    /// Detour implements `getSelf` of them, so that is the whole namespace,
+    /// and it still answers (TASK-251).
+    @MainActor func testManagementHasOnlyGetSelfWithoutPermission() async throws {
+        let unprivileged = try await makeWebView(manifestPermissions: ["history", "notifications", "privacy"])
+        let result = try await evalDictionary(Self.managementMembersJS, on: unprivileged)
+        XCTAssertEqual(result["chrome"] as? String, "object")
+        XCTAssertEqual(result["members"] as? [String], ["getSelf"])
+
+        let info = try await evalDictionary("""
+        const info = await chrome.management.getSelf();
+        return JSON.stringify({ id: info.id, diag: __detourPolyfillDiag.apis.management });
+        """, on: unprivileged)
+        XCTAssertEqual(info["id"] as? String, "test-polyfill-extension")
+        XCTAssertEqual(info["diag"] as? String, "function")
     }
 
     @MainActor func testFontSettingsNamespaceExists() async throws {

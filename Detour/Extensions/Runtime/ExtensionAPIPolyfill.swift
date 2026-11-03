@@ -99,7 +99,7 @@ struct ExtensionAPIPolyfill {
         try { if (!__detourPolyfillDiag.hasSendNativeMessage) __detourPolyfillDiag.hasSendNativeMessage = typeof chrome !== 'undefined' && typeof chrome.runtime.sendNativeMessage === 'function'; } catch(e) {}
         __detourPolyfillDiag.apis = {};
         try { __detourPolyfillDiag.apis.idle = typeof chrome.idle.queryState; } catch(e) { __detourPolyfillDiag.apis.idle = 'error: ' + e.message; }
-        try { __detourPolyfillDiag.apis.history = typeof chrome.history.search; } catch(e) { __detourPolyfillDiag.apis.history = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.history = chrome.history ? typeof chrome.history.search : 'absent'; } catch(e) { __detourPolyfillDiag.apis.history = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.notifications = chrome.notifications ? typeof chrome.notifications.create : 'absent'; } catch(e) { __detourPolyfillDiag.apis.notifications = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.offscreen = typeof chrome.offscreen.hasDocument; } catch(e) { __detourPolyfillDiag.apis.offscreen = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.management = typeof chrome.management.getSelf; } catch(e) { __detourPolyfillDiag.apis.management = 'error: ' + e.message; }
@@ -240,8 +240,9 @@ struct ExtensionAPIPolyfill {
         // The permissions the manifest declares, or [] when they cannot be read
         // (no readable manifest, or one without a permissions array). Modules
         // that must stay absent unless the extension asked for them —
-        // chrome.privacy, chrome.webRequest — gate on this, the way Chrome
-        // leaves an undeclared namespace out entirely.
+        // chrome.privacy, chrome.webRequest, chrome.notifications,
+        // chrome.history, most of chrome.management — gate on this, the way
+        // Chrome leaves an undeclared namespace out entirely.
         if (!g.__detourManifestPermissions) {
             g.__detourManifestPermissions = function() {
                 const manifest = g.__detourManifest();
@@ -2375,9 +2376,16 @@ struct ExtensionAPIPolyfill {
 
     // MARK: - chrome.history
 
+    /// chrome.history, installed only when the manifest declares the
+    /// `history` permission: Chrome leaves the namespace out otherwise, so a
+    /// feature detection stays truthful (TASK-251). The handler refuses
+    /// `history.search` from an extension without it as well, so a caller that
+    /// reaches `__detourPolyfillRequest` directly gets nothing either. WebKit
+    /// vends no `history` namespace of its own (measured from a page and a
+    /// worker in `ExtensionHistoryScopeTests`).
     private static let historyJS = """
     (function() {
-        // Always install — WebKit may provide stubs that don't work
+        if (__detourManifestPermissions().indexOf('history') === -1) return;
         const chrome = globalThis.chrome;
 
         const onVisitedListeners = [];
@@ -2439,10 +2447,29 @@ struct ExtensionAPIPolyfill {
 
     // MARK: - chrome.management
 
+    /// chrome.management. Chrome gates the namespace on the `management`
+    /// permission except for `getSelf`, `uninstallSelf` and
+    /// `getPermissionWarningsByManifest`, which declare no dependency
+    /// (Chromium `extensions/common/api/_api_features.json`), so an extension
+    /// without the permission sees a namespace holding only those. Detour
+    /// implements `getSelf` of the three, so that is all such an extension gets
+    /// here: no `getAll`, `setEnabled` or events (TASK-251). The handler
+    /// refuses `management.getAll` and `management.setEnabled` without the
+    /// permission as well. WebKit vends no `management` namespace of its own
+    /// (measured in `ExtensionHistoryScopeTests`).
     private static let managementJS = """
     (function() {
-        // Always install — WebKit may provide stubs that don't work
         const chrome = globalThis.chrome;
+
+        const getSelf = function(callback) {
+            const promise = __detourPolyfillRequest('management.getSelf', {});
+            return __detourSettle(promise, callback);
+        };
+
+        if (__detourManifestPermissions().indexOf('management') === -1) {
+            __detourDefine(chrome, 'management', { getSelf: getSelf });
+            return;
+        }
 
         const _onEnabledListeners = [];
         const _onDisabledListeners = [];
@@ -2450,10 +2477,7 @@ struct ExtensionAPIPolyfill {
         const _onUninstalledListeners = [];
 
         __detourDefine(chrome, 'management', {
-            getSelf: function(callback) {
-                const promise = __detourPolyfillRequest('management.getSelf', {});
-                return __detourSettle(promise, callback);
-            },
+            getSelf: getSelf,
 
             getAll: function(callback) {
                 const promise = __detourPolyfillRequest('management.getAll', {});

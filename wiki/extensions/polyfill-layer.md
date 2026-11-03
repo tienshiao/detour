@@ -76,6 +76,12 @@ sources:
   - id: task-239
     resource: backlog:TASK-239
     title: "Extensions: the notifications API is available without the notifications permission"
+  - id: task-251
+    resource: backlog:TASK-251
+    title: "Extensions: the history and management namespaces exist for extensions without the permission"
+  - id: chromium-api-features
+    resource: https://github.com/chromium/chromium/blob/main/extensions/common/api/_api_features.json
+    title: "Chromium, extensions/common/api/_api_features.json (management.getSelf etc. have no dependency)"
   - id: task-240
     resource: backlog:TASK-240
     title: "Extensions: notifications.clear and notifications.update diverge from Chrome"
@@ -212,15 +218,26 @@ does:
   before, the global last active space when it was this profile's, else the
   profile's first). See [opening a tab](./tab-and-window-bridge.md#opening-a-tab).
 - Gap-filling namespaces that Chrome leaves undefined without a permission
-  (`privacy`, `webRequest`, `notifications`) are installed only when the
+  (`privacy`, `webRequest`, `notifications`, `history`) are installed only when the
   manifest declares it, so feature detection stays truthful.[^task-3] Before
   TASK-239 `notifications` was installed for every extension and the handler
   served it unchecked. Both sides gate: the bundle gate is what the extension
   sees, the handler's is what holds against a caller that goes straight to
   `__detourPolyfillRequest`. Without the permission WebKit vends no
   `notifications` namespace of its own either (measured from a page and a
-  worker in `ExtensionNotificationOrderingTests`).[^task-239] `history` and `management`
-  are still installed for every extension; only their handlers gate.
+  worker in `ExtensionNotificationOrderingTests`).[^task-239]
+- `history` and `management` were installed whole for every extension until
+  TASK-251, gated only in the handler. Now `history` is absent without its
+  permission, and `management` without its permission holds `getSelf` alone.
+  Chromium's `extensions/common/api/_api_features.json` gives `management` the
+  dependency `permission:management` but gives `getSelf`, `uninstallSelf` and
+  `getPermissionWarningsByManifest` empty dependencies; Detour implements only
+  `getSelf` of those three. WebKit vends neither namespace (measured from a
+  page and a worker in `ExtensionHistoryScopeTests`: with neither permission
+  `chrome.history` is undefined and `chrome.management` has only Detour's
+  `getSelf`).[^task-251] In a plain `WKWebView` (the `ExtensionPolyfillTests`
+  harness) `browser` is a separate object from `chrome`, so the alias can only
+  be checked in a real context.
 
 ## chrome.history is profile-scoped
 
@@ -611,6 +628,7 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^notification-manager]: ExtensionNotificationManager.swift
 [^task-238]: Extensions: one profile's notifications are visible to and clearable by the same extension in another profile
 [^task-239]: Extensions: the notifications API is available without the notifications permission
+[^task-251]: Extensions: the history and management namespaces exist for extensions without the permission
 [^task-240]: Extensions: notifications.clear and notifications.update diverge from Chrome
 [^chrome-notifications-api]: chrome.notifications API reference
 [^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared

@@ -221,8 +221,10 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 # Gaps
 
 - The polyfill's own gates (`history`, `management`, `notifications`) check
-  that the manifest *declares* the permission (`hasPermission`), not the
-  user's saved decision.
+  that the manifest *declares* the permission (`hasPermission` in the handler,
+  `__detourManifestPermissions()` in the bundle), not the user's saved
+  decision, so an optional permission granted at runtime does not install the
+  namespace.
 - A legacy full-URL row saved as `.matchPattern` before `.url` existed is
   applied as an exact-path pattern when the manifest covers it, which is
   narrower than the origin-wide grant a `.url` row gives. No migration was
