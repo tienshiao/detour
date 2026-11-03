@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-03T08:18:00Z'
+updated_date: '2026-11-03T17:09:00Z'
 labels:
   - extensions
 dependencies:
@@ -29,4 +30,5 @@ Found during TASK-238. The polyfill has __extensionDispatchNotificationClicked/C
 - [ ] #2 Closing or dismissing it fires onClosed with byUser set correctly
 - [ ] #3 An event that arrives while the worker is unloaded is delivered once it starts again, or the task records why it is dropped
 - [ ] #4 Real-extension-context tests cover delivery, profile isolation and a worker restart
+- [ ] #5 A banner the user dismisses reaches the manager (a dismiss-action category is registered), so its entry is dropped: clear and update answer false and getAll no longer lists it
 <!-- AC:END -->
