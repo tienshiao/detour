@@ -657,9 +657,12 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
     /// inside the `disconnect()` call, in the web process, before anything
     /// reaches Detour (its port handlers run in the UI process, over IPC), so
     /// it is WebKit's `WebExtensionAPIPort::disconnect()`, fixed upstream in
-    /// 325256@main (Oct 30 2026). When a WebKit with that fix ships this test
-    /// fails: the keep-alive's port watch relies on the self-fired event, see
-    /// the wiki's native-port-keep-alive page.
+    /// 325256@main (Oct 30 2026). When a WebKit with that fix ships, this test
+    /// is expected to fail; flip it to `during == 0`, with the runtime-port pin
+    /// and the TASK-263 `ignored` count in ExtensionPolyfillProfileWiringTests.
+    /// The keep-alive's port
+    /// watch does not depend on the self-fired event (TASK-263; see the wiki's
+    /// native-port-keep-alive page).
     @MainActor func testWebKitFiresAPagesOwnOnDisconnectInsideConnectNativeDisconnect() async throws {
         let ext = try await makeExtension()
         let reply = try JSONSerialization.data(withJSONObject: ["pong": 1])

@@ -61,6 +61,9 @@ sources:
   - id: task-256
     resource: backlog:TASK-256
     title: "Extensions: a port's onDisconnect fires in the context that called port.disconnect()"
+  - id: task-263
+    resource: backlog:TASK-263
+    title: "Extensions: the keep-alive port watch must not depend on WebKit firing a port's own onDisconnect"
 ---
 
 # Role
@@ -184,15 +187,33 @@ Rejected: a listener of Detour's own on `runtime.onConnect`. WebKit gives
 every listener a port of its own and counts one open port per listener, so
 it added a port nobody held, which kept the channel open after the
 extension disconnected its own and was collected unpredictably (measured: the
-extension's listener saw the end, Detour's never did). Shadowing
-`port.disconnect` was unnecessary: shipped WebKit runs a port's own
-`onDisconnect` listeners inside the page's `disconnect()` call (a WebKit bug:
-Chrome fires it only at the other end). WebKit fixed it upstream on
-2026-10-30 (325256@main); once that ships, a port the background closes
-itself goes unseen until the next ping, and the watch has to wrap
-`disconnect` on each port it watches. Two tests pin the current behaviour
-and fail on a WebKit with the fix (see
-[native messaging](./native-messaging.md#gotchas)).[^task-256] A faster ping instead of detection: a wipe
+extension's listener saw the end, Detour's never did).
+
+**A port the background closes itself.** `watchPort` also wraps
+`disconnect` on every port it watches (TASK-263). Shipped WebKit runs a
+port's own `onDisconnect` listeners inside the caller's `disconnect()` (a
+WebKit bug: Chrome fires it only at the other end), so the listener alone
+used to see these ends, but WebKit fixed that upstream on 2026-10-30
+(325256@main), and Detour uses the system WebKit: without the wrapper, an
+installed Detour would stop seeing them once a macOS update ships the fix,
+until the next ping.[^task-256] Today both the wrapper and the listener see
+such an end, inside the same `disconnect()` call; a per-port flag counts
+the end once (`portEndsSeen`) and `reanchorSoon` coalesces anyway, so an
+arm re-anchors no more often than before.[^task-263] The wrapper calls the
+port's own `disconnect` on the port (a detached call works) and returns its
+result. Assigning `disconnect` on a WebKit port object takes
+(`portDisconnectsWrapped` counts it, and the real-worker test asserts it).
+The test-only `__detourKeepAliveNoSelfFiredDisconnect` makes the listener
+ignore an event fired inside the wrapped call (`selfFiredEndsIgnored`), to
+play a fixed WebKit. The two TASK-256 tests that pin the self-fired event
+are expected to fail once the fix ships; flip them then, together with the
+`ignored` count (1 today) in
+`testAWorkerClosingItsOwnRuntimePortReanchorsWhetherOrNotWebKitFiresItsOnDisconnect`.
+The wrapper is installed non-enumerable (`Object.defineProperty`), so an
+extension enumerating its port sees what it saw before, and a `disconnect()`
+that throws does not count as the port's end.
+
+A faster ping instead of detection: a wipe
 just before a tick would still unload the page, a chance of the ping gap
 over 60 s per close.
 
@@ -400,3 +421,4 @@ in the 2026-09-21 run.[^task-21]
 [^task-142]: The native-port keep-alive is defeated when any other port of the background closes
 [^task-236]: testAnArmedWorkerHoldsOneAnchorAndADisarmStopsReanchoring is flaky under Thread Sanitizer
 [^task-256]: Extensions: a port's onDisconnect fires in the context that called port.disconnect()
+[^task-263]: Extensions: the keep-alive port watch must not depend on WebKit firing a port's own onDisconnect

@@ -1927,7 +1927,10 @@ struct ExtensionAPIPolyfill {
     /// reconnect backoff for tests, `__detourForceNativePortKeepAlive` installs
     /// this outside a background context for tests, and
     /// `__detourKeepAliveIgnorePings` (a count, or `true`) makes it drop pings so
-    /// a test can play a background that has stopped answering. There is no
+    /// a test can play a background that has stopped answering, and
+    /// `__detourKeepAliveNoSelfFiredDisconnect` makes the port watch ignore the
+    /// onDisconnect WebKit fires inside a watched port's own `disconnect()`, so
+    /// a test can play a WebKit with 325256@main (TASK-263). There is no
     /// ping-interval override any more: the interval is
     /// `ExtensionManager.keepAlivePingInterval`.
     private static let nativePortKeepAliveJS = """
@@ -1979,6 +1982,8 @@ struct ExtensionAPIPolyfill {
         let watchDetail = '';
         let portsWatched = 0;
         let portEndsSeen = 0;
+        let portDisconnectsWrapped = 0;
+        let selfFiredEndsIgnored = 0;
         let reconnectTimer = null;
         let reconnectAttempts = 0;
         // 'port' (a port is open) | 'none'.
@@ -2063,8 +2068,8 @@ struct ExtensionAPIPolyfill {
             anchor = opened;
             anchorsOpened += 1;
             try {
-                // Fires for its own disconnect() too (WebKit runs a port's
-                // listeners when it is closed locally); nothing to re-open then.
+                // Shipped WebKit fires this for its own disconnect() too
+                // (TASK-256); nothing to re-open then.
                 opened.onDisconnect.addListener(function() {
                     if (anchor === opened) anchor = null;
                 });
@@ -2074,14 +2079,61 @@ struct ExtensionAPIPolyfill {
         // Re-anchor when this port ends. Nothing holds the port: a port the
         // extension drops is collected as before, and WebKit's removal of a
         // collected port runs its onDisconnect listeners too.
+        //
+        // The other side closing it fires onDisconnect here. The background
+        // closing it itself is seen by wrapping the port's `disconnect`:
+        // shipped WebKit also runs the caller's own onDisconnect listeners
+        // inside `disconnect()` (a bug, TASK-256), but WebKit fixed that
+        // upstream (325256@main, 2026-10-30), and an installed Detour must not
+        // stop re-anchoring when a macOS update ships the fix (TASK-263). The
+        // port's end counts once, whichever of the two sees it first; today
+        // both do, inside the same `disconnect()` call, and `reanchorSoon`
+        // coalesces anyway.
         function watchPort(watched) {
             if (!watched) return watched;
+            let ended = false;
+            let disconnecting = false;
+            const end = function() {
+                if (ended) return;
+                ended = true;
+                portEndsSeen += 1;
+                reanchorSoon();
+            };
             try {
                 watched.onDisconnect.addListener(function() {
-                    portEndsSeen += 1;
-                    reanchorSoon();
+                    // Test-only: play a WebKit with the fix, which no longer
+                    // runs the caller's own listeners inside `disconnect()`.
+                    if (disconnecting && g.__detourKeepAliveNoSelfFiredDisconnect === true) {
+                        selfFiredEndsIgnored += 1;
+                        return;
+                    }
+                    end();
                 });
                 portsWatched += 1;
+            } catch (e) {}
+            // Not enumerable, like the port's own methods, so the extension
+            // enumerating its port sees what it saw before. A `disconnect()`
+            // that throws has not ended the port: the watch stays open for the
+            // end that does come.
+            try {
+                const nativeDisconnect = watched.disconnect;
+                if (typeof nativeDisconnect === 'function') {
+                    Object.defineProperty(watched, 'disconnect', {
+                        value: function() {
+                            disconnecting = true;
+                            let result;
+                            try {
+                                result = nativeDisconnect.apply(watched, arguments);
+                            } finally {
+                                disconnecting = false;
+                            }
+                            end();
+                            return result;
+                        },
+                        writable: true, configurable: true, enumerable: false
+                    });
+                    if (watched.disconnect !== nativeDisconnect) portDisconnectsWrapped += 1;
+                }
             } catch (e) {}
             return watched;
         }
@@ -2342,7 +2394,9 @@ struct ExtensionAPIPolyfill {
             get anchorsOpened() { return anchorsOpened; },
             get watching() { return watchDetail; },
             get portsWatched() { return portsWatched; },
-            get portEndsSeen() { return portEndsSeen; }
+            get portEndsSeen() { return portEndsSeen; },
+            get portDisconnectsWrapped() { return portDisconnectsWrapped; },
+            get selfFiredEndsIgnored() { return selfFiredEndsIgnored; }
         });
     })();
     """

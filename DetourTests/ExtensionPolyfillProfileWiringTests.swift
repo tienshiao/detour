@@ -1008,6 +1008,8 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
                     watching: status.watching,
                     portsWatched: status.portsWatched,
                     portEndsSeen: status.portEndsSeen,
+                    portDisconnectsWrapped: status.portDisconnectsWrapped,
+                    selfFiredEndsIgnored: status.selfFiredEndsIgnored,
                     extensionPorts: (globalThis.__task142Ports || []).length,
                     extensionEnds: globalThis.__task142Ends
                 } : { installMode: 'missing' });
@@ -1298,15 +1300,103 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         XCTAssertEqual(anchors().requested, 0, "a runtime port is the background's own to notice")
     }
 
+    /// The armed worker closing a `runtime.connect` port of its own re-anchors
+    /// once, whether or not WebKit runs the worker's own onDisconnect inside
+    /// `disconnect()` (TASK-263). Shipped WebKit does (the TASK-256 pin below);
+    /// a WebKit with 325256@main does not, played here by the test-only
+    /// `__detourKeepAliveNoSelfFiredDisconnect`, which makes the watch ignore
+    /// the self-fired event so the `disconnect` wrapper alone sees the end.
+    @MainActor func testAWorkerClosingItsOwnRuntimePortReanchorsWhetherOrNotWebKitFiresItsOnDisconnect() async throws {
+        let ext = try await makeKeepAliveTestExtension(extraBackgroundJS: """
+
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (!message || message.type !== 'task263SelfClose') return false;
+            globalThis.__detourKeepAliveNoSelfFiredDisconnect = message.fixedWebKit === true;
+            (async () => {
+                const status = globalThis.__detourNativePortKeepAlive;
+                const counts = () => ({ opened: status.anchorsOpened, ends: status.portEndsSeen,
+                                        ignored: status.selfFiredEndsIgnored });
+                const port = chrome.runtime.connect({ name: 'task263' });
+                // Disconnect only once the page holds its end and has said so.
+                const held = await new Promise((resolve) => {
+                    const timer = setTimeout(() => resolve(false), 5000);
+                    port.onMessage.addListener(() => { clearTimeout(timer); resolve(true); });
+                });
+                const before = counts();
+                port.disconnect();
+                await new Promise((resolve) => setTimeout(resolve, 300));
+                sendResponse({ held: held, before: before, after: counts(),
+                               wrapped: status.portDisconnectsWrapped });
+            })();
+            return true;
+        });
+        """)
+        // No periodic ping inside the measured windows: a ping re-anchors too.
+        // (setUp/tearDown restore the interval.)
+        ExtensionManager.shared.keepAlivePingInterval = 3600
+        let profile = makeProfile("Keep-alive Self-closed Port Profile")
+        let controller = profile.extensionController
+        _ = profile.loadExtensionContext(ext)
+        let context = try XCTUnwrap(profile.extensionContexts[ext.id])
+        let page = try await makeExtensionWebView(for: context)
+        let manager = ExtensionManager.shared
+        func anchors() -> (held: Int, opened: Int, requested: Int) {
+            manager.keepAliveAnchorsForTesting(controller: controller, extensionID: ext.id)
+        }
+
+        try await waitUntil("the worker's keep-alive port to reach ExtensionManager") {
+            manager.keepAliveStateForTesting(controller: controller, extensionID: ext.id)?.portOpen == true
+        }
+        manager.simulateNativeHostForTesting(connected: true, controller: controller, extensionID: ext.id)
+        try await waitUntil("the armed worker's anchor") { anchors().held == 1 }
+        // The start and its first ping re-anchor; no other ping follows.
+        try await Task.sleep(nanoseconds: 500_000_000)
+        _ = try await page.callAsyncJavaScript("""
+            globalThis.__task263PagePorts = [];
+            chrome.runtime.onConnect.addListener((port) => {
+                globalThis.__task263PagePorts.push(port);
+                port.postMessage('held');
+            });
+            return true;
+            """, arguments: [:], contentWorld: .page)
+
+        for fixedWebKit in [false, true] {
+            let leg = fixedWebKit ? "with the self-fired event ignored" : "as WebKit ships"
+            let openedBefore = anchors().opened
+            let answer = try await askWorker(from: page,
+                                             message: ["type": "task263SelfClose", "fixedWebKit": fixedWebKit],
+                                             timeout: 10)
+            let reply = try XCTUnwrap(answer["reply"] as? [String: Any], "\(leg): \(answer)")
+            XCTAssertEqual(reply["held"] as? Bool, true, "\(leg): the page held its end")
+            XCTAssertGreaterThanOrEqual(reply["wrapped"] as? Int ?? 0, 1,
+                                        "\(leg): WebKit's port takes the disconnect wrapper")
+            let before = try XCTUnwrap(reply["before"] as? [String: Any])
+            let after = try XCTUnwrap(reply["after"] as? [String: Any])
+            func delta(_ key: String) -> Int { (after[key] as? Int ?? 0) - (before[key] as? Int ?? 0) }
+            XCTAssertEqual(delta("ends"), 1, "\(leg): the port's end counts once: \(reply)")
+            XCTAssertEqual(delta("opened"), 1, "\(leg): one re-anchor: \(reply)")
+            // Shipped WebKit fires the worker's own onDisconnect, so the hook
+            // has one to ignore; 0 on a WebKit with 325256@main, when the
+            // TASK-256 pins flip too.
+            XCTAssertEqual(delta("ignored"), fixedWebKit ? 1 : 0, "\(leg): \(reply)")
+            try await waitUntil("\(leg): the new anchor to reach Detour") { anchors().opened > openedBefore }
+            try await waitUntil("\(leg): the old anchor to be closed") { anchors().held == 1 }
+        }
+        XCTAssertEqual(anchors().requested, 0, "a runtime port is the background's own to notice")
+    }
+
     /// A measurement of WebKit, pinned (TASK-256): a `runtime.connect` port
     /// whose own context calls `disconnect()` gets its own `onDisconnect`,
     /// from an extension page and from the worker, where Chrome fires it only
     /// at the other end. It runs inside the `disconnect()` call, in the web
     /// process, so it is WebKit's (fixed upstream in 325256@main, Oct 30
     /// 2026), and Detour's native code plays no part in a runtime port. The
-    /// keep-alive's port watch relies on it to see the background close a port
-    /// itself: when a WebKit with the fix ships this test fails, and the watch
-    /// needs to wrap `port.disconnect` (see the native-port-keep-alive page).
+    /// keep-alive's port watch no longer depends on it: it wraps
+    /// `port.disconnect` as well (TASK-263). When a WebKit with the fix ships,
+    /// this test is expected to fail; flip it to `during == 0`, and the
+    /// `ignored` count in
+    /// `testAWorkerClosingItsOwnRuntimePortReanchorsWhetherOrNotWebKitFiresItsOnDisconnect`
+    /// to 0 (see the native-port-keep-alive page).
     @MainActor func testWebKitFiresTheCallersOwnOnDisconnectInsideRuntimePortDisconnect() async throws {
         let ownDisconnectJS = """
             const seen = { during: 0, after: 0 };

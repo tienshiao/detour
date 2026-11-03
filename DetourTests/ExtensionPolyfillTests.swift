@@ -2898,7 +2898,9 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
     /// A runtime with the port entry points the anchor watches: a fake
     /// `runtime.onConnect`, `runtime.connect` and `tabs.connect`. Every fake port
     /// ends with `__end()`, which runs its onDisconnect listeners the way WebKit
-    /// does for either side closing it.
+    /// does for the other side closing it. Its `disconnect()` runs none, as a
+    /// WebKit with 325256@main does for the caller; `__fakeFiresOwnDisconnect`
+    /// makes it run them inside the call, as shipped WebKit does (TASK-256).
     private static let portWatchShim = """
     globalThis.__fakeEvent = function() {
         const listeners = [];
@@ -2911,14 +2913,22 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
     };
     globalThis.__fakePort = function(name) {
         const ends = [];
-        return {
+        const port = {
             name: name,
+            disconnectCalls: 0,
+            disconnectThis: null,
             onDisconnect: { addListener(fn) { ends.push(fn); } },
             onMessage: { addListener() {} },
             postMessage() {},
-            disconnect() {},
+            disconnect() {
+                port.disconnectCalls += 1;
+                port.disconnectThis = this;
+                if (globalThis.__fakeFiresOwnDisconnect === true) port.__end();
+                return 'disconnected ' + name;
+            },
             __end() { ends.slice().forEach(fn => fn()); }
         };
+        return port;
     };
     globalThis.chrome.runtime.onConnect = __fakeEvent();
     globalThis.chrome.runtime.onConnectExternal = __fakeEvent();
@@ -3094,6 +3104,99 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["afterTabPort"] as? Int, 3)
     }
 
+    /// A port the background closes itself re-anchors on a WebKit that no
+    /// longer runs the caller's own onDisconnect inside `disconnect()`
+    /// (325256@main): the watch wraps `disconnect` on every port it watches,
+    /// made or received (TASK-263). The wrapper calls the port's own
+    /// `disconnect` on the port and hands back its result.
+    @MainActor func testKeepAliveReanchorsWhenTheBackgroundDisconnectsAPortItself() async throws {
+        let wv = try await makePortWatchWebView()
+        let result = try await evalAnchor("""
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
+        await settle();
+        const runtimePort = chrome.runtime.connect({ name: 'to a page' });
+        const tabPort = chrome.tabs.connect(7, { name: 'to a tab' });
+        let received = null;
+        chrome.runtime.onConnect.addListener(function(p) { received = p; });
+        const incoming = __fakePort('from a content script');
+        globalThis.__shimOnConnect.listeners[0](incoming);
+        const returned = runtimePort.disconnect();
+        await settle();
+        const afterRuntimePort = status.anchorsOpened;
+        tabPort.disconnect();
+        await settle();
+        const afterTabPort = status.anchorsOpened;
+        const detached = received.disconnect;
+        detached();
+        await settle();
+        return JSON.stringify({
+            returned: returned, afterRuntimePort: afterRuntimePort, afterTabPort: afterTabPort,
+            afterReceivedPort: status.anchorsOpened, endsSeen: status.portEndsSeen,
+            wrapped: status.portDisconnectsWrapped,
+            calls: [runtimePort, tabPort, incoming].map(p => p.disconnectCalls),
+            calledOnThePort: [runtimePort, tabPort, incoming].every(p => p.disconnectThis === p),
+            openAnchors: anchors().filter(p => !p.disconnectedLocally).length
+        });
+        """, on: wv)
+
+        XCTAssertEqual(result["returned"] as? String, "disconnected to a page", "the port's own disconnect runs")
+        XCTAssertEqual(result["calls"] as? [Int], [1, 1, 1])
+        XCTAssertEqual(result["calledOnThePort"] as? Bool, true, "even a detached call reaches the port")
+        XCTAssertEqual(result["wrapped"] as? Int, 3)
+        XCTAssertEqual(result["afterRuntimePort"] as? Int, 2, "runtime.connect's port closed by the background re-anchors")
+        XCTAssertEqual(result["afterTabPort"] as? Int, 3, "tabs.connect's port closed by the background re-anchors")
+        XCTAssertEqual(result["afterReceivedPort"] as? Int, 4, "a received port closed by the background re-anchors")
+        XCTAssertEqual(result["endsSeen"] as? Int, 3)
+        XCTAssertEqual(result["openAnchors"] as? Int, 1, "one anchor held")
+    }
+
+    /// Shipped WebKit runs the caller's own onDisconnect inside `disconnect()`
+    /// (TASK-256), so today the wrapper and the listener both see a port the
+    /// background closes: the end counts once and re-anchors once. Later ends of
+    /// the same port (another `disconnect()`, the other side's removal) count
+    /// for nothing. The test-only `__detourKeepAliveNoSelfFiredDisconnect`
+    /// ignores the self-fired event, so the wrapper alone re-anchors.
+    @MainActor func testKeepAliveCountsASelfClosedPortOnceWhenWebKitFiresItsOwnOnDisconnect() async throws {
+        let wv = try await makePortWatchWebView()
+        let result = try await evalAnchor("""
+        globalThis.__fakeFiresOwnDisconnect = true;
+        keepAlive.__simulateNativeMessage({ type: 'keepalive-start' });
+        await settle();
+        const port = chrome.runtime.connect({ name: 'to a page' });
+        port.disconnect();
+        const endsInsideTheTurn = status.portEndsSeen;
+        await settle();
+        const afterDisconnect = status.anchorsOpened;
+        port.disconnect();
+        port.__end();
+        await settle();
+        const afterLaterEnds = { opened: status.anchorsOpened, ends: status.portEndsSeen };
+
+        globalThis.__detourKeepAliveNoSelfFiredDisconnect = true;
+        const suppressed = chrome.runtime.connect({ name: 'on a fixed WebKit' });
+        suppressed.disconnect();
+        await settle();
+        return JSON.stringify({
+            endsInsideTheTurn: endsInsideTheTurn, afterDisconnect: afterDisconnect,
+            afterLaterEnds: afterLaterEnds,
+            afterSuppressed: { opened: status.anchorsOpened, ends: status.portEndsSeen,
+                               ignored: status.selfFiredEndsIgnored },
+            openAnchors: anchors().filter(p => !p.disconnectedLocally).length
+        });
+        """, on: wv)
+
+        XCTAssertEqual(result["endsInsideTheTurn"] as? Int, 1, "the self-fired event and the wrapper count one end")
+        XCTAssertEqual(result["afterDisconnect"] as? Int, 2, "one re-anchor for the port")
+        let later = try XCTUnwrap(result["afterLaterEnds"] as? [String: Any])
+        XCTAssertEqual(later["opened"] as? Int, 2, "a port ends once")
+        XCTAssertEqual(later["ends"] as? Int, 1)
+        let suppressed = try XCTUnwrap(result["afterSuppressed"] as? [String: Any])
+        XCTAssertEqual(suppressed["ignored"] as? Int, 1, "the hook ignored the self-fired event")
+        XCTAssertEqual(suppressed["ends"] as? Int, 2, "the wrapper saw the end on its own")
+        XCTAssertEqual(suppressed["opened"] as? Int, 3)
+        XCTAssertEqual(result["openAnchors"] as? Int, 1, "one anchor held")
+    }
+
     /// Should WebKit ever vend `browser.runtime` / `browser.tabs` as objects of
     /// their own, the ports made or received through them are watched too.
     @MainActor func testKeepAliveWatchesPortsOfADistinctBrowserNamespace() async throws {
@@ -3146,6 +3249,7 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         let result = try await evalAnchor("""
         const port = chrome.runtime.connect({ name: 'idle' });
         port.__end();
+        chrome.runtime.connect({ name: 'closed by the background' }).disconnect();
         keepAlive.__simulateNativeMessage({ type: '\(ExtensionManager.keepAliveReanchorType)' });
         await settle();
         return JSON.stringify({ anchors: anchors().length });

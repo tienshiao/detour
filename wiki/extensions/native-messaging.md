@@ -372,12 +372,13 @@ evidence for. There is no level between notice and error to use:
   extension that reconnects in `onDisconnect` therefore reconnects after its
   own deliberate disconnect too, starting a fresh host. No workaround:
   `connectNative` cannot be wrapped (see
-  [chrome.runtime patching](./chrome-runtime-patching.md)), and the
-  keep-alive's port watch relies on the self-fired event (see
+  [chrome.runtime patching](./chrome-runtime-patching.md)). The
+  keep-alive's port watch does not depend on the self-fired event: it wraps
+  `disconnect` on the ports it watches (TASK-263, see
   [Native port keep-alive](./native-port-keep-alive.md#the-anchor-task-142)).
   `testWebKitFiresAPagesOwnOnDisconnectInsideConnectNativeDisconnect` and
   `testWebKitFiresTheCallersOwnOnDisconnectInsideRuntimePortDisconnect` pin
-  it, so a WebKit that ships the fix fails them.[^task-256]
+  it, so a WebKit that ships the fix fails them; flip them then.[^task-256]
 - **A host's exit reason never reaches the extension.** WebKit does not
   deliver a native port's disconnect error to an established port — neither
   `port.error` nor `runtime.lastError` (measured 2026-09-13).[^manager] The
