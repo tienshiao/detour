@@ -15,7 +15,7 @@ import UniformTypeIdentifiers
 /// also moved the Quick Detour controls to a pane of their own).
 final class LinksSettingsViewController: SettingsPaneViewController, NSTableViewDataSource, NSTableViewDelegate,
                                          NSTextFieldDelegate, NSMenuDelegate, TabStoreObserver {
-    private let editor = LinkRouteEditor(store: TabStore.shared.linkRoutes)
+    private let editor: LinkRouteEditor
     private var store: LinkRouteStore { editor.store }
     /// The rows the table shows, as of the last refresh.
     private var rows: [LinkRouteEditor.Row] = []
@@ -48,6 +48,15 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
     private static let dragType = NSPasteboard.PasteboardType("com.detour.link-route")
     /// The list's height with no routes: one line of text.
     private static let emptyListHeight: CGFloat = 56
+
+    /// `linkRoutes` is the store the pane shows and edits: the shared one in
+    /// the app; tests pass a store over their own database (TASK-235).
+    init(linkRoutes: LinkRouteStore = TabStore.shared.linkRoutes) {
+        editor = LinkRouteEditor(store: linkRoutes)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
 
     override var paneDescription: String? {
         "Link Routes open links in the space you choose: links from other apps, addresses typed in a new tab, and links clicked to another site. Routes are tried from the top, and the first that matches decides. Drag routes to change their order."

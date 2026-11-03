@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import GRDB
 @testable import Detour
 
 /// TASK-211: in a Settings pane with a master list (Spaces, Profiles,
@@ -134,6 +135,20 @@ nonisolated final class SettingsPaneColumnsTests: XCTestCase {
             ])
             return container
         }
+    }
+
+    /// A link route store over an in-memory database, so the Links pane does
+    /// not show whatever routes an earlier run left in the shared test data
+    /// directory (TASK-235).
+    @MainActor private func makeLinkRouteStore() throws -> LinkRouteStore {
+        LinkRouteStore(database: try AppDatabase(dbQueue: DatabaseQueue()))
+    }
+
+    @MainActor private func makeLinksPane(over store: LinkRouteStore) -> LinksSettingsViewController {
+        let pane = LinksSettingsViewController(linkRoutes: store)
+        pane.view.setFrameSize(NSSize(width: SettingsMetrics.windowWidth, height: SettingsMetrics.listPaneMinimumHeight))
+        pane.view.layoutSubtreeIfNeeded()
+        return pane
     }
 
     @MainActor private func makeListPane(height: CGFloat) -> ListPane {
@@ -317,10 +332,11 @@ nonisolated final class SettingsPaneColumnsTests: XCTestCase {
                        ["general", "spaces", "links", "quickdetour", "profiles", "extensions", "contentblocker"])
     }
 
-    @MainActor func testPanesWithAListScrollTheirColumnsAndTheOthersScrollAsOneBody() {
+    @MainActor func testPanesWithAListScrollTheirColumnsAndTheOthersScrollAsOneBody() throws {
         let whole: [SettingsPaneViewController] = [GeneralSettingsViewController(), QuickDetourSettingsViewController(),
                                                    ContentBlockerSettingsViewController()]
-        let columns: [SettingsPaneViewController] = [SpacesSettingsViewController(), LinksSettingsViewController(),
+        let links = LinksSettingsViewController(linkRoutes: try makeLinkRouteStore())
+        let columns: [SettingsPaneViewController] = [SpacesSettingsViewController(), links,
                                                      ProfilesSettingsViewController(), ExtensionsSettingsViewController()]
         for pane in whole {
             _ = pane.view
@@ -343,12 +359,33 @@ nonisolated final class SettingsPaneColumnsTests: XCTestCase {
         XCTAssertLessThan(natural, SettingsMetrics.listPaneMinimumHeight)
     }
 
-    @MainActor func testTheLinksPaneDoesNotNeedMoreThanTheListMinimum() {
-        let pane = LinksSettingsViewController()
-        pane.view.setFrameSize(NSSize(width: SettingsMetrics.windowWidth, height: SettingsMetrics.listPaneMinimumHeight))
-        pane.view.layoutSubtreeIfNeeded()
+    @MainActor func testTheLinksPaneDoesNotNeedMoreThanTheListMinimum() throws {
+        let pane = makeLinksPane(over: try makeLinkRouteStore())
         // The Default and its caption, the Routes title and an empty list fit
         // the 400 pt minimum, so it is not raised.
+        XCTAssertLessThanOrEqual(pane.naturalContentHeight, SettingsMetrics.listPaneMinimumHeight)
+    }
+
+    /// TASK-235: routes left in the shared test data directory by an earlier
+    /// run (9 of them made the natural height 1287) do not reach a pane built
+    /// over its own store.
+    @MainActor func testTheLinksPaneIgnoresRoutesInTheSharedStore() throws {
+        let shared = TabStore.shared.linkRoutes
+        // A run killed before its teardown blocks left its seeds behind.
+        for stale in shared.routes where stale.match?.pattern.hasPrefix("task235-") == true {
+            shared.removeRoute(id: stale.id)
+        }
+        for n in 0..<9 {
+            let route = LinkRoute(match: LinkRouteMatch(kind: .domainIs, pattern: "task235-\(n).test"),
+                                  sourceApp: nil, target: .privateWindow)
+            let id = try XCTUnwrap(shared.add(route), "seed route \(n)").id
+            // Removed again from the shared store and its database.
+            addTeardownBlock { @MainActor in shared.removeRoute(id: id) }
+        }
+        // The seeding matters: a pane over the shared store needs more room.
+        XCTAssertGreaterThan(makeLinksPane(over: shared).naturalContentHeight, SettingsMetrics.listPaneMinimumHeight)
+
+        let pane = makeLinksPane(over: try makeLinkRouteStore())
         XCTAssertLessThanOrEqual(pane.naturalContentHeight, SettingsMetrics.listPaneMinimumHeight)
     }
 

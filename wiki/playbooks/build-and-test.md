@@ -36,6 +36,9 @@ sources:
   - id: notes-crash
     resource: "Agent session notes, 2026-09-13 (not in the repository)"
     title: Session notes on test host crashes
+  - id: task-235
+    resource: backlog:TASK-235
+    title: Tests - SettingsPaneColumnsTests depends on the shared DetourTests data directory being empty of link routes
 ---
 
 The commands are in [CLAUDE.md](../../CLAUDE.md), and so is the policy: what
@@ -117,6 +120,18 @@ production directory. If the line reads `⚠️ DETOUR_DATA_DIR not set`, stop:
 the run is writing into the real profile. What the data directory does and
 does not isolate is on [persistence](../architecture/persistence.md) and
 [profile data removal](../architecture/profile-data-removal.md).
+
+The directory is not emptied between runs (only the extension table is
+wiped), so the shared singletons (`TabStore.shared`, `LinkRouteStore.shared`,
+`AppDatabase.shared`) start each run with whatever earlier runs left. A suite
+that seeds a shared store in `setUp` and removes the rows in `tearDown`
+(`ExternalLinkRoutingTests` adds 9 link routes, `InPageLinkRoutingTests` 3)
+leaks them when the host crashes or the run is killed. A test whose result
+depends on a store's contents builds its object over a store of its own, an
+`AppDatabase(dbQueue: DatabaseQueue())` in memory: the Links settings pane
+takes one through `LinksSettingsViewController(linkRoutes:)`. Nine leaked
+routes made the Links pane 1287 pt tall and failed
+`SettingsPaneColumnsTests` until that seam existed.[^task-235]
 
 ## 5. Environment variables for the test host
 
@@ -243,3 +258,4 @@ Match the executable path `…/Detour.app/Contents/MacOS/Detour` and exclude
 [^notes-stale]: Session notes on stale DerivedData builds
 [^notes-harness]: Session notes on the runtime debug harness
 [^notes-crash]: Session notes on test host crashes
+[^task-235]: TASK-235
