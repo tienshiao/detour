@@ -2,7 +2,7 @@ import Foundation
 import WebKit
 import os
 
-private let log = Logger(subsystem: "com.detourbrowser.mac", category: "content-blocker")
+nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", category: "content-blocker")
 
 extension Notification.Name {
     static let contentBlockerRulesDidChange = Notification.Name("contentBlockerRulesDidChange")
@@ -387,7 +387,7 @@ class ContentBlockerManager {
     /// `rulesFormatVersion` change), then checks whether it is due a refresh.
     /// `onMiss` runs on the main queue when there is no cached text or it did
     /// not compile. Call on the main queue.
-    private func loadAndCompileFromCache(list: FilterList, onMiss: @escaping () -> Void) {
+    private func loadAndCompileFromCache(list: FilterList, onMiss: @escaping @MainActor () -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
         let textFile = cacheDir.appendingPathComponent("\(list.identifier).txt")
         // A missing cache goes straight to its fallback download instead of

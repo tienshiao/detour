@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-11-02
+* **Update**: TASK-231.3 — [Content blocking](features/content-blocking.md) Threading: rules are `ContentRule = [String: any Sendable]` so the parse-queue → main → work-queue hand-offs are compiler-checked; parser and encoding helpers nonisolated; `encodedRuleList` checks `isValidJSONObject` first.
 * **Update**: TASK-231.2 — [History database](architecture/history-database.md) and [Session database](architecture/session-database.md): both database types are nonisolated and `Sendable`, write completions `@Sendable`, the lock-guarded caches `Mutex`es, record types nonisolated with `TabRecord.init(tab:…)` main-actor isolated. Harness: `docs/harness/task231-2-harness.patch`.
 * **Creation**: TASK-231.1 — [Swift concurrency checking](platform/swift-concurrency-checking.md): main-actor default isolation and complete checking for the app target; WebKit delegate methods whose closure types drift from the SDK's are silently never called (guarded by `WebKitDelegateReachabilityTests`), the implicit-deinit isolation error, command-line settings leaking into packages, and which settings carry runtime meaning in the Swift 5 mode. Linked from [WKWebView delegate call order](platform/wkwebview-delegate-order.md) and [Build and test](playbooks/build-and-test.md). Runtime harness: `docs/harness/task231-1-harness.patch` with `docs/harness/task231-1-fixture-server.py` (dialogs, file panel, microphone and HTTP auth in a browser window and a Quick Detour).
 

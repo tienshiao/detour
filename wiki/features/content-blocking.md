@@ -4,8 +4,11 @@ title: Content blocking
 description: "The built-in blocker: EasyList-family filter lists compiled to WKContentRuleLists, per-profile list toggles, the per-site switch implemented through a WebKit preferences SPI, and the blocked-resource counter."
 tags: [content-blocker, webkit, profiles, spi, privacy]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T01:17:08Z }
 sources:
+  - id: task-231-3
+    resource: backlog:TASK-231.3
+    title: Content-blocker list parsing and rule compilation are compiler-checked across threads
   - id: manager
     resource: ../../Detour/Browser/ContentBlocker/ContentBlockerManager.swift
     title: ContentBlockerManager.swift
@@ -599,6 +602,17 @@ bookkeeping:[^task-200]
 | `WKContentRuleListStore` compile / look up / remove / list identifiers | main (the calls), WebKit's own work queue (the compile to bytecode, file I/O) |
 | Record the compiled list and counts, attach (`reapplyRuleLists` → each window's user content controllers) | main |
 
+The compiler checks these hand-offs (TASK-231.3):[^task-231-3] a rule is
+`ContentRule = [String: any Sendable]`, not `[String: Any]`, so a parsed list
+can cross from the parse queue to main and on to the work queue as a
+`Sendable` value; `EasyListParser`, the chunking helpers and
+`encodedRuleList` are `nonisolated`; the work queue's closures are
+`@Sendable` and their continuations `@MainActor`. `any Sendable` changes no
+runtime representation, so the JSON is byte-for-byte what it was.
+`encodedRuleList` checks `JSONSerialization.isValidJSONObject` first: the
+type admits any `Sendable` value, and a non-JSON one would otherwise raise an
+Objective-C exception on the work queue instead of failing the compile.
+
 What WebKit requires (`APIContentRuleListStore.cpp`, main as of
 2026-10):[^webkit-rule-list-store] `WKContentRuleListStore` is
 `WK_SWIFT_UI_ACTOR`, and every store call (`compileContentRuleList`,
@@ -858,3 +872,4 @@ EasyPrivacy cannot un-block something EasyList blocks.
 [^webkit-rule-list-store]: WebKit APIContentRuleListStore.cpp (main-thread asserts, JSON parsed on main, work queue per store path)
 [^webkit-backend]: WebKit ContentExtensionsBackend.cpp (per-list evaluation, global style sheet gate)
 [^webkit-compiler]: WebKit ContentExtensionCompiler.cpp (action merging, conditions)
+[^task-231-3]: TASK-231.3

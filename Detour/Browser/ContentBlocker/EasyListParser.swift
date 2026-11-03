@@ -1,6 +1,13 @@
 import Foundation
 
-class EasyListParser {
+/// One WebKit content rule as the parser emits it: a JSON object whose values
+/// are strings, numbers, booleans and arrays and objects of them. `Sendable`
+/// values, so a parsed list can be handed from the parse queue to the main
+/// thread and the rule store's work queue without copying.
+typealias ContentRule = [String: any Sendable]
+
+/// Nonisolated: lists are parsed on the content blocker's parse queue.
+nonisolated final class EasyListParser: Sendable {
 
     /// The version of the rule JSON this parser emits for a given list text.
     /// A list WebKit's store holds from another version is recompiled from its
@@ -19,7 +26,7 @@ class EasyListParser {
     static let rulesFormatVersion = 3
 
     struct ParseResult {
-        let rules: [[String: Any]]
+        let rules: [ContentRule]
         let skippedCount: Int
     }
 
@@ -59,7 +66,7 @@ class EasyListParser {
     }
 
     func parse(text: String) -> ParseResult {
-        var sections = Array(repeating: [[String: Any]](), count: Section.allCases.count)
+        var sections = Array(repeating: [ContentRule](), count: Section.allCases.count)
         var skipped = 0
         let lines = text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
         // `$badfilter` disables the rule it repeats (without the option).
@@ -88,7 +95,7 @@ class EasyListParser {
         return ParseResult(rules: sections.flatMap { $0 }, skippedCount: skipped)
     }
 
-    private func parseLine(_ line: String) -> [(Section, [String: Any])] {
+    private func parseLine(_ line: String) -> [(Section, ContentRule)] {
         // Extended CSS / snippet filters — not supported in Safari
         if line.contains("#?#") || line.contains("#@?#") ||
            line.contains("#$#") || line.contains("#@$#") {
@@ -99,7 +106,7 @@ class EasyListParser {
         if let hashRange = line.range(of: "##") {
             guard let rule = parseElementHidingRule(line, separatorRange: hashRange) else { return [] }
             // Generic: no included domain (`##sel`, `~domain##sel`).
-            let trigger = rule["trigger"] as? [String: Any]
+            let trigger = rule["trigger"] as? ContentRule
             let isGeneric = trigger?["if-domain"] == nil && trigger?["if-top-url"] == nil
             return [(isGeneric ? .genericHiding : .specificHiding, rule)]
         }
@@ -274,7 +281,7 @@ class EasyListParser {
     }
 
     /// Sets the trigger's page condition. False when the rule applies on no page.
-    private func applyDomains(_ entries: [String], to trigger: inout [String: Any]) -> Bool {
+    private func applyDomains(_ entries: [String], to trigger: inout ContentRule) -> Bool {
         switch domainCondition(ofEntries: entries) {
         case .everyPage: break
         case .ifDomain(let domains): trigger["if-domain"] = domains
@@ -309,12 +316,12 @@ class EasyListParser {
 
     // MARK: - Element Hiding
 
-    private func parseElementHidingRule(_ line: String, separatorRange: Range<String.Index>) -> [String: Any]? {
+    private func parseElementHidingRule(_ line: String, separatorRange: Range<String.Index>) -> ContentRule? {
         let domainPart = String(line[line.startIndex..<separatorRange.lowerBound])
         let selector = String(line[separatorRange.upperBound...])
         guard !selector.isEmpty else { return nil }
 
-        var trigger: [String: Any] = ["url-filter": ".*"]
+        var trigger: ContentRule = ["url-filter": ".*"]
 
         if !domainPart.isEmpty {
             guard applyDomains(domainPart.split(separator: ",").map(String.init), to: &trigger) else { return nil }
@@ -347,7 +354,7 @@ class EasyListParser {
     ///   resource type the exception would otherwise undo every block rule
     ///   for its URLs (`@@||accounts.google.com^$popup` did, TASK-199).
     /// - Anything else is a network exception.
-    private func parseExceptionRules(_ line: String) -> [(Section, [String: Any])] {
+    private func parseExceptionRules(_ line: String) -> [(Section, ContentRule)] {
         let options = Set(optionTokens(in: line))
         if options.contains("document") {
             let pageWide = pageWideException(line).map { [(Section.documentExceptions, $0)] } ?? []
@@ -384,7 +391,7 @@ class EasyListParser {
             option.hasPrefix("rewrite=") || option.hasPrefix("redirect=") || option.hasPrefix("csp=")
     }
 
-    private func networkExceptionRules(_ line: String) -> [[String: Any]] {
+    private func networkExceptionRules(_ line: String) -> [ContentRule] {
         let urlFilters = convertPatternToRegexes(line)
         guard !urlFilters.isEmpty else { return [] }
         return urlFilters.compactMap { urlFilter in
@@ -405,9 +412,9 @@ class EasyListParser {
     /// `domain=` option's domains (`if-domain`). A WebKit trigger takes one
     /// page condition, so a rule with both keeps the pattern. Nil when the
     /// rule names no page.
-    private func pageWideException(_ line: String) -> [String: Any]? {
+    private func pageWideException(_ line: String) -> ContentRule? {
         let pattern = patternPart(of: line)
-        var trigger: [String: Any] = ["url-filter": ".*"]
+        var trigger: ContentRule = ["url-filter": ".*"]
         if pattern.isEmpty || pattern == "*" {
             // The domains it names: `if-domain`, or `if-top-url` for included
             // domains with excluded subdomains. Only exclusions name no page.
@@ -446,7 +453,7 @@ class EasyListParser {
 
     // MARK: - Blocking Rules
 
-    private func parseBlockingRules(_ line: String) -> [[String: Any]] {
+    private func parseBlockingRules(_ line: String) -> [ContentRule] {
         let urlFilters = convertPatternToRegexes(line)
         guard !urlFilters.isEmpty else { return [] }
 
@@ -469,8 +476,8 @@ class EasyListParser {
     /// The trigger of a network rule for one of its URL filters. Nil when its
     /// `domain=` list leaves no page (every included domain excluded again,
     /// or none sanitises).
-    private func buildTrigger(from line: String, urlFilter: String) -> [String: Any]? {
-        var trigger: [String: Any] = ["url-filter": urlFilter]
+    private func buildTrigger(from line: String, urlFilter: String) -> ContentRule? {
+        var trigger: ContentRule = ["url-filter": urlFilter]
         var options: [String] = []
 
         // Extract options after $

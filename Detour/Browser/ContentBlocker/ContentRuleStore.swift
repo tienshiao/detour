@@ -2,7 +2,7 @@ import Foundation
 import WebKit
 import os
 
-private let log = Logger(subsystem: "com.detourbrowser.mac", category: "content-blocker")
+nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", category: "content-blocker")
 
 /// Where the content blocker keeps its compiled rule lists, downloaded filter
 /// list text and bookkeeping defaults (TASK-36).
@@ -56,7 +56,7 @@ struct ContentBlockerStorage {
 /// rule (an `@@` exception) only undoes rules earlier in its own list. So a
 /// split list's chunks are not plain slices: every chunk ends with the list's
 /// exceptions (`chunks(of:maxRulesPerList:isException:)`, TASK-155).
-enum ContentRuleListChunks {
+nonisolated enum ContentRuleListChunks {
     /// One rule list of a filter list.
     struct Chunk<Rule> {
         /// What is compiled, at most the cap.
@@ -129,7 +129,7 @@ enum ContentRuleListChunks {
     /// parser puts first, stays together at the start of the first chunk as
     /// long as it is shorter than a chunk. A page-wide exception after the
     /// first block rule (a `$document` allowlist) is carried like any other.
-    static func chunks(ofCompiledRules rules: [[String: Any]], maxRulesPerList: Int) -> [Chunk<[String: Any]>] {
+    static func chunks(ofCompiledRules rules: [ContentRule], maxRulesPerList: Int) -> [Chunk<ContentRule>] {
         let carried = carriedExceptions(rules)
         return chunks(of: Array(rules.indices), maxRulesPerList: maxRulesPerList) { carried[$0] }
             .map { Chunk(rules: $0.rules.map { rules[$0] }, countedRuleCount: $0.countedRuleCount) }
@@ -137,11 +137,11 @@ enum ContentRuleListChunks {
 
     /// How many of the rules `chunks(ofCompiledRules:…)` carries into every
     /// chunk of a split list.
-    static func carriedExceptionCount(ofCompiledRules rules: [[String: Any]]) -> Int {
+    static func carriedExceptionCount(ofCompiledRules rules: [ContentRule]) -> Int {
         carriedExceptions(rules).lazy.filter { $0 }.count
     }
 
-    private static func carriedExceptions(_ rules: [[String: Any]]) -> [Bool] {
+    private static func carriedExceptions(_ rules: [ContentRule]) -> [Bool] {
         let firstBlock = rules.firstIndex { actionType($0) == "block" } ?? rules.endIndex
         return rules.indices.map { index in
             isException(rules[index]) && !(index < firstBlock && isPageWideException(rules[index]))
@@ -152,17 +152,17 @@ enum ContentRuleListChunks {
     /// before it for every load (`url-filter` `.*`) of the pages its condition
     /// names (`EasyListParser`'s `$generichide`, `$elemhide` and `$document`
     /// rules).
-    static func isPageWideException(_ rule: [String: Any]) -> Bool {
-        isException(rule) && (rule["trigger"] as? [String: Any])?["url-filter"] as? String == ".*"
+    static func isPageWideException(_ rule: ContentRule) -> Bool {
+        isException(rule) && (rule["trigger"] as? ContentRule)?["url-filter"] as? String == ".*"
     }
 
-    private static func actionType(_ rule: [String: Any]) -> String? {
-        (rule["action"] as? [String: Any])?["type"] as? String
+    private static func actionType(_ rule: ContentRule) -> String? {
+        (rule["action"] as? ContentRule)?["type"] as? String
     }
 
     /// Whether a compiled rule is an exception: its action undoes the rules
     /// before it in the same rule list.
-    static func isException(_ rule: [String: Any]) -> Bool {
+    static func isException(_ rule: ContentRule) -> Bool {
         actionType(rule) == "ignore-previous-rules"
     }
 
@@ -241,7 +241,7 @@ class ContentRuleStore {
     private let maxRulesPerList: Int
 
     /// Turns rules into the JSON WebKit compiles; called on `workQueue` only.
-    typealias RuleListEncoder = ([[String: Any]]) -> String?
+    typealias RuleListEncoder = @Sendable ([ContentRule]) -> String?
     /// Compiles JSON into a rule list under an identifier, completing on the
     /// main queue: `WKContentRuleListStore.compileContentRuleList`. Called on
     /// the main queue only.
@@ -303,11 +303,15 @@ class ContentRuleStore {
 
     /// The JSON WebKit compiles a rule list from. Never on the main queue: it
     /// takes a few hundred milliseconds for a real list.
-    static func encodedRuleList(_ rules: [[String: Any]]) -> String? {
+    nonisolated static func encodedRuleList(_ rules: [ContentRule]) -> String? {
         #if DEBUG
         dispatchPrecondition(condition: .notOnQueue(.main))
         #endif
-        guard let data = try? JSONSerialization.data(withJSONObject: rules) else { return nil }
+        // `ContentRule` admits any Sendable value, and JSONSerialization raises
+        // an Objective-C exception (which `try?` does not catch) for one that
+        // is not a JSON value: refuse the list instead of crashing.
+        guard JSONSerialization.isValidJSONObject(rules),
+              let data = try? JSONSerialization.data(withJSONObject: rules) else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
@@ -405,7 +409,7 @@ class ContentRuleStore {
     /// When `invalidateAll` runs before it completes, it completes
     /// `.superseded` having recorded nothing, once what WebKit wrote for it
     /// is removed again, so the next compile of the list starts after that.
-    func compile(identifier: String, rules: [[String: Any]], completion: @escaping (CompileOutcome) -> Void) {
+    func compile(identifier: String, rules: [ContentRule], completion: @escaping (CompileOutcome) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
         let generation = generation
         let start = { [weak self] in
@@ -436,15 +440,15 @@ class ContentRuleStore {
     /// One chunk as handed to WebKit: its rules (kept for the bad-rule
     /// search), how many of them its list counts, and their JSON (nil when
     /// encoding failed).
-    private struct EncodedChunk {
-        let rules: [[String: Any]]
+    nonisolated private struct EncodedChunk: Sendable {
+        let rules: [ContentRule]
         let countedRuleCount: Int
         let json: String?
     }
 
     /// Chunks and encodes the rules on `workQueue`, then compiles every chunk
     /// from the main queue.
-    private func compileNow(identifier: String, rules: [[String: Any]], generation: Int,
+    private func compileNow(identifier: String, rules: [ContentRule], generation: Int,
                             completion: @escaping (CompileOutcome) -> Void) {
         guard !isSuperseded(generation) else {
             log.info("Not compiling \(identifier, privacy: .public): the rule lists were cleared after it was asked for")
@@ -602,7 +606,7 @@ class ContentRuleStore {
 
     /// Runs `work` on `workQueue` and hands its result to `then` on the main
     /// queue.
-    private func offMain<T>(_ work: @escaping () -> T, then: @escaping (T) -> Void) {
+    private func offMain<T: Sendable>(_ work: @escaping @Sendable () -> T, then: @escaping @MainActor (T) -> Void) {
         workQueue.async {
             let result = work()
             DispatchQueue.main.async { then(result) }
@@ -614,7 +618,7 @@ class ContentRuleStore {
     /// When full compilation fails, use binary search to find and strip only
     /// the bad rules. The search's probes and the cleaned rules are sliced and
     /// encoded on `workQueue`; only WebKit's compile calls are made on main.
-    private func compileWithFallback(identifier: String, rules: [[String: Any]], countedRuleCount: Int, generation: Int,
+    private func compileWithFallback(identifier: String, rules: [ContentRule], countedRuleCount: Int, generation: Int,
                                      completion: @escaping (WKContentRuleList?) -> Void) {
         log.info("Fallback: binary search for bad rules in \(rules.count) rules for \(identifier, privacy: .public)")
 
@@ -661,7 +665,7 @@ class ContentRuleStore {
     /// Recursively bisects rules to find indices of individually bad rules.
     /// `rules` is a slice of the chunk, so its indices are the chunk's.
     /// Stops probing once superseded (the caller then discards the result).
-    private func findBadRules(_ rules: ArraySlice<[String: Any]>, depth: Int, identifier: String, generation: Int,
+    private func findBadRules(_ rules: ArraySlice<ContentRule>, depth: Int, identifier: String, generation: Int,
                               completion: @escaping ([Int]) -> Void) {
         guard !isSuperseded(generation) else { return completion([]) }
         // Bail out if recursion is too deep
@@ -701,7 +705,7 @@ class ContentRuleStore {
 
     /// Whether `rules` compile on their own: encoded on `workQueue`, compiled
     /// under the probe's identifier and removed again.
-    private func testCompile(_ rules: ArraySlice<[String: Any]>, identifier: String, completion: @escaping (Bool) -> Void) {
+    private func testCompile(_ rules: ArraySlice<ContentRule>, identifier: String, completion: @escaping (Bool) -> Void) {
         let encode = encode
         offMain({ encode(Array(rules)) }, then: { [weak self] jsonString in
             guard let self, let jsonString else { return completion(false) }
