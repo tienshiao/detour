@@ -658,6 +658,29 @@ nonisolated final class ExtensionPermissionRestoreTests: XCTestCase {
                        "a grant the manifest never asked for does not count")
     }
 
+    /// TASK-260: the plan for a `permissions.request` of names WebKit does not
+    /// know. Every name is checked against the manifest first, as in Chrome,
+    /// so a denied name does not hide an undeclared one; a required name is
+    /// held; a denied optional one answers false without asking; an
+    /// undecided optional one is prompted for.
+    @MainActor func testOutsideWebKitPermissionRequestPlan() async throws {
+        let ext = try await makeTestExtension(permissions: ["management"], optionalPermissions: ["history"])
+        let context = try loadContext(makeProfile("Permission Request Plan Profile"), ext)
+        let plan = { (names: [String]) in
+            ExtensionPolyfillHandler.permissionRequestPlan(names, manifest: ext.manifest, context: context)
+        }
+
+        XCTAssertEqual(plan(["management"]), .answer(true), "required: held")
+        XCTAssertEqual(plan(["history", "management"]), .prompt(["history"]), "only the undecided name is asked about")
+        context.setPermissionStatus(.deniedExplicitly, for: WKWebExtension.Permission(rawValue: "history"))
+        XCTAssertEqual(plan(["history"]), .answer(false), "denied: false without asking")
+        context.setPermissionStatus(.deniedExplicitly, for: WKWebExtension.Permission(rawValue: "management"))
+        XCTAssertEqual(plan(["management"]), .answer(false), "required, switched off: false")
+        XCTAssertEqual(plan(["history", "bookmarks"]),
+                       .refuse(ExtensionPolyfillHandler.permissionRequestNotInManifestError),
+                       "an undeclared name refuses the request even after a denied one")
+    }
+
     // MARK: - TASK-19 review: permissions.request sub-patterns
 
     /// `permissions.request({origins: ["https://mail.example/*"]})` prompts with

@@ -781,10 +781,16 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
 
     // MARK: - Optional permission granted at runtime (TASK-250)
 
+    /// The refusals of a call whose declared permission is not active: an
+    /// optional one not granted, and one denied (TASK-260).
+    static let optionalNotGranted = "notifications permission is optional and has not been granted"
+    static let deniedByUser = "notifications permission denied by the user"
+
     /// `notificationGate` from both transports, refused or served. The
     /// namespace is there either way: an optional permission installs it at
     /// injection and the handler decides each call.
     @MainActor private func assertOptionalGate(served: Bool, _ label: String, in page: WKWebView,
+                                               refusal: String = ExtensionNotificationOrderingTests.optionalNotGranted,
                                                file: StaticString = #filePath, line: UInt = #line) async throws {
         for transport in [Transport.page, .worker] {
             let id = "optional-\(label.replacingOccurrences(of: " ", with: "-"))-\(transport)"
@@ -798,8 +804,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
                                where_, file: file, line: line)
             } else {
                 XCTAssertNil(direct["resolved"], "must be refused: \(where_)", file: file, line: line)
-                XCTAssertEqual(direct["rejected"] as? String, "notifications permission not declared",
-                               where_, file: file, line: line)
+                XCTAssertEqual(direct["rejected"] as? String, refusal, where_, file: file, line: line)
             }
         }
     }
@@ -859,7 +864,8 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             let (profile, center) = try makeProfile("Optional Notifications Saved \(granted)")
             center.holdsAdds = false
             let page = try await loadPage(ext, in: profile)
-            try await assertOptionalGate(served: granted, granted ? "saved grant" : "saved denial", in: page)
+            try await assertOptionalGate(served: granted, granted ? "saved grant" : "saved denial", in: page,
+                                         refusal: Self.deniedByUser)
         }
     }
 
@@ -889,7 +895,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
                 extensionID: ext.id, key: "notifications", type: .apiPermission, granted: on)
         }
         setSwitch(false)
-        try await assertOptionalGate(served: false, "switched off", in: page)
+        try await assertOptionalGate(served: false, "switched off", in: page, refusal: Self.deniedByUser)
         XCTAssertEqual(center.addedIdentifiers.count, 2, "nothing is shown while it is off")
 
         setSwitch(true)
@@ -899,7 +905,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         setSwitch(false)
         profile.unloadExtension(id: ext.id)
         try await assertOptionalGate(served: false, "switched off, after a reload",
-                                     in: try await loadPage(ext, in: profile))
+                                     in: try await loadPage(ext, in: profile), refusal: Self.deniedByUser)
         XCTAssertEqual(AppDatabase.shared.permissionStatus(extensionID: ext.id, key: "notifications",
                                                            type: .apiPermission), .denied)
     }

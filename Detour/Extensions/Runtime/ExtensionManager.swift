@@ -43,6 +43,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// rather than stacking alerts.
     private var pendingUninstallSelfConfirmations: Set<String> = []
 
+    /// Extensions whose `permissions.request` prompt for a permission outside
+    /// WebKit (TASK-260) is on screen or about to be. A second request while
+    /// one is pending is refused rather than stacking alerts.
+    private var pendingPermissionRequestPrompts: Set<String> = []
+
     /// Set once `loadInstalledExtensions` reaches its per-profile load. A profile
     /// added before then is loaded by that loop, so `profileWasAdded` leaves it
     /// alone (and never loads a half-populated `extensions` list).
@@ -2217,14 +2222,23 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // under a broad origin also took out grants whose rows are kept (a
         // required pattern under it), and re-running the restore there puts
         // them back now rather than at the next load.
-        let contexts = TabStore.shared.profiles.compactMap { $0.extensionContext(for: extensionID) }
-        let keys: [(key: String, type: ExtensionPermissionType)] = revoked.compactMap { record in
+        clearRemovedGrants(extensionID: extensionID, keys: revoked.compactMap { record in
             ExtensionPermissionType(rawValue: record.permissionType).map { (record.permissionKey, $0) }
-        }
+        })
+    }
+
+    /// Delete the saved grants of `keys` the extension removed itself, then
+    /// bring every loaded context of it to what the next load restores.
+    /// Shared by WebKit's removals (`contextDidLoseGrants`) and Detour's own
+    /// for the names WebKit does not know (`removeOutsideWebKitPermissions`).
+    @MainActor
+    private func clearRemovedGrants(extensionID: String, keys: [(key: String, type: ExtensionPermissionType)]) {
+        guard !keys.isEmpty else { return }
         for (key, type) in keys {
             log.info("\(extensionID, privacy: .public) removed its grant of \(key, privacy: .public); the saved decision is cleared")
             AppDatabase.shared.revokePermission(extensionID: extensionID, key: key, type: type)
         }
+        let contexts = TabStore.shared.profiles.compactMap { $0.extensionContext(for: extensionID) }
         applySavedDecisions(extensionID: extensionID, keys: keys, to: contexts)
         postPermissionDecisionsDidChange(extensionID: extensionID)
     }
@@ -2312,6 +2326,94 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             }
         }
         return revoked
+    }
+
+    // MARK: - permissions.request / remove for permissions outside WebKit (TASK-260)
+
+    /// How Detour's prompt for a `permissions.request` of `history` or
+    /// `management` ended.
+    enum OutsideWebKitPermissionRequestOutcome: Equatable {
+        /// Approved, and granted.
+        case approved
+        /// The user denied; the denial is saved.
+        case denied
+        /// Not asked: `message` is the rejection the extension sees.
+        case refused(String)
+    }
+
+    /// Ask the user about `names` (permissions WebKit does not know, already
+    /// checked to be optional, undecided and not held) for the extension's own
+    /// `permissions.request`, with the same alert WebKit's prompts use.
+    ///
+    /// An answer is saved through `setPermissionDecision`, the Settings path,
+    /// so it reaches every loaded context, is restored at the next load and
+    /// updates an open Settings pane. A denial is saved as denied, as
+    /// `handlePermissionPrompt` saves one; a later request is then refused
+    /// without asking, as WebKit refuses one for a denied permission of its
+    /// own, until the Settings switch is turned on.
+    ///
+    /// A request that also names WebKit's own permissions has had WebKit's
+    /// prompt first; the polyfill takes WebKit's grant back when this one is
+    /// denied, so the request is granted whole or not at all.
+    ///
+    /// Chrome, and WebKit for its own names, require a user gesture for
+    /// `permissions.request`. Detour cannot check one here: a polyfill
+    /// request carries no gesture signal to the handler, a worker has none,
+    /// and a check in the polyfill would be the extension's own code to skip.
+    /// The prompt is the guard, and a second request while one is pending is
+    /// refused rather than stacking alerts.
+    func requestOutsideWebKitPermissions(extensionID: String, names: [String],
+                                         completion: @escaping (OutsideWebKitPermissionRequestOutcome) -> Void) {
+        guard self.extension(withID: extensionID) != nil else {
+            completion(.refused("Failed to find extension with id \(extensionID)."))
+            return
+        }
+        // Claimed here, not in the task: WebKit dispatches a batch of incoming
+        // messages in one go, so a second call can arrive before the task runs.
+        guard pendingPermissionRequestPrompts.insert(extensionID).inserted else {
+            completion(.refused(Self.permissionRequestPendingError))
+            return
+        }
+        // Off the caller's stack: the alert runs a modal loop.
+        Task { @MainActor in
+            let approved = self.promptUserForPermission(
+                extensionName: self.displayName(for: extensionID),
+                itemDescriptions: names.map(ExtensionPermissionDescriptions.describe))
+            self.pendingPermissionRequestPrompts.remove(extensionID)
+            // Uninstalled while the alert was up.
+            guard self.extension(withID: extensionID) != nil else {
+                completion(.refused("Failed to find extension with id \(extensionID)."))
+                return
+            }
+            guard approved else {
+                for name in names {
+                    self.setPermissionDecision(extensionID: extensionID, key: name, type: .apiPermission, granted: false)
+                }
+                completion(.denied)
+                return
+            }
+            for name in names {
+                log.info("\(extensionID, privacy: .public) was granted \(name, privacy: .public) through permissions.request")
+                self.setPermissionDecision(extensionID: extensionID, key: name, type: .apiPermission, granted: true)
+            }
+            completion(.approved)
+        }
+    }
+
+    /// The rejection of a `permissions.request` made while the extension's
+    /// previous one is still on screen.
+    static let permissionRequestPendingError = "A permissions request is already pending."
+
+    /// The extension's own `permissions.remove` of optional `names` WebKit
+    /// does not know: what TASK-258 does for WebKit's own removals. A saved
+    /// grant is deleted, not saved as denied, so a later request prompts
+    /// again, and every loaded context of the extension is brought to what the
+    /// next load restores. A saved denial is left alone: there is no grant to
+    /// remove.
+    func removeOutsideWebKitPermissions(extensionID: String, names: [String]) {
+        clearRemovedGrants(extensionID: extensionID, keys: names.filter {
+            AppDatabase.shared.permissionStatus(extensionID: extensionID, key: $0, type: .apiPermission) == .granted
+        }.map { ($0, .apiPermission) })
     }
 
     /// Find the extension ID for a context by searching the owning profile.

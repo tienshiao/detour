@@ -62,6 +62,7 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         }
         createdSpaceIDs.removeAll()
         ExtensionManager.shared.lastActiveSpaceID = previousLastActiveSpaceID
+        ExtensionManager.shared.permissionPromptAnswerOverride = nil
         for id in registeredExtensionIDs {
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
             // Cascades to the permission rows a test saved (TASK-250).
@@ -98,6 +99,10 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
                 (e) => sendResponse({ error: String(e && e.message ? e.message : e) }));
             return true;
         }
+        if (message.type === 'permissionsCall') {
+            permissionsCall(message.method, message.details, message.form).then((outcome) => sendResponse(outcome));
+            return true;
+        }
         if (message.type === 'historyPromise') {
             let promise;
             try {
@@ -132,6 +137,27 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
     /// transport — are answered, for the permission gates (TASK-251). Run the
     /// same way from the page and the worker.
     private static let gateJS = """
+    function permissionsCall(method, details, form) {
+        const describe = (e) => String(e && e.message ? e.message : e);
+        return new Promise((resolve) => {
+            try {
+                if (form === 'callback') {
+                    chrome.permissions[method](details, function(...args) {
+                        const lastError = chrome.runtime.lastError;
+                        resolve(lastError
+                            ? { settled: 'rejected', message: String(lastError.message), argc: args.length }
+                            : { settled: 'resolved', value: args.length ? args[0] : null, argc: args.length });
+                    });
+                } else {
+                    Promise.resolve(chrome.permissions[method](details)).then(
+                        (value) => resolve({ settled: 'resolved', value: value === undefined ? null : value }),
+                        (e) => resolve({ settled: 'rejected', message: describe(e) }));
+                }
+            } catch (e) {
+                resolve({ settled: 'threw', message: describe(e) });
+            }
+        });
+    }
     async function namespaceGate() {
         const settle = async (promise) => {
             try { return { resolved: await promise }; }
@@ -935,7 +961,7 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         let grantedPage = try await loadPage(granted, in: a.profile)
 
         let cases: [(page: WKWebView, js: String, json: [String: Any], expected: String)] = [
-            (refusedPage, "{ text: '' }", ["text": ""], "history permission not declared"),
+            (refusedPage, "{ text: '' }", ["text": ""], Refusal.optionalNotGranted.text("history")),
             (grantedPage, "{ text: 5 }", ["text": 5], "history.search: query.text must be a string"),
         ]
         for (page, js, json, expected) in cases {
@@ -1078,10 +1104,23 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         XCTAssertEqual(AppDatabase.shared.loadPermissions(extensionID: ext.id).count, keys.count, "the rows were saved")
     }
 
+    /// The three refusals of a call whose permission is not active (TASK-260).
+    private enum Refusal {
+        case notDeclared, optionalNotGranted, denied
+        func text(_ permission: String) -> String {
+            switch self {
+            case .notDeclared: "\(permission) permission not declared"
+            case .optionalNotGranted: "\(permission) permission is optional and has not been granted"
+            case .denied: "\(permission) permission denied by the user"
+            }
+        }
+    }
+
     /// Both namespaces are there (they are built at injection, before any
     /// grant can arrive) and the requests made past them are `served` or
     /// refused, from the page and from the worker.
     @MainActor private func assertOptionalGate(served: Bool, in page: WKWebView, _ label: String,
+                                               refusal: Refusal = .optionalNotGranted,
                                                file: StaticString = #filePath, line: UInt = #line) async throws {
         for transport in [GateTransport.page, .worker] {
             let outcome = try await gate(via: transport, in: page, file: file, line: line)
@@ -1096,10 +1135,10 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
                 XCTAssertNotNil(getAll["resolved"] as? [Any], where_, file: file, line: line)
             } else {
                 XCTAssertNil(search["resolved"], "must be refused: \(where_)", file: file, line: line)
-                XCTAssertTrue(carries(search["rejected"] as? String ?? "", "history permission not declared"),
+                XCTAssertTrue(carries(search["rejected"] as? String ?? "", refusal.text("history")),
                               where_, file: file, line: line)
                 XCTAssertNil(getAll["resolved"], "must be refused: \(where_)", file: file, line: line)
-                XCTAssertTrue(carries(getAll["rejected"] as? String ?? "", "management permission not declared"),
+                XCTAssertTrue(carries(getAll["rejected"] as? String ?? "", refusal.text("management")),
                               where_, file: file, line: line)
             }
         }
@@ -1123,10 +1162,12 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         try await assertOptionalGate(served: false, in: page, "before the grant")
         // The namespace is there before the grant, so the public call itself
         // must refuse in both forms: a rejection, and a callback with lastError.
+        // The refusal says the permission is optional and not granted, not
+        // that it is undeclared (TASK-260).
         assertRejected(try await pagePromise("{ text: '' }", in: page),
-                       reading: "history permission not declared", "promise, before the grant")
+                       reading: Refusal.optionalNotGranted.text("history"), "promise, before the grant")
         assertCallbackFailed(try await pageCallback("{ text: '' }", in: page),
-                             reading: "history permission not declared", "callback, before the grant")
+                             reading: Refusal.optionalNotGranted.text("history"), "callback, before the grant")
 
         for key in ["history", "management"] {
             ExtensionManager.shared.setPermissionDecision(extensionID: ext.id, key: key, type: .apiPermission, granted: true)
@@ -1138,7 +1179,7 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         for key in ["history", "management"] {
             ExtensionManager.shared.setPermissionDecision(extensionID: ext.id, key: key, type: .apiPermission, granted: false)
         }
-        try await assertOptionalGate(served: false, in: page, "after the revocation")
+        try await assertOptionalGate(served: false, in: page, "after the revocation", refusal: .denied)
     }
 
     /// POSITIVE, new context: a grant saved earlier is restored when the
@@ -1169,7 +1210,7 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         try XCTUnwrap(b.profile.extensionContext(for: ext.id))
             .setPermissionStatus(.grantedExplicitly, for: WKWebExtension.Permission(rawValue: "history"))
 
-        try await assertOptionalGate(served: false, in: pageA, "saved denial")
+        try await assertOptionalGate(served: false, in: pageA, "saved denial", refusal: .denied)
         let outcomeB = try await gate(via: .page, in: pageB)
         XCTAssertNotNil(((outcomeB["directSearch"] as? [String: Any])?["resolved"] as? [String: Any])?["results"],
                         "the grant in B serves B: \(outcomeB)")
@@ -1201,11 +1242,11 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
             }
         }
         setSwitch(false)
-        try await assertOptionalGate(served: false, in: page, "switched off")
+        try await assertOptionalGate(served: false, in: page, "switched off", refusal: .denied)
         assertRejected(try await pagePromise("{ text: '' }", in: page),
-                       reading: "history permission not declared", "promise, switched off")
+                       reading: Refusal.denied.text("history"), "promise, switched off")
         assertCallbackFailed(try await pageCallback("{ text: '' }", in: page),
-                             reading: "history permission not declared", "callback, switched off")
+                             reading: Refusal.denied.text("history"), "callback, switched off")
 
         setSwitch(true)
         try await assertOptionalGate(served: true, in: page, "switched on again")
@@ -1213,7 +1254,7 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         setSwitch(false)
         a.profile.unloadExtension(id: ext.id)
         let reloaded = try await loadPage(ext, in: a.profile)
-        try await assertOptionalGate(served: false, in: reloaded, "switched off, after a reload")
+        try await assertOptionalGate(served: false, in: reloaded, "switched off, after a reload", refusal: .denied)
         for key in ["history", "management"] {
             XCTAssertEqual(AppDatabase.shared.permissionStatus(extensionID: ext.id, key: key, type: .apiPermission),
                            .denied, "the denial of required \(key) is kept")
@@ -1230,7 +1271,295 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         let undecided = try await makeExtension(permissions: ["history", "management"])
         let a = try makeProfile("Required Gate Denied", database: db)
 
-        try await assertOptionalGate(served: false, in: try await loadPage(denied, in: a.profile), "saved denial")
+        try await assertOptionalGate(served: false, in: try await loadPage(denied, in: a.profile), "saved denial",
+                                     refusal: .denied)
         try await assertOptionalGate(served: true, in: try await loadPage(undecided, in: a.profile), "no decision")
+    }
+
+    // MARK: - 7. permissions.request, contains and remove for history and management (TASK-260)
+
+    private enum CallForm: String { case promise, callback }
+
+    /// `chrome.permissions[method]({ permissions })` from `transport`, in
+    /// `form`: `settled` is "resolved" (with `value`) or "rejected" (with
+    /// `message`; for the callback form that is `runtime.lastError`).
+    @MainActor private func permissionsCall(_ method: String, _ permissions: [String], via transport: GateTransport,
+                                            _ form: CallForm = .promise, in page: WKWebView,
+                                            file: StaticString = #filePath, line: UInt = #line) async throws -> [String: Any] {
+        let details: [String: Any] = ["permissions": permissions]
+        switch transport {
+        case .page:
+            let raw = try await page.callAsyncJavaScript(
+                Self.gateJS + "\nreturn JSON.stringify(await permissionsCall(method, details, form));",
+                arguments: ["method": method, "details": details, "form": form.rawValue], contentWorld: .page)
+            let json = try XCTUnwrap(raw as? String, "expected a JSON string", file: file, line: line)
+            return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+                                 file: file, line: line)
+        case .worker:
+            let answer = try await askWorker(from: page, message: [
+                "type": "permissionsCall", "method": method, "details": details, "form": form.rawValue,
+            ])
+            XCTAssertNil(answer["lastError"] as? String, "the page could not reach the worker", file: file, line: line)
+            return try XCTUnwrap(answer["reply"] as? [String: Any], "the worker must answer: \(answer)",
+                                 file: file, line: line)
+        }
+    }
+
+    /// The call resolved with `expected`.
+    @MainActor private func assertAnswer(_ outcome: [String: Any], _ expected: Bool, _ what: String,
+                                         file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(outcome["settled"] as? String, "resolved", "\(what): \(outcome)", file: file, line: line)
+        XCTAssertEqual(outcome["value"] as? Bool, expected, "\(what): \(outcome)", file: file, line: line)
+    }
+
+    /// The call was refused with exactly `expected`.
+    @MainActor private func assertRefusal(_ outcome: [String: Any], _ expected: String, _ what: String,
+                                          file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(outcome["settled"] as? String, "rejected", "\(what): \(outcome)", file: file, line: line)
+        XCTAssertEqual(outcome["message"] as? String, expected, "\(what): \(outcome)", file: file, line: line)
+    }
+
+    /// Answer every permission prompt, Detour's and WebKit's, with `answer`
+    /// given its items, and record each prompt's items, sorted.
+    @MainActor private func recordPrompts(_ answer: @escaping ([String]) -> Bool) -> () -> [[String]] {
+        var prompts: [[String]] = []
+        ExtensionManager.shared.permissionPromptAnswerOverride = { items in
+            prompts.append(items.sorted())
+            return answer(items)
+        }
+        return { prompts }
+    }
+
+    @MainActor private func savedStatus(_ ext: WebExtension, _ key: String) -> ExtensionPermissionStatus? {
+        AppDatabase.shared.permissionStatus(extensionID: ext.id, key: key, type: .apiPermission)
+    }
+
+    @MainActor private static func describe(_ permission: String) -> String {
+        ExtensionPermissionDescriptions.describe(permission)
+    }
+
+    /// POSITIVE: `history` requested from the page (promise form) and
+    /// `management` from the worker (callback form) each show Detour's
+    /// prompt, with the wording WebKit's prompts use, and are granted on
+    /// Allow: `contains` turns from false to true, the decision is saved as
+    /// the Settings switch saves it, and the APIs are served from both
+    /// transports. A request for what is already held asks nothing.
+    @MainActor func testRequestGrantsOptionalHistoryAndManagementFromBothTransports() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["storage"], optionalPermissions: ["history", "management"])
+        let a = try makeProfile("Permissions Request Grant", database: db)
+        installTestExtension(ext, in: AppDatabase.shared)
+        let page = try await loadPage(ext, in: a.profile)
+        let prompts = recordPrompts { _ in true }
+
+        let legs: [(String, GateTransport, CallForm)] = [("history", .page, .promise), ("management", .worker, .callback)]
+        for (name, transport, form) in legs {
+            let label = "\(name), \(transport), \(form)"
+            assertAnswer(try await permissionsCall("contains", [name], via: transport, form, in: page), false,
+                         "\(label): contains before")
+            assertAnswer(try await permissionsCall("request", [name], via: transport, form, in: page), true,
+                         "\(label): request")
+            assertAnswer(try await permissionsCall("contains", [name], via: transport, form, in: page), true,
+                         "\(label): contains after")
+            XCTAssertEqual(savedStatus(ext, name), .granted, "\(label): the grant is saved")
+        }
+        XCTAssertEqual(prompts(), [[Self.describe("history")], [Self.describe("management")]],
+                       "one Detour prompt per request")
+        try await assertOptionalGate(served: true, in: page, "granted through permissions.request")
+
+        assertAnswer(try await permissionsCall("request", ["history", "management"], via: .worker, in: page), true,
+                     "a request for what is held")
+        XCTAssertEqual(prompts().count, 2, "a request for what is held asks nothing")
+    }
+
+    /// NEGATIVE: a request answered Deny resolves false from the page
+    /// (callback form) and saves the denial, as WebKit's prompt saves one; a
+    /// later request from the worker is answered false without asking again,
+    /// and the calls are refused as denied.
+    @MainActor func testDeniedRequestIsSavedAndNotAskedAgain() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["storage"], optionalPermissions: ["history", "management"])
+        let a = try makeProfile("Permissions Request Deny", database: db)
+        installTestExtension(ext, in: AppDatabase.shared)
+        let page = try await loadPage(ext, in: a.profile)
+        let prompts = recordPrompts { _ in false }
+
+        assertAnswer(try await permissionsCall("request", ["history", "management"], via: .page, .callback, in: page),
+                     false, "page, callback: request denied")
+        XCTAssertEqual(prompts(), [[Self.describe("history"), Self.describe("management")].sorted()],
+                       "one prompt for the whole request")
+        XCTAssertEqual(savedStatus(ext, "history"), .denied)
+        XCTAssertEqual(savedStatus(ext, "management"), .denied)
+
+        assertAnswer(try await permissionsCall("request", ["management"], via: .worker, in: page), false,
+                     "worker: request after a denial")
+        XCTAssertEqual(prompts().count, 1, "a denied permission is not asked about again")
+        assertAnswer(try await permissionsCall("contains", ["history"], via: .worker, .callback, in: page), false,
+                     "worker, callback: contains")
+        try await assertOptionalGate(served: false, in: page, "denied through permissions.request", refusal: .denied)
+    }
+
+    /// POSITIVE then NEGATIVE: `remove` from the page (promise form) and the
+    /// worker (callback form) revokes the grant everywhere and deletes the
+    /// saved row, so a relaunch keeps it revoked; the next request prompts
+    /// again (TASK-258's rule: the row is deleted, not saved as denied).
+    @MainActor func testRemoveIsSavedAndARelaunchKeepsItRevoked() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["storage"], optionalPermissions: ["history", "management"])
+        saveDecisions(["history", "management"], of: ext, status: .granted)
+        let a = try makeProfile("Permissions Remove", database: db)
+        let page = try await loadPage(ext, in: a.profile)
+        try await assertOptionalGate(served: true, in: page, "restored grant")
+
+        assertAnswer(try await permissionsCall("remove", ["history"], via: .page, in: page), true, "page: remove")
+        assertAnswer(try await permissionsCall("remove", ["management"], via: .worker, .callback, in: page), true,
+                     "worker, callback: remove")
+        assertAnswer(try await permissionsCall("contains", ["history"], via: .worker, in: page), false,
+                     "worker: contains after the page's remove")
+        assertAnswer(try await permissionsCall("contains", ["management"], via: .page, .callback, in: page), false,
+                     "page: contains after the worker's remove")
+        XCTAssertNil(savedStatus(ext, "history"), "the saved grant is deleted, not saved as denied")
+        XCTAssertNil(savedStatus(ext, "management"))
+        try await assertOptionalGate(served: false, in: page, "removed")
+
+        a.profile.unloadExtension(id: ext.id)
+        let reloaded = try await loadPage(ext, in: a.profile)
+        try await assertOptionalGate(served: false, in: reloaded, "removed, after a relaunch")
+        assertAnswer(try await permissionsCall("contains", ["history", "management"], via: .page, in: reloaded), false,
+                     "contains after a relaunch")
+
+        let prompts = recordPrompts { _ in true }
+        assertAnswer(try await permissionsCall("request", ["history"], via: .worker, in: reloaded), true,
+                     "worker: request after the relaunch")
+        XCTAssertEqual(prompts(), [[Self.describe("history")]], "the request prompts again")
+    }
+
+    /// A request naming `history` and WebKit's own `notifications` is granted
+    /// whole or not at all, as in Chrome. WebKit's prompt comes first, inside
+    /// the caller's user gesture, which WebKit requires: a denial there never
+    /// reaches Detour's prompt, and a denial in Detour's prompt takes back
+    /// what WebKit's just granted. Both approved, both are granted. From the
+    /// worker, which has no gesture, WebKit refuses the request and Detour
+    /// asks nothing.
+    @MainActor func testMixedRequestWithAWebKitPermissionIsGrantedWholeOrNotAtAll() async throws {
+        let db = try makeDatabase()
+        let a = try makeProfile("Permissions Mixed", database: db)
+        let history = Self.describe("history")
+        let notifications = Self.describe("notifications")
+        let mixed = ["history", "notifications"]
+        func makeLoaded() async throws -> (WebExtension, WKWebView) {
+            let ext = try await makeExtension(permissions: ["storage"], optionalPermissions: mixed)
+            installTestExtension(ext, in: AppDatabase.shared)
+            return (ext, try await loadPage(ext, in: a.profile))
+        }
+
+        // WebKit's prompt denied.
+        let (webKitDenied, pageA) = try await makeLoaded()
+        var prompts = recordPrompts { items in !items.contains(notifications) }
+        assertAnswer(try await permissionsCall("request", mixed, via: .page, in: pageA), false, "WebKit's prompt denied")
+        XCTAssertEqual(prompts(), [[notifications]], "Detour's prompt is never shown")
+        XCTAssertNil(savedStatus(webKitDenied, "history"), "Detour was not asked")
+        XCTAssertEqual(savedStatus(webKitDenied, "notifications"), .denied)
+
+        // Detour's prompt denied: WebKit's grant is taken back.
+        let (detourDenied, pageB) = try await makeLoaded()
+        prompts = recordPrompts { items in !items.contains(history) }
+        assertAnswer(try await permissionsCall("request", mixed, via: .page, .callback, in: pageB), false,
+                     "Detour's prompt denied")
+        XCTAssertEqual(prompts(), [[notifications], [history]], "WebKit's prompt first, then Detour's")
+        XCTAssertEqual(savedStatus(detourDenied, "history"), .denied)
+        assertAnswer(try await permissionsCall("contains", ["notifications"], via: .worker, in: pageB), false,
+                     "WebKit's grant was taken back")
+        try await waitUntil("the taken-back notifications grant to be cleared") {
+            savedStatus(detourDenied, "notifications") == nil
+        }
+
+        // Both approved.
+        let (approved, pageC) = try await makeLoaded()
+        prompts = recordPrompts { _ in true }
+        assertAnswer(try await permissionsCall("request", mixed, via: .page, in: pageC), true, "both approved")
+        XCTAssertEqual(prompts(), [[notifications], [history]])
+        XCTAssertEqual(savedStatus(approved, "history"), .granted)
+        XCTAssertEqual(savedStatus(approved, "notifications"), .granted)
+        assertAnswer(try await permissionsCall("contains", mixed, via: .worker, in: pageC), true, "a mixed contains")
+        let search = try await pagePromise("{ text: '' }", in: pageC)
+        XCTAssertEqual(search["settled"] as? String, "resolved", "history.search is served: \(search)")
+
+        // A mixed removal: WebKit removes its part, then Detour removes its own.
+        assertAnswer(try await permissionsCall("remove", mixed, via: .page, in: pageC), true, "a mixed remove")
+        assertAnswer(try await permissionsCall("contains", ["history"], via: .worker, in: pageC), false,
+                     "history removed")
+        assertAnswer(try await permissionsCall("contains", ["notifications"], via: .worker, in: pageC), false,
+                     "notifications removed")
+        XCTAssertNil(savedStatus(approved, "history"), "Detour's saved grant is deleted")
+        try await waitUntil("the removed notifications grant to be cleared") {
+            savedStatus(approved, "notifications") == nil
+        }
+
+        // From the worker: no gesture, so WebKit refuses before anyone is asked.
+        let (fromWorker, pageD) = try await makeLoaded()
+        prompts = recordPrompts { _ in true }
+        let outcome = try await permissionsCall("request", mixed, via: .worker, in: pageD)
+        XCTAssertEqual(outcome["settled"] as? String, "rejected", "worker: \(outcome)")
+        XCTAssertTrue((outcome["message"] as? String ?? "").contains("user gesture"), "worker: \(outcome)")
+        XCTAssertEqual(prompts(), [], "nothing is asked")
+        XCTAssertNil(savedStatus(fromWorker, "history"))
+    }
+
+    /// NEGATIVE: only manifest names may be requested or removed, as in
+    /// Chrome, from both transports in both forms, with no prompt. A required
+    /// name is held, so its request is granted without asking and its removal
+    /// refused; an undeclared one is refused, and `contains` answers false.
+    @MainActor func testOnlyOptionalPermissionsCanBeRequestedOrRemoved() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["storage", "management"])
+        let a = try makeProfile("Permissions Not Optional", database: db)
+        installTestExtension(ext, in: AppDatabase.shared)
+        let page = try await loadPage(ext, in: a.profile)
+        let prompts = recordPrompts { _ in true }
+
+        for transport in [GateTransport.page, .worker] {
+            for form in [CallForm.promise, .callback] {
+                let label = "\(transport), \(form)"
+                assertRefusal(try await permissionsCall("request", ["history"], via: transport, form, in: page),
+                              ExtensionPolyfillHandler.permissionRequestNotInManifestError, "\(label): request undeclared")
+                assertRefusal(try await permissionsCall("request", ["history", "storage"], via: transport, form, in: page),
+                              ExtensionPolyfillHandler.permissionRequestNotInManifestError, "\(label): mixed, undeclared")
+                assertAnswer(try await permissionsCall("request", ["management"], via: transport, form, in: page), true,
+                             "\(label): request required")
+                assertAnswer(try await permissionsCall("contains", ["history"], via: transport, form, in: page), false,
+                             "\(label): contains undeclared")
+                assertAnswer(try await permissionsCall("contains", ["management"], via: transport, form, in: page), true,
+                             "\(label): contains required")
+                assertRefusal(try await permissionsCall("remove", ["management"], via: transport, form, in: page),
+                              ExtensionPolyfillHandler.permissionRemoveRequiredError, "\(label): remove required")
+                assertRefusal(try await permissionsCall("remove", ["history"], via: transport, form, in: page),
+                              ExtensionPolyfillHandler.permissionRemoveNotInManifestError, "\(label): remove undeclared")
+            }
+        }
+        XCTAssertEqual(prompts(), [], "nothing is asked")
+        let gated = try await gate(via: .page, in: page)
+        XCTAssertEqual((gated["directSearch"] as? [String: Any])?["rejected"] as? String,
+                       Refusal.notDeclared.text("history"), "an undeclared permission's refusal: \(gated)")
+    }
+
+    /// A second request while the first one's prompt is pending is refused,
+    /// not stacked, and the first is granted once answered.
+    @MainActor func testPendingPromptRefusesASecondRequest() async throws {
+        let ext = try await makeExtension(permissions: ["storage"], optionalPermissions: ["history"])
+        installTestExtension(ext, in: AppDatabase.shared)
+        let prompts = recordPrompts { _ in true }
+        let manager = ExtensionManager.shared
+
+        var outcomes: [ExtensionManager.OutsideWebKitPermissionRequestOutcome] = []
+        for _ in 0..<2 {
+            manager.requestOutsideWebKitPermissions(extensionID: ext.id, names: ["history"]) { outcomes.append($0) }
+        }
+        XCTAssertEqual(outcomes, [.refused(ExtensionManager.permissionRequestPendingError)],
+                       "the second request is refused at once")
+        try await waitUntil("the first request to be answered") { outcomes.count == 2 }
+        XCTAssertEqual(outcomes.last, .approved)
+        XCTAssertEqual(prompts().count, 1, "one prompt")
+        XCTAssertEqual(savedStatus(ext, "history"), .granted)
     }
 }

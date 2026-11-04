@@ -2508,7 +2508,7 @@ struct ExtensionAPIPolyfill {
                 waiting = false;
                 let message = '';
                 try { message = String(e && e.message ? e.message : e); } catch (e2) {}
-                stopped = /notifications permission not declared/i.test(message) ? 'permission' : 'final';
+                stopped = /notifications permission (not declared|denied|is optional)/i.test(message) ? 'permission' : 'final';
             });
         };
         // A wait refused for the permission parks again once the context
@@ -3090,6 +3090,12 @@ struct ExtensionAPIPolyfill {
     /// docs/chrome-runtime-patching.md). `browser.permissions` is patched under
     /// its own key when it is a *different* object than `chrome.permissions`
     /// (1Password calls `browser.*`); neither global is ever replaced (TASK-15).
+    ///
+    /// The same wrappers take `history` and `management` out of
+    /// `details.permissions` (TASK-260): WebKit refuses those names in the web
+    /// process, so Detour's handler answers for them (`permissions.contains`,
+    /// `request` with Detour's prompt, `remove`), and only the rest of the call
+    /// reaches WebKit. A mixed request is granted whole or not at all.
     private static let permissionsOriginPortJS = """
     (function() {
         const g = globalThis;
@@ -3174,11 +3180,147 @@ struct ExtensionAPIPolyfill {
 
             const methodNames = ['contains', 'request', 'remove'];
 
+            // MARK: Permissions WebKit does not know (TASK-260)
+            //
+            // WebKit refuses these names in the web process ("'history' is not
+            // a valid permission"), before Detour sees the call, so they are
+            // taken out of `details.permissions` and answered by Detour's
+            // handler; the rest of the call still goes to WebKit. Mirrors
+            // `WebExtension.permissionsOutsideWebKit`.
+            const outsideWebKit = ['history', 'management'];
+
+            // `{ ours, rest, restIsEmpty }` when `details.permissions` names one
+            // of them, else null (the call goes to WebKit untouched). `rest` is
+            // a shallow copy carrying WebKit's names and every other key.
+            const splitOutsideWebKit = function(details) {
+                if (!details || typeof details !== 'object') return null;
+                if (!Array.isArray(details.permissions)) return null;
+                const ours = [];
+                const theirs = [];
+                details.permissions.forEach(function(name) {
+                    if (outsideWebKit.indexOf(name) === -1) { theirs.push(name); return; }
+                    if (ours.indexOf(name) === -1) ours.push(name);
+                });
+                if (ours.length === 0) return null;
+                const rest = {};
+                Object.keys(details).forEach(function(key) { rest[key] = details[key]; });
+                rest.permissions = theirs;
+                // An `origins` that is not an empty array (or absent) still goes
+                // to WebKit, so a malformed one gets WebKit's argument error.
+                const restIsEmpty = theirs.length === 0
+                    && (details.origins === undefined
+                        || (Array.isArray(details.origins) && details.origins.length === 0));
+                return { ours: ours, rest: rest, restIsEmpty: restIsEmpty };
+            };
+
+            // WebKit's method, promise form, with a synchronous throw turned
+            // into a rejection.
+            const callWebKit = function(native, receiver, details) {
+                return new Promise(function(resolve, reject) {
+                    try { Promise.resolve(native.call(receiver, details)).then(resolve, reject); }
+                    catch (e) { reject(e); }
+                });
+            };
+
+            // One call that names a permission WebKit does not know. `natives`
+            // holds WebKit's contains/request/remove of this namespace.
+            // - contains: true when Detour's names and WebKit's part all hold.
+            // - request: WebKit's part first, synchronously, while the caller's
+            //   user gesture is still current: WebKit refuses a request made
+            //   without one ("Must be called during a user gesture"), and an
+            //   answer from Detour's handler would arrive after it is gone. A
+            //   WebKit denial ends the request without Detour's prompt. When
+            //   Detour's prompt is then denied (or refused), what WebKit's
+            //   prompt just granted is removed again, so the request is granted
+            //   whole or not at all, as in Chrome. Each of WebKit's items is
+            //   asked about with `contains` before the request, so only what
+            //   the request added is taken back.
+            // - remove: Detour's names are checked, WebKit removes the rest, and
+            //   only then are Detour's names removed.
+            const callOutsideWebKit = function(name, natives, receiver, split, callback) {
+                let promise;
+                if (name === 'contains') {
+                    promise = Promise.all([
+                        __detourPolyfillRequest('permissions.contains', { permissions: split.ours }),
+                        split.restIsEmpty ? Promise.resolve(true) : callWebKit(natives.contains, receiver, split.rest)
+                    ]).then(function(answers) { return answers[0] === true && answers[1] === true; });
+                } else if (name === 'request') {
+                    promise = requestOutsideWebKit(natives, receiver, split);
+                } else {
+                    promise = __detourPolyfillRequest('permissions.remove', {
+                        permissions: split.ours, checkOnly: true
+                    }).then(function() {
+                        return split.restIsEmpty ? true : callWebKit(natives.remove, receiver, split.rest);
+                    }).then(function(removed) {
+                        if (removed !== true) return removed;
+                        return __detourPolyfillRequest('permissions.remove', { permissions: split.ours })
+                            .then(function(ok) { return ok === true; });
+                    });
+                }
+                return __detourSettle(promise, callback);
+            };
+
+            const requestOutsideWebKit = function(natives, receiver, split) {
+                const askDetour = function() {
+                    return __detourPolyfillRequest('permissions.request', { permissions: split.ours })
+                        .then(function(answer) { return !!(answer && answer.granted === true); });
+                };
+                if (split.restIsEmpty) return askDetour();
+                // Chrome's refusal, before WebKit's prompt can be shown for a
+                // request Detour would refuse anyway. The handler checks again.
+                for (let i = 0; i < split.ours.length; i++) {
+                    if (!__detourDeclaresPermission(split.ours[i])) {
+                        return Promise.reject(new Error(
+                            'Only permissions specified in the manifest may be requested.'));
+                    }
+                }
+                const items = [];
+                (split.rest.permissions || []).forEach(function(p) { items.push({ permissions: [p] }); });
+                (Array.isArray(split.rest.origins) ? split.rest.origins : []).forEach(function(o) {
+                    items.push({ origins: [o] });
+                });
+                // Sent before the request, so answered from the state before it.
+                // An unanswerable item counts as held: it is never taken back.
+                const heldBefore = Promise.all(items.map(function(item) {
+                    return callWebKit(natives.contains, receiver, item)
+                        .then(function(held) { return held === true; }, function() { return true; });
+                }));
+                const takeBack = function() {
+                    return heldBefore.then(function(held) {
+                        const added = { permissions: [], origins: [] };
+                        items.forEach(function(item, i) {
+                            if (held[i]) return;
+                            if (item.permissions) added.permissions.push(item.permissions[0]);
+                            else added.origins.push(item.origins[0]);
+                        });
+                        if (added.permissions.length === 0 && added.origins.length === 0) return;
+                        return callWebKit(natives.remove, receiver, added).then(function() {}, function() {});
+                    });
+                };
+                return callWebKit(natives.request, receiver, split.rest).then(function(granted) {
+                    if (granted !== true) return false;
+                    return askDetour().then(function(ok) {
+                        if (ok) return true;
+                        return takeBack().then(function() { return false; });
+                    }, function(error) {
+                        const rethrow = function() { throw error; };
+                        return takeBack().then(rethrow, rethrow);
+                    });
+                });
+            };
+
             // Wrap the three methods of one permissions namespace in place, root
             // it, and report whether the patch is what a fresh read answers with.
             const patch = function(permissions, key, read) {
                 let marker = null;
                 let defineFailed = false;
+                // WebKit's own three methods, for a call that has to use more
+                // than the one it was made through (TASK-260).
+                const natives = {};
+                methodNames.forEach(function(name) {
+                    const method = permissions[name];
+                    natives[name] = method && method._detourPortWrapper ? method._detourNative : method;
+                });
                 for (let i = 0; i < methodNames.length; i++) {
                     const name = methodNames[i];
                     const native = permissions[name];
@@ -3192,6 +3334,8 @@ struct ExtensionAPIPolyfill {
                         if (args.length > 0) args[0] = rewriteDetails(args[0]);
                         const receiver = (this === undefined || this === null || this === g)
                             ? permissions : this;
+                        const split = splitOutsideWebKit(args[0]);
+                        if (split) return callOutsideWebKit(name, natives, receiver, split, args[1]);
                         return native.apply(receiver, args);
                     };
                     wrapper._detourPortWrapper = true;

@@ -1034,6 +1034,57 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
                        "the wrapper keeps the native function reachable for diagnostics")
     }
 
+    /// TASK-260: `history` and `management` never reach WebKit's methods,
+    /// which refuse them in the web process; Detour's handler answers for
+    /// them and only the rest of the call is forwarded. The suite's extension
+    /// requires both, so a request of them is held already (no prompt) and a
+    /// removal is refused, before WebKit's `remove` runs, so a mixed removal
+    /// changes nothing. Both call forms.
+    @MainActor func testPermissionsNamesOutsideWebKitAreAnsweredByDetour() async throws {
+        let wv = try await makePermissionsWebView()
+        let result = try await evalDictionary("""
+        const describe = (e) => String(e && e.message ? e.message : e);
+        const contained = await chrome.permissions.contains({ permissions: ['history', 'tabs'] });
+        const requested = await chrome.permissions.request({ permissions: ['tabs', 'history'] });
+        const onlyOurs = await chrome.permissions.contains({ permissions: ['history', 'management'] });
+        let removeError = null;
+        try { await chrome.permissions.remove({ permissions: ['history', 'tabs'] }); }
+        catch (e) { removeError = describe(e); }
+        const callbackRemove = await new Promise((resolve) => {
+            const returned = chrome.permissions.remove({ permissions: ['management'] }, function() {
+                const lastError = chrome.runtime.lastError;
+                resolve({ argc: arguments.length, lastError: lastError ? String(lastError.message) : null,
+                          returned: typeof returned });
+            });
+        });
+        const callbackContains = await new Promise((resolve) => {
+            chrome.permissions.contains({ permissions: ['history'] }, (value) => resolve(value));
+        });
+        return JSON.stringify({
+            contained, requested, onlyOurs, removeError, callbackRemove, callbackContains,
+            calls: __permCalls.map((call) => ({ method: call.method, permissions: call.details.permissions }))
+        });
+        """, on: wv)
+
+        XCTAssertEqual(result["contained"] as? Bool, true)
+        XCTAssertEqual(result["requested"] as? Bool, true)
+        XCTAssertEqual(result["onlyOurs"] as? Bool, true, "answered by Detour alone")
+        XCTAssertEqual(result["removeError"] as? String, ExtensionPolyfillHandler.permissionRemoveRequiredError)
+        let callbackRemove = try XCTUnwrap(result["callbackRemove"] as? [String: Any])
+        XCTAssertEqual(callbackRemove["lastError"] as? String, ExtensionPolyfillHandler.permissionRemoveRequiredError)
+        XCTAssertEqual(callbackRemove["argc"] as? Int, 0)
+        XCTAssertEqual(result["callbackContains"] as? Bool, true)
+
+        let calls = try XCTUnwrap(result["calls"] as? [[String: Any]])
+        // The mixed request asks WebKit's `contains` about each of its own
+        // items first (what to take back if Detour's prompt is denied), then
+        // makes the request.
+        XCTAssertEqual(calls.map { $0["method"] as? String }, ["contains", "contains", "request"],
+                       "WebKit sees only the calls with names of its own left, and no removal")
+        XCTAssertEqual(calls.map { $0["permissions"] as? [String] }, [["tabs"], ["tabs"], ["tabs"]],
+                       "with Detour's names taken out")
+    }
+
     /// Both call styles survive the wrapper: a call with a callback stays a
     /// callback call (two arguments, native answers through the callback), and
     /// one without stays a promise call (one argument).

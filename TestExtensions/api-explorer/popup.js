@@ -715,6 +715,38 @@ document.getElementById('btn-perm-remove').addEventListener('click', async () =>
   }
 });
 
+// TASK-260: `history` is optional here. WebKit refuses the name in
+// permissions.request/contains/remove ("'history' is not a valid permission"),
+// so Detour's polyfill answers for it: Detour's prompt, saved like the Settings
+// switch. Until it is granted, History > Search reads "history permission is
+// optional and has not been granted". The mixed request goes through WebKit's
+// prompt for cookies first (inside the click's user gesture), then Detour's,
+// and is granted whole or not at all.
+async function requestAndReport(permissions) {
+  try {
+    const granted = await chrome.permissions.request({ permissions });
+    const has = await chrome.permissions.contains({ permissions });
+    showResult('res-permissions',
+      `permissions.request(${JSON.stringify(permissions)}): ${granted}, contains: ${has}`);
+  } catch (e) {
+    showResult('res-permissions', e.message, true);
+  }
+}
+
+document.getElementById('btn-perm-request-history').addEventListener('click', () => requestAndReport(['history']));
+document.getElementById('btn-perm-request-history-cookies').addEventListener('click',
+  () => requestAndReport(['history', 'cookies']));
+
+document.getElementById('btn-perm-remove-history').addEventListener('click', async () => {
+  try {
+    const removed = await chrome.permissions.remove({ permissions: ['history'] });
+    const has = await chrome.permissions.contains({ permissions: ['history'] });
+    showResult('res-permissions', `permissions.remove("history"): ${removed}, contains: ${has}`);
+  } catch (e) {
+    showResult('res-permissions', e.message, true);
+  }
+});
+
 // `https://example.org/*` is listed in optional_host_permissions, so Settings
 // shows it as an Optional row whose switch writes the decision and applies it
 // to the loaded context without a relaunch (TASK-25).

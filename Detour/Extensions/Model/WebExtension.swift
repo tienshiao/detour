@@ -51,6 +51,14 @@ class WebExtension {
     /// WebKit.
     static let polyfillGatedPermissions: Set<String> = ["history", "management", "notifications"]
 
+    /// The polyfill-gated permissions WebKit does not know at all. Its
+    /// `permissions.request`, `contains` and `remove` refuse these names in the
+    /// web process ("'history' is not a valid permission"), so the polyfill's
+    /// `chrome.permissions` wrapper takes them out of the call and the handler
+    /// answers for them (TASK-260). `notifications` is WebKit's own and stays
+    /// with WebKit's prompt.
+    static let permissionsOutsideWebKit: Set<String> = ["history", "management"]
+
     /// The polyfill-gated permissions this manifest lists under `permissions`
     /// or `optional_permissions`. WebKit drops `history` and `management` from
     /// its own `requestedPermissions` and `optionalPermissions` (they are
