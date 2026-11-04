@@ -458,6 +458,47 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         return .success(parsed)
     }
 
+    /// `management.getPermissionWarningsByManifest(manifestStr)` (TASK-257):
+    /// the lines Detour's install prompt lists for the manifest — its required
+    /// permissions and its site access, not what it may request later — as
+    /// `ExtensionPermissionDescriptions.warnings` gives them. That is not
+    /// Chrome's list: Chrome leaves out permissions that carry no warning
+    /// (`storage`, `alarms`) and merges hosts, where Detour's prompt names
+    /// every permission. The refusals use Chromium's texts
+    /// (`management_api_constants.h`), except that malformed JSON reads
+    /// `kManifestParseError` rather than the JSON parser's own message.
+    static func permissionWarnings(from params: [String: Any]) -> Result<[String], PolyfillArgumentError> {
+        guard let manifestString = params["manifestStr"] as? String else {
+            return .failure(PolyfillArgumentError(
+                message: "management.getPermissionWarningsByManifest: manifestStr must be a string"))
+        }
+        let data = Data(manifestString.utf8)
+        guard (try? JSONSerialization.jsonObject(with: data)) is [String: Any] else {
+            return .failure(PolyfillArgumentError(message: "Failed to parse manifest."))
+        }
+        guard let manifest = try? JSONDecoder().decode(ExtensionManifest.self, from: data) else {
+            return .failure(PolyfillArgumentError(message: "Failed to create extension from manifest."))
+        }
+        return .success(ExtensionPermissionDescriptions.warnings(
+            permissions: manifest.permissions ?? [], hostPermissions: manifest.hostPermissions ?? []))
+    }
+
+    /// `management.uninstallSelf(options)`'s `showConfirmDialog`: `options`
+    /// absent or null, or an object whose `showConfirmDialog` is absent, null
+    /// or a boolean. Anything else is refused, as Chrome's schema check does.
+    static func uninstallSelfShowsConfirmDialog(from params: [String: Any]) -> Result<Bool, PolyfillArgumentError> {
+        guard let raw = params["options"], !(raw is NSNull) else { return .success(false) }
+        guard let options = raw as? [String: Any] else {
+            return .failure(PolyfillArgumentError(message: "management.uninstallSelf: options must be an object"))
+        }
+        guard let flag = options["showConfirmDialog"], !(flag is NSNull) else { return .success(false) }
+        guard let boxed = flag as? NSNumber, CFGetTypeID(boxed) == CFBooleanGetTypeID() else {
+            return .failure(PolyfillArgumentError(
+                message: "management.uninstallSelf: options.showConfirmDialog must be a boolean"))
+        }
+        return .success(boxed.boolValue)
+    }
+
     /// Chrome's `HistoryItem` for one URL of the calling profile's history.
     private static func historyItem(_ entry: HistoryURLEntry) -> [String: Any] {
         [
@@ -737,6 +778,26 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         // MARK: - Management
         case "management.getSelf":
             replyHandler(buildExtensionInfo(extensionID: extensionID), nil)
+
+        case "management.getPermissionWarningsByManifest":
+            // Permission-free in Chrome, like getSelf and uninstallSelf (TASK-257).
+            switch Self.permissionWarnings(from: params) {
+            case .success(let warnings): replyHandler(warnings, nil)
+            case .failure(let error): replyHandler(nil, error.message)
+            }
+
+        case "management.uninstallSelf":
+            // Permission-free in Chrome. The verified id is the only one this
+            // can act on: an extension uninstalls itself, never another.
+            switch Self.uninstallSelfShowsConfirmDialog(from: params) {
+            case .failure(let error):
+                replyHandler(nil, error.message)
+            case .success(let showConfirmDialog):
+                ExtensionManager.shared.uninstallSelf(extensionID: extensionID,
+                                                      showConfirmDialog: showConfirmDialog) { error in
+                    replyHandler(error == nil ? true : nil, error)
+                }
+            }
 
         case "management.getAll":
             guard hasPermission("management", extensionID: extensionID) else {

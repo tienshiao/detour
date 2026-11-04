@@ -2678,9 +2678,9 @@ struct ExtensionAPIPolyfill {
     /// permission except for `getSelf`, `uninstallSelf` and
     /// `getPermissionWarningsByManifest`, which declare no dependency
     /// (Chromium `extensions/common/api/_api_features.json`), so an extension
-    /// without the permission sees a namespace holding only those. Detour
-    /// implements `getSelf` of the three, so that is all such an extension gets
-    /// here: no `getAll`, `setEnabled` or events (TASK-251). The handler
+    /// without the permission sees a namespace holding only those three: no
+    /// `getAll`, `setEnabled` or events (TASK-251; `uninstallSelf` and
+    /// `getPermissionWarningsByManifest` since TASK-257). The handler
     /// refuses `management.getAll` and `management.setEnabled` without the
     /// permission as well. An optional `management` installs the whole
     /// namespace, and the handler refuses those two until the grant and again
@@ -2695,8 +2695,33 @@ struct ExtensionAPIPolyfill {
             return __detourSettle(promise, callback);
         };
 
+        // uninstallSelf(options?, callback?). The uninstall unloads every
+        // context of the extension, this one included, so a successful call's
+        // reply may never be delivered (TASK-257).
+        const uninstallSelf = function(options, callback) {
+            if (typeof options === 'function' && callback === undefined) {
+                callback = options;
+                options = undefined;
+            }
+            const promise = __detourPolyfillRequest('management.uninstallSelf', {
+                options: options === undefined ? null : options
+            }).then(function() { return undefined; });
+            return __detourSettle(promise, callback, false);
+        };
+
+        const getPermissionWarningsByManifest = function(manifestStr, callback) {
+            const promise = __detourPolyfillRequest('management.getPermissionWarningsByManifest', {
+                manifestStr: manifestStr === undefined ? null : manifestStr
+            });
+            return __detourSettle(promise, callback);
+        };
+
         if (!__detourDeclaresPermission('management')) {
-            __detourDefine(chrome, 'management', { getSelf: getSelf });
+            __detourDefine(chrome, 'management', {
+                getSelf: getSelf,
+                uninstallSelf: uninstallSelf,
+                getPermissionWarningsByManifest: getPermissionWarningsByManifest
+            });
             return;
         }
 
@@ -2707,6 +2732,8 @@ struct ExtensionAPIPolyfill {
 
         __detourDefine(chrome, 'management', {
             getSelf: getSelf,
+            uninstallSelf: uninstallSelf,
+            getPermissionWarningsByManifest: getPermissionWarningsByManifest,
 
             getAll: function(callback) {
                 const promise = __detourPolyfillRequest('management.getAll', {});

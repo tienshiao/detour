@@ -648,6 +648,11 @@ async function handleMessage(message) {
       return { extensions: all };
     }
 
+    case 'managementPermissionWarnings': {
+      const warnings = await chrome.management.getPermissionWarningsByManifest(message.manifest);
+      return { warnings };
+    }
+
     case 'managementSetEnabled': {
       await chrome.management.setEnabled(message.id || chrome.runtime.id, message.enabled !== false);
       return { ok: true };

@@ -324,13 +324,14 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(withOptional["history"] as? String, "object")
         XCTAssertEqual(withOptional["notifications"] as? String, "object")
         XCTAssertEqual(withOptional["management"] as? [String],
-                       ["getAll", "getSelf", "onDisabled", "onEnabled", "onInstalled", "onUninstalled", "setEnabled"])
+                       ["getAll", "getPermissionWarningsByManifest", "getSelf", "onDisabled", "onEnabled", "onInstalled",
+                        "onUninstalled", "setEnabled", "uninstallSelf"])
 
         let neither = try await makeWebView(manifestPermissions: ["storage"], optionalPermissions: ["tabs"])
         let withNeither = try await evalDictionary(js, on: neither)
         XCTAssertEqual(withNeither["history"] as? String, "undefined")
         XCTAssertEqual(withNeither["notifications"] as? String, "undefined")
-        XCTAssertEqual(withNeither["management"] as? [String], ["getSelf"])
+        XCTAssertEqual(withNeither["management"] as? [String], ["getPermissionWarningsByManifest", "getSelf", "uninstallSelf"])
     }
 
     /// The members `chrome.management` has, sorted, as JSON.
@@ -347,19 +348,29 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         let result = try await evalDictionary(Self.managementMembersJS)
         XCTAssertEqual(result["chrome"] as? String, "object")
         XCTAssertEqual(result["members"] as? [String],
-                       ["getAll", "getSelf", "onDisabled", "onEnabled", "onInstalled", "onUninstalled", "setEnabled"])
+                       ["getAll", "getPermissionWarningsByManifest", "getSelf", "onDisabled", "onEnabled", "onInstalled",
+                        "onUninstalled", "setEnabled", "uninstallSelf"])
     }
 
     /// NEGATIVE: without the `management` permission only the permission-free
     /// methods are there. Chrome's `_api_features.json` gives `getSelf`,
-    /// `uninstallSelf` and `getPermissionWarningsByManifest` no dependency;
-    /// Detour implements `getSelf` of them, so that is the whole namespace,
-    /// and it still answers (TASK-251).
-    @MainActor func testManagementHasOnlyGetSelfWithoutPermission() async throws {
+    /// `uninstallSelf` and `getPermissionWarningsByManifest` no dependency, so
+    /// those three are the whole namespace (TASK-251, TASK-257), and getSelf
+    /// still answers. The real-context halves are in
+    /// ExtensionManagementSelfTests.
+    @MainActor func testManagementHasOnlyThePermissionFreeMethodsWithoutPermission() async throws {
         let unprivileged = try await makeWebView(manifestPermissions: ["history", "notifications", "privacy"])
         let result = try await evalDictionary(Self.managementMembersJS, on: unprivileged)
         XCTAssertEqual(result["chrome"] as? String, "object")
-        XCTAssertEqual(result["members"] as? [String], ["getSelf"])
+        XCTAssertEqual(result["members"] as? [String], ["getPermissionWarningsByManifest", "getSelf", "uninstallSelf"])
+        let types = try await evalDictionary("""
+        return JSON.stringify({
+            uninstallSelf: typeof chrome.management.uninstallSelf,
+            getPermissionWarningsByManifest: typeof chrome.management.getPermissionWarningsByManifest
+        });
+        """, on: unprivileged)
+        XCTAssertEqual(types["uninstallSelf"] as? String, "function")
+        XCTAssertEqual(types["getPermissionWarningsByManifest"] as? String, "function")
 
         let info = try await evalDictionary("""
         const info = await chrome.management.getSelf();

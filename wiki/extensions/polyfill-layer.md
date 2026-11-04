@@ -85,6 +85,12 @@ sources:
   - id: task-250
     resource: backlog:TASK-250
     title: "Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions"
+  - id: task-257
+    resource: backlog:TASK-257
+    title: "Extensions: management.uninstallSelf and management.getPermissionWarningsByManifest are missing"
+  - id: chromium-management-api
+    resource: https://source.chromium.org/chromium/chromium/src/+/main:extensions/browser/api/management/management_api.cc
+    title: "Chromium: management_api.cc (Uninstall, GetPermissionWarningsByManifest) and management_api_constants.h"
   - id: chromium-api-features
     resource: https://github.com/chromium/chromium/blob/main/extensions/common/api/_api_features.json
     title: "Chromium, extensions/common/api/_api_features.json (management.getSelf etc. have no dependency)"
@@ -247,11 +253,12 @@ does:
   permission, and `management` without its permission holds `getSelf` alone.
   Chromium's `extensions/common/api/_api_features.json` gives `management` the
   dependency `permission:management` but gives `getSelf`, `uninstallSelf` and
-  `getPermissionWarningsByManifest` empty dependencies; Detour implements only
-  `getSelf` of those three. WebKit vends neither namespace (measured from a
+  `getPermissionWarningsByManifest` empty dependencies, and since TASK-257
+  Detour implements all three ([below](#the-permission-free-management-methods)).
+  WebKit vends neither namespace (measured from a
   page and a worker in `ExtensionHistoryScopeTests`: with neither permission
   `chrome.history` is undefined and `chrome.management` has only Detour's
-  `getSelf`).[^task-251] In a plain `WKWebView` (the `ExtensionPolyfillTests`
+  permission-free methods).[^task-251] In a plain `WKWebView` (the `ExtensionPolyfillTests`
   harness) `browser` is a separate object from `chrome`, so the alias can only
   be checked in a real context.
 - Since TASK-250 those three namespaces also install for a permission listed
@@ -261,6 +268,47 @@ does:
   event would leave a restarted worker's top-level code without it. The rule
   and the WebKit behaviour behind it are in
   [Permissions](./permissions.md#permissions-the-polyfill-gates).[^task-250]
+
+## The permission-free management methods
+
+`getSelf`, `uninstallSelf` and `getPermissionWarningsByManifest` are in
+`chrome.management` with or without the `management` permission, as in
+Chrome.[^task-257]
+
+`uninstallSelf(options?, callback?)` goes to
+`ExtensionManager.uninstallSelf`, which ends in `uninstall(id:)`, the path
+Settings' Uninstall button takes. It acts only on the verified caller.
+
+| Rule | Detail |
+|---|---|
+| Scope | Every profile. Detour installs an extension once and each profile only turns it on or off, so an uninstall cannot be per profile. Chrome's profiles install separately, so Chrome removes it from the calling profile only |
+| `showConfirmDialog: true` | An `NSAlert` in the Settings style: "Uninstall "X"?", saying the extension asked, Uninstall / Cancel. Tests answer it through `uninstallSelfConfirmationAnswerOverride`. A second call while one alert is up is refused |
+| Cancel | Rejects with Chromium's `kUninstallCanceledError`: `Extension <id> uninstall canceled by user.` |
+| Order | The reply (`undefined`) goes first, and the uninstall runs on the next main-actor turn. The uninstall unloads the caller's worker and closes its pages, so the reply may still never arrive. Chrome uninstalls first and then answers |
+| Arguments | `options` absent, null or an object; `showConfirmDialog` absent, null or a boolean. Anything else is refused (`management.uninstallSelf: options must be an object`) |
+| A second dialog | Refused at once, with the cancel text, while the extension's alert is up. The claim is taken before the alert's task runs, because WebKit can hand two messages over in one batch. A call without a dialog is not affected |
+| Not carried over | Chrome refuses a dialog without a user gesture (`kGestureNeededForUninstallError`). The polyfill has no gesture signal, so Detour shows the dialog anyway. As a result a worker that calls again after every Cancel can keep the app-modal alert up (`permissions.request` prompts have the same exposure) |
+
+`getPermissionWarningsByManifest(manifestStr)` returns the lines Detour's
+install prompt shows for the manifest: its required permissions, each through
+`ExtensionPermissionDescriptions.describe`, then its `host_permissions`
+(`<all_urls>` reads "All websites"). It leaves out `optional_permissions`, as
+Chrome does. `ExtensionPermissionDescriptions.warnings` builds the list, and
+the prompt's `formatForAlert` uses the same host wording.
+
+This is not Chrome's list. Chrome leaves out permissions that carry no warning
+(`storage`, `alarms`), merges hosts and adds content-script matches. Detour's
+prompt names every permission it is asked for, so this list does too. Errors
+use Chromium's `management_api_constants.h` texts:
+
+| Input | Error |
+|---|---|
+| Malformed JSON, or JSON that is not an object | `Failed to parse manifest.` Chrome uses its JSON parser's message for malformed JSON. Detour does not reproduce that message |
+| An object `ExtensionManifest` cannot decode (no `name`, `version` or `manifest_version`) | `Failed to create extension from manifest.` |
+| Not a string | `management.getPermissionWarningsByManifest: manifestStr must be a string` |
+
+Both are tested from a page and a worker, in the promise and the callback
+form, in `ExtensionManagementSelfTests`.
 
 ## chrome.history is profile-scoped
 
@@ -761,6 +809,7 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-239]: Extensions: the notifications API is available without the notifications permission
 [^task-251]: Extensions: the history and management namespaces exist for extensions without the permission
 [^task-250]: Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions
+[^task-257]: Extensions: management.uninstallSelf and management.getPermissionWarningsByManifest are missing
 [^task-240]: Extensions: notifications.clear and notifications.update diverge from Chrome
 [^task-254]: Extensions: notifications.create(null, options) is treated as create(options) with empty options
 [^chrome-notifications-api]: chrome.notifications API reference

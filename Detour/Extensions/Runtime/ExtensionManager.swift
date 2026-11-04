@@ -33,6 +33,16 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// `permissions.request` through the prompt path; nil in the app.
     var permissionPromptAnswerOverride: (([String]) -> Bool)?
 
+    /// Answers the `management.uninstallSelf` confirmation in place of the
+    /// modal alert, given the extension's id: true is Uninstall. Tests set it
+    /// to drive both answers; nil in the app (TASK-257).
+    var uninstallSelfConfirmationAnswerOverride: ((String) -> Bool)?
+
+    /// Extensions whose `uninstallSelf` confirmation is on screen or about to
+    /// be. A second call asking for the dialog while one is pending is refused
+    /// rather than stacking alerts.
+    private var pendingUninstallSelfConfirmations: Set<String> = []
+
     /// Set once `loadInstalledExtensions` reaches its per-profile load. A profile
     /// added before then is loaded by that loop, so `profileWasAdded` leaves it
     /// alone (and never loads a half-populated `extensions` list).
@@ -1670,6 +1680,82 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         invalidateEnabledExtensionsCache()
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
+    }
+
+    /// `management.uninstallSelf` (TASK-257): the extension asks to be
+    /// uninstalled, through the same `uninstall(id:)` Settings uses. Detour
+    /// installs an extension once for every profile (each profile only turns
+    /// it on or off), so this removes it from every profile, where Chrome,
+    /// whose profiles install separately, removes it from the calling one.
+    ///
+    /// `completion` gets nil when the uninstall goes ahead and the refusal
+    /// otherwise; it runs before the uninstall itself, which waits for the
+    /// next main-actor turn, so the reply has a chance to reach the caller
+    /// before its context is unloaded. It may still never arrive: unloading
+    /// tears the worker and the extension's pages down. With
+    /// `showConfirmDialog` the user is asked first, in the style of the
+    /// Settings alert; Cancel refuses with Chromium's
+    /// `kUninstallCanceledError`. Unlike Chrome, the dialog needs no user
+    /// gesture: the polyfill has no gesture signal to check.
+    func uninstallSelf(extensionID: String, showConfirmDialog: Bool,
+                       completion: @escaping (String?) -> Void) {
+        guard self.extension(withID: extensionID) != nil else {
+            completion("Failed to find extension with id \(extensionID).")
+            return
+        }
+        guard showConfirmDialog else {
+            completion(nil)
+            scheduleSelfUninstall(extensionID: extensionID)
+            return
+        }
+        // Claimed here, not in the task: WebKit dispatches a batch of incoming
+        // messages in one go, so a second call can arrive before the task runs.
+        guard pendingUninstallSelfConfirmations.insert(extensionID).inserted else {
+            completion("Extension \(extensionID) uninstall canceled by user.")
+            return
+        }
+        // Off the caller's stack: the alert runs a modal loop.
+        Task { @MainActor in
+            let confirmed = self.confirmUninstallSelf(extensionID: extensionID)
+            self.pendingUninstallSelfConfirmations.remove(extensionID)
+            guard confirmed else {
+                completion("Extension \(extensionID) uninstall canceled by user.")
+                return
+            }
+            // Uninstalled from elsewhere while the alert was up.
+            guard self.extension(withID: extensionID) != nil else {
+                completion("Failed to find extension with id \(extensionID).")
+                return
+            }
+            completion(nil)
+            self.scheduleSelfUninstall(extensionID: extensionID)
+        }
+    }
+
+    /// The uninstall `uninstallSelf` agreed to, on the next main-actor turn:
+    /// it unloads the very context whose message is being answered.
+    private func scheduleSelfUninstall(extensionID: String) {
+        Task { @MainActor in
+            guard self.extension(withID: extensionID) != nil else { return }
+            log.info("Extension \(extensionID, privacy: .public) uninstalled itself")
+            self.uninstall(id: extensionID)
+        }
+    }
+
+    /// The confirmation `uninstallSelf` shows when asked to: the Settings
+    /// uninstall alert, saying who asked.
+    private func confirmUninstallSelf(extensionID: String) -> Bool {
+        if let answer = uninstallSelfConfirmationAnswerOverride {
+            return answer(extensionID)
+        }
+        let name = displayName(for: extensionID)
+        let alert = NSAlert()
+        alert.messageText = "Uninstall \"\(name)\"?"
+        alert.informativeText = "\"\(name)\" asked to uninstall itself. This will remove the extension and all its data from every profile."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Uninstall")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     // MARK: - Enable / Disable

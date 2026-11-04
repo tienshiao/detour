@@ -1005,12 +1005,13 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
     }
 
     /// NEGATIVE: without the `management` permission the page and the worker
-    /// see a `chrome.management` holding `getSelf` alone — the one
-    /// permission-free method (Chromium's `_api_features.json`) Detour
-    /// implements — and it answers; a `management.getAll` made past the
+    /// see a `chrome.management` holding the three permission-free methods
+    /// (Chromium's `_api_features.json`: getSelf, uninstallSelf,
+    /// getPermissionWarningsByManifest) and getSelf answers; a
+    /// `management.getAll` made past the
     /// namespace is refused. With neither permission there is no history
     /// namespace either, which also shows WebKit vends neither of its own.
-    @MainActor func testWithoutTheManagementPermissionOnlyGetSelfIsThere() async throws {
+    @MainActor func testWithoutTheManagementPermissionOnlyThePermissionFreeMethodsAreThere() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["storage"])
         let a = try makeProfile("Management Gate Denied", database: db)
@@ -1020,7 +1021,8 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
             let outcome = try await gate(via: transport, in: page)
             XCTAssertEqual(outcome["management"] as? String, "object", "\(transport): \(outcome)")
             XCTAssertEqual(outcome["browserManagement"] as? String, "object", "\(transport): \(outcome)")
-            XCTAssertEqual(outcome["managementMembers"] as? [String], ["getSelf"], "\(transport): \(outcome)")
+            XCTAssertEqual(outcome["managementMembers"] as? [String],
+                           ["getPermissionWarningsByManifest", "getSelf", "uninstallSelf"], "\(transport): \(outcome)")
             XCTAssertEqual((outcome["getSelf"] as? [String: Any])?["resolved"] as? String, ext.id,
                            "\(transport): \(outcome)")
             let direct = try XCTUnwrap(outcome["directGetAll"] as? [String: Any], "\(transport): \(outcome)")
@@ -1046,7 +1048,8 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
             XCTAssertEqual(outcome["historyDiag"] as? String, "function", "\(transport): \(outcome)")
             XCTAssertEqual(outcome["management"] as? String, "object", "\(transport): \(outcome)")
             XCTAssertEqual(outcome["managementMembers"] as? [String],
-                           ["getAll", "getSelf", "onDisabled", "onEnabled", "onInstalled", "onUninstalled", "setEnabled"],
+                           ["getAll", "getPermissionWarningsByManifest", "getSelf", "onDisabled", "onEnabled", "onInstalled",
+                        "onUninstalled", "setEnabled", "uninstallSelf"],
                            "\(transport): \(outcome)")
             XCTAssertEqual((outcome["getSelf"] as? [String: Any])?["resolved"] as? String, ext.id,
                            "\(transport): \(outcome)")
@@ -1061,7 +1064,8 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
 
     /// The full management namespace, as `testDeclaredPermissionsInstallBothNamespaces` lists it.
     private static let fullManagement =
-        ["getAll", "getSelf", "onDisabled", "onEnabled", "onInstalled", "onUninstalled", "setEnabled"]
+        ["getAll", "getPermissionWarningsByManifest", "getSelf", "onDisabled", "onEnabled", "onInstalled",
+                        "onUninstalled", "setEnabled", "uninstallSelf"]
 
     /// Saved decisions for `keys`, as a prompt or the Settings switch leaves
     /// them. The rows reference the extension's own row, so that is saved

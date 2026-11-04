@@ -36,6 +36,18 @@ enum ExtensionPermissionDescriptions {
         descriptions[permission] ?? permission
     }
 
+    /// How a host pattern reads in the install prompt.
+    static func describeHost(_ pattern: String) -> String {
+        pattern == "<all_urls>" ? "All websites" : pattern
+    }
+
+    /// The install prompt's lines for required permissions and site access,
+    /// flattened: what `management.getPermissionWarningsByManifest` returns
+    /// (TASK-257).
+    static func warnings(permissions: [String], hostPermissions: [String]) -> [String] {
+        permissions.map(describe) + hostPermissions.map(describeHost)
+    }
+
     /// Formats a list of permissions and host patterns for display in an alert.
     static func formatForAlert(permissions: [String], hostPermissions: [String], optionalPermissions: [String]? = nil) -> String {
         var lines: [String] = []
@@ -51,8 +63,7 @@ enum ExtensionPermissionDescriptions {
             if !lines.isEmpty { lines.append("") }
             lines.append("Site access:")
             for host in hostPermissions {
-                let display = host == "<all_urls>" ? "All websites" : host
-                lines.append("  \u{2022} \(display)")
+                lines.append("  \u{2022} \(describeHost(host))")
             }
         }
 

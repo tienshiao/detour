@@ -298,6 +298,16 @@
       <button id="btn-mgmt-enable">Set Enabled</button>
       <button id="btn-mgmt-disable" class="secondary">Set Disabled</button>
     </div>
+    <div class="row">
+      <textarea id="input-mgmt-manifest" rows="3" placeholder="Manifest JSON for permission warnings">{"manifest_version": 3, "name": "Probe", "version": "1.0", "permissions": ["tabs", "storage"], "host_permissions": ["&lt;all_urls&gt;"]}</textarea>
+    </div>
+    <div class="row">
+      <button id="btn-mgmt-warnings">Permission Warnings</button>
+      <button id="btn-mgmt-warnings-bg" class="secondary">Permission Warnings (Worker)</button>
+      <!-- Always with showConfirmDialog: Detour's alert is what keeps a stray
+           click from uninstalling the explorer itself. -->
+      <button id="btn-mgmt-uninstall-self" class="secondary">Uninstall Self (asks first)</button>
+    </div>
     <div class="result" id="res-management"></div>
   </section>
 

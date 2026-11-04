@@ -535,6 +535,35 @@ async function setEnabled(enabled) {
   } catch (e) { showResult('res-management', e.message, true); }
 }
 
+// getPermissionWarningsByManifest and uninstallSelf need no `management`
+// permission in Chrome (TASK-257). Warnings from the popup itself and from the
+// worker; a bad manifest shows the rejection.
+document.getElementById('btn-mgmt-warnings').addEventListener('click', async () => {
+  try {
+    const manifest = document.getElementById('input-mgmt-manifest').value;
+    const warnings = await chrome.management.getPermissionWarningsByManifest(manifest);
+    showResult('res-management', { from: 'popup', warnings });
+  } catch (e) { showResult('res-management', e.message, true); }
+});
+
+document.getElementById('btn-mgmt-warnings-bg').addEventListener('click', async () => {
+  try {
+    const manifest = document.getElementById('input-mgmt-manifest').value;
+    const { warnings } = await sendBg({ type: 'managementPermissionWarnings', manifest });
+    showResult('res-management', { from: 'worker', warnings });
+  } catch (e) { showResult('res-management', e.message, true); }
+});
+
+// Only ever with the confirmation dialog: confirming really uninstalls the
+// explorer, and the reply may never arrive (its contexts are unloaded).
+document.getElementById('btn-mgmt-uninstall-self').addEventListener('click', async () => {
+  showResult('res-management', 'uninstallSelf({ showConfirmDialog: true }) — waiting for the dialog…');
+  try {
+    await chrome.management.uninstallSelf({ showConfirmDialog: true });
+    showResult('res-management', 'uninstallSelf resolved: uninstalling');
+  } catch (e) { showResult('res-management', e.message, true); }
+});
+
 document.getElementById('btn-mgmt-enable').addEventListener('click', () => setEnabled(true));
 document.getElementById('btn-mgmt-disable').addEventListener('click', () => setEnabled(false));
 
