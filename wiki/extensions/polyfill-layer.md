@@ -260,8 +260,11 @@ does:
   [favicons](#favicons-are-profile-scoped) below.
 - `offscreen.*` uses only the handler's own profile's context.
 - `sidePanel.*` requires the manifest's `sidePanel` permission, which WebKit
-  does not know; a tab arrives as a handle and is refused unless this profile
-  lists it. `sidePanel.closeSelf` is honoured only from the main frame of a
+  does not know, and goes through `permissionRefusal` like `history` and
+  `management`: a denial in the profile's context (the Settings switch)
+  refuses the calls with "denied by the user" and also stops
+  `openPanelOnActionClick` from taking the toolbar click. A tab arrives as a
+  handle and is refused unless this profile lists it. `sidePanel.closeSelf` is honoured only from the main frame of a
   web view that is one of this profile's panels, which is why `dispatch` is
   handed the sending web view.
 - `runtime.getContexts` has no permission gate, as in Chrome. It can only

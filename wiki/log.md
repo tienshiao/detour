@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-11-04
+* **Update**: merge review — [Polyfill layer](extensions/polyfill-layer.md): a `sidePanel` denial in the profile's context refuses the bridge with its own text and leaves the toolbar click to the action.
 * **Update**: merge of `main` into `epic-claude-extension` — [Extension popup, menu and options page](extensions/popup-and-options-ui.md) (new subsection "Content taller than the popover"): TASK-150's scrolling now sits on TASK-220's intrinsic-size popover, switched off with an 800 × 0 maximum because a 0 × 0 one makes WebKit drop the intrinsic size for good; [Polyfill layer](extensions/polyfill-layer.md), [Testing extensions](extensions/testing-extensions.md), [AppKit gotchas](platform/appkit-gotchas.md), [Split tabs hosting](tabs/split-tabs-hosting.md) and [Tab and window bridge](extensions/tab-and-window-bridge.md) carry both sides' content.
 
 ## 2026-11-03

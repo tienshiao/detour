@@ -329,17 +329,19 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKUIDelegate {
         guard popover != nil, webView.uiDelegate === self, !Self.isPageScrolling(webView),
               Self.pageScrolls(contentHeight: webView.intrinsicContentSize.height,
                                maximumHeight: Self.maxSize.height) else { return }
+        // Measured before the switch, which may make WebKit drop the size.
         let size = Self.contentSize(of: webView)
+        // The mode first, then the hold: a WebKit without the setter is left
+        // untouched, where activating and deactivating the hold would lay the
+        // popover out again, and so call this again, on every pass. Both land
+        // before the next layout pass.
+        guard setPageScrolls(true, in: webView) else { return }
         let held = [
             webView.widthAnchor.constraint(equalToConstant: size.width),
             webView.heightAnchor.constraint(equalToConstant: Self.maxSize.height),
         ]
         for constraint in held { constraint.identifier = Self.scrollingHoldIdentifier }
         NSLayoutConstraint.activate(held)
-        guard setPageScrolls(true, in: webView) else {
-            NSLayoutConstraint.deactivate(held)
-            return
-        }
         scrollingConstraints = held
     }
 

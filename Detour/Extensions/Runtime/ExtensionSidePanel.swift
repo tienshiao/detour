@@ -566,7 +566,12 @@ final class ExtensionSidePanelController {
     /// `action.onClicked` does not fire, as in Chrome; returns false — nothing
     /// done — otherwise.
     func handleActionClick(extensionID: String, tab: BrowserTab?, window: BrowserWindowController) -> Bool {
-        guard profile?.extensionContext(for: extensionID) != nil,
+        // The same gate as `chrome.sidePanel`: a permission denied in this
+        // profile (the Settings switch) leaves the click to the popup or
+        // `action.onClicked`.
+        guard let context = profile?.extensionContext(for: extensionID),
+              let manifest = ExtensionManager.shared.extension(withID: extensionID)?.manifest,
+              ExtensionPolyfillHandler.permissionRefusal("sidePanel", manifest: manifest, context: context) == nil,
               opensPanelOnActionClick(extensionID: extensionID) else { return false }
         if let shown = window.displayedSidePanel, shown.extensionID == extensionID {
             close(shown, reason: .user)

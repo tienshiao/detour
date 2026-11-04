@@ -50,7 +50,7 @@ nonisolated final class ExtensionInterimNamespacesTests: XCTestCase {
     /// listener (1.0.98: a class's static field, and a constructor run at
     /// import). A TypeError here fails the whole background load.
     private static let touchAtEvaluationJS = """
-    @MainActor class __DetourTestGroups {
+    class __DetourTestGroups {
         static SESSION_GROUP_COLORS = [
             chrome.tabGroups.Color.BLUE, chrome.tabGroups.Color.CYAN, chrome.tabGroups.Color.GREEN,
             chrome.tabGroups.Color.ORANGE, chrome.tabGroups.Color.RED, chrome.tabGroups.Color.PINK,

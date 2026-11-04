@@ -491,7 +491,12 @@ nonisolated final class AutomationParkingWindowTests: XCTestCase {
         XCTAssertEqual(container?.isHidden, true, file: file, line: line)
         XCTAssertTrue(tab.webView?.window === wc.window, file: file, line: line)
         XCTAssertEqual(container?.frame.size, wc.contentContainerView.bounds.size, file: file, line: line)
-        XCTAssertEqual(tab.webView?.frame.size, wc.contentContainerView.bounds.size, file: file, line: line)
+        // The pages are on 127.0.0.1, a local development URL: a container
+        // that was displayed keeps its dev toolbar (TASK-186.2) above the
+        // web view, so the page has the viewport it had on screen.
+        var webViewSize = wc.contentContainerView.bounds.size
+        if container?.isShowingDevToolbar == true { webViewSize.height -= DevToolbarLayout.height }
+        XCTAssertEqual(tab.webView?.frame.size, webViewSize, file: file, line: line)
         XCTAssertFalse(wc.contentContainerView.bounds.isEmpty, file: file, line: line)
     }
 

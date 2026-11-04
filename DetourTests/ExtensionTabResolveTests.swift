@@ -831,9 +831,22 @@ nonisolated final class ExtensionTabResolveTests: XCTestCase {
         let tabByID = Dictionary(uniqueKeysWithValues: zip(tabIDsToStorm, [zoomed, plain, third]))
         let storm: [String: Any] = ["op": "storm", "tabIds": tabIDsToStorm, "rounds": 4]
         // Two main-actor tasks, both in flight at once; each hands its answer
-        // back as JSON, since a task's result has to be Sendable.
-        let pageStorm = Task { try JSONSerialization.data(withJSONObject: try await run(.page, in: world, storm)) }
-        let workerStorm = Task { try JSONSerialization.data(withJSONObject: try await run(.worker, in: world, storm)) }
+        // back as JSON, since a task's result has to be Sendable. An answer
+        // that is not JSON fails the test: `data(withJSONObject:)` would raise
+        // an Objective-C exception and take the test host down instead.
+        func json(_ value: Any) throws -> Data {
+            guard JSONSerialization.isValidJSONObject(value) else {
+                throw OpFailed(message: "the storm did not answer with a list: \(value)")
+            }
+            return try JSONSerialization.data(withJSONObject: value)
+        }
+        let pageStorm = Task { try json(try await run(.page, in: world, storm)) }
+        let workerStorm = Task { try json(try await run(.worker, in: world, storm)) }
+        // Unstructured: neither outlives the test when the other fails.
+        defer {
+            pageStorm.cancel()
+            workerStorm.cancel()
+        }
         let results = try await [("page", pageStorm.value), ("worker", workerStorm.value)]
         for (name, json) in results {
             let entries = try XCTUnwrap(try JSONSerialization.jsonObject(with: json) as? [[String: Any]])

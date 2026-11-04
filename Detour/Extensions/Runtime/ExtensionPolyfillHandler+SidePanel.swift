@@ -24,9 +24,10 @@ extension ExtensionPolyfillHandler {
         // `WKWebExtension.requestedPermissions`), so the manifest — and a
         // denial in this profile's context — is the gate, as for the other
         // polyfilled APIs; the polyfill defines no `chrome.sidePanel` without
-        // the manifest entry.
-        guard permissionRefusal("sidePanel", extensionID: extensionID) == nil else {
-            replyHandler(nil, Self.sidePanelPermissionRefusal)
+        // the manifest entry. A declared permission that is refused says why
+        // (denied in Settings, or optional and not granted), as for the others.
+        if let refusal = permissionRefusal("sidePanel", extensionID: extensionID) {
+            replyHandler(nil, refusal == Self.permissionNotDeclared("sidePanel") ? Self.sidePanelPermissionRefusal : refusal)
             return
         }
         guard let profile else {

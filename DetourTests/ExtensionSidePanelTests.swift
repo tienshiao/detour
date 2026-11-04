@@ -107,6 +107,28 @@ nonisolated final class ExtensionSidePanelTests: XCTestCase {
         XCTAssertNil(scene.window.displayedSidePanel)
     }
 
+    /// NEGATIVE, then POSITIVE: the declared permission denied in this
+    /// profile's context (the Settings switch) refuses the bridge and says
+    /// so; granted again, the bridge serves.
+    @MainActor func testADenialInTheContextRefusesTheBridgeAndAGrantRestoresIt() async throws {
+        let scene = try await makeScene("Panel Denied")
+        let permission = WKWebExtension.Permission(rawValue: "sidePanel")
+        func getPanelBehavior() async throws -> (result: Any?, error: String?) {
+            try await postRawPolyfillEnvelope(from: scene.loaded.page, type: "sidePanel.getPanelBehavior",
+                                              claimedID: scene.loaded.ext.id, params: [:])
+        }
+
+        scene.loaded.context.setPermissionStatus(.deniedExplicitly, for: permission)
+        let denied = try await getPanelBehavior()
+        XCTAssertNil(denied.result)
+        XCTAssertEqual(denied.error, "sidePanel permission denied by the user")
+
+        scene.loaded.context.setPermissionStatus(.grantedExplicitly, for: permission)
+        let granted = try await getPanelBehavior()
+        XCTAssertNil(granted.error)
+        XCTAssertEqual((granted.result as? [String: Any])?["openPanelOnActionClick"] as? Bool, false)
+    }
+
     // MARK: - Options (every method, both transports)
 
     @MainActor func testOptionsRoundTripFromBothTransports() async throws {
@@ -939,6 +961,26 @@ nonisolated final class ExtensionSidePanelTests: XCTestCase {
         try await Task.sleep(nanoseconds: 300_000_000)
         let events = try await world.runDict(.worker, in: scene.loaded, ["op": "events"])["events"] as? [[String: Any]]
         XCTAssertEqual(events?.count, 0, "action.onClicked does not fire when the click opens the panel")
+    }
+
+    /// NEGATIVE: with the permission denied in this profile (the Settings
+    /// switch), `openPanelOnActionClick` no longer takes the click: no panel
+    /// opens and `action.onClicked` fires as it would without the behaviour.
+    @MainActor func testADeniedPermissionLeavesTheClickToTheAction() async throws {
+        let scene = try await makeScene("Panel Action Denied")
+        _ = try await world.run(.worker, in: scene.loaded, ["op": "call", "method": "setPanelBehavior",
+                                                            "args": [["openPanelOnActionClick": true]]])
+        scene.loaded.context.setPermissionStatus(.deniedExplicitly, for: WKWebExtension.Permission(rawValue: "sidePanel"))
+        let anchor = scene.window.tabSidebar.fauxAddressBar
+
+        ExtensionPopoverController(extensionID: scene.loaded.ext.id).show(relativeTo: anchor.bounds, of: anchor, in: scene.window)
+
+        try await waitUntil("action.onClicked to fire", timeout: 20) {
+            let events = try? await self.world.runDict(.worker, in: scene.loaded, ["op": "events"])["events"] as? [[String: Any]]
+            return events?.first?["event"] as? String == "action.onClicked"
+        }
+        XCTAssertTrue(scene.panels.panels.isEmpty, "a denied permission opens no panel")
+        XCTAssertNil(scene.window.displayedSidePanel)
     }
 
     @MainActor func testTheCommandShortcutReachesTheExtension() async throws {
