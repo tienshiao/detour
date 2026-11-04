@@ -1,5 +1,8 @@
 # Wiki Update Log
 
+## 2026-11-04
+* **Update**: TASK-166 — [Build and test](playbooks/build-and-test.md) (new trap "Late web-view suites fail only in a full run"): the standing full-run-only failures of background-page onInstalled cases in `ExtensionPolyfillProfileWiringTests` were WebKit's network-process exhaustion, fixed by the test host's restart every 60 new stores (7c2bc2a); confirmed in two full runs of the merged epic branch.
+
 ## 2026-11-03
 * **Ingest**: full-run failure of 8 background-page tests in `ExtensionPolyfillProfileWiringTests` (noted on TASK-257) — [WebKit test host traps](platform/webkit-test-host-traps.md) (new section "Network process exhaustion"), [Testing extensions](extensions/testing-extensions.md) (new trap): the one network process takes only about 190 persistent sessions over its lifetime (sandbox extensions errno 12, EPERM on a new store's databases, localStorage silently keeping nothing), counted from its launch, not by live stores or fds; `TestEnvironmentSetup` now terminates it between suites every 60 new recorded stores.
 * **Update**: TASK-262 — [Polyfill layer](extensions/polyfill-layer.md) (section "Error text from both transports"): a worker's successful polyfill reply is wrapped as `{ __detourPolyfillOk: true, value }`, so a result carrying the error key is never read as a failure, and a reply in neither shape rejects; measured that a worker's `browser.runtime` is `chrome.runtime` and the relay's `lastError` reads the original text under both names.
