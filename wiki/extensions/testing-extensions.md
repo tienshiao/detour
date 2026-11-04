@@ -4,11 +4,11 @@ title: Testing extensions
 description: Which kind of extension test proves what — pure rules, the polyfill in a bare web view, a real WebKit extension context, the production Profile wiring, a runtime check with API Explorer, and the signed build — with the fixtures and the traps.
 tags: [extensions, testing, playbook, fixtures]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-04T02:43:07Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
-    title: CLAUDE.md (Test-Driven Development, Reminders)
+    title: CLAUDE.md (Testing, Reminders)
   - id: support
     resource: ../../DetourTests/ExtensionTestSupport.swift
     title: ExtensionTestSupport.swift
@@ -39,6 +39,12 @@ sources:
   - id: task-15
     resource: backlog:TASK-15
     title: The polyfill must not replace the chrome/browser globals
+  - id: task-245
+    resource: backlog:TASK-245
+    title: waitUntil stops the test on timeout
+  - id: task-252
+    resource: backlog:TASK-252
+    title: testStorageManagedInRealExtensionContextSurvivesGarbageCollection fails its own garbage-collection precondition
   - id: task-62
     resource: backlog:TASK-62
     title: Keep-alive in background pages (measurement legs, the user-script loop incident)
@@ -62,7 +68,7 @@ Explorer update). This page explains the test kinds that policy refers to.
 
 1. Pick the lowest level that can fail for the right reason, using the table
    below. Most API work needs levels 2, 3 and 4.
-2. Write the failing test first, with the shared fixtures.
+2. Write the tests, with the shared fixtures.
 3. Add or update the API Explorer section.
 4. Run the affected suites; see [build and test](../playbooks/build-and-test.md).
 5. If the behaviour depends on WebKit's process model or timers, check it in
@@ -96,22 +102,29 @@ All in `ExtensionTestSupport.swift` unless noted.
 | Fixture | Use |
 |---|---|
 | `makeTestExtension(id:manifestJSON:files:)`, `installTestExtension`, `loadTestContext` | Write an unpacked extension to a temp directory, save it, load it into a profile. Tests generate their extensions; they do not load `TestExtensions/` |
+| `waitUntil(_:timeout:pollInterval:_:)`, `pollUntil(timeout:pollInterval:_:)` | `waitUntil` polls a condition the test needs (used across ~57 files, not only extension tests). On timeout it records `XCTFail` at the waiting line *and* throws `WaitTimedOut`, so the test body stops there; before TASK-245 it only recorded the failure and returned, and the test went on with stale state. The `XCTFail` stays so a `do`/`catch` or `try?` around the wait cannot hide the timeout. A wait whose timeout is an expected outcome (the closed-gate leg of `ExtensionPrivateStoreTests`) uses `pollUntil`, which returns `false` and never fails |
 | `registerProbeTab(for:in:)` / `unregisterProbeTab` | Make a plain web view a tab WebKit knows. **Call it before the page loads** |
 | `askWorker(from:message:transport:)` | One round trip to the worker, returning both `reply` and `lastError`. `.direct` from an extension page, `.contentScriptRelay` from a web page |
 | `workerReplyIsEmpty` | A null reply means either "the worker answered nothing" or "WebKit could not reach it"; `"timeout"` means the callback never fired |
 | `postRawPolyfillEnvelope` | Post to the bridge bypassing the polyfill, so a test can claim any extension id |
 | `callbackOutcomeJS`, `promiseOutcomeJS` | Record how a call settled in callback form (`runtime.lastError`) and promise form |
-| `FakeNativeMessagingHost` | A silent host process found through `DETOUR_NATIVE_MESSAGING_HOSTS_DIR` |
-| `LoopbackHTTPServer` | Real http documents for frame tests; a different port is a different origin |
+| `FakeNativeMessagingHost` | A host process found through `DETOUR_NATIVE_MESSAGING_HOSTS_DIR`: silent by default; its `Behavior` writes fixed bytes, echoes (`.echoesCounted` with its process visible to `processCount()`), or answers one request and then exits or stays alive, or ignores SIGTERM (see [native messaging](./native-messaging.md#tests)) |
+| `LoopbackHTTPServer` | Real http documents for frame tests; a different port is a different origin. A `pending`/`stalled`/`truncated` route's connection is held in the same critical section that records its path, so once a path shows up in `requestedPaths`, `release(_:)` finds its connection (before TASK-237 a release could slip in between and leave the load hanging) |
 | `LoopbackWebSocketServer` | An echo server for the [relay](./websocket-relay.md) |
 | `CRX3TestSupport.swift` | Builds signed CRX3 files in the test |
 | `RecordingPolyfillBridge`, `makeRecordingPolyfillWebView` (`ExtensionSidePanelTestSupport.swift`) | A bare web view running the whole polyfill against a bridge that records every request and answers from a table. For asserting what a module sends, in what order, and when |
 | `SidePanelTestWorld` (same file) | A real extension in production profiles with real tabs and never-shown windows. `run(.worker / .page, …)` runs one op from either transport; `tabID(of:)` finds WebKit's id for a tab; `loadMarker(of:)` tells whether a panel page loaded again |
+| `HeldNotificationCenter` (`ExtensionNotificationManagerTests.swift`) | A notification center that holds every `add` until `release` (or answers at once with `holdsAdds = false`); its `authorization` (default `.authorized`) is what `authorizationStatus()` answers, and `holdsAuthorizationRequests` holds the prompt until `answerAuthorizationRequests(granting:)` (TASK-253). For `ExtensionNotificationManager(center:)` or a profile handler's `notificationManagerOverride`. Hand one manager to two profiles' handlers to test isolation the way production shares `shared`; set the override back to nil in tearDown, since the built-in Private profile's handler outlives the test |
+| `TestHostNotificationCenter.shared` (`TestEnvironmentSetup.swift`) | The center `ExtensionNotificationManager.shared` posts to in the test host: a non-holding `HeldNotificationCenter` installed at bundle start through the DEBUG-only `installSharedForTesting(center:)` (TASK-249). The host shares the app's bundle id, so before this every `notifications.create` from a handler without an override showed a real Detour banner. A test may read its `shown`; `testTestHostSharedManagerPostsToTheTestCenter` fails if `shared` is ever the system center |
 
 A window that is never shown is never key, so the side panel suites move web
 view ownership by calling `windowDidBecomeKey` themselves, and hand key
 events straight to `ExtensionCommandDispatch.perform`. What that leaves
 unproved is in the [side panel runtime check](../playbooks/side-panel-runtime-check.md).
+
+The loopback servers run on their own dispatch queues and keep all their
+mutable state in one `Mutex`-guarded struct each, so they are plain
+`Sendable` (TASK-237).
 
 `TestEnvironmentSetup` wipes the extension table and the data directory's
 `Extensions/` folder at bundle start and turns off
@@ -174,6 +187,13 @@ API Explorer details that show up in logs and are easy to misread:
   this were wrong.[^task-4]
 - **A message sent while the worker sleeps can be silently lost** in a test
   that does not wait for the worker.[^task-4]
+- **A worker's first answer does not mean WebKit has its `onConnect`
+  listener.** On a warm test host a page's `runtime.connect` made just after
+  the worker answered a `sendMessage` round trip was refused with "No
+  runtime.onConnect listeners found" (alone the same test passed). Wait for
+  the worker to report it holds the port, and reopen a port refused this way
+  (`testWebKitFiresTheCallersOwnOnDisconnectInsideRuntimePortDisconnect`,
+  TASK-256).
 - **WebKit hides ungranted API namespaces.** A hand-loaded or hand-seeded
   extension with no permission grants sees `chrome.alarms` (and others) as
   undefined; a top-level access throws and the background fails to load with
@@ -182,12 +202,19 @@ API Explorer details that show up in logs and are easy to misread:
 - **`runtime.onInstalled` never arrives from WebKit in a test** that loads a
   context straight into a new controller; see
   [runtime.onInstalled](./runtime-installed-event.md).
-- **Garbage-collection tests need a collection to happen.** They churn
-  garbage in escalating rounds until a control `WeakRef` is cleared, and fail
-  their own precondition ("no collection observed in N rounds") when none
-  happens within 10 rounds. That failure is about the run, not the patch
-  under test. The deterministic guard is the separate check that the object
-  the polyfill holds is the one the API answers with.
+- **Garbage-collection tests force the collection.** Allocation churn in
+  the page (escalating rounds until a control `WeakRef` cleared) went 10
+  rounds without an observed collection about one run in three.[^task-252]
+  `forceCollection(in:)` in `ExtensionPolyfillIntegrationTests` calls
+  WebKit's private `WKProcessPool _garbageCollectJavaScriptObjectsForTesting`
+  (reachable from the test host; the pool through KVC on the web view's
+  configuration), which asks the pool's WebContent processes for a full,
+  synchronous collection. The message is asynchronous, so it polls the
+  control `WeakRef` (made in an earlier script, so no live job keeps it)
+  across macrotasks; in 20 of 20 runs the first attempt cleared it. A test
+  skips, rather than fails, if the hook is gone or nothing is observed. The
+  deterministic guard is still the separate check that the object the
+  polyfill holds is the one the API answers with.
 - **Never mutate `WKUserContentController.userScripts` while iterating it.**
   The bridged array tracks the controller; a helper that re-added scripts in
   the loop never terminated and the test host reached 36 GB in 90 s.[^task-62]
@@ -196,11 +223,39 @@ API Explorer details that show up in logs and are easy to misread:
   the test host** seconds later, in another suite. Close the popup and keep
   torn-down profiles alive; see
   [WebKit test host traps](../platform/webkit-test-host-traps.md).
+- **The network process takes only about 190 persistent stores in its
+  lifetime.** Every profile a test creates gets a persistent
+  `WKWebsiteDataStore`, and the one network process behind them all stops
+  working for new stores after about 190 (no sandbox extensions, EPERM on the
+  store's databases) even when nearly all of them are gone again. Symptom: a
+  profile's localStorage silently keeps nothing, so background-page tests in
+  `ExtensionPolyfillProfileWiringTests` time out waiting for an install they
+  were dispatched, in full runs only. `TestEnvironmentSetup` restarts the
+  network process between suites every 60 new stores; see
+  [WebKit test host traps](../platform/webkit-test-host-traps.md).
 - **`DETOUR_DATA_DIR` isolates Detour's databases, not WebKit's storage
   directory**, which every run of the same bundle id shares.[^notes-testing]
   See [profile data removal](../architecture/profile-data-removal.md).
 - **Log line text is not asserted anywhere.** After changing a log line that
   a playbook greps for, check it by eye.
+- **A worker's polyfill requests need a profile-owned controller.** They
+  reach Swift through `ExtensionManager`'s `sendMessage` delegate, which finds
+  the handler through `Profile.profile(owning:)`. The controller
+  `ExtensionPolyfillIntegrationTests` builds by hand has no owning profile, so
+  only its page transport reaches a handler; a test that needs both transports
+  goes through `Profile.extensionController` (level 4), as
+  `ExtensionHistoryScopeTests` and `ExtensionNotificationOrderingTests` do
+  (read from the code, TASK-234).
+- **The built-in Private profile hosts real contexts in a test.**
+  `TabStore.shared.ensureIncognitoProfile()` returns it; `loadTestContext`
+  loads into it (with `hasAccessToPrivateData`, as in production), and both
+  transports reach its handler. The profile outlives the test, so unload the
+  extension there and reset anything swapped on its handler in tearDown, but
+  do not delete the profile. Its "Allow in Private" row is not consulted by
+  `Profile.loadExtensionContext`; `ExtensionNotificationOrderingTests` writes
+  it anyway (extension saved in the shared database, Private profile row
+  saved first for the foreign key), so the fixture matches what the app
+  allows (TASK-238).
 - **Stale comments.** The class comment on `ExtensionPolyfillIntegrationTests`
   says service worker messaging cannot be tested in the test process; the
   same class contains real worker round trips.
@@ -220,3 +275,4 @@ API Explorer details that show up in logs and are easy to misread:
 [^task-15]: The polyfill must not replace the chrome/browser globals
 [^task-62]: Keep-alive in background pages (measurement legs, the user-script loop incident)
 [^notes-testing]: Session notes on test runs and extension seeding
+[^task-252]: testStorageManagedInRealExtensionContextSurvivesGarbageCollection fails its own garbage-collection precondition

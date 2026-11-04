@@ -1,0 +1,273 @@
+TASK-186.3 runtime harness: the dev toolbar's capture buttons (visible area
+and full page; click copies, Option-click saves) on a single tab, in a split
+(the unfocused pane's button) and with the docked Web Inspector open, at 2x.
+Temporary code, never committed to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task186-3-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # Retina on a 1x monitor: the TASK-110 virtual display (docs/task-110/vdisplay.m),
+    #   clang -fobjc-arc -framework Foundation -framework CoreGraphics vdisplay.m -o vdisplay
+    #   ./vdisplay &   (a 1600x1000 pt @2x screen until killed); the harness
+    #   moves the window onto the first 2x screen.
+    # $SITE/tall.html: 10 coloured 500 px bands, a fixed 40 px header, a sticky
+    # 60 px bar, a 2D canvas (orange) and a 60 px magenta BOTTOM MARKER, 5320 px
+    # tall; app.html / api.html: solid #2a7fff / #ffb000.
+    python3 -m http.server 8863 --bind 127.0.0.1 --directory "$SITE" &
+    DETOUR_DATA_DIR=DetourVerify1863 DETOUR_VERIFY_DIR="$OUT" DETOUR_VERIFY_PORT=8863 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # a watcher captures `screencapture -x -o -l <windowNumber>` for each
+    # "SHOOT <name> <windowNumber>" line of $OUT/verify.log; the harness waits
+    # for each PNG. Wait for "done" (about 65 s), then kill that pid, the
+    # server and vdisplay.
+    git apply -R docs/harness/task186-3-harness.patch && xcodegen generate
+    rm -r -- ~/Library/Application\ Support/DetourVerify1863
+
+Seams: the window's capturePasteboard is a private named pasteboard
+(com.detourbrowser.verify.task1863) and captureSaveDirectory is $OUT/saved,
+so the user's clipboard and ~/Downloads are untouched. Buttons are pressed
+with performClick on the group's own buttons (through the window's wiring);
+Option is simulated through the group's modifierFlags seam. Each PNG is read
+back from the pasteboard and written to $OUT. The inspector is opened with
+WebInspectorToggler (step 5); no __WebInspector default was added (before
+and after: only WebKit2InspectorStartsAttached = 1).
+
+Results (2026-10-24, macOS 26.7, window 1400x860 on the 2x virtual display,
+backingScaleFactor 2; three runs, the last below; every PNG and window
+capture read and matching the log):
+- 0 Stack: Copy URL | Capture Visible Area, Capture Full Page | Console,
+  Network, Select Element. Run 1 showed the first separator stretched across
+  the bar (473 pt) and the link button pulled next to the URL: fixed by a
+  1 pt width on each separator (test added).
+- 1 Visible, scrolled to 1000: PNG 2344x1660 px, 144 dpi = web view
+  1172x830 pt x 2; pasteboard types public.png + public.tiff (lazy). Its top
+  matches the window capture of the same area (fixed header, sticky bar,
+  band 3, band 4) pixel for pixel in colour. Toast "Screenshot copied".
+  Run 1 put the toast over the capture buttons: it now drops below a dev
+  toolbar under its spot (toastTopInset, test added).
+- 2 Full page, scrolled to 2400: PNG 2344x10640 px = 1172x5320 pt x 2, every
+  band top to bottom, the fixed header once at the top, the sticky bar at its
+  place in the flow, the canvas, the BOTTOM MARKER in the last 120 px; the
+  page is still at scrollY 2400 afterwards. ~2.5 s including PNG encoding.
+  Buttons disabled while in flight. Toast "Full-page screenshot copied".
+- 3 Option-click: saved "Screenshot localhost-8863 2026-10-24 at
+  14.41.53.png"; two more in the same second gave "... 14.41.54.png" and
+  "... 14.41.54 (2).png"; full page "... (full page).png". The pasteboard
+  was unchanged by the saves. Toast "Saved “<name>” to saved" (the folder's
+  display name; "Downloads" in normal use).
+- 6 Dark appearance: both toasts legible below the toolbar; PNGs identical
+  in size.
+- 4 Split app | api (572 pt panes, app focused): the api pane's visible
+  button captured only that pane, 1144x1620 px, all #ffb000, and focused
+  it. The app pane's full page (a one-screen page): 1144x1620 px, #2a7fff.
+- 5 Inspector docked at the bottom (frontend 1172x500, page 1172x330):
+  visible capture 2344x660 px, page only (no inspector, no toolbar); full
+  page still the whole 2344x10640 document.
+NOT exercised here: the error toast (unit-tested: a web view with no page
+fails with .noPage), the PDF path at runtime (unit-tested on a real web view,
+forced), a page tall enough to be scaled down, a real Option-click from HID.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..b7ebc09 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask1863HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task1863Harness.swift b/Detour/App/Task1863Harness.swift
+new file mode 100644
+index 0000000..6471b72
+--- /dev/null
++++ b/Detour/App/Task1863Harness.swift
+@@ -0,0 +1,185 @@
++// TEMP TASK-186.3 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    @MainActor func runTask1863HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var steps: [(TimeInterval, () -> Void)] = []
++        var requestedShots: [String] = []
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) { steps.append((dt, block)) }
++        func runStep(_ index: Int) {
++            guard index < steps.count else { return }
++            let missing = requestedShots.filter { !FileManager.default.fileExists(atPath: "\(outDir)/\($0).png") }
++            let delay = missing.isEmpty ? steps[index].0 : 0.1
++            let timer = Timer(timeInterval: delay, repeats: false) { _ in
++                if missing.isEmpty { steps[index].1(); runStep(index + 1) } else { runStep(index) }
++            }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        guard let window = wc.window, let space = wc.activeSpace else { return log("no window/space") }
++        let store = TabStore.shared
++        let tallURL = URL(string: "http://localhost:\(port)/tall.html")!
++        let appURL = URL(string: "http://localhost:\(port)/app.html")!
++        let apiURL = URL(string: "http://localhost:\(port)/api.html")!
++        var tabs: [String: BrowserTab] = [:]
++
++        // Seams: a private pasteboard and a scratch folder, never the user's.
++        let pasteboard = NSPasteboard(name: NSPasteboard.Name("com.detourbrowser.verify.task1863"))
++        pasteboard.clearContents()
++        let saveDir = URL(fileURLWithPath: outDir).appendingPathComponent("saved", isDirectory: true)
++        wc.capturePasteboard = pasteboard
++        wc.captureSaveDirectory = { saveDir }
++
++        func r(_ rect: NSRect) -> String {
++            String(format: "(%.0f,%.0f %.0fx%.0f)", rect.minX, rect.minY, rect.width, rect.height)
++        }
++        func shoot(_ name: String) {
++            requestedShots.append(name)
++            log("SHOOT \(name) \(window.windowNumber)")
++        }
++        func group(_ key: String) -> DevToolbarCaptureGroup? {
++            tabs[key]?.webViewContainer?.devToolbar?.captureGroup
++        }
++        func press(_ key: String, _ kind: PageCapture.Kind, option: Bool = false) {
++            guard let g = group(key) else { return log("press [\(key)]: no capture group") }
++            g.modifierFlags = { option ? [.option] : [] }
++            let button = kind == .visible ? g.visibleButton : g.fullPageButton
++            log("press \(kind == .visible ? "visible" : "full page")\(option ? " (option)" : "") [\(key)] enabled=\(button.isEnabled)")
++            button.performClick(nil)
++            log("  busy right after the press: visible.enabled=\(g.visibleButton.isEnabled) full.enabled=\(g.fullPageButton.isEnabled)")
++        }
++        var pasteboardChange = pasteboard.changeCount
++        /// Saves the pasteboard's PNG and logs its size and resolution.
++        func savePasteboard(_ name: String, expectPoints: NSSize?) {
++            guard pasteboard.changeCount != pasteboardChange else { return log("\(name): pasteboard unchanged") }
++            pasteboardChange = pasteboard.changeCount
++            guard let png = pasteboard.data(forType: .png) else { return log("\(name): no PNG on the pasteboard, types \(pasteboard.types ?? [])") }
++            let url = URL(fileURLWithPath: outDir).appendingPathComponent("\(name).png")
++            try? png.write(to: url)
++            let rep = NSBitmapImageRep(data: png)
++            let scale = window.backingScaleFactor
++            var line = "\(name): PNG \(rep?.pixelsWide ?? -1)x\(rep?.pixelsHigh ?? -1) px, size \(rep.map { "\($0.size)" } ?? "-") pt, types \((pasteboard.types ?? []).map(\.rawValue))"
++            if let p = expectPoints { line += String(format: " | expected %.0fx%.0f px (%.0fx%.0f pt x %.0f)", p.width * scale, p.height * scale, p.width, p.height, scale) }
++            log(line)
++        }
++        func pane(_ key: String) -> String {
++            guard let tab = tabs[key], let c = tab.webViewContainer, let w = tab.webView else { return "\(key): none" }
++            return "\(key): container \(r(c.frame)) webView \(r(w.frame)) toolbar \(c.devToolbar.map { r($0.frame) } ?? "none") subviews \(c.subviews.map { "\(type(of: $0))" })"
++        }
++        func js(_ key: String, _ script: String, _ label: String) {
++            tabs[key]?.webView?.evaluateJavaScript(script) { v, e in log("\(label): \(v.map { "\($0)" } ?? "nil") \(e.map { "\($0)" } ?? "")") }
++        }
++
++        // MARK: Seed (on the 2x screen if there is one)
++        at(0) {
++            NSApp.activate(ignoringOtherApps: true)
++            NSApp.appearance = NSAppearance(named: .aqua)
++            let screen = NSScreen.screens.first { $0.backingScaleFactor >= 2 } ?? window.screen ?? NSScreen.main!
++            let f = screen.visibleFrame
++            window.setFrame(NSRect(x: f.minX + 20, y: f.maxY - 20 - 860, width: min(1400, f.width - 40), height: 860), display: true)
++            tabs["tall"] = store.addTab(in: space, url: tallURL)
++            for tab in space.tabs where !tabs.values.contains(where: { $0 === tab }) {
++                store.closeTab(id: tab.id, in: space, undoable: false)
++            }
++            store.undoManager.removeAllActions()
++            wc.selectTab(id: tabs["tall"]!.id)
++            log("seeded: screens \(NSScreen.screens.map { "\($0.localizedName) \($0.backingScaleFactor)x" }) window scale \(window.backingScaleFactor) frame \(r(window.frame))")
++        }
++        at(3.0) {
++            log("0 " + pane("tall"))
++            log("0 stack: \(tabs["tall"]?.webViewContainer?.devToolbar?.trailingStack.arrangedSubviews.map { $0.accessibilityLabel() ?? "\(type(of: $0))" } ?? [])")
++            js("tall", "[document.documentElement.scrollWidth, document.documentElement.scrollHeight, devicePixelRatio]", "0 tall metrics")
++            shoot("0-toolbar")
++        }
++        // MARK: 1 — visible area to the clipboard, scrolled to 1000
++        at(0.5) { js("tall", "window.scrollTo(0, 1000); scrollY", "1 scrolled") }
++        at(0.5) { press("tall", .visible) }
++        at(0.4) { shoot("1-window-toast") }
++        at(1.0) { savePasteboard("1-visible", expectPoints: tabs["tall"]?.webView?.frame.size); log("1 " + pane("tall")) }
++        // MARK: 2 — full page, scrolled to the middle
++        at(2.0) { js("tall", "window.scrollTo(0, 2400); scrollY", "2 scrolled") }
++        at(0.5) { press("tall", .fullPage) }
++        at(0.4) { shoot("2-window-toast-full") }
++        at(2.5) {
++            savePasteboard("2-fullpage", expectPoints: nil)
++            js("tall", "[document.documentElement.scrollWidth, document.documentElement.scrollHeight, scrollY]", "2 doc size and scroll after")
++        }
++        // MARK: 3 — Option-click saves; a second capture does not overwrite
++        at(2.5) { press("tall", .visible, option: true) }
++        at(0.4) { shoot("3-toast-saved-light") }
++        at(0.3) {
++            // Two in the same second: the second must not overwrite the first.
++            press("tall", .visible, option: true)
++            press("tall", .visible, option: true)
++        }
++        at(1.0) { press("tall", .fullPage, option: true) }
++        at(3.0) {
++            let files = (try? FileManager.default.contentsOfDirectory(atPath: saveDir.path))?.sorted() ?? []
++            log("3 saved files: \(files)")
++            log("3 pasteboard unchanged by the saves: \(pasteboard.changeCount == pasteboardChange)")
++        }
++        // MARK: 6 — the toast in dark
++        at(2.5) { NSApp.appearance = NSAppearance(named: .darkAqua) }
++        at(1.0) { press("tall", .visible) }
++        at(0.5) { shoot("6-toast-dark") }
++        at(2.5) { savePasteboard("6-visible-dark", expectPoints: tabs["tall"]?.webView?.frame.size) }
++        at(0.5) { press("tall", .visible, option: true) }
++        at(0.5) { shoot("6-toast-saved-dark") }
++        at(2.5) { NSApp.appearance = NSAppearance(named: .aqua) }
++        // MARK: 4 — a split: the unfocused right pane's button captures that pane only
++        at(1.0) {
++            let app = store.addTab(in: space, url: appURL)
++            let api = store.addTab(in: space, url: apiURL)
++            tabs["app"] = app; tabs["api"] = api
++            store.createSplit(draggedTabID: api.id, targetTabID: app.id, edge: .right, in: space)
++            wc.selectTab(id: app.id)
++        }
++        at(3.0) {
++            log("4 split: \(pane("app")) | \(pane("api")) focused=\(wc.selectedTab.flatMap { t in tabs.first { $0.value === t }?.key } ?? "?")")
++            shoot("4-split")
++        }
++        at(0.5) { press("api", .visible) }
++        at(2.0) {
++            savePasteboard("4-split-api-visible", expectPoints: tabs["api"]?.webView?.frame.size)
++            log("4 focused after the press: \(wc.selectedTab.flatMap { t in tabs.first { $0.value === t }?.key } ?? "?")")
++        }
++        at(0.5) { press("app", .fullPage) }
++        at(2.5) { savePasteboard("4-split-app-full", expectPoints: tabs["app"]?.webView?.frame.size) }
++        // MARK: 5 — docked inspector open: excluded from the capture
++        at(1.0) { wc.selectTab(id: tabs["tall"]!.id) }
++        at(2.0) {
++            guard let wv = tabs["tall"]?.webView else { return }
++            WebInspectorToggler.shared.toggle(.console, for: wv)
++        }
++        at(4.0) {
++            let control = tabs["tall"]?.webView.flatMap { WebInspectorControl(webView: $0) }
++            log("5 inspector visible=\(control?.isVisible ?? false) attached=\(control?.isAttached ?? false) frontend \(control?.frontendWebView.map { r($0.frame) } ?? "none") | " + pane("tall"))
++            js("tall", "window.scrollTo(0, 1000); scrollY", "5 scrolled")
++        }
++        at(0.5) { press("tall", .visible) }
++        at(0.5) { shoot("5-inspector") }
++        at(2.0) { savePasteboard("5-inspector-visible", expectPoints: tabs["tall"]?.webView?.frame.size) }
++        at(0.5) { press("tall", .fullPage) }
++        at(3.0) { savePasteboard("5-inspector-full", expectPoints: nil) }
++        at(0.5) {
++            if let wv = tabs["tall"]?.webView, let c = WebInspectorControl(webView: wv), c.isVisible { c.close() }
++        }
++        at(1.5) { log("5 closed: " + pane("tall")) }
++        at(1.0) { log("done") }
++        steps[0].0 = 3.0
++        runStep(0)
++    }
++}
++#endif

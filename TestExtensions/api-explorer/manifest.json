@@ -4,9 +4,9 @@
   "version": "3.0.0",
   "description": "__MSG_appDesc__",
   "default_locale": "en",
-  "permissions": ["storage", "tabs", "scripting", "webNavigation", "contextMenus", "offscreen", "alarms", "fontSettings", "idle", "notifications", "history", "bookmarks", "sessions", "search", "privacy", "webRequest", "management", "favicon", "declarativeNetRequestWithHostAccess", "tabGroups", "debugger", "sidePanel"],
+  "permissions": ["storage", "tabs", "scripting", "webNavigation", "contextMenus", "offscreen", "alarms", "fontSettings", "idle", "notifications", "bookmarks", "sessions", "search", "privacy", "webRequest", "management", "favicon", "declarativeNetRequestWithHostAccess", "tabGroups", "debugger", "sidePanel"],
   "host_permissions": ["<all_urls>"],
-  "optional_permissions": ["cookies"],
+  "optional_permissions": ["cookies", "history"],
   "optional_host_permissions": ["https://example.org/*"],
   "externally_connectable": {
     "matches": ["http://127.0.0.1/*", "http://localhost/*"]

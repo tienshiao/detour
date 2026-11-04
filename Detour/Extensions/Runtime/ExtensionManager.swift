@@ -2,7 +2,7 @@ import Foundation
 import WebKit
 import os
 
-private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extension-manager")
+nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", category: "extension-manager")
 
 /// Singleton lifecycle manager for web extensions.
 /// Each `Profile` owns its own `WKWebExtensionController`; this class coordinates
@@ -27,6 +27,26 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// contexts by hand do not load every registered extension as a side effect.
     /// Tests of the new-profile path turn it back on for their duration.
     var loadsExtensionsIntoAddedProfiles = true
+
+    /// Answers the permission prompt in place of the modal alert, given the
+    /// items' descriptions: true is Allow. Tests set it to drive a real
+    /// `permissions.request` through the prompt path; nil in the app.
+    var permissionPromptAnswerOverride: (([String]) -> Bool)?
+
+    /// Answers the `management.uninstallSelf` confirmation in place of the
+    /// modal alert, given the extension's id: true is Uninstall. Tests set it
+    /// to drive both answers; nil in the app (TASK-257).
+    var uninstallSelfConfirmationAnswerOverride: ((String) -> Bool)?
+
+    /// Extensions whose `uninstallSelf` confirmation is on screen or about to
+    /// be. A second call asking for the dialog while one is pending is refused
+    /// rather than stacking alerts.
+    private var pendingUninstallSelfConfirmations: Set<String> = []
+
+    /// Extensions whose `permissions.request` prompt for a permission outside
+    /// WebKit (TASK-260) is on screen or about to be. A second request while
+    /// one is pending is refused rather than stacking alerts.
+    private var pendingPermissionRequestPrompts: Set<String> = []
 
     /// Set once `loadInstalledExtensions` reaches its per-profile load. A profile
     /// added before then is loaded by that loop, so `profileWasAdded` leaves it
@@ -91,6 +111,22 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         let extensionID: String
     }
     private var keepAlivePorts: [KeepAlivePortKey: WKWebExtension.MessagePort] = [:]
+
+    /// The anchor ports an armed background holds next to its keep-alive port
+    /// (TASK-142), keyed by port identity. WebKit's `removePort` drops a page's
+    /// whole entry from its open-ports map when any one of its ports closes, so
+    /// the background re-creates the entry by closing its anchor and opening a
+    /// new one after every port of its that ends (`nativePortKeepAliveJS`).
+    /// Normally one per key; the old one is still registered for the moment
+    /// between the new one arriving and the old one's `disconnectHandler`. Never
+    /// disconnected from here while the background is armed: a native
+    /// disconnect after the new anchor was added would wipe the entry again.
+    private var keepAliveAnchorPorts: [KeepAlivePortKey: [ObjectIdentifier: WKWebExtension.MessagePort]] = [:]
+
+    /// Anchor ports accepted and re-anchor requests sent per key, for
+    /// diagnostics and tests. Dropped when the context unloads.
+    private var keepAliveAnchorOpenCounts: [KeepAlivePortKey: Int] = [:]
+    private var keepAliveReanchorRequestCounts: [KeepAlivePortKey: Int] = [:]
 
     /// Live relayed WebSockets per extension per controller (TASK-8). A worker may
     /// hold several at once, so each session is keyed by its own identity; entries
@@ -204,6 +240,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     enum NativeHostAccess: Equatable {
         /// Detour's own polyfill host: accepted without the manifest permission.
         case polyfillHost
+        /// The keep-alive's anchor port (TASK-142): Detour's own, accepted
+        /// without the manifest permission, and nothing is spawned for it.
+        case keepAliveAnchorHost
         /// Detour's WebSocket relay host (TASK-8): also accepted without the
         /// manifest permission — a worker may open a WebSocket whether or not it
         /// declares `nativeMessaging`, and this host is the only way it can.
@@ -233,6 +272,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     static func nativeHostAccess(hostName: String, manifestPermissions: [String],
                                  savedDecision: @autoclosure () -> ExtensionPermissionStatus?) -> NativeHostAccess {
         if hostName == ExtensionPolyfillHandler.handlerName { return .polyfillHost }
+        if hostName == keepAliveAnchorHostName { return .keepAliveAnchorHost }
         if hostName == WebSocketRelaySession.hostName { return .webSocketRelayHost }
         guard manifestPermissions.contains(ExtensionPermissionRecord.nativeMessagingKey) else { return .denied }
         return savedDecision() == .denied ? .deniedByUser : .allowed
@@ -326,12 +366,45 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// learns the reason.
     static let keepAliveSupersededType = "keepalive-superseded"
 
+    /// The native host an armed background opens its anchor port to (TASK-142,
+    /// `keepAliveAnchorPorts`). `ExtensionAPIPolyfill.nativePortKeepAliveJS`
+    /// embeds the same string.
+    static let keepAliveAnchorHostName = "detourKeepAliveAnchor"
+
+    /// The message type Detour sends on the keep-alive port after one of the
+    /// background's native ports (a host, a relayed WebSocket) closed while it
+    /// is armed: the close took WebKit's record of the background's open ports
+    /// with it, and the polyfill answers by re-opening its anchor.
+    static let keepAliveReanchorType = "keepalive-reanchor"
+
     /// An error in Detour's extension domain with `message` as its description —
     /// the one shape every native-messaging failure takes.
     static func extensionError(_ message: String) -> NSError {
         NSError(domain: "DetourExtension", code: -1,
                 userInfo: [NSLocalizedDescriptionKey: message])
     }
+
+    /// A one-shot `sendNativeMessage` whose message is not an object (TASK-242).
+    /// Chrome throws "No matching signature" for it; this is the wording
+    /// WebKit's own bindings use when they refuse a JS null as the message,
+    /// and WebKit prefixes it with "Invalid call to runtime.sendNativeMessage().".
+    static func nonObjectNativeMessageError() -> NSError {
+        extensionError("The 'message' value is invalid, because an object is expected")
+    }
+
+    /// A `javascript:` URL, which `windows.create`, `tabs.create` and
+    /// `tabs.update` refuse before anything opens or loads (TASK-225), as
+    /// Chrome's MV3 does. Shipped WebKit (macOS 26, Darwin 25.6) hands such a
+    /// URL to Detour's delegates and `BrowserTab.loadURL`; loading it ran the
+    /// script in the tab's page. Foundation's `URL` keeps a scheme's case
+    /// (`JavaScript:` parses as "JavaScript"), so the compare ignores it.
+    nonisolated static func isJavaScriptURL(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "javascript"
+    }
+
+    /// WebKit prefixes "Invalid call to <api>()." and capitalises the first
+    /// letter, so the message does not start with the scheme.
+    static let javaScriptURLRefusal = "Cannot load a javascript: URL; use chrome.scripting.executeScript instead"
 
     static func nativeHostForbiddenError() -> NSError {
         extensionError(nativeHostForbiddenMessage)
@@ -367,11 +440,24 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     static let popupOpenURLNotification = Notification.Name("extensionPopupOpenURL")
     static let extensionActionDidChangeNotification = Notification.Name("extensionActionDidChange")
     static let extensionPinStateDidChangeNotification = Notification.Name("extensionPinStateDidChange")
+    /// A saved permission decision of one extension changed: a Settings
+    /// toggle, a permission prompt's answer, or the extension's own
+    /// `permissions.remove` (TASK-258). Posted on the main thread after the
+    /// write, with the extension's ID under `extensionIDUserInfoKey`, so an
+    /// open Settings pane can show the new rows (TASK-259).
+    static let permissionDecisionsDidChangeNotification = Notification.Name("ExtensionManagerPermissionDecisionsDidChange")
+    static let extensionIDUserInfoKey = "extensionID"
+
+    private func postPermissionDecisionsDidChange(extensionID: String) {
+        NotificationCenter.default.post(name: Self.permissionDecisionsDidChangeNotification, object: self,
+                                        userInfo: [Self.extensionIDUserInfoKey: extensionID])
+    }
 
     // MARK: - Init
 
     override init() {
         super.init()
+        observeGrantRemovals()
     }
 
     // MARK: - Initialize
@@ -395,7 +481,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
         guard let window = notification.object as? NSWindow,
-              let wc = window.windowController as? BrowserWindowController else { return }
+              let wc = window.windowController as? (any ExtensionListedWindow) else { return }
         for profile in TabStore.shared.profiles {
             profile.extensionController.didFocusWindow(wc)
         }
@@ -404,7 +490,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     @objc private func windowDidResignKey(_ notification: Notification) {
         // Defer check: NSApp.keyWindow hasn't updated yet in the same run loop pass
         DispatchQueue.main.async {
-            if NSApp.keyWindow?.windowController is BrowserWindowController { return }
+            if NSApp.keyWindow?.windowController is (any ExtensionListedWindow) { return }
             for profile in TabStore.shared.profiles {
                 profile.extensionController.didFocusWindow(nil)
             }
@@ -450,19 +536,24 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
 
         // Load WKWebExtension resources in parallel (async I/O)
-        await withTaskGroup(of: (WebExtension, WKWebExtension?).self) { group in
-            for ext in pendingExtensions {
-                group.addTask { @MainActor in
+        // The child tasks carry only Sendable values (the index, the path and
+        // id, the loaded WKWebExtension) and await the main-actor load; the
+        // WebExtension is looked up again by index once its load finishes.
+        await withTaskGroup(of: (Int, WKWebExtension?).self) { group in
+            for (index, ext) in pendingExtensions.enumerated() {
+                let basePath = ext.basePath
+                let id = ext.id
+                group.addTask {
                     do {
-                        let wkExt = try await WKWebExtension(resourceBaseURL: ext.basePath)
-                        return (ext, wkExt)
+                        return (index, try await WKWebExtension(resourceBaseURL: basePath))
                     } catch {
-                        log.error("Failed to load WKWebExtension for \(ext.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                        return (ext, nil)
+                        log.error("Failed to load WKWebExtension for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                        return (index, nil)
                     }
                 }
             }
-            for await (ext, wkExt) in group {
+            for await (index, wkExt) in group {
+                let ext = pendingExtensions[index]
                 ext.wkExtension = wkExt
                 extensions.append(ext)
                 log.info("Loaded extension \(ext.manifest.name, privacy: .public) (\(ext.id, privacy: .public)), enabled: \(ext.isEnabled)")
@@ -680,6 +771,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             log.info("Tore down \(torn.relays) relayed WebSocket(s) for \(extensionID, privacy: .public) (context unloaded)")
         }
         keepAlivePortOpenCounts.removeValue(forKey: key)
+        dropKeepAliveAnchors(for: key)
+        keepAliveAnchorOpenCounts.removeValue(forKey: key)
+        keepAliveReanchorRequestCounts.removeValue(forKey: key)
         // A restart pending for a context that is being unloaded has nothing left
         // to load into — and must not fire later against whatever context the
         // same key resolves to by then (a reload, or a recycled controller
@@ -839,6 +933,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // or a control send that never arrived (`reconcile` starts them again).
         if !state.armed {
             stopKeepAlivePinging(for: key)
+        } else if event == .hostDisconnected {
+            requestReanchor(for: key)
         }
 
         let extID = key.extensionID
@@ -852,6 +948,64 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         case .sendStop:
             log.info("Keep-alive disarmed for \(extID, privacy: .public): no native host connected")
             sendKeepAliveControl("keepalive-stop", for: key)
+        }
+    }
+
+    /// One of the background's native ports (a host or a relayed WebSocket)
+    /// closed, or was refused, while it is still armed. WebKit's `removePort` dropped the
+    /// background page's whole open-ports entry with it, so the next 30 s unload
+    /// tick would close the page however many ports it still holds (TASK-141);
+    /// the polyfill re-creates the entry by re-opening its anchor port (TASK-142).
+    ///
+    /// Sent on the next turn of the main queue, not now: a host that exited
+    /// releases its keep-alive count *before* its WebKit port is disconnected,
+    /// and the background must hear of the disconnect (whose removal is the
+    /// wipe) before it re-anchors, or the anchor's entry is wiped in turn. Both
+    /// go to the background's process in the order they are sent.
+    private func requestReanchor(for key: KeepAlivePortKey) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.keepAliveStates[key]?.armed == true,
+                  let port = self.keepAlivePorts[key] else { return }
+            self.keepAliveReanchorRequestCounts[key, default: 0] += 1
+            port.sendMessage(["type": Self.keepAliveReanchorType], completionHandler: { _ in })
+            log.info("Keep-alive re-anchor requested for \(key.extensionID, privacy: .public): one of its native ports closed")
+        }
+    }
+
+    /// The last anchor closed while the keep-alive is disarmed. The polyfill
+    /// closes its anchor only to re-open one at once (a re-anchor, armed) or
+    /// when its keep-alive port drops (already gone here), so an anchor closing
+    /// with none to follow is WebKit unloading the background. And the anchor
+    /// may be the only port WebKit still reports: the first re-anchor's close
+    /// wiped the page's record of every other port, the keep-alive port
+    /// included, so the unload reports no other close (TASK-141). Without this
+    /// Detour would keep a dead keep-alive port registered until the next start
+    /// superseded it.
+    ///
+    /// Decided a second later, so a re-anchor that crossed a stop (its new
+    /// anchor follows its close in the same task) is not mistaken for one. If
+    /// it ever is, the keep-alive port is disconnected and the polyfill
+    /// reconnects it.
+    private func checkForUnloadReportedByAnchor(for key: KeepAlivePortKey) {
+        guard keepAliveAnchorPorts[key] == nil, keepAliveStates[key]?.armed != true,
+              let keepAlive = keepAlivePorts[key] else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self, weak keepAlive] in
+            guard let self, let keepAlive, self.keepAlivePorts[key] === keepAlive,
+                  self.keepAliveAnchorPorts[key] == nil, self.keepAliveStates[key]?.armed != true else { return }
+            self.keepAlivePorts.removeValue(forKey: key)
+            keepAlive.disconnect(throwing: nil)
+            self.applyKeepAlive(.portClosed, for: key)
+            log.info("Keep-alive port closed for \(key.extensionID, privacy: .public) (background unloaded; reported through its anchor)")
+        }
+    }
+
+    /// Disconnect every anchor port Detour holds for the key. Only for a
+    /// background that is going away or being restarted: its open ports must
+    /// not keep the page loaded any more.
+    private func dropKeepAliveAnchors(for key: KeepAlivePortKey) {
+        let anchors = keepAliveAnchorPorts.removeValue(forKey: key) ?? [:]
+        for anchor in anchors.values {
+            anchor.disconnect(throwing: nil)
         }
     }
 
@@ -1022,6 +1176,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         let error = Self.unresponsiveBackgroundError()
         let torn = tearDownNativeConnections(for: key, disconnectingPortsWith: error)
         ourPort?.disconnect(throwing: error)
+        // Its anchors too, or they would hold the zombie page open (TASK-142).
+        dropKeepAliveAnchors(for: key)
         log.info("Restarting the background of \(extID, privacy: .public): tore down \(torn.hosts) native host(s), \(torn.relays) relayed WebSocket(s) and its keep-alive port")
 
         // No restart can already be pending here: it would have removed the
@@ -1099,8 +1255,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             guard let self, let port else { return }
             // The keep-alive bookkeeping is main-thread only (see `applyKeepAlive`);
             // WebKit calls this back on the main queue, but do not rely on it.
-            let recover = { self.handleKeepAliveControlFailure(for: key, on: port) }
-            if Thread.isMainThread { recover() } else { DispatchQueue.main.async(execute: recover) }
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { self.handleKeepAliveControlFailure(for: key, on: port) }
+            } else {
+                DispatchQueue.main.async { self.handleKeepAliveControlFailure(for: key, on: port) }
+            }
         })
     }
 
@@ -1151,6 +1310,15 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         keepAlivePortOpenCounts[KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)] ?? 0
     }
 
+    /// Anchor ports Detour holds now, anchors accepted since the context loaded,
+    /// and re-anchor requests sent (TASK-142). Tests only.
+    func keepAliveAnchorsForTesting(controller: WKWebExtensionController,
+                                    extensionID: String) -> (held: Int, opened: Int, requested: Int) {
+        let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extensionID)
+        return (keepAliveAnchorPorts[key]?.count ?? 0, keepAliveAnchorOpenCounts[key] ?? 0,
+                keepAliveReanchorRequestCounts[key] ?? 0)
+    }
+
     /// Real native messaging hosts currently registered as live for the extension.
     /// Tests only.
     func liveNativeHostCountForTesting(controller: WKWebExtensionController, extensionID: String) -> Int {
@@ -1178,8 +1346,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// profile's open windows and tabs.
     private func notifyExistingTabs(for profile: Profile, contexts: [WKWebExtensionContext]? = nil) {
         let contexts = contexts ?? Array(profile.extensionContexts.values)
-        let windowControllers = NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
-            .filter { $0.activeSpace?.profileID == profile.id }
+        let windowControllers = extensionListedWindows().filter { $0.extensionProfileID == profile.id }
 
         for wc in windowControllers {
             for context in contexts {
@@ -1203,9 +1370,15 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for tab in tabs where !tab.isSleeping {
             ExtensionTabLifecycle.didOpen(tab, in: profile, contexts: contexts)
         }
+        // The Quick Detour windows' pages: in no space, listed by their own
+        // windows (TASK-193.1).
+        for tab in TabStore.shared.quickDetourTabs
+        where tab.quickDetourProfile === profile && tab.webView != nil {
+            ExtensionTabLifecycle.didOpen(tab, in: profile, contexts: contexts)
+        }
 
-        if let focusedWC = NSApp.keyWindow?.windowController as? BrowserWindowController,
-           focusedWC.activeSpace?.profileID == profile.id {
+        if let focusedWC = NSApp.keyWindow?.windowController as? (any ExtensionListedWindow),
+           focusedWC.extensionProfileID == profile.id {
             for context in contexts {
                 context.didFocusWindow(focusedWC)
             }
@@ -1514,6 +1687,82 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
     }
 
+    /// `management.uninstallSelf` (TASK-257): the extension asks to be
+    /// uninstalled, through the same `uninstall(id:)` Settings uses. Detour
+    /// installs an extension once for every profile (each profile only turns
+    /// it on or off), so this removes it from every profile, where Chrome,
+    /// whose profiles install separately, removes it from the calling one.
+    ///
+    /// `completion` gets nil when the uninstall goes ahead and the refusal
+    /// otherwise; it runs before the uninstall itself, which waits for the
+    /// next main-actor turn, so the reply has a chance to reach the caller
+    /// before its context is unloaded. It may still never arrive: unloading
+    /// tears the worker and the extension's pages down. With
+    /// `showConfirmDialog` the user is asked first, in the style of the
+    /// Settings alert; Cancel refuses with Chromium's
+    /// `kUninstallCanceledError`. Unlike Chrome, the dialog needs no user
+    /// gesture: the polyfill has no gesture signal to check.
+    func uninstallSelf(extensionID: String, showConfirmDialog: Bool,
+                       completion: @escaping (String?) -> Void) {
+        guard self.extension(withID: extensionID) != nil else {
+            completion("Failed to find extension with id \(extensionID).")
+            return
+        }
+        guard showConfirmDialog else {
+            completion(nil)
+            scheduleSelfUninstall(extensionID: extensionID)
+            return
+        }
+        // Claimed here, not in the task: WebKit dispatches a batch of incoming
+        // messages in one go, so a second call can arrive before the task runs.
+        guard pendingUninstallSelfConfirmations.insert(extensionID).inserted else {
+            completion("Extension \(extensionID) uninstall canceled by user.")
+            return
+        }
+        // Off the caller's stack: the alert runs a modal loop.
+        Task { @MainActor in
+            let confirmed = self.confirmUninstallSelf(extensionID: extensionID)
+            self.pendingUninstallSelfConfirmations.remove(extensionID)
+            guard confirmed else {
+                completion("Extension \(extensionID) uninstall canceled by user.")
+                return
+            }
+            // Uninstalled from elsewhere while the alert was up.
+            guard self.extension(withID: extensionID) != nil else {
+                completion("Failed to find extension with id \(extensionID).")
+                return
+            }
+            completion(nil)
+            self.scheduleSelfUninstall(extensionID: extensionID)
+        }
+    }
+
+    /// The uninstall `uninstallSelf` agreed to, on the next main-actor turn:
+    /// it unloads the very context whose message is being answered.
+    private func scheduleSelfUninstall(extensionID: String) {
+        Task { @MainActor in
+            guard self.extension(withID: extensionID) != nil else { return }
+            log.info("Extension \(extensionID, privacy: .public) uninstalled itself")
+            self.uninstall(id: extensionID)
+        }
+    }
+
+    /// The confirmation `uninstallSelf` shows when asked to: the Settings
+    /// uninstall alert, saying who asked.
+    private func confirmUninstallSelf(extensionID: String) -> Bool {
+        if let answer = uninstallSelfConfirmationAnswerOverride {
+            return answer(extensionID)
+        }
+        let name = displayName(for: extensionID)
+        let alert = NSAlert()
+        alert.messageText = "Uninstall \"\(name)\"?"
+        alert.informativeText = "\"\(name)\" asked to uninstall itself. This will remove the extension and all its data from every profile."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Uninstall")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     // MARK: - Enable / Disable
 
     /// Whether the extension is enabled in the profile — the one rule every path
@@ -1783,12 +2032,28 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         Profile.profile(owning: controller)
     }
 
-    /// Find a space belonging to the profile that owns a controller.
-    /// Returns nil if the profile has no open spaces — callers should not create
-    /// tabs in a different profile's space.
-    private func space(for controller: WKWebExtensionController) -> Space? {
-        let targetProfile = profile(for: controller)
-        return TabStore.shared.spaces.first { $0.profileID == targetProfile?.id }
+    /// The space a tab an extension opens without naming a window goes to:
+    /// `tabs.create` without a `windowId`, and the polyfill's `search.query`
+    /// and `sessions.restore` (`ExtensionPolyfillHandler.targetSpace`). Always
+    /// one of `profile`'s own spaces, never another profile's (its tabs would
+    /// load with that profile's cookies and history); nil when it has none.
+    ///
+    /// A normal profile's is the space it used last,
+    /// `TabStore.mostRecentlyUsedSpace(ofProfile:)`, which is also where
+    /// `windows.create` opens a normal window (TASK-223, TASK-226; it calls
+    /// this): the profile's first space may be one no window shows. An
+    /// incognito profile's spaces are never in `spaceUseOrder`, so there it is
+    /// the global last active space when it is that profile's
+    /// (`lastActiveSpaceID`, the space the last window to become key showed
+    /// then), else its first.
+    func newTabSpace(for profile: Profile) -> Space? {
+        let store = TabStore.shared
+        guard profile.isIncognito else { return store.mostRecentlyUsedSpace(ofProfile: profile.id) }
+        if let lastActiveSpaceID, let lastActive = store.space(withID: lastActiveSpaceID),
+           lastActive.profileID == profile.id {
+            return lastActive
+        }
+        return store.spaces.first { $0.profileID == profile.id }
     }
 
     /// Select a tab and notify window controllers.
@@ -1828,6 +2093,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         let status: ExtensionPermissionStatus = granted ? .granted : .denied
         AppDatabase.shared.savePermission(ExtensionPermissionRecord(
             extensionID: extensionID, key: key, type: type, status: status))
+        defer { postPermissionDecisionsDidChange(extensionID: extensionID) }
 
         if type == .apiPermission, key == ExtensionPermissionRecord.nativeMessagingKey {
             if !granted {
@@ -1837,43 +2103,317 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
 
         let contexts = TabStore.shared.profiles.compactMap { $0.extensionContext(for: extensionID) }
-        guard !contexts.isEmpty else { return }
+        applySavedDecisions(extensionID: extensionID, keys: [(key, type)], to: contexts)
+    }
 
-        switch type {
-        case .apiPermission:
-            let permission = WKWebExtension.Permission(rawValue: key)
+    /// Make `contexts` hold what the saved rows for `keys` say now, the state
+    /// the next load restores: the saved status, or `.unknown` with no row.
+    /// Shared by a Settings toggle (one key) and by an extension's own
+    /// `permissions.remove` (TASK-258, every key it revoked), so both reach
+    /// every profile the same way.
+    @MainActor
+    private func applySavedDecisions(extensionID: String,
+                                     keys: [(key: String, type: ExtensionPermissionType)],
+                                     to contexts: [WKWebExtensionContext]) {
+        guard !contexts.isEmpty, !keys.isEmpty else { return }
+
+        for entry in keys where entry.type == .apiPermission {
+            let permission = WKWebExtension.Permission(rawValue: entry.key)
+            let status = AppDatabase.shared.permissionStatus(extensionID: extensionID, key: entry.key, type: entry.type)
             for context in contexts {
-                context.setPermissionStatus(status.contextStatus, for: permission)
+                context.setPermissionStatus(status?.contextStatus ?? .unknown, for: permission)
             }
-        case .matchPattern, .url:
-            guard let ext = self.extension(withID: extensionID) else { return }
-            let saved = AppDatabase.shared.loadPermissions(extensionID: extensionID)
-            for context in contexts {
-                // Forget the context's previous status for the toggled key first:
-                // the restore only ever *adds* entries, and not every WebKit write
-                // replaces its opposite. For the all-hosts pattern neither a grant
-                // nor `.unknown` removes an earlier `<all_urls>` denial, which
-                // then keeps winning (pinned by
-                // ExtensionPermissionRestoreTests.testWebKitAllHostsGrantDoesNotEraseAllHostsDenial),
-                // so a pattern key is dropped from both dictionaries directly.
-                // A `.url` key widens to a non-all-hosts origin pattern, which
-                // `.unknown` does clear.
-                switch type {
+        }
+
+        let hostKeys = keys.filter { $0.type != .apiPermission }
+        guard !hostKeys.isEmpty, let ext = self.extension(withID: extensionID) else { return }
+        let saved = AppDatabase.shared.loadPermissions(extensionID: extensionID)
+        for context in contexts {
+            // Forget the context's previous status for each key first: the
+            // restore only ever *adds* entries, and not every WebKit write
+            // replaces its opposite. For the all-hosts pattern neither a grant
+            // nor `.unknown` removes an earlier `<all_urls>` denial, which then
+            // keeps winning (pinned by
+            // ExtensionPermissionRestoreTests.testWebKitAllHostsGrantDoesNotEraseAllHostsDenial),
+            // so a pattern key is dropped from both dictionaries directly.
+            // A `.url` key widens to a non-all-hosts origin pattern, which
+            // `.unknown` does clear. One restore then covers every key.
+            for entry in hostKeys {
+                switch entry.type {
                 case .matchPattern:
-                    context.grantedPermissionMatchPatterns = context.grantedPermissionMatchPatterns
-                        .filter { $0.key.string != key }
-                    context.deniedPermissionMatchPatterns = context.deniedPermissionMatchPatterns
-                        .filter { $0.key.string != key }
+                    // Only when the key is there: each assignment rewrites the
+                    // whole dictionary and posts a change for it.
+                    if context.grantedPermissionMatchPatterns.keys.contains(where: { $0.string == entry.key }) {
+                        context.grantedPermissionMatchPatterns = context.grantedPermissionMatchPatterns
+                            .filter { $0.key.string != entry.key }
+                    }
+                    if context.deniedPermissionMatchPatterns.keys.contains(where: { $0.string == entry.key }) {
+                        context.deniedPermissionMatchPatterns = context.deniedPermissionMatchPatterns
+                            .filter { $0.key.string != entry.key }
+                    }
                 case .url:
-                    if let url = URL(string: key) {
+                    if let url = URL(string: entry.key) {
                         context.setPermissionStatus(.unknown, for: url)
                     }
                 case .apiPermission:
                     break
                 }
-                Profile.applySavedHostAccessDecisions(saved, for: ext, to: context)
+            }
+            Profile.applySavedHostAccessDecisions(saved, for: ext, to: context)
+        }
+    }
+
+    // MARK: - Grants the extension removes (TASK-258)
+
+    /// Listen for every context losing a grant, so an extension's own
+    /// `permissions.remove` reaches the saved decisions. WebKit applies the
+    /// removal to the context only; without this the saved grant came back at
+    /// the next load and Settings kept reading ON.
+    ///
+    /// Grants are not observed: every grant WebKit makes from
+    /// `permissions.request` comes from a prompt answer, which
+    /// `handlePermissionPrompt` already saves.
+    private func observeGrantRemovals() {
+        let center = NotificationCenter.default
+        for name in [WKWebExtensionContext.grantedPermissionsWereRemovedNotification,
+                     WKWebExtensionContext.grantedPermissionMatchPatternsWereRemovedNotification] {
+            _ = center.addMainObserver(forName: name, object: nil) { [weak self] notification in
+                self?.contextDidLoseGrants(notification)
             }
         }
+    }
+
+    /// Delete the saved grants a context lost through a removal, then bring
+    /// every loaded context of the extension to what the next load restores.
+    ///
+    /// WebKit posts this notification for every write that takes a grant out,
+    /// Detour's own included: the restore's denials (and the grants a broader
+    /// denial subsumes), a Settings toggle's clear-and-reapply. The post is
+    /// dispatched to the main queue after the write returns, so a flag set
+    /// around Detour's writes would not line up with it. The rule is on state
+    /// instead, read at delivery (`savedGrantsRevoked`), and Detour's own
+    /// writes leave the context in a state that rule never deletes for. The
+    /// writes below post again, for rows already gone, so they end there.
+    @MainActor
+    private func contextDidLoseGrants(_ notification: Notification) {
+        guard let context = notification.object as? WKWebExtensionContext else { return }
+        // The post comes after the write, so the context may have been
+        // unloaded in between (the extension disabled or updated, its profile
+        // removed). It is out of every controller then, but the removal was
+        // still the extension's: `Profile.loadExtensionContext` set its
+        // `uniqueIdentifier` to the extension's ID, and unloading touches no
+        // permission.
+        guard let extensionID = extensionIDFromContext(context)
+                ?? (context.isLoaded ? nil : context.uniqueIdentifier),
+              let ext = self.extension(withID: extensionID) else { return }
+        let info = notification.userInfo ?? [:]
+        let permissions = info[WKWebExtensionContext.NotificationUserInfoKey.permissions]
+            as? Set<WKWebExtension.Permission> ?? []
+        let patterns = info[WKWebExtensionContext.NotificationUserInfoKey.matchPatterns]
+            as? Set<WKWebExtension.MatchPattern> ?? []
+
+        let revoked = Self.savedGrantsRevoked(
+            removedPermissions: permissions, removedPatterns: patterns,
+            saved: AppDatabase.shared.loadPermissions(extensionID: extensionID),
+            for: ext, in: context)
+        guard !revoked.isEmpty else { return }
+
+        // Every loaded context, the one that removed included: WebKit's sweep
+        // under a broad origin also took out grants whose rows are kept (a
+        // required pattern under it), and re-running the restore there puts
+        // them back now rather than at the next load.
+        clearRemovedGrants(extensionID: extensionID, keys: revoked.compactMap { record in
+            ExtensionPermissionType(rawValue: record.permissionType).map { (record.permissionKey, $0) }
+        })
+    }
+
+    /// Delete the saved grants of `keys` the extension removed itself, then
+    /// bring every loaded context of it to what the next load restores.
+    /// Shared by WebKit's removals (`contextDidLoseGrants`) and Detour's own
+    /// for the names WebKit does not know (`removeOutsideWebKitPermissions`).
+    @MainActor
+    private func clearRemovedGrants(extensionID: String, keys: [(key: String, type: ExtensionPermissionType)]) {
+        guard !keys.isEmpty else { return }
+        for (key, type) in keys {
+            log.info("\(extensionID, privacy: .public) removed its grant of \(key, privacy: .public); the saved decision is cleared")
+            AppDatabase.shared.revokePermission(extensionID: extensionID, key: key, type: type)
+        }
+        let contexts = TabStore.shared.profiles.compactMap { $0.extensionContext(for: extensionID) }
+        applySavedDecisions(extensionID: extensionID, keys: keys, to: contexts)
+        postPermissionDecisionsDidChange(extensionID: extensionID)
+    }
+
+    /// The saved grants that a removal of `removedPermissions` /
+    /// `removedPatterns` from `context` revoked, which are to be deleted.
+    ///
+    /// A saved granted row qualifies when its key was removed and, at the time
+    /// of asking, `context` neither grants nor denies it: only a plain removal
+    /// leaves that. A saved denial applied at load, or a Settings toggle, ends
+    /// with the key denied or granted again; a grant a broader saved denial
+    /// subsumed counts as denied (a denied pattern covers it). The row is also
+    /// skipped when:
+    /// - it is outside what the manifest may ask for (the restore's gate). Such
+    ///   a row is inert, and a removal is no decision about it;
+    /// - the manifest requires it: WebKit refuses `permissions.remove` of a
+    ///   required permission or of an origin a required pattern covers, but a
+    ///   broader optional origin still sweeps the narrower grants under it;
+    /// - it is `nativeMessaging`, which the context always holds.
+    ///
+    /// The row is deleted, not saved as denied. A saved denial is restored as
+    /// an explicit denial, and WebKit never prompts for one, so a later
+    /// `permissions.request` would be refused without asking. With no row the
+    /// permission is back where it started: off in Settings, and the next
+    /// request prompts. That is Chrome's state after `permissions.remove`.
+    @MainActor
+    static func savedGrantsRevoked(removedPermissions: Set<WKWebExtension.Permission>,
+                                   removedPatterns: Set<WKWebExtension.MatchPattern>,
+                                   saved: [ExtensionPermissionRecord],
+                                   for ext: WebExtension,
+                                   in context: WKWebExtensionContext) -> [ExtensionPermissionRecord] {
+        guard let wkExt = ext.wkExtension else { return [] }
+        let grantedRows = saved.filter {
+            ExtensionPermissionStatus(rawValue: $0.status) == .granted
+        }
+        var revoked: [ExtensionPermissionRecord] = []
+
+        if !removedPermissions.isEmpty {
+            let askable = ext.restorablePermissions
+            let required = Set(ext.manifest.permissions ?? [])
+            for record in grantedRows where record.permissionType == ExtensionPermissionType.apiPermission.rawValue {
+                let permission = WKWebExtension.Permission(rawValue: record.permissionKey)
+                guard removedPermissions.contains(permission), askable.contains(permission),
+                      permission != .nativeMessaging, !required.contains(record.permissionKey),
+                      context.grantedPermissions[permission] == nil,
+                      context.deniedPermissions[permission] == nil else { continue }
+                revoked.append(record)
+            }
+        }
+
+        if !removedPatterns.isEmpty {
+            let askable = ext.askableMatchPatterns
+            let required = wkExt.requestedPermissionMatchPatterns
+            // A denied pattern that covers the key counts as a denial of it:
+            // `permissionStatus(for:)` of a pattern under a broader denial does
+            // not read as denied.
+            let denied = Array(context.deniedPermissionMatchPatterns.keys)
+            func isPlainlyRemoved(_ status: WKWebExtensionContext.PermissionStatus) -> Bool {
+                switch status {
+                case .grantedExplicitly, .grantedImplicitly, .deniedExplicitly: false
+                default: true
+                }
+            }
+            for record in grantedRows {
+                switch ExtensionPermissionType(rawValue: record.permissionType) {
+                case .matchPattern:
+                    guard let pattern = try? WKWebExtension.MatchPattern(string: record.permissionKey),
+                          removedPatterns.contains(where: { $0.string == pattern.string }),
+                          askable.contains(where: { $0.matches(pattern) }),
+                          !required.contains(where: { $0.matches(pattern) }),
+                          !denied.contains(where: { $0.matches(pattern) }),
+                          isPlainlyRemoved(context.permissionStatus(for: pattern)) else { continue }
+                    revoked.append(record)
+                case .url:
+                    guard let url = URL(string: record.permissionKey),
+                          removedPatterns.contains(where: { $0.matches(url) }),
+                          askable.contains(where: { $0.matches(url) }),
+                          !required.contains(where: { $0.matches(url) }),
+                          !denied.contains(where: { $0.matches(url) }),
+                          isPlainlyRemoved(context.permissionStatus(for: url)) else { continue }
+                    revoked.append(record)
+                case .apiPermission, nil:
+                    break
+                }
+            }
+        }
+        return revoked
+    }
+
+    // MARK: - permissions.request / remove for permissions outside WebKit (TASK-260)
+
+    /// How Detour's prompt for a `permissions.request` of `history` or
+    /// `management` ended.
+    enum OutsideWebKitPermissionRequestOutcome: Equatable {
+        /// Approved, and granted.
+        case approved
+        /// The user denied; the denial is saved.
+        case denied
+        /// Not asked: `message` is the rejection the extension sees.
+        case refused(String)
+    }
+
+    /// Ask the user about `names` (permissions WebKit does not know, already
+    /// checked to be optional, undecided and not held) for the extension's own
+    /// `permissions.request`, with the same alert WebKit's prompts use.
+    ///
+    /// An answer is saved through `setPermissionDecision`, the Settings path,
+    /// so it reaches every loaded context, is restored at the next load and
+    /// updates an open Settings pane. A denial is saved as denied, as
+    /// `handlePermissionPrompt` saves one; a later request is then refused
+    /// without asking, as WebKit refuses one for a denied permission of its
+    /// own, until the Settings switch is turned on.
+    ///
+    /// A request that also names WebKit's own permissions has had WebKit's
+    /// prompt first; the polyfill takes WebKit's grant back when this one is
+    /// denied, so the request is granted whole or not at all.
+    ///
+    /// Chrome, and WebKit for its own names, require a user gesture for
+    /// `permissions.request`. Detour cannot check one here: a polyfill
+    /// request carries no gesture signal to the handler, a worker has none,
+    /// and a check in the polyfill would be the extension's own code to skip.
+    /// The prompt is the guard, and a second request while one is pending is
+    /// refused rather than stacking alerts.
+    func requestOutsideWebKitPermissions(extensionID: String, names: [String],
+                                         completion: @escaping (OutsideWebKitPermissionRequestOutcome) -> Void) {
+        guard self.extension(withID: extensionID) != nil else {
+            completion(.refused("Failed to find extension with id \(extensionID)."))
+            return
+        }
+        // Claimed here, not in the task: WebKit dispatches a batch of incoming
+        // messages in one go, so a second call can arrive before the task runs.
+        guard pendingPermissionRequestPrompts.insert(extensionID).inserted else {
+            completion(.refused(Self.permissionRequestPendingError))
+            return
+        }
+        // Off the caller's stack: the alert runs a modal loop.
+        Task { @MainActor in
+            let approved = self.promptUserForPermission(
+                extensionName: self.displayName(for: extensionID),
+                itemDescriptions: names.map(ExtensionPermissionDescriptions.describe))
+            self.pendingPermissionRequestPrompts.remove(extensionID)
+            // Uninstalled while the alert was up.
+            guard self.extension(withID: extensionID) != nil else {
+                completion(.refused("Failed to find extension with id \(extensionID)."))
+                return
+            }
+            guard approved else {
+                for name in names {
+                    self.setPermissionDecision(extensionID: extensionID, key: name, type: .apiPermission, granted: false)
+                }
+                completion(.denied)
+                return
+            }
+            for name in names {
+                log.info("\(extensionID, privacy: .public) was granted \(name, privacy: .public) through permissions.request")
+                self.setPermissionDecision(extensionID: extensionID, key: name, type: .apiPermission, granted: true)
+            }
+            completion(.approved)
+        }
+    }
+
+    /// The rejection of a `permissions.request` made while the extension's
+    /// previous one is still on screen.
+    static let permissionRequestPendingError = "A permissions request is already pending."
+
+    /// The extension's own `permissions.remove` of optional `names` WebKit
+    /// does not know: what TASK-258 does for WebKit's own removals. A saved
+    /// grant is deleted, not saved as denied, so a later request prompts
+    /// again, and every loaded context of the extension is brought to what the
+    /// next load restores. A saved denial is left alone: there is no grant to
+    /// remove.
+    func removeOutsideWebKitPermissions(extensionID: String, names: [String]) {
+        clearRemovedGrants(extensionID: extensionID, keys: names.filter {
+            AppDatabase.shared.permissionStatus(extensionID: extensionID, key: $0, type: .apiPermission) == .granted
+        }.map { ($0, .apiPermission) })
     }
 
     /// Find the extension ID for a context by searching the owning profile.
@@ -1890,18 +2430,18 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         openWindowsFor extensionContext: WKWebExtensionContext
     ) -> [any WKWebExtensionWindow] {
         // Return windows whose profile matches this controller
+        // Browser windows and Quick Detour windows alike (TASK-193.1).
         let profile = profile(for: controller)
-        return NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
-            .filter { $0.activeSpace?.profileID == profile?.id }
+        return extensionListedWindows().filter { $0.extensionProfileID != nil && $0.extensionProfileID == profile?.id }
     }
 
     func webExtensionController(
         _ controller: WKWebExtensionController,
         focusedWindowFor extensionContext: WKWebExtensionContext
     ) -> (any WKWebExtensionWindow)? {
-        guard let wc = NSApp.keyWindow?.windowController as? BrowserWindowController,
+        guard let wc = NSApp.keyWindow?.windowController as? (any ExtensionListedWindow),
               let profile = profile(for: controller),
-              wc.activeSpace?.profileID == profile.id else { return nil }
+              wc.extensionProfileID == profile.id else { return nil }
         return wc
     }
 
@@ -1928,16 +2468,23 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping ((any WKWebExtensionTab)?, (any Error)?) -> Void
     ) {
-        guard let space = space(for: controller) else {
-            completionHandler(nil, nil)
+        guard let callerProfile = profile(for: controller) else {
+            completionHandler(nil, Self.extensionError("Cannot open a tab for an unknown profile"))
             return
         }
-
         let url = configuration.url ?? URL(string: "about:blank")!
         // Refused before a tab exists: `BrowserTab.load(_:)` would drop the
         // URL and leave a blank tab reported as a success (TASK-86).
         guard !InternalPage.isInternal(url) else {
             completionHandler(nil, Self.extensionError("Cannot open a \(InternalPage.scheme):// URL"))
+            return
+        }
+        guard !Self.isJavaScriptURL(url) else {
+            completionHandler(nil, Self.extensionError(Self.javaScriptURLRefusal))
+            return
+        }
+        guard let space = newTabSpace(for: callerProfile) else {
+            completionHandler(nil, Self.extensionError("Cannot open a tab: the profile has no space"))
             return
         }
         let tab: BrowserTab
@@ -1953,6 +2500,27 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         completionHandler(tab, nil)
     }
 
+    /// Whether `windows.create` opens a Private window. A context in an
+    /// incognito profile — the one behind Private windows and quarantines —
+    /// only ever opens Private windows: WebKit passes `incognito ?? false`, so
+    /// a call that leaves the key out cannot be told from one that asks for a
+    /// normal window, and a normal window would carry a Private page's address
+    /// into a profile's cookies and history (TASK-214).
+    nonisolated static func opensPrivateWindow(requested: Bool, callerIsIncognito: Bool) -> Bool {
+        requested || callerIsIncognito
+    }
+
+    /// Whether `windows.create` is refused for asking for a Private window: a
+    /// normal context asks for one but the user has not allowed the extension
+    /// in Private (TASK-224, Chrome's rule for an extension without incognito
+    /// access). It would otherwise put a page of its choosing in front of the
+    /// user there. A context in an incognito profile is running there already.
+    /// `allowedInPrivate` is a database read, made only when it decides.
+    nonisolated static func refusesPrivateWindow(requested: Bool, callerIsIncognito: Bool,
+                                                 allowedInPrivate: @autoclosure () -> Bool) -> Bool {
+        requested && !callerIsIncognito && !allowedInPrivate()
+    }
+
     func webExtensionController(
         _ controller: WKWebExtensionController,
         openNewWindowUsing configuration: WKWebExtension.WindowConfiguration,
@@ -1963,16 +2531,59 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             completionHandler(nil, nil)
             return
         }
+        // Without the caller's profile there is no telling whether it is Private.
+        guard let callerProfile = profile(for: controller) else {
+            completionHandler(nil, Self.extensionError("Cannot open a window for an unknown profile"))
+            return
+        }
+        // Refused before a window exists, as `openNewTabUsing` does (TASK-86):
+        // dropping the URL left an empty window reported as a success.
+        guard !configuration.tabURLs.contains(where: { InternalPage.isInternal($0) }) else {
+            completionHandler(nil, Self.extensionError("Cannot open a \(InternalPage.scheme):// URL"))
+            return
+        }
+        guard !configuration.tabURLs.contains(where: Self.isJavaScriptURL) else {
+            completionHandler(nil, Self.extensionError(Self.javaScriptURLRefusal))
+            return
+        }
 
-        let wc = BrowserWindowController(incognito: configuration.shouldBePrivate)
-        appDelegate.assignDefaultSpace(to: wc)
+        // "Allowed in Private" is the one enabled-state rule for the built-in
+        // Private profile, where a missing row means off (TASK-74). An
+        // extension that cannot be identified is not allowed.
+        if Self.refusesPrivateWindow(
+            requested: configuration.shouldBePrivate, callerIsIncognito: callerProfile.isIncognito,
+            allowedInPrivate: extensionIDFromContext(extensionContext).map {
+                isEnabled(extensionID: $0, inProfile: TabStore.incognitoProfileID)
+            } ?? false) {
+            completionHandler(nil, Self.extensionError(
+                "Cannot open a Private window: the extension is not allowed in Private"))
+            return
+        }
+
+        let wc: BrowserWindowController
+        if Self.opensPrivateWindow(requested: configuration.shouldBePrivate,
+                                   callerIsIncognito: callerProfile.isIncognito) {
+            // A Private window makes its own space.
+            wc = BrowserWindowController(incognito: true)
+        } else {
+            // A normal window opens on the caller's own profile, never on the
+            // front window's space, which may be another profile's: its tabs
+            // would load with that profile's cookies and history (TASK-223).
+            // A profile with no space has nowhere to open one.
+            guard let space = newTabSpace(for: callerProfile) else {
+                completionHandler(nil, Self.extensionError("Cannot open a window: the profile has no space"))
+                return
+            }
+            wc = BrowserWindowController(incognito: false)
+            wc.setActiveSpace(id: space.id, selectTab: false)
+        }
 
         // TODO: Handle configuration.tabs (moving existing tabs to new window)
 
         // Open new tabs for specified URLs
         var lastTab: BrowserTab?
         if let space = wc.activeSpace {
-            for url in configuration.tabURLs where !InternalPage.isInternal(url) {
+            for url in configuration.tabURLs {
                 if url.scheme == "webkit-extension", let extConfig = extensionContext.webViewConfiguration {
                     lastTab = TabStore.shared.addExtensionTab(in: space, url: url, configuration: extConfig)
                 } else {
@@ -2046,10 +2657,12 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             self?.activePopovers.removeValue(forKey: extID)
             self?.popupCompletionHandlers.removeValue(forKey: extID)?(nil)
         }
-        popoverController.presentPopupWebView(popupWebView)
-
+        // Stored before presenting: a popup that cannot be presented reports
+        // its close from inside presentPopupWebView, and that close must find
+        // (and call) the completion handler.
         activePopovers[extID] = popoverController
         popupCompletionHandlers[extID] = completionHandler
+        popoverController.presentPopupWebView(popupWebView)
     }
 
     func webExtensionController(
@@ -2156,6 +2769,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 ExtensionPermissionRecord(extensionID: extID, key: recordKey($0), type: recordType, status: status)
             }
             AppDatabase.shared.savePermissions(records)
+            postPermissionDecisionsDidChange(extensionID: extID)
         }
         completionHandler(granted ? items : Set(), nil)
     }
@@ -2178,6 +2792,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         itemDescriptions: [String],
         category: String = "permissions"
     ) -> Bool {
+        if let answer = permissionPromptAnswerOverride {
+            return answer(itemDescriptions)
+        }
         let alert = NSAlert()
         alert.messageText = "\"\(extensionName)\" is requesting additional \(category)"
         alert.informativeText = itemDescriptions.map { "\u{2022} \($0)" }.joined(separator: "\n")
@@ -2225,8 +2842,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             let profile = profile(for: controller)
             guard let handler = profile?.polyfillHandler else {
                 log.error("No polyfill handler for profile")
-                replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
-                                          userInfo: [NSLocalizedDescriptionKey: "No polyfill handler for profile"]))
+                ExtensionPolyfillHandler.replyFailure("No polyfill handler for profile", to: body, replyHandler: replyHandler)
                 return
             }
             // The sender's identity comes from the context, never from the body:
@@ -2234,8 +2850,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             // flight across a reload) is rejected rather than trusted.
             guard let verifiedExtensionID = extensionIDFromContext(extensionContext) else {
                 log.error("Rejecting polyfill native message \(body["type"] as? String ?? "(unknown)", privacy: .public) from a context not loaded in profile \(profile?.name ?? "?", privacy: .public)")
-                replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
-                                          userInfo: [NSLocalizedDescriptionKey: "Unrecognized extension context"]))
+                ExtensionPolyfillHandler.replyFailure("Unrecognized extension context", to: body, replyHandler: replyHandler)
                 return
             }
             handler.handleNativeMessage(body, verifiedExtensionID: verifiedExtensionID, replyHandler: replyHandler)
@@ -2271,6 +2886,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             replyHandler(nil, NSError(domain: "DetourExtension", code: -1,
                                       userInfo: [NSLocalizedDescriptionKey: "\(WebSocketRelaySession.hostName) is a port-only host"]))
             return
+        case .keepAliveAnchorHost:
+            replyHandler(nil, Self.extensionError("\(Self.keepAliveAnchorHostName) is a port-only host"))
+            return
         case .denied:
             // A context the profile no longer lists (unloaded, or a message in
             // flight across a reload) has no manifest to consult; say so rather
@@ -2300,6 +2918,18 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             return
         }
 
+        // Chrome declares the message an object and its signature check refuses
+        // a string, number, array or null before anything is sent (TASK-242).
+        // WebKit hands over whatever JSON value the page passed and offers no
+        // way to wrap `sendNativeMessage` in JS, so the refusal is here, before
+        // any host object exists: nothing is looked up or spawned. (Until then
+        // such a message started the host, was never written, and left the
+        // request unanswered and the process running.)
+        guard let messageObject = message as? [String: Any] else {
+            replyHandler(nil, Self.nonObjectNativeMessageError())
+            return
+        }
+
         let host = NativeMessagingHost(hostName: hostName, extensionID: extID)
         let hostKey = ObjectIdentifier(host)
         let request = OneShotNativeRequest(host: host, replyHandler: replyHandler)
@@ -2325,9 +2955,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
         do {
             try host.connect()
-            if let msgDict = message as? [String: Any] {
-                try host.sendMessage(msgDict)
-            }
+            try host.sendMessage(messageObject)
         } catch {
             activeMessagingHosts.removeValue(forKey: hostKey)
             request.finish(nil, error)
@@ -2402,6 +3030,24 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             openWebSocketRelay(port: port, controller: controller, extensionID: relayID)
             completionHandler(nil)
             return
+        case .keepAliveAnchorHost:
+            guard let extID = verifiedExtensionID() else { return }
+            // An armed background's anchor (TASK-142, `keepAliveAnchorPorts`):
+            // held, never answered, nothing spawned. The background closes its
+            // previous anchor itself before opening this one.
+            let key = KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extID)
+            let portKey = ObjectIdentifier(port)
+            keepAliveAnchorPorts[key, default: [:]][portKey] = port
+            keepAliveAnchorOpenCounts[key, default: 0] += 1
+            port.disconnectHandler = { [weak self] _ in
+                guard let self, self.keepAliveAnchorPorts[key]?.removeValue(forKey: portKey) != nil else { return }
+                if self.keepAliveAnchorPorts[key]?.isEmpty == true {
+                    self.keepAliveAnchorPorts.removeValue(forKey: key)
+                }
+                self.checkForUnloadReportedByAnchor(for: key)
+            }
+            completionHandler(nil)
+            return
         case .polyfillHost:
             guard let extID = verifiedExtensionID() else { return }
             // The polyfill's keep-alive port (see ExtensionAPIPolyfill.nativePortKeepAliveJS):
@@ -2474,6 +3120,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             }
             keepAlivePorts[key] = port
             keepAlivePortOpenCounts[key, default: 0] += 1
+            // Any anchor still registered belongs to an earlier start of the
+            // background: the polyfill closes its anchor whenever its keep-alive
+            // port drops and opens one only once armed, and WebKit's context
+            // unload drops native ports without reporting them (TASK-67).
+            dropKeepAliveAnchors(for: key)
             // A background context is back (TASK-68): whether an alarm, a message
             // or a reconnect started it, a restart still waiting to load
             // background content would only start a second one.
@@ -2525,6 +3176,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 extensionID: extID, hostName: hostName, profileName: profileName,
                 outcome: .refused, detail: "nativeMessaging denied by the user")
             completionHandler(Self.nativeHostForbiddenError())
+            // A relayed WebSocket can still hold the keep-alive armed; the
+            // refused port's removal wiped the background's entry (TASK-142).
+            requestReanchor(for: KeepAlivePortKey(controller: ObjectIdentifier(controller), extensionID: extID))
             return
         case .allowed:
             break
@@ -2559,10 +3213,14 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             releaseHost()
             port.disconnect(throwing: nil)
         }
-        port.messageHandler = { message, _ in
-            if let msgDict = message as? [String: Any] {
-                try? host.sendMessage(msgDict)
-            }
+        // Any JSON value goes to the host, as Chrome's `Port.postMessage`
+        // (`any`) sends it: a non-object used to be dropped without a word
+        // (TASK-242). WebKit's bindings refuse a JS null before it gets here;
+        // nil is sent as null all the same. A delivery WebKit reports as an
+        // error carries no message, and nothing is written for it.
+        port.messageHandler = { message, error in
+            guard error == nil else { return }
+            try? host.sendMessage(message ?? NSNull())
         }
         port.disconnectHandler = { _ in
             releaseHost()
@@ -2579,6 +3237,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 extensionID: extID, hostName: hostName, profileName: profileName,
                 outcome: .failed, detail: error.localizedDescription)
             completionHandler(error)
+            // The refused port is removed like any closed one, and the removal
+            // takes the background's open-ports entry with it (TASK-142). The
+            // request runs on the next turn, after WebKit's disconnect has gone
+            // out; it is a no-op unless the keep-alive is armed.
+            requestReanchor(for: keepAliveKey)
             return
         }
         liveNativeHosts[keepAliveKey, default: [:]][hostKey] = LiveNativeHost(host: host, port: port)

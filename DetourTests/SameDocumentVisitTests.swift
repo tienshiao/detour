@@ -23,25 +23,24 @@ import WebKit
 /// `loadHTMLString`: WebKit gives a `loadHTMLString` document no back/forward
 /// entry at all (`currentItem` is nil), so item identity is unobservable in that
 /// setup — and the recorder's http(s)-only rule wants real http URLs anyway.
-@MainActor
-final class SameDocumentVisitTests: XCTestCase {
+nonisolated final class SameDocumentVisitTests: XCTestCase {
 
     private var createdTabs: [BrowserTab] = []
     private var servers: [LoopbackHTTPServer] = []
     private var navigationProbes: [NavigationProbe] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
         for server in servers { server.stop() }
         servers.removeAll()
         navigationProbes.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - The pure policy
 
-    private func outcome(tabURL: URL? = URL(string: "https://spa.invalid/home")!,
+    @MainActor private func outcome(tabURL: URL? = URL(string: "https://spa.invalid/home")!,
                          lastRecordedHistoryURL: URL? = URL(string: "https://spa.invalid/watch")!,
                          currentItem: ObjectIdentifier? = ObjectIdentifier(Sentinel.b),
                          lastRecordedItem: ObjectIdentifier? = ObjectIdentifier(Sentinel.a))
@@ -53,17 +52,17 @@ final class SameDocumentVisitTests: XCTestCase {
 
     /// Stand-ins for two back/forward entries: the policy only ever compares
     /// identities, and `WKBackForwardListItem` cannot be made by hand.
-    private final class Sentinel {
+    @MainActor private final class Sentinel {
         static let a = Sentinel()
         static let b = Sentinel()
     }
 
-    func testPolicyRecordsAPushStateOntoANewEntry() {
+    @MainActor func testPolicyRecordsAPushStateOntoANewEntry() {
         XCTAssertEqual(outcome(), .record)
     }
 
     /// The tab is already on the URL it recorded — a redraw, not a page view.
-    func testPolicyRefusesTheURLTheTabAlreadyRecorded() {
+    @MainActor func testPolicyRefusesTheURLTheTabAlreadyRecorded() {
         let url = URL(string: "https://spa.invalid/watch")!
         XCTAssertEqual(outcome(tabURL: url, lastRecordedHistoryURL: url), .skip)
         XCTAssertEqual(outcome(tabURL: nil), .skip)
@@ -71,7 +70,7 @@ final class SameDocumentVisitTests: XCTestCase {
 
     /// `replaceState` rewrites the current entry's URL in place, so the entry is
     /// the same object: query-string churn is never a visit.
-    func testPolicyRefusesAReplaceStateOnTheSameEntry() {
+    @MainActor func testPolicyRefusesAReplaceStateOnTheSameEntry() {
         let same = ObjectIdentifier(Sentinel.a)
         XCTAssertEqual(outcome(currentItem: same, lastRecordedItem: same), .skip)
     }
@@ -79,7 +78,7 @@ final class SameDocumentVisitTests: XCTestCase {
     /// No entry at all (a `loadHTMLString` document): a pushState cannot be told
     /// from a replaceState, so nothing is recorded — and there is no entry worth
     /// adopting as a baseline either.
-    func testPolicyRefusesWhenTheDocumentHasNoBackForwardEntry() {
+    @MainActor func testPolicyRefusesWhenTheDocumentHasNoBackForwardEntry() {
         XCTAssertEqual(outcome(currentItem: nil), .skip)
         XCTAssertEqual(outcome(currentItem: nil, lastRecordedItem: nil), .skip)
     }
@@ -89,13 +88,13 @@ final class SameDocumentVisitTests: XCTestCase {
     /// gone (the reference is weak). Recording here would turn the next
     /// `replaceState` into a visit, so the entry becomes the baseline instead
     /// and the *next* different one records (TASK-91).
-    func testPolicyAdoptsABaselineWhenNothingWasRecordedForThisDocument() {
+    @MainActor func testPolicyAdoptsABaselineWhenNothingWasRecordedForThisDocument() {
         XCTAssertEqual(outcome(lastRecordedItem: nil), .adoptBaseline)
     }
 
     // MARK: - Fixtures
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let store: TabStore
         let historyDB: HistoryDatabase
         let space: Space
@@ -125,7 +124,7 @@ final class SameDocumentVisitTests: XCTestCase {
     ///   - routes / pending / stalled: extra routes for the loopback server —
     ///     `pending` has committed but cannot finish, `stalled` has not answered
     ///     at all (see `LoopbackHTTPServer`).
-    private func makeFixture(incognito: Bool = false,
+    @MainActor private func makeFixture(incognito: Bool = false,
                              debounce: TimeInterval = 0.2,
                              routes: [String: String] = [:],
                              pending: [String: String] = [:],
@@ -151,7 +150,7 @@ final class SameDocumentVisitTests: XCTestCase {
                        base: URL(string: "http://127.0.0.1:\(port)/")!, server: server)
     }
 
-    private func makeTab(in f: Fixture) -> BrowserTab {
+    @MainActor private func makeTab(in f: Fixture) -> BrowserTab {
         let tab = f.store.addTab(in: f.space)
         createdTabs.append(tab)
         return tab
@@ -159,7 +158,7 @@ final class SameDocumentVisitTests: XCTestCase {
 
     /// Spins the main run loop — the debounce is scheduled on it, and so is
     /// everything WebKit reports back.
-    private func pump(_ seconds: TimeInterval) {
+    @MainActor private func pump(_ seconds: TimeInterval) {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
@@ -168,11 +167,11 @@ final class SameDocumentVisitTests: XCTestCase {
 
     /// Every visit of the profile, newest first — each carrying its own title
     /// (TASK-91), which is what the History page shows.
-    private func recorded(_ f: Fixture) -> [HistoryVisitEntry] {
+    @MainActor private func recorded(_ f: Fixture) -> [HistoryVisitEntry] {
         f.historyDB.visits(spaceIDs: [f.space.id.uuidString], limit: 50)
     }
 
-    private func js(_ webView: WKWebView, _ source: String) async throws {
+    @MainActor private func js(_ webView: WKWebView, _ source: String) async throws {
         _ = try await webView.callAsyncJavaScript("\(source); return true;", contentWorld: .page)
     }
 
@@ -180,7 +179,7 @@ final class SameDocumentVisitTests: XCTestCase {
     /// page's own title — the visit is filed the instant loading ends, which can
     /// be a beat before WebKit reports the title, and the TASK-88 correction is
     /// what settles it.
-    private func loadSPAPage(_ f: Fixture, _ tab: BrowserTab) async throws -> WKWebView {
+    @MainActor private func loadSPAPage(_ f: Fixture, _ tab: BrowserTab) async throws -> WKWebView {
         let webView = try XCTUnwrap(tab.webView)
         try await loadAndWait(webView, URLRequest(url: f.base))
         try await waitUntil("the first visit to be recorded with the page's own title") {
@@ -197,7 +196,7 @@ final class SameDocumentVisitTests: XCTestCase {
 
     /// AC #7: the in-page navigation is a visit of its own, carrying the title
     /// the site settles on — and the page it left keeps the title it had.
-    func testAPushStateRecordsAVisitWithTheSettledTitle() async throws {
+    @MainActor func testAPushStateRecordsAVisitWithTheSettledTitle() async throws {
         let f = try await makeFixture()
         let tab = makeTab(in: f)
         let webView = try await loadSPAPage(f, tab)
@@ -219,7 +218,7 @@ final class SameDocumentVisitTests: XCTestCase {
     /// The title can settle *after* the visit is recorded — the SPA fetches its
     /// data first. The TASK-88 correction then rewrites this visit, and only
     /// this one (TASK-91).
-    func testAPushStateVisitIsCorrectedByALateTitle() async throws {
+    @MainActor func testAPushStateVisitIsCorrectedByALateTitle() async throws {
         let f = try await makeFixture()
         let tab = makeTab(in: f)
         let webView = try await loadSPAPage(f, tab)
@@ -247,7 +246,7 @@ final class SameDocumentVisitTests: XCTestCase {
     /// AC #7: a `replaceState` rewrites the current entry rather than pushing a
     /// new one — the History page's own `?q=` as the user types, a filter, a
     /// scroll position. None of it is a page view.
-    func testReplaceStateChurnRecordsNothing() async throws {
+    @MainActor func testReplaceStateChurnRecordsNothing() async throws {
         let f = try await makeFixture()
         let tab = makeTab(in: f)
         let webView = try await loadSPAPage(f, tab)
@@ -266,7 +265,7 @@ final class SameDocumentVisitTests: XCTestCase {
 
     /// A site that pushes twice in a row — a redirect through a landing route —
     /// records where it came to rest, not every URL it passed through.
-    func testTwoPushStatesInsideTheDebounceRecordOnlyTheSettledURL() async throws {
+    @MainActor func testTwoPushStatesInsideTheDebounceRecordOnlyTheSettledURL() async throws {
         // Long enough that both pushes land inside one debounce window whatever
         // the machine is doing.
         let f = try await makeFixture(debounce: 0.8)
@@ -289,7 +288,7 @@ final class SameDocumentVisitTests: XCTestCase {
 
     /// AC #7: incognito records nothing, in-page navigations included — the
     /// exclusion comes from the shared recorder, not from a second rule here.
-    func testIncognitoRecordsNoInPageNavigation() async throws {
+    @MainActor func testIncognitoRecordsNoInPageNavigation() async throws {
         let f = try await makeFixture(incognito: true)
         let tab = makeTab(in: f)
         let webView = try XCTUnwrap(tab.webView)
@@ -310,7 +309,7 @@ final class SameDocumentVisitTests: XCTestCase {
     /// `browser-error://` and extension pages are excluded by the shared
     /// recorder. Driven by hand because the exclusion is about the tab's URL,
     /// which no in-page navigation of an http document can change the scheme of.
-    func testANonWebSchemeRecordsNoInPageNavigation() async throws {
+    @MainActor func testANonWebSchemeRecordsNoInPageNavigation() async throws {
         // Long enough that the debounced pipeline cannot fire during the test
         // and record the pushed URL behind the assertion's back.
         let f = try await makeFixture(debounce: 30)
@@ -340,7 +339,7 @@ final class SameDocumentVisitTests: XCTestCase {
     /// committed leaves `backForwardList.currentItem` on the *old* entry, so it
     /// can never look like an in-page navigation. Asserted against a real web
     /// view, because the whole rule rests on it (TASK-91).
-    func testANavigationThatHasNotCommittedIsNotANewEntry() async throws {
+    @MainActor func testANavigationThatHasNotCommittedIsNotANewEntry() async throws {
         let f = try await makeFixture(stalled: ["/next": """
             <html><head><title>Next Page</title></head><body>next</body></html>
             """])
@@ -377,7 +376,7 @@ final class SameDocumentVisitTests: XCTestCase {
 
     /// Records what WebKit reports for a navigation; `webView.navigationDelegate`
     /// is weak, so the test holds it in `navigationProbes`.
-    private final class NavigationProbe: NSObject, WKNavigationDelegate {
+    @MainActor private final class NavigationProbe: NSObject, WKNavigationDelegate {
         private(set) var events: [String] = []
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -402,7 +401,7 @@ final class SameDocumentVisitTests: XCTestCase {
     /// still records the pages the user visits in the meantime. This is what the
     /// dropped `isLoading` guard buys: before it, /a and /b were lost and only
     /// the URL that happened to be current when the load ended was recorded.
-    func testInPageNavigationsDuringALongLoadAreAllRecorded() async throws {
+    @MainActor func testInPageNavigationsDuringALongLoadAreAllRecorded() async throws {
         let f = try await makeFixture(routes: ["/spa": """
             <html><head><title>SPA</title></head><body><img src="/hang"></body></html>
             """], pending: ["/hang": ""])
@@ -436,7 +435,7 @@ final class SameDocumentVisitTests: XCTestCase {
     /// no title yet — so the placeholder must not be what the visit keeps. The
     /// load ends inside the dedup window, and that branch retries the correction
     /// (TASK-88).
-    func testASlowLoadRecordsOnceAndItsTitleIsCorrectedWhenItEnds() async throws {
+    @MainActor func testASlowLoadRecordsOnceAndItsTitleIsCorrectedWhenItEnds() async throws {
         let f = try await makeFixture(routes: ["/slow": stalledPage], pending: ["/hang": "// done"])
         let tab = makeTab(in: f)
         let webView = try await loadSPAPage(f, tab)
@@ -467,7 +466,7 @@ final class SameDocumentVisitTests: XCTestCase {
     /// a space — must not turn its first `replaceState` into a visit. The entry
     /// becomes the baseline, and the next genuinely different one records
     /// (TASK-91).
-    func testWithNoBaselineAReplaceStateRecordsNothingAndTheNextPushStateDoes() async throws {
+    @MainActor func testWithNoBaselineAReplaceStateRecordsNothingAndTheNextPushStateDoes() async throws {
         let f = try await makeFixture()
         let tab = makeTab(in: f)
         let webView = try await loadSPAPage(f, tab)
@@ -498,7 +497,7 @@ final class SameDocumentVisitTests: XCTestCase {
     /// policy and nothing else would retry it — so the id's arrival does
     /// (TASK-91). The writer queue is held so the ordering is the test's, not
     /// the machine's.
-    func testTheArrivalOfTheVisitIDRetriesADroppedTitleCorrection() async throws {
+    @MainActor func testTheArrivalOfTheVisitIDRetriesADroppedTitleCorrection() async throws {
         let f = try await makeFixture(debounce: 0.1)
         let tab = makeTab(in: f)
         let webView = try await loadSPAPage(f, tab)
@@ -532,7 +531,7 @@ final class SameDocumentVisitTests: XCTestCase {
     /// install its id: record A, record B, then A again — the third pass is
     /// dedup-skipped and decides the tab holds *no* correctable visit, and A's
     /// first insert must not overrule that (TASK-91).
-    func testAStaleInsertDoesNotInstallItsVisitID() async throws {
+    @MainActor func testAStaleInsertDoesNotInstallItsVisitID() async throws {
         let f = try await makeFixture()
         let tab = makeTab(in: f)
         _ = try await loadSPAPage(f, tab)
@@ -564,7 +563,7 @@ final class SameDocumentVisitTests: XCTestCase {
     /// The 30 s dedup is the recorder's, and applies here too: a Back to the
     /// page the tab came from selects another entry, but the visit it already
     /// has is minutes fresh.
-    func testABackToAJustRecordedURLIsDeduplicated() async throws {
+    @MainActor func testABackToAJustRecordedURLIsDeduplicated() async throws {
         let f = try await makeFixture()
         let tab = makeTab(in: f)
         let webView = try await loadSPAPage(f, tab)

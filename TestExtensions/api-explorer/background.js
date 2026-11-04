@@ -5,7 +5,8 @@
 //            chrome.runtime.onMessageExternal/onConnectExternal (externally_connectable),
 //            chrome.storage.onChanged, chrome.extension.getBackgroundPage,
 //            chrome.alarms, chrome.action, chrome.commands, chrome.windows,
-//            chrome.fontSettings, chrome.permissions
+//            chrome.fontSettings, chrome.permissions,
+//            chrome.notifications.onClicked/onClosed (logged to the event log; TASK-247)
 
 const MAX_LOG_ENTRIES = 50;
 
@@ -136,6 +137,9 @@ if (chrome.idle) {
 }
 
 // --- Notifications ---
+// onClicked fires when the banner is clicked; onClosed with byUser true when the
+// user dismisses it and false when this extension clears it (TASK-247). Both
+// arrive in the background only, even while it was unloaded: the event wakes it.
 
 if (chrome.notifications) {
   chrome.notifications.onClicked.addListener((notificationId) => {
@@ -624,14 +628,66 @@ async function handleMessage(message) {
         type: 'basic',
         title: message.title || 'Test Notification',
         message: message.message || 'This is a test notification from API Explorer',
+        contextMessage: message.contextMessage || 'API Explorer context message',
         iconUrl: message.iconUrl || chrome.runtime.getURL('icon.png')
       });
       return { notificationId: id };
     }
 
+    // update() with only a message: the title and context message are kept,
+    // as Chrome merges the given fields (TASK-240).
+    case 'updateNotificationMessage': {
+      const wasUpdated = await chrome.notifications.update(message.notificationId, {
+        message: message.message || 'Updated message (title kept)'
+      });
+      return { wasUpdated };
+    }
+
+    // What clear() answers: false for a missing id, true for one that exists
+    // (also while its create is in flight), false once cleared; promise and
+    // callback forms (TASK-240).
+    case 'notificationClearAnswers': {
+      const base = 'api-explorer-clear-answers';
+      const options = { type: 'basic', title: 'Clear answers', message: 'Cleared at once',
+                        iconUrl: chrome.runtime.getURL('icon.png') };
+      const viaCallback = (id) => new Promise((resolve) => chrome.notifications.clear(id, (wasCleared) => {
+        resolve({ wasCleared, lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null });
+      }));
+      const out = { from: 'worker' };
+      out.missing = await chrome.notifications.clear(base + '-missing');
+      await chrome.notifications.create(base, options);
+      out.existing = await chrome.notifications.clear(base);
+      out.again = await chrome.notifications.clear(base);
+      const created = chrome.notifications.create(base + '-inflight', options);
+      out.inFlightCallback = await viaCallback(base + '-inflight');
+      await created;
+      out.missingCallback = await viaCallback(base + '-missing');
+      console.log('[API Explorer] notifications clear answers', JSON.stringify(out));
+      appendLog({ event: 'notifications.clearAnswers', ...out });
+      return out;
+    }
+
     case 'clearNotification': {
       const cleared = await chrome.notifications.clear(message.notificationId);
       return { wasCleared: cleared };
+    }
+
+    // create() then clear() without awaiting the create (TASK-234).
+    case 'notificationCreateThenClear': {
+      const id = message.notificationId || 'api-explorer-race-worker';
+      const created = chrome.notifications.create(id, {
+        type: 'basic',
+        title: 'Create then clear',
+        message: 'Should never stay on screen',
+        iconUrl: chrome.runtime.getURL('icon.png')
+      });
+      const wasCleared = await chrome.notifications.clear(id);
+      const notificationId = await created;
+      const all = await chrome.notifications.getAll();
+      const listedAfterClear = Object.prototype.hasOwnProperty.call(all, id);
+      console.log('[API Explorer] notifications create-then-clear', notificationId, wasCleared, listedAfterClear);
+      appendLog({ event: 'notifications.createThenClear', notificationId, wasCleared, listedAfterClear });
+      return { from: 'worker', notificationId, wasCleared, listedAfterClear, notifications: all };
     }
 
     case 'getAllNotifications': {
@@ -647,6 +703,11 @@ async function handleMessage(message) {
     case 'getManagementAll': {
       const all = await chrome.management.getAll();
       return { extensions: all };
+    }
+
+    case 'managementPermissionWarnings': {
+      const warnings = await chrome.management.getPermissionWarningsByManifest(message.manifest);
+      return { warnings };
     }
 
     case 'managementSetEnabled': {

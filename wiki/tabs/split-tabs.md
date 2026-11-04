@@ -4,7 +4,7 @@ title: Split tabs
 description: The data model of a split (two adjacent tabs sharing a splitGroupID), the contiguity invariants TabStore keeps in every mutation, and where a pinned split's group lives.
 tags: [tabs, split, invariants, tabstore, pinned]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:30:00Z }
 sources:
   - id: design
     resource: ../../docs/split-tabs-design.md
@@ -30,9 +30,15 @@ sources:
   - id: tests
     resource: ../../DetourTests/SplitTabTests.swift
     title: SplitTabTests.swift
+  - id: opening-tests
+    resource: ../../DetourTests/SplitOpeningTests.swift
+    title: SplitOpeningTests.swift
   - id: task-38
     resource: backlog:TASK-38
     title: Move to Space loses extension pages (rebuilds the tab in the space configuration)
+  - id: task-185
+    resource: backlog:TASK-185
+    title: "Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section"
 ---
 
 # Summary
@@ -91,7 +97,11 @@ For a pinned split:
    member and wakes when the row is selected.
 
 Splits are never *created* in the pinned section; they arrive there by pinning
-an existing split. Favourites and Peeks are never members.
+an existing split. Favourites and Peeks are never members. A split opened
+*from* a favourite or a lone pinned tab (Option-click, the link menu, the
+Peek's button) is created in the normal section around a **copy** of that tab,
+which itself is not touched (see [opening a split from a
+tab](#opening-a-split-from-a-tab)).[^task-185]
 
 There is no runtime assertion of these. The invariants are held by
 construction and checked by `SplitTabTests`.
@@ -101,7 +111,8 @@ construction and checked by `SplitTabTests`.
 ## Insertions snap out of group interiors
 
 `snappedToSplitGroupBoundary(_:groupIDs:)` moves an index that falls between
-two members forward to just past the group. It is applied by `insertTab`,
+two members forward to just past the group. It is applied by
+`newTabInsertionIndex` (so by `insertTab` and `addSplitInNormalSection`),
 `restoreFavoriteAsTab`, the `closeTab` and `closeSplitGroup` undos,
 `reopenClosedTabRecord`, `unpinTab`, `unpinSplitGroup`, `removeTabFromSplit`
 and the cross-space `moveTab`. A new insertion path that forgets it can put a
@@ -120,7 +131,8 @@ because only the store knows the block is two tabs wide.
 `leaveSplitGroup(_:in:)` clears the leaving tab's membership and then
 `dissolveUndersizedSplitGroup` clears the partner's. It is called by
 `closeTab`, `pinTab`, `detachTab` (a tab becoming a favourite),
-`removeTabFromSplit`, the undo of `addTabInSplit`, and the cross-space
+`removeTabFromSplit`, the undo of `addTabInSplit` and of
+`addSplitInNormalSection` (one helper, `registerOpenInSplitUndo`), and the cross-space
 `moveTab`. The pinned counterpart is `dissolvePinnedSplit(around:groupID:in:)`,
 called by `unpinTab` (single member), `deletePinnedEntry`,
 `detachPinnedEntry`, `removePinnedEntryFromSplit` and `movePinnedEntry` (to
@@ -132,6 +144,8 @@ another space).
 |---|---|---|
 | `createSplit(draggedTabID:targetTabID:edge:fraction:in:)` | moves the dragged tab next to the target (left edge: before, right: after), fresh group id on both. Refuses if either is already grouped | `removeTabFromSplit` back to the original gap |
 | `addTabInSplit(with:url:in:)` | Option-click: new tab right after the anchor, grouped, loads the URL. Returns nil unless the anchor is an ungrouped *normal* tab | removes the new tab **without** a closed-tab record (the pane never existed as a lone tab) |
+| `addTabInSplit(with:webView:in:)` | the Peek hand-off: the same, but the new pane adopts the given web view (`BrowserTab(webView:)`) instead of loading a URL | as above |
+| `addSplitInNormalSection(copying:rightPane:in:)` | a split from a favourite or a lone pinned tab: two new tabs, one group, in the normal section. Left: a copy loading the parent's current URL; right: `SplitPaneContent.url` or `.webView`. Returns the right pane, nil unless `splitOpening` is `.inNormalSection` | removes **both** without closed-tab records; the favourite or entry is unchanged |
 | `separateSplit(groupID:in:)` | clears both; they stay adjacent as two rows | rejoins only if still adjacent and ungrouped |
 | `removeTabFromSplit(tabID:toGapIndex:in:)` | one member leaves to a pre-removal gap; the group dissolves | `createSplit` on the same side with the saved fraction |
 | `closeSplitGroup(groupID:in:)` | closes both as one gesture, two closed-tab records sharing one `closedAt` | one undo restores the pair |
@@ -142,6 +156,42 @@ another space).
 
 `pinTab` on one member is **not** `pinSplitGroup`: it leaves the group first, so
 the survivor becomes a plain tab.
+
+## Opening a split from a tab
+
+`splitOpening(from:in:)` is the one rule for "what does opening a split from
+this tab do"; Option-click, the link menu's Open Link in Split View and the
+Peek's Open in Split View all ask it.[^task-185]
+
+| The tab is | `splitOpening` | The split |
+|---|---|---|
+| an ungrouped normal tab | `.besideTab` | `addTabInSplit`: the tab is the left pane |
+| a pane of a normal split | nil | Option-click and the menu load the link into the other pane; the Peek shows no button |
+| a pane of a pinned split, **a dormant partner included** (the group is on the entry) | nil | as above; with the partner dormant there is no other pane to load, and Option-click falls back to a background tab |
+| a favourite's or a lone pinned entry's live tab | `.inNormalSection` | `addSplitInNormalSection` |
+| a pinned or favourite tab showing an extension's page | nil | the copy is built from the space's configuration, which cannot load the scheme |
+| a Peek, or a tab in no section of the space | nil | |
+
+Where `addSplitInNormalSection` puts the pair: the `TabInsertion` rule for a
+new tab opened from that parent (top of the normal section, after the run of
+tabs the parent already opened), through `newTabInsertionIndex`, which also
+snaps out of a group's interior. Both panes get the parent as `parentID`, so
+the pair counts as part of that run: a second split or a Cmd+click from the
+same pinned tab lands after it rather than before it or inside it. The rule was
+chosen over "next to the parent" because a pinned or favourite parent has no
+place in the normal list to be next to, and it is the same place a Cmd+click
+from that tab would open a tab.
+
+The copy loads `loadRecordedURL(parent.url)`: the parent's own committed URL,
+which may be one of Detour's internal pages. It carries nothing else of the
+parent (no back list, no Peek). Both inserts are made before either observer
+call, and the undo removes both before either removal is reported, so a window
+settling its selection never lands on the other new pane. The removals are
+reported with indices in the final list (both the pair's start), so the window
+settles on the tab that followed the pair, not the one after it. The window
+opening the split turns its collapsed-sidebar "Opened new tab in background"
+toast off around these inserts (`withoutBackgroundTabToast`): the new pane is
+selected, and the toast would otherwise fire once per pane.
 
 ## Pinned placement
 
@@ -232,6 +282,11 @@ group only if it forms **exactly one run of exactly two**.
 `SplitTabTests` (63 cases) is the suite: the flattener and sanitizers, the snap
 and block moves, every store mutation with its undo, pinned splits including
 dormant members and folder deletion, and persistence across save and load.
+`SplitOpeningTests` (19) covers opening a split from a tab: `splitOpening` for
+every kind of tab, the web-view variant keeping the very instance, the
+normal-section split's placement (after the parent's children, past a split at
+the insertion point, before a split starting the section, a second split after
+the first), its undo, and the favourite or entry left as it was.
 Also `SleepShowBudgetTests` (partner rules), `ArchivedTabRestoreTests`
 (restore snaps out of a group; the split-close undo with a consumed record) and
 `SidebarDragDropTests`. Extend these first when changing a rule.
@@ -246,3 +301,4 @@ Also `SleepShowBudgetTests` (partner rules), `ArchivedTabRestoreTests`
 - [Session database](../architecture/session-database.md): migrations v6 and v7.
 
 [^task-38]: Move to Space loses extension pages (rebuilds the tab in the space configuration)
+[^task-185]: Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section

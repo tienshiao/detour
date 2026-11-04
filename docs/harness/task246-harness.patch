@@ -1,0 +1,121 @@
+TASK-246 runtime harness: titled-visit search after the title matcher moved to
+Span. Temporary code, never committed to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task246-harness.patch
+    xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    OUT="<scratch dir>"; mkdir -p "$OUT"
+    DETOUR_DATA_DIR=DetourVerify246 DETOUR_VERIFY_DIR="$OUT" \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # wait for the "done" line in $OUT/verify.log (about 13 s), then kill that pid
+    git apply -R docs/harness/task246-harness.patch && xcodegen generate
+    # the run writes autosave keys suffixed -DetourVerify246 into the real
+    # com.detourbrowser.mac defaults (TASK-217); delete exactly those
+    defaults read com.detourbrowser.mac | grep DetourVerify246
+    defaults delete com.detourbrowser.mac "NSWindow Frame BrowserWindow-DetourVerify246"   # and any other listed
+
+Seeds three titled visits through recordVisit (an ASCII title, one that folds
+to ASCII, a Cyrillic one: the matcher's three paths), logs what searchVisits
+(History page) and searchURLs (chrome.history.search) return for title words,
+which go through history_title_matches, then types title words into the
+Cmd+T palette and logs its rows.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index cddb103..e157e61 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -127,6 +127,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask246HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task246Harness.swift b/Detour/App/Task246Harness.swift
+new file mode 100644
+index 0000000..8d9d5e1
+--- /dev/null
++++ b/Detour/App/Task246Harness.swift
+@@ -0,0 +1,79 @@
++// TEMP TASK-246 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask246HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.2f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        func pause(_ seconds: Double) async { try? await Task.sleep(for: .seconds(seconds)) }
++        guard let window = wc.window else { return log("no window") }
++        func allSubviews(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap(allSubviews) }
++        func palette() -> CommandPaletteView? {
++            allSubviews(window.contentView!).compactMap { $0 as? CommandPaletteView }.first
++        }
++        func key(_ code: UInt16, _ chars: String) {
++            guard let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
++                                           timestamp: ProcessInfo.processInfo.systemUptime,
++                                           windowNumber: window.windowNumber, context: nil,
++                                           characters: chars, charactersIgnoringModifiers: chars,
++                                           isARepeat: false, keyCode: code) else { return }
++            window.firstResponder?.keyDown(with: e)
++        }
++        func typeText(_ text: String) async { for ch in text { await pause(0.12); key(0, String(ch)) } }
++        func rows(_ label: String) {
++            let field = (window.firstResponder as? NSTextView)?.string ?? "?"
++            log("\(label): field=\"\(field)\"")
++            guard let table = palette().flatMap({ allSubviews($0).compactMap { $0 as? NSTableView }.first }) else {
++                return log("  no palette table")
++            }
++            for row in 0 ..< table.numberOfRows {
++                let texts = table.view(atColumn: 0, row: row, makeIfNecessary: false)
++                    .map { allSubviews($0).compactMap { ($0 as? NSTextField)?.stringValue }.filter { !$0.isEmpty } } ?? []
++                log("  row \(row): \(texts.joined(separator: " | "))")
++            }
++        }
++        let titles = [("https://roadmap.example/q3", "Quarterly Roadmap Review"),
++                      ("https://cv.example/", "Résumé Builder"),
++                      ("https://ru.example/", "Привет мир — главная")]
++        Task { @MainActor in
++            await pause(3)
++            guard let spaceID = wc.activeSpaceID else { return log("no active space") }
++            let spaceKey = spaceID.uuidString
++            for (url, title) in titles {
++                HistoryDatabase.shared.recordVisit(url: url, title: title, faviconURL: nil, spaceID: spaceKey)
++            }
++            log("seeded \(titles.count) titled visits in space \(spaceKey)")
++            await pause(1)
++            // The History page's and chrome.history's search: the SQL function this task changed.
++            for query in ["roadm", "REVIEW", "resum", "привет", "мир", "zzznothing"] {
++                let hits = HistoryDatabase.shared.searchVisits(query: query, spaceIDs: [spaceKey], limit: 50)
++                log("searchVisits \(query): \(hits.map(\.title))")
++                let urls = HistoryDatabase.shared.searchURLs(query: query, spaceIDs: [spaceKey], limit: 50)
++                log("searchURLs \(query): \(urls.map(\.title))")
++            }
++            // The palette: Cmd+T and type a title word.
++            for query in ["roadm", "resum", "привет"] {
++                await pause(0.5)
++                NSApp.sendAction(#selector(BrowserWindowController.newTab(_:)), to: wc, from: nil)
++                log("Cmd+T")
++                await typeText(query)
++                await pause(1.5)
++                rows("palette after typing \(query)")
++                key(53, "\u{1B}"); key(53, "\u{1B}"); key(53, "\u{1B}")
++                log("Escape x3")
++            }
++            await pause(0.5)
++            log("done")
++        }
++    }
++}
++#endif

@@ -2,9 +2,9 @@ import XCTest
 @testable import Detour
 
 /// Cmd+Option+Up/Down stop order and targeting (TASK-107).
-final class TabNavigationTests: XCTestCase {
+nonisolated final class TabNavigationTests: XCTestCase {
 
-    private func makeTab(splitGroupID: UUID? = nil) -> BrowserTab {
+    @MainActor private func makeTab(splitGroupID: UUID? = nil) -> BrowserTab {
         let tab = BrowserTab(
             id: UUID(),
             title: "Tab",
@@ -17,7 +17,7 @@ final class TabNavigationTests: XCTestCase {
         return tab
     }
 
-    private func makeEntry(folderID: UUID? = nil, sortOrder: Int, splitGroupID: UUID? = nil, live: Bool = true) -> PinnedEntry {
+    @MainActor private func makeEntry(folderID: UUID? = nil, sortOrder: Int, splitGroupID: UUID? = nil, live: Bool = true) -> PinnedEntry {
         let entry = PinnedEntry(
             pinnedURL: URL(string: "https://example.com")!,
             pinnedTitle: "Pinned",
@@ -29,7 +29,7 @@ final class TabNavigationTests: XCTestCase {
         return entry
     }
 
-    private func stops(entries: [PinnedEntry] = [], folders: [PinnedFolder] = [],
+    @MainActor private func stops(entries: [PinnedEntry] = [], folders: [PinnedFolder] = [],
                        tabs: [BrowserTab] = [], selectedTabID: UUID? = nil) -> [TabNavigationStop] {
         let pinnedItems = flattenPinnedTree(
             entries: entries,
@@ -42,7 +42,7 @@ final class TabNavigationTests: XCTestCase {
 
     // MARK: - Stops
 
-    func testPinnedRowsComeBeforeNormalTabs() {
+    @MainActor func testPinnedRowsComeBeforeNormalTabs() {
         let p0 = makeEntry(sortOrder: 0)
         let p1 = makeEntry(sortOrder: 1)
         let t0 = makeTab()
@@ -53,7 +53,7 @@ final class TabNavigationTests: XCTestCase {
         XCTAssertEqual(result.map(\.target), [.pinnedEntry(p0.id), .pinnedEntry(p1.id), .tab(t0.id), .tab(t1.id)])
     }
 
-    func testFolderRowsAreSkippedAndExpandedChildrenIncluded() {
+    @MainActor func testFolderRowsAreSkippedAndExpandedChildrenIncluded() {
         let folder = PinnedFolder(name: "F", sortOrder: 0)
         let child = makeEntry(folderID: folder.id, sortOrder: 0)
         let after = makeEntry(sortOrder: 1)
@@ -63,7 +63,7 @@ final class TabNavigationTests: XCTestCase {
         XCTAssertEqual(result.map(\.target), [.pinnedEntry(child.id), .pinnedEntry(after.id)])
     }
 
-    func testCollapsedFolderHidesChildrenUnlessSelected() {
+    @MainActor func testCollapsedFolderHidesChildrenUnlessSelected() {
         let folder = PinnedFolder(name: "F", isCollapsed: true, sortOrder: 0)
         let child = makeEntry(folderID: folder.id, sortOrder: 0)
         let hidden = makeEntry(folderID: folder.id, sortOrder: 1)
@@ -76,7 +76,7 @@ final class TabNavigationTests: XCTestCase {
                        [.pinnedEntry(child.id), .pinnedEntry(after.id)])
     }
 
-    func testNormalSplitIsOneStopCoveringBothPanes() {
+    @MainActor func testNormalSplitIsOneStopCoveringBothPanes() {
         let group = UUID()
         let left = makeTab(splitGroupID: group)
         let right = makeTab(splitGroupID: group)
@@ -90,7 +90,7 @@ final class TabNavigationTests: XCTestCase {
         ])
     }
 
-    func testPinnedSplitIsOneStopCoveringBothPanes() {
+    @MainActor func testPinnedSplitIsOneStopCoveringBothPanes() {
         let group = UUID()
         let left = makeEntry(sortOrder: 0, splitGroupID: group)
         let right = makeEntry(sortOrder: 1, splitGroupID: group)
@@ -102,7 +102,7 @@ final class TabNavigationTests: XCTestCase {
         ])
     }
 
-    func testDormantPinnedEntryIsAStopWithNoTabs() {
+    @MainActor func testDormantPinnedEntryIsAStopWithNoTabs() {
         let dormant = makeEntry(sortOrder: 0, live: false)
 
         XCTAssertEqual(stops(entries: [dormant]), [TabNavigationStop(target: .pinnedEntry(dormant.id), tabIDs: [])])
@@ -110,11 +110,11 @@ final class TabNavigationTests: XCTestCase {
 
     // MARK: - Target
 
-    private func stop(_ id: UUID) -> TabNavigationStop {
+    @MainActor private func stop(_ id: UUID) -> TabNavigationStop {
         TabNavigationStop(target: .tab(id), tabIDs: [id])
     }
 
-    func testMovesByOffsetFromTheCurrentStop() {
+    @MainActor func testMovesByOffsetFromTheCurrentStop() {
         let ids = (0..<3).map { _ in UUID() }
         let list = ids.map(stop)
 
@@ -122,7 +122,7 @@ final class TabNavigationTests: XCTestCase {
         XCTAssertEqual(tabNavigationTarget(in: list, selectedTabID: ids[1], offset: -1), list[0])
     }
 
-    func testWrapsAtBothEnds() {
+    @MainActor func testWrapsAtBothEnds() {
         let ids = (0..<3).map { _ in UUID() }
         let list = ids.map(stop)
 
@@ -130,7 +130,7 @@ final class TabNavigationTests: XCTestCase {
         XCTAssertEqual(tabNavigationTarget(in: list, selectedTabID: ids[0], offset: -1), list[2])
     }
 
-    func testEitherSplitPaneLocatesTheSplitStop() {
+    @MainActor func testEitherSplitPaneLocatesTheSplitStop() {
         let left = UUID(), right = UUID(), next = UUID()
         let list = [TabNavigationStop(target: .tab(left), tabIDs: [left, right]), stop(next)]
 
@@ -138,7 +138,7 @@ final class TabNavigationTests: XCTestCase {
         XCTAssertEqual(tabNavigationTarget(in: list, selectedTabID: next, offset: -1), list[0])
     }
 
-    func testNoCurrentStopStartsAtTheEnds() {
+    @MainActor func testNoCurrentStopStartsAtTheEnds() {
         let list = (0..<3).map { _ in stop(UUID()) }
 
         // A favourite (not in the sidebar list) or nothing selected.
@@ -146,7 +146,7 @@ final class TabNavigationTests: XCTestCase {
         XCTAssertEqual(tabNavigationTarget(in: list, selectedTabID: nil, offset: -1), list[2])
     }
 
-    func testNothingToDoWithNoOtherStop() {
+    @MainActor func testNothingToDoWithNoOtherStop() {
         let only = UUID()
 
         XCTAssertNil(tabNavigationTarget(in: [], selectedTabID: nil, offset: 1))

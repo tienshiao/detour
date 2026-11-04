@@ -1,9 +1,28 @@
 import AppKit
 
+/// A view under the drag strip that handles its own clicks, such as the dev
+/// toolbar's buttons. The strip forwards a click by synthesizing mouse-down
+/// and mouse-up, which an `NSButton` cannot take: its mouse-down tracks the
+/// real event stream for a mouse-up the strip has already consumed.
+protocol WindowDragPassThrough: NSView {}
+
 /// Transparent view that sits atop the content area to enable window dragging.
 /// Initiates a window drag on mouse-down; forwards clicks if no drag occurred.
 class WindowDragView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
+
+    /// Lets events through to a `WindowDragPassThrough` view (or one inside
+    /// it) under the strip; the strip handles everything else.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        guard hit === self, let superview else { return hit }
+        for sibling in superview.subviews.reversed() where sibling !== self {
+            guard let target = sibling.hitTest(point) else { continue }
+            let passesThrough = sequence(first: target, next: \.superview).contains { $0 is WindowDragPassThrough }
+            return passesThrough ? nil : self
+        }
+        return self
+    }
 
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }

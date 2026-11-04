@@ -20,22 +20,21 @@ import GRDB
 /// The first half drives an in-memory `AppDatabase` (the rule, and the paths
 /// that write rows); the second drives the real `ExtensionManager` against the
 /// shared `TabStore`'s Private profile (the live load/unload).
-@MainActor
-final class ExtensionPrivateDefaultTests: XCTestCase {
+nonisolated final class ExtensionPrivateDefaultTests: XCTestCase {
 
     private let privateID = TabStore.incognitoProfileID.uuidString
     private let normalID = "11111111-2222-3333-4444-555555555555"
 
     // MARK: - Database fixtures
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         let db = try AppDatabase(dbQueue: try DatabaseQueue(configuration: Configuration()))
         db.saveProfile(profileRecord(id: privateID, name: "Private"))
         db.saveProfile(profileRecord(id: normalID, name: "Default"))
         return db
     }
 
-    private func profileRecord(id: String, name: String) -> ProfileRecord {
+    @MainActor private func profileRecord(id: String, name: String) -> ProfileRecord {
         ProfileRecord(id: id, name: name, userAgentMode: 0, customUserAgent: nil,
                       archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0,
                       searchSuggestionsEnabled: true, isPerTabIsolation: false,
@@ -44,7 +43,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
                       isMalwareFilterEnabled: true)
     }
 
-    private func extensionRecord(id: String = "ext-1", version: String = "1.0",
+    @MainActor private func extensionRecord(id: String = "ext-1", version: String = "1.0",
                                  isEnabled: Bool = true) -> ExtensionRecord {
         ExtensionRecord(id: id, name: "Private Default Test", version: version,
                         manifestJSON: Data("{}".utf8), basePath: "/tmp/extensions/\(id)",
@@ -54,7 +53,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
     /// The three readers, asserted together: `isExtensionEnabled` and
     /// `enabledExtensionIDs` answer the whole rule (global AND per-profile),
     /// `isExtensionEnabledByProfile` only the profile's half.
-    private func assertState(_ db: AppDatabase, _ extensionID: String, _ profileID: String,
+    @MainActor private func assertState(_ db: AppDatabase, _ extensionID: String, _ profileID: String,
                              enabled: Bool, byProfile: Bool, _ message: String,
                              file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(db.isExtensionEnabled(extensionID: extensionID, profileID: profileID), enabled,
@@ -65,7 +64,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
                        byProfile, "isExtensionEnabledByProfile: \(message)", file: file, line: line)
     }
 
-    private func rows(_ db: AppDatabase, profileID: String) throws -> [ProfileExtensionRecord] {
+    @MainActor private func rows(_ db: AppDatabase, profileID: String) throws -> [ProfileExtensionRecord] {
         try db.dbQueue.read { db in
             try ProfileExtensionRecord.filter(Column("profileID") == profileID).fetchAll(db)
         }
@@ -73,7 +72,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
 
     // MARK: - The rule
 
-    func testMissingRowIsOffInPrivateAndOnElsewhere() throws {
+    @MainActor func testMissingRowIsOffInPrivateAndOnElsewhere() throws {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord())
 
@@ -94,7 +93,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
                       "reading the state must not write a row")
     }
 
-    func testAnExplicitRowWinsInBothProfiles() throws {
+    @MainActor func testAnExplicitRowWinsInBothProfiles() throws {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord())
 
@@ -113,7 +112,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
                     "re-enabling in a normal profile turns it back on")
     }
 
-    func testTheGlobalFlagStillWinsOverAPrivateAllow() throws {
+    @MainActor func testTheGlobalFlagStillWinsOverAPrivateAllow() throws {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord())
         db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: privateID, enabled: true)
@@ -125,7 +124,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
                     "globally off beats the default-on profile too")
     }
 
-    func testAnUninstalledIdIsInNeitherAnswerForEitherProfile() throws {
+    @MainActor func testAnUninstalledIdIsInNeitherAnswerForEitherProfile() throws {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord())
         db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: privateID, enabled: true)
@@ -143,7 +142,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
         XCTAssertTrue(db.enabledExtensionIDs(for: normalID).isEmpty)
     }
 
-    func testEnabledExtensionIDsPartitionsBothProfiles() throws {
+    @MainActor func testEnabledExtensionIDsPartitionsBothProfiles() throws {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord(id: "allowed"))
         db.saveExtension(extensionRecord(id: "untouched"))
@@ -168,7 +167,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
 
     // MARK: - Install / update / global re-enable leave Private alone
 
-    func testInstallAndUpdateNeverWriteAPrivateRow() throws {
+    @MainActor func testInstallAndUpdateNeverWriteAPrivateRow() throws {
         let db = try makeDatabase()
 
         // Install: the only row an install writes is the `extension` row.
@@ -186,7 +185,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
                       "neither install nor update writes a per-profile row")
     }
 
-    func testAnUpdateKeepsAPrivateAllow() throws {
+    @MainActor func testAnUpdateKeepsAPrivateAllow() throws {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord(version: "1.0"))
         db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: privateID, enabled: true)
@@ -197,7 +196,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
                     "an update must not revoke the user's Private allow")
     }
 
-    func testGlobalDisableAndReEnableLeavePrivateUntouchedBothWays() throws {
+    @MainActor func testGlobalDisableAndReEnableLeavePrivateUntouchedBothWays() throws {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord(id: "never-allowed"))
         db.saveExtension(extensionRecord(id: "allowed"))
@@ -220,7 +219,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
 
     // MARK: - Pinning
 
-    func testPinningInPrivateDoesNotAllowTheExtension() throws {
+    @MainActor func testPinningInPrivateDoesNotAllowTheExtension() throws {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord())
 
@@ -231,7 +230,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
                     "pinning must not enable it in Private")
     }
 
-    func testPinningInANormalProfileKeepsItEnabled() throws {
+    @MainActor func testPinningInANormalProfileKeepsItEnabled() throws {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord())
 
@@ -242,7 +241,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
                     "pinning must not disable it in a normal profile")
     }
 
-    func testPinningAnAllowedPrivateExtensionKeepsItAllowed() throws {
+    @MainActor func testPinningAnAllowedPrivateExtensionKeepsItAllowed() throws {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord())
         db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: privateID, enabled: true)
@@ -262,7 +261,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for id in registeredExtensionIDs {
             for profile in TabStore.shared.profiles {
                 profile.unloadExtension(id: id)
@@ -289,7 +288,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
     }
 
     /// A globally enabled, installed extension registered with the shared manager.
-    private func makeLiveExtension(named name: String) async throws -> WebExtension {
+    @MainActor private func makeLiveExtension(named name: String) async throws -> WebExtension {
         let ext = try await makeOptionsPageTestExtension(idPrefix: "private-default-\(name)",
                                                          name: "Private Default \(name)")
         tempDirs.append(ext.basePath)
@@ -303,18 +302,18 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
 
     /// The shared store's built-in Private profile, with its row saved so the
     /// `profileExtension` foreign key can be satisfied.
-    private func privateProfile() -> Profile {
+    @MainActor private func privateProfile() -> Profile {
         let profile = TabStore.shared.ensureIncognitoProfile()
         AppDatabase.shared.saveProfile(profile.toRecord())
         _ = profile.extensionController
         return profile
     }
 
-    private func isLoaded(_ ext: WebExtension, in profile: Profile) -> Bool {
+    @MainActor private func isLoaded(_ ext: WebExtension, in profile: Profile) -> Bool {
         profile.extensionContexts[ext.id] != nil
     }
 
-    func testLaunchLoadsNoContextIntoPrivateAndAllowLoadsItLive() async throws {
+    @MainActor func testLaunchLoadsNoContextIntoPrivateAndAllowLoadsItLive() async throws {
         let ext = try await makeLiveExtension(named: "live")
         let profile = privateProfile()
         XCTAssertEqual(profile.id, TabStore.incognitoProfileID, "precondition: the built-in Private profile")
@@ -353,7 +352,7 @@ final class ExtensionPrivateDefaultTests: XCTestCase {
     /// The negative control for the global toggle: a Private allow survives a
     /// global disable → enable, and an extension never allowed stays unloaded
     /// through the same cycle.
-    func testGlobalToggleDoesNotChangeWhatIsLoadedInPrivate() async throws {
+    @MainActor func testGlobalToggleDoesNotChangeWhatIsLoadedInPrivate() async throws {
         let allowed = try await makeLiveExtension(named: "global-allowed")
         let refused = try await makeLiveExtension(named: "global-refused")
         let profile = privateProfile()

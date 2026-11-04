@@ -105,8 +105,8 @@ struct ExtensionAPIPolyfill {
         try { if (!__detourPolyfillDiag.hasSendNativeMessage) __detourPolyfillDiag.hasSendNativeMessage = typeof chrome !== 'undefined' && typeof chrome.runtime.sendNativeMessage === 'function'; } catch(e) {}
         __detourPolyfillDiag.apis = {};
         try { __detourPolyfillDiag.apis.idle = typeof chrome.idle.queryState; } catch(e) { __detourPolyfillDiag.apis.idle = 'error: ' + e.message; }
-        try { __detourPolyfillDiag.apis.history = typeof chrome.history.search; } catch(e) { __detourPolyfillDiag.apis.history = 'error: ' + e.message; }
-        try { __detourPolyfillDiag.apis.notifications = typeof chrome.notifications.create; } catch(e) { __detourPolyfillDiag.apis.notifications = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.history = chrome.history ? typeof chrome.history.search : 'absent'; } catch(e) { __detourPolyfillDiag.apis.history = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.notifications = chrome.notifications ? typeof chrome.notifications.create : 'absent'; } catch(e) { __detourPolyfillDiag.apis.notifications = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.offscreen = typeof chrome.offscreen.hasDocument; } catch(e) { __detourPolyfillDiag.apis.offscreen = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.management = typeof chrome.management.getSelf; } catch(e) { __detourPolyfillDiag.apis.management = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.sessions = typeof chrome.sessions.restore; } catch(e) { __detourPolyfillDiag.apis.sessions = 'error: ' + e.message; }
@@ -264,14 +264,32 @@ struct ExtensionAPIPolyfill {
 
         // The permissions the manifest declares, or [] when they cannot be read
         // (no readable manifest, or one without a permissions array). Modules
-        // that must stay absent unless the extension asked for them —
-        // chrome.privacy, chrome.webRequest — gate on this, the way Chrome
-        // leaves an undeclared namespace out entirely.
+        // that must stay absent unless the extension asked for them gate on
+        // this (chrome.privacy, chrome.webRequest) or on
+        // `__detourDeclaresPermission` below (chrome.notifications,
+        // chrome.history, most of chrome.management), the way Chrome leaves an
+        // undeclared namespace out entirely.
         if (!g.__detourManifestPermissions) {
             g.__detourManifestPermissions = function() {
                 const manifest = g.__detourManifest();
                 if (manifest && Array.isArray(manifest.permissions)) return manifest.permissions;
                 return [];
+            };
+        }
+
+        // Whether the manifest declares `name` in `permissions` or in
+        // `optional_permissions`. The modules whose permission an extension may
+        // be granted at runtime (chrome.notifications, chrome.history, the full
+        // chrome.management) install on this, because a namespace is built
+        // here, once per context, while a grant can come later; the handler
+        // then decides each call from the profile's live permission state
+        // (TASK-250).
+        if (!g.__detourDeclaresPermission) {
+            g.__detourDeclaresPermission = function(name) {
+                if (g.__detourManifestPermissions().indexOf(name) !== -1) return true;
+                const manifest = g.__detourManifest();
+                return !!(manifest && Array.isArray(manifest.optional_permissions)
+                    && manifest.optional_permissions.indexOf(name) !== -1);
             };
         }
 
@@ -395,6 +413,58 @@ struct ExtensionAPIPolyfill {
             g.__detourContextInstance = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
         }
 
+        // MARK: Error text across transports (TASK-255)
+        //
+        // A page's request rejects with the handler's text as is. A worker's
+        // crosses `runtime.sendNativeMessage`, and WebKit rewrites every error
+        // there: "Invalid call to runtime.sendNativeMessage(). " + the text
+        // with its first letter capitalised, dots trimmed and one full stop
+        // appended. That is lossy, so the worker asks for the error in the
+        // reply instead (`errorEnvelope`): the handler answers a failure with
+        // `{ __detourPolyfillError: text }` and it is rejected here verbatim.
+        // A success on that path is wrapped as `{ __detourPolyfillOk: true,
+        // value: result }`, so a result that carries the error key itself is
+        // never read as a failure (TASK-262); a reply in neither shape rejects.
+        // An error WebKit still delivers as one (a refusal before the handler,
+        // WebKit's own limits) loses exactly that prefix and the full stop
+        // WebKit appended; any other text is left alone.
+        const nativeMessageErrorPrefix = 'Invalid call to runtime.sendNativeMessage(). ';
+        const polyfillErrorKey = '\(ExtensionPolyfillHandler.errorEnvelopeKey)';
+        const polyfillOkKey = '\(ExtensionPolyfillHandler.successEnvelopeKey)';
+        const polyfillValueKey = '\(ExtensionPolyfillHandler.successEnvelopeValueKey)';
+
+        const stripNativeMessagePrefix = function(message) {
+            if (typeof message !== 'string' || message.indexOf(nativeMessageErrorPrefix) !== 0) return message;
+            let rest = message.slice(nativeMessageErrorPrefix.length);
+            if (rest.length > 1 && rest.charAt(rest.length - 1) === '.') rest = rest.slice(0, -1);
+            return rest || message;
+        };
+
+        const unwrapPolyfillReply = function(response) {
+            const hasOwn = Object.prototype.hasOwnProperty;
+            let ok = false, value, text;
+            try {
+                if (response && typeof response === 'object') {
+                    if (hasOwn.call(response, polyfillOkKey) && response[polyfillOkKey] === true) {
+                        ok = true;
+                        value = response[polyfillValueKey];
+                    } else if (hasOwn.call(response, polyfillErrorKey)) {
+                        text = response[polyfillErrorKey];
+                    }
+                }
+            } catch (e) {}
+            if (ok) return value;
+            if (typeof text === 'string') throw new Error(text || 'Unknown error');
+            throw new Error('Malformed polyfill reply');
+        };
+
+        const unwrapNativeMessageError = function(error) {
+            let message;
+            try { message = error && error.message; } catch (e) {}
+            const stripped = stripNativeMessagePrefix(message);
+            throw stripped === message ? error : new Error(stripped);
+        };
+
         g.__detourPolyfillRequest = function(type, params) {
             const msg = { type: type, params: params || {}, extensionID: currentExtensionID() };
 
@@ -404,22 +474,31 @@ struct ExtensionAPIPolyfill {
 
             // Service worker fallback: use native messaging bridge.
             // Try browser.runtime (returns Promise) first, then chrome.runtime (callback-based).
+            msg.errorEnvelope = true;
             if (typeof browser !== 'undefined' && browser.runtime && browser.runtime.sendNativeMessage) {
-                return browser.runtime.sendNativeMessage('detourPolyfill', msg);
+                return browser.runtime.sendNativeMessage('detourPolyfill', msg)
+                    .then(unwrapPolyfillReply, unwrapNativeMessageError);
             }
             if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendNativeMessage) {
                 return new Promise(function(resolve, reject) {
                     chrome.runtime.sendNativeMessage('detourPolyfill', msg, function(response) {
-                        if (chrome.runtime.lastError) {
-                            reject(new Error(chrome.runtime.lastError.message));
+                        const lastError = chrome.runtime.lastError;
+                        if (lastError) {
+                            reject(new Error(lastError.message));
                         } else {
                             resolve(response);
                         }
                     });
-                });
+                }).then(unwrapPolyfillReply, unwrapNativeMessageError);
             }
             return Promise.reject(new Error('Polyfill bridge unavailable: no webkit handler or sendNativeMessage'));
         };
+
+        // For tests: the pure pieces of the normalisation above.
+        g.__detourPolyfillErrorText = Object.freeze({
+            stripNativeMessagePrefix: stripNativeMessagePrefix,
+            unwrapPolyfillReply: unwrapPolyfillReply
+        });
 
         // MARK: Callback settlement (TASK-23)
         //
@@ -448,9 +527,12 @@ struct ExtensionAPIPolyfill {
         //    Detour's polyfill host through the native, callback-style
         //    `runtime.sendNativeMessage`: the host always answers with that
         //    message as the error, and WebKit runs the callback inside its own
-        //    lastError scope (set, cleared, unchecked reporting). WebKit
-        //    prefixes the text: "Invalid call to runtime.sendNativeMessage().
-        //    <message>." The namespace is re-read here, never cached (TASK-15).
+        //    lastError scope (set, cleared). WebKit prefixes the text
+        //    ("Invalid call to runtime.sendNativeMessage(). <Message>."), so
+        //    the relay callback puts the original message back on WebKit's
+        //    lastError object (TASK-255); reading it there costs WebKit's
+        //    unchecked report. The namespace is re-read here, never cached
+        //    (TASK-15).
         //  - 'console': neither is possible; the callback runs without
         //    lastError and the message goes to console.error.
         const lastErrorRelayType = '\(ExtensionPolyfillHandler.lastErrorRelayType)';
@@ -538,9 +620,28 @@ struct ExtensionAPIPolyfill {
             } catch (e) {}
             if (runtime) {
                 try {
+                    const relayRuntime = runtime;
                     runtime.sendNativeMessage('detourPolyfill', {
                         type: lastErrorRelayType, params: { message: message }, extensionID: currentExtensionID()
-                    }, function() { invokeCallback(callback, []); });
+                    }, function() {
+                        // WebKit's lastError is an Error carrying its prefixed
+                        // rewrite of the text; give it the original back
+                        // (TASK-255). Reading it here tells WebKit it was
+                        // checked, so WebKit reports no unchecked error. The
+                        // polyfill does not report one either: it cannot see
+                        // a read of WebKit's native getter, so a callback that
+                        // only tests `if (chrome.runtime.lastError)` would be
+                        // reported falsely.
+                        try {
+                            const error = relayRuntime.lastError;
+                            if (error && typeof error === 'object') {
+                                Object.defineProperty(error, 'message', {
+                                    value: message, writable: true, configurable: true, enumerable: false
+                                });
+                            }
+                        } catch (e) {}
+                        invokeCallback(callback, []);
+                    });
                     lastErrorMode = 'native-relay';
                     return;
                 } catch (e) {}
@@ -2145,7 +2246,10 @@ struct ExtensionAPIPolyfill {
     /// reconnect backoff for tests, `__detourForceNativePortKeepAlive` installs
     /// this outside a background context for tests, and
     /// `__detourKeepAliveIgnorePings` (a count, or `true`) makes it drop pings so
-    /// a test can play a background that has stopped answering. There is no
+    /// a test can play a background that has stopped answering, and
+    /// `__detourKeepAliveNoSelfFiredDisconnect` makes the port watch ignore the
+    /// onDisconnect WebKit fires inside a watched port's own `disconnect()`, so
+    /// a test can play a WebKit with 325256@main (TASK-263). There is no
     /// ping-interval override any more: the interval is
     /// `ExtensionManager.keepAlivePingInterval`.
     private static let nativePortKeepAliveJS = """
@@ -2158,6 +2262,10 @@ struct ExtensionAPIPolyfill {
         // replaced (ExtensionManager.keepAliveSupersededMessage).
         const SUPERSEDED_TYPE = '\(ExtensionManager.keepAliveSupersededType)';
         const SUPERSEDED_MESSAGE = '\(ExtensionManager.keepAliveSupersededMessage)';
+        // The anchor port an armed background holds, and what Detour sends when
+        // one of the background's native ports closed (TASK-142).
+        const ANCHOR_HOST = '\(ExtensionManager.keepAliveAnchorHostName)';
+        const REANCHOR_TYPE = '\(ExtensionManager.keepAliveReanchorType)';
         const reconnectBaseMs = (typeof g.__detourKeepAliveReconnectBaseMs === 'number' && g.__detourKeepAliveReconnectBaseMs > 0)
             ? g.__detourKeepAliveReconnectBaseMs : DEFAULT_RECONNECT_BASE_MS;
 
@@ -2167,6 +2275,34 @@ struct ExtensionAPIPolyfill {
         let port = null;
         let armed = false;
         let repliesSent = 0;
+
+        // The anchor (TASK-142). WebKit keeps a page's open ports as counts per
+        // port, and the first port of the page whose count reaches zero takes the
+        // page's whole entry with it (`WebExtensionContext::removePort`). From
+        // then on WebKit believes the background holds no open port, so its next
+        // 30 s unload tick closes it, the keep-alive port and every answered ping
+        // notwithstanding (TASK-141). Only a port the page opens or receives puts
+        // the entry back. So while armed the background holds one more native
+        // port, the anchor, and after any of its ports ends it closes the anchor
+        // and opens a new one: the close takes the entry (if anything was left of
+        // it), the open re-creates it with the new anchor in it. Closed first,
+        // because a removal after the open would wipe the new entry too. The ends
+        // it reacts to: a port the background made or received closing, from
+        // either side (`watchPort`, below), and one of its native ports closing
+        // (Detour sends REANCHOR_TYPE, since `connectNative` cannot be wrapped).
+        // Every ping re-anchors as well, for a port that ended unseen.
+        let anchor = null;
+        let anchorsOpened = 0;
+        // Test-only: play the keep-alive as it was before TASK-142, so the
+        // measurement legs can still show what the anchor fixes. Nothing in
+        // production sets it.
+        const anchorDisabled = g.__detourKeepAliveNoAnchor === true;
+        let reanchorTimer = null;
+        let watchDetail = '';
+        let portsWatched = 0;
+        let portEndsSeen = 0;
+        let portDisconnectsWrapped = 0;
+        let selfFiredEndsIgnored = 0;
         let reconnectTimer = null;
         let reconnectAttempts = 0;
         // 'port' (a port is open) | 'none'.
@@ -2222,6 +2358,200 @@ struct ExtensionAPIPolyfill {
             return '';
         }
 
+        function closeAnchor() {
+            const closing = anchor;
+            anchor = null;
+            if (!closing) return;
+            try { closing.disconnect(); } catch (e) {}
+        }
+
+        // Deferred to a task of its own and coalesced: WebKit sends a port's
+        // removal before it runs the port's onDisconnect listeners, and Detour's
+        // REANCHOR_TYPE is sent after the native port's disconnect, so by the
+        // time this runs the removal that wiped the entry has already gone out.
+        function reanchorSoon() {
+            if (!armed || reanchorTimer || anchorDisabled) return;
+            reanchorTimer = setTimeout(reanchorNow, 0);
+        }
+
+        function reanchorNow() {
+            reanchorTimer = null;
+            // Disarmed meanwhile: leave the anchor as it is (see keepalive-stop).
+            if (!armed || !port) return;
+            closeAnchor();
+            const resolved = g.__detourResolveNativeRuntime();
+            if (!resolved.runtime) return;
+            let opened = null;
+            try { opened = resolved.runtime.connectNative(ANCHOR_HOST); } catch (e) {}
+            if (!opened) return;
+            anchor = opened;
+            anchorsOpened += 1;
+            try {
+                // Shipped WebKit fires this for its own disconnect() too
+                // (TASK-256); nothing to re-open then.
+                opened.onDisconnect.addListener(function() {
+                    if (anchor === opened) anchor = null;
+                });
+            } catch (e) {}
+        }
+
+        // Re-anchor when this port ends. Nothing holds the port: a port the
+        // extension drops is collected as before, and WebKit's removal of a
+        // collected port runs its onDisconnect listeners too.
+        //
+        // The other side closing it fires onDisconnect here. The background
+        // closing it itself is seen by wrapping the port's `disconnect`:
+        // shipped WebKit also runs the caller's own onDisconnect listeners
+        // inside `disconnect()` (a bug, TASK-256), but WebKit fixed that
+        // upstream (325256@main, 2026-10-30), and an installed Detour must not
+        // stop re-anchoring when a macOS update ships the fix (TASK-263). The
+        // port's end counts once, whichever of the two sees it first; today
+        // both do, inside the same `disconnect()` call, and `reanchorSoon`
+        // coalesces anyway.
+        function watchPort(watched) {
+            if (!watched) return watched;
+            let ended = false;
+            let disconnecting = false;
+            const end = function() {
+                if (ended) return;
+                ended = true;
+                portEndsSeen += 1;
+                reanchorSoon();
+            };
+            try {
+                watched.onDisconnect.addListener(function() {
+                    // Test-only: play a WebKit with the fix, which no longer
+                    // runs the caller's own listeners inside `disconnect()`.
+                    if (disconnecting && g.__detourKeepAliveNoSelfFiredDisconnect === true) {
+                        selfFiredEndsIgnored += 1;
+                        return;
+                    }
+                    end();
+                });
+                portsWatched += 1;
+            } catch (e) {}
+            // Not enumerable, like the port's own methods, so the extension
+            // enumerating its port sees what it saw before. A `disconnect()`
+            // that throws has not ended the port: the watch stays open for the
+            // end that does come.
+            try {
+                const nativeDisconnect = watched.disconnect;
+                if (typeof nativeDisconnect === 'function') {
+                    Object.defineProperty(watched, 'disconnect', {
+                        value: function() {
+                            disconnecting = true;
+                            let result;
+                            try {
+                                result = nativeDisconnect.apply(watched, arguments);
+                            } finally {
+                                disconnecting = false;
+                            }
+                            end();
+                            return result;
+                        },
+                        writable: true, configurable: true, enumerable: false
+                    });
+                    if (watched.disconnect !== nativeDisconnect) portDisconnectsWrapped += 1;
+                }
+            } catch (e) {}
+            return watched;
+        }
+
+        // Every way a background makes or receives a port other than
+        // `connectNative`: `runtime.connect` and `tabs.connect` are wrapped, and
+        // so is every listener the extension adds to `runtime.onConnect` /
+        // `onConnectExternal`. The wrappers patched are rooted
+        // (`__detourHoldWrapper`) so the next read returns them. WebKit vends one
+        // object under `chrome` and `browser` today; should the two ever differ,
+        // each is patched.
+        function installPortWatch() {
+            const details = [];
+            const note = function(label) {
+                if (details.indexOf(label) === -1) details.push(label);
+            };
+            const distinctNamespaces = function(name) {
+                const found = [];
+                ['chrome', 'browser'].forEach(function(rootName) {
+                    let namespace = null;
+                    try { namespace = g[rootName] && g[rootName][name]; } catch (e) {}
+                    if (namespace && found.indexOf(namespace) === -1) found.push(namespace);
+                });
+                return found;
+            };
+            const runtimes = distinctNamespaces('runtime');
+            if (!runtimes.length) {
+                watchDetail = 'no-runtime';
+                return;
+            }
+
+            const wrapConnect = function(namespace, label) {
+                try {
+                    const original = namespace && namespace.connect;
+                    if (typeof original !== 'function') return;
+                    namespace.connect = function() {
+                        return watchPort(original.apply(namespace, arguments));
+                    };
+                    if (namespace.connect !== original) note(label);
+                } catch (e) {}
+            };
+            runtimes.forEach(function(runtime, i) {
+                g.__detourHoldWrapper('keepAliveRuntime' + (i ? '.' + i : ''), runtime);
+                wrapConnect(runtime, 'runtime.connect');
+            });
+            distinctNamespaces('tabs').forEach(function(tabs, i) {
+                g.__detourHoldWrapper('keepAliveTabs' + (i ? '.' + i : ''), tabs);
+                wrapConnect(tabs, 'tabs.connect');
+            });
+
+            // WebKit hands every onConnect listener a port of its own (and
+            // counts one open port per listener), so a listener of Detour's
+            // would add a port nobody holds, and one that keeps the channel
+            // open after the extension disconnects its own. Each of the
+            // extension's listeners is wrapped instead, and the wrapper watches
+            // the very port that listener gets.
+            const wrappedEvents = [];
+            const wrapConnectEvent = function(event, name, holdName) {
+                if (!event || wrappedEvents.indexOf(event) !== -1 || typeof event.addListener !== 'function'
+                    || typeof event.removeListener !== 'function' || typeof event.hasListener !== 'function') return;
+                wrappedEvents.push(event);
+                g.__detourHoldWrapper(holdName, event);
+                const nativeAdd = event.addListener;
+                const nativeRemove = event.removeListener;
+                const nativeHas = event.hasListener;
+                const wrappers = new Map();
+                event.addListener = function(listener) {
+                    if (typeof listener !== 'function') return nativeAdd.apply(event, arguments);
+                    let wrapper = wrappers.get(listener);
+                    if (!wrapper) {
+                        wrapper = function(received) {
+                            watchPort(received);
+                            return listener.apply(this, arguments);
+                        };
+                        wrappers.set(listener, wrapper);
+                    }
+                    return nativeAdd.call(event, wrapper);
+                };
+                event.removeListener = function(listener) {
+                    const wrapper = wrappers.get(listener);
+                    if (!wrapper) return nativeRemove.apply(event, arguments);
+                    wrappers.delete(listener);
+                    return nativeRemove.call(event, wrapper);
+                };
+                event.hasListener = function(listener) {
+                    return nativeHas.call(event, wrappers.get(listener) || listener);
+                };
+                note('runtime.' + name);
+            };
+            runtimes.forEach(function(runtime, i) {
+                ['onConnect', 'onConnectExternal'].forEach(function(name) {
+                    let event = null;
+                    try { event = runtime[name]; } catch (e) {}
+                    wrapConnectEvent(event, name, 'keepAlive.' + name + (i ? '.' + i : ''));
+                });
+            });
+            watchDetail = details.join(',');
+        }
+
         function scheduleReconnect() {
             if (reconnectTimer) return;
             const delay = Math.min(reconnectBaseMs * Math.pow(2, reconnectAttempts), MAX_RECONNECT_MS);
@@ -2274,10 +2604,26 @@ struct ExtensionAPIPolyfill {
                     if (port !== opened || !message) return;
                     // Answered whether or not a start was seen: Detour pings only
                     // a port it has armed, and an extra reply is never wrong.
-                    if (message.type === 'keepalive-ping') reply(opened, message.seq);
-                    else if (message.type === 'keepalive-start') armed = true;
-                    else if (message.type === 'keepalive-stop') armed = false;
-                    else if (message.type === SUPERSEDED_TYPE) superseded = true;
+                    if (message.type === 'keepalive-ping') {
+                        reply(opened, message.seq);
+                        reanchorSoon();
+                    } else if (message.type === 'keepalive-start') {
+                        armed = true;
+                        reanchorSoon();
+                    } else if (message.type === 'keepalive-stop') {
+                        // The anchor stays open, idle: closing it is a port
+                        // removal, which would wipe WebKit's record of this
+                        // background's ports, and an unload WebKit then makes
+                        // reports none of them closed to Detour. Left open, it
+                        // goes with the keep-alive port on WebKit's 2-minute
+                        // inactive-ports unload, both reported. The next start
+                        // replaces it.
+                        armed = false;
+                    } else if (message.type === REANCHOR_TYPE) {
+                        reanchorSoon();
+                    } else if (message.type === SUPERSEDED_TYPE) {
+                        superseded = true;
+                    }
                 });
             } catch (e) {}
             try {
@@ -2285,6 +2631,7 @@ struct ExtensionAPIPolyfill {
                     if (port !== opened) return;
                     port = null;
                     armed = false;
+                    closeAnchor();
                     installMode = 'none';
                     // Another context of this extension (a tab navigated to the
                     // background document's path passes the gate below too) took
@@ -2346,6 +2693,7 @@ struct ExtensionAPIPolyfill {
             installDetail = 'persistent-background-page';
         } else {
             connect();
+            installPortWatch();
         }
         if (isWorker || isBackgroundPage) {
             // One line per background start, through the console bridge, so the
@@ -2360,7 +2708,14 @@ struct ExtensionAPIPolyfill {
             get armed() { return armed; },
             get active() { return armed && port !== null; },
             get repliesSent() { return repliesSent; },
-            get reconnectAttempts() { return reconnectAttempts; }
+            get reconnectAttempts() { return reconnectAttempts; },
+            get anchorOpen() { return anchor !== null; },
+            get anchorsOpened() { return anchorsOpened; },
+            get watching() { return watchDetail; },
+            get portsWatched() { return portsWatched; },
+            get portEndsSeen() { return portEndsSeen; },
+            get portDisconnectsWrapped() { return portDisconnectsWrapped; },
+            get selfFiredEndsIgnored() { return selfFiredEndsIgnored; }
         });
     })();
     """
@@ -2406,20 +2761,106 @@ struct ExtensionAPIPolyfill {
 
     // MARK: - chrome.notifications
 
+    /// chrome.notifications, installed only when the manifest declares the
+    /// `notifications` permission, required or optional: Chrome leaves the
+    /// namespace out otherwise, so a feature detection stays truthful
+    /// (TASK-239). The handler refuses the requests of an extension without it
+    /// as well, so a caller that reaches `__detourPolyfillRequest` directly
+    /// gets nothing either; for an optional permission it refuses until the
+    /// grant and again after a revocation (TASK-250). With the permission it
+    /// is always Detour's, whatever WebKit vends.
     private static let notificationsJS = """
     (function() {
-        // Always install — WebKit may provide stubs that don't work
+        if (!__detourDeclaresPermission('notifications')) return;
         const chrome = globalThis.chrome;
 
         const _onClickedListeners = [];
         const _onButtonClickedListeners = [];
         const _onClosedListeners = [];
 
+        // onClicked / onClosed (TASK-247): no push channel reaches a context,
+        // so the first listener parks a notifications.awaitEvent request,
+        // answered with the events not yet acknowledged. They are dispatched
+        // in order and the request is parked again, acknowledging the last
+        // seq seen. Only the background context may park (the handler
+        // refuses others), and the pending request keeps nothing alive.
+        // `stopped` says why the wait ended, if it did: 'permission' when the
+        // handler refused it for a `notifications` permission not granted
+        // yet (an optional one), so the context's next notifications call
+        // parks again (`rearm`); 'final' when it was refused for good (not
+        // the background context, superseded by a newer incarnation, the
+        // extension or its profile gone).
+        let waiting = false;
+        let stopped = null;
+        let lastSeq = null;
+        const dispatchEvent = function(event) {
+            if (!event || typeof event.notificationId !== 'string') return;
+            if (event.kind === 'clicked') {
+                globalThis.__extensionDispatchNotificationClicked(event.notificationId);
+            } else if (event.kind === 'closed') {
+                globalThis.__extensionDispatchNotificationClosed(event.notificationId, event.byUser === true);
+            }
+        };
+        const waitForEvents = function() {
+            if (waiting || stopped !== null) return;
+            waiting = true;
+            const params = { instance: globalThis.__detourContextInstance };
+            if (lastSeq !== null) params.ack = lastSeq;
+            __detourPolyfillRequest('notifications.awaitEvent', params).then(function(reply) {
+                waiting = false;
+                const events = (reply && Array.isArray(reply.events)) ? reply.events : [];
+                for (let i = 0; i < events.length; i++) {
+                    const event = events[i];
+                    if (!event || typeof event.seq !== 'number') continue;
+                    // A redelivery after a lost answer repeats what this
+                    // context already dispatched; skip those.
+                    if (lastSeq !== null && event.seq <= lastSeq) continue;
+                    lastSeq = event.seq;
+                    dispatchEvent(event);
+                }
+                // Parked again even with no listener left: the park is the
+                // acknowledgement, and an unacknowledged event is delivered
+                // again to the next incarnation.
+                waitForEvents();
+            }, function(e) {
+                // Refused: stay quiet and stop waiting (see `stopped`).
+                waiting = false;
+                let message = '';
+                try { message = String(e && e.message ? e.message : e); } catch (e2) {}
+                stopped = /notifications permission (not declared|denied|is optional)/i.test(message) ? 'permission' : 'final';
+            });
+        };
+        // A wait refused for the permission parks again once the context
+        // makes a notifications call (none can succeed before the grant),
+        // if it still has a listener.
+        const rearm = function() {
+            if (stopped !== 'permission') return;
+            if (_onClickedListeners.length === 0 && _onClosedListeners.length === 0) return;
+            stopped = null;
+            waitForEvents();
+        };
+        const parkingEmitter = function(listeners) {
+            const emitter = __detourMakeEventEmitter(listeners);
+            const nativeAddListener = emitter.addListener;
+            emitter.addListener = function(cb) {
+                nativeAddListener(cb);
+                waitForEvents();
+            };
+            return emitter;
+        };
+
         __detourDefine(chrome, 'notifications', {
             create: function(notificationId, options, callback) {
-                if (typeof notificationId === 'object') {
+                rearm();
+                // Chrome's signature is create(notificationId?, options, callback?).
+                // A null or undefined id counts as absent, so only a real
+                // options object in the first slot means the id was left out
+                // (typeof null is 'object' too).
+                if (notificationId !== null && typeof notificationId === 'object') {
                     callback = options;
                     options = notificationId;
+                    notificationId = null;
+                } else if (notificationId === undefined) {
                     notificationId = null;
                 }
                 const promise = __detourPolyfillRequest('notifications.create', {
@@ -2430,6 +2871,7 @@ struct ExtensionAPIPolyfill {
             },
 
             update: function(notificationId, options, callback) {
+                rearm();
                 const promise = __detourPolyfillRequest('notifications.update', {
                     notificationId: notificationId,
                     options: options || {}
@@ -2438,6 +2880,7 @@ struct ExtensionAPIPolyfill {
             },
 
             clear: function(notificationId, callback) {
+                rearm();
                 const promise = __detourPolyfillRequest('notifications.clear', {
                     notificationId: notificationId
                 }).then(function(r) { return r.wasCleared === true; });
@@ -2445,13 +2888,14 @@ struct ExtensionAPIPolyfill {
             },
 
             getAll: function(callback) {
+                rearm();
                 const promise = __detourPolyfillRequest('notifications.getAll', {});
                 return __detourSettle(promise, callback);
             },
 
-            onClicked: __detourMakeEventEmitter(_onClickedListeners),
+            onClicked: parkingEmitter(_onClickedListeners),
             onButtonClicked: __detourMakeEventEmitter(_onButtonClickedListeners),
-            onClosed: __detourMakeEventEmitter(_onClosedListeners)
+            onClosed: parkingEmitter(_onClosedListeners)
         });
 
         globalThis.__extensionDispatchNotificationClicked = function(notificationId) {
@@ -2476,9 +2920,18 @@ struct ExtensionAPIPolyfill {
 
     // MARK: - chrome.history
 
+    /// chrome.history, installed only when the manifest declares the
+    /// `history` permission, required or optional: Chrome leaves the namespace
+    /// out otherwise, so a feature detection stays truthful (TASK-251). The
+    /// handler refuses `history.search` from an extension without it as well,
+    /// so a caller that reaches `__detourPolyfillRequest` directly gets nothing
+    /// either; for an optional permission it refuses until the grant and again
+    /// after a revocation (TASK-250). WebKit
+    /// vends no `history` namespace of its own (measured from a page and a
+    /// worker in `ExtensionHistoryScopeTests`).
     private static let historyJS = """
     (function() {
-        // Always install — WebKit may provide stubs that don't work
+        if (!__detourDeclaresPermission('history')) return;
         const chrome = globalThis.chrome;
 
         const onVisitedListeners = [];
@@ -2540,10 +2993,56 @@ struct ExtensionAPIPolyfill {
 
     // MARK: - chrome.management
 
+    /// chrome.management. Chrome gates the namespace on the `management`
+    /// permission except for `getSelf`, `uninstallSelf` and
+    /// `getPermissionWarningsByManifest`, which declare no dependency
+    /// (Chromium `extensions/common/api/_api_features.json`), so an extension
+    /// without the permission sees a namespace holding only those three: no
+    /// `getAll`, `setEnabled` or events (TASK-251; `uninstallSelf` and
+    /// `getPermissionWarningsByManifest` since TASK-257). The handler
+    /// refuses `management.getAll` and `management.setEnabled` without the
+    /// permission as well. An optional `management` installs the whole
+    /// namespace, and the handler refuses those two until the grant and again
+    /// after a revocation (TASK-250). WebKit vends no `management` namespace of its own
+    /// (measured in `ExtensionHistoryScopeTests`).
     private static let managementJS = """
     (function() {
-        // Always install — WebKit may provide stubs that don't work
         const chrome = globalThis.chrome;
+
+        const getSelf = function(callback) {
+            const promise = __detourPolyfillRequest('management.getSelf', {});
+            return __detourSettle(promise, callback);
+        };
+
+        // uninstallSelf(options?, callback?). The uninstall unloads every
+        // context of the extension, this one included, so a successful call's
+        // reply may never be delivered (TASK-257).
+        const uninstallSelf = function(options, callback) {
+            if (typeof options === 'function' && callback === undefined) {
+                callback = options;
+                options = undefined;
+            }
+            const promise = __detourPolyfillRequest('management.uninstallSelf', {
+                options: options === undefined ? null : options
+            }).then(function() { return undefined; });
+            return __detourSettle(promise, callback, false);
+        };
+
+        const getPermissionWarningsByManifest = function(manifestStr, callback) {
+            const promise = __detourPolyfillRequest('management.getPermissionWarningsByManifest', {
+                manifestStr: manifestStr === undefined ? null : manifestStr
+            });
+            return __detourSettle(promise, callback);
+        };
+
+        if (!__detourDeclaresPermission('management')) {
+            __detourDefine(chrome, 'management', {
+                getSelf: getSelf,
+                uninstallSelf: uninstallSelf,
+                getPermissionWarningsByManifest: getPermissionWarningsByManifest
+            });
+            return;
+        }
 
         const _onEnabledListeners = [];
         const _onDisabledListeners = [];
@@ -2551,10 +3050,9 @@ struct ExtensionAPIPolyfill {
         const _onUninstalledListeners = [];
 
         __detourDefine(chrome, 'management', {
-            getSelf: function(callback) {
-                const promise = __detourPolyfillRequest('management.getSelf', {});
-                return __detourSettle(promise, callback);
-            },
+            getSelf: getSelf,
+            uninstallSelf: uninstallSelf,
+            getPermissionWarningsByManifest: getPermissionWarningsByManifest,
 
             getAll: function(callback) {
                 const promise = __detourPolyfillRequest('management.getAll', {});
@@ -2911,6 +3409,12 @@ struct ExtensionAPIPolyfill {
     /// docs/chrome-runtime-patching.md). `browser.permissions` is patched under
     /// its own key when it is a *different* object than `chrome.permissions`
     /// (1Password calls `browser.*`); neither global is ever replaced (TASK-15).
+    ///
+    /// The same wrappers take `history` and `management` out of
+    /// `details.permissions` (TASK-260): WebKit refuses those names in the web
+    /// process, so Detour's handler answers for them (`permissions.contains`,
+    /// `request` with Detour's prompt, `remove`), and only the rest of the call
+    /// reaches WebKit. A mixed request is granted whole or not at all.
     private static let permissionsOriginPortJS = """
     (function() {
         const g = globalThis;
@@ -2995,11 +3499,147 @@ struct ExtensionAPIPolyfill {
 
             const methodNames = ['contains', 'request', 'remove'];
 
+            // MARK: Permissions WebKit does not know (TASK-260)
+            //
+            // WebKit refuses these names in the web process ("'history' is not
+            // a valid permission"), before Detour sees the call, so they are
+            // taken out of `details.permissions` and answered by Detour's
+            // handler; the rest of the call still goes to WebKit. Mirrors
+            // `WebExtension.permissionsOutsideWebKit`.
+            const outsideWebKit = ['history', 'management'];
+
+            // `{ ours, rest, restIsEmpty }` when `details.permissions` names one
+            // of them, else null (the call goes to WebKit untouched). `rest` is
+            // a shallow copy carrying WebKit's names and every other key.
+            const splitOutsideWebKit = function(details) {
+                if (!details || typeof details !== 'object') return null;
+                if (!Array.isArray(details.permissions)) return null;
+                const ours = [];
+                const theirs = [];
+                details.permissions.forEach(function(name) {
+                    if (outsideWebKit.indexOf(name) === -1) { theirs.push(name); return; }
+                    if (ours.indexOf(name) === -1) ours.push(name);
+                });
+                if (ours.length === 0) return null;
+                const rest = {};
+                Object.keys(details).forEach(function(key) { rest[key] = details[key]; });
+                rest.permissions = theirs;
+                // An `origins` that is not an empty array (or absent) still goes
+                // to WebKit, so a malformed one gets WebKit's argument error.
+                const restIsEmpty = theirs.length === 0
+                    && (details.origins === undefined
+                        || (Array.isArray(details.origins) && details.origins.length === 0));
+                return { ours: ours, rest: rest, restIsEmpty: restIsEmpty };
+            };
+
+            // WebKit's method, promise form, with a synchronous throw turned
+            // into a rejection.
+            const callWebKit = function(native, receiver, details) {
+                return new Promise(function(resolve, reject) {
+                    try { Promise.resolve(native.call(receiver, details)).then(resolve, reject); }
+                    catch (e) { reject(e); }
+                });
+            };
+
+            // One call that names a permission WebKit does not know. `natives`
+            // holds WebKit's contains/request/remove of this namespace.
+            // - contains: true when Detour's names and WebKit's part all hold.
+            // - request: WebKit's part first, synchronously, while the caller's
+            //   user gesture is still current: WebKit refuses a request made
+            //   without one ("Must be called during a user gesture"), and an
+            //   answer from Detour's handler would arrive after it is gone. A
+            //   WebKit denial ends the request without Detour's prompt. When
+            //   Detour's prompt is then denied (or refused), what WebKit's
+            //   prompt just granted is removed again, so the request is granted
+            //   whole or not at all, as in Chrome. Each of WebKit's items is
+            //   asked about with `contains` before the request, so only what
+            //   the request added is taken back.
+            // - remove: Detour's names are checked, WebKit removes the rest, and
+            //   only then are Detour's names removed.
+            const callOutsideWebKit = function(name, natives, receiver, split, callback) {
+                let promise;
+                if (name === 'contains') {
+                    promise = Promise.all([
+                        __detourPolyfillRequest('permissions.contains', { permissions: split.ours }),
+                        split.restIsEmpty ? Promise.resolve(true) : callWebKit(natives.contains, receiver, split.rest)
+                    ]).then(function(answers) { return answers[0] === true && answers[1] === true; });
+                } else if (name === 'request') {
+                    promise = requestOutsideWebKit(natives, receiver, split);
+                } else {
+                    promise = __detourPolyfillRequest('permissions.remove', {
+                        permissions: split.ours, checkOnly: true
+                    }).then(function() {
+                        return split.restIsEmpty ? true : callWebKit(natives.remove, receiver, split.rest);
+                    }).then(function(removed) {
+                        if (removed !== true) return removed;
+                        return __detourPolyfillRequest('permissions.remove', { permissions: split.ours })
+                            .then(function(ok) { return ok === true; });
+                    });
+                }
+                return __detourSettle(promise, callback);
+            };
+
+            const requestOutsideWebKit = function(natives, receiver, split) {
+                const askDetour = function() {
+                    return __detourPolyfillRequest('permissions.request', { permissions: split.ours })
+                        .then(function(answer) { return !!(answer && answer.granted === true); });
+                };
+                if (split.restIsEmpty) return askDetour();
+                // Chrome's refusal, before WebKit's prompt can be shown for a
+                // request Detour would refuse anyway. The handler checks again.
+                for (let i = 0; i < split.ours.length; i++) {
+                    if (!__detourDeclaresPermission(split.ours[i])) {
+                        return Promise.reject(new Error(
+                            'Only permissions specified in the manifest may be requested.'));
+                    }
+                }
+                const items = [];
+                (split.rest.permissions || []).forEach(function(p) { items.push({ permissions: [p] }); });
+                (Array.isArray(split.rest.origins) ? split.rest.origins : []).forEach(function(o) {
+                    items.push({ origins: [o] });
+                });
+                // Sent before the request, so answered from the state before it.
+                // An unanswerable item counts as held: it is never taken back.
+                const heldBefore = Promise.all(items.map(function(item) {
+                    return callWebKit(natives.contains, receiver, item)
+                        .then(function(held) { return held === true; }, function() { return true; });
+                }));
+                const takeBack = function() {
+                    return heldBefore.then(function(held) {
+                        const added = { permissions: [], origins: [] };
+                        items.forEach(function(item, i) {
+                            if (held[i]) return;
+                            if (item.permissions) added.permissions.push(item.permissions[0]);
+                            else added.origins.push(item.origins[0]);
+                        });
+                        if (added.permissions.length === 0 && added.origins.length === 0) return;
+                        return callWebKit(natives.remove, receiver, added).then(function() {}, function() {});
+                    });
+                };
+                return callWebKit(natives.request, receiver, split.rest).then(function(granted) {
+                    if (granted !== true) return false;
+                    return askDetour().then(function(ok) {
+                        if (ok) return true;
+                        return takeBack().then(function() { return false; });
+                    }, function(error) {
+                        const rethrow = function() { throw error; };
+                        return takeBack().then(rethrow, rethrow);
+                    });
+                });
+            };
+
             // Wrap the three methods of one permissions namespace in place, root
             // it, and report whether the patch is what a fresh read answers with.
             const patch = function(permissions, key, read) {
                 let marker = null;
                 let defineFailed = false;
+                // WebKit's own three methods, for a call that has to use more
+                // than the one it was made through (TASK-260).
+                const natives = {};
+                methodNames.forEach(function(name) {
+                    const method = permissions[name];
+                    natives[name] = method && method._detourPortWrapper ? method._detourNative : method;
+                });
                 for (let i = 0; i < methodNames.length; i++) {
                     const name = methodNames[i];
                     const native = permissions[name];
@@ -3013,6 +3653,8 @@ struct ExtensionAPIPolyfill {
                         if (args.length > 0) args[0] = rewriteDetails(args[0]);
                         const receiver = (this === undefined || this === null || this === g)
                             ? permissions : this;
+                        const split = splitOutsideWebKit(args[0]);
+                        if (split) return callOutsideWebKit(name, natives, receiver, split, args[1]);
                         return native.apply(receiver, args);
                     };
                     wrapper._detourPortWrapper = true;

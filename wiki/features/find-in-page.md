@@ -4,7 +4,7 @@ title: Find in page
 description: "The Cmd+F find bar: a per-window FindBarView driving WKWebView.find on the selected tab, with a match counter computed separately in JavaScript."
 tags: [find, webkit, keyboard, window]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:42:36Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
 sources:
   - id: find-bar
     resource: ../../Detour/Browser/Window/FindBarView.swift
@@ -31,7 +31,9 @@ and returns focus to the page.
 `FindBarView` is a dumb view: it reports text changes and button clicks to its
 `FindBarDelegate` and displays whatever label it is told to. Each
 `BrowserWindowController` owns **one** find bar, added to
-`contentContainerView` and hidden until used. All the logic is in the window
+`contentContainerView` and hidden until used. The query, the match count
+and the current match live in `FindInPageSession`, shared with the
+[Quick Detour](./quick-detour.md) window (TASK-193.1). The rest of the logic is in the window
 controller:
 
 | Action | Method | Behaviour |

@@ -40,8 +40,32 @@ extension BrowserWindowController: WKNavigationDelegate {
             return allowed ? .allow : .cancel
         }
 
+        // Opt-Cmd-click (TASK-193.5): a Quick Detour on the page's profile — a
+        // Private page's is Private — in any frame, a `target=_blank` link
+        // too, and inside a Peek. Before Cmd, which it contains; never routed
+        // (the user chose where it opens). Off in Settings, it is a Cmd+click.
+        // Only for a real click: a script's synthetic Opt-Cmd `click()` must
+        // not open windows in front (it falls through to the Cmd branch).
+        if navigationAction.navigationType == .linkActivated, Self.isUserGesture(navigationAction),
+           let url = navigationAction.request.url,
+           inPageLinkClickBranch(Self.linkClickModifiers(navigationAction.modifierFlags), target: url,
+                                 quickDetourClickEnabled: QuickDetourSettings.shared.isOptionCommandClickEnabled)
+            == .quickDetour {
+            openQuickDetour(url, firing: webView)
+            return .cancel
+        }
+
         if navigationAction.navigationType == .linkActivated && navigationAction.modifierFlags.contains(.command) {
-            if let url = navigationAction.request.url, let space = activeSpace {
+            // A route that moves the link to another space (or a Private
+            // window) opens it there instead of in a background tab here
+            // (TASK-191.4).
+            guard let url = navigationAction.request.url else { return .cancel }
+            if let routed = routedDecision(for: inPageLinkRequest(for: navigationAction, to: url, in: webView,
+                                                                  entry: Self.linkRoutingEntry(for: navigationAction))) {
+                openRoutedLink(url, routed)
+                return .cancel
+            }
+            if let space = activeSpace {
                 _ = store.addTab(in: space, url: url, parentID: selectedTabID)
             }
             return .cancel
@@ -77,19 +101,7 @@ extension BrowserWindowController: WKNavigationDelegate {
             // Resolved from the firing webView, not selectedTab: in a split, a
             // link can be Option-clicked in the unfocused pane.
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                if let group = self.store.splitGroup(containing: clickedTab.id, in: space),
-                   let otherPane = group.members.first(where: { $0.id != clickedTab.id }) {
-                    // Already split: send the link to the other pane.
-                    otherPane.load(url)
-                } else if let newTab = self.store.addTabInSplit(with: clickedTab.id, url: url, in: space) {
-                    // New right pane, focused.
-                    self.selectTab(id: newTab.id)
-                } else {
-                    // Pinned/favorite/peek tabs can't join groups — fall back
-                    // to Cmd+click behavior (background tab).
-                    _ = self.store.addTab(in: space, url: url, parentID: self.selectedTabID)
-                }
+                self?.openLinkInSplit(url, from: clickedTab, in: space)
             }
             return .cancel
         }
@@ -118,23 +130,38 @@ extension BrowserWindowController: WKNavigationDelegate {
             return .download
         }
 
+        // Link Routes (TASK-191.4), then the Peek intercept. A plain
+        // click to another host or a target=_blank link that a route sends to
+        // another space (or a Private window) opens there; the tab stays on
+        // its page. Which navigations may route at all — not redirects,
+        // scripts, same-host clicks, Peek contents, subframes — is the pure
+        // `linkRoutingEligibility`; that a route elsewhere wins over the
+        // intercept is `inPageLinkOutcome`.
+        //
         // Peek mode: intercept cross-host navigation, and every target=_blank
         // link, on pinned tabs and favourites (`PeekAnchor.shouldPeek`). A
         // _blank link reaches this with a nil targetFrame before WebKit would
         // call createWebViewWith; script window.open() never does. The anchored
         // tab is the pane that fired, not the selection: in a pinned split the
         // link can come from the unfocused pane (TASK-48) — see `peekHostTab`.
-        if navigationAction.navigationType == .linkActivated,
-           let space = activeSpace,
-           let tab = peekHostTab(firing: webView),
-           let url = navigationAction.request.url,
-           let anchorURL = PeekAnchor.anchorURL(forTabID: tab.id,
-                                                pinnedEntries: space.pinnedEntries,
-                                                favorites: space.profile?.favorites ?? []),
-           PeekAnchor.shouldPeek(anchorURL: anchorURL, to: url,
-                                 opensNewWindow: navigationAction.targetFrame == nil) {
-            presentPeek(of: url, on: tab, firing: webView)
-            return .cancel
+        // Only a link activation can route or peek: other navigations (subframe
+        // loads, script navigations, reloads) skip the request's lookups.
+        if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url {
+            let routed = routedDecision(for: inPageLinkRequest(for: navigationAction, to: url, in: webView,
+                                                               entry: Self.linkRoutingEntry(for: navigationAction)))
+            var peekHost: BrowserTab?
+            if let space = activeSpace,
+               let tab = peekHostTab(firing: webView),
+               let anchorURL = PeekAnchor.anchorURL(forTabID: tab.id,
+                                                    pinnedEntries: space.pinnedEntries,
+                                                    favorites: space.profile?.favorites ?? []),
+               PeekAnchor.shouldPeek(anchorURL: anchorURL, to: url,
+                                     opensNewWindow: navigationAction.targetFrame == nil) {
+                peekHost = tab
+            }
+            if performInPageLinkOutcome(for: url, routed: routed, peekHost: peekHost, firing: webView) {
+                return .cancel
+            }
         }
 
         // Apply Chrome UA spoofing for domains that require it — on the tab that
@@ -150,26 +177,48 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
-        // Intercept CRX extension downloads
-        if isCRXResponse(navigationResponse) {
+        switch Self.responseHandling(for: navigationResponse) {
+        case .extensionPackage:
             DispatchQueue.main.async { [weak self] in
                 self?.handleCRXDownload(from: navigationResponse.response.url)
             }
+            // A tab opened on the package's link is left as empty as a
+            // download's (TASK-205).
+            DownloadOpenedTab.navigationBecameDownload(in: tab(owning: webView))
             return .cancel
-        }
-
-        if !navigationResponse.canShowMIMEType {
+        case .download:
             return .download
+        case .show:
+            return .allow
         }
+    }
+
+    /// What a main-frame or subframe response becomes, for a window's web
+    /// views and for a tab no window has claimed yet (`BrowserTab`'s own
+    /// delegate, TASK-205).
+    enum ResponseHandling: Equatable {
+        /// An extension package, offered for install instead (`handleCRXDownload`).
+        case extensionPackage
+        /// Not something to show: a type WebKit cannot display, or an attachment.
+        case download
+        case show
+    }
+
+    static func responseHandling(for navigationResponse: WKNavigationResponse) -> ResponseHandling {
+        if isCRXResponse(navigationResponse) { return .extensionPackage }
+        if !navigationResponse.canShowMIMEType { return .download }
         if let response = navigationResponse.response as? HTTPURLResponse,
            let disposition = response.value(forHTTPHeaderField: "Content-Disposition"),
            disposition.lowercased().hasPrefix("attachment") {
             return .download
         }
-        return .allow
+        return .show
     }
 
-    private func isCRXResponse(_ navigationResponse: WKNavigationResponse) -> Bool {
+    /// Whether a response is an extension package, which is offered for
+    /// install rather than downloaded — in a browser window or a Quick
+    /// Detour (TASK-193.1).
+    static func isCRXResponse(_ navigationResponse: WKNavigationResponse) -> Bool {
         let mime = navigationResponse.response.mimeType?.lowercased() ?? ""
         if mime == "application/x-chrome-extension" { return true }
         if let url = navigationResponse.response.url?.lastPathComponent.lowercased(),
@@ -178,17 +227,26 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func handleCRXDownload(from url: URL?) {
+        Self.downloadAndOfferCRX(from: url, scope: downloadScope) { [weak self] in
+            self?.triggerDownloadAnimation(iconName: "puzzlepiece.extension.fill")
+        }
+    }
+
+    /// Fetches the package at `url` as a listed download of `scope`, then
+    /// runs the install gate and asks the user. Shared by a browser window
+    /// and a Quick Detour window; `didStart` is the window's own feedback.
+    static func downloadAndOfferCRX(from url: URL?, scope: DownloadScope, didStart: () -> Void) {
         guard let url else { return }
 
         let filename = url.lastPathComponent.hasSuffix(".crx") ? url.lastPathComponent : "Extension.crx"
-        let item = DownloadManager.shared.addManualItem(filename: filename, sourceURL: url, scope: downloadScope)
+        let item = DownloadManager.shared.addManualItem(filename: filename, sourceURL: url, scope: scope)
 
-        triggerDownloadAnimation(iconName: "puzzlepiece.extension.fill")
+        didStart()
 
         // Download CRX data via URLSession with Chrome UA
         var request = URLRequest(url: url)
         request.setValue(UserAgentMode.chromeUserAgent, forHTTPHeaderField: "User-Agent")
-        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
                 let wasCancelled = item.state == .cancelled
                 DownloadManager.shared.removeDownload(item)
@@ -196,14 +254,14 @@ extension BrowserWindowController: WKNavigationDelegate {
                 // The URL the bytes were served from, after this fetch's own
                 // redirects: it is what the prompt names and what decides
                 // whether this counts as a store install.
-                self?.finishCRXInstall(data: data, error: error, downloadURL: response?.url ?? url)
+                finishCRXInstall(data: data, error: error, downloadURL: response?.url ?? url)
             }
         }
         item.observeURLSessionTask(task)
         task.resume()
     }
 
-    private func finishCRXInstall(data: Data?, error: Error?, downloadURL: URL) {
+    private static func finishCRXInstall(data: Data?, error: Error?, downloadURL: URL) {
         guard let data, error == nil else {
             let alert = NSAlert()
             alert.messageText = "Failed to Download Extension"
@@ -288,6 +346,7 @@ extension BrowserWindowController: WKNavigationDelegate {
         let item = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
         _ = item // suppress unused warning
         triggerDownloadAnimation()
+        DownloadOpenedTab.navigationBecameDownload(in: tab(owning: webView))
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
@@ -296,11 +355,15 @@ extension BrowserWindowController: WKNavigationDelegate {
         let item = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
         _ = item
         triggerDownloadAnimation()
+        DownloadOpenedTab.navigationBecameDownload(in: tab(owning: webView))
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        let committingTab = tab(owning: webView)
+        // Even an error page: the old page's Media Session is gone (TASK-192).
+        committingTab?.nowPlayingDocumentDidCommit()
         if webView.url?.scheme == ErrorPage.scheme { return }
-        tab(owning: webView)?.didCommitNavigation()
+        committingTab?.didCommitNavigation()
 
         // Native WKWebExtension handles chrome.webNavigation events
     }
@@ -376,6 +439,39 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     private static let blockedLoadSelector = NSSelectorFromString("blockedLoad")
+
+    /// Opens `url` in a split from `clickedTab`, the tab whose page the link is
+    /// in: Option-click, and the link menu's Open Link in Split View (TASK-185).
+    func openLinkInSplit(_ url: URL, from clickedTab: BrowserTab, in space: Space) {
+        if let group = store.splitGroup(containing: clickedTab.id, in: space),
+           let otherPane = group.members.first(where: { $0.id != clickedTab.id }) {
+            // Already split: send the link to the other pane.
+            otherPane.load(url)
+            return
+        }
+        // Selected right below, so not a background tab.
+        let newPane: BrowserTab? = withoutBackgroundTabToast {
+            switch store.splitOpening(from: clickedTab.id, in: space) {
+            case .besideTab:
+                // The clicked tab becomes the left pane.
+                store.addTabInSplit(with: clickedTab.id, url: url, in: space)
+            case .inNormalSection:
+                // A favourite or a lone pinned tab stays put: a copy of it is the
+                // left pane of a new split in the normal section.
+                store.addSplitInNormalSection(copying: clickedTab.id, rightPane: .url(url), in: space)
+            case nil:
+                nil
+            }
+        }
+        if let newPane {
+            // The new right pane, focused.
+            selectTab(id: newPane.id)
+        } else {
+            // A peek, a pinned split pane whose partner is dormant, an
+            // extension's page — fall back to Cmd+click behavior (background tab).
+            _ = store.addTab(in: space, url: url, parentID: selectedTabID)
+        }
+    }
 
     /// Resolve the tab (or peek tab) that owns the web view firing a navigation
     /// callback. Callbacks must act on the owning tab, not `selectedTab`: a peek
@@ -462,14 +558,23 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
-                 completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+                 completionHandler: @escaping @MainActor @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        HTTPAuthenticationPrompt.handle(challenge, in: window, completionHandler: completionHandler)
+    }
+}
+
+/// The HTTP Basic/Digest sign-in sheet: a browser window's and a Quick Detour
+/// window's (TASK-193.1). Every other challenge gets WebKit's default.
+enum HTTPAuthenticationPrompt {
+    static func handle(_ challenge: URLAuthenticationChallenge, in window: NSWindow?,
+                       completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         let method = challenge.protectionSpace.authenticationMethod
         guard method == NSURLAuthenticationMethodHTTPBasic || method == NSURLAuthenticationMethodHTTPDigest else {
             completionHandler(.performDefaultHandling, nil)
             return
         }
 
-        guard let window = self.window else {
+        guard let window else {
             completionHandler(.performDefaultHandling, nil)
             return
         }

@@ -8,13 +8,13 @@ final class FaviconLoader {
     static let shared = FaviconLoader()
 
     private let cache = NSCache<NSString, NSImage>()
-    private var inFlight: [NSString: [(NSImage?) -> Void]] = [:]
+    private var inFlight: [String: [(NSImage?) -> Void]] = [:]
 
     /// The network fetch behind `load`, as a test seam (TASK-53): tests replace
     /// it to complete a download deterministically instead of hitting the
     /// network. The cache, the coalescing and the main-thread delivery around it
     /// are unchanged — the seam only produces (or fails to produce) an image.
-    var fetch: (URL, @escaping (NSImage?) -> Void) -> Void = { url, completion in
+    var fetch: (URL, @escaping @Sendable (NSImage?) -> Void) -> Void = { url, completion in
         URLSession.shared.dataTask(with: url) { data, response, _ in
             var image: NSImage?
             if let data,
@@ -27,8 +27,8 @@ final class FaviconLoader {
     }
 
     func load(from url: URL, completion: @escaping (NSImage?) -> Void) {
-        let key = url.absoluteString as NSString
-        if let cached = cache.object(forKey: key) {
+        let key = url.absoluteString
+        if let cached = cache.object(forKey: key as NSString) {
             completion(cached)
             return
         }
@@ -42,7 +42,7 @@ final class FaviconLoader {
         fetch(url) { [weak self] image in
             DispatchQueue.main.async {
                 guard let self else { return }
-                if let image { self.cache.setObject(image, forKey: key) }
+                if let image { self.cache.setObject(image, forKey: key as NSString) }
                 let completions = self.inFlight.removeValue(forKey: key) ?? []
                 for completion in completions { completion(image) }
             }

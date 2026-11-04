@@ -8,11 +8,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let updaterController = SPUStandardUpdaterController(
         startingUpdater: AppDelegate.startsUpdater, updaterDelegate: nil, userDriverDelegate: nil)
     private var windowControllers: [BrowserWindowController] = []
+    /// File > New Quick Detour Window.
+    private(set) var quickDetourMenuItem: NSMenuItem?
 
     /// Whether this process is the XCTest host (the test runner injects
     /// `XCTest*` variables into the app it launches).
     static var isRunningUnitTests: Bool {
         ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("XCTest") }
+    }
+
+    /// Whether another process with Detour's bundle id is running now.
+    static var anotherInstanceIsRunning: Bool {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return false }
+        let current = ProcessInfo.processInfo.processIdentifier
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .contains { $0.processIdentifier != current }
     }
 
     /// Whether Sparkle's updater may run in this process (TASK-41).
@@ -29,7 +39,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         !AppDelegate.isRunningUnitTests && WebKitStorageScope.currentIsDefaultDataDirectory
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A SIGTERM to Detour ends its native hosts before the app dies
+        // (TASK-243); without it they are left running.
+        NativeMessagingHost.installSIGTERMHandler()
         setupMainMenu()
+
+        // The Quick Detour hotkey (TASK-193.2): the menu item mirrors the
+        // shortcut everywhere; `start` registers the system-wide hotkey only
+        // where `QuickDetourHotKeyAvailability` allows it (never in the test
+        // host; in a Debug build only with DETOUR_GLOBAL_HOTKEY=1).
+        let quickDetourHotKey = QuickDetourHotKey.shared
+        quickDetourHotKey.menuItem = quickDetourMenuItem
+        quickDetourHotKey.start { [weak self] in self?.quickDetourHotKeyPressed() }
 
         if !Self.startsUpdater {
             // Say so once at launch: a run that silently never checks for
@@ -53,6 +74,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // directory's leftovers are cleaned by the test bundle instead.
         if !Self.isRunningUnitTests {
             TabStore.shared.retryPendingProfileDataRemovals()
+        }
+
+        // Extension notifications an earlier launch left in Notification
+        // Center map to nothing any more (TASK-248). Not in the XCTest host:
+        // this runs before the bundle installs its fake center, and the real
+        // one is the developer's Detour's. Not while another Detour process
+        // runs either (the production app beside an isolated data directory
+        // run, or the reverse): they share the bundle id and so the center,
+        // and what this one would take for leftovers may be that process's
+        // live notifications.
+        if !Self.isRunningUnitTests && !Self.anotherInstanceIsRunning {
+            Task { await ExtensionNotificationManager.shared.removeLeftoverNotifications() }
+        } else if !Self.isRunningUnitTests {
+            log.notice("Not removing leftover extension notifications: another Detour process is running")
         }
 
         // Prune old history off the launch critical path. expireOldVisits() is
@@ -90,6 +125,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Start periodic tab archival
         TabStore.shared.startArchiveTimer()
 
+        // Close Quick Detours left unused into the archive (TASK-193.5). Not in
+        // the test host, whose tests drive the monitor on their own clock.
+        if !Self.isRunningUnitTests { QuickDetourIdleMonitor.shared.start() }
+
         // Recycle WebKit's GPU process before it runs out of IOSurfaces (TASK-105)
         GPUProcessRecycler.shared.start()
 
@@ -113,16 +152,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        QuickDetourHotKey.shared.stop()
+        QuickDetourIdleMonitor.shared.stop()
+        // Open Quick Detours go to the archive at quit (TASK-193.1's decision,
+        // TASK-193.5); nothing restores them as windows.
+        TabStore.shared.archiveOpenQuickDetours()
+        // Quitting ends the Private session without closing its windows, so
+        // `endPrivateSessionIfUnused` never runs: its extensions'
+        // notifications go here, or they stay in Notification Center (TASK-238).
+        TabStore.shared.removePrivateProfileNotifications()
         TabStore.shared.undoManager.removeAllActions()
         TabStore.shared.saveNow()
         // A download that ended inside the manager's 1 s save debounce would
         // otherwise be missing after the relaunch (TASK-143).
         DownloadManager.shared.flushPendingSave()
+        // Last, as it can wait: exiting ends no native host by itself, nor
+        // a torn-down one's pending SIGKILL. Every host still running gets
+        // SIGTERM, then SIGKILL if it outlasts the bounded wait (TASK-243).
+        NativeMessagingHost.terminateAllSpawnedHosts(within: NativeMessagingHost.quitGrace, refusingNewHosts: true)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let windowCount = windowControllers.count
-        guard windowCount > 0 else { return .terminateNow }
+        guard windowCount > 0 else {
+            // No browser window to ask from, but a Private Quick Detour
+            // (TASK-193.1) may still be downloading: its partial files go as a
+            // Private window's do at quit.
+            DownloadManager.shared.cancelPrivateDownloads(closing: .allWindows)
+            return .terminateNow
+        }
 
         // A Private window's downloads are listed nowhere once it is gone, and
         // nothing of them is kept for the next launch: quitting cancels the
@@ -220,8 +278,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         registerWindowController(wc)
     }
 
-    func createNewWindowWithURL(_ url: URL) {
-        let wc = BrowserWindowController(incognito: false)
+    /// A new window with `url` in a tab; a Private one when `incognito` (a
+    /// link routed to Private), which has its own space.
+    func createNewWindowWithURL(_ url: URL, incognito: Bool = false) {
+        let wc = BrowserWindowController(incognito: incognito)
         assignDefaultSpace(to: wc)
         if let space = wc.activeSpace {
             let tab = TabStore.shared.addTab(in: space, url: url)
@@ -249,6 +309,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         registerWindowController(wc)
     }
 
+    /// File > New Quick Detour Window (TASK-193.1): the launcher panel, for a
+    /// Quick Detour on the profile of the frontmost window — a browser window's active space, the
+    /// Private profile for a Private window, a Quick Detour's own — else the
+    /// first normal profile (`QuickDetour.profileForNewWindow`).
+    @objc func newQuickDetourWindow(_ sender: Any?) {
+        // The shortcut pressed while the panel is up closes it, as the global
+        // hotkey does (TASK-193.2); choosing the item shows it.
+        if NSApp.currentEvent?.type == .keyDown, QuickDetourLauncher.shared.isShowing {
+            QuickDetourLauncher.shared.close()
+            return
+        }
+        showQuickDetourLauncher()
+    }
+
+    /// The global hotkey (TASK-193.2), pressed in any app, Detour included:
+    /// shows the launcher over whatever is in front, without activating
+    /// Detour; pressed again while it is up, closes it (as Spotlight's does).
+    func quickDetourHotKeyPressed() {
+        if QuickDetourLauncher.shared.isShowing {
+            QuickDetourLauncher.shared.close()
+        } else {
+            showQuickDetourLauncher()
+        }
+    }
+
+    private func showQuickDetourLauncher() {
+        // A quarantine names no profile to browse with (TASK-194): the window
+        // behind it decides.
+        let frontmost = NSApp.orderedWindows.lazy.compactMap { $0.windowController }.first {
+            $0 is BrowserWindowController || ($0 as? QuickDetourWindowController)?.isQuarantine == false
+        }
+        let sourceSpace = (frontmost as? BrowserWindowController)?.activeSpace
+        let frontmostProfile = sourceSpace?.profile ?? (frontmost as? QuickDetourWindowController)?.profile
+        guard let profile = QuickDetour.profileForNewWindow(frontmostSpaceProfile: frontmostProfile,
+                                                            profiles: TabStore.shared.profiles) else { return }
+        QuickDetourLauncher.shared.show(profile: profile, sourceSpace: sourceSpace)
+    }
+
     private var keyBrowserWindowController: BrowserWindowController? {
         NSApp.keyWindow?.windowController as? BrowserWindowController
     }
@@ -269,16 +367,273 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Links opened from another app (Get URL Apple Events). Link Routes
+    /// pick where each goes (TASK-191.2); a route may name the
+    /// sending app, read from the event being handled. LaunchServices sends
+    /// the event from the opening app's process, so its PID names the app; a
+    /// shell's `open` has no bundle ID, and the URL that launches Detour comes
+    /// with no current event at all: both have no sender.
     func application(_ application: NSApplication, open urls: [URL]) {
+        let sender = linkSenderBundleID(
+            senderPID: linkSenderPID(of: NSAppleEventManager.shared().currentAppleEvent),
+            ownPID: ProcessInfo.processInfo.processIdentifier,
+            bundleIDForPID: { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier })
+        openExternalURLs(urls, sourceApp: sender)
+    }
+
+    /// Opens web links from another app where the routes send them, each URL
+    /// on its own. `sourceApp` is the sender's bundle ID, nil when unknown.
+    /// The decisions are the pure `resolveLinkRoute` and `linkPlacement`.
+    func openExternalURLs(_ urls: [URL], sourceApp: String?) {
+        let store = TabStore.shared
         for url in urls {
-            guard url.scheme == "http" || url.scheme == "https" else { continue }
-            if let wc = keyBrowserWindowController,
-               let space = wc.activeSpace {
-                let tab = TabStore.shared.addTab(in: space, url: url)
-                wc.selectTab(id: tab.id)
-            } else {
-                createNewWindowWithURL(url)
+            // Case-insensitive: LaunchServices hands over "HTTPS://…" as typed.
+            guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { continue }
+            let decision = resolveLinkRoute(url: url, origin: .external(sourceApp: sourceApp),
+                                            routes: store.linkRoutes.routes,
+                                            defaultTarget: store.linkRoutes.defaultTarget,
+                                            context: store.linkRouteContext)
+            log.info("External link from \(sourceApp ?? "no known sender", privacy: .public): \(String(describing: decision), privacy: .public)")
+            openLink(url, routedTo: decision)
+        }
+    }
+
+    /// Opens `url` where `decision` sends it, by the pure `linkPlacement`: a
+    /// link from another app (TASK-191.2), and a typed URL or clicked link a
+    /// route moves out of its window's space (TASK-191.4), which never get here
+    /// with `.stay`. `typed` marks the visit as typed in history, as a URL
+    /// submitted in the palette is when it opens here. `sourceSpace` is the
+    /// space a routed click came from, which a quarantine's Open in names.
+    /// `sourceWindow` is the window a routed click came from, which comes to
+    /// the front again if the link turns out to be a download (TASK-205).
+    func openLink(_ url: URL, routedTo decision: LinkRouteDecision, typed: Bool = false, from sourceSpace: Space? = nil,
+                  sourceWindow: BrowserWindowController? = nil) {
+        // Not a tab in a space, so not the placement's windows (TASK-193.5).
+        // The resolver sends only links from other apps here.
+        if decision == .quickDetour {
+            openInQuickDetour(url, typed: typed)
+            return
+        }
+        // Nor a quarantine (TASK-194): links from other apps and routed
+        // clicks, never typed URLs (the resolver's rule).
+        if decision == .quarantine {
+            openInQuarantine(url, from: sourceSpace)
+            return
+        }
+        let spacesBefore = Dictionary(uniqueKeysWithValues: browserWindowsByRecency.map {
+            (ObjectIdentifier($0), $0.activeSpaceID)
+        })
+        var placedTab: BrowserTab?
+        let placed = placeTab(routedTo: decision) { space in
+            let tab = TabStore.shared.addTab(in: space)
+            tab.load(url, typed: typed)
+            placedTab = tab
+            return tab
+        }
+        // What the placement changed, in case the link is a download: the
+        // response comes later, so recording it now is in time.
+        if let wc = placed, let tab = placedTab, let routedSpaceID = wc.activeSpaceID {
+            let id = ObjectIdentifier(wc)
+            let previousSpaceID = spacesBefore[id] ?? nil
+            tab.routedOpen = RoutedOpenRecord(
+                open: DownloadOpenedTabPolicy.RoutedOpen(
+                    sourceWindow: sourceWindow.map(ObjectIdentifier.init), placedWindow: id,
+                    placedWindowWasCreated: !spacesBefore.keys.contains(id), placedWindowIsPrivate: wc.isIncognito,
+                    placedWindowPreviousSpaceID: previousSpaceID == routedSpaceID ? nil : previousSpaceID,
+                    routedSpaceID: routedSpaceID),
+                sourceWindow: sourceWindow, placedWindow: wc)
+        }
+        // Never the most recent (normal) space for a link routed to Private.
+        if placed == nil, decision != .privateWindow { openInMostRecentSpace(url) }
+    }
+
+    /// Puts the windows back after a routed tab closed because its link was a
+    /// download (TASK-205, `DownloadOpenedTabPolicy.restoration`).
+    func restoreWindows(after open: DownloadOpenedTabPolicy.RoutedOpen<ObjectIdentifier>) {
+        let windows = browserWindowsByRecency
+        func window(_ id: ObjectIdentifier) -> BrowserWindowController? {
+            windows.first { ObjectIdentifier($0) == id }
+        }
+        let now = DownloadOpenedTabPolicy.Windows(
+            open: Set(windows.map(ObjectIdentifier.init)),
+            // The key browser window, else Detour's front one (the order
+            // starts at the key window): the user may have gone to another app
+            // or to Settings, which leaves the browser windows as the placement
+            // left them.
+            key: windows.first.map(ObjectIdentifier.init),
+            activeSpaceID: Dictionary(uniqueKeysWithValues: windows.compactMap { wc in
+                wc.activeSpaceID.map { (ObjectIdentifier(wc), $0) }
+            }))
+        for step in DownloadOpenedTabPolicy.restoration(of: open, windows: now) {
+            switch step {
+            case .closeWindow(let id):
+                window(id)?.window?.close()
+            case .switchSpace(let id, let spaceID):
+                window(id)?.setActiveSpace(id: spaceID)
+            case .bringToFront(let id):
+                window(id)?.window?.makeKeyAndOrderFront(nil)
             }
+        }
+    }
+
+    /// Puts a tab where `decision` sends it, by the pure `linkPlacement`, and
+    /// returns the window it is selected in, now in front: a link from
+    /// another app or a routed link (`openLink`), and Quick Detour's Open in
+    /// (TASK-193.3), whose `makeTab` hands over the Quick Detour's own page
+    /// instead of opening a URL. `makeTab` gets the receiving space once its
+    /// window shows it — switched, or opened for it — so a handed-over tab is
+    /// listed by a window the moment it arrives.
+    ///
+    /// `didSelect` runs once the window has selected the tab, before the
+    /// window tells the extension contexts it is active
+    /// (`holdingExtensionActivation`): where a handed-over tab's move is
+    /// announced.
+    ///
+    /// Nil when nothing was placed: Most Recent Space (the caller's own
+    /// fallback), a window or space gone since the snapshot, or `makeTab`
+    /// declining. A Private placement whose window has gone opens a new
+    /// Private window instead, as a link always did.
+    @discardableResult
+    func placeTab(routedTo decision: LinkRouteDecision, makeTab: (Space) -> BrowserTab?,
+                  didSelect: ((BrowserWindowController, BrowserTab) -> Void)? = nil) -> BrowserWindowController? {
+        // Taken per placement: an earlier one may have opened or switched a window.
+        let windows = browserWindowsByRecency
+        let placement = linkPlacement(for: decision, windows: windows.map {
+            LinkPlacementWindow(id: ObjectIdentifier($0), activeSpaceID: $0.activeSpaceID, isPrivate: $0.isIncognito)
+        })
+        return place(placement, windows: windows, makeTab: makeTab, didSelect: didSelect)
+    }
+
+    /// Browser windows, the most recently active first: front to back, then
+    /// any registered window not in the window list (minimized, or the app
+    /// hidden) last.
+    private var browserWindowsByRecency: [BrowserWindowController] {
+        var ordered = NSApp.browserWindowControllersFrontToBack
+        for wc in windowControllers where !ordered.contains(where: { $0 === wc }) {
+            ordered.append(wc)
+        }
+        return ordered
+    }
+
+    private func place(_ placement: LinkPlacement<ObjectIdentifier>, windows: [BrowserWindowController],
+                       makeTab: (Space) -> BrowserTab?,
+                       didSelect: ((BrowserWindowController, BrowserTab) -> Void)?) -> BrowserWindowController? {
+        let store = TabStore.shared
+        func window(_ id: ObjectIdentifier) -> BrowserWindowController? {
+            windows.first { ObjectIdentifier($0) == id }
+        }
+        switch placement {
+        case .openInWindow(let id):
+            guard let wc = window(id), let space = wc.activeSpace else { return nil }
+            return present(in: space, of: wc, makeTab: makeTab, didSelect: didSelect)
+        case .switchWindow(let id, let spaceID):
+            guard let wc = window(id), let space = store.space(withID: spaceID) else { return nil }
+            wc.setActiveSpace(id: spaceID, selectTab: false)
+            return present(in: space, of: wc, makeTab: makeTab, didSelect: didSelect)
+        case .openInNewWindow(let spaceID):
+            guard let space = store.space(withID: spaceID) else { return nil }
+            return present(in: space, of: createNewWindow(showing: space), makeTab: makeTab, didSelect: didSelect)
+        case .openInPrivateWindow(let id):
+            guard let wc = window(id), let space = wc.activeSpace else {
+                return placeInNewPrivateWindow(makeTab, didSelect: didSelect)
+            }
+            return present(in: space, of: wc, makeTab: makeTab, didSelect: didSelect)
+        case .openInNewPrivateWindow:
+            return placeInNewPrivateWindow(makeTab, didSelect: didSelect)
+        case .mostRecentSpace:
+            return nil
+        case .openInQuickDetour, .openInQuarantine:
+            // Not a tab in a space: `openLink` opens the window itself.
+            return nil
+        }
+    }
+
+    /// A placed tab: made in `space` of `wc`, selected, and the window in
+    /// front. Not a background tab, so a collapsed sidebar does not say one
+    /// opened.
+    private func present(in space: Space, of wc: BrowserWindowController, makeTab: (Space) -> BrowserTab?,
+                         didSelect: ((BrowserWindowController, BrowserTab) -> Void)?) -> BrowserWindowController? {
+        guard let tab = wc.withoutBackgroundTabToast({ makeTab(space) }) else { return nil }
+        select(tab, in: wc, didSelect: didSelect)
+        wc.window?.makeKeyAndOrderFront(nil)
+        return wc
+    }
+
+    private func select(_ tab: BrowserTab, in wc: BrowserWindowController,
+                        didSelect: ((BrowserWindowController, BrowserTab) -> Void)?) {
+        guard let didSelect else { return wc.selectTab(id: tab.id) }
+        wc.holdingExtensionActivation {
+            wc.selectTab(id: tab.id)
+            didSelect(wc, tab)
+        }
+    }
+
+    /// A new Private window holding only the placed tab — no empty tab of its
+    /// own, as New Private Window would add. When `makeTab` declines, the
+    /// window is never shown and its space goes again.
+    private func placeInNewPrivateWindow(_ makeTab: (Space) -> BrowserTab?,
+                                         didSelect: ((BrowserWindowController, BrowserTab) -> Void)?)
+        -> BrowserWindowController? {
+        let wc = BrowserWindowController(incognito: true)
+        guard let space = wc.activeSpace, let tab = wc.withoutBackgroundTabToast({ makeTab(space) }) else {
+            if let spaceID = wc.activeSpaceID { TabStore.shared.removeIncognitoSpace(id: spaceID) }
+            return nil
+        }
+        select(tab, in: wc, didSelect: didSelect)
+        wc.showWindow(nil)
+        registerWindowController(wc)
+        wc.window?.makeKeyAndOrderFront(nil)
+        return wc
+    }
+
+    /// A link that Link Routes send to Quick Detour (TASK-193.5): a new
+    /// Quick Detour window on the frontmost Detour window's profile — never
+    /// Private (`QuickDetour.profileForRoutedLink`) — whose Open in names the
+    /// most recent normal window's space when it is that profile's. In front
+    /// of Detour's windows, as a placed tab's window is.
+    private func openInQuickDetour(_ url: URL, typed: Bool) {
+        let store = TabStore.shared
+        var windowProfiles: [Profile] = NSApp.orderedWindows.compactMap { window in
+            switch window.windowController {
+            case let browser as BrowserWindowController: return browser.activeSpace?.profile
+            case let quick as QuickDetourWindowController: return quick.isQuarantine ? nil : quick.profile
+            default: return nil
+            }
+        }
+        // Windows not in the window list (minimized, the app hidden) last.
+        windowProfiles += browserWindowsByRecency.compactMap { $0.activeSpace?.profile }
+        guard let profile = QuickDetour.profileForRoutedLink(windowProfiles: windowProfiles,
+                                                             profiles: store.profiles) else { return }
+        let sourceSpace = browserWindowsByRecency.lazy
+            .compactMap { $0.isIncognito ? nil : $0.activeSpace }
+            .first { $0.profileID == profile.id }
+        log.info("Link routed to Quick Detour on profile \(profile.id.uuidString, privacy: .public)")
+        QuickDetourWindowController.open(profile: profile, sourceSpace: sourceSpace, url: url, typed: typed)
+    }
+
+    /// A link that Link Routes send to Quarantine (TASK-194): a new quarantine
+    /// window on the Private profile with a store of its own, in front of
+    /// Detour's windows. Its Open in names the space the link was clicked in,
+    /// else the most recent normal window's space.
+    private func openInQuarantine(_ url: URL, from clickedIn: Space?) {
+        let store = TabStore.shared
+        let sourceSpace = clickedIn ?? browserWindowsByRecency.lazy.compactMap { $0.isIncognito ? nil : $0.activeSpace }.first
+        log.info("Link routed to Quarantine")
+        QuickDetourWindowController.openQuarantine(url: url, privateProfile: store.ensureIncognitoProfile(),
+                                                   sourceSpace: sourceSpace)
+    }
+
+    /// What a link from another app did before routes, kept exactly (the Most
+    /// Recent Space target, TASK-191.2): a tab in the key browser window's
+    /// active space, else a new window. With Detour in the background there is
+    /// no key window, so that is a new window (unchanged from before routes).
+    private func openInMostRecentSpace(_ url: URL) {
+        if let wc = keyBrowserWindowController,
+           let space = wc.activeSpace {
+            let tab = TabStore.shared.addTab(in: space, url: url)
+            wc.selectTab(id: tab.id)
+        } else {
+            createNewWindowWithURL(url)
         }
     }
 
@@ -296,10 +651,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func observeWindowClose(_ wc: BrowserWindowController) {
-        NotificationCenter.default.addObserver(
+        _ = NotificationCenter.default.addMainObserver(
             forName: NSWindow.willCloseNotification,
-            object: wc.window,
-            queue: .main
+            object: wc.window
         ) { [weak self] notification in
             guard let self else { return }
             self.windowControllers.removeAll { $0.window === notification.object as? NSWindow }
@@ -350,6 +704,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "New Window", action: #selector(createNewWindow as () -> Void), keyEquivalent: "n")
         let privateWindowItem = fileMenu.addItem(withTitle: "New Private Window", action: #selector(createNewIncognitoWindow), keyEquivalent: "n")
         privateWindowItem.keyEquivalentModifierMask = [.command, .shift]
+        // Opt-Cmd-N by default (TASK-193.1), or the shortcut set for the
+        // system-wide hotkey (TASK-193.2). The File menu is not
+        // delegate-driven, so AppKit matches it natively.
+        let quickDetourItem = fileMenu.addItem(withTitle: "New \(QuickDetour.displayName) Window",
+                                               action: #selector(newQuickDetourWindow(_:)), keyEquivalent: "n")
+        quickDetourItem.keyEquivalentModifierMask = [.command, .option]
+        // Its key equivalent follows the hotkey's setting (QuickDetourHotKey).
+        quickDetourMenuItem = quickDetourItem
+        // Cmd+O (TASK-193.3): enabled only while a Quick Detour is key, whose
+        // controller answers it and names its target in the title.
+        fileMenu.addItem(withTitle: QuickDetourWindowController.openInMenuItemTitle,
+                         action: #selector(QuickDetourWindowController.openInDefaultSpace(_:)), keyEquivalent: "o")
         fileMenuItem.submenu = fileMenu
 
         // Edit menu

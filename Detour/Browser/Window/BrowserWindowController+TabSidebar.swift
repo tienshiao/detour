@@ -46,6 +46,13 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebarDidRequestOpenCommandPalette(_ sidebar: TabSidebarViewController, anchorFrame: NSRect) {
+        openCommandPaletteInPlace(anchorFrame: anchorFrame)
+    }
+
+    /// The palette prefilled with the page's URL, navigating the tab in place
+    /// (a new tab while a Peek is up): the faux address bar's click and the
+    /// dev toolbar's URL. `anchorFrame` is in window coordinates.
+    func openCommandPaletteInPlace(anchorFrame: NSRect) {
         commandPaletteNavigatesInPlace = displayTab === selectedTab
         showCommandPalette(initialText: displayTab?.url?.absoluteString, anchorFrame: anchorFrame)
     }
@@ -171,71 +178,44 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebarDidRequestShowSettings(_ sidebar: TabSidebarViewController, sourceButton: NSView) {
-        let host = displayTab?.url?.host ?? ""
-        let profileID = activeSpace?.profile?.id ?? UUID()
-        let isWhitelisted = host.isEmpty ? false : ContentBlockerManager.shared.whitelist.isWhitelisted(host: host, profileID: profileID)
+        showSiteSettingsPopover(relativeTo: sourceButton, fromAddressBar: true)
+    }
 
-        let vc = SettingsPopoverViewController()
-        vc.host = host
-        vc.isBlockingEnabled = !isWhitelisted
-        vc.blockedCount = displayTab?.blockedCount ?? 0
-
-        // Populate extensions list (fetch pinned IDs once to avoid per-extension DB queries)
-        let enabledExts = ExtensionManager.shared.enabledExtensions(for: profileID)
-            .filter { $0.manifest.action != nil }
-        let pinnedIDs = Set(AppDatabase.shared.pinnedExtensionIDs(for: profileID.uuidString))
-        vc.extensions = enabledExts.map { ext in
-            SettingsPopoverViewController.ExtensionItem(
-                id: ext.id,
-                name: ExtensionManager.shared.displayName(for: ext.id),
-                icon: ExtensionManager.iconImage(for: ext.id, ext: ext),
-                isPinned: pinnedIDs.contains(ext.id)
-            )
-        }
-
-        vc.onBlockingToggle = { [weak self] in
-            guard let self, let profile = self.activeSpace?.profile, !host.isEmpty else { return }
-            ContentBlockerManager.shared.whitelist.toggleHost(host, profileID: profile.id)
-            // The switch takes effect per navigation (the page's
-            // `WKWebpagePreferences`), so the page has to load again — the way
-            // Safari's per-site switch reloads the tab (TASK-69). Every pane this
-            // window has on screen for that host, not just `displayTab`: the
-            // other pane of a split would otherwise keep the old blocking state
-            // while its popover, reading the same whitelist, reports the new.
-            var panes = self.selectedTab.map { self.splitMembers(of: $0) } ?? []
-            if let peek = self.selectedTab?.peekTab { panes.append(peek) }
-            for pane in panes
-            where pane.url?.host.map({ ContentBlockerWhitelist.covers(host: $0, whitelistedHosts: [host]) }) == true {
-                pane.reload()
-            }
-        }
-
-        vc.onPinToggle = { [weak self] extensionID in
-            guard let profile = self?.activeSpace?.profile else { return }
-            ExtensionManager.shared.toggleExtensionPinned(extensionID, profileID: profile.id)
-        }
-
-        vc.onExtensionClick = { [weak self] extensionID in
-            guard let self else { return }
-            let popover = ExtensionPopoverController(extensionID: extensionID)
-            // The click was in this window, key or not (TASK-132.8).
-            popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY, in: self)
-            objc_setAssociatedObject(self, "extensionPopover", popover, .OBJC_ASSOCIATION_RETAIN)
-        }
-
-        vc.onOpenExtensionSettings = {
-            SettingsWindowController.shared.showExtensionsPane()
-        }
-
-        let fauxBar = tabSidebar.fauxAddressBar
-        fauxBar.keepButtonsVisible = true
+    /// The site settings popover for `displayTab`, below `sourceButton`: the
+    /// address bar's slider button, or a dev toolbar's info button
+    /// (TASK-186.2), which leaves the address bar's hover buttons alone.
+    func showSiteSettingsPopover(relativeTo sourceButton: NSView, fromAddressBar: Bool) {
+        // Every pane this window has on screen for the switched host, not just
+        // `displayTab`: the other pane of a split would otherwise keep the old
+        // blocking state while its popover, reading the same whitelist,
+        // reports the new.
+        let vc = SettingsPopoverViewController.forPage(
+            url: displayTab?.url, blockedCount: displayTab?.blockedCount ?? 0,
+            profileID: activeSpace?.profile?.id,
+            pages: { [weak self] in
+                guard let self, let selected = self.selectedTab else { return [] }
+                var panes = self.splitMembers(of: selected)
+                if let peek = selected.peekTab { panes.append(peek) }
+                return panes
+            },
+            openExtension: { [weak self] extensionID in
+                guard let self else { return }
+                let popover = ExtensionPopoverController(extensionID: extensionID)
+                // The click was in this window, key or not (TASK-132.8).
+                popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY, in: self)
+                objc_setAssociatedObject(self, "extensionPopover", popover, .OBJC_ASSOCIATION_RETAIN)
+            })
 
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentViewController = vc
-        let closeHandler = FauxAddressBarPopoverDelegate(fauxAddressBar: fauxBar)
-        popover.delegate = closeHandler
-        objc_setAssociatedObject(popover, "popoverDelegate", closeHandler, .OBJC_ASSOCIATION_RETAIN)
+        if fromAddressBar {
+            let fauxBar = tabSidebar.fauxAddressBar
+            fauxBar.keepButtonsVisible = true
+            let closeHandler = FauxAddressBarPopoverDelegate(fauxAddressBar: fauxBar)
+            popover.delegate = closeHandler
+            objc_setAssociatedObject(popover, "popoverDelegate", closeHandler, .OBJC_ASSOCIATION_RETAIN)
+        }
         popover.show(relativeTo: sourceButton.bounds, of: sourceButton, preferredEdge: .maxY)
     }
 
@@ -564,6 +544,16 @@ extension BrowserWindowController: TabSidebarDelegate {
         store.reorderFavorite(from: sourceIndex, to: destinationIndex, profileID: profile.id)
     }
 
+    /// Opt-Cmd-click on a sidebar tab (TASK-193.5): a copy of it in a new
+    /// Quick Detour on this window's space's profile (the Private profile in a
+    /// Private window); the tab itself is not selected or changed. An internal
+    /// page the tab shows (the History page) opens as one.
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestQuickDetourCopyOf url: URL) {
+        guard let space = activeSpace, let profile = space.profile else { return }
+        QuickDetourWindowController.open(profile: profile, sourceSpace: space, url: url,
+                                         typed: InternalPage(url: url) != nil)
+    }
+
     func tabSidebar(_ sidebar: TabSidebarViewController, didClickFavoriteAt index: Int) {
         guard let fav = activeFavorite(at: index) else { return }
         selectTab(id: fav.tab!.id)
@@ -633,8 +623,36 @@ extension BrowserWindowController: TabSidebarDelegate {
         return store.favoriteDropTargets(id: favoriteID, profileID: profile.id)
     }
 
+    /// The store refused to delete a space from an undo or redo because routes
+    /// target it (`TabStore.spaceDeletionBlockedNotification`). Every browser
+    /// window observes it; only the frontmost one shows the alert, once the
+    /// undo has returned.
+    @objc func handleSpaceDeletionBlocked(_ notification: Notification) {
+        guard let block = TabStore.spaceDeletionBlock(from: notification),
+              let window,
+              NSApp.orderedWindows.first(where: { $0.windowController is BrowserWindowController }) === window
+        else { return }
+        // From the run loop, not the main dispatch queue: a modal alert run
+        // inside a main-queue block holds that queue, and every main-queue
+        // block and main-actor job with it, until the alert is dismissed.
+        RunLoop.main.perform(inModes: [.default]) {
+            MainActor.assumeIsolated {
+                SpaceDeletionBlockedAlert.run(spaceName: block.spaceName, spaceID: block.spaceID,
+                                              references: block.references)
+            }
+        }
+    }
+
     func tabSidebarDidRequestDeleteSpace(_ sidebar: TabSidebarViewController, spaceID: UUID) {
         guard let space = store.space(withID: spaceID) else { return }
+
+        // Routes first: closing every tab only to be told the space is still
+        // routed to would waste the effort.
+        let references = store.linkRoutes.references(toSpace: spaceID)
+        guard references.isEmpty else {
+            SpaceDeletionBlockedAlert.run(spaceName: space.name, spaceID: space.id, references: references)
+            return
+        }
 
         if !space.tabs.isEmpty || !space.pinnedEntries.isEmpty {
             let alert = NSAlert()
@@ -655,7 +673,14 @@ extension BrowserWindowController: TabSidebarDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         let wasActive = (activeSpaceID == spaceID)
-        store.deleteSpace(id: spaceID)
+        switch store.deleteSpace(id: spaceID) {
+        case .deleted: break
+        case .notDeleted: return
+        case .blockedByLinkRoutes(let references):
+            // A route added while the confirmation was up.
+            SpaceDeletionBlockedAlert.run(spaceName: space.name, spaceID: space.id, references: references)
+            return
+        }
 
         if wasActive, let firstSpace = store.spaces.first {
             setActiveSpace(id: firstSpace.id)

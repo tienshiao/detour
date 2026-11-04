@@ -118,7 +118,7 @@ final class WebSocketRelaySession {
     /// Hands back every cookie the profile's data store holds for `url` (an
     /// http/https URL). The session picks the ones that apply
     /// (`applicableCookies(_:for:)`) and puts them on the handshake request.
-    typealias CookieProvider = (URL, @escaping ([HTTPCookie]) -> Void) -> Void
+    typealias CookieProvider = (URL, @escaping @MainActor @Sendable ([HTTPCookie]) -> Void) -> Void
 
     private let port: WebSocketRelayPort
     private let extensionID: String
@@ -199,20 +199,19 @@ final class WebSocketRelaySession {
         // handshake time only — nothing is written back and a `Set-Cookie` on the
         // 101 response is not stored.
         let cookieURL = Self.httpEquivalent(of: url)
+        // The completion is main-actor isolated (`WKHTTPCookieStore.getAllCookies`
+        // calls back on the main thread), so no hop is needed here.
         cookieProvider(cookieURL) { [weak self] cookies in
-            guard let self else { return }
-            self.onMain {
-                // The worker may have closed (or the context unloaded) while the
-                // cookie store was being read: there is no socket to open any more.
-                guard !self.closed, !self.tornDown else { return }
-                var request = request
-                let applicable = Self.applicableCookies(cookies, for: cookieURL)
-                if !applicable.isEmpty,
-                   let header = HTTPCookie.requestHeaderFields(with: applicable)["Cookie"] {
-                    request.setValue(header, forHTTPHeaderField: "Cookie")
-                }
-                self.startTask(with: request)
+            // The worker may have closed (or the context unloaded) while the
+            // cookie store was being read: there is no socket to open any more.
+            guard let self, !self.closed, !self.tornDown else { return }
+            var request = request
+            let applicable = Self.applicableCookies(cookies, for: cookieURL)
+            if !applicable.isEmpty,
+               let header = HTTPCookie.requestHeaderFields(with: applicable)["Cookie"] {
+                request.setValue(header, forHTTPHeaderField: "Cookie")
             }
+            self.startTask(with: request)
         }
     }
 
@@ -443,26 +442,37 @@ final class WebSocketRelaySession {
         return cookiePath.hasSuffix("/") || requestPath[requestPath.index(requestPath.startIndex, offsetBy: cookiePath.count)] == "/"
     }
 
-    /// The session's bookkeeping is main-thread only; URLSession callbacks arrive
-    /// on the delegate queue (main), but a custom session may not.
-    private func onMain(_ work: @escaping () -> Void) {
-        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
+    /// The session's bookkeeping is main-thread only. The task completion
+    /// handlers (`send`, `receive`) are `@Sendable` and nonisolated; they arrive
+    /// on the delegate queue (main), but nothing in their type says so.
+    nonisolated private func onMain(_ work: @escaping @MainActor @Sendable () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated(work)
+        } else {
+            DispatchQueue.main.async { work() }
+        }
     }
 
     /// Separate object so the URLSession's strong reference to its delegate does
     /// not retain the session that owns it.
+    ///
+    /// Main-actor isolated, with nonisolated callbacks (URLSession's delegate
+    /// protocols are `Sendable`, so their conformance cannot be isolated): the
+    /// session is created with `delegateQueue: .main`, so the callbacks run on
+    /// the main thread and `assumeIsolated` holds.
+    @MainActor
     private final class Delegate: NSObject, URLSessionWebSocketDelegate {
         weak var session: WebSocketRelaySession?
 
-        func urlSession(_ urlSession: URLSession, webSocketTask: URLSessionWebSocketTask,
-                        didOpenWithProtocol protocolName: String?) {
-            session?.handleDidOpen(protocol: protocolName)
+        nonisolated func urlSession(_ urlSession: URLSession, webSocketTask: URLSessionWebSocketTask,
+                                    didOpenWithProtocol protocolName: String?) {
+            MainActor.assumeIsolated { session?.handleDidOpen(protocol: protocolName) }
         }
 
-        func urlSession(_ urlSession: URLSession, webSocketTask: URLSessionWebSocketTask,
-                        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
-                        reason: Data?) {
-            session?.handleDidClose(code: closeCode.rawValue, reason: reason)
+        nonisolated func urlSession(_ urlSession: URLSession, webSocketTask: URLSessionWebSocketTask,
+                                    didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+                                    reason: Data?) {
+            MainActor.assumeIsolated { session?.handleDidClose(code: closeCode.rawValue, reason: reason) }
         }
     }
 }

@@ -6,19 +6,27 @@ extension BrowserWindowController: WKUIDelegate {
     // MARK: - window.open() and context menu link actions
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        // Consumed by this request whatever happens below: a menu action left
+        // set by an early return would route the next page's own window.open
+        // through it, past the `data:` and extension-context checks below.
+        let linkAction = contextMenuLinkAction
+        contextMenuLinkAction = .none
         guard let url = navigationAction.request.url, let space = activeSpace else { return nil }
         // window.open() never consults decidePolicy; refuse here rather than
         // open a tab whose only navigation the policy would then cancel.
         if InternalPage.isInternal(url) { return nil }
 
-        switch contextMenuLinkAction {
+        switch linkAction {
         case .openInNewTab:
-            contextMenuLinkAction = .none
             _ = TabStore.shared.addTab(in: space, url: url, parentID: selectedTabID)
         case .openInNewWindow:
-            contextMenuLinkAction = .none
             if let appDelegate = NSApp.delegate as? AppDelegate {
                 appDelegate.createNewWindowWithURL(url)
+            }
+        case .openInSplitView:
+            // The tab whose page the menu was opened on, by Option-click's rules.
+            if let clickedTab = tab(owning: webView) {
+                openLinkInSplit(url, from: clickedTab, in: space)
             }
         case .none:
             // A page's own new-window request (a `target=_blank` link, a
@@ -30,13 +38,25 @@ extension BrowserWindowController: WKUIDelegate {
             // user's choice and still open one.
             if url.scheme?.lowercased() == "data" { return nil }
 
-            // A tab-style window.open from a pinned tab or favourite peeks, like
-            // a target=_blank link does in decidePolicy (TASK-85).
+            // A tab-style window.open that a route sends to another space (or
+            // a Private window) opens there, and the page gets no window
+            // (TASK-191.4). A popup keeps its opener and is never routed; a
+            // `_blank` link was routed, or not, by the navigation policy.
+            //
+            // Otherwise a tab-style window.open from a pinned tab or favourite
+            // peeks, like a target=_blank link does in decidePolicy (TASK-85).
+            let wantsPopup = Self.wantsPopup(windowFeatures)
+            let entry = InPageLinkEntry.pageWindowRequest(
+                isLinkActivation: navigationAction.navigationType == .linkActivated, wantsPopup: wantsPopup)
+            let routed = routedDecision(for: inPageLinkRequest(for: navigationAction, to: url, in: webView, entry: entry))
+            var peekHost: BrowserTab?
             if let host = peekHostTab(firing: webView),
                PeekAnchor.anchorURL(forTabID: host.id, pinnedEntries: space.pinnedEntries,
                                     favorites: space.profile?.favorites ?? []) != nil,
-               PeekAnchor.shouldPeekScriptedWindow(to: url, wantsPopup: Self.wantsPopup(windowFeatures)) {
-                presentPeek(of: url, on: host, firing: webView)
+               PeekAnchor.shouldPeekScriptedWindow(to: url, wantsPopup: wantsPopup) {
+                peekHost = host
+            }
+            if performInPageLinkOutcome(for: url, routed: routed, peekHost: peekHost, firing: webView) {
                 return nil
             }
             // The page's new window is a real WebKit child: a tab whose web
@@ -142,17 +162,17 @@ extension BrowserWindowController: WKUIDelegate {
         }
     }
 
-    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable () -> Void) {
         showJSAlert(in: webView, from: frame, message: message) { _ in completionHandler() }
     }
 
-    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable (Bool) -> Void) {
         showJSAlert(in: webView, from: frame, message: message, showCancel: true) { response in
             completionHandler(response == .alertFirstButtonReturn)
         }
     }
 
-    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable (String?) -> Void) {
         let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         textField.stringValue = defaultText ?? ""
         showJSAlert(in: webView, from: frame, message: prompt, showCancel: true, accessoryView: textField) { response in
@@ -192,7 +212,7 @@ extension BrowserWindowController: WKUIDelegate {
 
     // MARK: - File Upload
 
-    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable ([URL]?) -> Void) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = parameters.allowsMultipleSelection
         panel.canChooseDirectories = parameters.allowsDirectories
@@ -212,7 +232,7 @@ extension BrowserWindowController: WKUIDelegate {
 
     // MARK: - Media Capture Permission
 
-    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) {
         let mediaType: String
         switch type {
         case .camera: mediaType = "camera"

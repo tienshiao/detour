@@ -46,6 +46,40 @@ class WebExtension {
         return wkExt.requestedPermissions.union(wkExt.optionalPermissions)
     }
 
+    /// The permissions whose APIs Detour's polyfill implements and gates
+    /// itself (`ExtensionPolyfillHandler.permissionIsActive`), rather than
+    /// WebKit.
+    static let polyfillGatedPermissions: Set<String> = ["history", "management", "notifications"]
+
+    /// The polyfill-gated permissions WebKit does not know at all. Its
+    /// `permissions.request`, `contains` and `remove` refuse these names in the
+    /// web process ("'history' is not a valid permission"), so the polyfill's
+    /// `chrome.permissions` wrapper takes them out of the call and the handler
+    /// answers for them (TASK-260). `notifications` is WebKit's own and stays
+    /// with WebKit's prompt.
+    static let permissionsOutsideWebKit: Set<String> = ["history", "management"]
+
+    /// The polyfill-gated permissions this manifest lists under `permissions`
+    /// or `optional_permissions`. WebKit drops `history` and `management` from
+    /// its own `requestedPermissions` and `optionalPermissions` (they are
+    /// outside its permission set), so `askablePermissions` misses them; the
+    /// restore adds these so a saved decision reaches the context, where the
+    /// handler reads it: an optional grant (TASK-250), or a required one
+    /// switched off in Settings (TASK-259).
+    var polyfillGatedDeclaredPermissions: Set<WKWebExtension.Permission> {
+        Set(((manifest.permissions ?? []) + (manifest.optionalPermissions ?? []))
+            .filter(Self.polyfillGatedPermissions.contains)
+            .map(WKWebExtension.Permission.init(rawValue:)))
+    }
+
+    /// The API permissions a saved decision is restored for: the askable
+    /// ones plus the polyfill-gated declared ones. Shared by the restore at
+    /// load and by the removal rule (TASK-258), so a row the restore would not
+    /// apply is never taken as revoked.
+    var restorablePermissions: Set<WKWebExtension.Permission> {
+        askablePermissions.union(polyfillGatedDeclaredPermissions)
+    }
+
     /// The host match patterns a prompt can come from: the manifest's
     /// `host_permissions` plus its `optional_host_permissions`, the only two
     /// sources a site-access or `permissions.request` prompt can come from.

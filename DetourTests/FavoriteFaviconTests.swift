@@ -9,16 +9,16 @@ import GRDB
 /// `onFaviconDownloaded` callback only reached whichever tile registered last.
 /// Both are covered here through `FaviconLoader`'s fetch seam, which completes
 /// downloads on demand instead of hitting the network.
-final class FavoriteFaviconTests: XCTestCase {
+nonisolated final class FavoriteFaviconTests: XCTestCase {
 
     private var pendingFetches: [URL: [(NSImage?) -> Void]] = [:]
-    private var defaultFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    private var defaultFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
 
     private let faviconURL = URL(string: "https://fav.example.com/favicon.ico")!
     private let favoriteURL = URL(string: "https://fav.example.com/home")!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         defaultFetch = FaviconLoader.shared.fetch
         FaviconLoader.shared.resetForTesting()
         FaviconLoader.shared.fetch = { [weak self] url, completion in
@@ -26,25 +26,25 @@ final class FavoriteFaviconTests: XCTestCase {
         }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         FaviconLoader.shared.fetch = defaultFetch
         FaviconLoader.shared.resetForTesting()
         pendingFetches.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helpers
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         let dbQueue = try DatabaseQueue()
         return try AppDatabase(dbQueue: dbQueue)
     }
 
-    private func makeImage() -> NSImage {
+    @MainActor private func makeImage() -> NSImage {
         NSImage(size: NSSize(width: 16, height: 16))
     }
 
-    private func makeSleepingTab(spaceID: UUID = UUID(), faviconURL: URL? = nil) -> BrowserTab {
+    @MainActor private func makeSleepingTab(spaceID: UUID = UUID(), faviconURL: URL? = nil) -> BrowserTab {
         BrowserTab(
             id: UUID(),
             title: "Tab",
@@ -55,13 +55,13 @@ final class FavoriteFaviconTests: XCTestCase {
         )
     }
 
-    private func spinRunLoop(_ interval: TimeInterval = 0.1) {
+    @MainActor private func spinRunLoop(_ interval: TimeInterval = 0.1) {
         RunLoop.main.run(until: Date().addingTimeInterval(interval))
     }
 
     /// Completes the single coalesced fetch for `url` and lets the loader's
     /// main-thread delivery and the tiles' `receive(on:)` hops run.
-    private func completeFetch(_ url: URL, with image: NSImage,
+    @MainActor private func completeFetch(_ url: URL, with image: NSImage,
                                file: StaticString = #filePath, line: UInt = #line) {
         let completions = pendingFetches.removeValue(forKey: url) ?? []
         XCTAssertFalse(completions.isEmpty, "no favicon fetch was started for \(url)", file: file, line: line)
@@ -74,7 +74,7 @@ final class FavoriteFaviconTests: XCTestCase {
     /// A favourite restored with a sleeping backing tab shows an icon before the
     /// tab wakes: the favourite downloads its own `faviconURL` even though it has
     /// a tab, and the tab's identical URL coalesces onto the same fetch.
-    func testRestoredFavoriteWithBackingTabGetsFaviconFromItsOwnDownload() throws {
+    @MainActor func testRestoredFavoriteWithBackingTabGetsFaviconFromItsOwnDownload() throws {
         let db = try makeDatabase()
         let store1 = TabStore(appDB: db)
         let profile1 = store1.addProfile(name: "Default")
@@ -104,7 +104,7 @@ final class FavoriteFaviconTests: XCTestCase {
 
     /// Two tiles for one favourite stand in for two windows: the download has to
     /// reach both, not just the one that registered last.
-    func testFaviconDownloadUpdatesEveryTileForTheSameFavorite() {
+    @MainActor func testFaviconDownloadUpdatesEveryTileForTheSameFavorite() {
         // A live backing tab with no favicon of its own — as after a restore,
         // where only the favourite's URL is known up front.
         let favorite = Favorite(url: favoriteURL, title: "Fav", faviconURL: faviconURL,
@@ -125,7 +125,7 @@ final class FavoriteFaviconTests: XCTestCase {
 
     /// A dormant favourite (no backing tab) still updates its tile when its own
     /// download lands.
-    func testDormantFavoriteDownloadUpdatesItsTile() {
+    @MainActor func testDormantFavoriteDownloadUpdatesItsTile() {
         let favorite = Favorite(url: favoriteURL, title: "Fav", faviconURL: faviconURL)
         let tile = FavoriteTileView(favorite: favorite, index: 0)
         XCTAssertNil(favorite.displayFavicon)
@@ -138,7 +138,7 @@ final class FavoriteFaviconTests: XCTestCase {
 
     /// The favourite's `tab` swaps as it activates and goes dormant, so
     /// `refreshFavicon()` has to rebind — the tile then follows the new tab.
-    func testTileFollowsFaviconOfTheTabAttachedOnActivation() {
+    @MainActor func testTileFollowsFaviconOfTheTabAttachedOnActivation() {
         let favorite = Favorite(url: favoriteURL, title: "Fav")
         let tile = FavoriteTileView(favorite: favorite, index: 0)
 

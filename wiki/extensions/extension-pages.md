@@ -67,7 +67,8 @@ page follows from the origin being short-lived.
   takes that configuration for this reason.
 - WebKit gives each loaded context a fresh base URL. The origin dies when the
   context is unloaded: on a background-recovery reload, an update, a
-  disable → enable, and at every quit.
+  disable → enable, and at every quit. (Its IndexedDB and `localStorage` move
+  to the next origin; see [storage](./storage.md).)
 - A page left on a dead origin is dead twice over. Its native `chrome.*`
   bindings went with the old context, and the
   [polyfill bridge](./polyfill-layer.md) rejects it because the origin

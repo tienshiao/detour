@@ -4,7 +4,7 @@ title: History page
 description: "The detour://history/ page: a profile-scoped list of visits in an ordinary tab, with search, a time-range filter, selection and delete, and a natively confirmed Clear History."
 tags: [history, internal-pages, profiles, privacy, bridge]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:42:36Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
 sources:
   - id: bridge
     resource: ../../Detour/Browser/InternalPages/HistoryPageBridge.swift
@@ -64,7 +64,8 @@ only what is specific to history.
 
 No bridge message names a profile or a space. `HistoryPageBridge.scope(for:)`
 maps the sending tab to its `owningProfile` and returns the IDs of the spaces
-whose `profileID` matches. It returns nil for an incognito or deleted profile,
+whose `profileID` matches, plus the profile's [Quick Detour](./quick-detour.md)
+scope (TASK-193.1). It returns nil for an incognito or deleted profile,
 and then `history.query` answers `{entries: [], incognito: true|false}` instead
 of falling through to another profile. Visits of deleted spaces are not shown.
 
@@ -77,7 +78,7 @@ another profile deletes nothing
 
 | Method | Params | Reply |
 |---|---|---|
-| `history.query` | `search?`, `limit` (clamped to 1…200; the page asks for 100), `cursor? {time, id}`, `range?`, `window?` | `{entries: [{id, url, title, time}], incognito, window?, nextCursor?}` |
+| `history.query` | `search?`, `limit` (clamped to 1…200; the page asks for 100), `cursor? {time, id}`, `range?`, `window?` | `{entries: [{id, url, title, time, quickDetour?}], incognito, window?, nextCursor?}` |
 | `history.delete` | `ids` (1…500), `allVisitsOfURL?`, `window?` | `{cleared: true, deleted: n}` |
 | `history.clear` | `range`: `hour` \| `today` \| `all` | `{cleared: bool, deleted: n}` |
 
@@ -87,6 +88,16 @@ Error strings: `forbidden` (sender check failed), `malformed`, `unavailable`
 There is no "open" method. Entries are plain `<a href>` links, rendered as
 links only when the URL parses as `http(s)`, so click, Cmd-click and
 middle-click ride the ordinary link policy and open in the tab's own space.
+
+## Quick Detour visits
+
+A visit made in a Quick Detour window is listed with the rest of the
+profile's, in list and search mode alike, with a small "Quick Detour" label
+after its host. The label is decided natively: the entry carries
+`quickDetour: true` when its `spaceID` is the profile's Quick Detour scope
+(`HistoryPageBridge.payload(for:profileID:)`), so the page never sees a
+space id. Deleting such a row works like any other, inside the profile's
+scope.
 
 ## Listing and paging
 
@@ -226,7 +237,7 @@ database, so the route cannot be pointed at an arbitrary host. Images are
 | Suite | Covers |
 |---|---|
 | `HistoryDeletionIntegrationTests` | bridge methods through a real web view: scope, forged ids, malformed params, windows, the page UI (selection, focus, deferral, key repeat), dedup-cache follow-up, launch sweep |
-| `InternalPageIntegrationTests` | loading, incognito, cross-profile isolation, hostile title, sleep/wake, restore |
+| `InternalPageIntegrationTests` | loading, incognito, cross-profile isolation, hostile title, sleep/wake, restore, the Quick Detour label |
 | `HistoryTimeRangeTests` | parsing, bounds, DST, time zones, non-Gregorian system calendars, the wire window |
 | `HistoryDatabaseTests` | `visits`, `searchVisits`, the delete APIs and reconciliation |
 

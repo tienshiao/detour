@@ -17,7 +17,7 @@ sources:
     title: TabSidebarViewController.swift
   - id: claude-md
     resource: ../../CLAUDE.md
-    title: CLAUDE.md, "Sidebar Drag & Drop" and "Test-Driven Development"
+    title: CLAUDE.md, "Sidebar Drag & Drop" and "Testing"
   - id: design
     resource: ../../docs/split-tabs-design.md
     title: Split tabs design, section 6

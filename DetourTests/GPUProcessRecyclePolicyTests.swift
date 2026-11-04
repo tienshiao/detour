@@ -3,12 +3,12 @@ import XCTest
 
 /// TASK-105: when to recycle WebKit's GPU process before it exhausts the
 /// kernel's 16,384 IOSurfaces per process.
-final class GPUProcessRecyclePolicyTests: XCTestCase {
+nonisolated final class GPUProcessRecyclePolicyTests: XCTestCase {
 
     private let policy = GPUProcessRecyclePolicy()
     private let now = Date(timeIntervalSinceReferenceDate: 1_000_000)
 
-    private func inputs(
+    @MainActor private func inputs(
         surfaces: Int,
         inactiveFor: TimeInterval? = nil,
         userIdle: TimeInterval = 0,
@@ -25,56 +25,56 @@ final class GPUProcessRecyclePolicyTests: XCTestCase {
 
     // MARK: - Below the soft limit
 
-    func testBelowSoftLimitKeepsEvenWhenLongInactive() {
+    @MainActor func testBelowSoftLimitKeepsEvenWhenLongInactive() {
         XCTAssertEqual(policy.decide(inputs(surfaces: 11_999, inactiveFor: 3600, userIdle: 3600)), .keep)
     }
 
     // MARK: - Soft limit: background only
 
-    func testSoftLimitRecyclesAfterInactiveGrace() {
+    @MainActor func testSoftLimitRecyclesAfterInactiveGrace() {
         XCTAssertEqual(policy.decide(inputs(surfaces: 12_000, inactiveFor: 5 * 60)), .recycle)
     }
 
-    func testSoftLimitWaitsWhileInactiveLessThanGrace() {
+    @MainActor func testSoftLimitWaitsWhileInactiveLessThanGrace() {
         XCTAssertEqual(policy.decide(inputs(surfaces: 13_000, inactiveFor: 5 * 60 - 1, userIdle: 3600)), .wait)
     }
 
-    func testSoftLimitNeverRecyclesWhileActiveEvenIfUserIdle() {
+    @MainActor func testSoftLimitNeverRecyclesWhileActiveEvenIfUserIdle() {
         XCTAssertEqual(policy.decide(inputs(surfaces: 14_999, inactiveFor: nil, userIdle: 3600)), .wait)
     }
 
     // MARK: - Hard limit: also while active, once the user is idle
 
-    func testHardLimitRecyclesWhileActiveOnceUserIdle() {
+    @MainActor func testHardLimitRecyclesWhileActiveOnceUserIdle() {
         XCTAssertEqual(policy.decide(inputs(surfaces: 15_000, inactiveFor: nil, userIdle: 60)), .recycle)
     }
 
-    func testHardLimitWaitsWhileActiveAndUserBusy() {
+    @MainActor func testHardLimitWaitsWhileActiveAndUserBusy() {
         XCTAssertEqual(policy.decide(inputs(surfaces: 16_384, inactiveFor: nil, userIdle: 59)), .wait)
     }
 
-    func testHardLimitRecyclesAsSoonAsAppIsInactive() {
+    @MainActor func testHardLimitRecyclesAsSoonAsAppIsInactive() {
         XCTAssertEqual(policy.decide(inputs(surfaces: 15_500, inactiveFor: 1, userIdle: 0)), .recycle)
     }
 
     // MARK: - Guards that apply at every limit
 
-    func testAudioBlocksRecycleAtSoftAndHardLimits() {
+    @MainActor func testAudioBlocksRecycleAtSoftAndHardLimits() {
         XCTAssertEqual(policy.decide(inputs(surfaces: 12_500, inactiveFor: 3600, audio: true)), .wait)
         XCTAssertEqual(policy.decide(inputs(surfaces: 16_384, inactiveFor: 3600, userIdle: 3600, audio: true)), .wait)
     }
 
-    func testRateLimitBlocksRecycleWithinAnHour() {
+    @MainActor func testRateLimitBlocksRecycleWithinAnHour() {
         XCTAssertEqual(policy.decide(inputs(surfaces: 16_000, inactiveFor: 3600, lastRecycleAgo: 60 * 60 - 1)), .wait)
     }
 
-    func testRateLimitReopensAfterAnHour() {
+    @MainActor func testRateLimitReopensAfterAnHour() {
         XCTAssertEqual(policy.decide(inputs(surfaces: 16_000, inactiveFor: 3600, lastRecycleAgo: 60 * 60)), .recycle)
     }
 
     // MARK: - Environment overrides (runtime harness)
 
-    func testEnvironmentOverridesApply() {
+    @MainActor func testEnvironmentOverridesApply() {
         let p = GPUProcessRecyclePolicy.fromEnvironment([
             "DETOUR_GPU_RECYCLE_SOFT_LIMIT": "100",
             "DETOUR_GPU_RECYCLE_HARD_LIMIT": "200",
@@ -86,7 +86,7 @@ final class GPUProcessRecyclePolicyTests: XCTestCase {
                                                   userIdleGrace: 0, minimumInterval: 30))
     }
 
-    func testInvalidEnvironmentOverridesAreIgnored() {
+    @MainActor func testInvalidEnvironmentOverridesAreIgnored() {
         let p = GPUProcessRecyclePolicy.fromEnvironment([
             "DETOUR_GPU_RECYCLE_SOFT_LIMIT": "0",
             "DETOUR_GPU_RECYCLE_HARD_LIMIT": "lots",
@@ -99,11 +99,11 @@ final class GPUProcessRecyclePolicyTests: XCTestCase {
 
     // MARK: - Surface counting
 
-    func testIOSurfaceCountReadsOwnProcess() {
+    @MainActor func testIOSurfaceCountReadsOwnProcess() {
         XCTAssertNotNil(GPUProcessRecycler.ioSurfaceCount(pid: getpid()))
     }
 
-    func testIOSurfaceCountIsNilForMissingProcess() {
+    @MainActor func testIOSurfaceCountIsNilForMissingProcess() {
         XCTAssertNil(GPUProcessRecycler.ioSurfaceCount(pid: 999_999))
     }
 }

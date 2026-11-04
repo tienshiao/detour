@@ -1,10 +1,10 @@
 ---
 type: Component
 title: Extension popup, menu and options page
-description: The browser-side entry points to an extension — the pinned sidebar buttons, the Extensions menu, the action popup popover and the options page — and the rule that nothing but an explicit present may read an action's popupWebView.
+description: The browser-side entry points to an extension — the pinned sidebar buttons, the Extensions menu, the action popup popover and how it takes the popup's size, and the options page — and the rule that nothing but an explicit present may read an action's popupWebView.
 tags: [extensions, ui, popup, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-04T08:30:00Z }
 sources:
   - id: popover
     resource: ../../Detour/Extensions/UI/ExtensionPopoverController.swift
@@ -48,6 +48,21 @@ sources:
   - id: options-tests
     resource: ../../DetourTests/ExtensionOptionsPageEntryTests.swift
     title: ExtensionOptionsPageEntryTests
+  - id: task-220
+    resource: backlog:TASK-220
+    title: A popup whose content is wider than its first size stays at 126x126 and is cut off
+  - id: sizing-tests
+    resource: ../../DetourTests/ExtensionPopoverSizingTests.swift
+    title: ExtensionPopoverSizingTests
+  - id: webkit-action
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionActionCocoa.mm
+    title: WebKit, WebExtensionActionCocoa.mm (popupWebView, _WKWebExtensionActionWebView, _WKWebExtensionActionPopover; read 2026-10-28)
+  - id: harness-220
+    resource: ../../docs/harness/task220-harness.patch
+    title: TASK-220 runtime harness and results
+  - id: task-150
+    resource: backlog:TASK-150
+    title: An action popup taller than the popover cannot scroll
 ---
 
 Detour has no toolbar. An extension's action is reached from a pinned button in
@@ -104,12 +119,87 @@ popover is showing, however it was opened. It exists for
 `ExtensionManager.activePopovers`, below.
 
 Presenting (`presentPopupWebView`): the web view is registered in
-`ExtensionPageHostRegistry`, the controller becomes its UI delegate (so
-`window.close()` closes the popover), and after 50 ms the content is measured
-with an injected `__detourMeasureBody`. The popover is sized to the content,
-clamped to 100–800 wide and 100–600 tall (360 × 480 if measuring fails), and a
-`ResizeObserver` posts later size changes to an `extensionPopupResize` message
-handler.
+`ExtensionPageHostRegistry` and the controller becomes its UI delegate (so
+`window.close()` closes the popover). The popover is shown once the page has
+finished loading (KVO on `isLoading`), or after 0.5 s if it has not. A
+`close()` while it waits, or an anchor that is gone by then, ends it without
+a popover and still calls `onClose`, so an `openPopup()` completion handler is
+always called; `presentActionPopup` stores that handler before presenting for
+the same reason.
+
+## Popup size
+
+WebKit lays an action popup out at the size of its content, whatever the web
+view's frame: `popupWebView` turns on size-to-content autosizing
+(`_sizeToContentAutoSizeMaximumSize` 800 × 600) and reports the laid-out
+size as the web view's `intrinsicContentSize`, which is what WebKit's own
+popup popover sizes itself from.[^webkit-action] Detour's popover uses the
+same number:[^task-220]
+
+- At presentation the popover takes `intrinsicContentSize`, clamped to
+  100–800 wide and 100–600 tall (360 × 480 while the web view reports none).
+- The web view sits in a `PopupContentView`, pinned at its top leading corner
+  only, with required min/max constraints, high hugging and compression
+  resistance, and a 360 × 480 wish at priority 50 for a web view with no
+  intrinsic size. When WebKit invalidates the intrinsic size, Auto Layout
+  resizes the web view and the container's `layout()` hands the new size to
+  `popover.contentSize`. The popover follows content that grows, shrinks or
+  navigates to another popup page.
+- On close the constraints are removed and the web view leaves the container:
+  WebKit keeps it for the next open. A close that comes after another
+  controller has taken the web view (the Quick Detour closes its previous
+  popup as it opens the next) removes only its own constraints and leaves the
+  web view where it is.
+
+Nothing is injected into the page. The old code measured the body from
+script 50 ms after `show`'s `reload()` and installed a `ResizeObserver`;
+both went into the document that was current then, about:blank (a 16 × 8
+body, clamped to 100 × 100), which the popup page replaced with neither
+present. The popover stayed at 100 × 100, a 126 × 126 popover window, while
+WebKit laid the page out at 220 × 300 behind it, so the page was cut off. It
+was a race, not a Quick Detour bug: whichever entry point opened a popup
+before its reload finished in 50 ms got the small popover, and the main
+window's pinned button did so on a first open in the runtime
+check.[^harness-220]
+
+### Content taller than the popover
+
+In the size-to-content mode WebKit never scrolls the page: with 3456 pt of
+content in a 600 pt popover, `window.scrollTo` is a no-op, a wheel does
+nothing, and a taller frame does not help, since WebKit keeps a 600 pt
+viewport and hit-tests nothing below it.[^task-150] So a popup whose
+intrinsic height reaches 600 has the mode switched off while it is
+presented (`updatePageScrolling`, checked on every layout of the container):
+the web view is held at its width and 600 pt by required constraints, and
+the page scrolls like any other. The mode comes back when the popover
+closes, or when the next presentation takes over a web view its predecessor
+left scrolling. While scrolling, WebKit reports no size, so a page that
+shrinks back stays 600 pt tall until the popover closes; before the merge
+with TASK-220 the epic's version measured the page from script and followed
+it back.
+
+The mode is switched off with a maximum of 800 × 0, not 0 × 0. A zero width
+makes WebKit's UI process drop the intrinsic size to −1
+(`WebPageProxy::setSizeToContentAutoSizeMaximumSize`), and the web process
+only sends a size that differs from the last one it sent
+(`WebPage::m_lastSentIntrinsicContentSize`). A popup reopened with the same
+content then never reported a size again and opened at the 360 × 480
+fallback (measured in `ExtensionPopoverSizingTests`). A zero height turns
+the mode off in the web process all the same, and the UI process keeps the
+last size.[^webkit-action]
+
+A popup whose page takes longer than the 0.5 s wait to load opens blank. On
+the first open after launch the popover appears at the 360 × 480 fallback,
+empty for as long as the page is still loading (about 1.1 s for a 1.5 s
+busy-wait in the page's head), then resizes to the content. On a reopen it
+appears blank at the previous page's size until the new one loads. The final
+size is right both times (runtime re-check of 2026-10-28).[^task-220]
+
+1Password has no popup to size without its desktop app or an account. With
+native messaging denied and no sign-in, it sets its action's popup to empty,
+so a click on its button runs its click handler instead (it opens its
+welcome tab). Checking a real popup's size with 1Password needs a profile
+connected to the app.[^task-220]
 
 The delegate path is only for extension-initiated opens. It anchors to the
 pinned button if there is one, keeps the controller in
@@ -175,6 +265,12 @@ window. For a Private profile it only ever uses its own window.
 - `ExtensionManager.context(for:)` answers for the last-active space's
   profile. The popup path uses it only as a fallback, when the clicked
   window's profile has no context for the extension.
+- An `NSPopover` window is 26 points larger than its content in each
+  direction (the arrow and border): a 126 × 126 window in a window list is
+  100 × 100 content.[^task-220]
+- In the test host AppKit never finishes a popover's close animation: the
+  window goes, `isShown` stays true and `popoverDidClose` never comes, so a
+  test of close handling calls the delegate method itself.[^task-220]
 - A key the popup page declines falls off the end of the popover's responder
   chain and beeps. The popover window has no window controller, so the fix
   used for browser windows does not apply ([AppKit gotchas](../platform/appkit-gotchas.md)).[^task-77]
@@ -193,6 +289,7 @@ window. For a Private profile it only ever uses its own window.
 
 - [ExtensionMenuPopupDecisionTests](../../DetourTests/ExtensionMenuPopupDecisionTests.swift) — the decision with a spy action, and an integration test with a popup that beacons on load: the decision triggers no load, an explicit `popupWebView` read does.
 - [ExtensionOptionsPageEntryTests](../../DetourTests/ExtensionOptionsPageEntryTests.swift) — `hasOptionsPage`, `resolveProfile`, tab reuse.
+- [ExtensionPopoverSizingTests](../../DetourTests/ExtensionPopoverSizingTests.swift) — a real popup in a window: opens at its content size through `show` and through `presentPopupWebView` with a loaded web view, the clamp, resizing when the content grows and shrinks or navigates, a second open of the reused web view, a close before the page loads; a popup taller than 600 pt scrolls at 600 pt, gets its size back on a reopen, and a late close of the previous popover leaves the mode alone (`ExtensionPopoverScrollStateTests` covers the setter and the per-view state).[^sizing-tests]
 - `MenuKeyEquivalentMatcherTests` — the key-equivalent fast path against the real main menu.
 
 # Related
@@ -209,3 +306,8 @@ window. For a Private profile it only ever uses its own window.
 [^task-77]: Keys the extension popup page declines still play the unhandled-key beep
 [^task-103]: Browser-side entry points to an extension's options page
 [^notes-updates]: Options-page entry points — what the real 1Password manifest declares
+[^task-220]: A popup whose content is wider than its first size stays at 126x126 and is cut off
+[^sizing-tests]: ExtensionPopoverSizingTests
+[^webkit-action]: WebKit, WebExtensionActionCocoa.mm (popupWebView, _WKWebExtensionActionWebView, _WKWebExtensionActionPopover; read 2026-10-28)
+[^harness-220]: TASK-220 runtime harness and results
+[^task-150]: An action popup taller than the popover cannot scroll

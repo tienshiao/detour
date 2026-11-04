@@ -4,7 +4,7 @@ title: Command palette
 description: "The overlay used for URL entry, tab switching, history and web search: its two modes, how it is opened and dismissed, inline completion, keyboard handling, and how focus returns to the page."
 tags: [command-palette, navigation, keyboard, focus, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T08:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
 sources:
   - id: palette-view
     resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
@@ -36,6 +36,15 @@ sources:
   - id: task-181
     resource: backlog:TASK-181
     title: Backspace after moving the caret off an inline completion deletes back to the typed prefix
+  - id: task-184
+    resource: backlog:TASK-184
+    title: The list changes height several times per keystroke, so the palette flickers while typing
+  - id: rows
+    resource: ../../Detour/Browser/CommandPalette/PaletteRows.swift
+    title: PaletteRows.swift
+  - id: rows-tests
+    resource: ../../DetourTests/PaletteRowsTests.swift
+    title: PaletteRowsTests.swift
   - id: selection-tests
     resource: ../../DetourTests/PaletteSelectionTests.swift
     title: PaletteSelectionTests.swift
@@ -69,13 +78,29 @@ once when the user submits.
 With a [Peek](../tabs/peek.md) open, Cmd+L shows the Peek's URL but submits
 into a new tab, like Cmd+T.
 
+[Quick Detour](./quick-detour.md) (TASK-193.1) uses the same
+`CommandPaletteView` twice: alone in the launcher panel that Opt-Cmd-N shows
+(submitting opens the Quick Detour window on the page; dismissing opens
+nothing), and over a Quick Detour window's page on Cmd+L or a click on the
+host in its title bar, navigating that page in place. Both hand the palette
+no `tabStore` (no open tab of any window is offered), the Quick Detour's
+profile, and that profile's history scope (`historySpaceIDs`). Every
+palette's history is its profile's: the spaces of the profile and its Quick
+Detour scope, none for the Private profile (TASK-209; see
+[suggestion pipeline](./suggestion-pipeline.md#history-is-profile-scoped)).
+
 Cmd+T while a palette is already showing: an anchored palette switches to the
 centred new-tab mode (`switchToCentered`, which clears the field), a centred
 one is dismissed.
 
 A palette is created per showing (`showCommandPalette` builds a new
-`CommandPaletteView`) and given `tabStore`, `activeSpaceID`, `currentTabID`
-and `profile` at that moment. Two scrims go up with it: one behind the sidebar
+`CommandPaletteView`) and given `tabStore`, then `activeSpaceID`,
+`currentTabID`, `profile` and `historySpaceIDs` (`scopeCommandPalette`). The
+window scopes it again when it switches spaces with the palette still open
+(selecting a tab dismisses it, but Next Space into an empty space does not),
+and `reloadSuggestions` rebuilds the list for what the field holds without an
+inline completion, so a palette never goes on offering the previous space's
+profile (found in TASK-209's code review). Two scrims go up with it: one behind the sidebar
 on the split view (the glass sidebar is partly transparent) and one above the
 content.
 
@@ -86,11 +111,51 @@ CommandPaletteView            full-window overlay, catches clicks outside
   GlassContainerView          500 pt wide
     search icon + CommandPaletteTextField
     separator
-    NSScrollView > NSTableView   rows 36 pt, at most 6 visible
+    NSScrollView > NSTableView   rows 36 pt, always 6 rows tall
 ```
 
-The centred position is computed against the palette's *maximum* height, so
-the box does not move as the list grows and shrinks.
+The list area has one height, six rows (`PaletteRows.visibleRows`), whenever
+the palette shows a list, and the rows fill it: like Arc, the palette does not
+show empty rows.[^task-184] For a typed query `PaletteRows.compose` builds the
+list from
+
+1. the matches of the latest local pass (top hit, verbatim row, hosts, open
+   tabs, history);
+2. search suggestions, the usual four, or as many as fill the room below six
+   (the service returns at most five);
+3. rows of the default (empty-field) list as filler, skipping a URL already
+   listed, until there are six. A query with no matches (gibberish, offline,
+   search suggestions off) shows its verbatim row over recent pages.
+
+Only a profile with nothing to pad with (no history, no open tabs) can show
+blank space; an empty default list drops the list area.
+
+Fitting the box to its rows made it flicker, because each keystroke rebuilds
+the list up to three times ([two passes and the
+network](./suggestion-pipeline.md#two-passes-per-keystroke)): a 60 Hz frame
+log of typing and deleting "youtu" counted 9 height changes between 78 and
+258 pt before, none after, and no moment with fewer than six rows. The
+centred position is computed against the same height, so the box does not
+move either.
+
+Two rules keep the rows themselves from jumping:
+
+- **Carried suggestions.** Until the new query's search suggestions arrive,
+  the previous query's suggestions that the new text still prefixes stay
+  (`carriedSearchSuggestions`), so the bottom rows do not blank and refill on
+  every keystroke.
+- **Late passes leave the user's row alone.** Once the user has moved the
+  selection with the arrow keys, a pass that lands later (history, network)
+  is applied only if the rows up to the selected one are unchanged, and then
+  keeps the selection; otherwise it is skipped (`latePassOutcome`). The
+  history pass's inline completion is not applied then either, since the
+  field shows the selected row's text. "Moved" is a flag
+  (`selectionMovedByUser`), not "the index differs from the initial row":
+  Down then Up lands back on row 0, which the user then chose. A skipped
+  pass is retried on the next arrow key, so it lands once the selection
+  allows it (e.g. after arrowing off the list). Before, the history pass
+  reset the selection to the first row, and search suggestions were only
+  appended.
 
 ## Submitting
 
@@ -106,6 +171,13 @@ the box does not move as the list grows and shrinks.
 classified as a direct URL; a search-engine URL is not typed. Typed visits
 weigh double in inline-completion ranking and bypass the 30 s history dedup
 (see [history recording and search](./history-recording-and-search.md)).
+
+In new-tab mode a URL (not a search) is first offered to
+[Link Routes](./link-routing.md#typed-urls-and-links-clicked-in-a-page)
+(`typedURLIsRoutable`, TASK-191.4): a route that sends it to another space or
+a Private window opens it there, placed as a link from another app, and no
+tab is added here. In place (Cmd+L, the address bar) never routes. Cmd+L or
+an address bar click with a Peek open submits in new-tab mode, so it routes.
 
 Typed `detour://history` is routed to `loadInternalPage`, because plain
 `load(_:)` refuses the internal scheme; see
@@ -196,9 +268,10 @@ whatever was under it.
 
 # Edge cases
 
-- **Incognito**: a Private window's palette lists only its own space's open
-  tabs; a normal window's palette lists the tabs of every non-incognito space
-  (pinned entries included) and never a Private window's. The rule is
+- **Profiles and Incognito**: a Private window's palette lists only its own
+  space's open tabs and no history; a normal window's palette lists the tabs
+  of every space of its profile (pinned entries included), never another
+  profile's and never a Private window's (TASK-209, TASK-137). The rule is
   `PaletteTabScope`, see [suggestion pipeline](./suggestion-pipeline.md).
 - **`currentTabID` is never switched to by the top hit**, so Cmd+L on a page
   does not autocomplete to that same tab. Its host can still complete: Cmd+L
@@ -249,3 +322,4 @@ whatever was under it.
 [^task-78]: After Cmd+L and Return the page does not regain keyboard focus
 [^task-144]: Cmd+L then Return activates the first recent-history row instead of the pre-filled URL
 [^task-181]: Backspace after moving the caret off an inline completion deletes back to the typed prefix
+[^task-184]: The list changes height several times per keystroke, so the palette flickers while typing. Harness: `docs/harness/task184-harness.patch`; rules tested in `PaletteRowsTests`

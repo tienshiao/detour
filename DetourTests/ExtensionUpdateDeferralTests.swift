@@ -2,14 +2,14 @@ import XCTest
 @testable import Detour
 
 /// TASK-123: when a verified update waits instead of installing.
-final class ExtensionUpdateDeferralTests: XCTestCase {
+nonisolated final class ExtensionUpdateDeferralTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
-    func testAnIdleExtensionIsNotDeferred() {
+    @MainActor func testAnIdleExtensionIsNotDeferred() {
         XCTAssertFalse(ExtensionUpdateDeferral.shouldDefer(.idle, now: now))
     }
 
-    func testOpenPagesPopupAndNativeHostsEachDefer() {
+    @MainActor func testOpenPagesPopupAndNativeHostsEachDefer() {
         var a = ExtensionUpdateDeferral.Activity(); a.openPages = 1
         XCTAssertTrue(ExtensionUpdateDeferral.shouldDefer(a, now: now))
         var b = ExtensionUpdateDeferral.Activity(); b.popupOpen = true
@@ -20,12 +20,12 @@ final class ExtensionUpdateDeferralTests: XCTestCase {
 
     /// TASK-132.8: a side panel is one of the extension's pages, on screen or
     /// hidden with its tab; replacing the context would tear it down.
-    func testAnOpenSidePanelDefers() {
+    @MainActor func testAnOpenSidePanelDefers() {
         var a = ExtensionUpdateDeferral.Activity(); a.openSidePanels = 1
         XCTAssertTrue(ExtensionUpdateDeferral.shouldDefer(a, now: now))
     }
 
-    func testRecentBackgroundTrafficDefersUntilItAges() {
+    @MainActor func testRecentBackgroundTrafficDefersUntilItAges() {
         var a = ExtensionUpdateDeferral.Activity()
         a.lastBackgroundRequestAt = now.addingTimeInterval(-10)
         XCTAssertTrue(ExtensionUpdateDeferral.shouldDefer(a, now: now), "the worker spoke 10 s ago")

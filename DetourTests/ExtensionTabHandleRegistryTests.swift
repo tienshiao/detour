@@ -6,22 +6,21 @@ import GRDB
 /// TASK-132.2: the native half of the tab id bridge — handles, resolve arms,
 /// placement and the validated lookup — without WebKit in the loop. The round
 /// trip through a real extension context is `ExtensionTabResolveTests`.
-@MainActor
-final class ExtensionTabHandleRegistryTests: XCTestCase {
+nonisolated final class ExtensionTabHandleRegistryTests: XCTestCase {
 
     private var createdTabs: [BrowserTab] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixture
 
-    private final class Box {}
+    @MainActor private final class Box {}
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let store: TabStore
         let profile: Profile
         let space: Space
@@ -30,21 +29,21 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
     /// A private store on an in-memory database: one profile, one space. The
     /// tabs placed in it are sleeping ones (no web view), so no extension
     /// controller is ever built and nothing is announced to WebKit.
-    private func makeFixture() throws -> Fixture {
+    @MainActor private func makeFixture() throws -> Fixture {
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()))
         let profile = store.addProfile(name: "Handles")
         let space = store.addSpace(name: "Handles", emoji: "H", colorHex: "007AFF", profileID: profile.id)
         return Fixture(store: store, profile: profile, space: space)
     }
 
-    private func sleepingTab(in space: Space, path: String = "page") -> BrowserTab {
+    @MainActor private func sleepingTab(in space: Space, path: String = "page") -> BrowserTab {
         BrowserTab(id: UUID(), title: path, url: URL(string: "https://example.com/\(path)"),
                    faviconURL: nil, cachedInteractionState: nil, spaceID: space.id)
     }
 
     /// A tab with a web view built from a bare configuration: no extension
     /// controller, so the placement rule reports it to nobody.
-    private func liveTab() -> BrowserTab {
+    @MainActor private func liveTab() -> BrowserTab {
         let tab = BrowserTab(configuration: WKWebViewConfiguration())
         createdTabs.append(tab)
         return tab
@@ -52,7 +51,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
 
     // MARK: - WeakHandleTable
 
-    func testHandlesArePositiveUniqueAndStable() {
+    @MainActor func testHandlesArePositiveUniqueAndStable() {
         var table = WeakHandleTable<Box>()
         let a = Box(), b = Box()
 
@@ -68,7 +67,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
         XCTAssertTrue(table.object(forHandle: handleB) === b)
     }
 
-    func testAnUnmintedHandleResolvesToNothing() {
+    @MainActor func testAnUnmintedHandleResolvesToNothing() {
         var table = WeakHandleTable<Box>()
         let a = Box()
         let handle = table.handle(for: a)
@@ -78,7 +77,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
         XCTAssertNil(table.object(forHandle: -handle))
     }
 
-    func testAHandleDiesWithItsObjectAndIsNeverReused() {
+    @MainActor func testAHandleDiesWithItsObjectAndIsNeverReused() {
         var table = WeakHandleTable<Box>()
         var doomed: Box? = Box()
         let dead = table.handle(for: doomed!)
@@ -103,7 +102,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
         }
     }
 
-    func testDeadEntriesAreSweptAsTheTableGrows() {
+    @MainActor func testDeadEntriesAreSweptAsTheTableGrows() {
         var table = WeakHandleTable<Box>()
         for _ in 0..<500 {
             _ = table.handle(for: Box())   // released at once
@@ -114,7 +113,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
 
     // MARK: - ExtensionTabResolveArms
 
-    func testArmsAreACounterPerKey() {
+    @MainActor func testArmsAreACounterPerKey() {
         var arms = ExtensionTabResolveArms<String>(lifetime: 5, limit: 8)
         XCTAssertTrue(arms.isEmpty)
         XCTAssertFalse(arms.consume("a", now: 0), "nothing armed: an ordinary getZoom")
@@ -132,7 +131,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
         XCTAssertTrue(arms.isEmpty)
     }
 
-    func testAnArmExpires() {
+    @MainActor func testAnArmExpires() {
         var arms = ExtensionTabResolveArms<String>(lifetime: 5, limit: 8)
         XCTAssertTrue(arms.arm("a", now: 10))
         XCTAssertEqual(arms.count("a", now: 14.9), 1)
@@ -141,7 +140,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
         XCTAssertTrue(arms.isEmpty, "the expired arm is dropped, not kept")
     }
 
-    func testArmsExpireIndependently() {
+    @MainActor func testArmsExpireIndependently() {
         var arms = ExtensionTabResolveArms<String>(lifetime: 5, limit: 8)
         XCTAssertTrue(arms.arm("a", now: 0))
         XCTAssertTrue(arms.arm("a", now: 3))
@@ -150,7 +149,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
         XCTAssertFalse(arms.consume("a", now: 6))
     }
 
-    func testExpiredArmsOfAContextThatWentAwayAreDropped() {
+    @MainActor func testExpiredArmsOfAContextThatWentAwayAreDropped() {
         var arms = ExtensionTabResolveArms<String>(lifetime: 5, limit: 8)
         XCTAssertTrue(arms.arm("gone", now: 0))
         // "gone" never consumes, disarms or arms again. Another context does.
@@ -165,7 +164,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
         XCTAssertEqual(arms.count("first", now: 21), 1)
     }
 
-    func testDisarmTakesBackOneArmIfStillThere() {
+    @MainActor func testDisarmTakesBackOneArmIfStillThere() {
         var arms = ExtensionTabResolveArms<String>(lifetime: 5, limit: 8)
         XCTAssertFalse(arms.disarm("a", now: 0))
         XCTAssertTrue(arms.arm("a", now: 0))
@@ -177,7 +176,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
         XCTAssertTrue(arms.isEmpty)
     }
 
-    func testArmsAreCappedPerKey() {
+    @MainActor func testArmsAreCappedPerKey() {
         var arms = ExtensionTabResolveArms<String>(lifetime: 5, limit: 3)
         XCTAssertTrue(arms.arm("a", now: 0))
         XCTAssertTrue(arms.arm("a", now: 0))
@@ -189,7 +188,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
 
     // MARK: - Registry arms
 
-    func testConsumeArmAnswersWithTheAskedTabsHandleOnlyWhileArmed() throws {
+    @MainActor func testConsumeArmAnswersWithTheAskedTabsHandleOnlyWhileArmed() throws {
         let f = try makeFixture()
         var now: TimeInterval = 100
         let registry = ExtensionTabHandleRegistry(armLifetime: 5, armLimit: 4, clock: { now })
@@ -227,7 +226,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
 
     // MARK: - Placement
 
-    func testPlacementOfEachSection() throws {
+    @MainActor func testPlacementOfEachSection() throws {
         let f = try makeFixture()
 
         let normal = sleepingTab(in: f.space, path: "normal")
@@ -259,7 +258,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
                        "a favourite's Peek is listed by the profile's windows, in no one space")
     }
 
-    func testATabInNoContainerHasNoPlacement() throws {
+    @MainActor func testATabInNoContainerHasNoPlacement() throws {
         let f = try makeFixture()
         let loose = sleepingTab(in: f.space)
         XCTAssertNil(extensionTabPlacement(of: loose, in: f.store),
@@ -281,19 +280,19 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
 
     // MARK: - Lookup
 
-    private func resolved(_ registry: ExtensionTabHandleRegistry, _ handle: Int, in profile: Profile,
+    @MainActor private func resolved(_ registry: ExtensionTabHandleRegistry, _ handle: Int, in profile: Profile,
                           store: TabStore) -> BrowserTab? {
         guard case .success(let found) = registry.tab(forHandle: handle, in: profile, store: store) else { return nil }
         return found.tab
     }
 
-    private func refusal(_ registry: ExtensionTabHandleRegistry, _ handle: Int, in profile: Profile,
+    @MainActor private func refusal(_ registry: ExtensionTabHandleRegistry, _ handle: Int, in profile: Profile,
                          store: TabStore) -> ExtensionTabHandleError? {
         guard case .failure(let error) = registry.tab(forHandle: handle, in: profile, store: store) else { return nil }
         return error
     }
 
-    func testLookupReturnsTheTabAndItsPlacementForEverySection() throws {
+    @MainActor func testLookupReturnsTheTabAndItsPlacementForEverySection() throws {
         let f = try makeFixture()
         let registry = ExtensionTabHandleRegistry()
 
@@ -321,7 +320,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
         }
     }
 
-    func testLookupRefusesBadHandles() throws {
+    @MainActor func testLookupRefusesBadHandles() throws {
         let f = try makeFixture()
         let registry = ExtensionTabHandleRegistry()
         let tab = sleepingTab(in: f.space)
@@ -334,7 +333,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
         XCTAssertTrue(resolved(registry, handle, in: f.profile, store: f.store) === tab)
     }
 
-    func testLookupRefusesAClosedTab() throws {
+    @MainActor func testLookupRefusesAClosedTab() throws {
         let f = try makeFixture()
         let registry = ExtensionTabHandleRegistry()
         let kept = sleepingTab(in: f.space, path: "kept")
@@ -368,7 +367,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
         XCTAssertTrue(resolved(registry, keptHandle, in: f.profile, store: f.store) === kept)
     }
 
-    func testLookupRefusesATabOfAnotherProfile() throws {
+    @MainActor func testLookupRefusesATabOfAnotherProfile() throws {
         let f = try makeFixture()
         let registry = ExtensionTabHandleRegistry()
         let otherProfile = f.store.addProfile(name: "Other")
@@ -392,7 +391,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
         XCTAssertTrue(resolved(registry, registry.handle(for: mine), in: f.profile, store: f.store) === mine)
     }
 
-    func testAHandleFollowsItsTabThroughReorderPinAndSpaceMoves() throws {
+    @MainActor func testAHandleFollowsItsTabThroughReorderPinAndSpaceMoves() throws {
         let f = try makeFixture()
         let registry = ExtensionTabHandleRegistry()
         let second = f.store.addSpace(name: "Second", emoji: "S", colorHex: "FF9500", profileID: f.profile.id)
@@ -431,7 +430,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
 
     // MARK: - Zoom answer
 
-    func testASleepingTabReportsZoomOneAndIsNotWoken() throws {
+    @MainActor func testASleepingTabReportsZoomOneAndIsNotWoken() throws {
         let f = try makeFixture()
         let tab = sleepingTab(in: f.space)
         f.space.tabs.append(tab)
@@ -441,7 +440,7 @@ final class ExtensionTabHandleRegistryTests: XCTestCase {
         XCTAssertTrue(tab.isSleeping)
     }
 
-    func testALiveTabReportsItsPageZoomToItsOwnController() throws {
+    @MainActor func testALiveTabReportsItsPageZoomToItsOwnController() throws {
         let tab = liveTab()
         let webView = try XCTUnwrap(tab.webView)
         webView.pageZoom = 1.5

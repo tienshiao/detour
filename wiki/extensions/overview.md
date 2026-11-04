@@ -120,8 +120,8 @@ Paths are relative to [Detour/Extensions](../../Detour/Extensions).
 | `sidePanel` | Polyfill | Only with the `sidePanel` permission; the panel is a web view Detour hosts beside the tab ([Side panel](./side-panel.md)) |
 | `idle` | Polyfill | `IdleMonitor` |
 | `notifications` | Polyfill | `ExtensionNotificationManager` (`UNUserNotificationCenter`) |
-| `history` | Polyfill | Only `search` is real, and it reads the calling profile's history only ([polyfill layer](./polyfill-layer.md)); `getVisits` answers `[]`, the writes are no-ops |
-| `management` | Polyfill | `getSelf`, `getAll`; `setEnabled` is a permission-gated no-op |
+| `history` | Polyfill | Absent without the `history` permission. Only `search` is real, and it reads the calling profile's history only ([polyfill layer](./polyfill-layer.md)); `getVisits` answers `[]`, the writes are no-ops |
+| `management` | Polyfill | `getSelf`, `getAll`, `uninstallSelf` (removes the extension from every profile, optionally after an alert), `getPermissionWarningsByManifest` (the install prompt's lines); `setEnabled` is a permission-gated no-op. Without the `management` permission the namespace holds `getSelf`, `uninstallSelf` and `getPermissionWarningsByManifest` ([polyfill layer](./polyfill-layer.md#the-permission-free-management-methods)) |
 | `fontSettings.getFontList` | Polyfill | System font families only |
 | `sessions` | Polyfill | `restore` reopens a closed tab; `getRecentlyClosed` and `getDevices` answer `[]` |
 | `search.query` | Polyfill | Opens the profile's search engine in a new tab |

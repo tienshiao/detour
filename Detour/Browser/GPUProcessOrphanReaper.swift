@@ -121,7 +121,7 @@ struct GPUProcessOrphanPolicy: Equatable {
 
 /// The `com.apple.WebKit.GPU` processes in the process table, and which app
 /// each belongs to.
-enum GPUProcessTable {
+nonisolated enum GPUProcessTable {
     static let processName = "com.apple.WebKit.GPU"
 
     /// A GPU process, identified by pid *and* start time: a pid alone can be

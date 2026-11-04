@@ -5,7 +5,7 @@ description: How BrowserWindowController shows a split (a frame-based NSSplitVie
 resource: ../../Detour/Browser/Window/BrowserWindowController.swift
 tags: [tabs, split, window, appkit, nssplitview, focus]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T18:50:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:30:00Z }
 sources:
   - id: window
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
@@ -49,6 +49,12 @@ sources:
   - id: webkit-inspector
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Inspector/mac/WebInspectorUIProxyMac.mm
     title: WebKit main, WebInspectorUIProxyMac.mm (platformCanAttach)
+  - id: dev-mode
+    resource: ../features/dev-mode.md
+    title: Dev mode (the dev toolbar inside the container)
+  - id: task-185
+    resource: backlog:TASK-185
+    title: "Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section"
 ---
 
 # Role
@@ -128,6 +134,15 @@ exists for the same reason: it clips each subview to the card's corner radius
 in `didAddSubview`, so an inspector that attaches *after* the pane chrome was
 applied is clipped too. The container's own layer must not clip, because
 `masksToBounds` would kill the pane's shadow.
+
+The container can also hold [dev mode's toolbar](../features/dev-mode.md#the-dev-toolbar)
+above the web view, framed the same way (only the web view's top edge moves,
+which WebKit's inspector docking preserves). Each pane decides its own
+toolbar, so a split can show it over one pane only; while it shows, the
+container rounds the toolbar's top corners and the page's bottom ones
+instead of all four on each.[^dev-mode] Code that looks for a pane's web view
+must not take the container's first subview blindly: the inspector and the
+toolbar are siblings, and the container's `hostedWebView` names the page.
 
 ## Tiling and the divider fraction
 
@@ -238,7 +253,8 @@ wake would resurrect a partner the user deliberately closed.
 |---|---|
 | Drop a tab on the left or right 40% of another tab's sidebar row | sidebar resolver → `didRequestCreateSplit` ([drag and drop](../sidebar/drag-and-drop.md)) |
 | Drop a tab on the left or right 30% of the web content area | `SplitDropZoneView` → `performContentAreaSplitDrop` → `didRequestCreateSplit` |
-| Option+click a link | `addTabInSplit`, new pane on the right, focused |
+| Option+click a link, or the link menu's Open Link in Split View | `openLinkInSplit`: new pane on the right, focused (see below) |
+| The Peek's Open in Split View button | `openPeekInSplitView`: the Peek's web view becomes the right pane, focused ([Peek](./peek.md)) |
 | Context menu "Split with Next Tab" | `createSplit` with the next tab on the right |
 
 **Content-area drops.** `SplitDropZoneView` is a transparent overlay that exists
@@ -272,13 +288,24 @@ downloads. This retires Option-click-to-download; the context menu's "Download
 Linked File" remains. The clicked pane is resolved from the firing web view, not
 from the selection:
 
-- clicked tab not in a split: `addTabInSplit`, and the new right pane is
-  selected;
 - clicked tab already in a split: the **other pane** loads the URL;
-- a lone pinned tab or a favourite (cannot join a group): a background tab, as
-  for Cmd+click;
+- otherwise `TabStore.splitOpening(from:in:)` decides: an ungrouped normal tab
+  gets `addTabInSplit`; a favourite or a lone pinned tab gets
+  `addSplitInNormalSection`, a new split in the normal section with a copy of
+  the tab on the left ([split tabs](./split-tabs.md#opening-a-split-from-a-tab));
+  either way the new right pane is selected;[^task-185]
+- nothing can split (a pinned split pane whose partner is dormant, a pinned
+  tab or favourite showing an extension's page): a background tab, as for
+  Cmd+click;
 - while a Peek is open the branch does not run, so Option-click still downloads
   inside a Peek.
+
+The rules live in `openLinkInSplit(_:from:in:)`, which the link menu's **Open
+Link in Split View** shares. The menu item works like Open Link in New Tab: it
+sets `contextMenuLinkAction = .openInSplitView` and replays WebKit's own "Open
+Link in New Window" item, and `createWebViewWith` routes the URL with the
+web view the menu was opened on as the clicked tab. The item is left out of a
+Peek's menu.
 
 ## Formation and separation animations
 
@@ -358,3 +385,5 @@ window, and repeat the inspector step with an extension side panel open
 [^design]: Split Tabs design document (sections 5, 7, 8, 11, 13)
 [^notes]: Runtime debug harness notes (NSSplitView setPosition finding)
 [^runtime-check]: Runtime check of the docked Web Inspector with a side panel open
+[^task-185]: Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section
+[^dev-mode]: Dev mode (the dev toolbar inside the container)

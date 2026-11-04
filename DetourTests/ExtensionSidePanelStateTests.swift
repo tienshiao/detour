@@ -3,14 +3,14 @@ import XCTest
 
 /// TASK-132.8: the pure rules behind `chrome.sidePanel` — options, what may
 /// open, what is open, which panel a window shows, and where it sits.
-final class ExtensionSidePanelStateTests: XCTestCase {
+nonisolated final class ExtensionSidePanelStateTests: XCTestCase {
 
     private typealias State = ExtensionSidePanelState<Int, String>
     private typealias Scope = ExtensionSidePanelScope<Int, String>
 
     // MARK: Options
 
-    func testWithNothingSetTheManifestPathIsTheDefaultPanel() {
+    @MainActor func testWithNothingSetTheManifestPathIsTheDefaultPanel() {
         let state = State(manifestDefaultPath: "panel.html")
         XCTAssertEqual(state.resolvedOptions(for: nil), .init(path: "panel.html", enabled: true))
         XCTAssertEqual(state.resolvedOptions(for: 7), .init(path: "panel.html", enabled: true))
@@ -18,14 +18,14 @@ final class ExtensionSidePanelStateTests: XCTestCase {
         XCTAssertFalse(state.hasOptions(for: 7))
     }
 
-    func testWithNoManifestPathAndNothingSetThereIsNoPanel() {
+    @MainActor func testWithNoManifestPathAndNothingSetThereIsNoPanel() {
         let state = State()
         XCTAssertEqual(state.resolvedOptions(for: nil), .init(path: nil, enabled: true))
         XCTAssertFalse(state.resolvedOptions(for: nil).isOpenable)
         XCTAssertNil(State(manifestDefaultPath: "").manifestDefaultPath, "an empty manifest path is no path")
     }
 
-    func testDefaultOptionsOverrideTheManifestAndOnlyGivenFieldsChange() {
+    @MainActor func testDefaultOptionsOverrideTheManifestAndOnlyGivenFieldsChange() {
         var state = State(manifestDefaultPath: "panel.html")
         state.setOptions(tab: nil, path: "other.html", enabled: nil)
         XCTAssertEqual(state.resolvedOptions(for: nil), .init(path: "other.html", enabled: true))
@@ -39,7 +39,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
         XCTAssertTrue(state.resolvedOptions(for: nil).isOpenable)
     }
 
-    func testTabOptionsAreTheTabsOwnAndFallBackFieldByField() {
+    @MainActor func testTabOptionsAreTheTabsOwnAndFallBackFieldByField() {
         var state = State(manifestDefaultPath: "panel.html")
         state.setOptions(tab: 1, path: "tab.html?tabId=1", enabled: true)
         XCTAssertTrue(state.hasOptions(for: 1))
@@ -62,13 +62,13 @@ final class ExtensionSidePanelStateTests: XCTestCase {
 
     // MARK: Opening
 
-    func testOpenNeedsATarget() {
+    @MainActor func testOpenNeedsATarget() {
         var state = State(manifestDefaultPath: "panel.html")
         XCTAssertEqual(state.open(tab: nil, window: nil), .failure(.missingTarget))
         XCTAssertTrue(state.openScopes.isEmpty)
     }
 
-    func testATabWithItsOwnOptionsOpensATabPanel() {
+    @MainActor func testATabWithItsOwnOptionsOpensATabPanel() {
         var state = State()
         state.setOptions(tab: 1, path: "tab.html", enabled: true)
         XCTAssertEqual(state.open(tab: 1, window: "w"), .success(.tab(1)))
@@ -76,13 +76,13 @@ final class ExtensionSidePanelStateTests: XCTestCase {
         XCTAssertFalse(state.isOpen(.window("w")), "a tab panel is not the window's panel")
     }
 
-    func testATabWithoutOptionsOpensTheDefaultPanelInItsWindow() {
+    @MainActor func testATabWithoutOptionsOpensTheDefaultPanelInItsWindow() {
         var state = State(manifestDefaultPath: "panel.html")
         XCTAssertEqual(state.open(tab: 2, window: "w"), .success(.window("w")))
         XCTAssertEqual(state.open(tab: 2, window: nil), .failure(.noWindowForTab))
     }
 
-    func testOpenIsRefusedWhenThePanelIsDisabledOrHasNoPath() {
+    @MainActor func testOpenIsRefusedWhenThePanelIsDisabledOrHasNoPath() {
         var state = State()
         XCTAssertEqual(state.open(tab: 1, window: "w"), .failure(.noActivePanelForTab))
         XCTAssertEqual(state.open(tab: nil, window: "w"), .failure(.noActivePanelForWindow))
@@ -95,7 +95,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
         XCTAssertEqual(state.open(tab: 1, window: "w"), .success(.tab(1)))
     }
 
-    func testOpeningAnOpenPanelKeepsOneEntryAndMakesItTheMostRecent() {
+    @MainActor func testOpeningAnOpenPanelKeepsOneEntryAndMakesItTheMostRecent() {
         var state = State(manifestDefaultPath: "panel.html")
         state.setOptions(tab: 1, path: "a.html", enabled: true)
         _ = state.open(tab: 1, window: "w")
@@ -106,7 +106,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
 
     // MARK: Closing
 
-    func testCloseClosesTheTabPanelElseTheWindowPanel() {
+    @MainActor func testCloseClosesTheTabPanelElseTheWindowPanel() {
         var state = State(manifestDefaultPath: "panel.html")
         state.setOptions(tab: 1, path: "a.html", enabled: true)
         _ = state.open(tab: 1, window: "w")
@@ -120,7 +120,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
         XCTAssertEqual(state.close(tab: nil, window: nil), [])
     }
 
-    func testDisablingOrLosingThePathClosesOpenPanels() {
+    @MainActor func testDisablingOrLosingThePathClosesOpenPanels() {
         var state = State(manifestDefaultPath: "panel.html")
         state.setOptions(tab: 1, path: "a.html", enabled: true)
         _ = state.open(tab: 1, window: "w")
@@ -136,7 +136,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
         XCTAssertTrue(state.openScopes.isEmpty)
     }
 
-    func testForgettingATabDropsItsOptionsAndItsPanel() {
+    @MainActor func testForgettingATabDropsItsOptionsAndItsPanel() {
         var state = State(manifestDefaultPath: "panel.html")
         state.setOptions(tab: 1, path: "a.html", enabled: true)
         _ = state.open(tab: 1, window: "w")
@@ -147,7 +147,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
         XCTAssertEqual(state.resolvedOptions(for: 1).path, "panel.html", "a later tab with that key starts over")
     }
 
-    func testForgettingAWindowClosesItsPanelOnly() {
+    @MainActor func testForgettingAWindowClosesItsPanelOnly() {
         var state = State(manifestDefaultPath: "panel.html")
         state.setOptions(tab: 1, path: "a.html", enabled: true)
         _ = state.open(tab: 1, window: "w")
@@ -158,7 +158,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
         XCTAssertNil(state.forget(window: "w"))
     }
 
-    func testCloseAllAndDidClose() {
+    @MainActor func testCloseAllAndDidClose() {
         var state = State(manifestDefaultPath: "panel.html")
         state.setOptions(tab: 1, path: "a.html", enabled: true)
         _ = state.open(tab: 1, window: "w")
@@ -170,7 +170,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
         XCTAssertTrue(state.hasOptions(for: 1), "closing panels does not forget options")
     }
 
-    func testPanelBehaviourDefaultsToOff() {
+    @MainActor func testPanelBehaviourDefaultsToOff() {
         var state = State()
         XCTAssertFalse(state.openPanelOnActionClick)
         state.openPanelOnActionClick = true
@@ -181,7 +181,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
 
     private typealias Candidate = ExtensionSidePanelCandidate<Int, String, String>
 
-    func testATabPanelShowsOnlyWhileItsTabIsDisplayed() {
+    @MainActor func testATabPanelShowsOnlyWhileItsTabIsDisplayed() {
         let candidates = [Candidate(id: "tab1", scope: .tab(1), recency: 1)]
         XCTAssertEqual(sidePanelToDisplay(window: "w", displayedTabs: [1], candidates: candidates), "tab1")
         XCTAssertNil(sidePanelToDisplay(window: "w", displayedTabs: [2], candidates: candidates))
@@ -189,7 +189,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
                      "a window showing a snapshot of the tab does not show its panel")
     }
 
-    func testTheWindowPanelShowsForEveryTabWithoutAnOpenTabPanel() {
+    @MainActor func testTheWindowPanelShowsForEveryTabWithoutAnOpenTabPanel() {
         let candidates = [
             Candidate(id: "tab1", scope: .tab(1), recency: 1),
             Candidate(id: "window", scope: .window("w"), recency: 2),
@@ -202,7 +202,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
                      "another window's panel is not this window's")
     }
 
-    func testTheWindowPanelHidesBesideATabItIsDisabledFor() {
+    @MainActor func testTheWindowPanelHidesBesideATabItIsDisabledFor() {
         let candidates = [
             Candidate(id: "wa", scope: .window("w"), recency: 1),
             Candidate(id: "wb", scope: .window("w"), recency: 2),
@@ -224,7 +224,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
                        "with no live tab there is nothing to be disabled for")
     }
 
-    func testInASplitTheFocusedPanesPanelWinsThenTheOtherPanes() {
+    @MainActor func testInASplitTheFocusedPanesPanelWinsThenTheOtherPanes() {
         let candidates = [
             Candidate(id: "left", scope: .tab(1), recency: 5),
             Candidate(id: "right", scope: .tab(2), recency: 1),
@@ -236,7 +236,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
                        "a focused pane without a panel leaves the other pane's showing")
     }
 
-    func testTwoExtensionsInOnePlaceTheMostRecentShows() {
+    @MainActor func testTwoExtensionsInOnePlaceTheMostRecentShows() {
         let candidates = [
             Candidate(id: "a", scope: .tab(1), recency: 3),
             Candidate(id: "b", scope: .tab(1), recency: 4),
@@ -249,7 +249,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
 
     // MARK: Layout
 
-    func testWithNoPanelTheContentFillsTheArea() {
+    @MainActor func testWithNoPanelTheContentFillsTheArea() {
         let bounds = CGRect(x: 0, y: 0, width: 1000, height: 600)
         let frames = SidePanelLayout.frames(in: bounds, wantedPanelWidth: nil)
         XCTAssertEqual(frames.content, bounds)
@@ -257,7 +257,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
         XCTAssertEqual(frames.divider, .zero)
     }
 
-    func testThePanelSitsAtTheTrailingEdgeAtItsWidth() {
+    @MainActor func testThePanelSitsAtTheTrailingEdgeAtItsWidth() {
         let bounds = CGRect(x: 0, y: 0, width: 1000, height: 600)
         let frames = SidePanelLayout.frames(in: bounds, wantedPanelWidth: 400)
         XCTAssertEqual(frames.content, CGRect(x: 0, y: 0, width: 600, height: 600))
@@ -267,7 +267,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
         XCTAssertEqual(frames.content.maxX, frames.panel.minX, "no gap and no overlap")
     }
 
-    func testThePanelHasAMinimumWidthAndLeavesTheContentItsMinimum() {
+    @MainActor func testThePanelHasAMinimumWidthAndLeavesTheContentItsMinimum() {
         let bounds = CGRect(x: 0, y: 0, width: 1000, height: 600)
         XCTAssertEqual(SidePanelLayout.frames(in: bounds, wantedPanelWidth: 50).panel.width,
                        SidePanelLayout.minimumPanelWidth)
@@ -275,7 +275,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
                        SidePanelLayout.minimumContentWidth)
     }
 
-    func testInANarrowAreaThePanelKeepsItsMinimumBeforeTheContentDoes() {
+    @MainActor func testInANarrowAreaThePanelKeepsItsMinimumBeforeTheContentDoes() {
         // Too narrow for both minimums: the panel keeps its own.
         let narrow = CGRect(x: 0, y: 0, width: 400, height: 600)
         let frames = SidePanelLayout.frames(in: narrow, wantedPanelWidth: 380)
@@ -289,7 +289,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
         XCTAssertEqual(tinyFrames.content.width, 0)
     }
 
-    func testTheWantedWidthSurvivesANarrowWindow() {
+    @MainActor func testTheWantedWidthSurvivesANarrowWindow() {
         // The wanted width is not what is clamped away: widening the window
         // again gives the panel its width back.
         let wanted: CGFloat = 500
@@ -299,7 +299,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
                                               wantedPanelWidth: wanted).panel.width, 500)
     }
 
-    func testDraggingTheDividerGivesAClampedWidth() {
+    @MainActor func testDraggingTheDividerGivesAClampedWidth() {
         let bounds = CGRect(x: 0, y: 0, width: 1000, height: 600)
         XCTAssertEqual(SidePanelLayout.panelWidth(forBoundaryAt: 700, in: bounds), 300)
         XCTAssertEqual(SidePanelLayout.panelWidth(forBoundaryAt: 990, in: bounds), SidePanelLayout.minimumPanelWidth)
@@ -307,7 +307,7 @@ final class ExtensionSidePanelStateTests: XCTestCase {
                        1000 - SidePanelLayout.minimumContentWidth)
     }
 
-    func testFramesFollowAnOffsetOrigin() {
+    @MainActor func testFramesFollowAnOffsetOrigin() {
         let bounds = CGRect(x: 20, y: 10, width: 1000, height: 600)
         let frames = SidePanelLayout.frames(in: bounds, wantedPanelWidth: 400)
         XCTAssertEqual(frames.content, CGRect(x: 20, y: 10, width: 600, height: 600))

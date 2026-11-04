@@ -5,25 +5,24 @@ import WebKit
 /// Keys web content declined must die at the window controller instead of
 /// falling off the responder chain into `noResponderFor(keyDown:)` — NSBeep
 /// (TASK-76). Keys unhandled with a *native* first responder keep beeping.
-@MainActor
-final class UnhandledKeyFallthroughTests: XCTestCase {
+nonisolated final class UnhandledKeyFallthroughTests: XCTestCase {
 
     private var controller: BrowserWindowController?
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         controller?.window?.close()
         controller = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - The decision
 
-    func testWebViewFirstResponderCountsAsDeclinedByWebContent() {
+    @MainActor func testWebViewFirstResponderCountsAsDeclinedByWebContent() {
         let webView = BrowserWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
         XCTAssertTrue(BrowserWindowController.keyWasDeclinedByWebContent(firstResponder: webView))
     }
 
-    func testViewNestedInsideAWebViewCountsAsDeclinedByWebContent() {
+    @MainActor func testViewNestedInsideAWebViewCountsAsDeclinedByWebContent() {
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
         let middle = NSView(frame: webView.bounds)
         let leaf = NSView(frame: webView.bounds)
@@ -32,7 +31,7 @@ final class UnhandledKeyFallthroughTests: XCTestCase {
         XCTAssertTrue(BrowserWindowController.keyWasDeclinedByWebContent(firstResponder: leaf))
     }
 
-    func testNativeFirstRespondersDoNotCountAsDeclinedByWebContent() {
+    @MainActor func testNativeFirstRespondersDoNotCountAsDeclinedByWebContent() {
         XCTAssertFalse(BrowserWindowController.keyWasDeclinedByWebContent(firstResponder: nil))
         XCTAssertFalse(BrowserWindowController.keyWasDeclinedByWebContent(
             firstResponder: NSTableView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))))
@@ -50,12 +49,12 @@ final class UnhandledKeyFallthroughTests: XCTestCase {
     /// `nextResponder` (nil in production), it stands in for the end of the
     /// chain: `super.keyDown` forwards to it instead of calling
     /// `noResponderFor(keyDown:)`, so the real fall-through runs without NSBeep.
-    private final class FallthroughProbe: NSResponder {
+    @MainActor private final class FallthroughProbe: NSResponder {
         var received: [NSEvent] = []
         override func keyDown(with event: NSEvent) { received.append(event) }
     }
 
-    func testDeclinedKeyStopsAtTheControllerButNativeKeyFallsThrough() throws {
+    @MainActor func testDeclinedKeyStopsAtTheControllerButNativeKeyFallsThrough() throws {
         let wc = BrowserWindowController(incognito: true)
         controller = wc
         // Never let this never-shown window's split view touch the autosaved
@@ -87,7 +86,7 @@ final class UnhandledKeyFallthroughTests: XCTestCase {
         XCTAssertTrue(probe.received.first === nativeEvent)
     }
 
-    private func makeKeyDown(in window: NSWindow, characters: String, keyCode: UInt16) throws -> NSEvent {
+    @MainActor private func makeKeyDown(in window: NSWindow, characters: String, keyCode: UInt16) throws -> NSEvent {
         try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown,
             location: .zero,

@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Closed tabs and the Archived Tabs page
-description: What a closed-tab record holds, how Reopen Closed Tab, the close undos and the Archived Tabs page each consume it, and how archived records differ from plain closes.
+description: What a closed-tab record holds, how Reopen Closed Tab, the close undos and the Archived Tabs page each consume it, how archived records differ from plain closes, and closed Quick Detours filed under their profile's scope (TASK-193.5).
 tags: [tabs, closed-tabs, archive, undo, sidebar]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:43:31Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T19:00:00Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -45,6 +45,9 @@ sources:
   - id: task-120
     resource: backlog:TASK-120
     title: Remove the closed-tab row cap entirely
+  - id: task-193-5
+    resource: backlog:TASK-193.5
+    title: "Quick Detour: Opt-Cmd-click entry points, links from other apps, and auto-archive"
   - id: notes
     resource: "Agent session notes, 2026-09-26 (not in the repository)"
     title: Closed tabs / archive work stream notes
@@ -61,7 +64,7 @@ is the tab's only life after closing. Three things can bring it back, and each
 |---|---|---|
 | Reopen Closed Tab (Cmd+Shift+T) | the window's active space | plain closes only, newest first |
 | Undo (Cmd+Z) of the close | the tab that undo action closed | its own record, while it still exists |
-| Archived Tabs page | every non-incognito space | plain closes and archived records alike |
+| Archived Tabs page | every non-incognito space, and closed Quick Detours | plain closes and archived records alike |
 
 The Archived Tabs page is the leftmost page of the sidebar's
 [page strip](../sidebar/space-paging.md), before the first space: swipe right
@@ -92,6 +95,21 @@ no such page.
 
 Not recorded: incognito closes, a close with `undoable: false`, and closing a
 pinned entry's or favourite's tab (those go dormant instead).
+
+## Closed Quick Detours
+
+Since TASK-193.5 a closed [Quick Detour](../features/quick-detour.md#the-archive)
+is a row of the same table, with `spaceID` = its profile's Quick Detour
+scope (`QuickDetour.historySpaceID(forProfileID:)`, the id its history
+visits use) instead of a space's. No migration: every query keyed by a
+space (Reopen Closed Tab, a space's deletion and its undo) never meets that
+id, so they stay correct unchanged. `archivedAt` set means the idle timer
+closed it ("auto-closed"); nil, closed by hand or at quit. Private ones are
+never recorded. The listing knows the scopes of the live normal profiles
+(`ArchiveEntry.kind = .quickDetour(profileID:autoClosed:)`), a restore
+reopens a Quick Detour window instead of a tab
+(`QuickDetourWindowController.restore`), Clear covers the scopes when no
+space filter is set, and deleting a profile deletes its rows.
 
 ## The database is the only store
 
@@ -157,8 +175,12 @@ with the same `archivedAt`, so a redone archive stays an archive.[^task-115]
   through Cmd+Shift+T. A record that cannot come back makes the window beep.
 - **Delete** (Delete/Backspace, context menu) and **Clear Archive…** (the page's
   Filter menu, or Navigate > Clear Archived Tabs…, after a confirmation sheet)
-  remove records permanently. Clear covers all spaces or the filtered one, and
-  is not undoable.
+  remove records permanently. Clear covers all spaces (and the closed Quick
+  Detours) or the filtered space, and is not undoable.
+- **Quick Detour rows** (TASK-193.5) say so on their second line: "Quick
+  Detour · example.com", or "Quick Detour · auto-closed · …"
+  (`archiveEntrySubtitle`); they have no space badge, a space filter hides
+  them, and restoring one opens a Quick Detour window on its profile.
 - **Live updates**: every `closedTab` mutation in `TabStore` fires
   `tabStoreDidUpdateClosedTabRecords()`, which carries no detail. The sidebar
   marks the page stale and reloads it at most once per run-loop turn, and only
@@ -189,7 +211,8 @@ styling; the bar itself rides off with the first space's page.[^notes]
 
 # Tests
 
-`ArchivedTabRestoreTests` (listing, restore position and space, extension
+`QuickDetourArchiveTests` and `QuickDetourArchiveWindowTests` (closed Quick
+Detours: TASK-193.5), `ArchivedTabRestoreTests` (listing, restore position and space, extension
 rules, delete, clear, the notification, the undo-after-consume cases),
 `ArchiveListLayoutTests` (buckets, sort, search, filter), `TabStoreTests`
 ("Archive vs close records", reopen ordering), `AppDatabaseTests` (index, v16

@@ -16,15 +16,19 @@ enum UserAgentMode: Int {
     static var safariUserAgent: String {
         let os = ProcessInfo.processInfo.operatingSystemVersion
         let osString = "\(os.majorVersion)_\(os.minorVersion)_\(os.patchVersion)"
-        let safariVersion: String
+        return "Mozilla/5.0 (Macintosh; Intel Mac OS X \(osString)) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(installedSafariVersion) Safari/605.1.15"
+    }
+
+    /// The installed Safari's version (`CFBundleShortVersionString`), "18.0"
+    /// when it cannot be read. Read once: a quarantine page asks on every
+    /// navigation (`Quarantine.userAgent`).
+    static let installedSafariVersion: String = {
         if let bundle = Bundle(path: "/Applications/Safari.app"),
            let version = bundle.infoDictionary?["CFBundleShortVersionString"] as? String {
-            safariVersion = version
-        } else {
-            safariVersion = "18.0"
+            return version
         }
-        return "Mozilla/5.0 (Macintosh; Intel Mac OS X \(osString)) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(safariVersion) Safari/605.1.15"
-    }
+        return "18.0"
+    }()
 
     static var detourAppName: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1"
@@ -343,6 +347,14 @@ class Profile {
                     log.debug("Skipping stale pattern decision \(key, privacy: .public) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
                     continue
                 }
+                // Already there with this status: WebKit keys its dictionaries
+                // by pattern object, so setting it again adds a second entry
+                // for the same string (`permissions.getAll` then lists it
+                // twice). The Settings toggle and TASK-258 re-run this restore
+                // on a loaded context.
+                let current = status == .granted ? context.grantedPermissionMatchPatterns
+                                                 : context.deniedPermissionMatchPatterns
+                if current.keys.contains(where: { $0.string == pattern.string }) { continue }
                 context.setPermissionStatus(status.contextStatus, for: pattern)
             }
         }
@@ -455,7 +467,12 @@ class Profile {
         // A key in neither set is left alone (TASK-11's rule): rows are never
         // purged on extension update, and re-applying a grant the current
         // manifest no longer asks for would widen the extension's access.
-        for permission in ext.askablePermissions {
+        // The permissions only Detour's polyfill implements (history,
+        // management), required or optional, are added: WebKit leaves them out
+        // of its sets but stores a status for them, which is what the polyfill
+        // handler reads — an optional grant (TASK-250), a required one's
+        // denial from Settings (TASK-259).
+        for permission in ext.restorablePermissions {
             // nativeMessaging is granted unconditionally above so the polyfill
             // bridge works; a saved denial is enforced at host dispatch instead.
             if permission == .nativeMessaging { continue }
@@ -488,8 +505,8 @@ class Profile {
             // is logged when it is not among them. Rebuilt from the current array
             // each time, so it is bounded by the array and a WebKit clear drops
             // the old keys by itself (a recurring failure is logged again).
-            var loggedErrorKeys = Set<String>()
-            extensionErrorObservers[extID] = NotificationCenter.default.addObserver(forName: WKWebExtensionContext.errorsDidUpdateNotification, object: context, queue: .main) { [weak self, weak context] _ in
+            let loggedErrorKeys = ErrorKeysLogged()
+            extensionErrorObservers[extID] = NotificationCenter.default.addMainObserver(forName: WKWebExtensionContext.errorsDidUpdateNotification, object: context) { [weak self, weak context] _ in
                 guard let context else { return }
                 let errors = context.errors
                 var currentKeys = Set<String>()
@@ -502,10 +519,10 @@ class Profile {
                     }
                     let key = "\(nsError.domain)#\(nsError.code)#\(nsError.localizedDescription)"
                     currentKeys.insert(key)
-                    guard !loggedErrorKeys.contains(key) else { continue }
+                    guard !loggedErrorKeys.keys.contains(key) else { continue }
                     log.error("Extension error [\(extID, privacy: .public)]: domain=\(nsError.domain, privacy: .public) code=\(nsError.code) \(nsError.localizedDescription, privacy: .public)")
                 }
-                loggedErrorKeys = currentKeys
+                loggedErrorKeys.keys = currentKeys
                 if backgroundLoadFailed, let self {
                     // A `runtime.onInstalled` claim this context made with no
                     // listener was made by a script that never ran to the end:
@@ -565,6 +582,9 @@ class Profile {
         // And the session header rules: WebKit drops its session rules with the
         // context, so Detour's part of them goes too (TASK-132.4).
         polyfillHandler?.forgetSessionHeaderRules(for: id)
+        // And its notifications (TASK-238): nothing is left to hear about or
+        // clear them, and a reloaded context starts with none.
+        polyfillHandler?.removeNotifications(ofExtension: id)
         // Likewise the worker's keep-alive port: WebKit is not relied on to
         // report its disconnect once the context is gone.
         ExtensionManager.shared.closeExtensionPorts(for: id, in: extensionController)
@@ -1007,4 +1027,10 @@ class Profile {
             isMalwareFilterEnabled: record.isMalwareFilterEnabled
         )
     }
+}
+
+/// The extension error keys already logged for one context, shared by the
+/// errors observer's runs (the observer block cannot mutate a captured `var`).
+private final class ErrorKeysLogged {
+    var keys = Set<String>()
 }

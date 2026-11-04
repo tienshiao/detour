@@ -28,7 +28,8 @@ class IdleMonitor {
         guard !isRunning else { return }
         isRunning = true
         timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            self?.checkState()
+            // Scheduled from the main thread, so on the main run loop.
+            MainActor.assumeIsolated { self?.checkState() }
         }
     }
 

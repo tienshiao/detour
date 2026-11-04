@@ -18,8 +18,7 @@ import WebKit
 /// `chrome.windows.getAll({ populate: true })` lists each window's tabs with
 /// their `index`, which is the position in `BrowserWindowController.extensionTabs`,
 /// and the windows are told apart by the width the test gave them.
-@MainActor
-final class ExtensionTabResolveTests: XCTestCase {
+nonisolated final class ExtensionTabResolveTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
@@ -38,9 +37,9 @@ final class ExtensionTabResolveTests: XCTestCase {
     /// rest of the test process: releasing one takes its process pool down, and
     /// WebKit traps when that lands inside an IPC dispatch (the hazard
     /// `ExtensionPrivateStoreTests` works around the same way).
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         previousLastActiveSpaceID = TabStore.shared.lastActiveSpaceID
         previousExtensionLastActiveSpaceID = ExtensionManager.shared.lastActiveSpaceID
@@ -52,7 +51,7 @@ final class ExtensionTabResolveTests: XCTestCase {
         self.server = server
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         let store = TabStore.shared
         for wc in windows { wc.window?.close() }
         windows.removeAll()
@@ -195,7 +194,7 @@ final class ExtensionTabResolveTests: XCTestCase {
     /// An MV3 extension with a (module) service worker and one page, and no
     /// permissions. The worker carries the polyfill itself — the user script
     /// `Profile.extensionController` installs reaches web views, not workers.
-    private func makeExtension() async throws -> WebExtension {
+    @MainActor private func makeExtension() async throws -> WebExtension {
         let id = "tab-resolve-\(UUID().uuidString.prefix(8).lowercased())"
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("detour-test-\(id)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -236,7 +235,7 @@ final class ExtensionTabResolveTests: XCTestCase {
 
     /// One profile with the extension loaded: two spaces, a window on each, an
     /// extension page and the started worker.
-    private struct World {
+    @MainActor private struct World {
         let ext: WebExtension
         let profile: Profile
         let context: WKWebExtensionContext
@@ -251,10 +250,10 @@ final class ExtensionTabResolveTests: XCTestCase {
         }
     }
 
-    private static let windowAWidth: CGFloat = 910
-    private static let windowBWidth: CGFloat = 1030
+    @MainActor private static let windowAWidth: CGFloat = 910
+    @MainActor private static let windowBWidth: CGFloat = 1030
 
-    private func makeWindow(on space: Space, width: CGFloat) -> BrowserWindowController {
+    @MainActor private func makeWindow(on space: Space, width: CGFloat) -> BrowserWindowController {
         let wc = BrowserWindowController(incognito: false)
         windows.append(wc)
         // Never let this window's split view touch the autosaved sidebar
@@ -265,7 +264,7 @@ final class ExtensionTabResolveTests: XCTestCase {
         return wc
     }
 
-    private func makeWorld(_ ext: WebExtension, name: String) async throws -> World {
+    @MainActor private func makeWorld(_ ext: WebExtension, name: String) async throws -> World {
         let store = TabStore.shared
         let profile = store.addProfile(name: name)
         createdProfiles.append(profile)
@@ -289,8 +288,9 @@ final class ExtensionTabResolveTests: XCTestCase {
         let page = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
         pages.append(page)
         try await loadAndWait(page, URLRequest(url: context.baseURL.appendingPathComponent("test.html")))
-        context.loadBackgroundContent { error in
-            if let error { print("loadBackgroundContent failed: \(error)") }
+        // Started, not awaited: the test waits for the worker itself.
+        Task {
+            do { try await context.loadBackgroundContent() } catch { print("loadBackgroundContent failed: \(error)") }
         }
         let world = World(ext: ext, profile: profile, context: context, spaceA: spaceA, spaceB: spaceB,
                           windowA: windowA, windowB: windowB, page: page)
@@ -301,33 +301,33 @@ final class ExtensionTabResolveTests: XCTestCase {
         return world
     }
 
-    private func url(_ name: String) -> URL {
+    @MainActor private func url(_ name: String) -> URL {
         URL(string: "http://127.0.0.1:\(serverPort)/\(name)")!
     }
 
     /// A tab added through the store, as the app adds one.
-    private func addTab(_ name: String, in space: Space) -> BrowserTab {
+    @MainActor private func addTab(_ name: String, in space: Space) -> BrowserTab {
         TabStore.shared.addTab(in: space, url: url(name))
     }
 
     // MARK: - Running an op
 
-    private enum Via: String, CaseIterable { case page, worker }
+    @MainActor private enum Via: String, CaseIterable { case page, worker }
 
-    private struct OpFailed: Error, CustomStringConvertible {
+    @MainActor private struct OpFailed: Error, CustomStringConvertible {
         let message: String
         var description: String { message }
     }
 
     /// The worker never ran the op — not a rejection, so never mistaken for one.
-    private struct WorkerSilent: Error, CustomStringConvertible {
+    @MainActor private struct WorkerSilent: Error, CustomStringConvertible {
         let envelope: [String: Any]
         var description: String { "the worker did not answer: \(envelope)" }
     }
 
     /// Runs one op in the page or the worker. Throws `OpFailed` with the JS
     /// error's message when the op rejected.
-    private func run(_ via: Via, in world: World, _ message: [String: Any]) async throws -> Any {
+    @MainActor private func run(_ via: Via, in world: World, _ message: [String: Any]) async throws -> Any {
         let envelope: [String: Any]
         switch via {
         case .page:
@@ -356,13 +356,13 @@ final class ExtensionTabResolveTests: XCTestCase {
         return envelope["value"] ?? NSNull()
     }
 
-    private func runDict(_ via: Via, in world: World, _ message: [String: Any]) async throws -> [String: Any] {
+    @MainActor private func runDict(_ via: Via, in world: World, _ message: [String: Any]) async throws -> [String: Any] {
         let value = try await run(via, in: world, message)
         return try XCTUnwrap(value as? [String: Any], "expected an object, got \(value)")
     }
 
     /// The op's rejection text, or nil when it resolved.
-    private func failure(_ via: Via, in world: World, _ message: [String: Any]) async throws -> String? {
+    @MainActor private func failure(_ via: Via, in world: World, _ message: [String: Any]) async throws -> String? {
         do {
             _ = try await run(via, in: world, message)
             return nil
@@ -376,7 +376,7 @@ final class ExtensionTabResolveTests: XCTestCase {
     /// WebKit's id for every tab the two windows list, read from
     /// `chrome.windows.getAll({ populate: true })`: a window is recognised by
     /// its width, and a tab by its index in that window's `extensionTabs`.
-    private func tabIDs(_ via: Via, in world: World,
+    @MainActor private func tabIDs(_ via: Via, in world: World,
                         file: StaticString = #filePath, line: UInt = #line) async throws -> [ObjectIdentifier: Int] {
         let answer = try await run(via, in: world, ["op": "windows"])
         let listed = try XCTUnwrap(answer as? [[String: Any]], file: file, line: line)
@@ -423,7 +423,7 @@ final class ExtensionTabResolveTests: XCTestCase {
     }
 
     /// WebKit's id for one listed tab.
-    private func tabID(of tab: BrowserTab, _ via: Via, in world: World,
+    @MainActor private func tabID(of tab: BrowserTab, _ via: Via, in world: World,
                        file: StaticString = #filePath, line: UInt = #line) async throws -> Int {
         let ids = try await tabIDs(via, in: world, file: file, line: line)
         return try XCTUnwrap(ids[ObjectIdentifier(tab)], "the tab has no id", file: file, line: line)
@@ -433,7 +433,7 @@ final class ExtensionTabResolveTests: XCTestCase {
     /// the native lookup and by what `tabs.describeHandle` reports. Returns
     /// the handle.
     @discardableResult
-    private func assertResolves(_ via: Via, in world: World, tabID: Int, to tab: BrowserTab,
+    @MainActor private func assertResolves(_ via: Via, in world: World, tabID: Int, to tab: BrowserTab,
                                 placement: ExtensionTabPlacement.Kind, selected: Bool? = nil,
                                 fresh: Bool = true, _ what: String,
                                 file: StaticString = #filePath, line: UInt = #line) async throws -> Int {
@@ -462,7 +462,7 @@ final class ExtensionTabResolveTests: XCTestCase {
 
     // MARK: - AC #1: every placement, from both transports
 
-    func testResolvesNormalPinnedFavouritePeekAndUnselectedTabsInWindowsThatAreNotKey() async throws {
+    @MainActor func testResolvesNormalPinnedFavouritePeekAndUnselectedTabsInWindowsThatAreNotKey() async throws {
         let world = try await makeWorld(try await makeExtension(), name: "Resolve Placements")
         let store = TabStore.shared
 
@@ -552,7 +552,7 @@ final class ExtensionTabResolveTests: XCTestCase {
 
     // MARK: - AC #2: refusals
 
-    func testAClosedTabIsRefusedAndNeverResolvesToAnotherTab() async throws {
+    @MainActor func testAClosedTabIsRefusedAndNeverResolvesToAnotherTab() async throws {
         let world = try await makeWorld(try await makeExtension(), name: "Resolve Closed")
         let store = TabStore.shared
         let registry = ExtensionTabHandleRegistry.shared
@@ -628,7 +628,7 @@ final class ExtensionTabResolveTests: XCTestCase {
     /// `tabs.describeHandle` must fail for `handle`. Returns the text the
     /// context saw (WebKit wraps a native-message failure in its own sentence,
     /// so the worker's reads differently from the page's).
-    private func assertHandleRefused(_ via: Via, in world: World, _ handle: Any, _ what: String,
+    @MainActor private func assertHandleRefused(_ via: Via, in world: World, _ handle: Any, _ what: String,
                                      file: StaticString = #filePath, line: UInt = #line) async throws -> String {
         let text = try await failure(via, in: world, ["op": "describe", "handle": handle])
         XCTAssertTrue(text?.contains("no tab for this handle") == true,
@@ -636,7 +636,7 @@ final class ExtensionTabResolveTests: XCTestCase {
         return text ?? ""
     }
 
-    func testATabOfAnotherProfileIsRefused() async throws {
+    @MainActor func testATabOfAnotherProfileIsRefused() async throws {
         let ext = try await makeExtension()
         let mine = try await makeWorld(ext, name: "Resolve Mine")
         let theirs = try await makeWorld(ext, name: "Resolve Theirs")
@@ -686,7 +686,7 @@ final class ExtensionTabResolveTests: XCTestCase {
 
     // MARK: - AC #3: reorder, move between spaces, space switch
 
-    func testResolutionSurvivesReorderSpaceMoveAndSpaceSwitch() async throws {
+    @MainActor func testResolutionSurvivesReorderSpaceMoveAndSpaceSwitch() async throws {
         let world = try await makeWorld(try await makeExtension(), name: "Resolve Moves")
         let store = TabStore.shared
 
@@ -760,7 +760,7 @@ final class ExtensionTabResolveTests: XCTestCase {
 
     // MARK: - A genuine tabs.getZoom
 
-    func testAGenuineGetZoomReturnsTheRealZoomEvenWhenItConsumesAnArm() async throws {
+    @MainActor func testAGenuineGetZoomReturnsTheRealZoomEvenWhenItConsumesAnArm() async throws {
         let world = try await makeWorld(try await makeExtension(), name: "Resolve Zoom")
         let registry = ExtensionTabHandleRegistry.shared
 
@@ -830,11 +830,13 @@ final class ExtensionTabResolveTests: XCTestCase {
         let tabIDsToStorm = try [zoomed, plain, third].map { try XCTUnwrap(ids[ObjectIdentifier($0)]) }
         let tabByID = Dictionary(uniqueKeysWithValues: zip(tabIDsToStorm, [zoomed, plain, third]))
         let storm: [String: Any] = ["op": "storm", "tabIds": tabIDsToStorm, "rounds": 4]
-        async let pageStorm = run(.page, in: world, storm)
-        async let workerStorm = run(.worker, in: world, storm)
-        let results = try await [("page", pageStorm), ("worker", workerStorm)]
-        for (name, result) in results {
-            let entries = try XCTUnwrap(result as? [[String: Any]])
+        // Two main-actor tasks, both in flight at once; each hands its answer
+        // back as JSON, since a task's result has to be Sendable.
+        let pageStorm = Task { try JSONSerialization.data(withJSONObject: try await run(.page, in: world, storm)) }
+        let workerStorm = Task { try JSONSerialization.data(withJSONObject: try await run(.worker, in: world, storm)) }
+        let results = try await [("page", pageStorm.value), ("worker", workerStorm.value)]
+        for (name, json) in results {
+            let entries = try XCTUnwrap(try JSONSerialization.jsonObject(with: json) as? [[String: Any]])
             XCTAssertEqual(entries.count, 4 * 3 * 3, "[\(name)]")
             for entry in entries {
                 let tab = try XCTUnwrap(tabByID[try XCTUnwrap(entry["id"] as? Int)])

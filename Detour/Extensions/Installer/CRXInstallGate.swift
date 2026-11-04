@@ -24,7 +24,7 @@ import Foundation
 enum CRXInstallGate {
 
     /// The installed extension a candidate's id collides with.
-    struct Installed: Equatable {
+    nonisolated struct Installed: Equatable, Sendable {
         let name: String
         let version: String
     }

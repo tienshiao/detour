@@ -20,9 +20,11 @@ xcodebuild -scheme DetourTests -configuration Debug test -only-testing:DetourTes
 
 ## Architecture
 
-macOS native browser (Swift 5.10, macOS 15.4+) using WebKit. Organized around **Profiles** (which own cookies, history, and extensions via `WKWebsiteDataStore`) and **Spaces** (workspaces that group tabs). Each Space references a Profile; multiple Spaces can share the same Profile and thus share cookies.
+macOS native browser (Swift 6 language mode, macOS 15.4+) using WebKit. Organized around **Profiles** (which own cookies, history, and extensions via `WKWebsiteDataStore`) and **Spaces** (workspaces that group tabs). Each Space references a Profile; multiple Spaces can share the same Profile and thus share cookies.
 
 ### Key Architectural Decisions
+
+**Concurrency**: the app target is Swift 6 with main-actor default isolation (`SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor`, approachable concurrency, complete checking; the test target has the same settings and is Swift 6 too). Everything is main-actor unless marked otherwise. Code that runs off the main thread is `nonisolated`, and what it shares is `Sendable`: shared mutable state goes behind a `Synchronization.Mutex`, never an `NSLock` plus `@unchecked Sendable`. Callbacks AppKit always runs on the main thread but the SDK types as nonisolated (`NSAnimationContext` completions, main-run-loop timers, main-queue notification blocks) use the helpers in `Browser/Shared/MainActorCallbacks.swift`. Every `@unchecked Sendable`, `nonisolated(unsafe)` and `MainActor.assumeIsolated` carries a comment saying why it holds. A delegate callback a framework may make off the main thread (UserNotifications, URLSession on its own queue) is `nonisolated` and hops to main; a delegate protocol the SDK marks main-actor (`NS_SWIFT_UI_ACTOR`, e.g. `AVAudioPlayerDelegate`) is handled in place. A new optional WebKit or UserNotifications delegate method gets a row in `WebKitDelegateReachabilityTests`: a signature that drifts from the SDK's stops being called, with only a warning. A test class is `nonisolated` with `@MainActor` on its members and `@MainActor override func setUp()/tearDown() async throws` (XCTest declares `init`/`setUp`/`tearDown` nonisolated, so no other shape compiles). Background: `wiki/platform/swift-concurrency-checking.md`.
 
 **State management**: `TabStore` singleton owns all spaces and tabs. Controllers observe changes via `TabStoreObserver` protocol (not Combine). `BrowserTab` exposes `@Published` properties for per-tab reactive updates consumed by `BrowserWindowController`.
 
@@ -110,14 +112,12 @@ Drag pasteboards carry ID-based payloads (`SidebarDragPayload` / `FavoriteDragPa
 * When adding/updating extension permissions, make sure to add/update the corresponding tests with both positive and negative cases.
 * When implementing polyfills, prefer `let`/`const` over `var`.
 
-## Test-Driven Development
+## Testing
 
-Prefer TDD where it makes sense:
-
-* **State and rule logic** — `TabStore` mutations and their invariants (split groups, pinned entries, sleep/archive policy), the pure rule functions (`SidebarLayout`, `TabListItems`, `TabInsertion`, `TabCloseSelection`, the `SidebarDragDrop` resolvers, the update and launch policies), storage and migrations: write the failing test first, make it pass, then refactor. A change that adds behavior without a test that would have failed before it needs a stated reason, recorded in the Backlog task.
-* **Shared rules are driven by their existing suites.** Sidebar row and drop behavior is extended through the resolver enums and `SidebarLayoutTests` / `SplitTabTests` / `SidebarDragDropTests`: add or extend the test, then make the pure function pass it, rather than branching in a view controller.
+* **State and rule logic** — `TabStore` mutations and their invariants (split groups, pinned entries, sleep/archive policy), the pure rule functions (`SidebarLayout`, `TabListItems`, `TabInsertion`, `TabCloseSelection`, the `SidebarDragDrop` resolvers, the update and launch policies), storage and migrations: a change in behavior comes with tests that cover it. A change that adds behavior without tests needs a stated reason, recorded in the Backlog task.
+* **Shared rules live in their existing suites.** Sidebar row and drop behavior is extended through the resolver enums and the pure functions, covered by `SidebarLayoutTests` / `SplitTabTests` / `SidebarDragDropTests`, rather than by branching in a view controller.
 * **Web Extension APIs** (polyfill JS, native polyfill handlers, WebKit delegate methods): every new or changed API has tests in a real extension context (the `ExtensionPolyfillIntegrationTests` / `ExtensionPolyfillProfileWiringTests` style), in addition to JS-level unit tests (`ExtensionPolyfillTests`). They cover permission gating (an extension without the permission does not get the API), isolation (another extension's or another profile's objects are refused), the happy path from both transports (service worker and extension page), and the common error cases (bad arguments, an unknown or closed tab, both the promise rejection and the callback `runtime.lastError` form). Unit tests do not exercise WebKit's wrappers, the message bridge or sender verification, so these are not optional. Update the API Explorer extension as well.
-* **UI (AppKit views, layout, animation)**: TDD is optional. Test behavior that matters — selection, keyboard focus, web view ownership hand-off, row and drop resolution — and check appearance at runtime with `/verify`; view code and styling do not need tests first.
+* **UI (AppKit views, layout, animation)**: test behavior that matters — selection, keyboard focus, web view ownership hand-off, row and drop resolution — and check appearance at runtime with `/verify`; view code and styling do not need tests.
 * Tests use XCTest (the `DetourTests` scheme). Keep them deterministic: inject the clock, use local fixture servers and fake native messaging hosts rather than real sites or apps, and keep long measurement legs behind a `TEST_RUNNER_…` environment variable.
 
 ### Before committing a code change

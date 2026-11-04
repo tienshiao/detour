@@ -6,34 +6,33 @@ import WebKit
 /// showing the same tab, the page gets keyboard focus unless a control in that
 /// window holds it (the TASK-128 rule), and the window that lost the web view
 /// keeps no first responder outside itself.
-@MainActor
-final class WebViewHandoffFocusTests: XCTestCase {
+nonisolated final class WebViewHandoffFocusTests: XCTestCase {
 
     private var controllers: [BrowserWindowController] = []
     private var createdSpaceIDs: [UUID] = []
     private var previousLastActiveSpaceID: UUID?
     private var previousExtensionLastActiveSpaceID: UUID?
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         previousLastActiveSpaceID = TabStore.shared.lastActiveSpaceID
         previousExtensionLastActiveSpaceID = ExtensionManager.shared.lastActiveSpaceID
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for controller in controllers { controller.window?.close() }
         controllers.removeAll()
         for id in createdSpaceIDs { TabStore.shared.deleteSpace(id: id) }
         createdSpaceIDs.removeAll()
         TabStore.shared.lastActiveSpaceID = previousLastActiveSpaceID
         ExtensionManager.shared.lastActiveSpaceID = previousExtensionLastActiveSpaceID
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Two regular windows on one fresh space with the same tab selected. The
     /// first hosts the web view; the second was shown while the first had it,
     /// so it displays the snapshot.
-    private func makeWindows() throws -> (first: BrowserWindowController, second: BrowserWindowController, tab: BrowserTab) {
+    @MainActor private func makeWindows() throws -> (first: BrowserWindowController, second: BrowserWindowController, tab: BrowserTab) {
         let store = TabStore.shared
         let profile = try XCTUnwrap(store.profiles.first { !$0.isIncognito })
         let space = store.addSpace(name: "Handoff", emoji: "H", colorHex: "007AFF", profileID: profile.id)
@@ -51,7 +50,7 @@ final class WebViewHandoffFocusTests: XCTestCase {
         return (first, second, tab)
     }
 
-    private func makeController(on space: Space, selecting tab: BrowserTab) -> BrowserWindowController {
+    @MainActor private func makeController(on space: Space, selecting tab: BrowserTab) -> BrowserWindowController {
         let wc = BrowserWindowController(incognito: false)
         controllers.append(wc)
         // Never let this window's split view touch the autosaved sidebar
@@ -64,11 +63,11 @@ final class WebViewHandoffFocusTests: XCTestCase {
     }
 
     /// What AppKit tells the window's delegate when the user switches to it.
-    private func becomeKey(_ wc: BrowserWindowController) {
+    @MainActor private func becomeKey(_ wc: BrowserWindowController) {
         wc.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: wc.window))
     }
 
-    func testTheWindowTakingOverTheWebViewFocusesThePage() throws {
+    @MainActor func testTheWindowTakingOverTheWebViewFocusesThePage() throws {
         let (first, second, tab) = try makeWindows()
         XCTAssertFalse(second.window?.firstResponder === tab.webView)
 
@@ -80,7 +79,7 @@ final class WebViewHandoffFocusTests: XCTestCase {
         _ = first
     }
 
-    func testTheWindowLosingTheWebViewKeepsNoStaleFirstResponder() throws {
+    @MainActor func testTheWindowLosingTheWebViewKeepsNoStaleFirstResponder() throws {
         let (first, second, tab) = try makeWindows()
         XCTAssertTrue(first.window?.firstResponder === tab.webView, "the hosting window's page has focus")
 
@@ -97,7 +96,7 @@ final class WebViewHandoffFocusTests: XCTestCase {
                        "the losing window shows its snapshot, not the web view")
     }
 
-    func testSwitchingBackFocusesThePageAgain() throws {
+    @MainActor func testSwitchingBackFocusesThePageAgain() throws {
         let (first, second, tab) = try makeWindows()
         becomeKey(second)
         becomeKey(first)
@@ -108,7 +107,7 @@ final class WebViewHandoffFocusTests: XCTestCase {
     }
 
     /// Focus a control in the window holds stays where it is.
-    func testFocusHeldByAControlInTheWindowIsLeftAlone() throws {
+    @MainActor func testFocusHeldByAControlInTheWindowIsLeftAlone() throws {
         let (_, second, tab) = try makeWindows()
         let window = try XCTUnwrap(second.window)
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 22))
@@ -123,7 +122,7 @@ final class WebViewHandoffFocusTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === held, "the control keeps the keyboard")
     }
 
-    func testAnOpenPaletteKeepsTheKeyboard() throws {
+    @MainActor func testAnOpenPaletteKeepsTheKeyboard() throws {
         let (_, second, tab) = try makeWindows()
         let window = try XCTUnwrap(second.window)
         second.focusAddressBar(nil)
@@ -140,7 +139,7 @@ final class WebViewHandoffFocusTests: XCTestCase {
 
     /// The other hand-off: a window that is acted on while another one hosts
     /// its tab's web view claims it without becoming key.
-    func testEnsureOwnsWebViewFocusesThePage() throws {
+    @MainActor func testEnsureOwnsWebViewFocusesThePage() throws {
         let (_, second, tab) = try makeWindows()
 
         second.ensureOwnsWebView()
@@ -152,7 +151,7 @@ final class WebViewHandoffFocusTests: XCTestCase {
     /// Becoming key again with the web view already here (a popover closed,
     /// the app was reactivated) and nothing holding the keyboard also leaves
     /// it with the page rather than with nothing.
-    func testBecomingKeyWithNothingFocusedFocusesTheHostedPage() throws {
+    @MainActor func testBecomingKeyWithNothingFocusedFocusesTheHostedPage() throws {
         let (first, _, tab) = try makeWindows()
         let window = try XCTUnwrap(first.window)
         window.makeFirstResponder(nil)

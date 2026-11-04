@@ -4,7 +4,7 @@ title: Unresponsive web process
 description: What WebKit does and does not do when a page's web process stops reading its messages — reload and stop are queued behind the hang, one "unresponsive" report arrives after three seconds, the "responsive" report is unreliable — and the rule by which Detour replaces the process for a load or a Stop it never answers.
 tags: [webkit, hang, navigation, loading]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T00:56:11Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-29T04:30:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-176
@@ -34,6 +34,9 @@ sources:
   - id: page-proxy
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/WebPageProxy.cpp
     title: WebKit WebPageProxy.cpp (the responsiveness timer is stopped when the view is hidden)
+  - id: task-227
+    resource: backlog:TASK-227
+    title: YouTube tabs come back from a relaunch titled with their URL
 ---
 
 `WKWebView.reload()`, `load(_:)` and `stopLoading()` only queue a message to
@@ -57,6 +60,17 @@ both gave the same results.[^spike]
 | `stopLoading()` | Queued behind the hang as well. `isLoading` stays true |
 | `_killWebContentProcessAndResetState` | Calls `webViewWebContentProcessDidTerminate` **before it returns**. Inside that callback `isLoading` is still true and `url` still set; once the call returns `isLoading` is false, `url` is nil and the process identifier 0 |
 | `reload()` after the kill | Launches a new process and loads the page (the back/forward list survives the reset); finished 80 ms later in the spike |
+
+Any exit of the web process — this kill, a crash, a `SIGKILL` from the
+system or a test — ends in `WebPageProxy::resetStateAfterProcessExited`,
+which calls `PageLoadState::reset`: `url` becomes nil **and `title` the empty
+string**. An unclaimed tab's page stays like that until a window claims it.
+`BrowserTab` keeps its own `url` and, since TASK-227, its title through
+this; see [BrowserTab](../architecture/browser-tab.md#url-and-title-rules).
+In the test host on macOS 26, `_killWebContentProcess` (without
+`AndResetState`) left the process of a web view in no window running and
+changed nothing; `TabTitleRetentionTests` sends `SIGKILL` to
+`_webProcessIdentifier` instead.[^task-227]
 
 Three more facts, from the incident behind TASK-175 and WebKit's
 source:[^task-175]
@@ -228,3 +242,4 @@ covered by the tests below.
 [^aux-proxy]: WebKit AuxiliaryProcessProxy.cpp (startResponsivenessTimer)
 [^page-proxy]: WebKit WebPageProxy.cpp (the responsiveness timer is stopped when the view is hidden)
 [^runtime]: Runtime check of Reload on a blocked page through the window
+[^task-227]: YouTube tabs come back from a relaunch titled with their URL

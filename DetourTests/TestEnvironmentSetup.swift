@@ -24,7 +24,7 @@ final class TestEnvironmentSetup: NSObject {
 /// domain — the host is Detour.app — so these are the keys the real app
 /// restores its window and sidebar from, plus Sparkle's state. Shared by the
 /// bundle-wide net below and by `ProductionDefaultsIsolationTests`.
-enum ProductionDefaultsWatch {
+nonisolated enum ProductionDefaultsWatch {
 
     /// The unscoped autosave keys: what the default data directory writes.
     static let autosaveKeys = [
@@ -93,12 +93,22 @@ private final class TestObserver: NSObject, XCTestObservation {
     /// `UserDefaults.didChangeNotification`, which a process receives only for
     /// its *own* writes — a production Detour writing the same domain during the
     /// run never posts it here — so the restore can tell the run's writes from
-    /// someone else's. The notification arrives on the writing thread, hence
-    /// the lock.
-    private var changesMadeHere: [String: NSObject?] = [:]
-    private var lastSeen: [String: NSObject] = [:]
+    /// someone else's. The notification arrives on the writing thread, so
+    /// every access takes `changesLock`. `nonisolated(unsafe)` because the
+    /// values are property-list objects (`NSObject`, not `Sendable`), which a
+    /// `Mutex` cannot take in and hand out.
+    nonisolated(unsafe) private var changesMadeHere: [String: NSObject?] = [:]
+    nonisolated(unsafe) private var lastSeen: [String: NSObject] = [:]
     private let changesLock = NSLock()
     private var defaultsObservation: NSObjectProtocol?
+
+    /// The WebKit storage identifiers seen recorded so far, and how many of
+    /// them were new since the network process last started
+    /// (`restartNetworkProcessIfNeeded`).
+    private var seenStorageIdentifiers: Set<UUID> = []
+    private var storesCreatedSinceNetworkProcessStart = 0
+    /// Set once the SPI turned out to be missing, so the warning prints once.
+    private var networkProcessRestartUnavailable = false
 
     func testBundleWillStart(_ testBundle: Bundle) {
         snapshotProductionDefaults()
@@ -118,12 +128,77 @@ private final class TestObserver: NSObject, XCTestObservation {
         // new-profile load tests opt back in (NewProfileExtensionLoadTests).
         ExtensionManager.shared.loadsExtensionsIntoAddedProfiles = false
 
+        // The test host shares the app's bundle id, so a notification posted to
+        // the system center shows as a real Detour banner (TASK-249). Every
+        // handler without an override uses `shared`; make it a fake before any
+        // test reaches it. `ExtensionNotificationManagerTests` checks it holds.
+        if ExtensionNotificationManager.sharedIfCreated != nil {
+            print("⚠️  ExtensionNotificationManager.shared existed before the test bundle started; removing its notifications and replacing it with the test center")
+        }
+        ExtensionNotificationManager.installSharedForTesting(center: TestHostNotificationCenter.shared)
+
         cleanTestExtensions()
         resetTabStore()
         clearPendingProfileDataRemovals()
         // The profiles TabStore.shared restored are live; leave their storage.
         removeRecordedWebKitStorage(phase: "start", excludingProfileIDs: Set(TabStore.shared.profiles.map(\.id)))
+        seenStorageIdentifiers = Set(AppDatabase.shared.recordedWebKitStorageIdentifiers())
         assertCleanState()
+    }
+
+    func testSuiteDidFinish(_ testSuite: XCTestSuite) {
+        // Only between test classes: a suite of suites (the bundle, "All
+        // tests") finishes right after its last class, when no test is left.
+        guard !testSuite.tests.contains(where: { $0 is XCTestSuite }) else { return }
+        restartNetworkProcessIfNeeded(after: testSuite.name)
+    }
+
+    // MARK: - Network process restarts
+
+    /// How many persistent website data stores the run may create before the
+    /// network process is restarted. One network process serves every store,
+    /// and it can only take about 190 persistent sessions over its lifetime,
+    /// however many of them are still alive: after that it can no longer issue
+    /// sandbox extensions ("Could not create a sandbox extension … errno = 12")
+    /// or open a new store's databases (EPERM), and every profile created
+    /// later runs without working localStorage — a background page's writes
+    /// read back empty. A full run creates more stores than that before
+    /// `ExtensionPolyfillProfileWiringTests` (measured Nov 3 2026: 196
+    /// sessions at the first failure, in runs with about 80 and about 10 of
+    /// those stores still alive; the count is of the sessions the network
+    /// process's ITP log names, so a lower bound). One suite can add a few
+    /// dozen stores before the next check, so the threshold is well under the
+    /// limit; a restart costs a process launch.
+    private static let storesPerNetworkProcess = 60
+
+    /// Between two suites, terminate the network process once enough new
+    /// persistent stores have been created since it started; WebKit launches a
+    /// fresh one when a store next needs it. A store counts once its WebKit
+    /// identifier is recorded (`WebKitStorageScope`), which happens before
+    /// WebKit creates it; the identifiers are remembered, so one removed
+    /// mid-run is still counted once.
+    private func restartNetworkProcessIfNeeded(after suiteName: String) {
+        guard !WebKitStorageScope.currentIsDefaultDataDirectory, !networkProcessRestartUnavailable else { return }
+        let recorded = Set(AppDatabase.shared.recordedWebKitStorageIdentifiers())
+        let new = recorded.subtracting(seenStorageIdentifiers)
+        seenStorageIdentifiers.formUnion(new)
+        storesCreatedSinceNetworkProcessStart += new.count
+        guard storesCreatedSinceNetworkProcessStart >= Self.storesPerNetworkProcess else { return }
+
+        let store = WKWebsiteDataStore.default()
+        guard store.responds(to: #selector(NetworkProcessTestingShim.terminateNetworkProcess)),
+              store.responds(to: #selector(NetworkProcessTestingShim.networkProcessIdentifier)) else {
+            print("⚠️  WKWebsiteDataStore lacks _terminateNetworkProcess or _networkProcessIdentifier; the network process keeps its \(storesCreatedSinceNetworkProcessStart) stores and is not restarted for the rest of the run")
+            networkProcessRestartUnavailable = true
+            return
+        }
+        // SPI (WKWebsiteDataStorePrivate.h), reached through an `@objc`
+        // protocol like the ITP hooks in ExtensionOriginTrackingPreventionTests.
+        let shim = unsafeBitCast(store, to: NetworkProcessTestingShim.self)
+        let pid = shim.networkProcessIdentifier()
+        shim.terminateNetworkProcess()
+        print("✓ Restarted the network process (pid \(pid)) after \(suiteName): \(storesCreatedSinceNetworkProcessStart) persistent stores created since it started")
+        storesCreatedSinceNetworkProcessStart = 0
     }
 
     func testBundleDidFinish(_ testBundle: Bundle) {
@@ -166,7 +241,7 @@ private final class TestObserver: NSObject, XCTestObservation {
         guard !WebKitStorageScope.currentIsDefaultDataDirectory, productionDefaults == nil else { return }
         let snapshot = ProductionDefaultsWatch.snapshot()
         productionDefaults = snapshot
-        lastSeen = snapshot
+        changesLock.withLock { lastSeen = snapshot }
         defaultsObservation = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: UserDefaults.standard, queue: nil
         ) { [weak self] _ in
@@ -176,15 +251,15 @@ private final class TestObserver: NSObject, XCTestObservation {
 
     /// One of this process's writes went through: attribute whatever watched
     /// key differs from the last look to this run.
-    private func recordOwnChanges() {
+    nonisolated private func recordOwnChanges() {
         let current = ProductionDefaultsWatch.snapshot()
-        changesLock.lock()
-        defer { changesLock.unlock() }
-        for key in Set(current.keys).union(lastSeen.keys)
-        where !ProductionDefaultsWatch.valuesEqual(current[key], lastSeen[key]) {
-            changesMadeHere[key] = .some(current[key])
+        changesLock.withLock {
+            for key in Set(current.keys).union(lastSeen.keys)
+            where !ProductionDefaultsWatch.valuesEqual(current[key], lastSeen[key]) {
+                changesMadeHere[key] = .some(current[key])
+            }
+            lastSeen = current
         }
-        lastSeen = current
     }
 
     /// Reports and undoes the changes this run made to the watched production
@@ -199,9 +274,7 @@ private final class TestObserver: NSObject, XCTestObservation {
             NotificationCenter.default.removeObserver(observation)
             defaultsObservation = nil
         }
-        changesLock.lock()
-        let changes = changesMadeHere
-        changesLock.unlock()
+        let changes = changesLock.withLock { changesMadeHere }
 
         let defaults = UserDefaults.standard
         var restored: [String] = []
@@ -348,4 +421,28 @@ private final class TestObserver: NSObject, XCTestObservation {
         assert(nonIncognitoProfiles.count == 1, "Test environment should start with exactly 1 profile")
         assert(totalTabs == 0, "Test environment should start with 0 tabs")
     }
+}
+
+/// The center `ExtensionNotificationManager.shared` posts to in the test host
+/// (TASK-249): a `HeldNotificationCenter` that answers every `add` at once, so
+/// a test that reaches `shared` sees its notifications shown here and nothing
+/// reaches the developer's Notification Center.
+enum TestHostNotificationCenter {
+    static let shared: HeldNotificationCenter = {
+        let center = HeldNotificationCenter()
+        center.holdsAdds = false
+        return center
+    }()
+}
+
+/// The private `WKWebsiteDataStore` hook the network process restart uses
+/// (WKWebsiteDataStorePrivate.h, macOS 12+). It terminates the one network
+/// process every store shares.
+@objc private protocol NetworkProcessTestingShim {
+    @objc(_terminateNetworkProcess)
+    func terminateNetworkProcess()
+
+    /// 0 when the store has no network process.
+    @objc(_networkProcessIdentifier)
+    func networkProcessIdentifier() -> pid_t
 }

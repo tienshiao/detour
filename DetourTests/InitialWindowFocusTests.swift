@@ -5,21 +5,20 @@ import WebKit
 /// TASK-128: a freshly shown window must not leave keyboard focus on a sidebar
 /// control nobody chose (AppKit focuses the first key view by itself). The
 /// page gets it, or nothing does.
-@MainActor
-final class InitialWindowFocusTests: XCTestCase {
+nonisolated final class InitialWindowFocusTests: XCTestCase {
 
     private var controller: BrowserWindowController?
     private var createdTabs: [BrowserTab] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         controller?.window?.close()
         controller = nil
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func makeController() throws -> (BrowserWindowController, Space) {
+    @MainActor private func makeController() throws -> (BrowserWindowController, Space) {
         let wc = BrowserWindowController(incognito: true)
         controller = wc
         // Never let this window's split view touch the autosaved sidebar
@@ -28,17 +27,17 @@ final class InitialWindowFocusTests: XCTestCase {
         return (wc, try XCTUnwrap(wc.activeSpace))
     }
 
-    private func addTab(to wc: BrowserWindowController, in space: Space) -> BrowserTab {
+    @MainActor private func addTab(to wc: BrowserWindowController, in space: Space) -> BrowserTab {
         let tab = wc.store.addTab(in: space, url: URL(string: "https://a.example.com/"))
         createdTabs.append(tab)
         return tab
     }
 
-    private func isInSidebar(_ responder: NSResponder?, of wc: BrowserWindowController) -> Bool {
+    @MainActor private func isInSidebar(_ responder: NSResponder?, of wc: BrowserWindowController) -> Bool {
         (responder as? NSView)?.isDescendant(of: wc.tabSidebar.view) ?? false
     }
 
-    func testWindowShownWithNoTabFocusesNothingInTheSidebar() throws {
+    @MainActor func testWindowShownWithNoTabFocusesNothingInTheSidebar() throws {
         let (wc, _) = try makeController()
         wc.showWindow(nil)
 
@@ -47,7 +46,7 @@ final class InitialWindowFocusTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === window)
     }
 
-    func testWindowShownWithASelectedTabFocusesItsWebView() throws {
+    @MainActor func testWindowShownWithASelectedTabFocusesItsWebView() throws {
         let (wc, space) = try makeController()
         let tab = addTab(to: wc, in: space)
         wc.selectTab(id: tab.id)
@@ -59,7 +58,7 @@ final class InitialWindowFocusTests: XCTestCase {
 
     /// The launch order: the window is shown first, the session's tab is
     /// selected afterwards.
-    func testTabSelectedAfterTheWindowIsShownTakesFocus() throws {
+    @MainActor func testTabSelectedAfterTheWindowIsShownTakesFocus() throws {
         let (wc, space) = try makeController()
         wc.showWindow(nil)
         let tab = addTab(to: wc, in: space)
@@ -70,7 +69,7 @@ final class InitialWindowFocusTests: XCTestCase {
 
     /// Switching tabs from the keyboard while the page has focus: the outgoing
     /// web view leaves the window, and the incoming one inherits the focus.
-    func testSwitchingTabsKeepsFocusOnThePage() throws {
+    @MainActor func testSwitchingTabsKeepsFocusOnThePage() throws {
         let (wc, space) = try makeController()
         wc.showWindow(nil)
         let first = addTab(to: wc, in: space)
@@ -84,7 +83,7 @@ final class InitialWindowFocusTests: XCTestCase {
 
     /// A tab playing audio stays parented for a moment after the switch (the
     /// PiP capture), so its web view never drops the focus by itself.
-    func testSwitchingAwayFromATabPlayingAudioFocusesTheIncomingPage() throws {
+    @MainActor func testSwitchingAwayFromATabPlayingAudioFocusesTheIncomingPage() throws {
         let (wc, space) = try makeController()
         wc.showWindow(nil)
         let first = addTab(to: wc, in: space)
@@ -100,7 +99,7 @@ final class InitialWindowFocusTests: XCTestCase {
 
     /// A switch that did not come from a click on the tab list (Control+Tab,
     /// Cmd+Option+Up/Down) leaves the keyboard with a control that holds it.
-    func testSelectingATabLeavesFocusOnAControlThatHoldsIt() throws {
+    @MainActor func testSelectingATabLeavesFocusOnAControlThatHoldsIt() throws {
         let (wc, space) = try makeController()
         wc.showWindow(nil)
         let tab = addTab(to: wc, in: space)
@@ -115,7 +114,7 @@ final class InitialWindowFocusTests: XCTestCase {
 
     /// The archive page sits off screen before the first space, which makes
     /// its search field the window's first key view.
-    func testArchivePageTakesKeyboardFocusOnlyWhileShowing() {
+    @MainActor func testArchivePageTakesKeyboardFocusOnlyWhileShowing() {
         let page = ArchivePageView(onScrollWheel: { _ in false })
         XCTAssertFalse(page.searchField.acceptsFirstResponder)
         XCTAssertFalse(page.tableView.acceptsFirstResponder)

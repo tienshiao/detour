@@ -6,35 +6,34 @@ import XCTest
 /// `URLSessionWebSocketTask` on the other. The worker side is faked
 /// (`FakeRelayPort`) and the server side is real — a loopback WebSocket echo
 /// server — so the protocol is checked against an actual socket, not a mock.
-@MainActor
-final class WebSocketRelaySessionTests: XCTestCase {
+nonisolated final class WebSocketRelaySessionTests: XCTestCase {
 
     private var server: LoopbackWebSocketServer!
     private var serverPort: UInt16 = 0
     private var sessions: [WebSocketRelaySession] = []
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         server = try LoopbackWebSocketServer()
         serverPort = try await server.start()
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for session in sessions { session.tearDown() }
         sessions.removeAll()
         server?.stop()
         server = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Helpers
 
-    private var echoURL: String { "ws://127.0.0.1:\(serverPort)/" }
+    @MainActor private var echoURL: String { "ws://127.0.0.1:\(serverPort)/" }
 
     /// A session whose cookie provider hands back `cookies` (the whole jar, the
     /// way `WKHTTPCookieStore.getAllCookies` does — the session picks the ones
     /// that apply). Passing nil means no provider at all.
-    private func makeSession(cookies: [HTTPCookie]? = nil) -> (WebSocketRelaySession, FakeRelayPort) {
+    @MainActor private func makeSession(cookies: [HTTPCookie]? = nil) -> (WebSocketRelaySession, FakeRelayPort) {
         let port = FakeRelayPort()
         let provider: WebSocketRelaySession.CookieProvider? = cookies.map { jar in
             { _, completion in completion(jar) }
@@ -45,7 +44,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
         return (session, port)
     }
 
-    private func cookie(name: String, value: String, domain: String,
+    @MainActor private func cookie(name: String, value: String, domain: String,
                        path: String = "/", secure: Bool = false) throws -> HTTPCookie {
         var properties: [HTTPCookiePropertyKey: Any] = [
             .name: name, .value: value, .domain: domain, .path: path
@@ -56,7 +55,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
 
     /// Wait for the session to send the worker a message with `op`, and return it.
     @discardableResult
-    private func waitForOp(_ op: String, on port: FakeRelayPort, timeout: TimeInterval = 5,
+    @MainActor private func waitForOp(_ op: String, on port: FakeRelayPort, timeout: TimeInterval = 5,
                            file: StaticString = #filePath, line: UInt = #line) async throws -> [String: Any] {
         var found: [String: Any]?
         try await waitUntil("a '\(op)' message on the relay port (got: \(port.sentOps))",
@@ -68,7 +67,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
     }
 
     /// Open a socket to the echo server and return once it is connected.
-    private func openSocket(file: StaticString = #filePath,
+    @MainActor private func openSocket(file: StaticString = #filePath,
                             line: UInt = #line) async throws -> (WebSocketRelaySession, FakeRelayPort) {
         let (session, port) = makeSession()
         port.deliver(["op": "open", "url": echoURL, "protocols": [String]()])
@@ -78,7 +77,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
 
     // MARK: - Opening
 
-    func testOpenConnectsAndReportsTheHandshake() async throws {
+    @MainActor func testOpenConnectsAndReportsTheHandshake() async throws {
         let (_, port) = makeSession()
         port.deliver(["op": "open", "url": echoURL, "protocols": [String]()])
 
@@ -91,7 +90,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
 
     // MARK: - Data frames
 
-    func testEchoesTextFrames() async throws {
+    @MainActor func testEchoesTextFrames() async throws {
         let (_, port) = try await openSocket()
         port.deliver(["op": "send", "text": "hello relay"])
 
@@ -100,7 +99,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
         XCTAssertNil(message["binary"], "a text frame must not be reported as binary")
     }
 
-    func testEchoesBinaryFramesAsBase64() async throws {
+    @MainActor func testEchoesBinaryFramesAsBase64() async throws {
         let (_, port) = try await openSocket()
         // Bytes that are not valid UTF-8 on their own, so a text round trip would
         // corrupt them.
@@ -115,7 +114,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
 
     // MARK: - Closing
 
-    func testWorkerCloseClosesTheSocketExactlyOnce() async throws {
+    @MainActor func testWorkerCloseClosesTheSocketExactlyOnce() async throws {
         let (_, port) = try await openSocket()
         port.deliver(["op": "close", "code": 1000, "reason": "bye"])
 
@@ -136,7 +135,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
     /// `close()` with no argument closes with *no status code*, and the CloseEvent
     /// the worker gets must then be 1005 ("no status received") with an empty
     /// reason — not the 1000 the task is actually cancelled with.
-    func testWorkerCloseWithoutACodeReportsA1005Close() async throws {
+    @MainActor func testWorkerCloseWithoutACodeReportsA1005Close() async throws {
         let (_, port) = try await openSocket()
         port.deliver(["op": "close"])
 
@@ -155,7 +154,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
     /// An application close code (3000-4999) has no `URLSessionWebSocketTask.CloseCode`
     /// case, so the frame goes out as a normal closure — but the worker must be
     /// told the code it asked for, not a 1000 it never chose.
-    func testWorkerCloseWithAnApplicationCodeIsReportedBack() async throws {
+    @MainActor func testWorkerCloseWithAnApplicationCodeIsReportedBack() async throws {
         let (_, port) = try await openSocket()
         port.deliver(["op": "close", "code": 4001, "reason": "app close"])
 
@@ -165,7 +164,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
         XCTAssertEqual(closed["wasClean"] as? Bool, true)
     }
 
-    func testServerCloseIsForwardedAndReleasesThePort() async throws {
+    @MainActor func testServerCloseIsForwardedAndReleasesThePort() async throws {
         let (_, port) = try await openSocket()
         server.closeAllConnections()
 
@@ -176,7 +175,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
         try await waitUntil("the port to be disconnected") { port.disconnectCount > 0 }
     }
 
-    func testPortDisconnectCancelsTheSocket() async throws {
+    @MainActor func testPortDisconnectCancelsTheSocket() async throws {
         let (_, port) = try await openSocket()
         try await waitUntil("the server to accept the connection") { self.server.acceptedConnections >= 1 }
 
@@ -189,7 +188,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
                        "the worker asked for nothing back: its port is already gone")
     }
 
-    func testTearDownCancelsTheSocketAndDisconnectsThePort() async throws {
+    @MainActor func testTearDownCancelsTheSocketAndDisconnectsThePort() async throws {
         let (session, port) = try await openSocket()
         try await waitUntil("the server to accept the connection") { self.server.acceptedConnections >= 1 }
 
@@ -205,7 +204,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
     /// handshake; a fresh ephemeral session sends none, so a credentialed socket
     /// to an origin the user is signed into would fail. The provider hands over
     /// the whole jar and the session picks what applies.
-    func testHandshakeCarriesTheProfilesCookiesForTheHost() async throws {
+    @MainActor func testHandshakeCarriesTheProfilesCookiesForTheHost() async throws {
         let jar = [try cookie(name: "session", value: "abc123", domain: "127.0.0.1")]
         let (session, port) = makeSession(cookies: jar)
         port.deliver(["op": "open", "url": echoURL, "protocols": [String]()])
@@ -227,7 +226,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
     /// `httpShouldHandleCookies` is off). The capture server records the
     /// handshake and then drops the connection, so the socket never opens — what
     /// is under test is what was asked for.
-    func testHandshakeSendsTheCookieAndProtocolHeadersOnTheWire() async throws {
+    @MainActor func testHandshakeSendsTheCookieAndProtocolHeadersOnTheWire() async throws {
         let capture = try LoopbackHandshakeCaptureServer()
         defer { capture.stop() }
         let capturePort = try await capture.start()
@@ -248,7 +247,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
 
     /// NEGATIVE: cookies scoped to another domain must not leak onto this
     /// handshake, even though the provider hands over the whole jar.
-    func testHandshakeOmitsCookiesForOtherDomains() async throws {
+    @MainActor func testHandshakeOmitsCookiesForOtherDomains() async throws {
         let jar = [
             try cookie(name: "elsewhere", value: "nope", domain: "example.com"),
             // Right host, wrong path.
@@ -266,7 +265,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
     }
 
     /// NEGATIVE: no provider (no Profile owns the controller) means no cookies.
-    func testHandshakeHasNoCookieHeaderWithoutAProvider() async throws {
+    @MainActor func testHandshakeHasNoCookieHeaderWithoutAProvider() async throws {
         let (session, port) = makeSession()
         port.deliver(["op": "open", "url": echoURL, "protocols": [String]()])
         try await waitForOp("open", on: port)
@@ -277,7 +276,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
 
     // MARK: - Protocol errors (negative)
 
-    func testInvalidURLFailsWithErrorAndClose1006() async throws {
+    @MainActor func testInvalidURLFailsWithErrorAndClose1006() async throws {
         let (_, port) = makeSession()
         port.deliver(["op": "open", "url": "https://example.invalid/notify", "protocols": [String]()])
 
@@ -290,7 +289,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
         XCTAssertEqual(port.sentOps, ["error", "close"], "nothing else may be sent")
     }
 
-    func testURLWithFragmentIsRejected() async throws {
+    @MainActor func testURLWithFragmentIsRejected() async throws {
         let (_, port) = makeSession()
         port.deliver(["op": "open", "url": "\(echoURL)#frag", "protocols": [String]()])
 
@@ -299,7 +298,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
         XCTAssertEqual(closed["code"] as? Int, 1006)
     }
 
-    func testOpBeforeOpenIsAProtocolError() async throws {
+    @MainActor func testOpBeforeOpenIsAProtocolError() async throws {
         let (_, port) = makeSession()
         port.deliver(["op": "send", "text": "too early"])
 
@@ -312,7 +311,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
         try await waitUntil("the port to be disconnected") { port.disconnectCount > 0 }
     }
 
-    func testSecondOpenIsAProtocolError() async throws {
+    @MainActor func testSecondOpenIsAProtocolError() async throws {
         let (_, port) = try await openSocket()
         port.deliver(["op": "open", "url": echoURL, "protocols": [String]()])
 
@@ -322,7 +321,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
         XCTAssertEqual(closed["reason"] as? String, "protocol error")
     }
 
-    func testUnknownOpIsAProtocolError() async throws {
+    @MainActor func testUnknownOpIsAProtocolError() async throws {
         let (_, port) = try await openSocket()
         port.deliver(["op": "teleport"])
 
@@ -331,7 +330,7 @@ final class WebSocketRelaySessionTests: XCTestCase {
         XCTAssertEqual(closed["reason"] as? String, "protocol error")
     }
 
-    func testSendAfterCloseIsIgnored() async throws {
+    @MainActor func testSendAfterCloseIsIgnored() async throws {
         let (_, port) = try await openSocket()
         port.deliver(["op": "close", "code": 1000, "reason": "bye"])
         try await waitForOp("close", on: port)
@@ -348,41 +347,30 @@ final class WebSocketRelaySessionTests: XCTestCase {
 // MARK: - Fake worker port
 
 /// The worker side of a relay port, driven by the test: it records what the
-/// session sent and injects what the worker would say.
-final class FakeRelayPort: WebSocketRelayPort, @unchecked Sendable {
+/// session sent and injects what the worker would say. Main-actor, like the
+/// session that drives it and the protocol it conforms to: every call reaches
+/// it on the main actor, so its state needs no lock and the class is Sendable
+/// by isolation (the `[String: Any]` messages never leave the main actor).
+@MainActor
+final class FakeRelayPort: WebSocketRelayPort {
 
-    private let lock = NSLock()
-    private var _sent: [[String: Any]] = []
-    private var _disconnectCount = 0
+    /// Everything the session sent the worker, in order.
+    private(set) var sent: [[String: Any]] = []
+    private(set) var disconnectCount = 0
 
     var onMessage: (([String: Any]) -> Void)?
     var onDisconnect: (() -> Void)?
 
-    /// Everything the session sent the worker, in order.
-    var sent: [[String: Any]] {
-        lock.lock(); defer { lock.unlock() }
-        return _sent
-    }
-
     /// Just the `op` of each message, for failure messages.
     var sentOps: [String] { sent.compactMap { $0["op"] as? String } }
 
-    var disconnectCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _disconnectCount
-    }
-
     func send(_ message: [String: Any], completion: (() -> Void)?) {
-        lock.lock()
-        _sent.append(message)
-        lock.unlock()
+        sent.append(message)
         completion?()
     }
 
     func disconnect() {
-        lock.lock()
-        _disconnectCount += 1
-        lock.unlock()
+        disconnectCount += 1
     }
 
     // MARK: Test drivers

@@ -1,0 +1,611 @@
+TASK-193.4 runtime harness: Quick Detour's profile pill (the menu, a
+switch reloading the page on another profile in the same window, into and
+out of Private, the download question, Open in following, an internal
+page, the extension events per profile). Temporary code, never committed to
+Detour/. Gated on DETOUR_VERIFY_DIR; DETOUR_VERIFY_PHASE 1 (light, the
+whole flow, fresh data dir) or 2 (dark, relaunch on phase 1's data: the
+pill, its menu, a switch into Private and Private's menu); 3 (light, fresh)
+and 4 (dark, on 3's data) are the code-review follow-up: the pressed pill
+while its menu is open, one switch, and leaving Private with a download.
+DETOUR_VERIFY_FIXTURE is a loopback server on 127.0.0.1:8934 (the
+TASK-193.3 threaded python http.server on another port): login.html sets
+the cookie qd=signed-in; cookie.html reads it ("Logged in" / "Not logged
+in", title "Signed in" / "Signed out"); a.html; /slow (a 20 MB attachment,
+4 KB every 0.25 s). Downloads go to $DETOUR_VERIFY_DIR/downloads-<phase>,
+never ~/Downloads.
+
+Real input: NSApp.postEvent keys and clicks (⌥⌘N and typing into the
+launcher; a posted click on the pill, which opens its menu on mouse-down;
+Down/Return/Escape inside the menu's tracking loop and Escape/Return in the
+modal question, driven by timers in .common mode). Before every activation
+and every posted input the harness waits until the HID idle time
+(CGEventSource.secondsSinceLastEventType) is at least 12 s, and a step that
+sees human input while posting is aborted and retried. Captures are of
+Detour's own windows only: -l <window number>, or -R of a region inside
+the Quick Detour window's frame (the menu, which drops over it). A test
+extension (tabs, storage, <all_urls>; enabled in Default, Second and
+Private) records tabs.onCreated/onRemoved and windows.onCreated/onRemoved
+into storage per profile.
+
+    SP=<scratch>/task193-4; mkdir -p $SP/out
+    python3 -I $SP/server/fixture.py $SP/fixture &   # port 8934
+    git apply docs/harness/task193-4-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # run.sh <phase> <light|dark>: DETOUR_DATA_DIR=DetourVerify1934, the
+    # 193.3 run.sh (screencapture -x -o -l <n> per "SHOOT <name> <n>",
+    # -x -R <rect> per "SHOOTRECT <name> <rect>", kill only the launched
+    # PID after "done"); phase 1 then phase 2.
+    git apply -R docs/harness/task193-4-harness.patch && xcodegen generate
+
+Results (2026-10-26, macOS 26.7, screen unlocked, no human input seen
+during either run; captures in out/light-* and out/dark-*, logs
+out/verify-1.log and verify-2.log):
+- Default's cookie seeded (login.html in Home). ⌥⌘N from the window on
+  Home, cookie.html: pill "Default", "Logged in", Open in "🏠 Home"
+  (sections Default: Home [default] / Second: Play); the extension in
+  Default listed popup 122 with tab 144, Second's none.
+- The pill (posted click): its menu "✓ Default, Second, ----, Private",
+  each other profile with the tooltip "Reload this page in <name>: its
+  cookies and sign-ins, without this page's back and forward history"
+  (out/light-02-pill-menu-open). Down×2 + Return chose Second: the same
+  window, a new tab (98E02CDA) and web view on Second's store, "Not logged
+  in", no back history, the old web view released; Open in "🎮 Play"
+  (Second's section first). History: Default's Quick Detour scope kept
+  "Signed in <cookie.html>", Second's got "Signed out <cookie.html>".
+  Extension: Default heard tabs.onRemoved 144 (windowId -1) and
+  windows.onRemoved 122; Second heard windows.onCreated 148 (popup, not
+  incognito) then tabs.onCreated 178 in 148, and listed popup 148 with tab
+  178 on cookie.html; Default listed no popup.
+- Back to Default: "Logged in" again, Open in "🏠 Home" (the source space
+  again); Default heard windows.onCreated 188 (a new id) and tabs.onCreated
+  210; Second heard its tab and window removed.
+- Into Private (Down×3 + Return, past the separator): Private's
+  non-persistent store, dark window, pill "Private", "Open in Private
+  Window ⌘O" with no chevron, download scope its tab, the Private session
+  live; cookie.html then a.html recorded nothing (3 visits before and
+  after); Private's extension context heard windows.onCreated 147
+  (incognito popup) and tabs.onCreated 247, Default its removals.
+- Out of Private with /slow downloading (scope: the page): choosing Default
+  brought up "Switch to Default? / 1 download is in progress. Leaving
+  Private browsing cancels it. / [Switch Profile] [Continue Downloading]"
+  (out/light-05-switch-alert). Escape: still Private, same tab and web
+  view, the download downloading and listed. Again with Return: switched to
+  Default (a new tab, a.html reloaded there), the download cancelled and
+  no longer listed, no partial file in downloads-1, the Private session
+  ended (hasLivePrivateSession false).
+- The History page (typed into the window as an internal page), then
+  Second from the pill: detour://history/ reopened as the History page on
+  Second, listing Second's Quick Detour visit with its "Quick Detour" label.
+- Closing the window (performClose): Second's extension heard the tab and
+  the popup removed.
+- Phase 2 (dark, relaunch): the pill and its menu (out/dark-12), a switch
+  into Private (dark window, "Not logged in": the Private store has no
+  cookie), Private's menu with ✓ Private (out/dark-14).
+Not checked: a person's own click on the pill, VoiceOver, a page mid-load
+(unit test only), a profile renamed or deleted while its Quick Detour is
+open (unit tests only), several displays.
+
+Code-review follow-up (phases 3 light and 4 dark, 2026-10-26; the post-alert
+guard now also refuses while a sheet is attached, the pill reports its
+pressed state through onHighlightChange): with the menu open the pill was
+highlighted (layer alpha 0.16, 0.08 before and after Escape), captured with
+the menu (out/light-21-pill-menu-open, out/dark-21-pill-menu-open; window
+captures out/*-22-pill-pressed-window); choosing Second switched (a new tab
+on Second's store, "Not logged in"; out/*-23-switched-to-second); from
+Private with /slow downloading, choosing Default asked "Switch to Default?
+/ 1 download is in progress. Leaving Private browsing cancels it." (out/*-24-
+switch-alert), Return switched, cancelled the download (not listed, no
+partial file) and ended the Private session. No human input seen.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 10201a7..89a7681 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -120,6 +120,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask1934HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task1934Harness.swift b/Detour/App/Task1934Harness.swift
+new file mode 100644
+index 0000000..7a94288
+--- /dev/null
++++ b/Detour/App/Task1934Harness.swift
+@@ -0,0 +1,492 @@
++// TEMP TASK-193.4 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import GRDB
++import WebKit
++
++extension AppDelegate {
++    func runTask1934HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let phase = env["DETOUR_VERIFY_PHASE"] ?? "1"
++        let base = env["DETOUR_VERIFY_FIXTURE"] ?? "http://127.0.0.1:8934/"
++        let ap = env["DETOUR_VERIFY_APPEARANCE"] ?? "light"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(phase).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        switch ap {
++        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
++        default: NSApp.appearance = NSAppearance(named: .aqua)
++        }
++        let store = TabStore.shared
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func quick() -> [QuickDetourWindowController] { QuickDetourWindowController.openControllers }
++        func oid(_ o: AnyObject?) -> String { o.map { String(UInt(bitPattern: ObjectIdentifier($0).hashValue), radix: 16) } ?? "nil" }
++        func shoot(_ name: String, _ window: NSWindow?) async {
++            guard let window else { return log("no window for \(name)") }
++            await sleep(1.0)
++            log("SHOOT \(ap)-\(name) \(window.windowNumber)")
++            await sleep(1.5)
++        }
++        func humanIdle() -> Double {
++            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
++        }
++        func awaitIdle(_ seconds: Double = 12) async {
++            var waited = 0.0
++            while humanIdle() < seconds {
++                if waited == 0 { log("waiting for the machine to be idle (idle \(Int(humanIdle())) s)") }
++                await sleep(2); waited += 2
++            }
++            if waited > 0 { log("idle again after \(Int(waited)) s") }
++        }
++        func ensureFront(_ window: NSWindow?) async {
++            await awaitIdle()
++            for _ in 0..<6 {
++                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
++                if let window, NSApp.keyWindow !== window { window.makeKeyAndOrderFront(nil) }
++                if NSApp.isActive && (window == nil || NSApp.keyWindow === window) { return }
++                await sleep(0.5)
++            }
++            log("WARN not frontmost: active=\(NSApp.isActive) key=\(String(describing: NSApp.keyWindow?.title))")
++        }
++        var eventNumber = 9000
++        var stepAborted = false
++        var focus: NSWindow?
++        func mouse(_ type: NSEvent.EventType, at p: NSPoint, in window: NSWindow) {
++            if humanIdle() < 1 { log("ABORT human input before a click: not posted"); stepAborted = true; return }
++            eventNumber += 1
++            if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
++                                          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                          context: nil, eventNumber: eventNumber, clickCount: 1,
++                                          pressure: type == .leftMouseDown ? 1 : 0) {
++                NSApp.postEvent(e, atStart: false)
++            }
++        }
++        func clickNoWait(_ view: NSView) {
++            guard let w = view.window else { return log("click: no window") }
++            let p = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
++            mouse(.leftMouseDown, at: p, in: w)
++            mouse(.leftMouseUp, at: p, in: w)
++        }
++        func key(_ chars: String, code: UInt16, mods: NSEvent.ModifierFlags = [], ignoring: String? = nil,
++                 window: NSWindow? = nil) {
++            if humanIdle() < 1 {
++                log("ABORT human input while posting \(chars.debugDescription): not posted")
++                stepAborted = true
++                return
++            }
++            guard let w = window ?? NSApp.keyWindow else { return log("key: no key window") }
++            for type in [NSEvent.EventType.keyDown, .keyUp] {
++                if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: mods,
++                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
++                                            context: nil, characters: chars, charactersIgnoringModifiers: ignoring ?? chars,
++                                            isARepeat: false, keyCode: code) {
++                    NSApp.postEvent(e, atStart: false)
++                }
++            }
++        }
++        func refocus() async {
++            if humanIdle() < 2 { await awaitIdle() }
++            if !NSApp.isActive || NSApp.keyWindow == nil || (focus != nil && NSApp.keyWindow !== focus) {
++                log("refocus: active=\(NSApp.isActive) key=\(NSApp.keyWindow?.title ?? "nil") -> \(focus?.title ?? "nil")")
++                await ensureFront(focus)
++            }
++        }
++        func typeText(_ text: String) async {
++            for ch in text {
++                await refocus()
++                key(String(ch), code: 0)
++                await sleep(0.03)
++            }
++            await sleep(0.6)
++        }
++        let launcher = QuickDetourLauncher.shared
++        func returnKey() async { await refocus(); key("\r", code: 36); await sleep(1.0) }
++        func optCmdN() async {
++            await refocus()
++            key("˜", code: 45, mods: [.command, .option], ignoring: "n"); await sleep(1.5)
++            if launcher.isShowing { focus = launcher.panel }
++        }
++        func openFromLauncher(_ window: NSWindow?, _ url: String) async -> QuickDetourWindowController? {
++            for attempt in 1...3 {
++                focus = window
++                await ensureFront(window)
++                await optCmdN()
++                if !launcher.isShowing { log("launcher did not show (attempt \(attempt))"); continue }
++                let before = quick().count
++                await typeText(url)
++                await returnKey()
++                if quick().count > before, let q = quick().last { focus = q.window; return q }
++                log("retrying the launcher (attempt \(attempt))")
++                if launcher.isShowing { launcher.close() }
++                await sleep(1.0)
++            }
++            return nil
++        }
++        func newPrivateWindow() {
++            let selector = #selector(AppDelegate.createNewIncognitoWindow)
++            for top in NSApp.mainMenu?.items ?? [] {
++                if let menu = top.submenu, let index = menu.items.firstIndex(where: { $0.action == selector }) {
++                    menu.performActionForItem(at: index)
++                    return
++                }
++            }
++            log("no New Private Window item")
++        }
++        func waitFor(_ what: String, timeout: Double = 15, _ cond: () -> Bool) async -> Bool {
++            let deadline = Date().addingTimeInterval(timeout)
++            while Date() < deadline {
++                if cond() { return true }
++                await sleep(0.25)
++            }
++            log("TIMEOUT waiting for \(what)")
++            return false
++        }
++        func js(_ webView: WKWebView?, _ source: String) async -> String {
++            guard let webView else { return "no web view" }
++            let value = try? await webView.callAsyncJavaScript(source, contentWorld: .page)
++            return value.map { "\($0)" } ?? "nil"
++        }
++        func historyRows(_ scope: String) -> [String] {
++            HistoryDatabase.shared.visits(spaceIDs: [scope], limit: 50).map { "\($0.title) <\(URL(string: $0.url)?.lastPathComponent ?? $0.url)>" }
++        }
++        func allVisitCount() -> Int {
++            (try? HistoryDatabase.shared.dbQueue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM historyVisit") }) ?? -1
++        }
++        func describeOpenIn(_ q: QuickDetourWindowController) -> String {
++            let m = q.openInMenu
++            return "button='\(q.titleBar.openInButton.attributedTitle.string)' chevron=\(!q.titleBar.openInMenuButton.isHidden) target=\(String(describing: m.defaultTarget)) sections=\(m.sections.map { "\($0.title): " + $0.items.map { "\($0.emoji) \($0.name)\($0.isDefault ? " [default]" : "")" }.joined(separator: ", ") })"
++        }
++        func describe(_ q: QuickDetourWindowController) -> String {
++            "pill='\(q.titleBar.profileName)' profile=\(q.profile.name) tab=\(q.tabID.uuidString.prefix(8)) webView=\(oid(q.tab?.webView)) store=\(q.tab?.webView?.configuration.websiteDataStore === q.profile.dataStore ? "the profile's" : "OTHER") persistent=\(q.tab?.webView?.configuration.websiteDataStore.isPersistent ?? false) appearance=\(q.window?.appearance?.name.rawValue ?? "app") title='\(q.tab?.title ?? "nil")' url=\(q.tab?.url?.absoluteString ?? "nil") canGoBack=\(q.tab?.canGoBack ?? false) scope=\(q.downloadScope)"
++        }
++
++        /// Opens the pill's menu with a posted click, logs and captures it
++        /// (its tracking loop runs inside the click, so timers drive the
++        /// rest), then picks the profile named `choose` with Down arrows and
++        /// Return — or Escape when nil. `alertKey`, when set, is posted to the
++        /// modal alert the choice brings up.
++        func usePill(_ q: QuickDetourWindowController, shot: String?, choose: String?,
++                     alertKey: (chars: String, code: UInt16)? = nil, alertShot: String? = nil,
++                     pressedShot: String? = nil) async {
++            var trackedMenu: NSMenu?
++            let observer = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification,
++                                                                  object: nil, queue: nil) { note in
++                trackedMenu = note.object as? NSMenu
++            }
++            defer { NotificationCenter.default.removeObserver(observer) }
++            guard let w = q.window else { return }
++            focus = w
++            await ensureFront(w)
++            let pill = q.titleBar.pill
++            let pillScreen = w.convertToScreen(pill.convert(pill.bounds, to: nil))
++            let selectable = q.makeProfileMenu().items.filter { !$0.isSeparatorItem }.map(\.title)
++            let downs = choose.flatMap { selectable.firstIndex(of: $0) }.map { $0 + 1 }
++            if choose != nil && downs == nil { log("no item \(choose!) in \(selectable)") }
++            var steps: [(Double, () -> Void)] = []
++            steps.append((1.2, {
++                let items = trackedMenu?.items.map {
++                    $0.isSeparatorItem ? "----" : "\($0.state == .on ? "✓ " : "")\($0.title)\($0.toolTip.map { " {tip: \($0)}" } ?? "")"
++                } ?? []
++                log("pill menu open: tracking=\(trackedMenu != nil) pillHighlighted=\(q.titleBar.pill.isHighlighted) pillAlpha=\(q.titleBar.pill.layer?.backgroundColor?.alpha ?? -1) items=\(items)")
++                // The window alone: the menu is a window of its own, so this
++                // shows the pressed pill beside nothing but Detour.
++                if let pressedShot { log("SHOOT \(ap)-\(pressedShot) \(w.windowNumber)") }
++                if let shot {
++                    // The menu drops below the pill, over the Quick Detour
++                    // window only (the region stays inside its frame).
++                    let rect = NSRect(x: pillScreen.minX - 12, y: max(w.frame.minY, pillScreen.minY - 190),
++                                      width: 300, height: pillScreen.height + 200)
++                        .intersection(w.frame)
++                    let top = (NSScreen.screens.first?.frame.maxY ?? 0) - rect.maxY
++                    log("SHOOTRECT \(ap)-\(shot) \(Int(rect.minX)),\(Int(top)),\(Int(rect.width)),\(Int(rect.height))")
++                }
++            }))
++            if let downs {
++                for i in 0..<downs {
++                    steps.append((3.5 + Double(i) * 0.3, { key("\u{F701}", code: 125, window: w) }))
++                }
++                steps.append((3.8 + Double(downs) * 0.3, { key("\r", code: 36, window: w) }))
++                if let alertKey {
++                    let t0 = 5.5 + Double(downs) * 0.3
++                    steps.append((t0, {
++                        let modal = NSApp.modalWindow
++                        func texts(_ v: NSView?) -> [String] {
++                            guard let v else { return [] }
++                            let own = (v as? NSTextField).map { [$0.stringValue] } ?? (v as? NSButton).map { ["[\($0.title)]"] } ?? []
++                            return own + v.subviews.flatMap(texts)
++                        }
++                        log("alert: modal=\(modal != nil) text='\(texts(modal?.contentView).filter { !$0.isEmpty }.joined(separator: " | "))'")
++                        if let alertShot, let modal { log("SHOOT \(ap)-\(alertShot) \(modal.windowNumber)") }
++                    }))
++                    steps.append((t0 + 3.0, { key(alertKey.chars, code: alertKey.code, window: NSApp.modalWindow) }))
++                }
++            } else {
++                steps.append((3.5, { key("\u{1b}", code: 53, window: w) }))
++            }
++            for (delay, body) in steps {
++                let t = Timer(timeInterval: delay, repeats: false) { _ in body() }
++                RunLoop.main.add(t, forMode: .common)
++            }
++            clickNoWait(pill)
++            let total = (steps.map(\.0).max() ?? 4) + 1.5
++            await sleep(total)
++        }
++
++        // Downloads go to the run's own folder, never ~/Downloads.
++        let downloadsDir = URL(fileURLWithPath: outDir).appendingPathComponent("downloads-\(phase)")
++        try? FileManager.default.createDirectory(at: downloadsDir, withIntermediateDirectories: true)
++        DownloadManager.shared.downloadsDirectory = downloadsDir
++
++        Task { @MainActor in
++            await sleep(2.5)
++            log("phase \(phase) \(ap) start: spaces=\(store.spaces.map { "\($0.emoji) \($0.name)@\($0.profile?.name ?? "?")" }) profiles=\(store.profiles.map(\.name))")
++            let home = wc.activeSpace ?? store.nonIncognitoSpaces.first!
++            let defaultProfile = home.profile!
++            let second = store.profiles.first { $0.name == "Second" } ?? store.addProfile(name: "Second")
++            let play = store.nonIncognitoSpaces.first { $0.name == "Play" }
++                ?? store.addSpace(name: "Play", emoji: "🎮", colorHex: "FF9500", profileID: second.id)
++            let privateProfile = store.ensureIncognitoProfile()
++            log("fixture: home=\(home.emoji) \(home.name)@\(defaultProfile.name) play=\(play.emoji) \(play.name)@\(second.name)")
++
++            /// Runs `body` once the machine is idle; again (up to 3 times)
++            /// when the person used it meanwhile.
++            func step(_ name: String, _ body: () async -> Bool) async -> Bool {
++                for attempt in 1...3 {
++                    await awaitIdle()
++                    stepAborted = false
++                    let ok = await body()
++                    if !stepAborted { return ok }
++                    log("\(name): aborted (attempt \(attempt)), retrying when idle")
++                    await sleep(1)
++                }
++                log("\(name): gave up"); return false
++            }
++
++            if phase == "3" || phase == "4" {
++                // Review follow-up: the pressed pill, one switch, the question.
++                _ = await step("R1 pressed pill and a switch") {
++                    for q in quick() { q.window?.close() }
++                    guard let q = await openFromLauncher(wc.window, base + "cookie.html") else { return false }
++                    _ = await waitFor("cookie.html") { q.tab?.title.hasPrefix("Signed") == true && q.tab?.isLoading == false }
++                    log("R1 before: \(describe(q)) pillHighlighted=\(q.titleBar.pill.isHighlighted) pillAlpha=\(q.titleBar.pill.layer?.backgroundColor?.alpha ?? -1)")
++                    await usePill(q, shot: "21-pill-menu-open", choose: nil, pressedShot: "22-pill-pressed-window")
++                    if stepAborted { return false }
++                    log("R1 after Escape: pillHighlighted=\(q.titleBar.pill.isHighlighted) pillAlpha=\(q.titleBar.pill.layer?.backgroundColor?.alpha ?? -1)")
++                    let oldTab = q.tabID
++                    await usePill(q, shot: nil, choose: second.name)
++                    if stepAborted { return false }
++                    _ = await waitFor("cookie.html on Second") { q.tab?.title.hasPrefix("Signed") == true && q.tab?.isLoading == false }
++                    log("R1 switched: newTab=\(q.tabID != oldTab) store===Second=\(q.tab?.webView?.configuration.websiteDataStore === second.dataStore) \(describe(q)) page='\(await js(q.tab?.webView, "return document.getElementById('state').textContent;"))'")
++                    await shoot("23-switched-to-second", q.window)
++                    await usePill(q, shot: nil, choose: privateProfile.name)
++                    if stepAborted { return false }
++                    _ = await waitFor("Private load") { q.tab?.isLoading == false }
++                    _ = await js(q.tab?.webView, "location.href = '\(base)slow'; return 1;")
++                    _ = await waitFor("download in flight") { DownloadManager.shared.items.contains { $0.state == .downloading } }
++                    let item = DownloadManager.shared.items.first { $0.state == .downloading }
++                    log("R2 Private with download: \(describe(q)) download=\(item?.filename ?? "nil") scope=\(item.map { $0.scope == .incognito(spaceID: q.tabID) ? "this page" : "\($0.scope)" } ?? "nil")")
++                    await usePill(q, shot: nil, choose: defaultProfile.name, alertKey: ("\r", 36), alertShot: "24-switch-alert")
++                    if stepAborted { return false }
++                    _ = await waitFor("Default load") { q.tab?.isLoading == false && q.profile === defaultProfile }
++                    log("R2 after Switch Profile: \(describe(q)) download=\(item.map { "\($0.state)" } ?? "nil") listed=\(DownloadManager.shared.items.contains { $0 === item }) privateSessionLive=\(store.hasLivePrivateSession) downloadsDir=\((try? FileManager.default.contentsOfDirectory(atPath: downloadsDir.path)) ?? [])")
++                    q.window?.performClose(nil)
++                    return true
++                }
++                log("done")
++                return
++            }
++            if phase == "2" {
++                // Dark: the pill and its menu, then Private's.
++                _ = await step("D1 dark pill menu") {
++                    for q in quick() { q.window?.close() }
++                    guard let q = await openFromLauncher(wc.window, base + "cookie.html") else { return false }
++                    _ = await waitFor("cookie.html") { q.tab?.title.hasPrefix("Signed") == true && q.tab?.isLoading == false }
++                    log("D1 \(describe(q))")
++                    await shoot("11-pill-window", q.window)
++                    await usePill(q, shot: "12-pill-menu-open", choose: nil)
++                    if stepAborted { return false }
++                    await usePill(q, shot: nil, choose: privateProfile.name)
++                    if stepAborted { return false }
++                    _ = await waitFor("private load") { q.tab?.isLoading == false }
++                    log("D2 after Private: \(describe(q))")
++                    await shoot("13-private-window", q.window)
++                    await usePill(q, shot: "14-private-pill-menu-open", choose: nil)
++                    q.window?.close()
++                    return true
++                }
++                log("done")
++                return
++            }
++
++            // An extension recording what a switch tells each profile.
++            let extDir = URL(fileURLWithPath: outDir).appendingPathComponent("ext-src")
++            try? FileManager.default.createDirectory(at: extDir, withIntermediateDirectories: true)
++            let manifest = """
++            {"manifest_version":3,"name":"Profile Pill Probe","version":"1.0.0","permissions":["tabs","storage"],
++             "host_permissions":["<all_urls>"],"background":{"service_worker":"background.js"}}
++            """
++            let worker = """
++            let chain = Promise.resolve();
++            const record = (e) => { chain = chain.then(() => chrome.storage.local.get({ events: [] })).then(({ events }) => {
++                events.push(e); return chrome.storage.local.set({ events });
++            }); };
++            chrome.tabs.onCreated.addListener((t) => record({ ev: 'tabs.onCreated', tabId: t.id, windowId: t.windowId, incognito: t.incognito }));
++            chrome.tabs.onRemoved.addListener((id, i) => record({ ev: 'tabs.onRemoved', tabId: id, windowId: i.windowId }));
++            chrome.windows.onCreated.addListener((w) => record({ ev: 'windows.onCreated', windowId: w.id, type: w.type, incognito: w.incognito }));
++            chrome.windows.onRemoved.addListener((id) => record({ ev: 'windows.onRemoved', windowId: id }));
++            """
++            try? manifest.write(to: extDir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
++            try? worker.write(to: extDir.appendingPathComponent("background.js"), atomically: true, encoding: .utf8)
++            try? "<html><body>probe</body></html>".write(to: extDir.appendingPathComponent("page.html"), atomically: true, encoding: .utf8)
++            var extPages: [UUID: WKWebView] = [:]
++            do {
++                let ext = try ExtensionManager.shared.install(from: extDir)
++                log("installed extension \(ext.id)")
++                ExtensionManager.shared.setEnabled(id: ext.id, profileID: privateProfile.id, enabled: true)
++                await sleep(2.0)
++                for profile in [defaultProfile, second, privateProfile] {
++                    if let context = profile.extensionContext(for: ext.id), let config = context.webViewConfiguration {
++                        let page = WKWebView(frame: NSRect(x: 0, y: 0, width: 300, height: 200), configuration: config)
++                        page.load(URLRequest(url: context.baseURL.appendingPathComponent("page.html")))
++                        _ = await waitFor("extension page \(profile.name)") { !page.isLoading && page.url != nil }
++                        extPages[profile.id] = page
++                        context.loadBackgroundContent { _ in }
++                        await sleep(1.5)
++                    } else { log("no extension context in \(profile.name)") }
++                }
++            } catch { log("install failed: \(error)") }
++            func extEvents(_ profile: Profile) async -> String {
++                guard let page = extPages[profile.id] else { return "no extension page" }
++                return await js(page, "return JSON.stringify((await chrome.storage.local.get({ events: [] })).events);")
++            }
++            func extWindows(_ profile: Profile) async -> String {
++                guard let page = extPages[profile.id] else { return "no extension page" }
++                return await js(page, """
++                    const ws = await chrome.windows.getAll({ populate: true });
++                    return JSON.stringify(ws.filter(w => w.type === 'popup').map(w => ({ id: w.id, type: w.type, incognito: w.incognito, tabs: (w.tabs || []).map(t => [t.id, (t.url || '').split('/').pop()]) })));
++                    """)
++            }
++            func clearEvents() async {
++                for page in extPages.values { _ = await js(page, "await chrome.storage.local.set({ events: [] }); return 1;") }
++            }
++
++            // Seed the default profile's sign-in cookie in a tab of Home.
++            let seed = store.addTab(in: home, url: URL(string: base + "login.html")!)
++            _ = await waitFor("login seed") { seed.title == "Logged in" && !seed.isLoading }
++            log("seeded the Default profile's cookie: \(seed.title)")
++            let defaultScope = QuickDetour.historySpaceIDString(forProfileID: defaultProfile.id)
++            let secondScope = QuickDetour.historySpaceIDString(forProfileID: second.id)
++
++            var qRef: QuickDetourWindowController?
++            _ = await step("S1 open on Default") {
++                for q in quick() { q.window?.close() }
++                qRef = await openFromLauncher(wc.window, base + "cookie.html")
++                guard let q = qRef else { return false }
++                _ = await waitFor("cookie.html") { q.tab?.title.hasPrefix("Signed") == true && q.tab?.isLoading == false }
++                log("S1 \(describe(q)) page='\(await js(q.tab?.webView, "return document.getElementById('state').textContent;"))'")
++                log("S1 \(describeOpenIn(q))")
++                await sleep(1.5)
++                log("S1 extension popups: Default=\(await extWindows(defaultProfile)) Second=\(await extWindows(second))")
++                await shoot("01-pill-window", q.window)
++                return true
++            }
++            guard let q = qRef else { return log("done") }
++            await clearEvents()
++
++            _ = await step("S2 the menu, then Second") {
++                await usePill(q, shot: "02-pill-menu-open", choose: nil)
++                if stepAborted { return false }
++                let window = q.window
++                let oldTab = q.tabID
++                weak var oldWeb = q.tab?.webView
++                await usePill(q, shot: nil, choose: second.name)
++                if stepAborted { return false }
++                _ = await waitFor("cookie.html on Second") { q.tab?.title.hasPrefix("Signed") == true && q.tab?.isLoading == false }
++                log("S2 switched: sameWindow=\(q.window === window) newTab=\(q.tabID != oldTab) store===Second=\(q.tab?.webView?.configuration.websiteDataStore === second.dataStore) \(describe(q)) page='\(await js(q.tab?.webView, "return document.getElementById('state').textContent;"))'")
++                for _ in 0..<20 where oldWeb != nil { await sleep(0.25) }
++                log("S2 old web view released=\(oldWeb == nil)")
++                log("S2 \(describeOpenIn(q))")
++                await sleep(2.0)
++                log("S2 history: Default QD=\(historyRows(defaultScope)) Second QD=\(historyRows(secondScope))")
++                log("S2 events: Default=\(await extEvents(defaultProfile)) Second=\(await extEvents(second))")
++                log("S2 popups: Default=\(await extWindows(defaultProfile)) Second=\(await extWindows(second))")
++                await shoot("03-switched-to-second", q.window)
++                return true
++            }
++            await clearEvents()
++
++            _ = await step("S3 back to Default") {
++                await usePill(q, shot: nil, choose: defaultProfile.name)
++                if stepAborted { return false }
++                _ = await waitFor("cookie.html on Default") { q.tab?.title.hasPrefix("Signed") == true && q.tab?.isLoading == false }
++                log("S3 \(describe(q)) page='\(await js(q.tab?.webView, "return document.getElementById('state').textContent;"))'")
++                log("S3 \(describeOpenIn(q))")
++                await sleep(1.0)
++                log("S3 events: Default=\(await extEvents(defaultProfile)) Second=\(await extEvents(second))")
++                return true
++            }
++            await clearEvents()
++
++            _ = await step("S4 into Private") {
++                let visitsBefore = allVisitCount()
++                await usePill(q, shot: nil, choose: privateProfile.name)
++                if stepAborted { return false }
++                _ = await waitFor("cookie.html in Private") { q.tab?.title.hasPrefix("Signed") == true && q.tab?.isLoading == false }
++                q.tab?.load(URL(string: base + "a.html")!)
++                _ = await waitFor("a.html in Private") { q.tab?.title == "Page A" && q.tab?.isLoading == false }
++                await sleep(2.0)
++                log("S4 \(describe(q)) privateSessionLive=\(store.hasLivePrivateSession) liveScopes=\(store.liveIncognitoDownloadScopeIDs.map { $0 == q.tabID ? "this page" : "other" })")
++                log("S4 \(describeOpenIn(q))")
++                log("S4 history: visits before=\(visitsBefore) after=\(allVisitCount())")
++                log("S4 events: Default=\(await extEvents(defaultProfile)) Private=\(await extEvents(privateProfile))")
++                log("S4 popups: Private=\(await extWindows(privateProfile))")
++                await shoot("04-private", q.window)
++                return true
++            }
++
++            _ = await step("S5 leave Private with a download running") {
++                _ = await js(q.tab?.webView, "location.href = '\(base)slow'; return 1;")
++                _ = await waitFor("download in flight") { DownloadManager.shared.items.contains { $0.state == .downloading } }
++                let item = DownloadManager.shared.items.first { $0.state == .downloading }
++                log("S5 download: \(item?.filename ?? "nil") scope=\(item.map { $0.scope == .incognito(spaceID: q.tabID) ? "this page" : "\($0.scope)" } ?? "nil")")
++                // Escape: Continue Downloading.
++                await usePill(q, shot: nil, choose: defaultProfile.name, alertKey: ("\u{1b}", 53), alertShot: "05-switch-alert")
++                if stepAborted { return false }
++                log("S5 after Continue Downloading: \(describe(q)) download=\(item.map { "\($0.state)" } ?? "nil") listed=\(DownloadManager.shared.items.contains { $0 === item })")
++                // Return: Switch Profile.
++                await usePill(q, shot: nil, choose: defaultProfile.name, alertKey: ("\r", 36))
++                if stepAborted { return false }
++                _ = await waitFor("cookie.html on Default again") { q.tab?.title.hasPrefix("Signed") == true && q.tab?.isLoading == false }
++                await sleep(1.0)
++                log("S5 after Switch Profile: \(describe(q)) download=\(item.map { "\($0.state)" } ?? "nil") listed=\(DownloadManager.shared.items.contains { $0 === item }) privateSessionLive=\(store.hasLivePrivateSession) downloadsDir=\((try? FileManager.default.contentsOfDirectory(atPath: downloadsDir.path)) ?? [])")
++                return true
++            }
++
++            _ = await step("S6 an internal page") {
++                q.load(InternalPage.history.url, typed: true)
++                _ = await waitFor("History page") { q.tab?.webView?.url?.scheme == InternalPage.scheme && q.tab?.isLoading == false }
++                await usePill(q, shot: nil, choose: second.name)
++                if stepAborted { return false }
++                _ = await waitFor("History on Second") { q.tab?.webView?.url?.scheme == InternalPage.scheme && q.tab?.isLoading == false }
++                await sleep(1.5)
++                log("S6 \(describe(q)) webViewURL=\(q.tab?.webView?.url?.absoluteString ?? "nil") rows='\(await js(q.tab?.webView, "return document.body.innerText.slice(0, 300);"))'")
++                await shoot("06-history-on-second", q.window)
++                return true
++            }
++            await clearEvents()
++            q.window?.performClose(nil)
++            await sleep(1.5)
++            log("S7 closed: quickDetours=\(quick().count) events Second=\(await extEvents(second))")
++            log("done")
++        }
++    }
++}
++#endif

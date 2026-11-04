@@ -20,8 +20,7 @@ import WebKit
 /// fallback has to be looked at again — the failure message says which way.
 ///
 /// The pure matching and combining rules are `ExtensionHeaderRulesTests`.
-@MainActor
-final class ExtensionDeclarativeNetRequestTests: XCTestCase {
+nonisolated final class ExtensionDeclarativeNetRequestTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
@@ -37,14 +36,14 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// rest of the test process: releasing one takes its process pool down, and
     /// WebKit traps when that lands inside an IPC dispatch (as in
     /// `ExtensionTabResolveTests`).
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         (server, serverPort) = try await startServer()
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for page in pages { page.stopLoading() }
         pages.removeAll()
         for id in createdSpaceIDs {
@@ -79,7 +78,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func startServer() async throws -> (LoopbackHTTPServer, UInt16) {
+    @MainActor private func startServer() async throws -> (LoopbackHTTPServer, UInt16) {
         let server = try LoopbackHTTPServer(routes: [
             "/api": "fixture",
             "/blocked": "fixture",
@@ -244,7 +243,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// carries the polyfill itself — the user script `Profile.extensionController`
     /// installs reaches web views, not workers. Its declared permissions are
     /// recorded as granted, as `ExtensionManager.install` records them.
-    private func makeExtension(permissions: [String], hostPermissions: [String] = ["<all_urls>"]) async throws -> WebExtension {
+    @MainActor private func makeExtension(permissions: [String], hostPermissions: [String] = ["<all_urls>"]) async throws -> WebExtension {
         let id = "dnr-\(UUID().uuidString.prefix(8).lowercased())"
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("detour-test-\(id)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -284,13 +283,13 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
         return ext
     }
 
-    private static let permission = "declarativeNetRequestWithHostAccess"
+    @MainActor private static let permission = "declarativeNetRequestWithHostAccess"
 
     // MARK: - Fixture world
 
     /// One profile with the extension loaded: an extension page and the
     /// started worker.
-    private struct World {
+    @MainActor private struct World {
         let ext: WebExtension
         let profile: Profile
         let context: WKWebExtensionContext
@@ -300,10 +299,10 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
         var heldRules: ExtensionHeaderRuleSet { handler.sessionHeaderRulesForTesting(extensionID: ext.id) }
     }
 
-    private enum Via: String, CaseIterable { case page, worker }
+    @MainActor private enum Via: String, CaseIterable { case page, worker }
 
     /// Loads `ext` into `profile`, or into a new profile of its own.
-    private func makeWorld(_ ext: WebExtension, in existing: Profile? = nil) async throws -> World {
+    @MainActor private func makeWorld(_ ext: WebExtension, in existing: Profile? = nil) async throws -> World {
         let profile: Profile
         if let existing {
             profile = existing
@@ -317,8 +316,9 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
         let page = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
         pages.append(page)
         try await loadAndWait(page, URLRequest(url: context.baseURL.appendingPathComponent("test.html")))
-        context.loadBackgroundContent { error in
-            if let error { print("loadBackgroundContent failed: \(error)") }
+        // Started, not awaited: the test waits for the worker itself.
+        Task {
+            do { try await context.loadBackgroundContent() } catch { print("loadBackgroundContent failed: \(error)") }
         }
         let world = World(ext: ext, profile: profile, context: context, page: page)
         // The worker is still starting; an unreachable worker answers nothing.
@@ -328,20 +328,20 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
         return world
     }
 
-    private func makeWorld(permissions: [String] = [permission],
+    @MainActor private func makeWorld(permissions: [String] = [permission],
                            hostPermissions: [String] = ["<all_urls>"]) async throws -> World {
         try await makeWorld(try await makeExtension(permissions: permissions, hostPermissions: hostPermissions))
     }
 
     // MARK: - Running an op
 
-    private struct OpFailed: Error, CustomStringConvertible {
+    @MainActor private struct OpFailed: Error, CustomStringConvertible {
         let message: String
         var description: String { message }
     }
 
     /// Runs one op in the page or the worker and returns its value.
-    private func run(_ via: Via, in world: World, _ message: [String: Any]) async throws -> [String: Any] {
+    @MainActor private func run(_ via: Via, in world: World, _ message: [String: Any]) async throws -> [String: Any] {
         let envelope: [String: Any]
         switch via {
         case .page:
@@ -372,7 +372,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
 
     /// Asserts a `settle`d op resolved and returns its value.
     @discardableResult
-    private func resolved(_ outcome: [String: Any], _ what: String,
+    @MainActor private func resolved(_ outcome: [String: Any], _ what: String,
                           file: StaticString = #filePath, line: UInt = #line) -> Any? {
         XCTAssertEqual(outcome["settled"] as? String, "resolved",
                        "\(what) should resolve, got: \(outcome)", file: file, line: line)
@@ -380,7 +380,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     }
 
     /// Asserts a `settle`d op rejected and returns the message.
-    private func rejection(_ outcome: [String: Any], _ what: String,
+    @MainActor private func rejection(_ outcome: [String: Any], _ what: String,
                            file: StaticString = #filePath, line: UInt = #line) -> String {
         XCTAssertEqual(outcome["settled"] as? String, "rejected",
                        "\(what) should reject, got: \(outcome)", file: file, line: line)
@@ -391,19 +391,19 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
 
     private var apiBase: String { "http://127.0.0.1:\(serverPort)" }
 
-    private static let userAgent = "claude-browser-extension/1.0.98 (external) fixture-agent "
+    @MainActor private static let userAgent = "claude-browser-extension/1.0.98 (external) fixture-agent "
 
     /// The three headers of the Claude extension's rule, lower-cased as the
     /// server reports them. The extension's User-Agent value ends in a space
     /// (so does the fixture's); a field value's trailing whitespace is not
     /// part of it on the wire.
-    private static let ruleHeaders = [
+    @MainActor private static let ruleHeaders = [
         "user-agent": userAgent.trimmingCharacters(in: .whitespaces),
         "anthropic-client-platform": "claude_browser_extension",
         "anthropic-client-version": "1.0.98",
     ]
 
-    private func claudeRule(base: String? = nil, id: Int = 1,
+    @MainActor private func claudeRule(base: String? = nil, id: Int = 1,
                             condition extra: [String: Any] = [:]) -> [String: Any] {
         var condition: [String: Any] = ["urlFilter": "\(base ?? apiBase)/*",
                                         "resourceTypes": ["xmlhttprequest", "other"]]
@@ -420,7 +420,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     }
 
     /// A rule WebKit accepts as it stands: `User-Agent` is in its own list.
-    private func userAgentRule(_ value: String, id: Int = 1) -> [String: Any] {
+    @MainActor private func userAgentRule(_ value: String, id: Int = 1) -> [String: Any] {
         [
             "id": id, "priority": 1,
             "action": ["type": "modifyHeaders", "requestHeaders": [
@@ -434,7 +434,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// Makes one request to the fixture and returns the headers it arrived
     /// with. Each request carries its own marker, so what the server recorded
     /// for it is found whatever else was sent.
-    private func requestHeaders(_ via: Via, in world: World, kind: String = "fetch", on server: LoopbackHTTPServer? = nil,
+    @MainActor private func requestHeaders(_ via: Via, in world: World, kind: String = "fetch", on server: LoopbackHTTPServer? = nil,
                                 port: UInt16? = nil, extra: [String: Any] = [:],
                                 file: StaticString = #filePath, line: UInt = #line) async throws -> [String: String] {
         requestCounter += 1
@@ -451,7 +451,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
         return seen.first?.headers ?? [:]
     }
 
-    private func assertCarriesRuleHeaders(_ headers: [String: String], _ what: String,
+    @MainActor private func assertCarriesRuleHeaders(_ headers: [String: String], _ what: String,
                                           file: StaticString = #filePath, line: UInt = #line) {
         for (name, value) in Self.ruleHeaders {
             XCTAssertEqual(headers[name], value, "\(what): `\(name)` should be the rule's value; got \(headers)",
@@ -459,7 +459,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
         }
     }
 
-    private func assertCarriesNoRuleHeaders(_ headers: [String: String], _ what: String,
+    @MainActor private func assertCarriesNoRuleHeaders(_ headers: [String: String], _ what: String,
                                             file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertNil(headers["anthropic-client-platform"], "\(what): \(headers)", file: file, line: line)
         XCTAssertNil(headers["anthropic-client-version"], "\(what): \(headers)", file: file, line: line)
@@ -467,13 +467,13 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
         XCTAssertNotNil(headers["user-agent"], "\(what): the browser's own User-Agent should be there", file: file, line: line)
     }
 
-    private func ruleIDs(_ value: Any?) -> [Int] {
+    @MainActor private func ruleIDs(_ value: Any?) -> [Int] {
         ((value as? [[String: Any]]) ?? []).compactMap { ExtensionHeaderRule.integer($0["id"]) }.sorted()
     }
 
     /// The ids `getSessionRules` answers with in a context — through Detour's
     /// wrapper, or (`webKitOnly`) from WebKit's own function.
-    private func sessionRuleIDs(_ via: Via, in world: World, webKitOnly: Bool = false, filter: [String: Any]? = nil,
+    @MainActor private func sessionRuleIDs(_ via: Via, in world: World, webKitOnly: Bool = false, filter: [String: Any]? = nil,
                                 file: StaticString = #filePath, line: UInt = #line) async throws -> [Int] {
         var message: [String: Any] = ["op": webKitOnly ? "nativeGetRules" : "getRules"]
         if let filter { message["filter"] = filter }
@@ -482,7 +482,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     }
 
     /// One header of one request to the fixture.
-    private func requestHeader(_ name: String, _ via: Via, in world: World, kind: String = "fetch",
+    @MainActor private func requestHeader(_ name: String, _ via: Via, in world: World, kind: String = "fetch",
                                file: StaticString = #filePath, line: UInt = #line) async throws -> String? {
         try await requestHeaders(via, in: world, kind: kind, file: file, line: line)[name]
     }
@@ -492,7 +492,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// With the permission, both contexts get the enums WebKit lacks, the
     /// wrapped session-rule methods on a rooted namespace, and a `fetch` that
     /// applies header rules; only a page has `XMLHttpRequest`.
-    func testEnumsAndWrappersAreInstalledInThePageAndTheWorker() async throws {
+    @MainActor func testEnumsAndWrappersAreInstalledInThePageAndTheWorker() async throws {
         let world = try await makeWorld()
         for via in Via.allCases {
             let state = try await run(via, in: world, ["op": "state"])
@@ -543,7 +543,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// The rule WebKit refuses resolves, is reported back by `getSessionRules`,
     /// and its three headers are on every `fetch` and XHR the extension's own
     /// contexts send to the rule's host — and on nothing else.
-    func testClaudeShapedRuleResolvesAndItsHeadersReachTheServer() async throws {
+    @MainActor func testClaudeShapedRuleResolvesAndItsHeadersReachTheServer() async throws {
         let world = try await makeWorld()
 
         // Before the rule: the browser's own User-Agent, no custom headers.
@@ -606,7 +606,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
 
     /// Removing the rule stops the headers, and unloading the context drops
     /// whatever is left: session rules do not outlive the session.
-    func testRemovingTheRuleStopsItsHeadersAndUnloadDropsTheRest() async throws {
+    @MainActor func testRemovingTheRuleStopsItsHeadersAndUnloadDropsTheRest() async throws {
         let world = try await makeWorld()
         resolved(try await run(.page, in: world,
                                ["op": "update", "options": ["addRules": [claudeRule(), claudeRule(id: 2)]]]),
@@ -655,7 +655,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// CANARY: WebKit's own `updateSessionRules` refuses a header name outside
     /// its list. If it starts accepting the rule, Detour no longer has to keep
     /// it alone.
-    func testWebKitItselfStillRefusesTheRulesCustomHeaders() async throws {
+    @MainActor func testWebKitItselfStillRefusesTheRulesCustomHeaders() async throws {
         let world = try await makeWorld()
         for via in Via.allCases {
             let outcome = try await run(via, in: world, ["op": "nativeUpdate", "options": ["addRules": [claudeRule()]]])
@@ -677,7 +677,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// CANARIES, and the split they justify. A rule WebKit accepts changes a
     /// *page's* requests in WebKit, and not the *worker's*; so Detour applies
     /// it in the worker and leaves the page to WebKit.
-    func testARuleWebKitAcceptsIsAppliedByDetourInTheWorkerAndByWebKitInAPage() async throws {
+    @MainActor func testARuleWebKitAcceptsIsAppliedByDetourInTheWorkerAndByWebKitInAPage() async throws {
         let world = try await makeWorld()
         resolved(try await run(.worker, in: world, ["op": "update", "options": ["addRules": [userAgentRule("rule-agent/1")]]]),
                  "a rule naming only User-Agent")
@@ -738,7 +738,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// The two header rules arrive in ONE call, which WebKit refuses as a
     /// whole (one of them names custom headers): each must still end up with
     /// the right keeper, or the tab would lose the rule WebKit can apply.
-    func testWebKitHeldRulesReachWebPagesInTabsAndDetourHeldOnesDoNot() async throws {
+    @MainActor func testWebKitHeldRulesReachWebPagesInTabsAndDetourHeldOnesDoNot() async throws {
         let world = try await makeWorld()
         let space = TabStore.shared.addSpace(name: "DNR tab", emoji: "D", colorHex: "007AFF", profileID: world.profile.id)
         createdSpaceIDs.append(space.id)
@@ -816,7 +816,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// A rule WebKit refuses that Detour cannot match either (a condition its
     /// matching does not implement) fails with WebKit's own error and leaves
     /// nothing behind; so does a call whose *other* rules WebKit refuses.
-    func testWhatNeitherKeeperCanApplyFailsWithWebKitsError() async throws {
+    @MainActor func testWhatNeitherKeeperCanApplyFailsWithWebKitsError() async throws {
         let world = try await makeWorld()
 
         let unmatched = claudeRule(condition: ["initiatorDomains": ["example.com"]])
@@ -847,7 +847,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     }
 
     /// The callback form settles through `runtime.lastError`, as WebKit's does.
-    func testCallbackFormReportsSuccessAndFailure() async throws {
+    @MainActor func testCallbackFormReportsSuccessAndFailure() async throws {
         let world = try await makeWorld()
         for via in Via.allCases {
             let ok = try await run(via, in: world, ["op": "updateCallback",
@@ -870,7 +870,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// `send()` waits for Detour's answer before WebKit sends anything. A page
     /// that aborts, or opens the request again, in that moment must get what it
     /// would have got from WebKit: the abort events, and only the second request.
-    func testXHRAbortedOrReopenedBeforeItIsSentNeverGoesOut() async throws {
+    @MainActor func testXHRAbortedOrReopenedBeforeItIsSentNeverGoesOut() async throws {
         let world = try await makeWorld()
         resolved(try await run(.worker, in: world, ["op": "update", "options": ["addRules": [claudeRule()]]]), "the rule")
 
@@ -897,7 +897,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// A send() that is waiting for Detour's answer is, to the page, a request
     /// in flight: the calls WebKit refuses then still throw from the call
     /// itself, and an open() that throws does not cancel the waiting send.
-    func testXHRMisuseStillThrowsWhileSendWaits() async throws {
+    @MainActor func testXHRMisuseStillThrowsWhileSendWaits() async throws {
         let world = try await makeWorld()
         resolved(try await run(.worker, in: world, ["op": "update", "options": ["addRules": [claudeRule()]]]), "the rule")
 
@@ -921,7 +921,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// set it in. Another extension in the same profile — holding the same
     /// permission — and the same extension in another profile neither see the
     /// rule nor have it applied to their requests.
-    func testRulesAreNotSharedWithAnotherExtensionOrAnotherProfile() async throws {
+    @MainActor func testRulesAreNotSharedWithAnotherExtensionOrAnotherProfile() async throws {
         let owner = try await makeWorld()
         let neighbour = try await makeWorld(try await makeExtension(permissions: [Self.permission]), in: owner.profile)
         let elsewhere = try await makeWorld(owner.ext)
@@ -966,7 +966,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// NEGATIVE: an extension that did not ask for declarativeNetRequest gets no
     /// namespace, no wrapped `fetch`, and the bridge refuses it outright — so
     /// it cannot have Detour keep or apply a rule by posting the messages itself.
-    func testWithoutThePermissionNothingIsInstalledAndTheBridgeRefuses() async throws {
+    @MainActor func testWithoutThePermissionNothingIsInstalledAndTheBridgeRefuses() async throws {
         let world = try await makeWorld(permissions: ["storage"])
         for via in Via.allCases {
             let state = try await run(via, in: world, ["op": "state"])
@@ -997,7 +997,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// answering for the extension's requests at once (the rule stays, so
     /// granting it again brings the headers back); the plain permission
     /// `declarativeNetRequest` is as good as the host-access one.
-    func testDenyingThePermissionInSettingsStopsTheHeadersAndGrantingRestoresThem() async throws {
+    @MainActor func testDenyingThePermissionInSettingsStopsTheHeadersAndGrantingRestoresThem() async throws {
         for permission in ["declarativeNetRequestWithHostAccess", "declarativeNetRequest"] {
             let world = try await makeWorld(permissions: [permission])
             resolved(try await run(.worker, in: world, ["op": "update", "options": ["addRules": [claudeRule()]]]),
@@ -1024,7 +1024,7 @@ final class ExtensionDeclarativeNetRequestTests: XCTestCase {
     /// As in Chrome, a header rule changes nothing for a URL the extension has
     /// no host access to. Asked of the bridge directly, so nothing is sent to
     /// the host the extension may not reach.
-    func testNoChangesAreAnsweredForAURLWithoutHostAccess() async throws {
+    @MainActor func testNoChangesAreAnsweredForAURLWithoutHostAccess() async throws {
         let world = try await makeWorld(hostPermissions: ["http://127.0.0.1/*"])
         // No urlFilter: the rule matches every URL, so only host access decides.
         var everywhere = claudeRule()

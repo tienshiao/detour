@@ -233,7 +233,11 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHand
 
     // MARK: - AVAudioPlayerDelegate
 
+    /// Main-actor isolated, as the SDK declares `AVAudioPlayerDelegate`
+    /// (`NS_SWIFT_UI_ACTOR`). Handled in place, not after a hop: a player
+    /// started in between would otherwise be released and its node ended.
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard player === audioPlayer else { return }
         log.info("Audio bridge: playback finished (success=\(flag)) for \(self.extensionID, privacy: .public)")
         audioPlayer = nil
         // Fire the JS sourceNode.onended callback so the extension knows playback completed
@@ -304,11 +308,6 @@ class OffscreenDocumentHost: NSObject, WKNavigationDelegate, WKScriptMessageHand
         }
         log.error("Offscreen document \(phase, privacy: .public) navigation failed for \(self.extensionID, privacy: .public): \(error.localizedDescription, privacy: .public)")
         settleLoad(.failure(LoadError.navigationFailed(path: requestedPath, underlying: error)))
-    }
-
-    /// Evaluate JavaScript in the offscreen document.
-    func evaluateJavaScript(_ js: String, completionHandler: ((Any?, Error?) -> Void)? = nil) {
-        webView?.evaluateJavaScript(js, completionHandler: completionHandler)
     }
 
     // MARK: - WKNavigationDelegate

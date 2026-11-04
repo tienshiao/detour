@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Synchronization
 
 /// Favicon image *bytes* for a page URL, shared by the two schemes that hand
 /// favicons to a web view: `detour-favicon://` (extensions holding the favicon
@@ -19,7 +20,9 @@ import Foundation
 /// Lookups run off the calling thread: the History page's scheme handler is
 /// asked from the main thread once per rendered row, and the `historyURL` read
 /// is a disk read.
-final class FaviconPNGLoader {
+/// Nonisolated and `Sendable`: lookups run on a global queue and complete on
+/// any queue; the cache and the in-flight table are behind one mutex.
+nonisolated final class FaviconPNGLoader: Sendable {
     static let shared = FaviconPNGLoader()
 
     /// A 1×1 transparent PNG — what `detour-favicon://` answers with when there
@@ -43,7 +46,12 @@ final class FaviconPNGLoader {
     /// The network fetch, as a test seam (mirrors `FaviconLoader.fetch`): tests
     /// replace it so no suite depends on the network. Only the download is
     /// replaced — the cache, the coalescing and the re-encode around it stand.
-    var fetch: (URL, @escaping (Data?) -> Void) -> Void = { url, completion in
+    typealias Fetch = @Sendable (URL, @escaping @Sendable (Data?) -> Void) -> Void
+    var fetch: Fetch {
+        get { fetchSeam.withLock { $0 } }
+        set { fetchSeam.withLock { $0 = newValue } }
+    }
+    private let fetchSeam = Mutex<Fetch>({ url, completion in
         URLSession.shared.dataTask(with: url) { data, response, _ in
             guard let data, (response as? HTTPURLResponse)?.statusCode == 200 else {
                 completion(nil)
@@ -51,15 +59,19 @@ final class FaviconPNGLoader {
             }
             completion(data)
         }.resume()
-    }
+    })
 
-    private let lock = NSLock()
-    private let cache: NSCache<NSString, NSData> = {
-        let cache = NSCache<NSString, NSData>()
-        cache.countLimit = 200
-        return cache
-    }()
-    private var inFlight: [NSString: [(Data?) -> Void]] = [:]
+    /// The cache and the requests waiting on a fetch, guarded together so a
+    /// lookup's check-then-enqueue is one step.
+    private struct State {
+        let cache: NSCache<NSString, NSData> = {
+            let cache = NSCache<NSString, NSData>()
+            cache.countLimit = 200
+            return cache
+        }()
+        var inFlight: [String: [@Sendable (Data?) -> Void]] = [:]
+    }
+    private let state = Mutex(State())
 
     /// Whose visits may answer a lookup. Every caller names one: there is no
     /// default, because the wrong one tells a caller what another profile
@@ -97,7 +109,7 @@ final class FaviconPNGLoader {
     func pngData(forPageURL pageURL: String, scope: Scope, resizedTo size: Int?,
                  undecodablePassesThrough: Bool = false,
                  database: HistoryDatabase = .shared,
-                 completion: @escaping (Data?) -> Void) {
+                 completion: @escaping @Sendable (Data?) -> Void) {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let recorded: String?
             switch scope {
@@ -118,24 +130,28 @@ final class FaviconPNGLoader {
 
     private func pngData(forFaviconURL faviconURL: URL, resizedTo size: Int?,
                          undecodablePassesThrough: Bool,
-                         completion: @escaping (Data?) -> Void) {
-        let key = "\(faviconURL.absoluteString)@\(size ?? 0)\(undecodablePassesThrough ? "+raw" : "")" as NSString
+                         completion: @escaping @Sendable (Data?) -> Void) {
+        let key = "\(faviconURL.absoluteString)@\(size ?? 0)\(undecodablePassesThrough ? "+raw" : "")"
 
-        lock.lock()
-        if let cached = cache.object(forKey: key) {
-            lock.unlock()
-            // Empty data is a remembered failure: a history full of one site
-            // whose icon 404s must not refetch it for every row scrolled past.
-            completion(cached.length > 0 ? cached as Data : nil)
-            return
+        enum Lookup { case cached(Data?), joined, fetch }
+        let lookup = state.withLock { state -> Lookup in
+            if let cached = state.cache.object(forKey: key as NSString) {
+                // Empty data is a remembered failure: a history full of one site
+                // whose icon 404s must not refetch it for every row scrolled past.
+                return .cached(cached.length > 0 ? cached as Data : nil)
+            }
+            if state.inFlight[key] != nil {
+                state.inFlight[key]?.append(completion)
+                return .joined
+            }
+            state.inFlight[key] = [completion]
+            return .fetch
         }
-        if inFlight[key] != nil {
-            inFlight[key]?.append(completion)
-            lock.unlock()
-            return
+        switch lookup {
+        case .cached(let data): return completion(data)
+        case .joined: return
+        case .fetch: break
         }
-        inFlight[key] = [completion]
-        lock.unlock()
 
         fetch(faviconURL) { [weak self] data in
             guard let self else {
@@ -148,10 +164,10 @@ final class FaviconPNGLoader {
             } else {
                 result = data
             }
-            self.lock.lock()
-            self.cache.setObject((result ?? Data()) as NSData, forKey: key)
-            let waiting = self.inFlight.removeValue(forKey: key) ?? []
-            self.lock.unlock()
+            let waiting = self.state.withLock { state in
+                state.cache.setObject((result ?? Data()) as NSData, forKey: key as NSString)
+                return state.inFlight.removeValue(forKey: key) ?? []
+            }
             for completion in waiting { completion(result) }
         }
     }
@@ -173,9 +189,9 @@ final class FaviconPNGLoader {
     /// Test seam: drops the cache and any queued completions, so one test's
     /// downloads cannot satisfy the next test's lookups.
     func resetForTesting() {
-        lock.lock()
-        defer { lock.unlock() }
-        cache.removeAllObjects()
-        inFlight.removeAll()
+        state.withLock { state in
+            state.cache.removeAllObjects()
+            state.inFlight.removeAll()
+        }
     }
 }

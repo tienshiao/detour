@@ -1,0 +1,411 @@
+TASK-210 runtime harness: Quick Detour's page settings popover, the bar's
+drag-or-click buttons, the Open in dropdown without its subtitle, and the
+palette prompt; the main window's site settings after the shared builder.
+Temporary code, never committed to Detour/. Gated on DETOUR_VERIFY_DIR;
+DETOUR_VERIFY_APPEARANCE light or dark; DETOUR_VERIFY_FIXTURE a loopback
+server (python3 -I -m http.server 8936 over a dir with index.html, title
+"Lookup Page"); DETOUR_VERIFY_EXT an unpacked MV3 extension with an action
+popup ("Verify Probe"), installed with ExtensionManager.install(from:) and
+pinned in Default. Data dir DetourVerify2100.
+
+Real input: NSApp.postEvent clicks and keys, and real HID presses
+(CGEvent .cghidEventTap: move, down, 12 dragged steps, up, then the cursor
+warped back) for the drags and the plain click; the Accessibility grant made
+HID drags work on 2026-10-26. Every activation and posted input waits for
+12 s of HID idle. Captures are of Detour's own windows (-l) or regions over
+them (-R). run.sh tails the log for "SHOOT <name> <window>" / "SHOOTRECT
+<name> x,y,w,h" (zsh: split with ${=line#*SHOOT }) and kills only the PID it
+launched after "done".
+
+    git apply docs/harness/task210-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    run.sh light; run.sh dark
+    git apply -R docs/harness/task210-harness.patch && xcodegen generate
+
+Results (2026-10-26, light and dark, screen unlocked): the bar shows the
+pinned probe, the Site Settings button (slider) and Copy Link; a click opens
+the main window's popover below it (host 127.0.0.1, no resources blocked,
+the three switches, "Verify Probe [pinned]", Extension Settings…). Its
+blocking switch whitelisted 127.0.0.1 in Default only (not Second) and the
+page reloaded (a JS marker gone); again: un-whitelisted, reloaded. The
+probe's name closed the settings and opened its popup below the pinned
+button (it opened above, out of the window, before the edge fix). A click
+on the host opened the palette, "Search or enter a URL" when emptied; the
+main window's Cmd+T palette "Where do you want to go?". The Open in
+dropdown: Default: Home ⌘O / Second: Play, no subtitles. A posted press
+moving 12 pt on the host began the window drag (no palette); HID drags of
+80/40 pt on the host and on Open in moved the window (no palette, the page
+not moved); a HID click on the host opened the palette. With the main
+window key, a first HID click on the Quick Detour's Open in only made it
+key (page kept, Home's tab count unchanged); a first HID drag moved it. The
+main window's popover (shared builder): same content, its blocking toggle
+reloaded the main tab and was undone.
+Not checked: a page with blocked resources (count > 0), several displays,
+VoiceOver, a person's own hand.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 915860d..166c5ea 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask210HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task210Harness.swift b/Detour/App/Task210Harness.swift
+new file mode 100644
+index 0000000..3bf0df1
+--- /dev/null
++++ b/Detour/App/Task210Harness.swift
+@@ -0,0 +1,346 @@
++// TEMP TASK-210 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask210HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let base = env["DETOUR_VERIFY_FIXTURE"] ?? "http://127.0.0.1:8936/"
++        let ap = env["DETOUR_VERIFY_APPEARANCE"] ?? "light"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(ap).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        NSApp.appearance = NSAppearance(named: ap == "dark" ? .darkAqua : .aqua)
++        let store = TabStore.shared
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func humanIdle() -> Double {
++            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
++        }
++        func awaitIdle(_ seconds: Double = 12) async {
++            var waited = 0.0
++            while humanIdle() < seconds {
++                if waited == 0 { log("waiting for the machine to be idle (idle \(Int(humanIdle())) s)") }
++                await sleep(2); waited += 2
++            }
++            if waited > 0 { log("idle again after \(Int(waited)) s") }
++        }
++        func ensureFront(_ window: NSWindow?) async {
++            await awaitIdle()
++            for _ in 0..<6 {
++                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
++                if let window, NSApp.keyWindow !== window { window.makeKeyAndOrderFront(nil) }
++                if NSApp.isActive && (window == nil || NSApp.keyWindow === window) { return }
++                await sleep(0.5)
++            }
++            log("WARN not frontmost: active=\(NSApp.isActive) key=\(String(describing: NSApp.keyWindow?.title))")
++        }
++        func shoot(_ name: String, _ window: NSWindow?) async {
++            guard let window else { return log("no window for \(name)") }
++            await sleep(0.8)
++            log("SHOOT \(ap)-\(name) \(window.windowNumber)")
++            await sleep(1.5)
++        }
++        func shootRect(_ name: String, _ rect: NSRect) async {
++            await sleep(0.5)
++            let top = (NSScreen.screens.first?.frame.maxY ?? 0) - rect.maxY
++            log("SHOOTRECT \(ap)-\(name) \(Int(rect.minX)),\(Int(top)),\(Int(rect.width)),\(Int(rect.height))")
++            await sleep(1.5)
++        }
++        var eventNumber = 9000
++        func mouse(_ type: NSEvent.EventType, at p: NSPoint, in window: NSWindow) {
++            if humanIdle() < 1 { log("ABORT human input before a click: not posted"); return }
++            eventNumber += 1
++            if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
++                                          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                          context: nil, eventNumber: eventNumber, clickCount: 1,
++                                          pressure: type == .leftMouseDown ? 1 : 0) {
++                NSApp.postEvent(e, atStart: false)
++            }
++        }
++        func centre(_ view: NSView) -> NSPoint {
++            view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
++        }
++        func click(_ view: NSView) {
++            guard let w = view.window else { return log("click: no window") }
++            let p = centre(view)
++            mouse(.leftMouseDown, at: p, in: w)
++            mouse(.leftMouseUp, at: p, in: w)
++        }
++        func key(_ chars: String, code: UInt16, mods: NSEvent.ModifierFlags = [], window: NSWindow? = nil) {
++            if humanIdle() < 1 { return log("ABORT human input while posting a key") }
++            guard let w = window ?? NSApp.keyWindow else { return log("key: no key window") }
++            for type in [NSEvent.EventType.keyDown, .keyUp] {
++                if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: mods,
++                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
++                                            context: nil, characters: chars, charactersIgnoringModifiers: chars,
++                                            isARepeat: false, keyCode: code) {
++                    NSApp.postEvent(e, atStart: false)
++                }
++            }
++        }
++        func waitFor(_ what: String, timeout: Double = 15, _ cond: () -> Bool) async -> Bool {
++            let deadline = Date().addingTimeInterval(timeout)
++            while Date() < deadline {
++                if cond() { return true }
++                await sleep(0.25)
++            }
++            log("TIMEOUT waiting for \(what)")
++            return false
++        }
++        func js(_ webView: WKWebView?, _ source: String) async -> String {
++            guard let webView else { return "no web view" }
++            let value = try? await webView.callAsyncJavaScript(source, contentWorld: .page)
++            return value.map { "\($0)" } ?? "nil"
++        }
++        func popoverSettings() -> (NSWindow, SettingsPopoverViewController)? {
++            for w in NSApp.windows where w.isVisible {
++                if let vc = w.contentViewController as? SettingsPopoverViewController { return (w, vc) }
++            }
++            return nil
++        }
++        func switches(_ v: NSView) -> [NSSwitch] {
++            ((v as? NSSwitch).map { [$0] } ?? []) + v.subviews.flatMap(switches)
++        }
++        func buttons(_ v: NSView) -> [NSButton] {
++            ((v as? NSButton).map { [$0] } ?? []) + v.subviews.flatMap(buttons)
++        }
++        func describeSettings(_ vc: SettingsPopoverViewController) -> String {
++            let sw = switches(vc.view).map { "\($0.accessibilityLabel() ?? "switch")=\($0.state == .on ? "on" : "off")\($0.isEnabled ? "" : "(disabled)")" }
++            return "host=\(vc.host) blocking=\(vc.isBlockingEnabled) blocked=\(vc.blockedCount) pip=\(vc.isPictureInPictureEnabled) devAvail=\(vc.isDevModeAvailable) switches=\(sw) extensions=\(vc.extensions.map { "\($0.name)\($0.isPinned ? " [pinned]" : "")" })"
++        }
++        /// A real press through the HID system: down at `from`, moved in
++        /// steps by `delta`, released. Global display coordinates.
++        func hidPress(at from: NSPoint, by delta: CGVector) async -> Bool {
++            let screenTop = NSScreen.screens.first?.frame.maxY ?? 0
++            let p0 = CGPoint(x: from.x, y: screenTop - from.y)
++            let saved = CGEvent(source: nil)?.location
++            let src = CGEventSource(stateID: .hidSystemState)
++            func post(_ type: CGEventType, _ p: CGPoint) {
++                CGEvent(mouseEventSource: src, mouseType: type, mouseCursorPosition: p, mouseButton: .left)?
++                    .post(tap: .cghidEventTap)
++            }
++            if humanIdle() < 1 { log("ABORT human input before a HID press"); return false }
++            post(.mouseMoved, p0); await sleep(0.15)
++            post(.leftMouseDown, p0); await sleep(0.12)
++            let steps = 12
++            for i in 1...steps where delta != .zero {
++                let p = CGPoint(x: p0.x + delta.dx * CGFloat(i) / CGFloat(steps), y: p0.y - delta.dy * CGFloat(i) / CGFloat(steps))
++                post(.leftMouseDragged, p); await sleep(0.03)
++            }
++            let end = CGPoint(x: p0.x + delta.dx, y: p0.y - delta.dy)
++            await sleep(0.1)
++            post(.leftMouseUp, end); await sleep(0.4)
++            if let saved { CGWarpMouseCursorPosition(saved) }
++            return true
++        }
++
++        Task { @MainActor in
++            await sleep(2.5)
++            log("start \(ap): spaces=\(store.spaces.map { "\($0.emoji) \($0.name)@\($0.profile?.name ?? "?")" })")
++            let home = wc.activeSpace ?? store.nonIncognitoSpaces.first!
++            let defaultProfile = home.profile!
++            let second = store.profiles.first { $0.name == "Second" } ?? store.addProfile(name: "Second")
++            if !store.nonIncognitoSpaces.contains(where: { $0.name == "Play" }) {
++                _ = store.addSpace(name: "Play", emoji: "🎮", colorHex: "FF9500", profileID: second.id)
++            }
++            // The probe extension, pinned in Default.
++            if let extDir = env["DETOUR_VERIFY_EXT"],
++               !ExtensionManager.shared.extensions.contains(where: { $0.manifest.name == "Verify Probe" }) {
++                do {
++                    let ext = try ExtensionManager.shared.install(from: URL(fileURLWithPath: extDir))
++                    ExtensionManager.shared.toggleExtensionPinned(ext.id, profileID: defaultProfile.id)
++                    log("installed \(ext.id), pinned in Default")
++                } catch { log("install failed: \(error)") }
++            }
++            await sleep(1.5)
++
++            // 1. The bar.
++            let q = QuickDetourWindowController.open(profile: defaultProfile, sourceSpace: home,
++                                                     url: URL(string: base + "index.html")!)
++            guard let qw = q.window else { return log("no Quick Detour window") }
++            _ = await waitFor("the page") { q.tab?.title == "Lookup Page" && q.tab?.isLoading == false }
++            let bar = q.titleBar
++            log("1 bar: pageSettings hidden=\(bar.pageSettingsButton.isHidden) tip='\(bar.pageSettingsButton.toolTip ?? "")' pinned=\(bar.extensionStack.arrangedSubviews.count) host='\(bar.hostButton.title)' hostClass=\(type(of: bar.hostButton)) openInClass=\(type(of: bar.openInButton))")
++            await ensureFront(qw)
++            await shoot("01-bar", qw)
++
++            // 2. The page settings popover from the bar (a posted click).
++            click(bar.pageSettingsButton)
++            _ = await waitFor("the page settings popover", timeout: 5) { popoverSettings() != nil }
++            if let (pw, vc) = popoverSettings() {
++                log("2 popover: \(describeSettings(vc))")
++                let union = pw.frame.union(qw.frame.intersection(NSRect(x: qw.frame.minX, y: qw.frame.maxY - 60, width: qw.frame.width, height: 60)))
++                await shootRect("02-page-settings", union.insetBy(dx: -8, dy: -8).intersection(qw.frame.union(pw.frame).insetBy(dx: -8, dy: -8)))
++
++                // 3. Content blocking off: the profile's whitelist, the page reloads.
++                let webView = q.tab?.webView
++                _ = await js(webView, "window.__mark = 1; return 1")
++                if let blockingSwitch = switches(vc.view).first {
++                    click(blockingSwitch)
++                    await sleep(0.4)
++                    let reloaded = await waitFor("the reload") { q.tab?.isLoading == false }
++                    let mark = await js(webView, "return window.__mark === 1")
++                    let wl = ContentBlockerManager.shared.whitelist
++                    log("3 blocking off: switch=\(blockingSwitch.state == .on ? "on" : "off") whitelisted(Default)=\(wl.isWhitelisted(host: "127.0.0.1", profileID: defaultProfile.id)) whitelisted(Second)=\(wl.isWhitelisted(host: "127.0.0.1", profileID: second.id)) markSurvived=\(mark) loaded=\(reloaded) popoverOpen=\(popoverSettings() != nil)")
++                    await shoot("03-blocking-off", pw)
++                    _ = await js(webView, "window.__mark = 1; return 1")
++                    click(blockingSwitch)
++                    await sleep(0.4)
++                    _ = await waitFor("the second reload") { q.tab?.isLoading == false }
++                    let mark2 = await js(webView, "return window.__mark === 1")
++                    log("3 blocking on again: whitelisted(Default)=\(wl.isWhitelisted(host: "127.0.0.1", profileID: defaultProfile.id)) markSurvived=\(mark2)")
++                }
++
++                // 4. An extension's name in the popover: its popup, for this page.
++                if let nameButton = buttons(vc.view).first(where: { $0.title == "Verify Probe" }) {
++                    click(nameButton)
++                    await sleep(4.0)
++                    let popups = NSApp.windows.filter { $0.isVisible && $0 !== qw && $0 !== wc.window }
++                    log("4 extension clicked: settingsOpen=\(popoverSettings() != nil) others=\(popups.map { "\(type(of: $0)) \(NSStringFromRect($0.frame))" }) pinnedButton=\(NSStringFromRect(qw.convertToScreen(bar.extensionStack.convert(bar.extensionStack.bounds, to: nil))))")
++                    let area = popups.reduce(qw.frame) { $0.union($1.frame) }
++                    await shootRect("04-extension-popup", area.insetBy(dx: -8, dy: -8))
++                    key("\u{1b}", code: 53)
++                    await sleep(0.6)
++                } else {
++                    log("4 no Verify Probe row")
++                }
++            } else {
++                log("2 no popover")
++            }
++            for w in NSApp.windows where w.isVisible && w.contentViewController is SettingsPopoverViewController { w.close() }
++            await ensureFront(qw)
++
++            // 5. The palette: placeholder, from a click on the host.
++            click(bar.hostButton)
++            _ = await waitFor("the palette", timeout: 5) { q.commandPaletteView != nil }
++            log("5 host click: palette=\(q.commandPaletteView != nil) placeholder='\(q.commandPaletteView?.placeholder ?? "")'")
++            key("a", code: 0, mods: .command)
++            await sleep(0.2)
++            key("\u{7f}", code: 51)
++            await shoot("05-palette-empty", qw)
++            key("\u{1b}", code: 53)
++            await sleep(0.6)
++            q.dismissPalette()
++
++            // 6. The Open in dropdown: no subtitle.
++            let menu = q.makeOpenInMenu()
++            log("6 open in items: \(menu.items.map { $0.isSectionHeader ? "[\($0.title)]" : "\($0.title) subtitle=\($0.subtitle ?? "nil") tip=\($0.toolTip != nil)" })")
++            do {
++                let anchor = bar.openInControl
++                let rect = qw.convertToScreen(anchor.convert(anchor.bounds, to: nil))
++                let shotRect = NSRect(x: rect.minX - 60, y: rect.minY - 160, width: rect.width + 120, height: rect.height + 170)
++                let top = (NSScreen.screens.first?.frame.maxY ?? 0) - shotRect.maxY
++                let t1 = Timer(timeInterval: 1.0, repeats: false) { _ in
++                    log("SHOOTRECT \(ap)-06-open-in-menu \(Int(shotRect.minX)),\(Int(top)),\(Int(shotRect.width)),\(Int(shotRect.height))")
++                }
++                let t2 = Timer(timeInterval: 3.0, repeats: false) { _ in key("\u{1b}", code: 53, window: qw) }
++                RunLoop.main.add(t1, forMode: .common)
++                RunLoop.main.add(t2, forMode: .common)
++                click(bar.openInMenuButton)
++                await sleep(4.0)
++            }
++
++            // 7a. A posted press that moves on the host: the window drag begins,
++            // the palette stays shut.
++            await ensureFront(qw)
++            var drags: [String] = []
++            for button in [bar.hostButton, bar.openInButton] {
++                let original = button.beginWindowDrag
++                let name = button === bar.hostButton ? "host" : "openIn"
++                button.beginWindowDrag = { w, e in drags.append(name); original(w, e) }
++            }
++            do {
++                let p = centre(bar.hostButton)
++                mouse(.leftMouseDown, at: p, in: qw)
++                mouse(.leftMouseDragged, at: NSPoint(x: p.x + 2, y: p.y), in: qw)
++                mouse(.leftMouseDragged, at: NSPoint(x: p.x + 12, y: p.y - 4), in: qw)
++                mouse(.leftMouseUp, at: NSPoint(x: p.x + 12, y: p.y - 4), in: qw)
++                await sleep(1.0)
++                log("7a posted drag on host: drags=\(drags) palette=\(q.commandPaletteView != nil)")
++                q.dismissPalette()
++            }
++
++            // 7b. Real HID drags: the window moves; no palette, no Open in.
++            drags.removeAll()
++            for (name, view) in [("host", bar.hostButton as NSView), ("openIn", bar.openInButton as NSView)] {
++                await ensureFront(qw)
++                let before = qw.frame
++                let p = qw.convertToScreen(NSRect(origin: centre(view), size: .zero)).origin
++                let ok = await hidPress(at: p, by: CGVector(dx: 80, dy: -40))
++                await sleep(0.8)
++                log("7b HID drag on \(name): posted=\(ok) frame \(NSStringFromRect(before)) -> \(NSStringFromRect(qw.frame)) moved=\(before.origin != qw.frame.origin) drags=\(drags) palette=\(q.commandPaletteView != nil) quickDetourOpen=\(q.window?.isVisible == true && q.tab != nil)")
++                q.dismissPalette()
++            }
++            await shoot("07-after-drags", qw)
++
++            // 7c. A real click on the host, no movement: the palette.
++            do {
++                await ensureFront(qw)
++                let p = qw.convertToScreen(NSRect(origin: centre(bar.hostButton), size: .zero)).origin
++                let ok = await hidPress(at: p, by: .zero)
++                _ = await waitFor("the palette after a HID click", timeout: 3) { q.commandPaletteView != nil }
++                log("7c HID click on host: posted=\(ok) palette=\(q.commandPaletteView != nil) drags=\(drags)")
++                q.dismissPalette()
++            }
++
++            // 8. The main window: its palette keeps its prompt, its site
++            // settings still work after the refactor.
++            await ensureFront(wc.window)
++            let mainTab = store.addTab(in: home, url: URL(string: base + "index.html")!)
++            wc.selectTab(id: mainTab.id)
++            _ = await waitFor("the main page") { mainTab.title == "Lookup Page" && mainTab.isLoading == false }
++            wc.showCommandPalette()
++            await sleep(0.5)
++            log("8 main palette placeholder='\(wc.commandPaletteView?.placeholder ?? "nil")'")
++            await shoot("08-main-palette", wc.window)
++            key("\u{1b}", code: 53)
++            await sleep(0.6)
++            let fauxButton = wc.tabSidebar.fauxAddressBar.settingsButton
++            wc.showSiteSettingsPopover(relativeTo: fauxButton, fromAddressBar: true)
++            await sleep(0.8)
++            if let (pw, vc) = popoverSettings() {
++                log("8 main popover: \(describeSettings(vc))")
++                await shoot("08-main-site-settings", pw)
++                _ = await js(mainTab.webView, "window.__mark = 1; return 1")
++                vc.onBlockingToggle?()
++                await sleep(0.4)
++                _ = await waitFor("the main reload") { mainTab.isLoading == false }
++                let mark = await js(mainTab.webView, "return window.__mark === 1")
++                let wl = ContentBlockerManager.shared.whitelist
++                log("8 main blocking toggled: whitelisted(Default)=\(wl.isWhitelisted(host: "127.0.0.1", profileID: defaultProfile.id)) markSurvived=\(mark)")
++                vc.onBlockingToggle?()
++                log("8 main blocking restored: whitelisted(Default)=\(wl.isWhitelisted(host: "127.0.0.1", profileID: defaultProfile.id))")
++                pw.close()
++            } else {
++                log("8 no main popover")
++            }
++            // 9. A Quick Detour in the background (the main window key): the
++            // first click on Open in only brings it forward; a first press
++            // that moves drags it.
++            for (name, delta) in [("click", CGVector.zero), ("drag", CGVector(dx: -60, dy: 30))] {
++                await ensureFront(wc.window)
++                qw.orderFront(nil)
++                await sleep(0.5)
++                let before = qw.frame
++                let wasKey = qw.isKeyWindow
++                let p = qw.convertToScreen(NSRect(origin: centre(bar.openInButton), size: .zero)).origin
++                let ok = await hidPress(at: p, by: delta)
++                await sleep(1.0)
++                log("9 first \(name) on Open in: posted=\(ok) wasKey=\(wasKey) nowKey=\(qw.isKeyWindow) moved=\(before.origin != qw.frame.origin) pageStillHere=\(q.tab != nil && qw.isVisible) homeTabs=\(home.tabs.count)")
++            }
++            q.window?.performClose(nil)
++            await sleep(1.0)
++            log("done")
++        }
++    }
++}
++#endif

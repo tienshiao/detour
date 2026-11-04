@@ -9,7 +9,7 @@ enum HistoryPageContent {
 
     /// Serves one resource of `detour://history/`. The completion may be called
     /// on any queue — the favicon route answers from a background queue.
-    static func resource(for url: URL, completion: @escaping (InternalPageResource?) -> Void) {
+    static func resource(for url: URL, completion: @escaping @Sendable (InternalPageResource?) -> Void) {
         switch url.path {
         case "", "/": completion(.text(html, mimeType: "text/html; charset=utf-8"))
         case "/page.css": completion(.text(css, mimeType: "text/css; charset=utf-8"))
@@ -24,7 +24,7 @@ enum HistoryPageContent {
     /// gets fetched is the one Detour already recorded for that page, so this
     /// route cannot be used to reach an arbitrary host. Unknown pages 404, which
     /// the page renders as a blank placeholder (no image, no second request).
-    private static func favicon(for url: URL, completion: @escaping (InternalPageResource?) -> Void) {
+    private static func favicon(for url: URL, completion: @escaping @Sendable (InternalPageResource?) -> Void) {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         guard let pageURL = items.first(where: { $0.name == "pageUrl" })?.value, !pageURL.isEmpty else {
             completion(nil)
@@ -468,6 +468,19 @@ enum HistoryPageContent {
         white-space: nowrap;
         text-overflow: ellipsis;
         color: var(--muted);
+    }
+
+    /* A visit made in a Quick Detour window, which belongs to no space
+       (TASK-193.1). */
+    .source {
+        flex: 0 0 auto;
+        font-size: 11px;
+        line-height: 16px;
+        padding: 0 6px;
+        border-radius: 4px;
+        color: var(--muted);
+        background: var(--placeholder);
+        white-space: nowrap;
     }
 
     .when {
@@ -946,6 +959,14 @@ extension HistoryPageContent {
         text.appendChild(title);
         text.appendChild(where);
         row.appendChild(text);
+
+        // Filed under no space: the native side marks it (TASK-193.1).
+        if (entry.quickDetour === true) {
+            const source = document.createElement('span');
+            source.className = 'source';
+            source.textContent = 'Quick Detour';
+            row.appendChild(source);
+        }
 
         const when = document.createElement('span');
         when.className = 'when';

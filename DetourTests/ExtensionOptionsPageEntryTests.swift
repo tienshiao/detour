@@ -7,15 +7,14 @@ import GRDB
 /// rules (`ExtensionOptionsPageEntry`) and the per-profile tab resolution
 /// (`ExtensionManager.optionsPageTab(for:in:preferring:)`), driven against real
 /// Profiles and Spaces in the shared `TabStore` and `AppDatabase`.
-@MainActor
-final class ExtensionOptionsPageEntryTests: XCTestCase {
+nonisolated final class ExtensionOptionsPageEntryTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
     private var createdProfiles: [Profile] = []
     private var createdSpaceIDs: [UUID] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for spaceID in createdSpaceIDs {
             guard let space = TabStore.shared.space(withID: spaceID) else { continue }
             for tab in space.tabs + space.pinnedTabs { tab.teardown() }
@@ -27,7 +26,7 @@ final class ExtensionOptionsPageEntryTests: XCTestCase {
                 profile.unloadExtension(id: id)
             }
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
-            try? AppDatabase.shared.dbQueue.write { db in
+            try? await AppDatabase.shared.dbQueue.write { db in
                 _ = try ProfileExtensionRecord
                     .filter(Column("extensionID") == id)
                     .deleteAll(db)
@@ -45,16 +44,16 @@ final class ExtensionOptionsPageEntryTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
-    private func parse(_ json: String) throws -> ExtensionManifest {
+    @MainActor private func parse(_ json: String) throws -> ExtensionManifest {
         try JSONDecoder().decode(ExtensionManifest.self, from: Data(json.utf8))
     }
 
-    private func makeTestExtension(named name: String) async throws -> WebExtension {
+    @MainActor private func makeTestExtension(named name: String) async throws -> WebExtension {
         let ext = try await makeOptionsPageTestExtension(idPrefix: "options-entry-\(name)",
                                                          name: "Options Entry Test \(name)")
         tempDirs.append(ext.basePath)
@@ -65,14 +64,14 @@ final class ExtensionOptionsPageEntryTests: XCTestCase {
         return ext
     }
 
-    private func makeProfile(_ name: String) -> Profile {
+    @MainActor private func makeProfile(_ name: String) -> Profile {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         _ = profile.extensionController
         return profile
     }
 
-    private func makeSpace(_ name: String, in profile: Profile) -> Space {
+    @MainActor private func makeSpace(_ name: String, in profile: Profile) -> Space {
         let space = TabStore.shared.addSpace(name: name, emoji: "🧪", colorHex: "007AFF",
                                              profileID: profile.id)
         createdSpaceIDs.append(space.id)
@@ -81,21 +80,21 @@ final class ExtensionOptionsPageEntryTests: XCTestCase {
 
     // MARK: - hasOptionsPage
 
-    func testHasOptionsPageFromOptionsPage() throws {
+    @MainActor func testHasOptionsPageFromOptionsPage() throws {
         let manifest = try parse("""
         {"manifest_version": 3, "name": "T", "version": "1.0", "options_page": "options.html"}
         """)
         XCTAssertTrue(ExtensionOptionsPageEntry.hasOptionsPage(manifest))
     }
 
-    func testHasOptionsPageFromOptionsUI() throws {
+    @MainActor func testHasOptionsPageFromOptionsUI() throws {
         let manifest = try parse("""
         {"manifest_version": 3, "name": "T", "version": "1.0", "options_ui": {"page": "settings.html"}}
         """)
         XCTAssertTrue(ExtensionOptionsPageEntry.hasOptionsPage(manifest))
     }
 
-    func testEmptyStringsMeanNoOptionsPage() throws {
+    @MainActor func testEmptyStringsMeanNoOptionsPage() throws {
         let manifest = try parse("""
         {"manifest_version": 3, "name": "T", "version": "1.0",
          "options_page": "", "options_ui": {"page": ""}}
@@ -103,14 +102,14 @@ final class ExtensionOptionsPageEntryTests: XCTestCase {
         XCTAssertFalse(ExtensionOptionsPageEntry.hasOptionsPage(manifest))
     }
 
-    func testNoOptionsKeysMeansNoOptionsPage() throws {
+    @MainActor func testNoOptionsKeysMeansNoOptionsPage() throws {
         let manifest = try parse("""
         {"manifest_version": 3, "name": "T", "version": "1.0"}
         """)
         XCTAssertFalse(ExtensionOptionsPageEntry.hasOptionsPage(manifest))
     }
 
-    func testEmptyOptionsPageFallsBackToOptionsUI() throws {
+    @MainActor func testEmptyOptionsPageFallsBackToOptionsUI() throws {
         let manifest = try parse("""
         {"manifest_version": 3, "name": "T", "version": "1.0",
          "options_page": "", "options_ui": {"page": "options.html"}}
@@ -124,7 +123,7 @@ final class ExtensionOptionsPageEntryTests: XCTestCase {
     private let a = UUID()
     private let b = UUID()
 
-    private func resolve(_ candidates: [UUID], enabled: Set<UUID>) -> UUID? {
+    @MainActor private func resolve(_ candidates: [UUID], enabled: Set<UUID>) -> UUID? {
         ExtensionOptionsPageEntry.resolveProfile(
             candidates: candidates,
             isEnabled: { enabled.contains($0) },
@@ -132,26 +131,26 @@ final class ExtensionOptionsPageEntryTests: XCTestCase {
         )
     }
 
-    func testResolvesFirstEnabledCandidate() {
+    @MainActor func testResolvesFirstEnabledCandidate() {
         XCTAssertEqual(resolve([a, b], enabled: [a, b]), a)
         XCTAssertEqual(resolve([a, b], enabled: [b]), b,
                        "skips a preferred profile where the extension is off")
         XCTAssertEqual(resolve([a, a, b], enabled: [b]), b, "duplicates are harmless")
     }
 
-    func testNoEnabledCandidateResolvesToNil() {
+    @MainActor func testNoEnabledCandidateResolvesToNil() {
         XCTAssertNil(resolve([a, b], enabled: []))
         XCTAssertNil(resolve([], enabled: [a]))
     }
 
-    func testPrivateQualifiesWhenFirst() {
+    @MainActor func testPrivateQualifiesWhenFirst() {
         XCTAssertEqual(resolve([privateID, a], enabled: [privateID, a]), privateID,
                        "the main window is Private and the extension is allowed there")
         XCTAssertEqual(resolve([privateID, a], enabled: [a]), a,
                        "Private first but off there: fall through to a normal profile")
     }
 
-    func testPrivateNeverQualifiesAfterTheFirstCandidate() {
+    @MainActor func testPrivateNeverQualifiesAfterTheFirstCandidate() {
         XCTAssertEqual(resolve([a, privateID, b], enabled: [privateID, b]), b,
                        "a background Private window must not capture the click")
         XCTAssertNil(resolve([a, privateID], enabled: [privateID]))
@@ -159,7 +158,7 @@ final class ExtensionOptionsPageEntryTests: XCTestCase {
 
     // MARK: - isOptionsPage
 
-    func testIsOptionsPageMatchesOriginAndPathIgnoringQueryAndFragment() throws {
+    @MainActor func testIsOptionsPageMatchesOriginAndPathIgnoringQueryAndFragment() throws {
         let base = try XCTUnwrap(URL(string: "webkit-extension://AAAA/"))
         let options = try XCTUnwrap(URL(string: "webkit-extension://AAAA/options.html"))
         func matches(_ s: String) -> Bool {
@@ -175,7 +174,7 @@ final class ExtensionOptionsPageEntryTests: XCTestCase {
 
     // MARK: - optionsPageTab (integration)
 
-    func testOptionsPageOpensInTheRequestedProfileAndIsReused() async throws {
+    @MainActor func testOptionsPageOpensInTheRequestedProfileAndIsReused() async throws {
         let ext = try await makeTestExtension(named: "per-profile")
         let profileA = makeProfile("Options Entry A")
         let profileB = makeProfile("Options Entry B")
@@ -207,7 +206,7 @@ final class ExtensionOptionsPageEntryTests: XCTestCase {
         }.count, 1)
     }
 
-    func testOptionsPageOpensInThePreferredSpaceOfTheProfile() async throws {
+    @MainActor func testOptionsPageOpensInThePreferredSpaceOfTheProfile() async throws {
         let ext = try await makeTestExtension(named: "preferred")
         let profileA = makeProfile("Options Entry Preferred A")
         let profileB = makeProfile("Options Entry Preferred B")
@@ -229,7 +228,7 @@ final class ExtensionOptionsPageEntryTests: XCTestCase {
         XCTAssertTrue(preferred.space === secondA)
     }
 
-    func testNoTabWhereTheExtensionIsOff() async throws {
+    @MainActor func testNoTabWhereTheExtensionIsOff() async throws {
         let ext = try await makeTestExtension(named: "off")
         let profileC = makeProfile("Options Entry Off")
         let spaceC = makeSpace("Options Entry Off", in: profileC)
@@ -242,7 +241,7 @@ final class ExtensionOptionsPageEntryTests: XCTestCase {
         XCTAssertTrue(spaceC.tabs.isEmpty, "nothing opens in a profile that has the extension off")
     }
 
-    func testNoTabWhenTheProfileHasNoSpace() async throws {
+    @MainActor func testNoTabWhenTheProfileHasNoSpace() async throws {
         let ext = try await makeTestExtension(named: "no-space")
         let profile = makeProfile("Options Entry No Space")
         _ = try loadTestContext(ext, in: profile)

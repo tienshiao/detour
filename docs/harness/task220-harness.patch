@@ -1,0 +1,263 @@
+TASK-220 runtime harness: an action popup's popover size from the main
+window's pinned button (faux address bar) and from the Quick Detour bar's
+pinned button, at open, after the page grows and after it shrinks.
+Temporary code, never committed to Detour/. Gated on DETOUR_VERIFY_DIR;
+DETOUR_VERIFY_APPEARANCE light or dark (also launch with
+-AppleInterfaceStyle Dark); DETOUR_VERIFY_FIXTURE a loopback server
+(python3 -I -m http.server 8937 over a dir with index.html, title
+"Lookup Page"); DETOUR_VERIFY_EXT an unpacked MV3 extension "Verify Popup
+Size" whose popup.html is a 220x300 box (no body margin, a red corner
+square, color-scheme light dark) with a Grow/Shrink button (popup.js)
+toggling it to 340x420. Installed with ExtensionManager.install(from:) and
+pinned in Default. Data dirs DetourVerify2200 (old code), 2201, 2202.
+
+Measured in-process: the popover window's frame, the popup web view's frame
+and intrinsicContentSize, and in the page innerWidth/innerHeight, the corner
+square's bottom-right and prefers-color-scheme. The Grow button is pressed
+with a posted click and, when that does not reach the page, from script
+(the page's own handler either way). run.sh logs SHOOTRECT lines for
+screencapture -R and kills only the PID it launched after "done".
+
+    git apply docs/harness/task220-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    run.sh light; run.sh dark
+    git apply -R docs/harness/task220-harness.patch && xcodegen generate
+
+Results (2026-10-28, screen LOCKED: no screenshots, posted clicks did not
+reach the page, so the Grow button was pressed from script):
+- Old code (HEAD before the fix), light: main window popover 126x126 window
+  / 100x100 web view while the page's intrinsic size was 220x300 (cut off);
+  Quick Detour, the second open, 246x326 / 220x300 (the reload happened to
+  finish inside 50 ms). Grow did not resize either.
+- Fixed, light and dark (scheme=dark seen by the page): main and Quick
+  Detour both first seen at 246x326 window / 220x300 web view, grew to
+  366x446 / 340x420, shrank back to 246x326 / 220x300; Escape closed both.
+- After the code review's fixes (data dirs 2203 light, 2204 dark): the
+  same sizes in both windows and both appearances.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 64c96ee..37a3e46 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask220HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task220Harness.swift b/Detour/App/Task220Harness.swift
+new file mode 100644
+index 0000000..66dda74
+--- /dev/null
++++ b/Detour/App/Task220Harness.swift
+@@ -0,0 +1,206 @@
++// TEMP TASK-220 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask220HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let base = env["DETOUR_VERIFY_FIXTURE"] ?? "http://127.0.0.1:8937/"
++        let ap = env["DETOUR_VERIFY_APPEARANCE"] ?? "light"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(ap).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        NSApp.appearance = NSAppearance(named: ap == "dark" ? .darkAqua : .aqua)
++        let store = TabStore.shared
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func humanIdle() -> Double {
++            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
++        }
++        func awaitIdle(_ seconds: Double = 12) async {
++            var waited = 0.0
++            while humanIdle() < seconds {
++                if waited == 0 { log("waiting for the machine to be idle (idle \(Int(humanIdle())) s)") }
++                await sleep(2); waited += 2
++            }
++            if waited > 0 { log("idle again after \(Int(waited)) s") }
++        }
++        func ensureFront(_ window: NSWindow?) async {
++            await awaitIdle()
++            for _ in 0..<6 {
++                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
++                if let window, NSApp.keyWindow !== window { window.makeKeyAndOrderFront(nil) }
++                if NSApp.isActive && (window == nil || NSApp.keyWindow === window) { return }
++                await sleep(0.5)
++            }
++            log("WARN not frontmost: active=\(NSApp.isActive) key=\(String(describing: NSApp.keyWindow?.title))")
++        }
++        func shootRect(_ name: String, _ rect: NSRect) async {
++            await sleep(0.6)
++            let top = (NSScreen.screens.first?.frame.maxY ?? 0) - rect.maxY
++            log("SHOOTRECT \(ap)-\(name) \(Int(rect.minX)),\(Int(top)),\(Int(rect.width)),\(Int(rect.height))")
++            await sleep(1.5)
++        }
++        var eventNumber = 9000
++        func mouse(_ type: NSEvent.EventType, at p: NSPoint, in window: NSWindow) {
++            if humanIdle() < 1 { log("ABORT human input before a click: not posted"); return }
++            eventNumber += 1
++            if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
++                                          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                          context: nil, eventNumber: eventNumber, clickCount: 1,
++                                          pressure: type == .leftMouseDown ? 1 : 0) {
++                NSApp.postEvent(e, atStart: false)
++            }
++        }
++        func click(_ view: NSView) {
++            guard let w = view.window else { return log("click: no window") }
++            let p = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
++            mouse(.leftMouseDown, at: p, in: w)
++            mouse(.leftMouseUp, at: p, in: w)
++        }
++        func click(_ point: NSPoint, inFlipped view: NSView) {
++            guard let w = view.window else { return log("click: no window") }
++            let p = view.convert(point, to: nil)
++            mouse(.leftMouseDown, at: p, in: w)
++            mouse(.leftMouseUp, at: p, in: w)
++        }
++        func key(_ chars: String, code: UInt16, window: NSWindow? = nil) {
++            if humanIdle() < 1 { return log("ABORT human input while posting a key") }
++            guard let w = window ?? NSApp.keyWindow else { return log("key: no key window") }
++            for type in [NSEvent.EventType.keyDown, .keyUp] {
++                if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [],
++                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
++                                            context: nil, characters: chars, charactersIgnoringModifiers: chars,
++                                            isARepeat: false, keyCode: code) {
++                    NSApp.postEvent(e, atStart: false)
++                }
++            }
++        }
++        func waitFor(_ what: String, timeout: Double = 15, _ cond: () -> Bool) async -> Bool {
++            let deadline = Date().addingTimeInterval(timeout)
++            while Date() < deadline {
++                if cond() { return true }
++                await sleep(0.02)
++            }
++            log("TIMEOUT waiting for \(what)")
++            return false
++        }
++        func popoverWindows() -> [NSWindow] {
++            NSApp.windows.filter { $0.isVisible && String(describing: type(of: $0)).contains("Popover") }
++        }
++        func webView(in v: NSView?) -> WKWebView? {
++            guard let v else { return nil }
++            if let w = v as? WKWebView { return w }
++            for s in v.subviews { if let w = webView(in: s) { return w } }
++            return nil
++        }
++        func describe(_ w: NSWindow) -> String {
++            let wv = webView(in: w.contentView)
++            return "window=\(Int(w.frame.width))x\(Int(w.frame.height)) webView=\(wv.map { "\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? "none") intrinsic=\(wv.map { "\(Int($0.intrinsicContentSize.width))x\(Int($0.intrinsicContentSize.height))" } ?? "-")"
++        }
++        func pageState(_ wv: WKWebView?) async -> String {
++            guard let wv else { return "no web view" }
++            let v = try? await wv.callAsyncJavaScript("""
++                const r = document.getElementById('corner').getBoundingClientRect();
++                return `label='${document.getElementById('size').textContent}' inner=${innerWidth}x${innerHeight} corner=${r.right}x${r.bottom} scheme=${matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'}`;
++                """, contentWorld: .page)
++            return v.map { "\($0)" } ?? "nil"
++        }
++
++        /// Open the popup from `button`, measure it, grow it, shrink it, close it.
++        func exercise(_ label: String, button: NSView, owner: NSWindow) async {
++            await ensureFront(owner)
++            click(button)
++            guard await waitFor("\(label) popover", timeout: 5, { !popoverWindows().isEmpty }),
++                  let pw = popoverWindows().first else { return log("\(label): no popover") }
++            log("\(label) first seen: \(describe(pw))")
++            await sleep(1.2)
++            let wv = webView(in: pw.contentView)
++            log("\(label) settled: \(describe(pw)) page: \(await pageState(wv))")
++            await shootRect("\(label)-1-open", pw.frame.union(owner.frame.intersection(pw.frame.insetBy(dx: -40, dy: -60))).insetBy(dx: -10, dy: -10))
++            guard let wv else { return }
++            // The page's Grow button: 10 pt in from the 4 pt border, 32 pt tall, at the bottom.
++            await awaitIdle(3)
++            click(NSPoint(x: 4 + 10 + 60, y: wv.frame.height - 4 - 10 - 16), inFlipped: wv)
++            if !(await waitFor("\(label) grow", timeout: 3) { wv.frame.width == 340 }) {
++                // A posted click does not reach the page (inactive app or locked
++                // screen): press the page's button from script instead.
++                _ = try? await wv.callAsyncJavaScript("document.getElementById('grow').click()", contentWorld: .page)
++                let ok = await waitFor("\(label) grow by script", timeout: 3) { wv.frame.width == 340 }
++                log("\(label) grow: posted click missed; script click resized=\(ok)")
++            } else { log("\(label) grow: posted click") }
++            await sleep(0.8)
++            log("\(label) grown: \(describe(pw)) page: \(await pageState(wv))")
++            await shootRect("\(label)-2-grown", pw.frame.insetBy(dx: -10, dy: -10))
++            await awaitIdle(3)
++            click(NSPoint(x: 4 + 10 + 60, y: wv.frame.height - 4 - 10 - 16), inFlipped: wv)
++            if !(await waitFor("\(label) shrink", timeout: 3) { wv.frame.width == 220 }) {
++                // A posted click does not reach the page (inactive app or locked
++                // screen): press the page's button from script instead.
++                _ = try? await wv.callAsyncJavaScript("document.getElementById('grow').click()", contentWorld: .page)
++                let ok = await waitFor("\(label) shrink by script", timeout: 3) { wv.frame.width == 220 }
++                log("\(label) shrink: posted click missed; script click resized=\(ok)")
++            } else { log("\(label) shrink: posted click") }
++            await sleep(0.8)
++            log("\(label) shrunk: \(describe(pw)) page: \(await pageState(wv))")
++            key("\u{1b}", code: 53, window: pw)
++            let closed = await waitFor("\(label) close", timeout: 3) { popoverWindows().isEmpty }
++            log("\(label) closed by Escape: \(closed)")
++            if !closed { pw.orderOut(nil) }
++        }
++
++        Task { @MainActor in
++            await sleep(2.5)
++            let home = wc.activeSpace ?? store.nonIncognitoSpaces.first!
++            let defaultProfile = home.profile!
++            log("start \(ap): space=\(home.name) profile=\(defaultProfile.name)")
++            var extID = ExtensionManager.shared.extensions.first(where: { $0.manifest.name == "Verify Popup Size" })?.id
++            if extID == nil, let extDir = env["DETOUR_VERIFY_EXT"] {
++                do {
++                    let ext = try ExtensionManager.shared.install(from: URL(fileURLWithPath: extDir))
++                    ExtensionManager.shared.toggleExtensionPinned(ext.id, profileID: defaultProfile.id)
++                    extID = ext.id
++                    log("installed \(ext.id), pinned in Default")
++                } catch { log("install failed: \(error)") }
++            }
++            guard let extID else { return log("no extension") }
++            await sleep(2.0)
++
++            // 1. The main window's pinned button (faux address bar).
++            let fauxBar = wc.tabSidebar.fauxAddressBar
++            fauxBar.keepButtonsVisible = true
++            await sleep(0.5)
++            if let button = fauxBar.pinnedExtensionStack.arrangedSubviews.first(where: { $0.identifier?.rawValue == extID }),
++               let mw = wc.window {
++                log("main: button at \(NSStringFromRect(mw.convertToScreen(button.convert(button.bounds, to: nil)))) alpha=\(fauxBar.pinnedExtensionStack.alphaValue)")
++                await exercise("main", button: button, owner: mw)
++            } else {
++                log("main: no pinned button; stack=\(fauxBar.pinnedExtensionStack.arrangedSubviews.map { $0.identifier?.rawValue ?? "?" })")
++            }
++            fauxBar.keepButtonsVisible = false
++
++            // 2. The Quick Detour bar's pinned button.
++            let q = QuickDetourWindowController.open(profile: defaultProfile, sourceSpace: home,
++                                                     url: URL(string: base + "index.html")!)
++            guard let qw = q.window else { return log("no Quick Detour window") }
++            _ = await waitFor("the page") { q.tab?.title == "Lookup Page" && q.tab?.isLoading == false }
++            await sleep(1.0)
++            if let button = q.titleBar.extensionStack.arrangedSubviews.first {
++                await exercise("quick", button: button, owner: qw)
++            } else {
++                log("quick: no pinned button")
++            }
++            qw.close()
++            log("done")
++        }
++    }
++}
++#endif

@@ -6,12 +6,12 @@ import XCTest
 /// against a rule's condition, and combining the changes of every matching rule
 /// (`ExtensionHeaderRule`, `ExtensionHeaderRuleSet`). The rules in real contexts
 /// against a fixture server are `ExtensionDeclarativeNetRequestTests`.
-final class ExtensionHeaderRulesTests: XCTestCase {
+nonisolated final class ExtensionHeaderRulesTests: XCTestCase {
 
     // MARK: - Fixtures
 
     /// The Claude extension's start-up rule (1.0.98), with the API host a parameter.
-    private func claudeRule(host: String = "https://api.anthropic.com") -> [String: Any] {
+    @MainActor private func claudeRule(host: String = "https://api.anthropic.com") -> [String: Any] {
         [
             "id": 1, "priority": 1,
             "action": [
@@ -26,7 +26,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         ]
     }
 
-    private func rule(id: Int = 1, priority: Int? = nil,
+    @MainActor private func rule(id: Int = 1, priority: Int? = nil,
                       headers: [[String: Any]] = [["header": "x-test", "operation": "set", "value": "1"]],
                       condition: [String: Any] = [:]) -> [String: Any] {
         var rule: [String: Any] = [
@@ -38,7 +38,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         return rule
     }
 
-    private func parsed(_ raw: [String: Any], acceptedByWebKit: Bool = false,
+    @MainActor private func parsed(_ raw: [String: Any], acceptedByWebKit: Bool = false,
                         file: StaticString = #filePath, line: UInt = #line) throws -> ExtensionHeaderRule {
         switch ExtensionHeaderRule.parse(raw, acceptedByWebKit: acceptedByWebKit) {
         case .success(let rule): return rule
@@ -48,28 +48,28 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         }
     }
 
-    private func failure(_ raw: [String: Any], acceptedByWebKit: Bool = false) -> ExtensionHeaderRule.ParseError? {
+    @MainActor private func failure(_ raw: [String: Any], acceptedByWebKit: Bool = false) -> ExtensionHeaderRule.ParseError? {
         if case .failure(let error) = ExtensionHeaderRule.parse(raw, acceptedByWebKit: acceptedByWebKit) { return error }
         return nil
     }
 
-    private func matches(_ condition: [String: Any], _ url: String, method: String = "GET",
+    @MainActor private func matches(_ condition: [String: Any], _ url: String, method: String = "GET",
                          file: StaticString = #filePath, line: UInt = #line) throws -> Bool {
         let rule = try parsed(self.rule(condition: condition), file: file, line: line)
         return rule.condition.matches(url: try XCTUnwrap(URL(string: url)), method: method)
     }
 
-    private func set(_ rules: [ExtensionHeaderRule]) throws -> ExtensionHeaderRuleSet {
+    @MainActor private func set(_ rules: [ExtensionHeaderRule]) throws -> ExtensionHeaderRuleSet {
         try ExtensionHeaderRuleSet().updated(removing: [], adding: rules)
     }
 
-    private func summary(_ changes: [ExtensionHeaderRule.HeaderChange]) -> [String] {
+    @MainActor private func summary(_ changes: [ExtensionHeaderRule.HeaderChange]) -> [String] {
         changes.map { "\($0.operation.rawValue) \($0.header)\($0.value.map { "=\($0)" } ?? "")" }
     }
 
     // MARK: - Parsing (positive)
 
-    func testParsesTheClaudeExtensionsRule() throws {
+    @MainActor func testParsesTheClaudeExtensionsRule() throws {
         let rule = try parsed(claudeRule())
         XCTAssertEqual(rule.id, 1)
         XCTAssertEqual(rule.priority, 1)
@@ -86,7 +86,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         XCTAssertEqual(rule.original as NSDictionary, claudeRule() as NSDictionary)
     }
 
-    func testPriorityDefaultsToOneAndAcceptsWholeDoubles() throws {
+    @MainActor func testPriorityDefaultsToOneAndAcceptsWholeDoubles() throws {
         XCTAssertEqual(try parsed(rule()).priority, 1)
         // A JS bridge delivers every number as a double.
         var raw = rule()
@@ -97,13 +97,13 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         XCTAssertEqual(rule.priority, 3)
     }
 
-    func testRemoveNeedsNoValue() throws {
+    @MainActor func testRemoveNeedsNoValue() throws {
         let rule = try parsed(self.rule(headers: [["header": "X-Gone", "operation": "remove"]]))
         XCTAssertEqual(summary(rule.changes), ["remove X-Gone"])
         XCTAssertEqual(rule.changes[0].payload as NSDictionary, ["header": "X-Gone", "operation": "remove"] as NSDictionary)
     }
 
-    func testResponseHeadersAreAllowedOnARuleWebKitHolds() throws {
+    @MainActor func testResponseHeadersAreAllowedOnARuleWebKitHolds() throws {
         var raw = rule()
         var action = raw["action"] as! [String: Any]
         action["responseHeaders"] = [["header": "x-frame-options", "operation": "remove"]]
@@ -113,7 +113,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
 
     // MARK: - Parsing (negative)
 
-    func testOtherActionsAreNotHeaderRules() {
+    @MainActor func testOtherActionsAreNotHeaderRules() {
         XCTAssertEqual(failure(["id": 1, "action": ["type": "block"], "condition": [:] as [String: Any]]), .notAHeaderRule)
         // modifyHeaders with response headers only is WebKit's business alone.
         XCTAssertEqual(failure(["id": 1, "action": ["type": "modifyHeaders",
@@ -123,7 +123,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         XCTAssertFalse(ExtensionHeaderRule.isHeaderRule(["action": "modifyHeaders"]))
     }
 
-    func testMalformedRulesAreInvalid() {
+    @MainActor func testMalformedRulesAreInvalid() {
         func assertInvalid(_ raw: [String: Any], _ what: String, line: UInt = #line) {
             guard case .invalid = failure(raw) else {
                 XCTFail("\(what) should be invalid, got \(String(describing: failure(raw)))", line: line)
@@ -165,7 +165,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
 
     /// A condition Detour's matching does not implement is never guessed at:
     /// ignoring it could put a header on a request the rule excluded.
-    func testConditionsDetourDoesNotMatchAreUnsupported() {
+    @MainActor func testConditionsDetourDoesNotMatchAreUnsupported() {
         for key in ["initiatorDomains", "excludedInitiatorDomains", "domainType", "tabIds", "excludedTabIds",
                     "domains", "excludedDomains", "responseHeaders", "somethingNew"] {
             guard case .unsupported(let reason) = failure(rule(condition: [key: ["example.com"]])) else {
@@ -179,7 +179,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         }
     }
 
-    func testResponseHeadersAreUnsupportedOnARuleOnlyDetourHolds() {
+    @MainActor func testResponseHeadersAreUnsupportedOnARuleOnlyDetourHolds() {
         var raw = rule()
         var action = raw["action"] as! [String: Any]
         action["responseHeaders"] = [["header": "x-frame-options", "operation": "remove"]]
@@ -189,7 +189,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         }
     }
 
-    func testIntegerRejectsWhatIsNotAWholeNumber() {
+    @MainActor func testIntegerRejectsWhatIsNotAWholeNumber() {
         XCTAssertEqual(ExtensionHeaderRule.integer(3), 3)
         XCTAssertEqual(ExtensionHeaderRule.integer(NSNumber(value: 3.0)), 3)
         XCTAssertNil(ExtensionHeaderRule.integer(3.5))
@@ -201,7 +201,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
 
     // MARK: - urlFilter
 
-    func testURLFilterIsASubstringMatchWithWildcards() throws {
+    @MainActor func testURLFilterIsASubstringMatchWithWildcards() throws {
         XCTAssertTrue(try matches(["urlFilter": "api.example.com/v1"], "https://api.example.com/v1/messages"))
         XCTAssertFalse(try matches(["urlFilter": "api.example.com/v2"], "https://api.example.com/v1/messages"))
         XCTAssertTrue(try matches(["urlFilter": "https://api.example.com/*"], "https://api.example.com/"))
@@ -211,7 +211,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         XCTAssertTrue(try matches(["urlFilter": "/a?b=(1)"], "https://example.com/a?b=(1)"))
     }
 
-    func testURLFilterIsCaseInsensitiveUnlessAskedOtherwise() throws {
+    @MainActor func testURLFilterIsCaseInsensitiveUnlessAskedOtherwise() throws {
         XCTAssertTrue(try matches(["urlFilter": "EXAMPLE.com/Path"], "https://example.com/path"))
         XCTAssertFalse(try matches(["urlFilter": "EXAMPLE.com/Path", "isUrlFilterCaseSensitive": true],
                                    "https://example.com/path"))
@@ -219,7 +219,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
                                   "https://example.com/path"))
     }
 
-    func testURLFilterAnchors() throws {
+    @MainActor func testURLFilterAnchors() throws {
         // `|` at the start and at the end.
         XCTAssertTrue(try matches(["urlFilter": "|https://example.com"], "https://example.com/a"))
         XCTAssertFalse(try matches(["urlFilter": "|example.com"], "https://example.com/a"))
@@ -237,19 +237,19 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         XCTAssertFalse(try matches(["urlFilter": "||example.com^"], "https://example.company/a"))
     }
 
-    func testTheFragmentIsNotMatched() throws {
+    @MainActor func testTheFragmentIsNotMatched() throws {
         XCTAssertFalse(try matches(["urlFilter": "secret"], "https://example.com/a#secret"))
         XCTAssertTrue(try matches(["urlFilter": "/a|"], "https://example.com/a#secret"))
     }
 
-    func testRegexFilter() throws {
+    @MainActor func testRegexFilter() throws {
         XCTAssertTrue(try matches(["regexFilter": "^https://api\\.example\\.com/v[0-9]+/"], "https://api.example.com/v12/x"))
         XCTAssertFalse(try matches(["regexFilter": "^https://api\\.example\\.com/v[0-9]+/"], "https://api.example.com/vx/x"))
         XCTAssertTrue(try matches(["regexFilter": "EXAMPLE"], "https://example.com/"))
         XCTAssertFalse(try matches(["regexFilter": "EXAMPLE", "isUrlFilterCaseSensitive": true], "https://example.com/"))
     }
 
-    func testNoFilterMatchesEveryURL() throws {
+    @MainActor func testNoFilterMatchesEveryURL() throws {
         XCTAssertTrue(try matches([:], "https://anything.test/at/all"))
     }
 
@@ -257,7 +257,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
 
     /// The wrappers only ever see script-made requests, which Chrome types
     /// `xmlhttprequest`.
-    func testResourceTypesDecideWhetherScriptRequestsAreCovered() throws {
+    @MainActor func testResourceTypesDecideWhetherScriptRequestsAreCovered() throws {
         XCTAssertTrue(try matches(["resourceTypes": ["xmlhttprequest", "other"]], "https://example.com/"))
         XCTAssertTrue(try matches(["resourceTypes": ["XMLHttpRequest"]], "https://example.com/"))
         XCTAssertFalse(try matches(["resourceTypes": ["main_frame", "sub_frame", "image"]], "https://example.com/"))
@@ -266,14 +266,14 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         XCTAssertTrue(try matches([:], "https://example.com/"), "with neither list a rule covers everything but main_frame")
     }
 
-    func testRequestMethods() throws {
+    @MainActor func testRequestMethods() throws {
         XCTAssertTrue(try matches(["requestMethods": ["post"]], "https://example.com/", method: "POST"))
         XCTAssertFalse(try matches(["requestMethods": ["post"]], "https://example.com/", method: "GET"))
         XCTAssertFalse(try matches(["excludedRequestMethods": ["get"]], "https://example.com/", method: "get"))
         XCTAssertTrue(try matches(["excludedRequestMethods": ["get"]], "https://example.com/", method: "PUT"))
     }
 
-    func testRequestDomains() throws {
+    @MainActor func testRequestDomains() throws {
         XCTAssertTrue(try matches(["requestDomains": ["example.com"]], "https://example.com/"))
         XCTAssertTrue(try matches(["requestDomains": ["example.com"]], "https://API.example.com/"))
         XCTAssertFalse(try matches(["requestDomains": ["example.com"]], "https://notexample.com/"))
@@ -285,7 +285,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
 
     // MARK: - Combining rules
 
-    func testOnlyMatchingRulesContribute() throws {
+    @MainActor func testOnlyMatchingRulesContribute() throws {
         let rules = try set([
             try parsed(rule(id: 1, headers: [["header": "x-a", "operation": "set", "value": "a"]],
                             condition: ["urlFilter": "||a.test"])),
@@ -300,7 +300,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
 
     /// Chrome's rule: the higher priority decides, a lower one may only append
     /// to what was set or appended, and nothing follows a remove.
-    func testHigherPriorityWinsAndOnlyAppendFollows() throws {
+    @MainActor func testHigherPriorityWinsAndOnlyAppendFollows() throws {
         let url = URL(string: "https://example.com/")!
         let rules = try set([
             try parsed(rule(id: 1, priority: 1, headers: [
@@ -328,7 +328,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         ])
     }
 
-    func testEqualPrioritiesGoByID() throws {
+    @MainActor func testEqualPrioritiesGoByID() throws {
         let rules = try set([
             try parsed(rule(id: 9, headers: [["header": "x", "operation": "set", "value": "nine"]])),
             try parsed(rule(id: 3, headers: [["header": "x", "operation": "set", "value": "three"]])),
@@ -339,7 +339,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
 
     /// In a page WebKit applies the rules it accepted, so Detour answers only
     /// with the ones it holds alone; the worker gets both.
-    func testRulesWebKitAcceptedAreLeftToWebKitInAPage() throws {
+    @MainActor func testRulesWebKitAcceptedAreLeftToWebKitInAPage() throws {
         let rules = try set([
             try parsed(rule(id: 1, headers: [["header": "user-agent", "operation": "set", "value": "ua"]]),
                        acceptedByWebKit: true),
@@ -353,7 +353,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
                        ["set user-agent=ua", "set x-custom=c"])
     }
 
-    func testOnlyHTTPRequestsAreChanged() throws {
+    @MainActor func testOnlyHTTPRequestsAreChanged() throws {
         let rules = try set([try parsed(rule())])
         for url in ["webkit-extension://abc/page.html", "data:text/plain,hi", "blob:https://example.com/1", "file:///etc/hosts"] {
             XCTAssertTrue(rules.changes(for: URL(string: url)!, method: "GET", includingAcceptedByWebKit: true).isEmpty,
@@ -365,7 +365,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
 
     // MARK: - The rule set
 
-    func testUpdateRemovesThenAddsAndAnIDHasOneKeeper() throws {
+    @MainActor func testUpdateRemovesThenAddsAndAnIDHasOneKeeper() throws {
         var rules = try set([try parsed(rule(id: 1)), try parsed(rule(id: 2))])
         rules = try rules.updated(removing: [1, 99], adding: [try parsed(rule(id: 3))])
         XCTAssertEqual(rules.rules.keys.sorted(), [2, 3])
@@ -379,13 +379,13 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         XCTAssertTrue(rules.isEmpty)
     }
 
-    func testUpdatedLeavesTheReceiverUntouched() throws {
+    @MainActor func testUpdatedLeavesTheReceiverUntouched() throws {
         let rules = try set([try parsed(rule(id: 1))])
         _ = try rules.updated(removing: [1], adding: [try parsed(rule(id: 2))])
         XCTAssertEqual(rules.rules.keys.sorted(), [1], "a dry run must not change anything")
     }
 
-    func testOriginalsAreByIDAndFilterable() throws {
+    @MainActor func testOriginalsAreByIDAndFilterable() throws {
         let rules = try set([try parsed(rule(id: 5)), try parsed(rule(id: 2)),
                              try parsed(rule(id: 8), acceptedByWebKit: true)])
         XCTAssertEqual(rules.originalsKeptByDetourAlone().compactMap { $0["id"] as? Int }, [2, 5])
@@ -393,7 +393,7 @@ final class ExtensionHeaderRulesTests: XCTestCase {
         XCTAssertEqual(rules.originalsKeptByDetourAlone(ruleIDs: []).count, 0)
     }
 
-    func testTheRuleCountIsCapped() throws {
+    @MainActor func testTheRuleCountIsCapped() throws {
         let full = try ExtensionHeaderRuleSet().updated(
             removing: [], adding: try (1...ExtensionHeaderRuleSet.maximumRuleCount).map { try parsed(rule(id: $0)) })
         XCTAssertEqual(full.rules.count, ExtensionHeaderRuleSet.maximumRuleCount)

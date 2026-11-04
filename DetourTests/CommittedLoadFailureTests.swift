@@ -11,8 +11,7 @@ import WebKit
 /// The failure is a real one, reported by WebKit through whichever navigation
 /// delegate the web view has: the server sends the start of a document under a
 /// `Content-Length` it never honours, then closes the connection.
-@MainActor
-final class CommittedLoadFailureTests: XCTestCase {
+nonisolated final class CommittedLoadFailureTests: XCTestCase {
 
     private var tabs: [BrowserTab] = []
     private var controllers: [BrowserWindowController] = []
@@ -20,10 +19,10 @@ final class CommittedLoadFailureTests: XCTestCase {
     private var servers: [LoopbackHTTPServer] = []
     private var previousLastActiveSpaceID: UUID?
     private var previousExtensionLastActiveSpaceID: UUID?
-    private var defaultFaviconFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         previousLastActiveSpaceID = TabStore.shared.lastActiveSpaceID
         previousExtensionLastActiveSpaceID = ExtensionManager.shared.lastActiveSpaceID
         defaultFaviconFetch = FaviconLoader.shared.fetch
@@ -31,7 +30,7 @@ final class CommittedLoadFailureTests: XCTestCase {
         FaviconLoader.shared.fetch = { _, completion in completion(nil) }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         tabs.forEach { $0.teardown() }
         tabs.removeAll()
         for controller in controllers { controller.window?.close() }
@@ -44,7 +43,7 @@ final class CommittedLoadFailureTests: XCTestCase {
         ExtensionManager.shared.lastActiveSpaceID = previousExtensionLastActiveSpaceID
         FaviconLoader.shared.fetch = defaultFaviconFetch
         FaviconLoader.shared.resetForTesting()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixture
@@ -56,7 +55,7 @@ final class CommittedLoadFailureTests: XCTestCase {
         + String(repeating: "<!-- padding -->", count: 128)
 
     /// A server whose `/partial` commits and then waits to be dropped.
-    private func makeServer() async throws -> (server: LoopbackHTTPServer, url: URL) {
+    @MainActor private func makeServer() async throws -> (server: LoopbackHTTPServer, url: URL) {
         let server = try LoopbackHTTPServer(routes: [:], truncated: [Self.partialPath: Self.partialPage])
         servers.append(server)
         let port = try await server.start()
@@ -65,7 +64,7 @@ final class CommittedLoadFailureTests: XCTestCase {
 
     /// Waits for the page to be showing, fails its load, and checks that the
     /// tab is still on the page.
-    private func assertStaysOnThePage(_ tab: BrowserTab, at url: URL, server: LoopbackHTTPServer,
+    @MainActor private func assertStaysOnThePage(_ tab: BrowserTab, at url: URL, server: LoopbackHTTPServer,
                                       file: StaticString = #filePath, line: UInt = #line) async throws {
         let webView = try XCTUnwrap(tab.webView, file: file, line: line)
         try await waitUntil("the start of the page to show", file: file, line: line) { tab.title == "Partial" }
@@ -91,7 +90,7 @@ final class CommittedLoadFailureTests: XCTestCase {
     // MARK: -
 
     /// A tab no window owns: the tab is its own navigation delegate.
-    func testAFailureAfterCommitKeepsThePageInAnUnownedTab() async throws {
+    @MainActor func testAFailureAfterCommitKeepsThePageInAnUnownedTab() async throws {
         let (server, url) = try await makeServer()
         let tab = BrowserTab(id: UUID())
         tabs.append(tab)
@@ -101,7 +100,7 @@ final class CommittedLoadFailureTests: XCTestCase {
     }
 
     /// The selected tab of a window: the window is the navigation delegate.
-    func testAFailureAfterCommitKeepsThePageInTheSelectedTab() async throws {
+    @MainActor func testAFailureAfterCommitKeepsThePageInTheSelectedTab() async throws {
         let (server, url) = try await makeServer()
         let store = TabStore.shared
         let profile = try XCTUnwrap(store.profiles.first { !$0.isIncognito })

@@ -18,14 +18,13 @@ import WebKit
 /// UI read that follows the load does not repeat the query; every measured load
 /// below starts from a cold cache (a brand-new profile) or an explicitly
 /// invalidated one.
-@MainActor
-final class ExtensionStartupEnabledReadsTests: XCTestCase {
+nonisolated final class ExtensionStartupEnabledReadsTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
     private var createdProfiles: [Profile] = []
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         // Launch's own loadInstalledExtensions runs in the test host too; until it
         // has reached its per-profile loop, `profileWasAdded` is a no-op.
@@ -34,7 +33,7 @@ final class ExtensionStartupEnabledReadsTests: XCTestCase {
         }
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         ExtensionManager.shared.loadsExtensionsIntoAddedProfiles = false
         for id in registeredExtensionIDs {
             // A globally enabled extension reaches every profile in the store,
@@ -68,7 +67,7 @@ final class ExtensionStartupEnabledReadsTests: XCTestCase {
     /// A minimal MV3 extension with an options page and no background content,
     /// registered in ExtensionManager and saved as globally enabled — what an
     /// installed extension looks like at launch.
-    private func installExtension(named name: String) async throws -> WebExtension {
+    @MainActor private func installExtension(named name: String) async throws -> WebExtension {
         let ext = try await makeOptionsPageTestExtension(idPrefix: "startup-reads-\(name)",
                                                          name: "Startup Reads Test \(name)")
         tempDirs.append(ext.basePath)
@@ -80,28 +79,28 @@ final class ExtensionStartupEnabledReadsTests: XCTestCase {
         return ext
     }
 
-    private func makeProfile(_ name: String) -> Profile {
+    @MainActor private func makeProfile(_ name: String) -> Profile {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         _ = profile.extensionController
         return profile
     }
 
-    private func isLoaded(_ ext: WebExtension, in profile: Profile) -> Bool {
+    @MainActor private func isLoaded(_ ext: WebExtension, in profile: Profile) -> Bool {
         profile.extensionContexts[ext.id] != nil
     }
 
-    private var enabledSetReads: Int {
+    @MainActor private var enabledSetReads: Int {
         AppDatabase.readCount(AppDatabase.enabledExtensionIDsReadLabel)
     }
 
-    private var perExtensionReads: Int {
+    @MainActor private var perExtensionReads: Int {
         AppDatabase.readCount(AppDatabase.isExtensionEnabledReadLabel)
     }
 
     // MARK: - AC #1 / #4: one enabled-state query per profile
 
-    func testLoadIntoProfileIssuesOneEnabledStateQueryForAnyNumberOfExtensions() async throws {
+    @MainActor func testLoadIntoProfileIssuesOneEnabledStateQueryForAnyNumberOfExtensions() async throws {
         let a = try await installExtension(named: "one-a")
         let b = try await installExtension(named: "one-b")
         let c = try await installExtension(named: "one-c")
@@ -122,7 +121,7 @@ final class ExtensionStartupEnabledReadsTests: XCTestCase {
 
     /// The count must not grow with the number of profiles either: each profile
     /// resolves its own set in one query.
-    func testEachProfileCostsOneEnabledStateQuery() async throws {
+    @MainActor func testEachProfileCostsOneEnabledStateQuery() async throws {
         _ = try await installExtension(named: "per-profile-a")
         _ = try await installExtension(named: "per-profile-b")
         _ = try await installExtension(named: "per-profile-c")
@@ -139,7 +138,7 @@ final class ExtensionStartupEnabledReadsTests: XCTestCase {
 
     // MARK: - AC #2: the precomputed decision matches the per-extension rule
 
-    func testPrecomputedSetLoadsExactlyWhatThePerExtensionRuleWould() async throws {
+    @MainActor func testPrecomputedSetLoadsExactlyWhatThePerExtensionRuleWould() async throws {
         let enabled = try await installExtension(named: "mixed-enabled")
         let offForProfile = try await installExtension(named: "mixed-profile-off")
         let offGlobally = try await installExtension(named: "mixed-global-off")
@@ -176,7 +175,7 @@ final class ExtensionStartupEnabledReadsTests: XCTestCase {
 
     /// A stale context left over from a disable is still unloaded: the reconcile
     /// is a two-way convergence, not a load-only pass.
-    func testAContextDisabledForTheProfileIsUnloadedOnReload() async throws {
+    @MainActor func testAContextDisabledForTheProfileIsUnloadedOnReload() async throws {
         let ext = try await installExtension(named: "unload")
         let profile = makeProfile("Startup Reads Unload")
         ExtensionManager.shared.loadExtensionsIntoProfile(profile)
@@ -198,7 +197,7 @@ final class ExtensionStartupEnabledReadsTests: XCTestCase {
 
     // MARK: - AC #1: the mid-session path (profileWasAdded)
 
-    func testProfileAddedMidSessionMakesNoPerExtensionReads() async throws {
+    @MainActor func testProfileAddedMidSessionMakesNoPerExtensionReads() async throws {
         let a = try await installExtension(named: "added-a")
         let b = try await installExtension(named: "added-b")
         let c = try await installExtension(named: "added-c")

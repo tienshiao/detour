@@ -1,13 +1,14 @@
 import Foundation
 import GRDB
 import os
+import Synchronization
 
-private let log = Logger(subsystem: "com.detourbrowser.mac", category: "storage")
+nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", category: "storage")
 
 /// Returns the app's data directory inside Application Support.
 /// When the `DETOUR_DATA_DIR` environment variable is set (e.g. in the test scheme),
 /// that subdirectory name is used instead of "Detour", keeping test data isolated.
-func detourDataDirectory() -> URL {
+nonisolated func detourDataDirectory() -> URL {
     let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
     let subdir = detourDataDirectoryName()
     let dir = appSupport.appendingPathComponent(subdir, isDirectory: true)
@@ -16,16 +17,18 @@ func detourDataDirectory() -> URL {
 }
 
 /// The production data directory's name inside Application Support.
-let defaultDetourDataDirectoryName = "Detour"
+nonisolated let defaultDetourDataDirectoryName = "Detour"
 
 /// The data directory name in use: `DETOUR_DATA_DIR`, or "Detour" when unset.
-func detourDataDirectoryName(
+nonisolated func detourDataDirectoryName(
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> String {
     environment["DETOUR_DATA_DIR"] ?? defaultDetourDataDirectoryName
 }
 
-struct AppDatabase {
+/// Nonisolated and `Sendable`: all state is behind `dbQueue`, which
+/// serialises access, so it may be used from any thread.
+nonisolated struct AppDatabase: Sendable {
     static let shared = AppDatabase()
 
     let dbQueue: DatabaseQueue
@@ -81,28 +84,21 @@ struct AppDatabase {
     /// the last reset. Lets a test pin down a query count — e.g. TASK-46, one
     /// enabled-state read per profile at startup no matter how many extensions
     /// are installed — so per-row reads cannot creep back in unnoticed.
-    /// Reads happen off the main thread too, so the table is lock-guarded.
-    private static let readCountsLock = NSLock()
-    private static var readCounts: [String: Int] = [:]
+    /// Reads happen off the main thread too, so the table is behind a mutex.
+    private static let readCounts = Mutex<[String: Int]>([:])
 
     private static func countRead(_ label: String) {
-        readCountsLock.lock()
-        readCounts[label, default: 0] += 1
-        readCountsLock.unlock()
+        readCounts.withLock { $0[label, default: 0] += 1 }
     }
 
     static func resetReadCounts() {
-        readCountsLock.lock()
-        readCounts.removeAll()
-        readCountsLock.unlock()
+        readCounts.withLock { $0.removeAll() }
     }
 
     /// Reads run under `label` — the string `performRead` was called with — since
     /// the last `resetReadCounts()`.
     static func readCount(_ label: String) -> Int {
-        readCountsLock.lock()
-        defer { readCountsLock.unlock() }
-        return readCounts[label] ?? 0
+        readCounts.withLock { $0[label] ?? 0 }
     }
     #endif
 
@@ -136,7 +132,7 @@ struct AppDatabase {
     /// for profiles missing from the saved set), run inside the caller's write
     /// transaction. For each id that no space references it deletes every row
     /// keyed by the id (TASK-31) — per-profile extension state, the
-    /// `runtime.onInstalled` ledger, favourites, the content blocker whitelist
+    /// `runtime.onInstalled` ledger, favourites, per-site settings (TASK-187)
     /// and remembered external-app permissions — then the profile row.
     ///
     /// `recordingPendingDataRemoval` also records a pending removal of the
@@ -146,7 +142,7 @@ struct AppDatabase {
     /// `saveProfiles` sweep passes false, because its set of live profiles can be
     /// incomplete.
     ///
-    /// `favorite`, `profileExtension`, `contentBlockerWhitelist` and
+    /// `favorite`, `profileExtension`, `siteSetting` and
     /// `externalAppPermission` also cascade
     /// from the profile row, but only while foreign keys are enforced, and
     /// `extensionInstalledEvent` has no foreign key at all, so each is deleted
@@ -167,7 +163,7 @@ struct AppDatabase {
             try ProfileExtensionRecord.filter(Column("profileID") == id).deleteAll(db)
             try ExtensionInstalledEventRecord.filter(Column("profileID") == id).deleteAll(db)
             try FavoriteRecord.filter(Column("profileID") == id).deleteAll(db)
-            try ContentBlockerWhitelistRecord.filter(Column("profileID") == id).deleteAll(db)
+            try SiteSettingRecord.filter(Column("profileID") == id).deleteAll(db)
             try ExternalAppPermissionRecord.filter(Column("profileID") == id).deleteAll(db)
             if try ProfileRecord.filter(Column("id") == id).deleteAll(db) > 0 {
                 if recordingPendingDataRemoval {
@@ -717,25 +713,70 @@ struct AppDatabase {
         }
     }
 
-    // MARK: - Content Blocker Whitelist
+    // MARK: - Site settings (TASK-187)
 
-    func saveContentBlockerWhitelistEntry(_ record: ContentBlockerWhitelistRecord) {
-        performWrite("save whitelist entry") { db in
+    func saveSiteSetting(_ record: SiteSettingRecord) {
+        performWrite("save site setting") { db in
             try record.save(db)
         }
     }
 
-    func deleteContentBlockerWhitelistEntry(profileID: String, host: String) {
-        performWrite("delete whitelist entry") { db in
-            try ContentBlockerWhitelistRecord
-                .filter(Column("profileID") == profileID && Column("host") == host)
+    func deleteSiteSettings(profileID: String, setting: String, sites: Set<String>) {
+        guard !sites.isEmpty else { return }
+        performWrite("delete site settings") { db in
+            try SiteSettingRecord
+                .filter(Column("profileID") == profileID && Column("setting") == setting
+                        && sites.contains(Column("site")))
                 .deleteAll(db)
         }
     }
 
-    func loadContentBlockerWhitelist() -> [ContentBlockerWhitelistRecord] {
-        performRead("load whitelist", default: []) { db in
-            try ContentBlockerWhitelistRecord.fetchAll(db)
+    func loadSiteSettings() -> [SiteSettingRecord] {
+        performRead("load site settings", default: []) { db in
+            try SiteSettingRecord.fetchAll(db)
+        }
+    }
+
+    // MARK: - Link routes (TASK-191.1)
+
+    func loadLinkRoutes() -> [LinkRouteRecord] {
+        performRead("load link routes", default: []) { db in
+            try LinkRouteRecord.order(Column("sortOrder")).fetchAll(db)
+        }
+    }
+
+    func saveLinkRoute(_ record: LinkRouteRecord) {
+        performWrite("save link route") { db in
+            try record.save(db)
+        }
+    }
+
+    /// Writes new sort orders for existing routes, in one transaction.
+    func saveLinkRouteOrder(_ orders: [(id: String, sortOrder: Int)]) {
+        guard !orders.isEmpty else { return }
+        performWrite("save link route order") { db in
+            for order in orders {
+                try db.execute(sql: "UPDATE linkRoute SET sortOrder = ? WHERE id = ?",
+                               arguments: [order.sortOrder, order.id])
+            }
+        }
+    }
+
+    func deleteLinkRoute(id: String) {
+        performWrite("delete link route") { db in
+            _ = try LinkRouteRecord.deleteOne(db, key: id)
+        }
+    }
+
+    func loadLinkRouteDefault() -> LinkRouteDefaultRecord? {
+        performRead("load link route default", default: nil) { db in
+            try LinkRouteDefaultRecord.fetchOne(db, key: 1)
+        }
+    }
+
+    func saveLinkRouteDefault(_ record: LinkRouteDefaultRecord) {
+        performWrite("save link route default") { db in
+            try record.save(db)
         }
     }
 
@@ -1281,6 +1322,67 @@ struct AppDatabase {
                 }
                 try db.execute(sql: "UPDATE extension SET source = ?, updateURL = ? WHERE id = ?",
                                arguments: [source, updateURL, id])
+            }
+        }
+
+        migrator.registerMigration("v18") { db in
+            // TASK-187: per-site settings get one table (`SiteSettingRecord`), and
+            // content blocking's site list moves into it. A missing row is the
+            // setting's default; `setting` is `SiteSetting.rawValue`.
+            try db.create(table: "siteSetting") { t in
+                t.column("profileID", .text).notNull()
+                    .references("profile", onDelete: .cascade)
+                t.column("site", .text).notNull()
+                t.column("setting", .text).notNull()
+                t.column("value", .boolean).notNull()
+                t.primaryKey(["profileID", "site", "setting"])
+            }
+            // Every whitelisted host is "content blocking off" for that site. The
+            // old loader lowercased hosts, so two spellings were one entry; a row
+            // whose profile is gone (written while foreign keys were off) is
+            // dropped rather than failing the migration's foreign key check.
+            // Literals rather than `SiteSetting` so a rename cannot change what
+            // this wrote.
+            try db.execute(sql: """
+                INSERT OR IGNORE INTO siteSetting (profileID, site, setting, value)
+                SELECT profileID, lower(host), 'contentBlocking', 0 FROM contentBlockerWhitelist
+                WHERE host <> '' AND profileID IN (SELECT id FROM profile)
+                """)
+            try db.drop(table: "contentBlockerWhitelist")
+        }
+
+        migrator.registerMigration("v19") { db in
+            // TASK-195: a Private window's content-blocking switch is kept in
+            // memory only, so the rows earlier builds saved for the Private
+            // profile go. Its other settings never wrote rows; other profiles'
+            // rows stay. The literal is TabStore.incognitoProfileID, spelled out
+            // (as in v10) so this migration cannot change meaning later.
+            try db.execute(sql: "DELETE FROM siteSetting WHERE profileID = ? AND setting = 'contentBlocking'",
+                           arguments: ["00000000-0000-0000-0000-000000000001"])
+        }
+
+        migrator.registerMigration("v20") { db in
+            // TASK-191.1: Link Routes. Routes are app-wide (spaces are
+            // global). The target is a kind plus a space id for a space target,
+            // as text, so a target a later build adds is a new string this one
+            // skips. No foreign key on targetSpaceID: every session save
+            // deletes and re-inserts the space rows, so a cascade would wipe the
+            // routes and a restriction would refuse the save. Deleting a space
+            // a route targets is refused in TabStore instead.
+            try db.create(table: "linkRoute") { t in
+                t.primaryKey("id", .text)
+                t.column("matchKind", .text)
+                t.column("matchPattern", .text)
+                t.column("sourceApp", .text)
+                t.column("targetKind", .text).notNull()
+                t.column("targetSpaceID", .text)
+                t.column("sortOrder", .integer).notNull()
+            }
+            // The Default target: one row at most; none means Most Recent Space.
+            try db.create(table: "linkRouteDefault") { t in
+                t.primaryKey("id", .integer).check { $0 == 1 }
+                t.column("targetKind", .text).notNull()
+                t.column("targetSpaceID", .text)
             }
         }
 

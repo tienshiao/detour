@@ -9,13 +9,13 @@ import GRDB
 /// Cmd+L followed by Return activated the space's most recent history entry
 /// instead of submitting the pre-filled URL, and Cmd+T followed by Return
 /// opened that entry from an empty field.
-final class PaletteSelectionTests: XCTestCase {
+nonisolated final class PaletteSelectionTests: XCTestCase {
 
     private let currentURL = "https://current.example.com/"
 
     // MARK: - The four Return cases
 
-    func testReturnOnAnUneditedPrefilledFieldSubmitsThePrefilledURL() {
+    @MainActor func testReturnOnAnUneditedPrefilledFieldSubmitsThePrefilledURL() {
         // Cmd+L: the field holds the current URL over a default list of 12 rows.
         let selected = PaletteSelection.initialRow(listIsDefault: true, rowCount: 12)
         XCTAssertNil(selected, "the default list starts with no row selected")
@@ -25,7 +25,7 @@ final class PaletteSelectionTests: XCTestCase {
             .submitText(currentURL))
     }
 
-    func testReturnOnAnEmptyFieldDoesNothing() {
+    @MainActor func testReturnOnAnEmptyFieldDoesNothing() {
         // Cmd+T: an empty field over the same default list.
         let selected = PaletteSelection.initialRow(listIsDefault: true, rowCount: 12)
 
@@ -34,7 +34,7 @@ final class PaletteSelectionTests: XCTestCase {
             .nothing, "Return no longer opens the most recent history entry")
     }
 
-    func testReturnAfterArrowingToADefaultRowActivatesThatRow() {
+    @MainActor func testReturnAfterArrowingToADefaultRowActivatesThatRow() {
         var selected = PaletteSelection.initialRow(listIsDefault: true, rowCount: 12)
         selected = PaletteSelection.row(afterMoving: 1, from: selected, rowCount: 12)
         XCTAssertEqual(selected, 0, "Down from no selection selects the first row")
@@ -48,7 +48,7 @@ final class PaletteSelectionTests: XCTestCase {
             .activateRow(1))
     }
 
-    func testReturnOnATypedQueryActivatesTheTopRow() {
+    @MainActor func testReturnOnATypedQueryActivatesTheTopRow() {
         // Typed input keeps the first row (top hit, else the verbatim input)
         // selected after every rebuild.
         let selected = PaletteSelection.initialRow(listIsDefault: false, rowCount: 3)
@@ -61,39 +61,39 @@ final class PaletteSelectionTests: XCTestCase {
 
     // MARK: - Initial selection
 
-    func testAnEmptyListHasNoSelection() {
+    @MainActor func testAnEmptyListHasNoSelection() {
         XCTAssertNil(PaletteSelection.initialRow(listIsDefault: false, rowCount: 0))
         XCTAssertNil(PaletteSelection.initialRow(listIsDefault: true, rowCount: 0))
     }
 
     // MARK: - Arrow keys
 
-    func testDownFromNoSelectionSelectsTheFirstRow() {
+    @MainActor func testDownFromNoSelectionSelectsTheFirstRow() {
         XCTAssertEqual(PaletteSelection.row(afterMoving: 1, from: nil, rowCount: 4), 0)
     }
 
-    func testUpFromNoSelectionWrapsToTheLastRow() {
+    @MainActor func testUpFromNoSelectionWrapsToTheLastRow() {
         XCTAssertEqual(PaletteSelection.row(afterMoving: -1, from: nil, rowCount: 4), 3)
     }
 
-    func testArrowsMoveWithinTheList() {
+    @MainActor func testArrowsMoveWithinTheList() {
         XCTAssertEqual(PaletteSelection.row(afterMoving: 1, from: 1, rowCount: 4), 2)
         XCTAssertEqual(PaletteSelection.row(afterMoving: -1, from: 1, rowCount: 4), 0)
     }
 
-    func testMovingPastEitherEndClearsTheSelection() {
+    @MainActor func testMovingPastEitherEndClearsTheSelection() {
         XCTAssertNil(PaletteSelection.row(afterMoving: -1, from: 0, rowCount: 4))
         XCTAssertNil(PaletteSelection.row(afterMoving: 1, from: 3, rowCount: 4))
     }
 
-    func testArrowsDoNothingInAnEmptyList() {
+    @MainActor func testArrowsDoNothingInAnEmptyList() {
         XCTAssertNil(PaletteSelection.row(afterMoving: 1, from: nil, rowCount: 0))
         XCTAssertNil(PaletteSelection.row(afterMoving: -1, from: nil, rowCount: 0))
     }
 
     // MARK: - Return
 
-    func testReturnTrimsTheSubmittedText() {
+    @MainActor func testReturnTrimsTheSubmittedText() {
         XCTAssertEqual(
             PaletteSelection.returnAction(selectedRow: nil, rowCount: 0, fieldText: "  swift  "),
             .submitText("swift"))
@@ -102,7 +102,7 @@ final class PaletteSelectionTests: XCTestCase {
             .nothing)
     }
 
-    func testAStaleSelectionPastTheEndOfTheListSubmitsTheText() {
+    @MainActor func testAStaleSelectionPastTheEndOfTheListSubmitsTheText() {
         XCTAssertEqual(
             PaletteSelection.returnAction(selectedRow: 4, rowCount: 2, fieldText: "swift"),
             .submitText("swift"))
@@ -110,13 +110,13 @@ final class PaletteSelectionTests: XCTestCase {
 
     // MARK: - Text restored when the selection is cleared
 
-    func testLeavingTheListRestoresAnUneditedPrefill() {
+    @MainActor func testLeavingTheListRestoresAnUneditedPrefill() {
         XCTAssertEqual(
             PaletteSelection.restoredFieldText(userTypedText: "", uneditedPrefill: currentURL),
             currentURL)
     }
 
-    func testLeavingTheListRestoresWhatTheUserTyped() {
+    @MainActor func testLeavingTheListRestoresWhatTheUserTyped() {
         XCTAssertEqual(
             PaletteSelection.restoredFieldText(userTypedText: "git", uneditedPrefill: nil),
             "git")
@@ -130,10 +130,9 @@ final class PaletteSelectionTests: XCTestCase {
 /// field editor drives it: commands go to the first responder's
 /// `doCommand(by:)`, which asks the palette's `control(_:textView:doCommandBy:)`
 /// and otherwise falls through to the field's own action.
-@MainActor
-final class PaletteReturnKeyTests: XCTestCase {
+nonisolated final class PaletteReturnKeyTests: XCTestCase {
 
-    private final class SpyDelegate: CommandPaletteDelegate {
+    @MainActor private final class SpyDelegate: CommandPaletteDelegate {
         enum Event: Equatable {
             case input(String)
             case search(String)
@@ -166,19 +165,19 @@ final class PaletteReturnKeyTests: XCTestCase {
     private var palette: CommandPaletteView?
     private var spy = SpyDelegate()
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         // Cancels the debounced network suggestion fetch a typed query schedules.
         palette?.delegate = nil
         palette?.dismiss()
         palette = nil
         window?.close()
         window = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// A palette over a default list of [newestURL, olderURL], shown as Cmd+L
     /// shows it (`initialText` = the current URL) or as Cmd+T does (nil).
-    private func showPalette(initialText: String?, alsoVisited: [String] = []) throws -> CommandPaletteView {
+    @MainActor private func showPalette(initialText: String?, alsoVisited: [String] = []) throws -> CommandPaletteView {
         var config = Configuration()
         config.foreignKeysEnabled = true
         let db = try HistoryDatabase(dbQueue: try DatabaseQueue(configuration: config))
@@ -186,7 +185,7 @@ final class PaletteReturnKeyTests: XCTestCase {
         // Recorded in order; a tie on the visit time is broken by the newer row.
         db.recordVisit(url: olderURL, title: "Older", faviconURL: nil, spaceID: spaceID.uuidString)
         db.recordVisit(url: newestURL, title: "Newest", faviconURL: nil, spaceID: spaceID.uuidString)
-        XCTAssertEqual(db.recentHistory(spaceID: spaceID.uuidString).map(\.url), [newestURL, olderURL])
+        XCTAssertEqual(db.recentHistory(spaceIDs: [spaceID.uuidString]).map(\.url), [newestURL, olderURL])
         for url in alsoVisited {
             db.recordVisit(url: url, title: "", faviconURL: nil, spaceID: spaceID.uuidString)
         }
@@ -198,7 +197,7 @@ final class PaletteReturnKeyTests: XCTestCase {
 
         let palette = CommandPaletteView()
         palette.suggestionProvider = SuggestionProvider(db: db)
-        palette.activeSpaceID = spaceID
+        palette.historySpaceIDs = [spaceID.uuidString]
         palette.delegate = spy
         self.palette = palette
         palette.show(in: try XCTUnwrap(window.contentView), initialText: initialText)
@@ -207,26 +206,26 @@ final class PaletteReturnKeyTests: XCTestCase {
 
     /// The field editor of the palette's text field, which is first responder
     /// while the palette is shown.
-    private func fieldEditor() throws -> NSTextView {
+    @MainActor private func fieldEditor() throws -> NSTextView {
         try XCTUnwrap(window?.firstResponder as? NSTextView, "the palette's field is being edited")
     }
 
-    private func press(_ command: Selector) throws {
+    @MainActor private func press(_ command: Selector) throws {
         try fieldEditor().doCommand(by: command)
     }
 
-    private func pressReturn() throws { try press(#selector(NSResponder.insertNewline(_:))) }
-    private func pressDown() throws { try press(#selector(NSResponder.moveDown(_:))) }
-    private func pressUp() throws { try press(#selector(NSResponder.moveUp(_:))) }
+    @MainActor private func pressReturn() throws { try press(#selector(NSResponder.insertNewline(_:))) }
+    @MainActor private func pressDown() throws { try press(#selector(NSResponder.moveDown(_:))) }
+    @MainActor private func pressUp() throws { try press(#selector(NSResponder.moveUp(_:))) }
 
-    private func type(_ text: String) throws {
+    @MainActor private func type(_ text: String) throws {
         let editor = try fieldEditor()
         editor.insertText(text, replacementRange: editor.selectedRange())
     }
 
     /// Spins the main run loop until the field shows `text`: a history-derived
     /// inline completion lands from the palette's background query.
-    private func waitForField(_ text: String, file: StaticString = #filePath, line: UInt = #line) throws {
+    @MainActor private func waitForField(_ text: String, file: StaticString = #filePath, line: UInt = #line) throws {
         let editor = try fieldEditor()
         let deadline = Date().addingTimeInterval(5)
         while editor.string != text, Date() < deadline {
@@ -239,7 +238,7 @@ final class PaletteReturnKeyTests: XCTestCase {
 
     /// The reproduction of TASK-144: before the fix the delegate received
     /// `newestURL`, the default list's first row.
-    func testCmdLThenReturnSubmitsThePrefilledURL() throws {
+    @MainActor func testCmdLThenReturnSubmitsThePrefilledURL() throws {
         _ = try showPalette(initialText: currentURL)
 
         try pressReturn()
@@ -247,7 +246,7 @@ final class PaletteReturnKeyTests: XCTestCase {
         XCTAssertEqual(spy.events, [.input(currentURL)])
     }
 
-    func testCmdLThenDownThenReturnActivatesTheFirstDefaultRow() throws {
+    @MainActor func testCmdLThenDownThenReturnActivatesTheFirstDefaultRow() throws {
         _ = try showPalette(initialText: currentURL)
 
         try pressDown()
@@ -257,7 +256,7 @@ final class PaletteReturnKeyTests: XCTestCase {
         XCTAssertEqual(spy.events, [.input(newestURL)])
     }
 
-    func testCmdLThenDownTwiceThenReturnActivatesTheSecondDefaultRow() throws {
+    @MainActor func testCmdLThenDownTwiceThenReturnActivatesTheSecondDefaultRow() throws {
         _ = try showPalette(initialText: currentURL)
 
         try pressDown()
@@ -267,7 +266,7 @@ final class PaletteReturnKeyTests: XCTestCase {
         XCTAssertEqual(spy.events, [.input(olderURL)])
     }
 
-    func testArrowingBackOutOfTheListRestoresThePrefilledURL() throws {
+    @MainActor func testArrowingBackOutOfTheListRestoresThePrefilledURL() throws {
         _ = try showPalette(initialText: currentURL)
 
         try pressDown()
@@ -280,7 +279,7 @@ final class PaletteReturnKeyTests: XCTestCase {
 
     // MARK: - Cmd+T
 
-    func testCmdTThenReturnOnTheEmptyFieldDoesNothing() throws {
+    @MainActor func testCmdTThenReturnOnTheEmptyFieldDoesNothing() throws {
         _ = try showPalette(initialText: nil)
 
         try pressReturn()
@@ -288,7 +287,7 @@ final class PaletteReturnKeyTests: XCTestCase {
         XCTAssertEqual(spy.events, [], "the most recent history entry is not opened")
     }
 
-    func testCmdTThenDownThenReturnActivatesTheFirstDefaultRow() throws {
+    @MainActor func testCmdTThenDownThenReturnActivatesTheFirstDefaultRow() throws {
         _ = try showPalette(initialText: nil)
 
         try pressDown()
@@ -297,7 +296,7 @@ final class PaletteReturnKeyTests: XCTestCase {
         XCTAssertEqual(spy.events, [.input(newestURL)])
     }
 
-    func testCmdTThenUpWrapsToTheLastDefaultRow() throws {
+    @MainActor func testCmdTThenUpWrapsToTheLastDefaultRow() throws {
         _ = try showPalette(initialText: nil)
 
         try pressUp()
@@ -311,7 +310,7 @@ final class PaletteReturnKeyTests: XCTestCase {
     /// Typed input keeps today's behaviour: the first row of the rebuilt list
     /// is selected, so Return activates it. With no open tabs the instant
     /// (pre-history) list is just the verbatim typed-input row.
-    func testTypedQueryThenReturnActivatesTheTopRow() throws {
+    @MainActor func testTypedQueryThenReturnActivatesTheTopRow() throws {
         _ = try showPalette(initialText: nil)
 
         let editor = try fieldEditor()
@@ -321,7 +320,7 @@ final class PaletteReturnKeyTests: XCTestCase {
         XCTAssertEqual(spy.events, [.input("swift")])
     }
 
-    func testTypingOverThePrefilledURLThenReturnSubmitsTheTypedText() throws {
+    @MainActor func testTypingOverThePrefilledURLThenReturnSubmitsTheTypedText() throws {
         _ = try showPalette(initialText: currentURL)
 
         // Cmd+L selects the whole pre-filled URL, so typing replaces it.
@@ -339,7 +338,7 @@ final class PaletteReturnKeyTests: XCTestCase {
     /// The reproduction of TASK-181: Cmd+Right moved the caret to the end, but
     /// the completion was still pending, so Backspace dropped it and left the
     /// field at the typed prefix instead of deleting the last character.
-    func testBackspaceAfterMovingToTheEndDeletesTheLastCharacter() throws {
+    @MainActor func testBackspaceAfterMovingToTheEndDeletesTheLastCharacter() throws {
         _ = try showPalette(initialText: nil, alsoVisited: [deepURL])
 
         try type("example.com/w")
@@ -358,7 +357,7 @@ final class PaletteReturnKeyTests: XCTestCase {
 
     /// The caret placed inside the completion (a click, Left arrow) accepts it
     /// too: Backspace deletes before the caret.
-    func testBackspaceAfterPlacingTheCaretInsideTheCompletionDeletesBeforeTheCaret() throws {
+    @MainActor func testBackspaceAfterPlacingTheCaretInsideTheCompletionDeletesBeforeTheCaret() throws {
         _ = try showPalette(initialText: nil, alsoVisited: [deepURL])
 
         try type("example.com/w")
@@ -372,7 +371,7 @@ final class PaletteReturnKeyTests: XCTestCase {
 
     /// Unchanged: with the completion still selected, Backspace removes only
     /// the completion.
-    func testBackspaceWhileTheCompletionIsSelectedRemovesOnlyTheCompletion() throws {
+    @MainActor func testBackspaceWhileTheCompletionIsSelectedRemovesOnlyTheCompletion() throws {
         _ = try showPalette(initialText: nil, alsoVisited: [deepURL])
 
         try type("example.com/w")
@@ -384,7 +383,7 @@ final class PaletteReturnKeyTests: XCTestCase {
 
     /// Tab with no completion pending (here: the caret moved off it, which
     /// accepts it) must not move keyboard focus out of the open palette.
-    func testTabAfterMovingOffTheCompletionKeepsFocusInTheField() throws {
+    @MainActor func testTabAfterMovingOffTheCompletionKeepsFocusInTheField() throws {
         let palette = try showPalette(initialText: nil, alsoVisited: [deepURL])
         // Something else focusable in the window, so Tab has somewhere to go.
         let other = NSTextField(frame: NSRect(x: 10, y: 10, width: 100, height: 22))

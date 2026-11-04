@@ -99,6 +99,11 @@ extension BrowserWindowController {
             guard let tab, let image, tab.switcherPreviewRequest == request else { return }
             tab.switcherPreview = image
             self?.recentTabSwitcher?.previewDidChange()
+            // The sidebar hover card's picture, kept on disk (TASK-190).
+            let store = TabStore.shared
+            if let cache = store.thumbnailCache, let key = store.thumbnailKey(for: tab) {
+                cache.store(image, for: key)
+            }
         }
     }
 }

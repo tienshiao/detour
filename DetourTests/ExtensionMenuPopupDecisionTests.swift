@@ -7,15 +7,14 @@ import WebKit
 /// `popupWebView` creates the popup web view and loads the popup page, and
 /// `menuNeedsUpdate` runs on every key-equivalent dispatch — which is how a
 /// locked 1Password ended up asking to unlock at launch, with no popup shown.
-@MainActor
-final class ExtensionMenuPopupDecisionTests: XCTestCase {
+nonisolated final class ExtensionMenuPopupDecisionTests: XCTestCase {
 
     // MARK: - Spy
 
     /// Records that the decision asked for `presentsPopup` — and, having no
     /// `popupWebView` member at all, proves by construction that it could not
     /// have asked for one.
-    private final class SpyAction: ExtensionActionPopupDeclaring {
+    @MainActor private final class SpyAction: ExtensionActionPopupDeclaring {
         private let declares: Bool
         private(set) var presentsPopupReads = 0
 
@@ -29,32 +28,32 @@ final class ExtensionMenuPopupDecisionTests: XCTestCase {
 
     // MARK: - The decision
 
-    func testAnActionThatPresentsAPopupIsClickable() {
+    @MainActor func testAnActionThatPresentsAPopupIsClickable() {
         let spy = SpyAction(presentsPopup: true)
         XCTAssertTrue(ExtensionMenuPopupDecision.hasPopup(action: spy, manifestDefaultPopup: nil))
         XCTAssertEqual(spy.presentsPopupReads, 1, "the decision should consult the action")
     }
 
-    func testAnActionWithoutAPopupAndNoManifestDefaultIsNotClickable() {
+    @MainActor func testAnActionWithoutAPopupAndNoManifestDefaultIsNotClickable() {
         let spy = SpyAction(presentsPopup: false)
         XCTAssertFalse(ExtensionMenuPopupDecision.hasPopup(action: spy, manifestDefaultPopup: nil))
         XCTAssertEqual(spy.presentsPopupReads, 1, "the decision should consult the action")
     }
 
-    func testTheManifestDefaultPopupMakesItClickableWhenTheActionSaysNo() {
+    @MainActor func testTheManifestDefaultPopupMakesItClickableWhenTheActionSaysNo() {
         let spy = SpyAction(presentsPopup: false)
         XCTAssertTrue(ExtensionMenuPopupDecision.hasPopup(action: spy, manifestDefaultPopup: "popup.html"))
         XCTAssertEqual(spy.presentsPopupReads, 1, "the decision should consult the action")
     }
 
-    func testAnEmptyManifestDefaultPopupCountsAsNoPopup() {
+    @MainActor func testAnEmptyManifestDefaultPopupCountsAsNoPopup() {
         XCTAssertFalse(ExtensionMenuPopupDecision.hasPopup(action: SpyAction(presentsPopup: false),
                                                            manifestDefaultPopup: ""))
     }
 
     /// An extension whose context is not loaded for the key window's profile has
     /// no action to ask, so the manifest is the whole answer.
-    func testWithoutAnActionTheManifestDecides() {
+    @MainActor func testWithoutAnActionTheManifestDecides() {
         XCTAssertFalse(ExtensionMenuPopupDecision.hasPopup(action: nil, manifestDefaultPopup: nil))
         XCTAssertTrue(ExtensionMenuPopupDecision.hasPopup(action: nil, manifestDefaultPopup: "popup.html"))
     }
@@ -73,9 +72,9 @@ final class ExtensionMenuPopupDecisionTests: XCTestCase {
     /// happens inside an IPC dispatch, taking the whole test host down in
     /// whichever suite runs next. The context is still unloaded and the store
     /// row removed; only the object outlives the test.
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         beaconServer?.stop()
         beaconServer = nil
         for profile in createdProfiles {
@@ -96,7 +95,7 @@ final class ExtensionMenuPopupDecisionTests: XCTestCase {
     /// answer "yes, clickable" without that beacon ever arriving; an explicit
     /// `popupWebView` read then makes it arrive, which is what proves the hook
     /// works and the first assertion is not vacuous.
-    func testTheMenuDecisionDoesNotLoadThePopupPageButAnExplicitReadDoes() async throws {
+    @MainActor func testTheMenuDecisionDoesNotLoadThePopupPageButAnExplicitReadDoes() async throws {
         let server = try LoopbackHTTPServer(routes: [:])
         beaconServer = server
         let port = try await server.start()

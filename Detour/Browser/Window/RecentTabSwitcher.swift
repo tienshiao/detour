@@ -47,12 +47,18 @@ final class RecentTabSwitcher {
     init(window: NSWindow) {
         self.window = window
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
-            MainActor.assumeIsolated { RecentTabSwitcher.monitorResult(for: event, switcher: self) }
+            // Local monitors run on the main thread. Only whether to pass the
+            // event on comes back: `NSEvent` is not Sendable, and the switcher
+            // never substitutes another event.
+            let passesOn = MainActor.assumeIsolated {
+                RecentTabSwitcher.monitorResult(for: event, switcher: self) != nil
+            }
+            return passesOn ? event : nil
         }
-        resignObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+        resignObserver = NotificationCenter.default.addMainObserver(
+            forName: NSWindow.didResignKeyNotification, object: window
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.cancel() }
+            self?.cancel()
         }
     }
 

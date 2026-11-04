@@ -58,26 +58,25 @@ class FaviconSchemeHandler: NSObject, WKURLSchemeHandler {
         return (spaceIDs, profile.polyfillHandler?.historyDatabase ?? .shared)
     }
 
-    private let lock = NSLock()
-    private var activeTasks = Set<ObjectIdentifier>()
+    /// The tasks WebKit has started and not stopped. Main thread only: WebKit
+    /// calls `start` and `stop` there, and `respond` hops to it.
+    private var activeTasks = SchemeTaskTable()
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
-        let taskID = ObjectIdentifier(urlSchemeTask as AnyObject)
-        lock.lock(); defer { lock.unlock() }
-        activeTasks.insert(taskID)
+        let ticket = activeTasks.insert(urlSchemeTask)
 
         guard let requestURL = urlSchemeTask.request.url,
               let components = URLComponents(url: requestURL, resolvingAgainstBaseURL: false),
               let webKitHost = requestURL.host, !webKitHost.isEmpty,
               let pageUrl = components.queryItems?.first(where: { $0.name == "pageUrl" })?.value else {
-            respond(urlSchemeTask, taskID: taskID, data: nil, mimeType: nil)
+            respond(ticket, data: nil, mimeType: nil)
             return
         }
 
         // The host must be a `favicon` extension of this handler's profile, and
         // the profile must have a history to answer from.
         guard let lookup = lookupScope(forWebKitHost: webKitHost) else {
-            respond(urlSchemeTask, taskID: taskID, data: nil, mimeType: nil)
+            respond(ticket, data: nil, mimeType: nil)
             return
         }
 
@@ -91,21 +90,20 @@ class FaviconSchemeHandler: NSObject, WKURLSchemeHandler {
                                         resizedTo: requestedSize > 0 ? requestedSize : nil,
                                         undecodablePassesThrough: true,
                                         database: lookup.database) { [weak self] data in
-            self?.respond(urlSchemeTask, taskID: taskID, data: data, mimeType: data != nil ? "image/png" : nil)
+            self?.respond(ticket, data: data, mimeType: data != nil ? "image/png" : nil)
         }
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
-        lock.lock(); defer { lock.unlock() }
-        activeTasks.remove(ObjectIdentifier(urlSchemeTask as AnyObject))
+        activeTasks.remove(urlSchemeTask)
     }
 
-    private func respond(_ task: any WKURLSchemeTask, taskID: ObjectIdentifier, data: Data?, mimeType: String?) {
+    /// Answers the task if WebKit has not stopped it meanwhile. Always on a
+    /// later turn of the main queue, so `start` returns first; nonisolated so
+    /// the lookup's completion calls it from its own queue with one hop.
+    nonisolated private func respond(_ ticket: SchemeTaskTable.Ticket, data: Data?, mimeType: String?) {
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.lock.lock(); defer { self.lock.unlock() }
-            let isActive = self.activeTasks.remove(taskID) != nil
-            guard isActive else { return }
+            guard let self, let task = self.activeTasks.take(ticket) else { return }
 
             let url = task.request.url ?? URL(string: "about:blank")!
             let responseData = data ?? FaviconPNGLoader.transparentPixel

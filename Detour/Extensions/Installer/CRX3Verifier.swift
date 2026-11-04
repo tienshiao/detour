@@ -96,15 +96,19 @@ enum CRX3Verifier {
     /// what it is about to become (a Web Store install or update needs
     /// `.webStore`), and a call that forgot to say would get the weaker check.
     static func verify(crxData data: Data, format: Format) -> Outcome {
-        guard data.count >= 12 else { return .failed(.malformed("too small")) }
-        guard data[0..<4] == Data([0x43, 0x72, 0x32, 0x34]) else { return .failed(.malformed("bad magic")) }
-        let version = data.subdata(in: 4..<8).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
-        guard version == 3 else { return .failed(.malformed("version \(version)")) }
-        let headerLen = Int(data.subdata(in: 8..<12).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
-        let zipStart = 12 + headerLen
-        guard zipStart < data.count else { return .failed(.malformed("header length exceeds file")) }
-        let header = data.subdata(in: 12..<zipStart)
-        let zip = data.subdata(in: zipStart..<data.count)
+        let container: CRXUnpacker.Container
+        switch CRXUnpacker.container(of: data) {
+        case .success(let parts): container = parts
+        case .failure(.fileTooSmall): return .failed(.malformed("too small"))
+        case .failure(.invalidMagic): return .failed(.malformed("bad magic"))
+        case .failure(.unsupportedVersion(let version)): return .failed(.malformed("version \(version)"))
+        case .failure(.headerOverflow): return .failed(.malformed("header length exceeds file"))
+        case .failure(.zipExtractionFailed(let reason)): return .failed(.malformed(reason))
+        }
+        // The loop below indexes `header` from zero: it is a copy. The
+        // archive is only appended to the signed message, so a slice will do.
+        let header = data.subdata(in: container.header)
+        let zip = data[container.zip]
 
         var proofs: [Proof] = []
         var signedHeaderData: Data?
@@ -158,9 +162,10 @@ enum CRX3Verifier {
         }
         guard !proofs.isEmpty else { return .failed(.noProofs) }
 
+        // `signedHeaderData` is a subrange of `header`, whose length came
+        // from a UInt32, so its count fits.
         var message = signedDataPreamble
-        var lengthLE = UInt32(signedHeaderData.count).littleEndian
-        message.append(Data(bytes: &lengthLE, count: 4))
+        message.append(Data(littleEndianBytesOf: UInt32(signedHeaderData.count)))
         message.append(signedHeaderData)
         message.append(zip)
 
@@ -206,11 +211,20 @@ enum CRX3Verifier {
                 kSecAttrKeyClass: kSecAttrKeyClassPublic,
             ]
             var error: Unmanaged<CFError>?
-            guard let key = SecKeyCreateWithData(pkcs1 as CFData, attributes as CFDictionary, &error) else {
-                return .failure(.unsupportedKey("RSA key rejected by Security: \(error?.takeRetainedValue().localizedDescription ?? "unknown")"))
+            // `unsafe`: Security's out-parameter is an `Unmanaged` CFError
+            // that follows the Create rule (+1, set only on failure). It is
+            // taken over exactly once, with `takeRetainedValue()`, on the one
+            // path where the call failed, so it is neither leaked nor
+            // over-released. No bytes are read through it.
+            guard let key = unsafe SecKeyCreateWithData(pkcs1 as CFData, attributes as CFDictionary, &error) else {
+                let reason = unsafe error?.takeRetainedValue().localizedDescription
+                return .failure(.unsupportedKey("RSA key rejected by Security: \(reason ?? "unknown")"))
             }
+            // A verification failure is reported as `badSignature` whatever
+            // Security says, so its error is not asked for (passing `&error`
+            // here used to leak the CFError it set).
             let ok = SecKeyVerifySignature(key, .rsaSignatureMessagePKCS1v15SHA256,
-                                           message as CFData, proof.signature as CFData, &error)
+                                           message as CFData, proof.signature as CFData, nil)
             return ok ? .success(()) : .failure(.badSignature)
         }
     }

@@ -12,14 +12,13 @@ import WebKit
 /// answers it (what `stageUpdate` does after staging a verified update), the
 /// listeners run and the request is parked again. Each test uses a fresh
 /// extension id, so waiters parked by one test never count in another.
-@MainActor
-final class ExtensionRuntimeUpdateAvailablePolyfillTests: XCTestCase {
+nonisolated final class ExtensionRuntimeUpdateAvailablePolyfillTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
     private var createdProfiles: [Profile] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for profile in createdProfiles {
             profile.unloadAllExtensions()
             TabStore.shared.forceRemoveProfile(id: profile.id)
@@ -33,14 +32,14 @@ final class ExtensionRuntimeUpdateAvailablePolyfillTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
     /// The worker: listens for `onUpdateAvailable` at top level (as a real
     /// extension would) and answers `ping` and `seen` from the page.
-    private static let workerJS = ExtensionAPIPolyfill.polyfillJS + """
+    @MainActor private static let workerJS = ExtensionAPIPolyfill.polyfillJS + """
 
 
     globalThis.__seen = null;
@@ -64,7 +63,7 @@ final class ExtensionRuntimeUpdateAvailablePolyfillTests: XCTestCase {
     /// resolve its manifest's background) and loaded in a fresh profile, with
     /// one extension page open. With `withWorker`, it declares a service worker
     /// running `workerJS`.
-    private func makeExtension(withWorker: Bool) async throws
+    @MainActor private func makeExtension(withWorker: Bool) async throws
         -> (ext: WebExtension, profile: Profile, context: WKWebExtensionContext, page: WKWebView) {
         let id = "update-available-\(UUID().uuidString.prefix(8))"
         let background = withWorker
@@ -94,13 +93,13 @@ final class ExtensionRuntimeUpdateAvailablePolyfillTests: XCTestCase {
         return (ext, profile, context, webView)
     }
 
-    private func evalObject(_ js: String, in webView: WKWebView) async throws -> [String: Any] {
+    @MainActor private func evalObject(_ js: String, in webView: WKWebView) async throws -> [String: Any] {
         let raw = try await webView.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
         let json = try XCTUnwrap(raw as? String, "expected a JSON string, got \(String(describing: raw))")
         return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
     }
 
-    private func waiterCount(_ ext: WebExtension) -> Int {
+    @MainActor private func waiterCount(_ ext: WebExtension) -> Int {
         ExtensionManager.shared.updateAvailableWaiterCountForTesting(extensionID: ext.id)
     }
 
@@ -109,7 +108,7 @@ final class ExtensionRuntimeUpdateAvailablePolyfillTests: XCTestCase {
     /// The worker's `addListener` parks one request; staging an update (here the
     /// notification `stageUpdate` sends) runs the listener with `{version}`, and
     /// the request is parked again for the next one.
-    func testBackgroundListenerParksAWaiterAndReceivesTheStagedVersion() async throws {
+    @MainActor func testBackgroundListenerParksAWaiterAndReceivesTheStagedVersion() async throws {
         let (ext, _, _, page) = try await makeExtension(withWorker: true)
 
         try await waitUntil("the background worker to wake") {
@@ -142,7 +141,7 @@ final class ExtensionRuntimeUpdateAvailablePolyfillTests: XCTestCase {
 
     /// A page is not the background context: its `addListener` works as an
     /// event, but the native side refuses its wait, quietly.
-    func testPageListenerDoesNotParkAWaiter() async throws {
+    @MainActor func testPageListenerDoesNotParkAWaiter() async throws {
         let (ext, _, _, page) = try await makeExtension(withWorker: false)
 
         let result = try await evalObject("""
@@ -175,7 +174,7 @@ final class ExtensionRuntimeUpdateAvailablePolyfillTests: XCTestCase {
 
     /// The same from a page of an extension that does have a worker: the page's
     /// request arrives as a frame message from a non-background URL.
-    func testPageOfAWorkerExtensionDoesNotParkAWaiter() async throws {
+    @MainActor func testPageOfAWorkerExtensionDoesNotParkAWaiter() async throws {
         let (ext, _, _, page) = try await makeExtension(withWorker: true)
         // Wake the worker so its own waiter is in place, then add the page's.
         try await waitUntil("the background worker to wake") {
@@ -203,7 +202,7 @@ final class ExtensionRuntimeUpdateAvailablePolyfillTests: XCTestCase {
     /// polyfill therefore does not pretend to patch it; a reload that follows an
     /// `onUpdateAvailable` delivery is recognised natively instead
     /// (`ExtensionManager.backgroundContextDidStart`, ExtensionUpdaterTests).
-    func testRuntimeReloadStaysWebKitsAndCannotBeShadowed() async throws {
+    @MainActor func testRuntimeReloadStaysWebKitsAndCannotBeShadowed() async throws {
         let (ext, profile, _, page) = try await makeExtension(withWorker: false)
         let result = try await evalObject("""
             const runtime = chrome.runtime;
@@ -223,7 +222,7 @@ final class ExtensionRuntimeUpdateAvailablePolyfillTests: XCTestCase {
         XCTAssertNotNil(profile.extensionContext(for: ext.id))
     }
 
-   func testRequestUpdateCheckReplyForADeferredUpdate() {
+    @MainActor func testRequestUpdateCheckReplyForADeferredUpdate() {
         let reply = ExtensionPolyfillHandler.requestUpdateCheckReply(for: .deferred(version: "2.0"))
         XCTAssertEqual(reply["status"] as? String, "update_available")
         XCTAssertEqual(reply["version"] as? String, "2.0")

@@ -447,6 +447,70 @@ document.getElementById('btn-action-user-settings').addEventListener('click', as
   }
 });
 
+// --- Notifications ---
+
+const NOTIFICATION_ID = 'api-explorer-notification';
+
+document.getElementById('btn-notif-create').addEventListener('click', async () => {
+  try {
+    const result = await sendBg({ type: 'createNotification', notificationId: NOTIFICATION_ID });
+    showResult('res-notifications', result);
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
+document.getElementById('btn-notif-getall').addEventListener('click', async () => {
+  try {
+    showResult('res-notifications', await sendBg({ type: 'getAllNotifications' }));
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
+document.getElementById('btn-notif-clear').addEventListener('click', async () => {
+  try {
+    showResult('res-notifications',
+      await sendBg({ type: 'clearNotification', notificationId: NOTIFICATION_ID }));
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
+// update() with only a message keeps the title (TASK-240).
+document.getElementById('btn-notif-update').addEventListener('click', async () => {
+  try {
+    showResult('res-notifications',
+      await sendBg({ type: 'updateNotificationMessage', notificationId: NOTIFICATION_ID }));
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
+// clear() answers whether the notification existed (TASK-240).
+document.getElementById('btn-notif-clear-answers').addEventListener('click', async () => {
+  try {
+    showResult('res-notifications', await sendBg({ type: 'notificationClearAnswers' }));
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
+// create() then clear() without awaiting the create (TASK-234): the clear must
+// win, so no banner stays up and getAll() does not list the id.
+document.getElementById('btn-notif-race-worker').addEventListener('click', async () => {
+  try {
+    showResult('res-notifications', await sendBg({ type: 'notificationCreateThenClear' }));
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
+document.getElementById('btn-notif-race-popup').addEventListener('click', async () => {
+  try {
+    const id = 'api-explorer-race-popup';
+    const created = chrome.notifications.create(id, {
+      type: 'basic', title: 'Create then clear', message: 'Should never stay on screen',
+      iconUrl: chrome.runtime.getURL('icon.png')
+    });
+    const wasCleared = await chrome.notifications.clear(id);
+    const notificationId = await created;
+    const all = await chrome.notifications.getAll();
+    showResult('res-notifications', {
+      from: 'popup', notificationId, wasCleared,
+      listedAfterClear: Object.prototype.hasOwnProperty.call(all, id), notifications: all
+    });
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
 // --- Management ---
 
 document.getElementById('btn-mgmt-self').addEventListener('click', async () => {
@@ -470,6 +534,35 @@ async function setEnabled(enabled) {
     showResult('res-management', `setEnabled(${id || '(self)'}, ${enabled}) → ${JSON.stringify(result)}`);
   } catch (e) { showResult('res-management', e.message, true); }
 }
+
+// getPermissionWarningsByManifest and uninstallSelf need no `management`
+// permission in Chrome (TASK-257). Warnings from the popup itself and from the
+// worker; a bad manifest shows the rejection.
+document.getElementById('btn-mgmt-warnings').addEventListener('click', async () => {
+  try {
+    const manifest = document.getElementById('input-mgmt-manifest').value;
+    const warnings = await chrome.management.getPermissionWarningsByManifest(manifest);
+    showResult('res-management', { from: 'popup', warnings });
+  } catch (e) { showResult('res-management', e.message, true); }
+});
+
+document.getElementById('btn-mgmt-warnings-bg').addEventListener('click', async () => {
+  try {
+    const manifest = document.getElementById('input-mgmt-manifest').value;
+    const { warnings } = await sendBg({ type: 'managementPermissionWarnings', manifest });
+    showResult('res-management', { from: 'worker', warnings });
+  } catch (e) { showResult('res-management', e.message, true); }
+});
+
+// Only ever with the confirmation dialog: confirming really uninstalls the
+// explorer, and the reply may never arrive (its contexts are unloaded).
+document.getElementById('btn-mgmt-uninstall-self').addEventListener('click', async () => {
+  showResult('res-management', 'uninstallSelf({ showConfirmDialog: true }) — waiting for the dialog…');
+  try {
+    await chrome.management.uninstallSelf({ showConfirmDialog: true });
+    showResult('res-management', 'uninstallSelf resolved: uninstalling');
+  } catch (e) { showResult('res-management', e.message, true); }
+});
 
 document.getElementById('btn-mgmt-enable').addEventListener('click', () => setEnabled(true));
 document.getElementById('btn-mgmt-disable').addEventListener('click', () => setEnabled(false));
@@ -826,6 +919,28 @@ document.getElementById('btn-windows-current').addEventListener('click', async (
   }
 });
 
+// From a Private or quarantine window both buttons open a Private window:
+// Detour cannot tell `incognito: false` from leaving it out (TASK-214).
+// From a normal window, Create Private is refused, and the error shown, unless
+// the extension is allowed in Private (Settings > Extensions, TASK-224).
+async function createWindow(incognito) {
+  try {
+    const options = { url: 'https://example.com/' };
+    if (incognito) options.incognito = true;
+    const win = await chrome.windows.create(options);
+    // A Private window is reported only to a context with access to Private
+    // data; from an extension page WebKit resolves with null, not undefined.
+    showResult('res-windows', win == null
+      ? 'Opened (this context cannot see the new window)'
+      : { id: win.id, incognito: win.incognito, type: win.type });
+  } catch (e) {
+    showResult('res-windows', e.message, true);
+  }
+}
+
+document.getElementById('btn-windows-create').addEventListener('click', () => createWindow(false));
+document.getElementById('btn-windows-create-private').addEventListener('click', () => createWindow(true));
+
 // --- Font Settings ---
 
 document.getElementById('btn-fonts-list').addEventListener('click', async () => {
@@ -871,6 +986,38 @@ document.getElementById('btn-perm-remove').addEventListener('click', async () =>
   try {
     const removed = await chrome.permissions.remove({ permissions: ['cookies'] });
     showResult('res-permissions', `permissions.remove("cookies"): ${removed}`);
+  } catch (e) {
+    showResult('res-permissions', e.message, true);
+  }
+});
+
+// TASK-260: `history` is optional here. WebKit refuses the name in
+// permissions.request/contains/remove ("'history' is not a valid permission"),
+// so Detour's polyfill answers for it: Detour's prompt, saved like the Settings
+// switch. Until it is granted, History > Search reads "history permission is
+// optional and has not been granted". The mixed request goes through WebKit's
+// prompt for cookies first (inside the click's user gesture), then Detour's,
+// and is granted whole or not at all.
+async function requestAndReport(permissions) {
+  try {
+    const granted = await chrome.permissions.request({ permissions });
+    const has = await chrome.permissions.contains({ permissions });
+    showResult('res-permissions',
+      `permissions.request(${JSON.stringify(permissions)}): ${granted}, contains: ${has}`);
+  } catch (e) {
+    showResult('res-permissions', e.message, true);
+  }
+}
+
+document.getElementById('btn-perm-request-history').addEventListener('click', () => requestAndReport(['history']));
+document.getElementById('btn-perm-request-history-cookies').addEventListener('click',
+  () => requestAndReport(['history', 'cookies']));
+
+document.getElementById('btn-perm-remove-history').addEventListener('click', async () => {
+  try {
+    const removed = await chrome.permissions.remove({ permissions: ['history'] });
+    const has = await chrome.permissions.contains({ permissions: ['history'] });
+    showResult('res-permissions', `permissions.remove("history"): ${removed}, contains: ${has}`);
   } catch (e) {
     showResult('res-permissions', e.message, true);
   }

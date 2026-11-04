@@ -13,12 +13,11 @@ import WebKit
 /// rules: nothing here compiles a real filter list. Each test gets its own
 /// rule list store and defaults suite in a temporary directory, so the lists
 /// named `easylist` below never meet the test host's own.
-@MainActor
-final class ContentRuleListChunkTests: XCTestCase {
+nonisolated final class ContentRuleListChunkTests: XCTestCase {
 
     // MARK: - Chunk arithmetic
 
-    func testChunkCountRoundsUp() {
+    @MainActor func testChunkCountRoundsUp() {
         XCTAssertEqual(ContentRuleListChunks.chunkCount(ruleCount: 0, maxRulesPerList: 150_000), 0)
         XCTAssertEqual(ContentRuleListChunks.chunkCount(ruleCount: 1, maxRulesPerList: 150_000), 1)
         XCTAssertEqual(ContentRuleListChunks.chunkCount(ruleCount: 150_000, maxRulesPerList: 150_000), 1)
@@ -27,20 +26,20 @@ final class ContentRuleListChunkTests: XCTestCase {
         XCTAssertEqual(ContentRuleListChunks.chunkCount(ruleCount: 300_001, maxRulesPerList: 150_000), 3)
     }
 
-    func testTheFirstChunkKeepsTheListIdentifier() {
+    @MainActor func testTheFirstChunkKeepsTheListIdentifier() {
         XCTAssertEqual(ContentRuleListChunks.identifier(forList: "easylist", chunk: 0), "easylist")
         XCTAssertEqual(ContentRuleListChunks.identifier(forList: "easylist", chunk: 1), "easylist-1")
         XCTAssertEqual(ContentRuleListChunks.identifier(forList: "easylist-cookie", chunk: 2), "easylist-cookie-2")
     }
 
-    func testIdentifiersOfAList() {
+    @MainActor func testIdentifiersOfAList() {
         XCTAssertEqual(ContentRuleListChunks.identifiers(forList: "easylist", chunkCount: 0), [])
         XCTAssertEqual(ContentRuleListChunks.identifiers(forList: "easylist", chunkCount: 1), ["easylist"])
         XCTAssertEqual(ContentRuleListChunks.identifiers(forList: "easylist", chunkCount: 3),
                        ["easylist", "easylist-1", "easylist-2"])
     }
 
-    func testRuleRangesCoverEveryRuleOnce() {
+    @MainActor func testRuleRangesCoverEveryRuleOnce() {
         XCTAssertEqual(ContentRuleListChunks.ruleRanges(ruleCount: 0, maxRulesPerList: 2), [])
         XCTAssertEqual(ContentRuleListChunks.ruleRanges(ruleCount: 2, maxRulesPerList: 2), [0 ..< 2])
         XCTAssertEqual(ContentRuleListChunks.ruleRanges(ruleCount: 4, maxRulesPerList: 2), [0 ..< 2, 2 ..< 4])
@@ -48,14 +47,14 @@ final class ContentRuleListChunkTests: XCTestCase {
         XCTAssertEqual(ContentRuleListChunks.ruleRanges(ruleCount: 74_973, maxRulesPerList: 150_000), [0 ..< 74_973])
     }
 
-    func testAShrunkListsStaleChunks() {
+    @MainActor func testAShrunkListsStaleChunks() {
         XCTAssertEqual(ContentRuleListChunks.staleIdentifiers(forList: "easylist", previousChunkCount: 3, chunkCount: 2),
                        ["easylist-2"])
         XCTAssertEqual(ContentRuleListChunks.staleIdentifiers(forList: "easylist", previousChunkCount: 3, chunkCount: 1),
                        ["easylist-1", "easylist-2"])
     }
 
-    func testAListThatDidNotShrinkHasNoStaleChunks() {
+    @MainActor func testAListThatDidNotShrinkHasNoStaleChunks() {
         XCTAssertEqual(ContentRuleListChunks.staleIdentifiers(forList: "easylist", previousChunkCount: 1, chunkCount: 1), [])
         XCTAssertEqual(ContentRuleListChunks.staleIdentifiers(forList: "easylist", previousChunkCount: 2, chunkCount: 2), [])
         XCTAssertEqual(ContentRuleListChunks.staleIdentifiers(forList: "easylist", previousChunkCount: 2, chunkCount: 3), [])
@@ -65,7 +64,7 @@ final class ContentRuleListChunkTests: XCTestCase {
     /// The list's own identifier is every compile's first chunk, so it is
     /// never a leftover: an empty rule set is not compiled at all and the
     /// previous list stays.
-    func testTheFirstChunkIsNeverStale() {
+    @MainActor func testTheFirstChunkIsNeverStale() {
         XCTAssertEqual(ContentRuleListChunks.staleIdentifiers(forList: "easylist", previousChunkCount: 3, chunkCount: 0),
                        ["easylist-1", "easylist-2"])
     }
@@ -73,22 +72,22 @@ final class ContentRuleListChunkTests: XCTestCase {
     // MARK: - Exceptions in a split list (TASK-155)
 
     /// Rules as strings: `b…` blocks, `x…` is an exception.
-    private func layout(_ rules: [String], cap: Int) -> [[String]] {
+    @MainActor private func layout(_ rules: [String], cap: Int) -> [[String]] {
         ContentRuleListChunks.chunks(of: rules, maxRulesPerList: cap) { $0.hasPrefix("x") }.map(\.rules)
     }
 
-    private func counted(_ rules: [String], cap: Int) -> [Int] {
+    @MainActor private func counted(_ rules: [String], cap: Int) -> [Int] {
         ContentRuleListChunks.chunks(of: rules, maxRulesPerList: cap) { $0.hasPrefix("x") }.map(\.countedRuleCount)
     }
 
-    func testAListWithinTheCapIsOneChunkInListOrder() {
+    @MainActor func testAListWithinTheCapIsOneChunkInListOrder() {
         XCTAssertEqual(layout([], cap: 4), [])
         XCTAssertEqual(layout(["b0", "x0", "b1"], cap: 4), [["b0", "x0", "b1"]])
         XCTAssertEqual(layout(["x0", "b0", "x1", "b1"], cap: 4), [["x0", "b0", "x1", "b1"]], "exactly at the cap")
         XCTAssertEqual(counted(["x0", "b0", "x1", "b1"], cap: 4), [4])
     }
 
-    func testEveryChunkOfASplitListEndsWithTheListsExceptions() {
+    @MainActor func testEveryChunkOfASplitListEndsWithTheListsExceptions() {
         let rules = ["b0", "b1", "x0", "b2", "b3", "b4", "b5", "b6"]
 
         // Cap 4, one exception: three block rules a chunk, then the exception.
@@ -97,17 +96,17 @@ final class ContentRuleListChunkTests: XCTestCase {
 
     /// The task's case: the exception is past the cap, the block rule it
     /// exempts is in the first chunk.
-    func testAnExceptionPastTheCapStillFollowsTheBlockRulesOfTheFirstChunk() {
+    @MainActor func testAnExceptionPastTheCapStillFollowsTheBlockRulesOfTheFirstChunk() {
         XCTAssertEqual(layout(["b0", "b1", "x0"], cap: 2), [["b0", "x0"], ["b1", "x0"]])
     }
 
-    func testExceptionsKeepTheirOrderAndFollowEveryBlockRule() {
+    @MainActor func testExceptionsKeepTheirOrderAndFollowEveryBlockRule() {
         let rules = ["x0", "b0", "b1", "x1", "b2", "b3", "b4"]
 
         XCTAssertEqual(layout(rules, cap: 5), [["b0", "b1", "b2", "x0", "x1"], ["b3", "b4", "x0", "x1"]])
     }
 
-    func testNoChunkOfASplitListExceedsTheCap() {
+    @MainActor func testNoChunkOfASplitListExceedsTheCap() {
         for cap in 1 ... 9 {
             for exceptionCount in 0 ... 12 {
                 let rules = (0 ..< 20).map { "b\($0)" } + (0 ..< exceptionCount).map { "x\($0)" }
@@ -121,7 +120,7 @@ final class ContentRuleListChunkTests: XCTestCase {
     }
 
     /// A repeated exception is counted in the first chunk only.
-    func testARepeatedExceptionIsCountedOnce() {
+    @MainActor func testARepeatedExceptionIsCountedOnce() {
         let rules = ["b0", "b1", "x0", "b2", "b3", "b4", "b5", "b6"]
 
         XCTAssertEqual(counted(rules, cap: 4), [4, 3, 1])
@@ -131,7 +130,7 @@ final class ContentRuleListChunkTests: XCTestCase {
 
     /// Every chunk has to hold all the carried exceptions, so they may take
     /// half the cap at most; the ones beyond that are left out.
-    func testExceptionsBeyondHalfTheCapAreLeftOut() {
+    @MainActor func testExceptionsBeyondHalfTheCapAreLeftOut() {
         XCTAssertEqual(ContentRuleListChunks.maxCarriedExceptions(maxRulesPerList: 150_000), 75_000)
         XCTAssertEqual(ContentRuleListChunks.maxCarriedExceptions(maxRulesPerList: 5), 2)
         let rules = ["b0", "b1", "b2", "x0", "x1", "x2"]
@@ -141,27 +140,27 @@ final class ContentRuleListChunkTests: XCTestCase {
         XCTAssertEqual(ContentRuleListChunks.droppedExceptionCount(ruleCount: 6, exceptionCount: 3, maxRulesPerList: 4), 1)
     }
 
-    func testExceptionsAtHalfTheCapAreAllCarried() {
+    @MainActor func testExceptionsAtHalfTheCapAreAllCarried() {
         let rules = ["b0", "b1", "b2", "x0", "x1"]
 
         XCTAssertEqual(layout(rules, cap: 4), [["b0", "b1", "x0", "x1"], ["b2", "x0", "x1"]])
         XCTAssertEqual(ContentRuleListChunks.droppedExceptionCount(ruleCount: 5, exceptionCount: 2, maxRulesPerList: 4), 0)
     }
 
-    func testAListWithinTheCapDropsNoException() {
+    @MainActor func testAListWithinTheCapDropsNoException() {
         XCTAssertEqual(ContentRuleListChunks.droppedExceptionCount(ruleCount: 4, exceptionCount: 4, maxRulesPerList: 4), 0)
         XCTAssertEqual(layout(["x0", "x1", "x2", "x3"], cap: 4), [["x0", "x1", "x2", "x3"]])
     }
 
     /// Exceptions with nothing to exempt undo nothing; they still compile as
     /// one list, so the compile does not read as a failure.
-    func testASplitListOfOnlyExceptionsIsOneChunk() {
+    @MainActor func testASplitListOfOnlyExceptionsIsOneChunk() {
         XCTAssertEqual(layout(["x0", "x1", "x2", "x3", "x4"], cap: 4), [["x0", "x1"]])
         XCTAssertEqual(counted(["x0", "x1", "x2", "x3", "x4"], cap: 4), [2])
         XCTAssertEqual(layout(["x0", "x1"], cap: 1), [], "a cap of one carries no exception: nothing to compile")
     }
 
-    func testWhichCompiledRulesAreExceptions() {
+    @MainActor func testWhichCompiledRulesAreExceptions() {
         XCTAssertTrue(ContentRuleListChunks.isException(
             ["trigger": ["url-filter": "a"], "action": ["type": "ignore-previous-rules"]]))
         XCTAssertFalse(ContentRuleListChunks.isException(["trigger": ["url-filter": "a"], "action": ["type": "block"]]))
@@ -176,7 +175,7 @@ final class ContentRuleListChunkTests: XCTestCase {
     private var defaultsSuiteName: String!
     private var storage: ContentBlockerStorage!
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ContentRuleListChunkTests-\(UUID().uuidString)", isDirectory: true)
@@ -188,7 +187,7 @@ final class ContentRuleListChunkTests: XCTestCase {
             defaults: try XCTUnwrap(UserDefaults(suiteName: defaultsSuiteName)))
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         storage = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuiteName)
         try? FileManager.default.removeItem(at: directory)
@@ -196,32 +195,32 @@ final class ContentRuleListChunkTests: XCTestCase {
     }
 
     /// A store over this test's storage with a cap of two rules per list.
-    private func makeStore() -> ContentRuleStore {
+    @MainActor private func makeStore() -> ContentRuleStore {
         ContentRuleStore(storage: storage, maxRulesPerList: 2)
     }
 
     /// Rule `n` blocks everything under `blocked-<n>.example`.
-    private func blockRules(_ count: Int) -> [[String: Any]] {
+    @MainActor private func blockRules(_ count: Int) -> [ContentRule] {
         (0 ..< count).map { index in
             ["trigger": ["url-filter": "blocked-\(index)\\.example"], "action": ["type": "block"]]
         }
     }
 
-    private func compile(_ store: ContentRuleStore, _ identifier: String, ruleCount: Int) async {
+    @MainActor private func compile(_ store: ContentRuleStore, _ identifier: String, ruleCount: Int) async {
         let rules = blockRules(ruleCount)
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             store.compile(identifier: identifier, rules: rules) { _ in continuation.resume() }
         }
     }
 
-    private func lookUp(_ store: ContentRuleStore, _ identifier: String) async -> [WKContentRuleList] {
+    @MainActor private func lookUp(_ store: ContentRuleStore, _ identifier: String) async -> [WKContentRuleList] {
         await withCheckedContinuation { continuation in
             store.lookUpList(identifier: identifier) { continuation.resume(returning: $0) }
         }
     }
 
     /// What WebKit's store holds on disk.
-    private func storedIdentifiers() async -> [String] {
+    @MainActor private func storedIdentifiers() async -> [String] {
         await withCheckedContinuation { continuation in
             storage.ruleListStore.getAvailableContentRuleListIdentifiers { identifiers in
                 continuation.resume(returning: (identifiers ?? []).sorted())
@@ -231,7 +230,7 @@ final class ContentRuleListChunkTests: XCTestCase {
 
     // MARK: - Compiling
 
-    func testEveryChunkOfASplitListIsCompiledCachedAndCounted() async {
+    @MainActor func testEveryChunkOfASplitListIsCompiledCachedAndCounted() async {
         let store = makeStore()
         await compile(store, "easylist", ruleCount: 5)
 
@@ -243,7 +242,7 @@ final class ContentRuleListChunkTests: XCTestCase {
         XCTAssertEqual(stored, ["easylist", "easylist-1", "easylist-2"])
     }
 
-    func testAListAtTheCapIsOneRuleList() async {
+    @MainActor func testAListAtTheCapIsOneRuleList() async {
         let store = makeStore()
         await compile(store, "easylist", ruleCount: 2)
 
@@ -253,7 +252,7 @@ final class ContentRuleListChunkTests: XCTestCase {
         XCTAssertEqual(stored, ["easylist"])
     }
 
-    func testOneListsChunksAreNotAnotherLists() async {
+    @MainActor func testOneListsChunksAreNotAnotherLists() async {
         let store = makeStore()
         await compile(store, "easylist", ruleCount: 3)
         await compile(store, "easylist-cookie", ruleCount: 1)
@@ -267,7 +266,7 @@ final class ContentRuleListChunkTests: XCTestCase {
         XCTAssertEqual(store.cachedLists(forList: "easyprivacy").map(\.identifier), [])
     }
 
-    func testAListThatShrinksLosesItsStaleChunks() async throws {
+    @MainActor func testAListThatShrinksLosesItsStaleChunks() async throws {
         let store = makeStore()
         await compile(store, "easylist", ruleCount: 5)
 
@@ -293,7 +292,7 @@ final class ContentRuleListChunkTests: XCTestCase {
     }
 
     /// A relaunch: nothing in memory, the chunk count comes from the defaults.
-    func testANewStoreKnowsAShrunkListsChunkCount() async throws {
+    @MainActor func testANewStoreKnowsAShrunkListsChunkCount() async throws {
         let first = makeStore()
         await compile(first, "easylist", ruleCount: 5)
         await compile(first, "easylist", ruleCount: 3)
@@ -309,7 +308,7 @@ final class ContentRuleListChunkTests: XCTestCase {
 
     // MARK: - Looking a compiled list up at launch
 
-    func testANewStoreFindsEveryChunkOfACompiledList() async {
+    @MainActor func testANewStoreFindsEveryChunkOfACompiledList() async {
         let first = makeStore()
         await compile(first, "easylist", ruleCount: 5)
 
@@ -324,7 +323,7 @@ final class ContentRuleListChunkTests: XCTestCase {
         XCTAssertTrue(relaunched.isCompiled(list: "easylist"))
     }
 
-    func testLookingUpAListThatWasNeverCompiledFindsNothing() async {
+    @MainActor func testLookingUpAListThatWasNeverCompiledFindsNothing() async {
         let store = makeStore()
         let found = await lookUp(store, "easylist")
         XCTAssertEqual(found.map(\.identifier), [])
@@ -334,7 +333,7 @@ final class ContentRuleListChunkTests: XCTestCase {
 
     // MARK: - Invalidating
 
-    func testInvalidateAllRemovesEveryChunk() async throws {
+    @MainActor func testInvalidateAllRemovesEveryChunk() async throws {
         let store = makeStore()
         await compile(store, "easylist", ruleCount: 5)
         await compile(store, "easyprivacy", ruleCount: 1)
@@ -356,7 +355,7 @@ final class ContentRuleListChunkTests: XCTestCase {
 
     // MARK: - What a profile gets
 
-    func testEveryChunkOfEveryEnabledListIsApplied() async {
+    @MainActor func testEveryChunkOfEveryEnabledListIsApplied() async {
         let store = makeStore()
         await compile(store, "easylist", ruleCount: 5)
         await compile(store, "easyprivacy", ruleCount: 1)
@@ -367,7 +366,7 @@ final class ContentRuleListChunkTests: XCTestCase {
                        ["easylist", "easylist-1", "easylist-2", "easyprivacy", "urlhaus-filter", "urlhaus-filter-1"])
     }
 
-    func testADisabledListContributesNoChunk() async {
+    @MainActor func testADisabledListContributesNoChunk() async {
         let store = makeStore()
         await compile(store, "easylist", ruleCount: 5)
         await compile(store, "easyprivacy", ruleCount: 1)
@@ -390,11 +389,11 @@ final class ContentRuleListChunkTests: XCTestCase {
     /// Matched by rule 0: the first chunk.
     private let firstChunkImageURL = URL(string: "http://blocked-0.example/x.png")!
 
-    private var pageHTML: String {
+    @MainActor private var pageHTML: String {
         "<html><body><img src='\(firstChunkImageURL.absoluteString)'><img src='\(lastChunkImageURL.absoluteString)'></body></html>"
     }
 
-    private func makeWebView() -> WKWebView {
+    @MainActor private func makeWebView() -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         return WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200), configuration: configuration)
@@ -402,13 +401,13 @@ final class ContentRuleListChunkTests: XCTestCase {
 
     /// What `Space.makeWebViewConfiguration` and the window's rules-changed
     /// handler do to a user content controller.
-    private func apply(_ lists: [WKContentRuleList], to webView: WKWebView) {
+    @MainActor private func apply(_ lists: [WKContentRuleList], to webView: WKWebView) {
         let controller = webView.configuration.userContentController
         controller.removeAllContentRuleLists()
         lists.forEach(controller.add)
     }
 
-    func testARuleInTheLastChunkBlocksInAWebView() async throws {
+    @MainActor func testARuleInTheLastChunkBlocksInAWebView() async throws {
         let store = makeStore()
         await compile(store, "easylist", ruleCount: 5)
         let delegate = ChunkRecordingNavigationDelegate()
@@ -429,7 +428,7 @@ final class ContentRuleListChunkTests: XCTestCase {
 
     /// The window's reaction to a profile toggle: remove every rule list, add
     /// back what the profile still has on. No chunk of the disabled list stays.
-    func testDisablingAListDetachesEveryChunkFromAWebView() async throws {
+    @MainActor func testDisablingAListDetachesEveryChunkFromAWebView() async throws {
         let store = makeStore()
         await compile(store, "easylist", ruleCount: 5)
         let profile = Profile(name: "Test")
@@ -452,7 +451,7 @@ final class ContentRuleListChunkTests: XCTestCase {
 
     /// The per-site switch turns content blockers off for the navigation,
     /// which covers every rule list — every chunk included.
-    func testAWhitelistedNavigationIsNotBlockedByAnyChunk() async throws {
+    @MainActor func testAWhitelistedNavigationIsNotBlockedByAnyChunk() async throws {
         let store = makeStore()
         await compile(store, "easylist", ruleCount: 5)
         let delegate = ChunkRecordingNavigationDelegate()
@@ -472,16 +471,16 @@ final class ContentRuleListChunkTests: XCTestCase {
 
     // MARK: - Exceptions in a split list (TASK-155)
 
-    private func blockRule(_ host: String) -> [String: Any] {
+    @MainActor private func blockRule(_ host: String) -> ContentRule {
         ["trigger": ["url-filter": "\(host)\\.example"], "action": ["type": "block"]]
     }
 
     /// An `@@` rule: undoes the block rules before it in the same rule list.
-    private func exceptionRule(_ urlFilter: String) -> [String: Any] {
+    @MainActor private func exceptionRule(_ urlFilter: String) -> ContentRule {
         ["trigger": ["url-filter": urlFilter], "action": ["type": "ignore-previous-rules"]]
     }
 
-    private func compile(_ store: ContentRuleStore, _ identifier: String, rules: [[String: Any]]) async {
+    @MainActor private func compile(_ store: ContentRuleStore, _ identifier: String, rules: [ContentRule]) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             store.compile(identifier: identifier, rules: rules) { _ in continuation.resume() }
         }
@@ -491,7 +490,7 @@ final class ContentRuleListChunkTests: XCTestCase {
     /// WebKit reported as blocked once `expectedBlocked` of them are in.
     /// Images load in document order, so by then an earlier one that was going
     /// to be blocked has been reported too.
-    private func blockedLoads(of imageURLs: [URL], with lists: [WKContentRuleList],
+    @MainActor private func blockedLoads(of imageURLs: [URL], with lists: [WKContentRuleList],
                               expectedBlocked: Int) async throws -> [URL] {
         let delegate = ChunkRecordingNavigationDelegate()
         let webView = makeWebView()
@@ -511,7 +510,7 @@ final class ContentRuleListChunkTests: XCTestCase {
     /// The exception is the third of three rules under a cap of two: in list
     /// order it lands in a later chunk than the block rule it exempts, and
     /// WebKit only lets `ignore-previous-rules` undo rules of its own list.
-    func testAnExceptionAppliesToABlockRuleOfAnEarlierChunk() async throws {
+    @MainActor func testAnExceptionAppliesToABlockRuleOfAnEarlierChunk() async throws {
         let store = makeStore()
         await compile(store, "easylist", rules: [
             blockRule("blocked-0"),
@@ -532,7 +531,7 @@ final class ContentRuleListChunkTests: XCTestCase {
     }
 
     /// An exception ahead of the cap exempts a block rule of the last chunk.
-    func testAnExceptionAppliesToABlockRuleOfALaterChunk() async throws {
+    @MainActor func testAnExceptionAppliesToABlockRuleOfALaterChunk() async throws {
         let store = makeStore()
         await compile(store, "easylist", rules: [
             exceptionRule("blocked-2\\.example/allowed"),
@@ -556,7 +555,7 @@ final class ContentRuleListChunkTests: XCTestCase {
     }
 
     /// Settings shows this count: the exception both chunks carry is one rule.
-    func testTheRuleCountOfASplitListCountsARepeatedExceptionOnce() async throws {
+    @MainActor func testTheRuleCountOfASplitListCountsARepeatedExceptionOnce() async throws {
         let store = makeStore()
         let rules = [blockRule("blocked-0"), blockRule("blocked-1"), exceptionRule("blocked-0\\.example/allowed")]
         await compile(store, "easylist", rules: rules)
@@ -572,7 +571,7 @@ final class ContentRuleListChunkTests: XCTestCase {
 
     /// Under a cap of two every chunk carries one exception at most; the
     /// second is left out and the count shows it.
-    func testTheRuleCountLeavesOutExceptionsThatWereNotCompiled() async throws {
+    @MainActor func testTheRuleCountLeavesOutExceptionsThatWereNotCompiled() async throws {
         let store = makeStore()
         await compile(store, "easylist", rules: [
             blockRule("blocked-0"),
@@ -603,7 +602,7 @@ private final class ChunkRecordingNavigationDelegate: NSObject, WKNavigationDele
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences,
-                 decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
         if navigationAction.targetFrame?.isMainFrame == true {
             configurePreferences?(preferences)
         }

@@ -1,16 +1,16 @@
 import XCTest
 @testable import Detour
 
-final class TabInsertionTests: XCTestCase {
+nonisolated final class TabInsertionTests: XCTestCase {
 
     // MARK: - No parent
 
-    func testNoParentReturnsIndex0() {
+    @MainActor func testNoParentReturnsIndex0() {
         let result = tabInsertionIndex(parentID: nil, existingTabs: [], pinnedTabIDs: [])
         XCTAssertEqual(result, 0)
     }
 
-    func testNoParentWithExistingTabsReturnsIndex0() {
+    @MainActor func testNoParentWithExistingTabsReturnsIndex0() {
         let id1 = UUID()
         let result = tabInsertionIndex(
             parentID: nil,
@@ -22,7 +22,7 @@ final class TabInsertionTests: XCTestCase {
 
     // MARK: - Normal parent
 
-    func testNormalParentNoChildren() {
+    @MainActor func testNormalParentNoChildren() {
         let parentID = UUID()
         let result = tabInsertionIndex(
             parentID: parentID,
@@ -32,7 +32,7 @@ final class TabInsertionTests: XCTestCase {
         XCTAssertEqual(result, 1, "Should insert right after the parent")
     }
 
-    func testNormalParentWithChildren() {
+    @MainActor func testNormalParentWithChildren() {
         let parentID = UUID()
         let child1 = UUID()
         let child2 = UUID()
@@ -48,7 +48,7 @@ final class TabInsertionTests: XCTestCase {
         XCTAssertEqual(result, 3, "Should insert after the last child")
     }
 
-    func testChildrenMustBeContiguous() {
+    @MainActor func testChildrenMustBeContiguous() {
         let parentID = UUID()
         let child1 = UUID()
         let unrelated = UUID()
@@ -68,7 +68,7 @@ final class TabInsertionTests: XCTestCase {
 
     // MARK: - Pinned parent
 
-    func testPinnedParentReturnsIndex0() {
+    @MainActor func testPinnedParentReturnsIndex0() {
         let parentID = UUID()
         let result = tabInsertionIndex(
             parentID: parentID,
@@ -78,7 +78,7 @@ final class TabInsertionTests: XCTestCase {
         XCTAssertEqual(result, 0, "Pinned parent with no existing children → index 0")
     }
 
-    func testPinnedParentWithExistingSiblings() {
+    @MainActor func testPinnedParentWithExistingSiblings() {
         let parentID = UUID()
         let child1 = UUID()
         let child2 = UUID()
@@ -93,7 +93,7 @@ final class TabInsertionTests: XCTestCase {
         XCTAssertEqual(result, 2, "Should insert after existing siblings from pinned parent")
     }
 
-    func testPinnedParentSiblingsContiguous() {
+    @MainActor func testPinnedParentSiblingsContiguous() {
         let parentID = UUID()
         let child1 = UUID()
         let unrelated = UUID()
@@ -112,7 +112,7 @@ final class TabInsertionTests: XCTestCase {
 
     // MARK: - Sequential insertions
 
-    func testSequentialInsertionsFromSameParent() {
+    @MainActor func testSequentialInsertionsFromSameParent() {
         let parentID = UUID()
         var tabs: [(id: UUID, parentID: UUID?)] = [(id: parentID, parentID: nil)]
 

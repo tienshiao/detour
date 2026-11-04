@@ -4,7 +4,7 @@ title: Favicons
 description: "How a tab finds its icon (an optimistic /favicon.ico guess, an early link report from a private content world, an end-of-load lookup), and the two shared loaders that hand icons to AppKit and to web views."
 tags: [favicons, webkit, sidebar, caching, content-world]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:42:23Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T00:38:52Z }
 sources:
   - id: loader
     resource: ../../Detour/Browser/Shared/FaviconLoader.swift
@@ -21,6 +21,12 @@ sources:
   - id: browser-tab
     resource: ../../Detour/Browser/BrowserTab.swift
     title: BrowserTab.swift (setupObservers, fetchFavicon, pageDidReportFaviconLink, downloadFavicon)
+  - id: url-host
+    resource: ../../Detour/Browser/Shared/URLHost.swift
+    title: URLHost.swift (faviconFallbackURL, faviconSiteKey, securityOriginHost)
+  - id: task-198
+    resource: backlog:TASK-198
+    title: "Tabs: navigating to an IPv6 literal URL (http://[::1]:3000/) crashes Detour in the optimistic favicon fetch"
   - id: task-112
     resource: backlog:TASK-112
     title: Some sites never get their favicon, and their sidebar rows show a stray grey box
@@ -62,11 +68,15 @@ image again when it needs one. Three pieces do the work:
 
 Three sources, in the order they usually land:
 
-1. **Optimistic guess.** On the first URL of a new host the tab bumps
-   `faviconGeneration` and downloads `<scheme>://<host>/favicon.ico`. It
-   happens in `load(_:)` for programmatic navigations and in the `webView.url`
-   observer for everything else. The observer also clears the old icon on a
-   host change.
+1. **Optimistic guess.** On the first URL of a new site the tab bumps
+   `faviconGeneration` and downloads `faviconFallbackURL(for:)`: the page's
+   origin with the path `/favicon.ico`, built from the page URL's own
+   `URLComponents` (scheme, host as written, port). It happens in `load(_:)`
+   for programmatic navigations and in the `webView.url` observer for
+   everything else. The observer also clears the old icon on a site change.
+   A "site" is `faviconSiteKey(for:)`: the lowercased host, IPv6 bracketed,
+   plus the port when it is not the scheme's default, held in
+   `previousFaviconSite`.
 2. **Early link report.** `FaviconLinkBridge` injects a user script at
    document start, main frame only, in the private content world
    `DetourFavicon`. A `MutationObserver` on the whole document reports the
@@ -202,8 +212,13 @@ cannot be read: see the worker row in
   `faviconGeneration` is bumped on every host change, on an error page and on
   an internal page.
 - A link report is honoured only from a main frame whose origin host equals
-  the host of the page the tab is showing, and never for an error page or an
-  internal page.
+  the host of the page the tab is showing (`securityOriginHost(_:isHostOf:)`,
+  which brackets an IPv6 page host the way `WKSecurityOrigin.host` does), and
+  never for an error page or an internal page.
+- The optimistic URL is never rebuilt from a host string: `URL.host` drops an
+  IPv6 literal's brackets and `http://::1/favicon.ico` does not parse. That
+  force unwrap crashed Detour on every `http://[::1]:…` page until
+  TASK-198.[^task-198] See [IPv6 hosts in URL APIs](../platform/ipv6-url-hosts.md).
 - `FaviconLinkBridge.iconLinkSelector` is the single selector, shared by the
   early report and the end-of-load lookup.
 - The link handler lives in a private content world: page script can neither
@@ -216,9 +231,14 @@ cannot be read: see the worker row in
 - **`FaviconLinkBridge.install` must stay idempotent.** A configuration
   reaches `BrowserTab.makeWebView` more than once, and adding a handler name
   twice in one world raises.
-- **Host-keyed, not page-keyed.** The optimistic guess and the icon reset fire
-  on host changes only. Two pages of one host with different icons rely on the
-  link report or the end-of-load lookup.
+- **Site-keyed, not page-keyed.** The optimistic guess and the icon reset fire
+  on site changes only (host plus non-default port). Two pages of one site
+  with different icons rely on the link report or the end-of-load lookup.
+- **The port is kept** (TASK-198). Before, a `localhost:3000` page guessed
+  `http://localhost/favicon.ico` (another server, or none), and moving from
+  `localhost:3000` to `localhost:5173` kept the first server's icon because
+  the key was the bare host. A favicon belongs to the origin, as in other
+  browsers.[^task-198]
 - **`faviconCancellables` holds more than favicon subscriptions**: the
   load-stall timer subscription is stored there too.
 - **The two loaders disagree on failure caching** (see above). Do not assume a
@@ -236,14 +256,19 @@ cannot be read: see the worker row in
 - `FaviconLinkBridgeTests` - a `stall://` scheme handler holds one image open
   so the load never ends: an icon arrives while loading, a link added by
   script, a changed `href`, a late optimistic guess, the origin guard. The
-  three behaviour tests fail with the bridge disabled.[^task-112]
+  three behaviour tests fail with the bridge disabled.[^task-112] Also an IPv6
+  page's guess (`stall://[::1]:3000/favicon.ico`), an IPv6 page's link report,
+  and a port change on one host guessing the new server's icon.[^task-198]
+- `URLHostTests` - `faviconFallbackURL` (IPv4, IPv6 with and without a port,
+  a normal host, no host), `faviconSiteKey`, `authorityHost`,
+  `securityOriginHost`, and the faux address bar's `[::1]`.
 - `FavoriteFaviconTests` - restore with a sleeping backing tab, two tiles for
   one favourite, a dormant download, rebinding on a tab swap.
 - `HistoryDatabaseTests` - `faviconURLInAnyProfile(for:)`: exact match, host
   fallback, most recent entry for a host.
 - `FaviconLookupScopeTests` - the scoped lookup: out-of-scope pages and hosts
   answer nothing, the newest in-scope visit wins the host fallback, the host
-  ends at the host.
+  ends at the host, an IPv6 host matches in brackets.
 - `ExtensionFaviconScopeTests` - the extension route in real contexts: one
   extension in two profiles, another profile's host, the tab route, the
   permission, the Private profile, the worker, and the removed
@@ -265,4 +290,5 @@ cannot be read: see the worker row in
 [^task-86]: Profile-scoped History page in a tab
 [^task-98]: FavoriteFaviconTests fails intermittently on a clean tree
 [^task-152]: favicon.lookup answers from every profile's history, without a permission check
+[^task-198]: TASK-198
 [^task-112]: Some sites never get their favicon, and their sidebar rows show a stray grey box

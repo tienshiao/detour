@@ -269,6 +269,23 @@
     <div class="result" id="res-action"></div>
   </section>
 
+  <!-- Notifications -->
+  <section>
+    <h2>Notifications</h2>
+    <div class="row">
+      <button id="btn-notif-create">Create</button>
+      <button id="btn-notif-getall" class="secondary">Get All</button>
+      <button id="btn-notif-clear" class="secondary">Clear</button>
+      <button id="btn-notif-update" class="secondary">Update message</button>
+    </div>
+    <div class="row">
+      <button id="btn-notif-race-worker">Create then Clear (worker)</button>
+      <button id="btn-notif-race-popup" class="secondary">Create then Clear (popup)</button>
+      <button id="btn-notif-clear-answers" class="secondary">Clear answers (worker)</button>
+    </div>
+    <div class="result" id="res-notifications"></div>
+  </section>
+
   <!-- Management -->
   <section>
     <h2>Management</h2>
@@ -280,6 +297,16 @@
       <input type="text" id="input-mgmt-id" placeholder="Extension id (blank = self)"/>
       <button id="btn-mgmt-enable">Set Enabled</button>
       <button id="btn-mgmt-disable" class="secondary">Set Disabled</button>
+    </div>
+    <div class="row">
+      <textarea id="input-mgmt-manifest" rows="3" placeholder="Manifest JSON for permission warnings">{"manifest_version": 3, "name": "Probe", "version": "1.0", "permissions": ["tabs", "storage"], "host_permissions": ["&lt;all_urls&gt;"]}</textarea>
+    </div>
+    <div class="row">
+      <button id="btn-mgmt-warnings">Permission Warnings</button>
+      <button id="btn-mgmt-warnings-bg" class="secondary">Permission Warnings (Worker)</button>
+      <!-- Always with showConfirmDialog: Detour's alert is what keeps a stray
+           click from uninstalling the explorer itself. -->
+      <button id="btn-mgmt-uninstall-self" class="secondary">Uninstall Self (asks first)</button>
     </div>
     <div class="result" id="res-management"></div>
   </section>
@@ -401,6 +428,8 @@
     <div class="row">
       <button id="btn-windows-getall">Get All</button>
       <button id="btn-windows-current" class="secondary">Current</button>
+      <button id="btn-windows-create" class="secondary">Create</button>
+      <button id="btn-windows-create-private" class="secondary">Create Private</button>
     </div>
     <div class="result" id="res-windows"></div>
   </section>
@@ -425,6 +454,11 @@
     <div class="row">
       <button id="btn-perm-request">Request Cookies</button>
       <button id="btn-perm-remove" class="secondary">Remove Cookies</button>
+    </div>
+    <div class="row">
+      <button id="btn-perm-request-history">Request History</button>
+      <button id="btn-perm-remove-history" class="secondary">Remove History</button>
+      <button id="btn-perm-request-history-cookies" class="secondary">Request History + Cookies</button>
     </div>
     <div class="row">
       <button id="btn-perm-request-origin">Request example.org</button>

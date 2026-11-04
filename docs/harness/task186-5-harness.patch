@@ -1,0 +1,277 @@
+TASK-186.5 runtime harness: dev mode's per-site switch in the address bar
+popover, the sidebar rows following it at once in two windows, the Private
+window's choice staying out of the database, and the new popover button.
+Temporary code, never committed to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task186-5-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # $SITE/remote.html and $SITE/app.html, each a <title> + <h1>:
+    python3 -m http.server 8865 --bind 127.0.0.1 --directory "$SITE" &
+    DETOUR_DATA_DIR=DetourVerify1865 DETOUR_VERIFY_DIR="$OUT" DETOUR_VERIFY_PORT=8865 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # a watcher reads only the new lines of $OUT/verify.log every 0.2 s and
+    # runs `screencapture -x -o -l <windowNumber> $OUT/<name>.png` for each
+    # "SHOOT <name> <windowNumber>" line. The harness waits for each
+    # requested PNG before its next step (on a machine at load ~1000 a
+    # timer-only schedule shot states up to 9 s late). Wait for "done"
+    # (about 55 s), then kill that pid and the server.
+    git apply -R docs/harness/task186-5-harness.patch && xcodegen generate
+    rm -r -- ~/Library/Application\ Support/DetourVerify1865
+
+The "remote" site is kubernetes.docker.internal:8865: /etc/hosts maps it to
+127.0.0.1 (Docker Desktop's entry), so the 127.0.0.1-bound server answers it
+with no network, and it is not local by `isLocalDevelopmentURL`. The local
+site is localhost:8865. Window 2 is `createNewWindow(showing:)` on the same
+space; the Private window is `createNewIncognitoWindow()`. Switches are driven
+with performClick on the popover's "Dev mode for this site" NSSwitch; each
+click logs every row in the affected windows in the same run-loop turn
+("immediately"), before any capture.
+
+Results (2026-10-24, all 20 captures read and matching the log):
+- Before: Local App row has the hazard border and "localhost:8865"; Remote
+  Site has neither, in both windows. Popover on the remote site: three
+  switches, dev mode off and enabled; the address bar's hover buttons show
+  the link and the slider.horizontal.3 button ("Site Settings"), light and
+  dark.
+- ON for the remote site: one row (kubernetes.docker.internal:8865 devMode
+  true); in the same turn both windows' Remote Site rows gained the border
+  and the host line "kubernetes.docker.internal:8865".
+- OFF for the local site: row localhost:8865 devMode false; both windows'
+  Local App rows lost the border and host line at once.
+- Dark, each switched back to its default: the row was removed (remote off,
+  then local on), db rows [], rows back to the URL rule in both windows.
+- Private window, ON for the remote site: its row got the border at once,
+  the store holds true for the Private profile, 0 Private rows in the
+  database (no rows at all); window 1's Remote Site row was unaffected.
+Not driven: a favourite tile or pinned row following a switch (same refresh
+path; tiles via FavoritesBarView.refreshDevMode), a split half, a second
+space page of the same profile.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..4a3ed0c 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask1865HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task1865Harness.swift b/Detour/App/Task1865Harness.swift
+new file mode 100644
+index 0000000..9c37985
+--- /dev/null
++++ b/Detour/App/Task1865Harness.swift
+@@ -0,0 +1,208 @@
++// TEMP TASK-186.5 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask1865HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        // Steps run in order; each waits until every capture requested so far
++        // exists, so a slow watcher (a saturated machine) cannot shoot a later state.
++        var steps: [(TimeInterval, () -> Void)] = []
++        var requestedShots: [String] = []
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) { steps.append((dt, block)) }
++        func runStep(_ index: Int) {
++            guard index < steps.count else { return }
++            let missing = requestedShots.filter { !FileManager.default.fileExists(atPath: "\(outDir)/\($0).png") }
++            let delay = missing.isEmpty ? steps[index].0 : 0.2
++            let timer = Timer(timeInterval: delay, repeats: false) { _ in
++                if missing.isEmpty { steps[index].1(); runStep(index + 1) } else { runStep(index) }
++            }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        guard let window = wc.window, let space = wc.activeSpace else { return log("no window/space") }
++        let store = TabStore.shared
++        func allSubviews(_ view: NSView) -> [NSView] {
++            view.subviews + view.subviews.flatMap(allSubviews)
++        }
++        // kubernetes.docker.internal is 127.0.0.1 in /etc/hosts but not local by the rule.
++        let remoteURL = URL(string: "http://kubernetes.docker.internal:\(port)/remote.html")!
++        let localURL = URL(string: "http://localhost:\(port)/app.html")!
++        var tabs: [String: BrowserTab] = [:]
++        var second: BrowserWindowController?
++        var privateWC: BrowserWindowController?
++
++        /// Every visible tab row in `w`, with its dev-mode state.
++        func describeRows(_ label: String, _ w: NSWindow?) {
++            guard let content = w?.contentView else { return log("\(label): no window") }
++            for cell in allSubviews(content).compactMap({ $0 as? TabCellView })
++            where cell.window != nil && !cell.isHiddenOrHasHiddenAncestor {
++                let host = cell.hostLineLabel.isHidden ? "-" : cell.hostLineLabel.stringValue
++                log("\(label) ROW \"\(cell.titleLabel.stringValue)\" host=\(host) borders=\(cell.devModeBorderFrames.count)")
++            }
++        }
++        func popoverWindow() -> NSWindow? {
++            NSApp.windows.first { $0.isVisible && String(describing: type(of: $0)).contains("Popover") }
++        }
++        func popoverSwitches() -> [NSSwitch] {
++            guard let content = popoverWindow()?.contentView else { return [] }
++            return allSubviews(content).compactMap { $0 as? NSSwitch }
++        }
++        func devSwitch() -> NSSwitch? {
++            popoverSwitches().first { $0.accessibilityLabel() == "Dev mode for this site" }
++        }
++        func showPopover(_ c: BrowserWindowController) {
++            c.tabSidebarDidRequestShowSettings(c.tabSidebar, sourceButton: c.tabSidebar.fauxAddressBar.settingsButton)
++        }
++        func closePopover() {
++            popoverWindow()?.orderOut(nil)
++            NSApp.windows.filter { String(describing: type(of: $0)).contains("Popover") }.forEach { $0.close() }
++        }
++        func shoot(_ name: String, _ w: NSWindow?) {
++            describeRows(name, w)
++            requestedShots.append(name)
++            log("SHOOT \(name) \(w?.windowNumber ?? -1)")
++        }
++        func shootPopover(_ name: String) {
++            guard let p = popoverWindow() else { return log("SHOOT \(name): no popover") }
++            let button = wc.tabSidebar.fauxAddressBar.settingsButton
++            log("popover switches=\(popoverSwitches().count) dev=\(devSwitch().map { "on=\($0.state == .on) enabled=\($0.isEnabled)" } ?? "none") "
++                + "button=\(button.image?.accessibilityDescription ?? "nil") alpha=\(button.alphaValue)")
++            requestedShots.append(name)
++            log("SHOOT \(name) \(p.windowNumber)")
++        }
++        /// Shows the address bar's hover buttons (copy link, site settings).
++        func hoverAddressBar() {
++            let bar = wc.tabSidebar.fauxAddressBar
++            guard let event = NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [],
++                                                     timestamp: 0, windowNumber: window.windowNumber, context: nil,
++                                                     eventNumber: 0, trackingNumber: 0, userData: nil) else { return }
++            bar.mouseEntered(with: event)
++        }
++        func dbRows() -> String {
++            AppDatabase.shared.loadSiteSettings().map { "\($0.profileID.prefix(8)) \($0.site) \($0.setting) \($0.value)" }.description
++        }
++        func clickDev(_ label: String, _ c: BrowserWindowController, _ windows: [(String, NSWindow?)]) {
++            guard let sw = devSwitch() else { return log("\(label): no dev switch") }
++            sw.performClick(nil)
++            let profileID = c.activeSpace?.profile?.id
++            let url = c.selectedTab?.url
++            log("\(label): clicked dev switch now on=\(sw.state == .on) key=\(devModeSiteKey(for: url) ?? "nil") "
++                + "override=\(String(describing: DevMode.override(for: url, profileID: profileID))) active=\(DevMode.isActive(for: url, profileID: profileID))")
++            log("\(label): db rows \(dbRows())")
++            // Same run-loop turn as the click: the rows must already follow.
++            for (name, w) in windows { describeRows("\(label) immediately \(name)", w) }
++        }
++
++        // MARK: Seed — window 1 and a second window on the same space
++        at(0) {
++            NSApp.activate(ignoringOtherApps: true)
++            NSApp.appearance = NSAppearance(named: .aqua)
++            tabs["remote"] = store.addTab(in: space, url: remoteURL)
++            tabs["local"] = store.addTab(in: space, url: localURL)
++            for tab in space.tabs where !tabs.values.contains(where: { $0 === tab }) {
++                store.closeTab(id: tab.id, in: space, undoable: false)
++            }
++            store.undoManager.removeAllActions()
++            wc.selectTab(id: tabs["remote"]!.id)
++            log("seeded: \(space.tabs.map { $0.url?.absoluteString ?? "nil" }) db=\(dbRows())")
++        }
++        at(2.5) {
++            second = self.createNewWindow(showing: space)
++            second?.selectTab(id: tabs["local"]!.id)
++            if let w2 = second?.window {
++                var f = window.frame
++                f.origin.x += f.width + 20
++                w2.setFrame(f, display: true)
++            }
++            window.makeKeyAndOrderFront(nil)
++            log("second window: \(second?.window?.windowNumber ?? -1) active=\(second?.activeSpaceID == space.id)")
++        }
++        at(2.5) {
++            shoot("1-light-w1-before", window)
++            shoot("1-light-w2-before", second?.window)
++        }
++
++        // MARK: Leg 1 — turn dev mode ON for the non-local site (light)
++        at(1.0) { hoverAddressBar() }
++        at(1.0) {
++            let b = wc.tabSidebar.fauxAddressBar.settingsButton
++            log("address bar button: \(b.image?.accessibilityDescription ?? "nil") alpha=\(b.alphaValue) frame=\(b.frame)")
++            shoot("1a-light-addressbar-hover", window)
++        }
++        at(1.5) { showPopover(wc) }
++        at(1.0) { shootPopover("2-light-popover-remote-off"); shoot("2-light-w1-popover-open", window) }
++        at(2.0) { clickDev("ON remote", wc, [("w1", window), ("w2", second?.window)]) }
++        at(0.5) { shootPopover("3-light-popover-remote-on") }
++        at(1.5) {
++            closePopover()
++            shoot("4-light-w1-remote-on", window)
++            shoot("4-light-w2-remote-on", second?.window)
++        }
++
++        // MARK: Leg 2 — turn dev mode OFF for the local site
++        at(2.0) { wc.selectTab(id: tabs["local"]!.id) }
++        at(1.5) { showPopover(wc) }
++        at(1.0) { shootPopover("5-light-popover-local-on") }
++        at(1.5) { clickDev("OFF local", wc, [("w1", window), ("w2", second?.window)]) }
++        at(0.5) {
++            closePopover()
++            shoot("6-light-w1-local-off", window)
++            shoot("6-light-w2-local-off", second?.window)
++        }
++
++        // MARK: Leg 3 — dark; set both back to the default (rows removed)
++        at(2.0) { NSApp.appearance = NSAppearance(named: .darkAqua); wc.selectTab(id: tabs["remote"]!.id) }
++        at(1.0) { hoverAddressBar() }
++        at(1.0) { shoot("6a-dark-addressbar-hover", window) }
++        at(1.5) { showPopover(wc) }
++        at(1.0) { shootPopover("7-dark-popover-remote-on"); shoot("7-dark-w1-popover-open", window) }
++        at(1.5) { clickDev("DEFAULT remote", wc, [("w1", window), ("w2", second?.window)]) }
++        at(0.5) { shootPopover("8-dark-popover-remote-default") }
++        at(1.0) { closePopover(); wc.selectTab(id: tabs["local"]!.id) }
++        at(1.5) { showPopover(wc) }
++        at(1.0) { clickDev("DEFAULT local", wc, [("w1", window), ("w2", second?.window)]) }
++        at(0.5) {
++            closePopover()
++            shoot("9-dark-w1-defaults", window)
++            shoot("9-dark-w2-defaults", second?.window)
++        }
++
++        // MARK: Leg 4 — a Private window's choice stays out of the database
++        at(2.0) {
++            NSApp.appearance = NSAppearance(named: .aqua)
++            self.createNewIncognitoWindow()
++            privateWC = NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }.first { $0.isIncognito }
++            guard let p = privateWC, let pSpace = p.activeSpace else { return log("no private window") }
++            p.dismissCommandPalette(restoringFocus: false)
++            let tab = store.addTab(in: pSpace, url: remoteURL)
++            p.selectTab(id: tab.id)
++            tabs["private"] = tab
++            log("private window \(p.window?.windowNumber ?? -1) profile=\(pSpace.profile?.id.uuidString.prefix(8) ?? "nil")")
++        }
++        at(3.0) { if let p = privateWC { showPopover(p) } }
++        at(1.0) { shootPopover("10-private-popover-before") }
++        at(1.5) { if let p = privateWC { clickDev("ON private remote", p, [("private", p.window), ("w1", window)]) } }
++        at(0.5) {
++            closePopover()
++            shoot("11-private-remote-on", privateWC?.window)
++            shoot("11-light-w1-unaffected", window)
++            let id = TabStore.incognitoProfileID
++            log("private override in store: \(String(describing: SiteSettingsStore.shared.override(.devMode, forSite: "kubernetes.docker.internal:\(port)", profileID: id))) "
++                + "db private rows: \(AppDatabase.shared.loadSiteSettings().filter { $0.profileID == id.uuidString }.count) all=\(dbRows())")
++        }
++        at(1.5) { log("done") }
++        steps[0].0 = 3.0
++        runStep(0)
++    }
++}
++#endif

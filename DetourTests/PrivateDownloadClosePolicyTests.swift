@@ -3,45 +3,45 @@ import XCTest
 
 /// The rule for a Private window's downloads that are still running when the
 /// window goes away (TASK-156): which are cancelled, and whether to ask.
-final class PrivateDownloadClosePolicyTests: XCTestCase {
+nonisolated final class PrivateDownloadClosePolicyTests: XCTestCase {
 
     private let windowA = DownloadScope.incognito(spaceID: UUID())
     private let windowB = DownloadScope.incognito(spaceID: UUID())
 
     // MARK: - Which downloads a close cancels
 
-    func testClosingAPrivateWindowCancelsItsOwnDownloadsInFlight() {
+    @MainActor func testClosingAPrivateWindowCancelsItsOwnDownloadsInFlight() {
         XCTAssertTrue(PrivateDownloadClosePolicy.cancels(downloadIn: windowA, isInFlight: true,
                                                          closing: .window(windowA)))
     }
 
-    func testADownloadThatHasEndedIsNotCancelled() {
+    @MainActor func testADownloadThatHasEndedIsNotCancelled() {
         XCTAssertFalse(PrivateDownloadClosePolicy.cancels(downloadIn: windowA, isInFlight: false,
                                                           closing: .window(windowA)))
         XCTAssertFalse(PrivateDownloadClosePolicy.cancels(downloadIn: windowA, isInFlight: false,
                                                           closing: .allWindows))
     }
 
-    func testAnotherPrivateWindowsDownloadsAreLeftAlone() {
+    @MainActor func testAnotherPrivateWindowsDownloadsAreLeftAlone() {
         XCTAssertFalse(PrivateDownloadClosePolicy.cancels(downloadIn: windowB, isInFlight: true,
                                                           closing: .window(windowA)))
     }
 
     /// Normal windows share one list: the download is still listed in the
     /// others, and closing the last one does not end it either.
-    func testClosingANormalWindowCancelsNothing() {
+    @MainActor func testClosingANormalWindowCancelsNothing() {
         XCTAssertFalse(PrivateDownloadClosePolicy.cancels(downloadIn: .normal, isInFlight: true,
                                                           closing: .window(.normal)))
         XCTAssertFalse(PrivateDownloadClosePolicy.cancels(downloadIn: windowA, isInFlight: true,
                                                           closing: .window(.normal)))
     }
 
-    func testClosingAPrivateWindowLeavesNormalDownloadsAlone() {
+    @MainActor func testClosingAPrivateWindowLeavesNormalDownloadsAlone() {
         XCTAssertFalse(PrivateDownloadClosePolicy.cancels(downloadIn: .normal, isInFlight: true,
                                                           closing: .window(windowA)))
     }
 
-    func testQuittingCancelsEveryPrivateWindowsDownloadsInFlight() {
+    @MainActor func testQuittingCancelsEveryPrivateWindowsDownloadsInFlight() {
         XCTAssertTrue(PrivateDownloadClosePolicy.cancels(downloadIn: windowA, isInFlight: true, closing: .allWindows))
         XCTAssertTrue(PrivateDownloadClosePolicy.cancels(downloadIn: windowB, isInFlight: true, closing: .allWindows))
         XCTAssertFalse(PrivateDownloadClosePolicy.cancels(downloadIn: .normal, isInFlight: true, closing: .allWindows))
@@ -49,11 +49,11 @@ final class PrivateDownloadClosePolicyTests: XCTestCase {
 
     // MARK: - Whether to ask
 
-    func testNothingInFlightClosesWithoutAsking() {
+    @MainActor func testNothingInFlightClosesWithoutAsking() {
         XCTAssertEqual(PrivateDownloadClosePolicy.decision(inFlightCount: 0), .close)
     }
 
-    func testOneDownloadInFlightAsks() throws {
+    @MainActor func testOneDownloadInFlightAsks() throws {
         guard case .confirm(let prompt) = PrivateDownloadClosePolicy.decision(inFlightCount: 1) else {
             return XCTFail("expected a question")
         }
@@ -63,7 +63,7 @@ final class PrivateDownloadClosePolicyTests: XCTestCase {
         XCTAssertEqual(prompt.keepButtonTitle, "Continue Downloading")
     }
 
-    func testSeveralDownloadsInFlightAskInThePlural() throws {
+    @MainActor func testSeveralDownloadsInFlightAskInThePlural() throws {
         guard case .confirm(let prompt) = PrivateDownloadClosePolicy.decision(inFlightCount: 3) else {
             return XCTFail("expected a question")
         }
@@ -73,7 +73,7 @@ final class PrivateDownloadClosePolicyTests: XCTestCase {
 
     // MARK: - Quit
 
-    func testTheQuitConfirmationNamesPrivateDownloadsInFlight() {
+    @MainActor func testTheQuitConfirmationNamesPrivateDownloadsInFlight() {
         XCTAssertNil(PrivateDownloadClosePolicy.quitWarning(inFlightCount: 0))
         XCTAssertEqual(PrivateDownloadClosePolicy.quitWarning(inFlightCount: 1),
                        "1 download in a Private window is in progress and will be cancelled.")
@@ -86,28 +86,27 @@ final class PrivateDownloadClosePolicyTests: XCTestCase {
 /// confirmation, so no test shows an alert (TASK-156). The downloads are manual
 /// items on `DownloadManager.shared`; a real one is in
 /// `PrivateDownloadTransferTests`.
-@MainActor
-final class PrivateDownloadCloseWindowTests: XCTestCase {
+nonisolated final class PrivateDownloadCloseWindowTests: XCTestCase {
 
     private var controllers: [BrowserWindowController] = []
     private var items: [DownloadItem] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for controller in controllers { controller.window?.close() }
         controllers.removeAll()
         // Normal items stay listed after their window closes.
         for item in items { DownloadManager.shared.removeDownload(item) }
         items.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// A window whose answer to the question is `answer`, and the prompts it
     /// was asked.
-    private final class Asked {
+    @MainActor private final class Asked {
         var prompts: [PrivateDownloadClosePolicy.Prompt] = []
     }
 
-    private func makeWindow(incognito: Bool, answering answer: Bool) -> (BrowserWindowController, Asked) {
+    @MainActor private func makeWindow(incognito: Bool, answering answer: Bool) -> (BrowserWindowController, Asked) {
         let wc = BrowserWindowController(incognito: incognito)
         controllers.append(wc)
         // Never let this window's split view touch the autosaved sidebar
@@ -121,17 +120,17 @@ final class PrivateDownloadCloseWindowTests: XCTestCase {
         return (wc, asked)
     }
 
-    private func addItem(_ name: String, scope: DownloadScope) -> DownloadItem {
+    @MainActor private func addItem(_ name: String, scope: DownloadScope) -> DownloadItem {
         let item = DownloadManager.shared.addManualItem(filename: name, sourceURL: nil, scope: scope)
         items.append(item)
         return item
     }
 
-    private func shouldClose(_ wc: BrowserWindowController) throws -> Bool {
+    @MainActor private func shouldClose(_ wc: BrowserWindowController) throws -> Bool {
         wc.windowShouldClose(try XCTUnwrap(wc.window))
     }
 
-    func testAPrivateWindowWithNothingInFlightClosesWithoutAsking() throws {
+    @MainActor func testAPrivateWindowWithNothingInFlightClosesWithoutAsking() throws {
         let (wc, asked) = makeWindow(incognito: true, answering: false)
         let ended = addItem("done.zip", scope: wc.downloadScope)
         DownloadManager.shared.downloadDidEnd(ended)
@@ -140,7 +139,7 @@ final class PrivateDownloadCloseWindowTests: XCTestCase {
         XCTAssertTrue(asked.prompts.isEmpty)
     }
 
-    func testDecliningKeepsTheWindowOpenAndTheDownloadRunning() throws {
+    @MainActor func testDecliningKeepsTheWindowOpenAndTheDownloadRunning() throws {
         let (wc, asked) = makeWindow(incognito: true, answering: false)
         let running = addItem("private.iso", scope: wc.downloadScope)
 
@@ -153,7 +152,7 @@ final class PrivateDownloadCloseWindowTests: XCTestCase {
         XCTAssertNotNil(wc.activeSpace, "the window keeps its space")
     }
 
-    func testGoingAheadCancelsTheWindowsDownloadsInFlight() throws {
+    @MainActor func testGoingAheadCancelsTheWindowsDownloadsInFlight() throws {
         let (wc, asked) = makeWindow(incognito: true, answering: true)
         let first = addItem("first.iso", scope: wc.downloadScope)
         let second = addItem("second.iso", scope: wc.downloadScope)
@@ -173,7 +172,7 @@ final class PrivateDownloadCloseWindowTests: XCTestCase {
         XCTAssertTrue(DownloadManager.shared.items(in: wc.downloadScope).isEmpty)
     }
 
-    func testAnotherPrivateWindowsDownloadIsNeitherCountedNorCancelled() throws {
+    @MainActor func testAnotherPrivateWindowsDownloadIsNeitherCountedNorCancelled() throws {
         let (closing, asked) = makeWindow(incognito: true, answering: true)
         let (other, _) = makeWindow(incognito: true, answering: true)
         let mine = addItem("mine.iso", scope: closing.downloadScope)
@@ -192,7 +191,7 @@ final class PrivateDownloadCloseWindowTests: XCTestCase {
 
     /// Normal windows share the list, so the download is still reachable from
     /// the others and from the next window opened.
-    func testANormalWindowClosesWithoutAskingAndCancelsNothing() throws {
+    @MainActor func testANormalWindowClosesWithoutAskingAndCancelsNothing() throws {
         let (wc, asked) = makeWindow(incognito: false, answering: false)
         let running = addItem("normal.iso", scope: .normal)
 

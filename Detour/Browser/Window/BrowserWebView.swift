@@ -24,6 +24,11 @@ class BrowserWebView: WKWebView {
     /// When editing web content, let WKWebView handle Cmd+Z (text undo).
     /// Otherwise, do browser undo (close tab, move tab, etc.).
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // The browser undo stack is the browser windows' (tabs, spaces); a
+        // Quick Detour window has none of its own to undo (TASK-193.1).
+        guard window?.windowController is BrowserWindowController else {
+            return super.performKeyEquivalent(with: event)
+        }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags == .command, event.charactersIgnoringModifiers == "z" {
             if !isEditingWebContent, TabStore.shared.undoManager.canUndo {
@@ -47,8 +52,12 @@ class BrowserWebView: WKWebView {
             // sent a synthesized back button goes back itself (TASK-132.3).
             if isInAutomationParking {
                 goBack()
-            } else {
-                (window?.windowController as? BrowserWindowController)?.goBack(nil)
+                return
+            }
+            // A browser window or a Quick Detour window (TASK-193.1).
+            let goBackAction = #selector(BrowserWindowController.goBack(_:))
+            if let controller = window?.windowController, controller.responds(to: goBackAction) {
+                controller.perform(goBackAction, with: nil)
             }
             return
         }
@@ -61,8 +70,11 @@ class BrowserWebView: WKWebView {
         let windowController = window?.windowController as? BrowserWindowController
 
         // --- Standard link menu customization ---
+        // Only a browser window replaces WebKit's link items: a Quick Detour
+        // window keeps Open Link (in place) and Open Link in New Window, which
+        // opens another Quick Detour (TASK-193.1).
         let openInNewWindowID = NSUserInterfaceItemIdentifier("WKMenuItemIdentifierOpenLinkInNewWindow")
-        if let originalItem = menu.items.first(where: { $0.identifier == openInNewWindowID }) {
+        if windowController != nil, let originalItem = menu.items.first(where: { $0.identifier == openInNewWindowID }) {
             let linkIdentifiers: Set<NSUserInterfaceItemIdentifier> = [
                 NSUserInterfaceItemIdentifier("WKMenuItemIdentifierOpenLinkInNewWindow"),
                 NSUserInterfaceItemIdentifier("WKMenuItemIdentifierOpenLink"),
@@ -87,19 +99,33 @@ class BrowserWebView: WKWebView {
             newWindowItem.target = windowController
             newWindowItem.image = NSImage(systemSymbolName: "macwindow.badge.plus", accessibilityDescription: nil)
             menu.insertItem(newWindowItem, at: min(insertIndex + 1, menu.items.count))
+
+            // Not in a Peek: its page hands over to a split by the panel's own
+            // button, and Option-click inside a Peek is left alone too.
+            if let windowController, windowController.selectedTab?.peekTab?.webView !== self {
+                let splitItem = NSMenuItem(title: "Open Link in Split View", action: #selector(BrowserWindowController.contextMenuOpenInSplitView(_:)), keyEquivalent: "")
+                splitItem.representedObject = originalItem
+                splitItem.target = windowController
+                splitItem.image = NSImage(systemSymbolName: "rectangle.split.2x1", accessibilityDescription: nil)
+                menu.insertItem(splitItem, at: min(insertIndex + 2, menu.items.count))
+            }
         }
 
         // --- Extension context menu items ---
-        appendExtensionMenuItems(to: menu, windowController: windowController)
+        if let windowController {
+            appendExtensionMenuItems(to: menu, tab: windowController.selectedTab,
+                                     profileID: windowController.activeSpace?.profileID)
+        } else if let quick = window?.windowController as? QuickDetourWindowController {
+            appendExtensionMenuItems(to: menu, tab: quick.tab, profileID: quick.profile.id)
+        }
     }
 
-    private func appendExtensionMenuItems(to menu: NSMenu, windowController: BrowserWindowController?) {
+    private func appendExtensionMenuItems(to menu: NSMenu, tab: BrowserTab?, profileID: UUID?) {
         // A parked page's menu comes from a right click an extension
         // synthesized: the window's selected tab is a different tab, and
         // nobody performed a gesture on it (TASK-132.3).
         guard !isInAutomationParking else { return }
-        guard let tab = windowController?.selectedTab,
-              let profileID = windowController?.activeSpace?.profileID,
+        guard let tab, let profileID,
               let profile = TabStore.shared.profiles.first(where: { $0.id == profileID }) else { return }
 
         // Use the native WKWebExtensionContext.menuItems(for:) API — WKWebExtension
@@ -130,6 +156,14 @@ extension BrowserWindowController {
     @objc func contextMenuOpenInNewWindow(_ sender: NSMenuItem) {
         guard let originalItem = sender.representedObject as? NSMenuItem else { return }
         contextMenuLinkAction = .openInNewWindow
+        _ = originalItem.target?.perform(originalItem.action, with: originalItem)
+    }
+
+    /// Open Link in Split View: Option-click's rules for the tab the menu is in
+    /// (TASK-185), applied in `createWebViewWith`.
+    @objc func contextMenuOpenInSplitView(_ sender: NSMenuItem) {
+        guard let originalItem = sender.representedObject as? NSMenuItem else { return }
+        contextMenuLinkAction = .openInSplitView
         _ = originalItem.target?.perform(originalItem.action, with: originalItem)
     }
 

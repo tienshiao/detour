@@ -7,19 +7,18 @@ import WebKit
 /// recording bridge that plays Detour: the enum, the filters, how tab handles
 /// become ids, and when the request is sent. The real contexts are
 /// `ExtensionRuntimeGetContextsTests`' business.
-@MainActor
-final class ExtensionRuntimeGetContextsPolyfillTests: XCTestCase {
+nonisolated final class ExtensionRuntimeGetContextsPolyfillTests: XCTestCase {
 
     private var bridge: RecordingPolyfillBridge!
     private var webViews: [WKWebView] = []
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         bridge = RecordingPolyfillBridge()
         bridge.replies["runtime.getContexts"] = { _ in (["contexts": Self.contexts], nil) }
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for webView in webViews {
             webView.configuration.userContentController.removeScriptMessageHandler(
                 forName: ExtensionPolyfillHandler.handlerName, contentWorld: .page)
@@ -29,11 +28,11 @@ final class ExtensionRuntimeGetContextsPolyfillTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private static let origin = "webkit-extension://fixture"
+    @MainActor private static let origin = "webkit-extension://fixture"
 
     /// What Detour answers: a worker, two pages in tabs (one in a tab WebKit
     /// does not list), a popup, an offscreen document and two side panels.
-    private static let contexts: [[String: Any]] = [
+    @MainActor private static let contexts: [[String: Any]] = [
         ["contextType": "BACKGROUND", "contextId": "bg", "frameId": -1, "incognito": false],
         ["contextType": "TAB", "contextId": "tab-a", "frameId": 0, "incognito": false,
          "documentUrl": "\(origin)/options.html", "documentOrigin": origin, "tabHandle": 11, "windowTabHandle": 11],
@@ -66,7 +65,7 @@ final class ExtensionRuntimeGetContextsPolyfillTests: XCTestCase {
     };
     """
 
-    private func makeWebView(shim: String = "") async throws -> WKWebView {
+    @MainActor private func makeWebView(shim: String = "") async throws -> WKWebView {
         let webView = try await makeRecordingPolyfillWebView(
             bridge: bridge, manifest: ["manifest_version": 3, "permissions": [String]()],
             shim: shim, afterPolyfill: Self.fakes)
@@ -75,18 +74,18 @@ final class ExtensionRuntimeGetContextsPolyfillTests: XCTestCase {
         return webView
     }
 
-    private func getContexts(_ filter: String, in webView: WKWebView) async throws -> [[String: Any]] {
+    @MainActor private func getContexts(_ filter: String, in webView: WKWebView) async throws -> [[String: Any]] {
         let value = try await evaluateJSON("return await chrome.runtime.getContexts(\(filter));", in: webView)
         return try XCTUnwrap(value as? [[String: Any]], "expected an array, got \(value)")
     }
 
-    private func ids(_ filter: String, in webView: WKWebView) async throws -> [String] {
+    @MainActor private func ids(_ filter: String, in webView: WKWebView) async throws -> [String] {
         try await getContexts(filter, in: webView).compactMap { $0["contextId"] as? String }
     }
 
     // MARK: AC #1: the enum
 
-    func testContextTypeHasChromesTypes() async throws {
+    @MainActor func testContextTypeHasChromesTypes() async throws {
         let webView = try await makeWebView()
         let state = try await evaluateJSONObject("""
             return { type: chrome.runtime.ContextType, values: Object.values(chrome.runtime.ContextType),
@@ -108,7 +107,7 @@ final class ExtensionRuntimeGetContextsPolyfillTests: XCTestCase {
         XCTAssertEqual(state["held"] as? Bool, true, "the patched runtime wrapper is rooted")
     }
 
-    func testANativeGetContextsAndEnumAreLeftAlone() async throws {
+    @MainActor func testANativeGetContextsAndEnumAreLeftAlone() async throws {
         let webView = try await makeWebView(shim: """
             globalThis.chrome.runtime.getContexts = function() { return 'theirs'; };
             globalThis.chrome.runtime.ContextType = { TAB: 'theirs' };
@@ -123,7 +122,7 @@ final class ExtensionRuntimeGetContextsPolyfillTests: XCTestCase {
         XCTAssertTrue(bridge.calls.isEmpty)
     }
 
-    func testASecondRunOfThePolyfillKeepsThePatch() async throws {
+    @MainActor func testASecondRunOfThePolyfillKeepsThePatch() async throws {
         let webView = try await makeWebView()
         let state = try await evaluateJSONObject("""
             const before = chrome.runtime.getContexts;
@@ -139,7 +138,7 @@ final class ExtensionRuntimeGetContextsPolyfillTests: XCTestCase {
 
     // MARK: AC #2: what a context looks like, and the filters
 
-    func testEveryContextComesBackWithItsIdsResolved() async throws {
+    @MainActor func testEveryContextComesBackWithItsIdsResolved() async throws {
         let webView = try await makeWebView()
         let all = try await getContexts("{}", in: webView)
         XCTAssertEqual(all.compactMap { $0["contextId"] as? String },
@@ -181,7 +180,7 @@ final class ExtensionRuntimeGetContextsPolyfillTests: XCTestCase {
         XCTAssertEqual(byID["offscreen"]?["windowId"] as? Int, -1)
     }
 
-    func testFilters() async throws {
+    @MainActor func testFilters() async throws {
         let webView = try await makeWebView()
         let panels = try await ids("{ contextTypes: [chrome.runtime.ContextType.SIDE_PANEL] }", in: webView)
         XCTAssertEqual(panels, ["panel-1", "panel-2"])
@@ -216,7 +215,7 @@ final class ExtensionRuntimeGetContextsPolyfillTests: XCTestCase {
         XCTAssertEqual(combined, ["panel-1"], "every filter given must match")
     }
 
-    func testIdsAreResolvedOnlyForContextsTheOtherFiltersKeep() async throws {
+    @MainActor func testIdsAreResolvedOnlyForContextsTheOtherFiltersKeep() async throws {
         let webView = try await makeWebView()
         let lookups = try await evaluateJSON("""
             globalThis.__handleLookups = 0;
@@ -228,7 +227,7 @@ final class ExtensionRuntimeGetContextsPolyfillTests: XCTestCase {
         XCTAssertEqual(lookups as? [Int], [0, 2], "one lookup per distinct handle of the contexts that are kept")
     }
 
-    func testABadFilterRejectsWithoutAskingDetour() async throws {
+    @MainActor func testABadFilterRejectsWithoutAskingDetour() async throws {
         let webView = try await makeWebView()
         let messages = try await evaluateJSON("""
             const failure = async (call) => { try { await call(); return null; } catch (e) { return e.name + ': ' + e.message; } };
@@ -248,7 +247,7 @@ final class ExtensionRuntimeGetContextsPolyfillTests: XCTestCase {
         XCTAssertTrue(bridge.calls.isEmpty)
     }
 
-    func testCallbackFormAndLastError() async throws {
+    @MainActor func testCallbackFormAndLastError() async throws {
         let webView = try await makeWebView()
         let good = try await evaluateJSONObject("""
             return await new Promise((resolve) => {
@@ -278,7 +277,7 @@ final class ExtensionRuntimeGetContextsPolyfillTests: XCTestCase {
 
     // MARK: Timing
 
-    func testTheRequestLeavesInTheCallItself() async throws {
+    @MainActor func testTheRequestLeavesInTheCallItself() async throws {
         // The Claude extension's shortcut handler asks for the contexts, then
         // changes them, then reads the answer: the question must already be on
         // its way when the next statement runs.

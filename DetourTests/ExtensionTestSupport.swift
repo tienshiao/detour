@@ -1,5 +1,6 @@
 import XCTest
 import Network
+import Synchronization
 import WebKit
 @testable import Detour
 
@@ -81,21 +82,45 @@ func loadHTMLStringAndWait(
     }
 }
 
-/// Poll `condition` until it holds, failing the test if `timeout` elapses first.
-/// `what` names the thing being waited for, so the failure says what never
-/// happened.
+/// What `waitUntil` throws when its condition never held: the test body stops
+/// at the wait instead of going on with stale state.
+struct WaitTimedOut: Error, CustomStringConvertible {
+    let what: String
+    let timeout: TimeInterval
+    var description: String { "timed out after \(timeout) s waiting for \(what)" }
+}
+
+/// Poll `condition` until it holds. If `timeout` elapses first, the test fails
+/// at the call site and the wait throws `WaitTimedOut`, so the rest of the test
+/// body does not run. `what` names the thing being waited for, so the failure
+/// says what never happened.
+///
+/// The failure is recorded with `XCTFail` as well as thrown: the recorded one
+/// points at the waiting line, and it still fails the test when a caller's
+/// `do`/`catch` or `try?` swallows the error. A test that *expects* a condition
+/// may never hold polls with `pollUntil(timeout:pollInterval:_:)` instead.
 @MainActor
 func waitUntil(_ what: String, timeout: TimeInterval = 10, pollInterval: TimeInterval = 0.1,
                file: StaticString = #filePath, line: UInt = #line,
                _ condition: () async throws -> Bool) async throws {
+    if try await pollUntil(timeout: timeout, pollInterval: pollInterval, condition) { return }
+    let timedOut = WaitTimedOut(what: what, timeout: timeout)
+    XCTFail(timedOut.description, file: file, line: line)
+    throw timedOut
+}
+
+/// Poll `condition` until it holds or `timeout` elapses, and say which: `true`
+/// once it held, `false` on timeout. Never fails the test; it is for a wait whose
+/// timeout is an expected outcome. Use `waitUntil` for anything the test needs.
+@MainActor
+func pollUntil(timeout: TimeInterval, pollInterval: TimeInterval = 0.1,
+               _ condition: () async throws -> Bool) async throws -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while try await !condition() {
-        if Date() >= deadline {
-            XCTFail("timed out after \(timeout) s waiting for \(what)", file: file, line: line)
-            return
-        }
+        if Date() >= deadline { return false }
         try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
     }
+    return true
 }
 
 /// How a test page reaches the background worker.
@@ -226,7 +251,8 @@ func runTool(_ path: String, _ arguments: [String]) -> (status: Int32, output: S
 
 /// A stand-in native messaging host: a shell script that `exec`s
 /// `sleep <token>` and reads nothing, so a test gets a real host process that
-/// stays connected and silent. `token` is unique per fixture, so a stray process
+/// stays connected and silent (`Behavior` has variants that write fixed bytes
+/// first, or echo). `token` is unique per fixture, so a stray process
 /// from another run — or another agent's — can never be counted, or killed, by
 /// this one.
 ///
@@ -236,6 +262,40 @@ func runTool(_ path: String, _ arguments: [String]) -> (status: Int32, output: S
 /// test's own tearDown: nothing this spawns may outlive the test.
 final class FakeNativeMessagingHost {
 
+    /// What the host process does once it is spawned.
+    enum Behavior {
+        /// Reads nothing and writes nothing: `exec sleep <token>`.
+        case silent
+        /// Writes these bytes to stdout, closes it, then sleeps as `.silent`
+        /// does, so the reader sees EOF while the process is still alive
+        /// (its exit cannot race the read loop's report).
+        case writesThenClosesStdout(Data)
+        /// `exec cat`: every byte written to it comes back on stdout. It
+        /// exits when its stdin closes, so it carries no sleep token and
+        /// `processCount()` does not see it.
+        case echoes
+        /// As `echoes`, but visible to `processCount()`: `cat` is given an empty
+        /// file named `sleep <token>` to read after stdin, so the token is on
+        /// its command line (TASK-242).
+        case echoesCounted
+        /// Waits for the first byte of input (the request), writes these
+        /// bytes to stdout and exits with `status` straight away: a one-shot
+        /// `sendNativeMessage` host. The process is gone by the time the
+        /// read loop gets to the reply, so it carries no sleep token.
+        case answersThenExits(Data, status: Int32)
+        /// As `answersThenExits`, but the exiting host leaves a background
+        /// `sleep <token>` holding its stdout open: the read loop sees the
+        /// host exit and no EOF. `processCount()` sees the sleep.
+        case answersThenExitsLeavingStdoutOpen(Data)
+        /// Waits for the first byte of input, writes these bytes and then
+        /// `exec`s `sleep <token>` with stdout still open: a host that stays
+        /// alive and silent after answering.
+        case answersThenStaysAlive(Data)
+        /// As `.silent`, but SIGTERM is ignored (`trap '' TERM`, which the
+        /// `exec`'d sleep inherits): only SIGKILL ends it (TASK-241).
+        case silentIgnoringSIGTERM
+    }
+
     /// The host name an extension passes to `connectNative` / `sendNativeMessage`.
     let name: String
     /// The `sleep` argument that identifies this fixture's processes.
@@ -244,7 +304,8 @@ final class FakeNativeMessagingHost {
     private let dir: URL
     private let previousHostsDir: String?
 
-    init(name: String = "com.detour.fake_host_test", allowing extensionIDs: [String]) throws {
+    init(name: String = "com.detour.fake_host_test", allowing extensionIDs: [String],
+         behavior: Behavior = .silent) throws {
         self.name = name
         self.sleepToken = String(Int.random(in: 300_000...899_999))
         self.previousHostsDir = ProcessInfo.processInfo.environment["DETOUR_NATIVE_MESSAGING_HOSTS_DIR"]
@@ -253,7 +314,36 @@ final class FakeNativeMessagingHost {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         let script = dir.appendingPathComponent("fake-host.sh")
-        try "#!/bin/sh\nexec sleep \(sleepToken)\n".write(to: script, atomically: true, encoding: .utf8)
+        let body: String
+        switch behavior {
+        case .silent:
+            body = "exec sleep \(sleepToken)\n"
+        case .writesThenClosesStdout(let output):
+            let outputFile = dir.appendingPathComponent("stdout.bin")
+            try output.write(to: outputFile)
+            body = "/bin/cat '\(outputFile.path)'\nexec 1>&-\nexec sleep \(sleepToken)\n"
+        case .echoes:
+            body = "exec /bin/cat\n"
+        case .echoesCounted:
+            let tokenFile = dir.appendingPathComponent("sleep \(sleepToken)")
+            try Data().write(to: tokenFile)
+            body = "exec /bin/cat - '\(tokenFile.path)'\n"
+        case .answersThenExits(let output, let status):
+            let outputFile = dir.appendingPathComponent("stdout.bin")
+            try output.write(to: outputFile)
+            body = "/usr/bin/head -c 1 >/dev/null\n/bin/cat '\(outputFile.path)'\nexit \(status)\n"
+        case .answersThenExitsLeavingStdoutOpen(let output):
+            let outputFile = dir.appendingPathComponent("stdout.bin")
+            try output.write(to: outputFile)
+            body = "/usr/bin/head -c 1 >/dev/null\n/bin/cat '\(outputFile.path)'\n/bin/sleep \(sleepToken) &\nexit 0\n"
+        case .answersThenStaysAlive(let output):
+            let outputFile = dir.appendingPathComponent("stdout.bin")
+            try output.write(to: outputFile)
+            body = "/usr/bin/head -c 1 >/dev/null\n/bin/cat '\(outputFile.path)'\nexec sleep \(sleepToken)\n"
+        case .silentIgnoringSIGTERM:
+            body = "trap '' TERM\nexec sleep \(sleepToken)\n"
+        }
+        try ("#!/bin/sh\n" + body).write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
 
         let manifest: [String: Any] = [
@@ -288,7 +378,7 @@ final class FakeNativeMessagingHost {
         } else {
             unsetenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR")
         }
-        runTool("/usr/bin/pkill", ["-f", "sleep \(sleepToken)"])
+        runTool("/usr/bin/pkill", ["-KILL", "-f", "sleep \(sleepToken)"])
         try? FileManager.default.removeItem(at: dir)
     }
 }
@@ -462,19 +552,29 @@ func extensionPageURL(_ path: String, on base: URL) throws -> URL {
     try XCTUnwrap(URL(string: path, relativeTo: base)?.absoluteURL)
 }
 
+// MARK: - Bridge reply
+
+/// A bridge reply handed from a reply handler to the test awaiting it.
+/// `@unchecked`: the value is a JSON-like object graph handed over once, on
+/// the main actor, and never shared afterwards.
+struct BridgeReply: @unchecked Sendable {
+    let result: Any?
+    let error: String?
+}
+
 // MARK: - One-shot flag
 
 /// One-shot flag guarding a continuation that several callbacks can reach.
-final class LockedFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var used = false
+/// Nonisolated: the callbacks run on the servers' own dispatch queues.
+nonisolated final class LockedFlag: Sendable {
+    private let used = Mutex(false)
 
     func claim() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if used { return false }
-        used = true
-        return true
+        used.withLock { used in
+            if used { return false }
+            used = true
+            return true
+        }
     }
 }
 
@@ -485,15 +585,19 @@ final class LockedFlag: @unchecked Sendable {
 /// binary frame is echoed back unchanged and a close from the peer is answered
 /// with a close, so a relayed socket can be driven end to end against a real
 /// server (TASK-8, `WebSocketRelaySessionTests`).
-final class LoopbackWebSocketServer: @unchecked Sendable {
+/// Nonisolated: it runs on its own dispatch queue, its state behind a Mutex.
+nonisolated final class LoopbackWebSocketServer: Sendable {
+
+    private struct State {
+        var openConnections: [ObjectIdentifier: NWConnection] = [:]
+        var accepted = 0
+        var ended = 0
+        var closeFrames = 0
+    }
 
     private let listener: NWListener
     private let queue = DispatchQueue(label: "detour-test-loopback-ws")
-    private let lock = NSLock()
-    private var openConnections: [ObjectIdentifier: NWConnection] = [:]
-    private var _accepted = 0
-    private var _ended = 0
-    private var _closeFrames = 0
+    private let state = Mutex(State())
 
     struct StartTimedOut: Error, CustomStringConvertible {
         var description: String { "loopback WebSocket server did not become ready" }
@@ -511,21 +615,18 @@ final class LoopbackWebSocketServer: @unchecked Sendable {
 
     /// Connections the server has accepted so far.
     var acceptedConnections: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _accepted
+        state.withLock { $0.accepted }
     }
 
     /// Connections that have since ended (peer close, cancel, or failure) — this
     /// is how a test sees that the relay really tore its socket down.
     var endedConnections: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _ended
+        state.withLock { $0.ended }
     }
 
     /// Close frames received from clients.
     var closeFramesReceived: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _closeFrames
+        state.withLock { $0.closeFrames }
     }
 
     /// Start listening and return the port that was assigned.
@@ -558,9 +659,7 @@ final class LoopbackWebSocketServer: @unchecked Sendable {
     /// Close every open connection with a normal-closure handshake, so a test can
     /// drive a server-initiated close.
     func closeAllConnections() {
-        lock.lock()
-        let connections = Array(openConnections.values)
-        lock.unlock()
+        let connections = state.withLock { Array($0.openConnections.values) }
         for connection in connections {
             sendClose(on: connection)
         }
@@ -574,10 +673,10 @@ final class LoopbackWebSocketServer: @unchecked Sendable {
     // MARK: Connection handling
 
     private func accept(_ connection: NWConnection) {
-        lock.lock()
-        _accepted += 1
-        openConnections[ObjectIdentifier(connection)] = connection
-        lock.unlock()
+        state.withLock { state in
+            state.accepted += 1
+            state.openConnections[ObjectIdentifier(connection)] = connection
+        }
 
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
@@ -592,10 +691,11 @@ final class LoopbackWebSocketServer: @unchecked Sendable {
     }
 
     private func forget(_ connection: NWConnection) {
-        lock.lock()
-        let removed = openConnections.removeValue(forKey: ObjectIdentifier(connection)) != nil
-        if removed { _ended += 1 }
-        lock.unlock()
+        state.withLock { state in
+            if state.openConnections.removeValue(forKey: ObjectIdentifier(connection)) != nil {
+                state.ended += 1
+            }
+        }
     }
 
     private func receive(on connection: NWConnection) {
@@ -610,7 +710,7 @@ final class LoopbackWebSocketServer: @unchecked Sendable {
                 as? NWProtocolWebSocket.Metadata
             switch metadata?.opcode {
             case .close:
-                self.lock.lock(); self._closeFrames += 1; self.lock.unlock()
+                self.state.withLock { $0.closeFrames += 1 }
                 self.sendClose(on: connection)
                 return
             case .text:
@@ -657,13 +757,17 @@ final class LoopbackWebSocketServer: @unchecked Sendable {
 /// sends, so the socket that opens is `LoopbackWebSocketServer`'s job and this
 /// one's is only to show what was asked for. The client sees the connection
 /// fail, which the relay reports as an error and a 1006 close.
-final class LoopbackHandshakeCaptureServer: @unchecked Sendable {
+/// Nonisolated: it runs on its own dispatch queue, its state behind a Mutex.
+nonisolated final class LoopbackHandshakeCaptureServer: Sendable {
+
+    private struct State {
+        var requests: [[String: String]] = []
+        var connections: [NWConnection] = []
+    }
 
     private let listener: NWListener
     private let queue = DispatchQueue(label: "detour-test-ws-handshake")
-    private let lock = NSLock()
-    private var _requests: [[String: String]] = []
-    private var connections: [NWConnection] = []
+    private let state = Mutex(State())
 
     struct StartTimedOut: Error, CustomStringConvertible {
         var description: String { "loopback handshake server did not become ready" }
@@ -678,8 +782,7 @@ final class LoopbackHandshakeCaptureServer: @unchecked Sendable {
 
     /// The headers of each handshake seen, in order, with lowercased names.
     var requests: [[String: String]] {
-        lock.lock(); defer { lock.unlock() }
-        return _requests
+        state.withLock { $0.requests }
     }
 
     func start(timeout: TimeInterval = 5) async throws -> UInt16 {
@@ -709,10 +812,10 @@ final class LoopbackHandshakeCaptureServer: @unchecked Sendable {
     }
 
     func stop() {
-        lock.lock()
-        let open = connections
-        connections.removeAll()
-        lock.unlock()
+        let open = state.withLock { state in
+            defer { state.connections.removeAll() }
+            return state.connections
+        }
         for connection in open { connection.cancel() }
         listener.cancel()
     }
@@ -720,9 +823,7 @@ final class LoopbackHandshakeCaptureServer: @unchecked Sendable {
     // MARK: Handshake
 
     private func accept(_ connection: NWConnection) {
-        lock.lock()
-        connections.append(connection)
-        lock.unlock()
+        state.withLock { $0.connections.append(connection) }
         connection.start(queue: queue)
         readRequest(on: connection, buffer: Data())
     }
@@ -752,9 +853,7 @@ final class LoopbackHandshakeCaptureServer: @unchecked Sendable {
             let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespaces)
             headers[name] = value
         }
-        lock.lock()
-        _requests.append(headers)
-        lock.unlock()
+        state.withLock { $0.requests.append(headers) }
         connection.cancel()
     }
 }
@@ -851,6 +950,15 @@ func promiseOutcomeJS(_ call: String) -> String {
     """#
 }
 
+/// Runs `js` (a `callbackOutcomeJS` / `promiseOutcomeJS` body, or any body
+/// returning a JSON object string) in `page`'s page world and decodes it.
+@MainActor
+func pageEval(_ js: String, in page: WKWebView) async throws -> [String: Any] {
+    let raw = try await page.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
+    let json = try XCTUnwrap(raw as? String, "expected JSON, got \(String(describing: raw))")
+    return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+}
+
 // MARK: - Loopback HTTP server
 
 /// A one-shot-per-connection HTTP/1.1 server on 127.0.0.1, just enough to serve
@@ -861,7 +969,16 @@ func promiseOutcomeJS(_ call: String) -> String {
 /// Every request's path is recorded in `requestedPaths` (a 404 counts too), so
 /// a page can also use the server as a beacon target to say "I loaded"; the
 /// headers each one arrived with are in `receivedRequests`.
-final class LoopbackHTTPServer: @unchecked Sendable {
+/// Nonisolated: it runs on its own dispatch queue, its state behind a Mutex.
+nonisolated final class LoopbackHTTPServer: Sendable {
+
+    private struct State {
+        var port: UInt16 = 0
+        var requestedPaths: [String] = []
+        var requests: [Request] = []
+        var requestHeads: [String] = []
+        var held: [String: [NWConnection]] = [:]
+    }
 
     private let listener: NWListener
     private let queue = DispatchQueue(label: "detour-test-loopback-http")
@@ -869,21 +986,31 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     private let pending: [String: String]
     private let stalled: [String: String]
     private let truncated: [String: String]
-    private let lock = NSLock()
-    private var _requestedPaths: [String] = []
-    private var _requestHeads: [String] = []
-    private var _held: [String: [NWConnection]] = [:]
+    private let redirects: [String: String]
+    private let setCookies: [String: String]
+    private let state = Mutex(State())
 
     /// The request paths seen so far, in arrival order.
     var requestedPaths: [String] {
-        lock.lock(); defer { lock.unlock() }
-        return _requestedPaths
+        state.withLock { $0.requestedPaths }
+    }
+
+    /// One request as it arrived: its path and its `Cookie` header, if any.
+    struct Request: Equatable, Sendable {
+        var path: String
+        var cookie: String?
+    }
+
+    /// The requests seen so far, in arrival order (TASK-194: which cookies a
+    /// page sent).
+    var requests: [Request] {
+        state.withLock { $0.requests }
     }
 
     /// One request as the server received it: the request line's method and
     /// path, and the header fields with lower-cased names (a repeated field
     /// keeps its last value).
-    struct ReceivedRequest {
+    struct ReceivedRequest: Sendable {
         let method: String
         let path: String
         let headers: [String: String]
@@ -892,10 +1019,7 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     /// Every request seen so far, in arrival order, with its headers — what a
     /// test reads to see which headers a request actually went out with.
     var receivedRequests: [ReceivedRequest] {
-        lock.lock()
-        let heads = _requestHeads
-        lock.unlock()
-        return heads.map { head in
+        state.withLock { $0.requestHeads }.map { head in
             let lines = head.components(separatedBy: "\r\n")
             let requestLine = (lines.first ?? "").split(separator: " ").map(String.init)
             var headers: [String: String] = [:]
@@ -928,12 +1052,19 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     ///     value goes out as the start of the body, and `release(_:)` closes
     ///     the connection with the rest still owed — a navigation that commits,
     ///     renders what arrived and then *fails* (TASK-178).
+    ///   - redirects: routes answered with a `302 Found` to the value, in
+    ///     which `{port}` stands for the server's port (TASK-191.4).
+    ///   - setCookies: routes whose (200) response carries a `Set-Cookie`
+    ///     header with the value (TASK-194).
     init(routes: [String: String], pending: [String: String] = [:],
-         stalled: [String: String] = [:], truncated: [String: String] = [:]) throws {
+         stalled: [String: String] = [:], truncated: [String: String] = [:],
+         redirects: [String: String] = [:], setCookies: [String: String] = [:]) throws {
         self.routes = routes
+        self.setCookies = setCookies
         self.pending = pending
         self.stalled = stalled
         self.truncated = truncated
+        self.redirects = redirects
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         params.requiredInterfaceType = .loopback
@@ -947,11 +1078,13 @@ final class LoopbackHTTPServer: @unchecked Sendable {
         }
         return try await withCheckedThrowingContinuation { continuation in
             let resumed = LockedFlag()
-            listener.stateUpdateHandler = { [listener] state in
+            listener.stateUpdateHandler = { [listener, weak self] state in
                 switch state {
                 case .ready:
                     guard resumed.claim() else { return }
-                    continuation.resume(returning: listener.port?.rawValue ?? 0)
+                    let port = listener.port?.rawValue ?? 0
+                    self?.state.withLock { $0.port = port }
+                    continuation.resume(returning: port)
                 case .failed(let error):
                     guard resumed.claim() else { return }
                     continuation.resume(throwing: error)
@@ -968,10 +1101,10 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     }
 
     func stop() {
-        lock.lock()
-        let held = _held.values.flatMap { $0 }
-        _held.removeAll()
-        lock.unlock()
+        let held = state.withLock { state in
+            defer { state.held.removeAll() }
+            return state.held.values.flatMap { $0 }
+        }
         for connection in held { connection.cancel() }
         listener.cancel()
     }
@@ -981,9 +1114,7 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     /// ends the load. A `truncated` route has nothing left to send, so the
     /// close alone ends its load, short of the promised length.
     func release(_ path: String) {
-        lock.lock()
-        let connections = _held.removeValue(forKey: path) ?? []
-        lock.unlock()
+        let connections = state.withLock { $0.held.removeValue(forKey: path) ?? [] }
         var rest = Data()
         if truncated[path] != nil {
             // Nothing: the close is the response ending short.
@@ -1031,16 +1162,22 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     private func respond(_ connection: NWConnection, head: Data) {
         let request = String(decoding: head, as: UTF8.self)
         let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+        let cookie = request.components(separatedBy: "\r\n").lazy
+            .first { $0.lowercased().hasPrefix("cookie:") }
+            .map { String($0.dropFirst("cookie:".count)).trimmingCharacters(in: .whitespaces) }
         let headEnd = request.range(of: "\r\n\r\n")?.lowerBound ?? request.endIndex
-        lock.lock()
-        _requestedPaths.append(path)
-        _requestHeads.append(String(request[..<headEnd]))
-        lock.unlock()
+        // A held connection is recorded in the same critical section as its
+        // path, so a test that sees the path in `requestedPaths` and calls
+        // `release(_:)` always finds the connection to release.
+        let holds = pending[path] != nil || stalled[path] != nil || truncated[path] != nil
+        state.withLock { state in
+            state.requestedPaths.append(path)
+            state.requests.append(Request(path: path, cookie: cookie))
+            state.requestHeads.append(String(request[..<headEnd]))
+            if holds { state.held[path, default: []].append(connection) }
+        }
 
-        if pending[path] != nil || stalled[path] != nil || truncated[path] != nil {
-            lock.lock()
-            _held[path, default: []].append(connection)
-            lock.unlock()
+        if holds {
             if let start = truncated[path] {
                 // More is promised than `release(_:)` will ever deliver.
                 let header = Self.head(contentLength: start.utf8.count + 4096)
@@ -1055,12 +1192,24 @@ final class LoopbackHTTPServer: @unchecked Sendable {
             return
         }
 
+        if let location = redirects[path] {
+            let port = state.withLock { $0.port }
+            let head = "HTTP/1.1 302 Found\r\nLocation: \(location.replacingOccurrences(of: "{port}", with: String(port)))\r\n"
+                + "Content-Length: 0\r\nConnection: close\r\n\r\n"
+            connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in
+                connection.cancel()
+            })
+            return
+        }
+
         // A route also answers its path with a query added, so a test can tag
         // each request (`/api?marker`) and find it in `receivedRequests`.
-        let route = routes[path] ?? routes[String(path.prefix { $0 != "?" })]
+        let routePath = routes[path] != nil ? path : String(path.prefix { $0 != "?" })
+        let route = routes[routePath]
         let body = Data((route ?? "<html><body>not found</body></html>").utf8)
         let status = route == nil ? "404 Not Found" : "200 OK"
-        var response = Data(Self.head(status: status, contentLength: body.count).utf8)
+        var response = Data(Self.head(status: status, contentLength: body.count,
+                                      setCookie: route == nil ? nil : setCookies[routePath]).utf8)
         response.append(body)
         connection.send(content: response, completion: .contentProcessed { _ in
             connection.cancel()
@@ -1069,9 +1218,10 @@ final class LoopbackHTTPServer: @unchecked Sendable {
 
     /// The head of an HTML response whose connection closes after it. Without
     /// a `contentLength` the close is what ends the body.
-    private static func head(status: String = "200 OK", contentLength: Int?) -> String {
+    private static func head(status: String = "200 OK", contentLength: Int?, setCookie: String? = nil) -> String {
         "HTTP/1.1 \(status)\r\n"
             + "Content-Type: text/html; charset=utf-8\r\n"
+            + (setCookie.map { "Set-Cookie: \($0)\r\n" } ?? "")
             + (contentLength.map { "Content-Length: \($0)\r\n" } ?? "")
             + "Connection: close\r\n\r\n"
     }

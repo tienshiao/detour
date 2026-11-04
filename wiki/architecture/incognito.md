@@ -4,7 +4,7 @@ title: Incognito (Private windows)
 description: "How Private browsing is built — one built-in Private profile with a non-persistent store, one throwaway space per Private window, and the list of things that are and are not kept."
 tags: [architecture, privacy, profiles, incognito]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:48:28Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -114,11 +114,47 @@ until quit.[^private-notes]
 | History visits and title corrections | `recordHistoryVisit` returns early; `HistoryTitleUpdatePolicy` refuses. |
 | The History page | `HistoryPageBridge.scope(for:)` returns nil and the page is told `incognito: true`. |
 | `chrome.history.search` from an extension running in Private | `HistoryPageBridge.scope(forProfile:)` returns nil and the extension gets an empty list, never another profile's history ([polyfill layer](../extensions/polyfill-layer.md)). |
+| Per-site switches (content blocking, picture in picture, dev mode) | `SiteSettingsStore` keeps the Private profile's values in memory only and drops them when the last Private page goes — no Private space and no Private Quick Detour left (`TabStore.hasLivePrivateSession`; [site settings](./site-settings.md), TASK-195, TASK-193.1). |
 | "Always allow" for external apps | `ExternalAppPermissionStore` keeps a Private decision in memory for the session only; the prompt offers no "remember" option. |
 | `runtime.onInstalled` for extensions | Never delivered or recorded for the Private profile. |
 | Auto-archive | `archiveStaleTabs` skips incognito spaces. |
 | Favorites of the Private profile | `saveNow` skips incognito profiles when saving favorites. |
 | Download records | `DownloadScope.isPersisted`: a download started in a Private window is never written to the `download` table. See below. |
+
+## A Private Quick Detour
+
+A [Quick Detour](../features/quick-detour.md) window can be Private
+(TASK-193.1): opened while a Private window is frontmost, it is on the
+Private profile and has **no space**. Its page uses the profile's one
+non-persistent store, records no history (`recordHistoryVisit` checks the
+tab's `quickDetourProfile`), and is never saved. The Private session's
+in-memory state goes only when neither a Private space nor a Private Quick
+Detour is left: closing the last Private window while a Private Quick Detour
+is open keeps the Private site settings, and the store itself is never torn
+down either way (it lives until quit). Its downloads are scoped to the Quick
+Detour's tab id (`.incognito(spaceID: tab.id)`), kept while the window is
+open and dropped, cancelled if still running, when it closes
+(`TabStore.liveIncognitoDownloadScopeIDs`). Tests: `QuickDetourTests` (the
+Private session and download cases).
+
+Its profile pill (TASK-193.4) can switch a Quick Detour **into** Private —
+a new page on the Private store, from then on everything above — or **out**
+of it: the Private page closes (the session ends if it was the last Private
+page) and, with Private downloads still running, the switch first asks
+"Switch to Work?" with Switch Profile (cancels them) and Continue
+Downloading, as closing the window would. Tests:
+`QuickDetourProfileSwitchTests`, `QuickDetourProfileSwitchWindowTests`.
+
+## A quarantine
+
+A [quarantine](../features/quarantine.md) window (TASK-194) is a Private
+Quick Detour with one difference: its page does **not** use the Private
+profile's store but a fresh non-persistent one of its own, shared only with
+windows that page opens. Everything else above holds — the Private
+profile's extension controller (extensions allowed in Private run), no
+history, never saved or archived, downloads scoped to its tab id — and it
+counts as a user of the Private session (`hasLivePrivateSession`), so the
+Private site settings live while it is open.
 
 ## Downloads
 
@@ -163,8 +199,13 @@ spaces those tabs may come from:
 
 | Palette's window | Spaces whose tabs it is handed |
 |---|---|
-| Normal | every non-incognito space |
+| Normal | the non-incognito spaces of its profile (TASK-209; every non-incognito space before) |
 | Private | its own space and no other, not even another Private window's |
+
+A Private window's palette has no history scope either: the Private profile
+records nothing and `PaletteTabScope.historySpaceIDs` gives it none, so no
+profile's history can show there; and no normal palette's scope ever names a
+Private space.
 
 A window counts as Private when its profile says so **or** when the space it
 is showing is incognito, so a missing profile cannot widen the list.

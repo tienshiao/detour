@@ -1,6 +1,7 @@
 import XCTest
 import WebKit
 import GRDB
+import Synchronization
 @testable import Detour
 
 /// TASK-152: the favicons an extension can ask for
@@ -25,8 +26,7 @@ import GRDB
 ///
 /// What a caller observes is the image it gets: the stub icon is 4×4, "no
 /// icon" is the 1×1 transparent pixel.
-@MainActor
-final class ExtensionFaviconScopeTests: XCTestCase {
+nonisolated final class ExtensionFaviconScopeTests: XCTestCase {
 
     // MARK: - Fixture bookkeeping
 
@@ -35,21 +35,22 @@ final class ExtensionFaviconScopeTests: XCTestCase {
     private var createdProfiles: [Profile] = []
     private var createdSpaceIDs: [UUID] = []
     private var openWebViews: [WKWebView] = []
-    private var defaultFaviconFetch: ((URL, @escaping (Data?) -> Void) -> Void)!
+    private var defaultFaviconFetch: (FaviconPNGLoader.Fetch)!
     private let fetchedIconURLs = FetchLog()
 
     /// Profiles whose extension controller hosted a web view are kept alive for
     /// the rest of the test process (see `ExtensionHistoryScopeTests`).
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    private final class FetchLog: @unchecked Sendable {
-        private let lock = NSLock()
-        private var urls: [String] = []
-        func record(_ url: URL) { lock.lock(); urls.append(url.absoluteString); lock.unlock() }
-        var all: [String] { lock.lock(); defer { lock.unlock() }; return urls }
+    /// Nonisolated: the stub fetch records from whichever thread the loader
+    /// calls it on.
+    nonisolated private final class FetchLog: Sendable {
+        private let urls = Mutex<[String]>([])
+        func record(_ url: URL) { urls.withLock { $0.append(url.absoluteString) } }
+        var all: [String] { urls.withLock { $0 } }
     }
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         defaultFaviconFetch = FaviconPNGLoader.shared.fetch
         FaviconPNGLoader.shared.resetForTesting()
@@ -60,7 +61,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
         }
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for webView in openWebViews {
             webView.stopLoading()
             webView.loadHTMLString("", baseURL: nil)
@@ -95,7 +96,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
     private static let iconSide = 4
 
     /// What every stubbed icon download returns.
-    private static let iconPNG: Data = {
+    nonisolated private static let iconPNG: Data = {
         let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: iconSide, pixelsHigh: iconSide,
                                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
@@ -107,7 +108,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
     /// then a listener for the two things a worker can try: fetch the
     /// `_favicon` URL, and send the retired `favicon.lookup` message over the
     /// worker's own bridge.
-    private static let workerJS = ExtensionAPIPolyfill.polyfillJS + """
+    @MainActor private static let workerJS = ExtensionAPIPolyfill.polyfillJS + """
 
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!message) { return false; }
@@ -136,7 +137,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
     /// An MV3 extension with a module service worker and one page, registered
     /// in `ExtensionManager` the way an installed extension is (the permission
     /// gate reads the manifest from there).
-    private func makeExtension(permissions: [String]) async throws -> WebExtension {
+    @MainActor private func makeExtension(permissions: [String]) async throws -> WebExtension {
         let id = "favicon-scope-\(UUID().uuidString.prefix(8))"
         let permissionsJSON = String(decoding: try JSONSerialization.data(withJSONObject: permissions),
                                      as: UTF8.self)
@@ -161,7 +162,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
         return ext
     }
 
-    private func makeDatabase() throws -> HistoryDatabase {
+    @MainActor private func makeDatabase() throws -> HistoryDatabase {
         var config = Configuration()
         config.foreignKeysEnabled = true
         return try HistoryDatabase(dbQueue: try DatabaseQueue(configuration: config)) // in-memory
@@ -169,7 +170,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
 
     /// A persistent profile with one space, its extension controller built and
     /// its handler reading `database`.
-    private func makeProfile(_ name: String, database: HistoryDatabase) throws -> (profile: Profile, space: Space) {
+    @MainActor private func makeProfile(_ name: String, database: HistoryDatabase) throws -> (profile: Profile, space: Space) {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         let space = TabStore.shared.addSpace(name: "\(name) Space", emoji: "F", colorHex: "#000000",
@@ -181,21 +182,21 @@ final class ExtensionFaviconScopeTests: XCTestCase {
 
     /// A Private profile of its own (a random id, never the built-in one whose
     /// rows other suites share), with the same `isIncognito` wiring.
-    private func makePrivateProfile(_ name: String, database: HistoryDatabase) throws -> Profile {
+    @MainActor private func makePrivateProfile(_ name: String, database: HistoryDatabase) throws -> Profile {
         let profile = Profile(name: name, isIncognito: true)
         createdProfiles.append(profile)
         try useDatabase(database, in: profile)
         return profile
     }
 
-    private func useDatabase(_ database: HistoryDatabase, in profile: Profile) throws {
+    @MainActor private func useDatabase(_ database: HistoryDatabase, in profile: Profile) throws {
         // Force the lazy controller, and with it the polyfill handler.
         _ = profile.extensionController
         try XCTUnwrap(profile.polyfillHandler, "extensionController must build a polyfill handler")
             .historyDatabase = database
     }
 
-    private func seedVisit(_ db: HistoryDatabase, url: String, favicon: String, space: Space,
+    @MainActor private func seedVisit(_ db: HistoryDatabase, url: String, favicon: String, space: Space,
                            visitTime: Double) throws {
         try db.dbQueue.write { conn in
             let urlID = try Int64.fetchOne(conn, sql: """
@@ -225,7 +226,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
     /// | `onlyA` | visited | never |
     /// | `onlyB` | never | visited |
     /// | `shared` | visited | visited |
-    private func seedTwoProfiles(_ db: HistoryDatabase, spaceA: Space, spaceB: Space) throws {
+    @MainActor private func seedTwoProfiles(_ db: HistoryDatabase, spaceA: Space, spaceB: Space) throws {
         try seedVisit(db, url: Self.onlyA, favicon: "https://only-a.example/icon.png", space: spaceA, visitTime: 100)
         try seedVisit(db, url: Self.onlyB, favicon: "https://only-b.example/icon.png", space: spaceB, visitTime: 200)
         try seedVisit(db, url: Self.shared, favicon: "https://shared.example/icon.png", space: spaceA, visitTime: 300)
@@ -234,7 +235,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
 
     // MARK: Real-context round trips
 
-    private func makePage(for context: WKWebExtensionContext) async throws -> WKWebView {
+    @MainActor private func makePage(for context: WKWebExtensionContext) async throws -> WKWebView {
         let config = try XCTUnwrap(context.webViewConfiguration,
                                    "webViewConfiguration is nil — context not loaded in a controller")
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
@@ -245,7 +246,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
 
     /// The extension loaded into `profile`, an extension page of it, and its
     /// worker awake.
-    private func loadPage(_ ext: WebExtension, in profile: Profile) async throws
+    @MainActor private func loadPage(_ ext: WebExtension, in profile: Profile) async throws
         -> (page: WKWebView, context: WKWebExtensionContext) {
         let context = try loadTestContext(ext, in: profile)
         let page = try await makePage(for: context)
@@ -264,7 +265,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
     /// did not load at all. With `host` the `detour-favicon://` URL is written
     /// by hand for that WebKit host; without it the page builds the URL the way
     /// an extension does, through `chrome.runtime.getURL`.
-    private func iconSide(for pageURL: String, in webView: WKWebView, host: String? = nil,
+    @MainActor private func iconSide(for pageURL: String, in webView: WKWebView, host: String? = nil,
                           file: StaticString = #filePath, line: UInt = #line) async throws -> Int? {
         let js = """
             const url = host
@@ -292,7 +293,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
         return outcome["width"] as? Int
     }
 
-    private func workerReply(_ message: [String: Any], via page: WKWebView,
+    @MainActor private func workerReply(_ message: [String: Any], via page: WKWebView,
                              file: StaticString = #filePath, line: UInt = #line) async throws -> [String: Any] {
         let answer = try await askWorker(from: page, message: message)
         XCTAssertNil(answer["lastError"] as? String, "the page could not reach the worker", file: file, line: line)
@@ -309,7 +310,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
     /// gets the icons of the pages its own profile visited, and for a page —
     /// or a host — only the other profile visited exactly what it gets for a
     /// page nobody visited.
-    func testAnExtensionPageGetsOnlyItsOwnProfilesFavicons() async throws {
+    @MainActor func testAnExtensionPageGetsOnlyItsOwnProfilesFavicons() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["favicon"])
         let a = try makeProfile("Favicon Scope A", database: db)
@@ -351,7 +352,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
     /// of *one* profile. A page of profile B that writes profile A's host gets
     /// nothing — neither A's history nor its own: the host is not an extension
     /// of B.
-    func testAnotherProfilesExtensionHostIsRefused() async throws {
+    @MainActor func testAnotherProfilesExtensionHostIsRefused() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["favicon"])
         let a = try makeProfile("Favicon Host A", database: db)
@@ -376,7 +377,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
     /// The tab route: `Space.makeWebViewConfiguration` registers the scheme so
     /// an extension frame inside a tab can show favicons. A tab answers for
     /// its own profile's extension hosts and its own profile's history.
-    func testATabAnswersForItsOwnProfileOnly() async throws {
+    @MainActor func testATabAnswersForItsOwnProfileOnly() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["favicon"])
         let a = try makeProfile("Favicon Tab A", database: db)
@@ -417,7 +418,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
     /// AC #3: `favicon` is the permission Chrome requires for `_favicon`. An
     /// extension without it gets the transparent pixel for a page its own
     /// profile visited. The positive half is the isolation test above.
-    func testAnExtensionWithoutTheFaviconPermissionGetsNoIcon() async throws {
+    @MainActor func testAnExtensionWithoutTheFaviconPermissionGetsNoIcon() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["storage", "history"])
         let a = try makeProfile("Favicon Ungranted", database: db)
@@ -431,7 +432,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
 
     /// AC #3: the Private profile records no history and must learn nothing of
     /// anyone else's.
-    func testAnExtensionInThePrivateProfileGetsNoIcon() async throws {
+    @MainActor func testAnExtensionInThePrivateProfileGetsNoIcon() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["favicon"])
         let a = try makeProfile("Favicon Private Neighbour", database: db)
@@ -459,7 +460,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
     /// visited is indistinguishable from one nobody visited, down to no icon
     /// being fetched. Should the fetch ever return bytes, they are the scoped
     /// answer.
-    func testTheServiceWorkerLearnsNothingAboutAnotherProfile() async throws {
+    @MainActor func testTheServiceWorkerLearnsNothingAboutAnotherProfile() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["favicon"])
         let a = try makeProfile("Favicon Worker A", database: db)
@@ -488,7 +489,7 @@ final class ExtensionFaviconScopeTests: XCTestCase {
     /// message, with no permission check and no scope; no polyfill API ever
     /// sent it. It is gone: both transports are refused, for an extension that
     /// holds `favicon` and a page its own profile visited.
-    func testTheFaviconLookupMessageIsRefusedFromBothTransports() async throws {
+    @MainActor func testTheFaviconLookupMessageIsRefusedFromBothTransports() async throws {
         let db = try makeDatabase()
         let ext = try await makeExtension(permissions: ["favicon"])
         let a = try makeProfile("Favicon Lookup", database: db)

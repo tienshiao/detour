@@ -9,31 +9,30 @@ import WebKit
 /// bar of such a row once its progress has not moved for
 /// `BrowserTab.loadStallInterval`. Each page here holds one image request open,
 /// so the load stays in flight with its progress parked.
-@MainActor
-final class LoadProgressStallTests: XCTestCase {
+nonisolated final class LoadProgressStallTests: XCTestCase {
 
     private var tabs: [BrowserTab] = []
     private var windows: [NSWindow] = []
     private var defaultInterval: TimeInterval = 0
-    private let scheme = StallingSchemeHandler()
+    @MainActor private lazy var scheme = StallingSchemeHandler()
     private let pageURL = URL(string: "stall://stall.test/page")!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         defaultInterval = BrowserTab.loadStallInterval
         BrowserTab.loadStallInterval = 0.3
         scheme.pages[pageURL.path] = "<html><head><title>Stalled</title></head><body><img src=\"/hang.png\"></body></html>"
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for tab in tabs { tab.teardown() }
         tabs.removeAll()
         windows.removeAll()
         BrowserTab.loadStallInterval = defaultInterval
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func makeLoadingTab() async throws -> BrowserTab {
+    @MainActor private func makeLoadingTab() async throws -> BrowserTab {
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(scheme, forURLScheme: "stall")
         let tab = BrowserTab(configuration: configuration)
@@ -45,7 +44,7 @@ final class LoadProgressStallTests: XCTestCase {
         return tab
     }
 
-    func testAHiddenLoadWhoseProgressStopsMovingCountsAsStalled() async throws {
+    @MainActor func testAHiddenLoadWhoseProgressStopsMovingCountsAsStalled() async throws {
         let tab = try await makeLoadingTab()
 
         try await waitUntil("the stall to be noticed") { tab.isLoadProgressStalled }
@@ -55,7 +54,7 @@ final class LoadProgressStallTests: XCTestCase {
         XCTAssertEqual(tab.sidebarProgress, 0, "the sidebar stops drawing the bar")
     }
 
-    func testTheStallClearsWhenTheLoadMovesAgain() async throws {
+    @MainActor func testTheStallClearsWhenTheLoadMovesAgain() async throws {
         let tab = try await makeLoadingTab()
         try await waitUntil("the stall to be noticed") { tab.isLoadProgressStalled }
 
@@ -65,7 +64,7 @@ final class LoadProgressStallTests: XCTestCase {
         XCTAssertFalse(tab.isLoadProgressStalled)
     }
 
-    func testShowingAStalledTabClearsTheStallWithoutProgressMoving() async throws {
+    @MainActor func testShowingAStalledTabClearsTheStallWithoutProgressMoving() async throws {
         let tab = try await makeLoadingTab()
         try await waitUntil("the stall to be noticed") { tab.isLoadProgressStalled }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
@@ -83,7 +82,7 @@ final class LoadProgressStallTests: XCTestCase {
         XCTAssertEqual(tab.sidebarProgress, tab.estimatedProgress)
     }
 
-    func testATabShownInAWindowNeverCountsAsStalled() async throws {
+    @MainActor func testATabShownInAWindowNeverCountsAsStalled() async throws {
         let tab = try await makeLoadingTab()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
                               styleMask: [.borderless], backing: .buffered, defer: true)

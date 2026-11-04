@@ -18,15 +18,14 @@ import GRDB
 /// scheme points `DETOUR_DATA_DIR` at an isolated directory), with real
 /// `WKWebExtension` contexts: `BrowserTab.wake` resolves its space from the
 /// shared store, and disable, enable and uninstall go through production paths.
-@MainActor
-final class ExtensionPageFavoriteTests: XCTestCase {
+nonisolated final class ExtensionPageFavoriteTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
     private var createdProfiles: [Profile] = []
     private var createdSpaceIDs: [UUID] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for spaceID in createdSpaceIDs {
             guard let space = TabStore.shared.space(withID: spaceID) else { continue }
             for tab in space.tabs + space.pinnedTabs { tab.teardown() }
@@ -47,14 +46,14 @@ final class ExtensionPageFavoriteTests: XCTestCase {
         registeredExtensionIDs.removeAll()
         for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
     /// A minimal MV3 extension with an options page and no background content,
     /// registered with the shared `ExtensionManager` and database.
-    private func makeExtension() async throws -> WebExtension {
+    @MainActor private func makeExtension() async throws -> WebExtension {
         let ext = try await makeOptionsPageTestExtension(idPrefix: "page-favorite",
                                                          name: "Page Favorite Test")
         tempDirs.append(ext.basePath)
@@ -65,7 +64,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
         return ext
     }
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let ext: WebExtension
         let store: TabStore
         let profile: Profile
@@ -73,7 +72,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
         let context: WKWebExtensionContext
     }
 
-    private func makeFixture(_ name: String) async throws -> Fixture {
+    @MainActor private func makeFixture(_ name: String) async throws -> Fixture {
         let ext = try await makeExtension()
         let store = TabStore.shared
         let profile = store.addProfile(name: "Favorite \(name)")
@@ -87,7 +86,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
     }
 
     /// Adds a dormant favourite on `url` and returns it.
-    private func dormantFavorite(_ url: URL, title: String = "Fav", in f: Fixture) throws -> Favorite {
+    @MainActor private func dormantFavorite(_ url: URL, title: String = "Fav", in f: Fixture) throws -> Favorite {
         XCTAssertTrue(f.store.addFavoriteFromEntry(url: url, title: title, faviconURL: nil, favicon: nil,
                                                    profileID: f.profile.id, at: f.profile.favorites.count))
         let favorite = try XCTUnwrap(f.profile.favorites.last)
@@ -98,7 +97,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
     /// Reloads the context the way production does when its background content
     /// fails (`recoverFromBackgroundLoadFailure`): a new origin, with every page
     /// and tile of the profile retargeted onto it.
-    private func reloadContext(_ f: Fixture) throws -> URL {
+    @MainActor private func reloadContext(_ f: Fixture) throws -> URL {
         f.profile.recoverFromBackgroundLoadFailure(extensionID: f.ext.id, failedContext: f.context)
         let newBase = try XCTUnwrap(f.profile.extensionContext(for: f.ext.id)?.baseURL)
         XCTAssertNotEqual(newBase.host?.lowercased(), f.context.baseURL.host?.lowercased(),
@@ -108,7 +107,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
 
     // MARK: - Dormant extension page -> tab list
 
-    func testDormantFavoriteToTabAfterAContextReloadLoadsOnTheNewOrigin() async throws {
+    @MainActor func testDormantFavoriteToTabAfterAContextReloadLoadsOnTheNewOrigin() async throws {
         let f = try await makeFixture("ToTab")
         let url = try extensionPageURL("options.html?fav=tab#frag", on: f.context.baseURL)
         let favorite = try dormantFavorite(url, in: f)
@@ -130,7 +129,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
     /// A favourite restored from the previous launch waits on a dead origin
     /// registered as pending (TASK-24). Moved after its context has loaded but
     /// before the resolution pass, it is rehomed onto the live origin by the move.
-    func testDormantFavoriteOnAPendingOriginIsRehomedWhenMoved() async throws {
+    @MainActor func testDormantFavoriteOnAPendingOriginIsRehomedWhenMoved() async throws {
         let f = try await makeFixture("Pending")
         let deadHost = UUID().uuidString.lowercased()
         let deadBase = try XCTUnwrap(URL(string: "webkit-extension://\(deadHost)/"))
@@ -158,7 +157,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
 
     // MARK: - Dormant extension page -> pinned section
 
-    func testDormantFavoriteToPinnedAfterAContextReloadLoadsOnTheNewOrigin() async throws {
+    @MainActor func testDormantFavoriteToPinnedAfterAContextReloadLoadsOnTheNewOrigin() async throws {
         let f = try await makeFixture("ToPinned")
         let url = try extensionPageURL("options.html?fav=pinned", on: f.context.baseURL)
         let favorite = try dormantFavorite(url, in: f)
@@ -182,7 +181,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
 
     // MARK: - Live favourite
 
-    func testLiveFavoriteMovesItsBackingTabAsIs() async throws {
+    @MainActor func testLiveFavoriteMovesItsBackingTabAsIs() async throws {
         let f = try await makeFixture("Live")
         let config = try XCTUnwrap(f.context.webViewConfiguration)
         let tabURL = try extensionPageURL("options.html?live=tab", on: f.context.baseURL)
@@ -223,7 +222,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
     /// entry, kept on its origin registered as pending so an enable moves it. It
     /// may not become a tab: one would sit unloaded on the pending origin, and
     /// the next restore drops open tabs of a disabled extension.
-    func testDisabledDormantFavoriteMovesOnlyToPinnedAndResolvesOnEnable() async throws {
+    @MainActor func testDisabledDormantFavoriteMovesOnlyToPinnedAndResolvesOnEnable() async throws {
         let f = try await makeFixture("Disabled")
         let url = try extensionPageURL("options.html?disabled=1", on: f.context.baseURL)
         let favorite = try dormantFavorite(url, in: f)
@@ -253,7 +252,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
     /// An uninstalled extension's dormant favourite can never load again: every
     /// move out of the favourites bar is refused and it stays where it is, as a
     /// dormant pinned entry of that extension is refused a move into the bar.
-    func testUninstalledDormantFavoriteIsRefusedAndStays() async throws {
+    @MainActor func testUninstalledDormantFavoriteIsRefusedAndStays() async throws {
         let f = try await makeFixture("Uninstalled")
         let url = try extensionPageURL("options.html?gone=1", on: f.context.baseURL)
         let pinnedURL = try extensionPageURL("options.html?gone=pinned", on: f.context.baseURL)
@@ -279,7 +278,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
     /// Clicking a dormant favourite of a disabled extension must not build a tab:
     /// it would sit unloaded on the pending origin, wake blank, and be dropped at
     /// the next restore. The favourite stays dormant instead.
-    func testActivateFavoriteOfADisabledExtensionLeavesItDormant() async throws {
+    @MainActor func testActivateFavoriteOfADisabledExtensionLeavesItDormant() async throws {
         let f = try await makeFixture("ActivateFav")
         let url = try extensionPageURL("options.html?activate=fav", on: f.context.baseURL)
         let favorite = try dormantFavorite(url, in: f)
@@ -295,7 +294,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
     /// A dormant pinned entry of a disabled extension cannot become a tab either:
     /// activating it is a no-op, and unpinning it leaves the tile pinned rather
     /// than removing it and dropping a blank tab into the tab list.
-    func testDormantEntryOfADisabledExtensionIsNeitherActivatedNorUnpinned() async throws {
+    @MainActor func testDormantEntryOfADisabledExtensionIsNeitherActivatedNorUnpinned() async throws {
         let f = try await makeFixture("ActivateEntry")
         let url = try extensionPageURL("options.html?activate=entry", on: f.context.baseURL)
         let favorite = try dormantFavorite(url, in: f)
@@ -318,7 +317,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
 
     /// A dormant pinned entry on `url`, created while the extension is still
     /// enabled — a move into the pinned section is refused otherwise.
-    private func dormantEntry(_ url: URL, title: String = "Entry", in f: Fixture) throws -> PinnedEntry {
+    @MainActor private func dormantEntry(_ url: URL, title: String = "Entry", in f: Fixture) throws -> PinnedEntry {
         let favorite = try dormantFavorite(url, title: title, in: f)
         XCTAssertTrue(f.store.restoreFavoriteAsPinned(id: favorite.id, profileID: f.profile.id,
                                                       in: f.space, at: f.space.pinnedEntries.count))
@@ -329,7 +328,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
 
     /// Clicking or unpinning a disabled extension's tile is refused, and the
     /// store names the extension so the window can say why nothing happened.
-    func testDisabledExtensionTilesRefuseAndNameTheExtension() async throws {
+    @MainActor func testDisabledExtensionTilesRefuseAndNameTheExtension() async throws {
         let f = try await makeFixture("RefusalDisabled")
         let entryURL = try extensionPageURL("options.html?refuse=entry", on: f.context.baseURL)
         let favURL = try extensionPageURL("options.html?refuse=fav", on: f.context.baseURL)
@@ -357,7 +356,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
     /// its tiles: the tile stays put (the next restore drops it, TASK-24) and the
     /// refusal explains that the extension is gone. It names no extension —
     /// nothing installed claims the origin any more.
-    func testUninstalledExtensionTilesRefuseAndSayTheExtensionIsGone() async throws {
+    @MainActor func testUninstalledExtensionTilesRefuseAndSayTheExtensionIsGone() async throws {
         let f = try await makeFixture("RefusalGone")
         let entryURL = try extensionPageURL("options.html?gone=entry", on: f.context.baseURL)
         let favURL = try extensionPageURL("options.html?gone=fav", on: f.context.baseURL)
@@ -381,7 +380,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
 
     /// The ordinary paths are untouched: the tile becomes a tab and there is
     /// nothing to explain.
-    func testOrdinaryTilesActivateAndUnpinWithNoRefusal() async throws {
+    @MainActor func testOrdinaryTilesActivateAndUnpinWithNoRefusal() async throws {
         let f = try await makeFixture("RefusalOrdinary")
         let entryURL = try XCTUnwrap(URL(string: "https://example.com/entry"))
         let unpinURL = try XCTUnwrap(URL(string: "https://example.com/unpin"))
@@ -409,7 +408,7 @@ final class ExtensionPageFavoriteTests: XCTestCase {
 
     // MARK: - Ordinary pages
 
-    func testOrdinaryFavoritesMoveUnchanged() async throws {
+    @MainActor func testOrdinaryFavoritesMoveUnchanged() async throws {
         let f = try await makeFixture("Ordinary")
         let tabURL = try XCTUnwrap(URL(string: "https://example.com/path?q=1#frag"))
         let pinnedURL = try XCTUnwrap(URL(string: "https://example.org/"))

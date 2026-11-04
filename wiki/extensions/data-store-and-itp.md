@@ -198,13 +198,12 @@ Traps met while writing it:[^task-70]
 
 - **Disabled extensions.** Only loaded contexts are kept. An extension left
   disabled longer than the window loses its last origin's storage.[^task-72]
-- **Storage does not survive a relaunch anyway.** Because each load gets a
-  new origin, the previous launch's origin directory was found orphaned on
-  disk with its data, and 1Password rebuilds its item cache at every
-  start.[^task-99] The keeper's header comment still says WebKit carries
-  IndexedDB and localStorage onto the new origin from its last-seen base URL;
-  the on-disk evidence does not show that happening, and the plan document
-  records the question as unresolved. See [storage](./storage.md).
+- **Storage across relaunches** (resolved 2026-10-28). The keeper's header
+  comment is right: WebKit renames the last-seen origin's IndexedDB and
+  `localStorage` to the new base URL at every load, on the store the pages
+  use. The orphans found on 2026-09-20 were left from before this fix moved
+  the pages to the profile store, and WebKit's one-time stale-origin sweep
+  has since removed them. See [storage](./storage.md).[^task-99]
 - **One unexplained event.** Both of 1Password's hosts in one profile were
   terminated within half a second and respawned a second later on
   2026-09-19. Judged harmless, never explained.[^task-90]

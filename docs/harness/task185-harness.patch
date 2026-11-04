@@ -1,0 +1,538 @@
+TASK-185 runtime harness: the Peek's Open in Split View, the normal-section
+split from a favourite or pinned tab, Option-click and the link menu's Open
+Link in Split View. Temporary code, never committed to Detour/. Apply, build,
+run, revert:
+
+    git apply docs/harness/task185-harness.patch
+    xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # fixture pages (host, pinned, fav, split-a/-b, psplit-a/-b, peek1/2, target
+    # .html, each a heading plus a big link #l to /target.html) in $SITE:
+    python3 -m http.server 8185 --bind 127.0.0.1 --directory "$SITE" &
+    OUT="$PWD/.derived-logs/task185"; mkdir -p "$OUT"
+    DETOUR_DATA_DIR=DetourVerify185 DETOUR_VERIFY_DIR="$OUT" \
+        TASK185_BASE=http://127.0.0.1:8185 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # wait for the "done" line in $OUT/verify.log (about 105 s), then kill that
+    # pid only. A watcher runs `screencapture -x -o -l <windowNumber>` for each
+    # "SHOOT <name> <windowNumber>" line.
+    git apply -R docs/harness/task185-harness.patch && xcodegen generate
+    rm -r -- ~/Library/Application\ Support/DetourVerify185
+
+Needs an unlocked screen (posted clicks and the real context menu). Seeds a
+normal tab, a lone pinned tab, a favourite, a normal split and a pinned split
+from local pages, then, each followed by its undo:
+1. Peek on the normal tab, navigated once inside the Peek, then
+   `openPeekInSplitView`: host + new right pane, the right pane's web view `===`
+   the Peek's, `canGoBack` kept, the pane selected and first responder, both
+   panes hosted in the NSSplitView.
+2. The same on the pinned tab and on the favourite: a split at the top of the
+   normal section, a copy of the host on the left, the entry / favourite
+   unchanged (id, URL, sort order, folder, group, backing tab).
+3. Peek on a pane of the normal split and of the pinned split: no split button.
+4. Option-click as a real posted left click with the Option flag on the page's
+   link (so through `decidePolicy`), in the favourite, the lone pinned tab, a
+   normal tab and a split pane.
+5. The link menu as a real posted right click: WebKit builds the menu, a hook
+   at the end of `BrowserWebView.willOpenMenu` checks the item (after Open Link
+   in New Window; action, target, the WebKit item as representedObject) and
+   performs it while the menu is up, so the URL arrives through WebKit's own
+   "Open Link in New Window" and `createWebViewWith`. In the favourite, a normal
+   tab and a split pane; plus a synthetic menu on a Peek's web view.
+6. A second window on the same space selecting the host, then window A hands
+   its Peek to a split.
+
+Results (2026-10-24, run1, screen unlocked): 70 checks, 0 failures.
+- Peek → split on the normal host: the web view kept (back list [peek1] at
+  peek2), right pane selected and first responder, both panes in the split
+  view; undo removed the pane, archived nothing, ungrouped the host.
+- Pinned and favourite hosts: [copy, Peek page] as the first two normal tabs,
+  the copy at the host's URL, the entry and the favourite unchanged before and
+  after undo; undo left three tabs and no closed-tab records.
+- Split hosts (normal and pinned): the overlay showed close and expand only.
+- Option-click (real event): the favourite and the lone pinned tab opened
+  [copy, target] at the top of the normal section with the right pane
+  selected; a normal tab got its right pane; a split pane sent the link to
+  the other pane.
+- Link menu (real menu): items read New Tab, New Window, Split View, Download
+  Linked File, ...; the item's routes matched Option-click for the favourite,
+  a normal tab and a split pane; a Peek's menu has no split item.
+- Two windows: both panes' containers stayed in window A, window B kept a
+  snapshot (an NSImageView, no split view or container). B's snapshot is the
+  one it took before the split formed (full-bleed host): a window already on
+  a snapshot does not refresh it on a later hand-off, as for any split formed
+  in another window.
+Captured: the Peek with three buttons, each split, each undo, the Peeks on
+split hosts with two buttons, window B. Not driven: a person's click on the
+button itself (`openPeekInSplitView` was called directly; the button's
+`onSplit` is the only caller), and the glide animation frame by frame.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask185HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/Browser/Window/BrowserWebView.swift b/Detour/Browser/Window/BrowserWebView.swift
+--- a/Detour/Browser/Window/BrowserWebView.swift
++++ b/Detour/Browser/Window/BrowserWebView.swift
+@@ -95,6 +95,9 @@
+ 
+         // --- Extension context menu items ---
+         appendExtensionMenuItems(to: menu, windowController: windowController)
++        #if DEBUG
++        Task185Hook.menuOpened?(menu, self)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     private func appendExtensionMenuItems(to menu: NSMenu, windowController: BrowserWindowController?) {
+diff --git a/Detour/App/Task185Harness.swift b/Detour/App/Task185Harness.swift
+new file mode 100644
+--- /dev/null
++++ b/Detour/App/Task185Harness.swift
+@@ -0,0 +1,438 @@
++// TEMP TASK-185 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++/// Lets the harness see the link menu WebKit is about to show.
++enum Task185Hook {
++    static var menuOpened: ((NSMenu, BrowserWebView) -> Void)?
++}
++
++extension AppDelegate {
++    func runTask185HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let base = ProcessInfo.processInfo.environment["TASK185_BASE"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var passes = 0, failures = 0
++        func check(_ name: String, _ ok: Bool, _ detail: @autoclosure () -> String = "") {
++            if ok { passes += 1 } else { failures += 1 }
++            log("\(ok ? "PASS" : "FAIL") \(name)\(detail().isEmpty ? "" : " — \(detail())")")
++        }
++        var clock: TimeInterval = 2.0
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) {
++            clock += dt
++            let timer = Timer(timeInterval: clock, repeats: false) { _ in block() }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        guard let window = wc.window else { return log("no window") }
++        let store = TabStore.shared
++        func url(_ path: String) -> URL { URL(string: "\(base)/\(path)")! }
++        var tabs: [String: BrowserTab] = [:]
++        var space: Space { wc.activeSpace! }
++
++        func shoot(_ name: String, _ w: NSWindow? = nil) {
++            log("SHOOT \(name) \((w ?? window).windowNumber)")
++        }
++        func name(_ tab: BrowserTab?) -> String {
++            guard let tab else { return "nil" }
++            return tabs.first { $0.value === tab }?.key ?? (tab.url?.lastPathComponent ?? "?")
++        }
++        func describeTabs(_ label: String) {
++            log("\(label): tabs=\(space.tabs.map { "\(name($0))\($0.splitGroupID.map { "[\($0.uuidString.prefix(4))]" } ?? "")" }) "
++                + "pinned=\(space.pinnedEntries.map { "\($0.pinnedTitle)\($0.splitGroupID.map { "[\($0.uuidString.prefix(4))]" } ?? "")" }) "
++                + "selected=\(name(wc.selectedTab)) closed=\(store.closedTabRecords(in: space).count)")
++        }
++        func isHostedInSplit(_ tab: BrowserTab, in w: NSWindow) -> Bool {
++            guard let container = tab.webViewContainer else { return false }
++            return container.superview is NSSplitView && container.window === w
++        }
++        func firstResponderIsInside(_ webView: WKWebView?) -> Bool {
++            guard let webView, let view = window.firstResponder as? NSView else { return false }
++            return view === webView || view.isDescendant(of: webView)
++        }
++        /// The centre of `#l` in window coordinates.
++        func linkPoint(in webView: WKWebView, _ done: @escaping (NSPoint?) -> Void) {
++            webView.evaluateJavaScript("(() => { const r = document.getElementById('l').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()") { result, error in
++                guard let xy = result as? [Double], xy.count == 2 else {
++                    log("linkPoint error \(String(describing: error))"); return done(nil)
++                }
++                let y = webView.isFlipped ? xy[1] : webView.bounds.height - xy[1]
++                done(webView.convert(NSPoint(x: xy[0], y: y), to: nil))
++            }
++        }
++        func postClick(at p: NSPoint, flags: NSEvent.ModifierFlags, right: Bool = false) {
++            let types: [NSEvent.EventType] = right ? [.rightMouseDown, .rightMouseUp] : [.leftMouseDown, .leftMouseUp]
++            for type in types {
++                let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: flags,
++                                           timestamp: ProcessInfo.processInfo.systemUptime,
++                                           windowNumber: window.windowNumber, context: nil,
++                                           eventNumber: 0, clickCount: 1,
++                                           pressure: (type == .leftMouseDown || type == .rightMouseDown) ? 1 : 0)!
++                NSApp.postEvent(e, atStart: false)
++            }
++        }
++        func activate() {
++            NSApp.activate(ignoringOtherApps: true)
++            window.makeKeyAndOrderFront(nil)
++        }
++
++        // MARK: Seed
++        at(0) {
++            activate()
++            for (key, path) in [("normal", "host.html"), ("pinned", "pinned.html"), ("fav", "fav.html"),
++                                ("splitA", "split-a.html"), ("splitB", "split-b.html"),
++                                ("psplitA", "psplit-a.html"), ("psplitB", "psplit-b.html")] {
++                tabs[key] = store.addTab(in: space, url: url(path))
++            }
++            log("seeded; screen check is done by the shell")
++        }
++        at(3.0) {
++            guard let profileID = space.profile?.id else { return log("no profile") }
++            store.pinTab(id: tabs["pinned"]!.id, in: space)
++            _ = store.moveTabToFavorites(id: tabs["fav"]!.id, from: space, profileID: profileID)
++            store.createSplit(draggedTabID: tabs["splitB"]!.id, targetTabID: tabs["splitA"]!.id, edge: .right, in: space)
++            store.createSplit(draggedTabID: tabs["psplitB"]!.id, targetTabID: tabs["psplitA"]!.id, edge: .right, in: space)
++            if let g = tabs["psplitA"]!.splitGroupID { store.pinSplitGroup(groupID: g, in: space) }
++            // Leftover tabs of a fresh profile (a New Tab) are closed so the list reads clearly.
++            for tab in space.tabs where !tabs.values.contains(where: { $0 === tab }) {
++                store.closeTab(id: tab.id, in: space, undoable: false)
++            }
++            store.undoManager.removeAllActions()
++            wc.selectTab(id: tabs["normal"]!.id)
++            describeTabs("arranged")
++        }
++
++        // MARK: 1. Peek on an ungrouped normal host
++        var oldPeekWebView: WKWebView?
++        at(2.0) {
++            activate()
++            wc.selectTab(id: tabs["normal"]!.id)
++            wc.showPeekOverlay(url: url("peek1.html"))
++        }
++        at(2.0) {
++            let peek = tabs["normal"]!.peekTab
++            oldPeekWebView = peek?.webView
++            check("normal host: peek presented", wc.peekOverlayView != nil && oldPeekWebView != nil)
++            check("normal host: split button shown", wc.peekOverlayView?.showsSplitButton == true)
++            // Navigate inside the peek so it has a back list.
++            oldPeekWebView?.load(URLRequest(url: url("peek2.html")))
++        }
++        at(2.0) {
++            check("normal host: peek can go back before hand-off", oldPeekWebView?.canGoBack == true,
++                  "url=\(oldPeekWebView?.url?.lastPathComponent ?? "nil")")
++            shoot("1-peek-normal-host")
++        }
++        at(1.0) {
++            log("openPeekInSplitView (normal host)")
++            wc.openPeekInSplitView()
++        }
++        at(1.5) {
++            let host = tabs["normal"]!
++            let group = store.splitGroup(containing: host.id, in: space)
++            let right = group?.members.last
++            tabs["normalRight"] = right
++            describeTabs("after peek→split (normal)")
++            check("normal host: split of host + new pane", group?.members.count == 2 && group?.members.first === host)
++            check("normal host: right pane adopts the very web view", right?.webView === oldPeekWebView && oldPeekWebView != nil)
++            check("normal host: right pane keeps back history", right?.webView?.canGoBack == true,
++                  "url=\(right?.webView?.url?.lastPathComponent ?? "nil") back=\(right?.webView?.backForwardList.backList.map { $0.url.lastPathComponent } ?? [])")
++            check("normal host: right pane selected", wc.selectedTabID == right?.id)
++            check("normal host: right pane first responder", firstResponderIsInside(right?.webView),
++                  "firstResponder=\(String(describing: window.firstResponder))")
++            check("normal host: peek cleared", wc.peekOverlayView == nil && host.peekTab == nil && host.peekURL == nil)
++            check("normal host: both panes hosted in the split view", right.map { isHostedInSplit($0, in: window) } == true && isHostedInSplit(host, in: window))
++            check("normal host: undo action name", store.undoManager.undoActionName == "Open in Split", store.undoManager.undoActionName)
++            shoot("2-split-normal-host")
++        }
++        at(1.5) {
++            store.undoManager.undo()
++        }
++        at(1.0) {
++            describeTabs("after undo (normal)")
++            let rightID = tabs["normalRight"]?.id
++            check("normal host undo: right pane removed", !space.tabs.contains { $0.id == rightID })
++            check("normal host undo: host ungrouped", tabs["normal"]!.splitGroupID == nil)
++            check("normal host undo: nothing archived", store.closedTabRecords(in: space).isEmpty)
++            shoot("3-undo-normal-host")
++        }
++
++        // MARK: 2. Peek on a pinned host and on a favourite host
++        func anchoredPeekLeg(_ key: String, label: String, number: Int) {
++            var entrySnapshot = ""
++            func entryState() -> String {
++                if let entry = space.pinnedEntries.first(where: { $0.tab === tabs[key] }) {
++                    return "entry id=\(entry.id) url=\(entry.pinnedURL.lastPathComponent) order=\(entry.sortOrder) folder=\(String(describing: entry.folderID)) group=\(String(describing: entry.splitGroupID)) tab=\(entry.tab === tabs[key])"
++                }
++                if let fav = space.profile?.favorites.first(where: { $0.tab === tabs[key] }) {
++                    return "favourite id=\(fav.id) url=\(fav.url.lastPathComponent) order=\(fav.sortOrder) tab=\(fav.tab === tabs[key]) count=\(space.profile!.favorites.count)"
++                }
++                return "missing"
++            }
++            at(2.0) {
++                activate()
++                wc.selectTab(id: tabs[key]!.id)
++                wc.showPeekOverlay(url: url("peek1.html"))
++            }
++            at(2.0) {
++                oldPeekWebView = tabs[key]!.peekTab?.webView
++                check("\(label) host: split button shown", wc.peekOverlayView?.showsSplitButton == true)
++                entrySnapshot = entryState()
++                log("\(label) before: \(entrySnapshot) pinnedCount=\(space.pinnedEntries.count)")
++                shoot("\(number)a-peek-\(label)-host")
++                wc.openPeekInSplitView()
++            }
++            at(1.5) {
++                let host = tabs[key]!
++                let pinnedCount = space.pinnedEntries.count
++                describeTabs("after peek→split (\(label))")
++                let left = space.tabs.first
++                let right = space.tabs.dropFirst().first
++                let group = right.flatMap { store.splitGroup(containing: $0.id, in: space) }
++                check("\(label) host: split at the top of the normal section", group?.members.map(\.id) == [left?.id, right?.id].compactMap { $0 })
++                check("\(label) host: left is a copy at the host's URL", left !== host && left?.url == host.url,
++                      "left=\(left?.url?.lastPathComponent ?? "nil") host=\(host.url?.lastPathComponent ?? "nil")")
++                check("\(label) host: right pane adopts the very web view", right?.webView === oldPeekWebView && oldPeekWebView != nil)
++                check("\(label) host: right pane selected", wc.selectedTabID == right?.id)
++                check("\(label) host: right pane first responder", firstResponderIsInside(right?.webView))
++                check("\(label) host: host not in the normal section", !space.tabs.contains { $0 === host })
++                check("\(label) host: host has no group", host.splitGroupID == nil)
++                check("\(label) host: entry unchanged", entryState() == entrySnapshot, entryState())
++                check("\(label) host: pinned count unchanged", space.pinnedEntries.count == pinnedCount)
++                check("\(label) host: hosted as a split", right.map { isHostedInSplit($0, in: window) } == true && left.map { isHostedInSplit($0, in: window) } == true)
++                shoot("\(number)b-split-\(label)-host")
++            }
++            at(2.0) {
++                log("undo name=\(store.undoManager.undoActionName)")
++                store.undoManager.undo()
++            }
++            at(1.0) {
++                describeTabs("after undo (\(label))")
++                check("\(label) host undo: both new tabs removed", space.tabs.count == 3, "count=\(space.tabs.count)")
++                check("\(label) host undo: nothing archived", store.closedTabRecords(in: space).isEmpty)
++                check("\(label) host undo: entry unchanged", entryState() == entrySnapshot, entryState())
++                shoot("\(number)c-undo-\(label)-host")
++            }
++        }
++        anchoredPeekLeg("pinned", label: "pinned", number: 4)
++        anchoredPeekLeg("fav", label: "favourite", number: 5)
++
++        // MARK: 3. No button on a split host (normal and pinned split)
++        for (key, label, number) in [("splitA", "normal-split", 6), ("psplitA", "pinned-split", 7)] {
++            at(2.0) {
++                activate()
++                wc.selectTab(id: tabs[key]!.id)
++                wc.showPeekOverlay(url: url("peek1.html"))
++            }
++            at(2.0) {
++                check("\(label) host: peek presented", wc.peekOverlayView != nil)
++                check("\(label) host: split button hidden", wc.peekOverlayView?.showsSplitButton == false)
++                shoot("\(number)-peek-\(label)-host")
++            }
++            at(1.0) { wc.closePeekOverlay() }
++        }
++
++        // MARK: 4. Option-click
++        // Real posted clicks with the Option flag on the page's link.
++        func optionClickLeg(_ key: String, label: String, expect: @escaping () -> Void) {
++            at(2.0) {
++                activate()
++                wc.selectTab(id: tabs[key]!.id)
++                describeTabs("before option-click (\(label))")
++            }
++            at(1.5) {
++                guard let webView = tabs[key]!.webView else { return log("\(label): no web view") }
++                linkPoint(in: webView) { p in
++                    guard let p else { return }
++                    log("option-click \(label) at \(p)")
++                    postClick(at: p, flags: .option)
++                }
++            }
++            at(2.0) { expect() }
++        }
++        optionClickLeg("fav", label: "favourite") {
++            describeTabs("after option-click (favourite)")
++            let fav = tabs["fav"]!
++            let left = space.tabs.first, right = space.tabs.dropFirst().first
++            check("option-click favourite: normal-section split", left?.splitGroupID != nil && left?.splitGroupID == right?.splitGroupID)
++            check("option-click favourite: left copy at the favourite's URL", left !== fav && left?.url == fav.url)
++            check("option-click favourite: right loads the link", right?.url?.lastPathComponent == "target.html",
++                  right?.url?.absoluteString ?? "nil")
++            check("option-click favourite: right pane selected", wc.selectedTabID == right?.id)
++            check("option-click favourite: favourite still a favourite", space.profile?.favorites.contains { $0.tab === fav } == true && fav.url?.lastPathComponent == "fav.html")
++            shoot("8-optionclick-favourite")
++        }
++        at(1.0) {
++            log("undo name=\(store.undoManager.undoActionName)")
++            store.undoManager.undo()
++        }
++        at(1.0) {
++            check("option-click favourite undo: back to three tabs, nothing archived",
++                  space.tabs.count == 3 && store.closedTabRecords(in: space).isEmpty)
++        }
++        optionClickLeg("pinned", label: "pinned") {
++            describeTabs("after option-click (pinned)")
++            let left = space.tabs.first, right = space.tabs.dropFirst().first
++            check("option-click lone pinned: normal-section split", left?.splitGroupID != nil && left?.splitGroupID == right?.splitGroupID
++                  && left?.url?.lastPathComponent == "pinned.html" && right?.url?.lastPathComponent == "target.html")
++            check("option-click lone pinned: pinned tab stayed home", tabs["pinned"]!.url?.lastPathComponent == "pinned.html")
++        }
++        at(1.0) { store.undoManager.undo() }
++        optionClickLeg("normal", label: "normal") {
++            describeTabs("after option-click (normal)")
++            let group = store.splitGroup(containing: tabs["normal"]!.id, in: space)
++            check("option-click normal (unchanged): host + new right pane", group?.members.count == 2 && group?.members.first === tabs["normal"]
++                  && group?.members.last?.url?.lastPathComponent == "target.html")
++        }
++        at(1.0) { store.undoManager.undo() }
++        optionClickLeg("splitA", label: "split pane") {
++            describeTabs("after option-click (split)")
++            check("option-click in a split (unchanged): other pane loads the link",
++                  tabs["splitB"]!.url?.lastPathComponent == "target.html" && space.tabs.count == 3)
++        }
++
++        // MARK: 5. The link menu
++        // A real right-click: WebKit builds the menu, `willOpenMenu` adds ours,
++        // the hook picks Open Link in Split View while the menu is up.
++        var menuLegResult: [String: Bool] = [:]
++        func menuLeg(_ key: String, label: String, expect: @escaping () -> Void) {
++            at(2.0) {
++                activate()
++                wc.selectTab(id: tabs[key]!.id)
++                menuLegResult[label] = false
++                Task185Hook.menuOpened = { menu, webView in
++                    Task185Hook.menuOpened = nil
++                    let titles = menu.items.map(\.title)
++                    log("menu (\(label)) items=\(titles)")
++                    guard let index = menu.items.firstIndex(where: { $0.title == "Open Link in Split View" }) else {
++                        check("menu \(label): has Open Link in Split View", false); return
++                    }
++                    let item = menu.items[index]
++                    let original = item.representedObject as? NSMenuItem
++                    check("menu \(label): has Open Link in Split View after New Window",
++                          index > 0 && menu.items[index - 1].title == "Open Link in New Window")
++                    check("menu \(label): action/target/representedObject",
++                          item.action == #selector(BrowserWindowController.contextMenuOpenInSplitView(_:))
++                          && item.target === wc && original?.identifier?.rawValue == "WKMenuItemIdentifierOpenLinkInNewWindow",
++                          "action=\(String(describing: item.action)) original=\(original?.identifier?.rawValue ?? "nil")")
++                    menuLegResult[label] = true
++                    let timer = Timer(timeInterval: 0.3, repeats: false) { _ in
++                        menu.performActionForItem(at: index)
++                        menu.cancelTracking()
++                        log("menu (\(label)) performed Open Link in Split View")
++                    }
++                    RunLoop.main.add(timer, forMode: .common)
++                }
++            }
++            at(1.5) {
++                guard let webView = tabs[key]!.webView else { return log("\(label): no web view") }
++                linkPoint(in: webView) { p in
++                    guard let p else { return }
++                    log("right-click \(label) at \(p)")
++                    postClick(at: p, flags: [], right: true)
++                }
++            }
++            at(3.0) {
++                if menuLegResult[label] != true { log("menu \(label): no menu appeared") }
++                Task185Hook.menuOpened = nil
++                expect()
++            }
++        }
++        menuLeg("fav", label: "favourite") {
++            describeTabs("after menu split (favourite)")
++            let left = space.tabs.first, right = space.tabs.dropFirst().first
++            check("menu favourite: normal-section split with the link on the right",
++                  left?.splitGroupID != nil && left?.splitGroupID == right?.splitGroupID
++                  && left?.url?.lastPathComponent == "fav.html" && right?.url?.lastPathComponent == "target.html",
++                  "left=\(left?.url?.lastPathComponent ?? "nil") right=\(right?.url?.lastPathComponent ?? "nil")")
++            check("menu favourite: right pane selected", wc.selectedTabID == right?.id)
++            shoot("9-menu-favourite")
++        }
++        at(1.0) { store.undoManager.undo() }
++        at(0.5) { tabs["splitB"]!.load(url("split-b.html")) }
++        menuLeg("normal", label: "normal") {
++            describeTabs("after menu split (normal)")
++            let group = store.splitGroup(containing: tabs["normal"]!.id, in: space)
++            check("menu normal: host + new right pane", group?.members.count == 2 && group?.members.first === tabs["normal"]
++                  && group?.members.last?.url?.lastPathComponent == "target.html")
++        }
++        at(1.0) { store.undoManager.undo() }
++        menuLeg("splitA", label: "split pane") {
++            describeTabs("after menu split (split)")
++            check("menu in a split: other pane loads the link", tabs["splitB"]!.url?.lastPathComponent == "target.html"
++                  && space.tabs.count == 3)
++        }
++        // In a Peek: no split item (synthetic menu through the same override).
++        at(2.0) {
++            wc.selectTab(id: tabs["normal"]!.id)
++            wc.showPeekOverlay(url: url("peek1.html"))
++        }
++        at(2.0) {
++            guard let peekWebView = tabs["normal"]!.peekTab?.webView as? BrowserWebView else { return log("no peek web view") }
++            let menu = NSMenu()
++            let original = NSMenuItem(title: "Open Link in New Window", action: nil, keyEquivalent: "")
++            original.identifier = NSUserInterfaceItemIdentifier("WKMenuItemIdentifierOpenLinkInNewWindow")
++            menu.addItem(original)
++            let event = NSEvent.mouseEvent(with: .rightMouseDown, location: NSPoint(x: 300, y: 300), modifierFlags: [],
++                                           timestamp: 0, windowNumber: window.windowNumber, context: nil,
++                                           eventNumber: 0, clickCount: 1, pressure: 1)!
++            peekWebView.willOpenMenu(menu, with: event)
++            log("peek menu items=\(menu.items.map(\.title))")
++            check("menu in a Peek: no split item", !menu.items.contains { $0.title == "Open Link in Split View" }
++                  && menu.items.contains { $0.title == "Open Link in New Tab" })
++            wc.closePeekOverlay()
++        }
++
++        // MARK: 6. A second window on the space must not steal the web view
++        var second: BrowserWindowController?
++        at(2.0) {
++            guard let appDelegate = NSApp.delegate as? AppDelegate else { return }
++            let b = appDelegate.createNewWindow(showing: space)
++            second = b
++            b.window?.setFrame(window.frame.offsetBy(dx: 60, dy: -60), display: true)
++            b.selectTab(id: tabs["normal"]!.id)
++            log("second window \(b.window?.windowNumber ?? 0) selected normal")
++        }
++        at(1.5) {
++            activate()   // window A takes the web view back on becoming key
++            wc.selectTab(id: tabs["normal"]!.id)
++            wc.showPeekOverlay(url: url("peek1.html"))
++        }
++        at(2.0) {
++            oldPeekWebView = tabs["normal"]!.peekTab?.webView
++            wc.openPeekInSplitView()
++        }
++        at(1.5) {
++            guard let b = second, let bWindow = b.window else { return }
++            let host = tabs["normal"]!
++            let right = store.splitGroup(containing: host.id, in: space)?.members.last
++            check("two windows: right pane adopts the peek web view", right?.webView === oldPeekWebView)
++            check("two windows: both panes live in window A", right?.webViewContainer?.window === window && host.webViewContainer?.window === window,
++                  "right in \(right?.webViewContainer?.window?.windowNumber ?? -1), host in \(host.webViewContainer?.window?.windowNumber ?? -1)")
++            let bShowsSnapshot = b.contentContainerView.subviews.contains { $0 is NSImageView }
++            let bHostsLive = b.contentContainerView.subviews.contains { $0 is NSSplitView || $0 is WebViewContainerView }
++            check("two windows: window B shows a snapshot, not the live view", bShowsSnapshot && !bHostsLive,
++                  "B subviews=\(b.contentContainerView.subviews.map { String(describing: type(of: $0)) })")
++            shoot("10-two-windows-A")
++            shoot("10-two-windows-B", bWindow)
++        }
++        at(1.5) {
++            store.undoManager.undo()
++            second?.window?.close()
++            second = nil
++        }
++        at(1.5) {
++            describeTabs("final")
++            log("RESULT passes=\(passes) failures=\(failures)")
++            log("done")
++        }
++    }
++}
++#endif

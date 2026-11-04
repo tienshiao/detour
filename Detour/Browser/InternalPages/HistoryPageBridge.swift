@@ -64,7 +64,7 @@ enum HistoryPageBridge {
     /// into it — can confirm on the user's behalf or skip the question. Calls
     /// back with false when there is no window to ask in. A test seam, like
     /// `database`: production never assigns it.
-    static var confirmClear: (BrowserTab, ClearRange, @escaping (Bool) -> Void) -> Void = presentClearConfirmation
+    static var confirmClear: @MainActor (BrowserTab, ClearRange, @escaping (Bool) -> Void) -> Void = presentClearConfirmation
 
     /// The history database the page reads, as a test seam: the bridge is
     /// reached through a real web view, so an integration test has no call site
@@ -82,24 +82,31 @@ enum HistoryPageBridge {
 
     /// The same rule for a caller that holds the profile rather than a tab of
     /// it: the `chrome.history` extension API, whose handler belongs to one
-    /// profile (TASK-138). One definition, so "this profile's history" cannot
-    /// mean one thing on the History page and another to an extension. Nil for
-    /// no profile, the Private profile and a deleted one; an empty list for a
-    /// profile no space uses.
+    /// profile (TASK-138), and the command palette (TASK-209,
+    /// `PaletteTabScope.historySpaceIDs`). One definition, so "this profile's
+    /// history" cannot mean one thing on the History page, another in the
+    /// palette and a third to an extension. Nil for
+    /// no profile, the Private profile and a deleted one. Never empty
+    /// otherwise: the profile's Quick Detour scope is always in it
+    /// (TASK-193.1), so a profile no space uses still reads those visits.
     static func scope(forProfile profile: Profile?, in store: TabStore = .shared) -> [String]? {
         guard let profile, !profile.isIncognito, !profile.isDeleted else { return nil }
+        // Its Quick Detour visits too (TASK-193.1): filed under a scope of the
+        // profile's that is no space's, so searchable like any visit.
         return store.spaces.filter { $0.profileID == profile.id }.map { $0.id.uuidString }
+            + [QuickDetour.historySpaceIDString(forProfileID: profile.id)]
     }
 
     static func handle(method: String, params: [String: Any], from tab: BrowserTab,
                        database: HistoryDatabase = HistoryPageBridge.database,
-                       reply: @escaping (Any?, String?) -> Void) {
+                       reply: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         switch method {
         case "history.query":
             guard let spaceIDs = scope(for: tab) else {
                 reply(["entries": [], "incognito": tab.owningProfile?.isIncognito == true], nil)
                 return
             }
+            let profileID = tab.owningProfile?.id
             let search = (params["search"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let limit = min(max((params["limit"] as? NSNumber)?.intValue ?? 100, 1), maxPageSize)
             let cursor = cursor(from: params["cursor"])
@@ -110,6 +117,8 @@ enum HistoryPageBridge {
             // the whole listing agrees about where the period begins and ends
             // however long it stays open.
             guard let resolved = resolvedWindow(params) else { return reply(nil, "malformed") }
+            // The read runs off the main thread; the reply, a dictionary of
+            // non-Sendable values, is built back on it.
             DispatchQueue.global(qos: .userInitiated).async {
                 // One extra row tells the page whether there is more to load.
                 let rows = search.isEmpty
@@ -117,14 +126,17 @@ enum HistoryPageBridge {
                                       before: cursor, limit: limit + 1)
                     : database.searchVisits(query: search, spaceIDs: spaceIDs, from: resolved.from,
                                             until: resolved.until, before: cursor, limit: limit + 1)
-                let page = Array(rows.prefix(limit))
-                var result: [String: Any] = ["entries": page.map(payload(for:)), "incognito": false]
-                // Absent for all of history: there is no window to page inside.
-                if let window = resolved.window { result["window"] = window.bridgeValue }
-                if rows.count > limit, let last = page.last {
-                    result["nextCursor"] = ["time": last.visitTime, "id": last.visitID]
+                DispatchQueue.main.async {
+                    let page = Array(rows.prefix(limit))
+                    var result: [String: Any] = ["entries": page.map { payload(for: $0, profileID: profileID) },
+                                                  "incognito": false]
+                    // Absent for all of history: there is no window to page inside.
+                    if let window = resolved.window { result["window"] = window.bridgeValue }
+                    if rows.count > limit, let last = page.last {
+                        result["nextCursor"] = ["time": last.visitTime, "id": last.visitID]
+                    }
+                    reply(result, nil)
                 }
-                DispatchQueue.main.async { reply(result, nil) }
             }
         case "history.delete":
             guard let spaceIDs = scope(for: tab) else { return reply(nil, "unavailable") }
@@ -256,7 +268,16 @@ enum HistoryPageBridge {
         return HistoryCursor(visitTime: time, visitID: id)
     }
 
-    private static func payload(for entry: HistoryVisitEntry) -> [String: Any] {
-        ["id": entry.visitID, "url": entry.url, "title": entry.title, "time": entry.visitTime]
+    /// One row as the page receives it. `quickDetour` is set on a visit filed
+    /// under `profileID`'s Quick Detour scope (TASK-193.1), which the page
+    /// labels; it is absent otherwise.
+    static func payload(for entry: HistoryVisitEntry, profileID: UUID?) -> [String: Any] {
+        var payload: [String: Any] = ["id": entry.visitID, "url": entry.url, "title": entry.title,
+                                      "time": entry.visitTime]
+        if let profileID, let spaceID = entry.spaceID,
+           QuickDetour.isHistorySpaceID(spaceID, ofProfileID: profileID) {
+            payload["quickDetour"] = true
+        }
+        return payload
     }
 }

@@ -7,6 +7,17 @@ protocol FavoritesBarDelegate: AnyObject {
     func favoritesBar(_ bar: FavoritesBarView, didDoubleClickFavoriteAt index: Int)
     func favoritesBar(_ bar: FavoritesBarView, didReorderFavoriteFrom sourceIndex: Int, to destinationIndex: Int)
     func favoritesBar(_ bar: FavoritesBarView, didRemoveFavoriteAt index: Int)
+    /// The pointer entered or left `tile`, or moved onto or off its Peek
+    /// badge (the sidebar's hover card, TASK-190 and TASK-229).
+    func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool, overPeekBadge: Bool)
+    /// Opt-Cmd-click on a tile (TASK-193.5): true when a Quick Detour copy
+    /// was opened, so the click does nothing else.
+    func favoritesBar(_ bar: FavoritesBarView, didQuickDetourClickFavoriteAt index: Int) -> Bool
+}
+
+extension FavoritesBarDelegate {
+    func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool, overPeekBadge: Bool) {}
+    func favoritesBar(_ bar: FavoritesBarView, didQuickDetourClickFavoriteAt index: Int) -> Bool { false }
 }
 
 class FavoritesBarView: NSView, NSDraggingSource {
@@ -16,6 +27,15 @@ class FavoritesBarView: NSView, NSDraggingSource {
     /// Identity of the owning sidebar, stamped into drag payloads so drops from
     /// another window's bars are rejected. Set by TabSidebarViewController.
     var sidebarID: UUID?
+
+    /// The profile the favourites belong to, whose per-site dev-mode override
+    /// the tiles read (TASK-186.5). Set by TabSidebarViewController.
+    var profileID: UUID? {
+        didSet {
+            guard profileID != oldValue else { return }
+            for tile in tileViews { tile.profileID = profileID }
+        }
+    }
 
     private static let tileSize: CGFloat = 40
     private static let iconSize: CGFloat = 16
@@ -65,6 +85,14 @@ class FavoritesBarView: NSView, NSDraggingSource {
 
     var isEmpty: Bool { favorites.isEmpty }
 
+    /// Whether `favorite`'s tile shows as the selected tab. A dormant
+    /// favourite has no tab, so it is never selected — comparing its nil tab
+    /// ID with a nil selection would otherwise read as a match.
+    static func isSelected(_ favorite: Favorite, selectedTabID: UUID?) -> Bool {
+        guard let selectedTabID else { return false }
+        return favorite.tab?.id == selectedTabID
+    }
+
     func update(favorites: [Favorite], selectedTabID: UUID? = nil, animated: Bool = true) {
         let oldFavorites = self.favorites
         self.favorites = favorites
@@ -103,14 +131,15 @@ class FavoritesBarView: NSView, NSDraggingSource {
         for (index, fav) in favorites.enumerated() {
             if let existing = oldTilesByID[fav.id] {
                 existing.updateIndex(index)
-                existing.isSelected = fav.tab?.id == selectedTabID
+                existing.isSelected = Self.isSelected(fav, selectedTabID: selectedTabID)
                 existing.refreshFavicon()
                 existing.refreshPeekBadge()
+                existing.refreshDevMode()
                 newTiles.append(existing)
             } else {
-                let tile = FavoriteTileView(favorite: fav, index: index)
+                let tile = FavoriteTileView(favorite: fav, index: index, profileID: profileID)
                 tile.selectionColor = selectionColor
-                tile.isSelected = fav.tab?.id == selectedTabID
+                tile.isSelected = Self.isSelected(fav, selectedTabID: selectedTabID)
                 if index < targetFrames.count {
                     if let origin = animOrigin {
                         // Start where the drag was released
@@ -154,7 +183,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
             }
 
             superview?.layoutSubtreeIfNeeded()
-        } completionHandler: { [weak self] in
+        } onMain: { [weak self] in
             self?.isAnimatingTileUpdate = false
             for id in removedIDs {
                 oldTilesByID[id]?.removeFromSuperview()
@@ -167,9 +196,9 @@ class FavoritesBarView: NSView, NSDraggingSource {
         tileViews.removeAll()
 
         for (index, fav) in favorites.enumerated() {
-            let tile = FavoriteTileView(favorite: fav, index: index)
+            let tile = FavoriteTileView(favorite: fav, index: index, profileID: profileID)
             tile.selectionColor = selectionColor
-            tile.isSelected = fav.tab?.id == selectedTabID
+            tile.isSelected = Self.isSelected(fav, selectedTabID: selectedTabID)
             addSubview(tile)
             tileViews.append(tile)
         }
@@ -181,12 +210,18 @@ class FavoritesBarView: NSView, NSDraggingSource {
         needsLayout = true
     }
 
+    /// Re-reads every tile's dev-mode state: a site's override changed.
+    func refreshDevMode() {
+        tileViews.forEach { $0.refreshDevMode() }
+    }
+
     /// Refreshes the favicon and peek badge on the tile backed by `tabID`, if
     /// any. Called when a Peek opens, navigates, or closes on a favourite host.
     func refreshTile(forTabID tabID: UUID) {
         for tile in tileViews where tile.favorite.tab?.id == tabID {
             tile.refreshFavicon()
             tile.refreshPeekBadge()
+            tile.refreshDevMode()
         }
     }
 
@@ -198,7 +233,7 @@ class FavoritesBarView: NSView, NSDraggingSource {
     func updateSelection(selectedTabID: UUID?) {
         self.selectedFavoriteID = selectedTabID
         for tile in tileViews {
-            tile.isSelected = tile.favorite.tab?.id == selectedTabID
+            tile.isSelected = Self.isSelected(tile.favorite, selectedTabID: selectedTabID)
         }
     }
 
@@ -528,8 +563,14 @@ class FavoriteTileView: NSView {
     let peekFaviconImageView = NSImageView()
     private var peekSubscription: AnyCancellable?
     private var faviconSubscriptions = Set<AnyCancellable>()
+    /// Dev mode's hazard border (TASK-186.1), shown only while the tile's tab
+    /// is the selected tab (TASK-197): a tile has no title, so no host line.
+    private let devModeBorder = HazardBorderView()
+    private var devModeSubscription: AnyCancellable?
     private var trackingArea: NSTrackingArea?
     private var isHovering = false
+    /// Whether the pointer is over the Peek badge (TASK-229).
+    private var isHoveringPeekBadge = false
 
     private static let restingColor = NSColor.labelColor.withAlphaComponent(0.04)
     private static let hoverColor = UIConstants.hoverBackgroundColor
@@ -537,15 +578,23 @@ class FavoriteTileView: NSView {
     private static let peekBadgeIconSize: CGFloat = 10
     private static let peekBadgeInset: CGFloat = 2
 
-    var isSelected = false { didSet { updateBackground() } }
+    var isSelected = false {
+        didSet {
+            updateBackground()
+            if isSelected != oldValue { applyDevMode() }
+        }
+    }
     var selectionColor: NSColor? { didSet { updateBackground() } }
+    /// The bar's profile, for dev mode's per-site override.
+    var profileID: UUID? { didSet { applyDevMode() } }
 
     // Prevent window drag when clicking/dragging on tiles
     override var mouseDownCanMoveWindow: Bool { false }
 
-    init(favorite: Favorite, index: Int) {
+    init(favorite: Favorite, index: Int, profileID: UUID? = nil) {
         self.favorite = favorite
         self.index = index
+        self.profileID = profileID
         super.init(frame: .zero)
         setup()
     }
@@ -558,6 +607,11 @@ class FavoriteTileView: NSView {
         wantsLayer = true
         layer?.cornerRadius = UIConstants.defaultCornerRadius
         updateBackground()
+
+        devModeBorder.frame = bounds
+        devModeBorder.autoresizingMask = [.width, .height]
+        devModeBorder.isHidden = true
+        addSubview(devModeBorder)
 
         imageView.imageScaling = .scaleProportionallyUpOrDown
         imageView.translatesAutoresizingMaskIntoConstraints = false
@@ -573,6 +627,26 @@ class FavoriteTileView: NSView {
         refreshFavicon()
         setupPeekBadge()
         refreshPeekBadge()
+        refreshDevMode()
+    }
+
+    var showsDevModeBorder: Bool { !devModeBorder.isHidden }
+
+    /// Syncs the hazard border with the favourite's dev-mode state — the live
+    /// tab's page, else the favourite's URL — and rebinds to the live tab's
+    /// URL so the border follows navigation. Cheap and idempotent: call it
+    /// whenever the tile is reused, like `refreshFavicon`.
+    func refreshDevMode() {
+        devModeSubscription = favorite.tab?.$url
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.applyDevMode() }
+        applyDevMode()
+    }
+
+    private func applyDevMode() {
+        devModeBorder.isHidden = !DevMode.rowMarking(for: favorite.devModeURL, profileID: profileID)
+            .display(isSelected: isSelected).showsMainBorder
     }
 
     /// Syncs the main favicon with the favourite and rebinds the two sources
@@ -607,6 +681,13 @@ class FavoriteTileView: NSView {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.applyFavicon() }
             .store(in: &faviconSubscriptions)
+    }
+
+    /// Where the pointer counts as over the Peek badge (TASK-229): the chip
+    /// and its inset to the tile's top and trailing edges.
+    static func peekBadgeHoverRect(in bounds: NSRect) -> NSRect {
+        let side = peekBadgeInset + peekBadgeSize
+        return NSRect(x: bounds.maxX - side, y: bounds.maxY - side, width: side, height: side)
     }
 
     private func setupPeekBadge() {
@@ -650,7 +731,11 @@ class FavoriteTileView: NSView {
     private func applyPeekBadge() {
         let image = favorite.tab?.displayPeekFavicon
         peekFaviconImageView.image = image
+        let changed = peekBadgeView.isHidden != (image == nil)
         peekBadgeView.isHidden = image == nil
+        // A badge appearing under the pointer, or going from under it, moves
+        // the hover card between the tile and the Peek.
+        if changed, isHovering { recheckHover() }
     }
 
     /// Subscribes to the backing tab's `$peekFavicon`, which carries both the
@@ -707,21 +792,62 @@ class FavoriteTileView: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingArea { removeTrackingArea(trackingArea) }
-        trackingArea = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self, userInfo: nil)
+        // .mouseMoved so the hover card can follow the pointer onto the Peek badge.
+        trackingArea = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp],
+                                      owner: self, userInfo: nil)
         addTrackingArea(trackingArea!)
     }
 
     override func mouseEntered(with event: NSEvent) {
-        isHovering = true
-        updateBackground()
+        setHovering(true, overPeekBadge: isOverPeekBadge(at: convert(event.locationInWindow, from: nil)))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard isHovering else { return }
+        setHovering(true, overPeekBadge: isOverPeekBadge(at: convert(event.locationInWindow, from: nil)))
     }
 
     override func mouseExited(with event: NSEvent) {
-        isHovering = false
-        updateBackground()
+        setHovering(false, overPeekBadge: false)
+    }
+
+    /// A tile removed from the bar sends no exit.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil { setHovering(false, overPeekBadge: false) }
+    }
+
+    private func isOverPeekBadge(at point: NSPoint) -> Bool {
+        !peekBadgeView.isHidden && Self.peekBadgeHoverRect(in: bounds).contains(point)
+    }
+
+    /// Re-evaluates the badge hover from the current mouse position.
+    private func recheckHover() {
+        guard let window else { return }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        let inside = bounds.contains(point)
+        setHovering(inside, overPeekBadge: inside && isOverPeekBadge(at: point))
+    }
+
+    private func setHovering(_ hovering: Bool, overPeekBadge: Bool) {
+        guard hovering != isHovering || overPeekBadge != isHoveringPeekBadge else { return }
+        if hovering != isHovering {
+            isHovering = hovering
+            updateBackground()
+        }
+        isHoveringPeekBadge = overPeekBadge
+        if let bar = superview as? FavoritesBarView {
+            bar.delegate?.favoritesBar(bar, tile: self, hoverChanged: hovering, overPeekBadge: overPeekBadge)
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
+        if QuickDetour.isQuickDetourClick(event.modifierFlags,
+                                          enabled: QuickDetourSettings.shared.isOptionCommandClickEnabled),
+           let bar = superview as? FavoritesBarView,
+           bar.delegate?.favoritesBar(bar, didQuickDetourClickFavoriteAt: index) == true {
+            return
+        }
         if event.clickCount == 2 {
             if let bar = superview as? FavoritesBarView {
                 bar.delegate?.favoritesBar(bar, didDoubleClickFavoriteAt: index)

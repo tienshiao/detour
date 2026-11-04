@@ -1,6 +1,6 @@
 import AppKit
 
-class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataSource, NSTableViewDelegate {
     private var tableView: NSTableView!
     private var nameField: NSTextField!
     private var emojiButton: NSButton!
@@ -18,6 +18,8 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
     }
 
     private var selectedIndex: Int = 0
+    /// The space the detail column last showed: another one scrolls it to the top.
+    private var shownSpaceID: UUID?
 
     private var selectedSpace: Space? {
         let list = spaces
@@ -25,32 +27,27 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
         return list[selectedIndex]
     }
 
-    override func loadView() {
-        preferredContentSize = NSSize(width: 740, height: 400)
-        let container = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
-        self.view = container
+    override var paneDescription: String? {
+        "Spaces are workspaces that group your tabs together. Each Space uses a Profile for its cookies, history, and extensions."
+    }
 
-        let margin: CGFloat = 20
-        let spacing: CGFloat = 12
+    override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }
+    override var scrollsBodyAsWhole: Bool { false }
 
-        // Description label
-        let descLabel = NSTextField(wrappingLabelWithString:
-            "Spaces are workspaces that group your tabs together. Each Space uses a Profile for its cookies, history, and extensions.")
-        descLabel.font = .systemFont(ofSize: 12)
-        descLabel.textColor = .secondaryLabelColor
-        descLabel.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(descLabel)
+    /// Tall enough to show every space without scrolling the list.
+    override func idealBodyHeight(fittingHeight: CGFloat) -> CGFloat {
+        let rows = tableView.allRowsHeight
+        return max(fittingHeight, rows + SettingsMetrics.listBarHeight)
+    }
+
+    override func makeBody() -> NSView {
+        let container = NSView()
 
         // Left side: list container
-        let listContainer = NSView()
-        listContainer.translatesAutoresizingMaskIntoConstraints = false
-        listContainer.wantsLayer = true
-        listContainer.layer?.borderWidth = 1
-        listContainer.layer?.borderColor = NSColor.separatorColor.cgColor
-        listContainer.layer?.cornerRadius = 4
+        let listContainer = SettingsListContainerView()
         container.addSubview(listContainer)
 
-        let scrollView = NSScrollView()
+        let scrollView = SettingsColumnScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
@@ -58,7 +55,7 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
 
         tableView = NSTableView()
         tableView.headerView = nil
-        tableView.rowHeight = 28
+        tableView.rowHeight = SettingsMetrics.listRowHeight
         tableView.style = .plain
         tableView.backgroundColor = .clear
         tableView.selectionHighlightStyle = .regular
@@ -78,7 +75,7 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
         listContainer.addSubview(separator)
 
         // Toolbar buttons
-        let buttonSize: CGFloat = 24
+        let buttonSize = SettingsMetrics.listButtonSize
 
         addButton = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "Add")!,
                              target: self, action: #selector(addSpaceClicked))
@@ -107,7 +104,7 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
         nameField.placeholderString = "Space name"
         nameField.font = .systemFont(ofSize: 13)
         nameField.translatesAutoresizingMaskIntoConstraints = false
-        nameField.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        nameField.widthAnchor.constraint(equalToConstant: SettingsMetrics.fieldWidth).isActive = true
         nameField.target = self
         nameField.action = #selector(nameChanged)
 
@@ -116,11 +113,14 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
         emojiButton.font = .systemFont(ofSize: 20)
         emojiButton.translatesAutoresizingMaskIntoConstraints = false
 
-        // Profile dropdown
+        // Profile dropdown: as wide as its longest profile name, but never
+        // wider than the name field; a longer name truncates (defect 12).
         profilePopUp = NSPopUpButton()
         profilePopUp.translatesAutoresizingMaskIntoConstraints = false
         profilePopUp.target = self
         profilePopUp.action = #selector(profileChanged)
+        profilePopUp.widthAnchor.constraint(lessThanOrEqualToConstant: SettingsMetrics.fieldWidth).isActive = true
+        profilePopUp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         // Color well
         colorWell = NSColorWell()
@@ -136,35 +136,31 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
             [makeLabel("Color"), colorWell],            // row 3
         ])
         gridView.translatesAutoresizingMaskIntoConstraints = false
-        gridView.rowSpacing = spacing
-        gridView.columnSpacing = 8
+        gridView.rowSpacing = SettingsMetrics.rowGap
+        gridView.columnSpacing = SettingsMetrics.labelToControl
         gridView.column(at: 0).xPlacement = .trailing
+        gridView.column(at: 0).width = SettingsMetrics.labelColumnWidth
         gridView.column(at: 1).xPlacement = .leading
+        // Labels sit on their control's text baseline (defect 6). The colour
+        // well has no text, so its label is centred on it instead.
+        gridView.rowAlignment = .firstBaseline
+        gridView.row(at: 3).rowAlignment = .none
+        gridView.row(at: 3).yPlacement = .center
 
-        // Wrap grid in a flipped scroll view
-        let rightScrollView = NSScrollView()
-        rightScrollView.hasVerticalScroller = true
-        rightScrollView.borderType = .noBorder
-        rightScrollView.drawsBackground = false
-        rightScrollView.translatesAutoresizingMaskIntoConstraints = false
+        // The grid scrolls on its own in a window too short for it (TASK-211).
+        let detailDocument = NSView()
+        detailDocument.addSubview(gridView)
+        let detailScroll = makeColumnScrollView(document: detailDocument,
+                                                estimatedWidth: SettingsMetrics.detailColumnWidth)
+        container.addSubview(detailScroll)
 
-        let clipView = FlippedClipView()
-        clipView.drawsBackground = false
-        rightScrollView.contentView = clipView
-        rightScrollView.documentView = gridView
-
-        container.addSubview(rightScrollView)
-
-        // Layout
+        // Layout: the list and the detail column fill the body's height; the
+        // grid starts level with the list's top (defect 11).
         NSLayoutConstraint.activate([
-            descLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: margin),
-            descLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
-            descLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
-
-            listContainer.topAnchor.constraint(equalTo: descLabel.bottomAnchor, constant: spacing),
-            listContainer.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
-            listContainer.widthAnchor.constraint(equalToConstant: 220),
-            listContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -margin),
+            listContainer.topAnchor.constraint(equalTo: container.topAnchor),
+            listContainer.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            listContainer.widthAnchor.constraint(equalToConstant: SettingsMetrics.listWidth),
+            listContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
             scrollView.topAnchor.constraint(equalTo: listContainer.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor),
@@ -178,16 +174,17 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
             buttonStack.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor, constant: 4),
             buttonStack.bottomAnchor.constraint(equalTo: listContainer.bottomAnchor, constant: -2),
 
-            rightScrollView.topAnchor.constraint(equalTo: listContainer.topAnchor),
-            rightScrollView.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: margin),
-            rightScrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
-            rightScrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -margin),
+            detailScroll.topAnchor.constraint(equalTo: container.topAnchor),
+            detailScroll.leadingAnchor.constraint(equalTo: listContainer.trailingAnchor, constant: SettingsMetrics.sectionGap),
+            detailScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            detailScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
-            gridView.topAnchor.constraint(equalTo: clipView.topAnchor, constant: 8),
-            gridView.leadingAnchor.constraint(equalTo: clipView.leadingAnchor),
-            gridView.trailingAnchor.constraint(lessThanOrEqualTo: clipView.trailingAnchor),
-
+            gridView.topAnchor.constraint(equalTo: detailDocument.topAnchor),
+            gridView.leadingAnchor.constraint(equalTo: detailDocument.leadingAnchor),
+            gridView.trailingAnchor.constraint(lessThanOrEqualTo: detailDocument.trailingAnchor),
+            gridView.bottomAnchor.constraint(equalTo: detailDocument.bottomAnchor),
         ])
+        return container
     }
 
     override func viewWillAppear() {
@@ -200,6 +197,19 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
         }
         updateRightPane()
         updateButtonStates()
+        scrollToSelection()
+    }
+
+    override func paneDidFit() {
+        super.paneDidFit()
+        scrollToSelection()
+    }
+
+    /// Keeps the selected space in view (defect 13): the sidebar's edit-space
+    /// action can open the pane on a space far down a long list.
+    private func scrollToSelection() {
+        guard selectedIndex >= 0, selectedIndex < tableView.numberOfRows else { return }
+        tableView.scrollRowToVisible(selectedIndex)
     }
 
     /// Select a space by ID (used when opening from sidebar).
@@ -211,6 +221,7 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
                 tableView.selectRowIndexes(IndexSet(integer: selectedIndex), byExtendingSelection: false)
                 updateRightPane()
                 updateButtonStates()
+                scrollToSelection()
             }
         }
     }
@@ -237,6 +248,12 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
 
     private func updateRightPane() {
         guard let space = selectedSpace else { return }
+        // Another space (picked, added, deleted, or selected from outside)
+        // shows its details from the top.
+        if space.id != shownSpaceID {
+            shownSpaceID = space.id
+            scrollColumnsToTop()
+        }
         nameField.stringValue = space.name
         emojiButton.title = space.emoji
         colorWell.color = NSColor(hex: space.colorHex) ?? .controlAccentColor
@@ -326,16 +343,26 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
         tableView.selectRowIndexes(IndexSet(integer: selectedIndex), byExtendingSelection: false)
         updateRightPane()
         updateButtonStates()
+        contentHeightDidChange()
+        scrollToSelection()
     }
 
     @objc private func deleteSpaceClicked() {
         guard let space = selectedSpace, spaces.count > 1 else { return }
-        TabStore.shared.deleteSpace(id: space.id)
+        switch TabStore.shared.deleteSpace(id: space.id) {
+        case .deleted: break
+        case .notDeleted: return
+        case .blockedByLinkRoutes(let references):
+            SpaceDeletionBlockedAlert.run(spaceName: space.name, spaceID: space.id, references: references)
+            return
+        }
         selectedIndex = max(0, selectedIndex - 1)
         tableView.reloadData()
         tableView.selectRowIndexes(IndexSet(integer: selectedIndex), byExtendingSelection: false)
         updateRightPane()
         updateButtonStates()
+        contentHeightDidChange()
+        scrollToSelection()
     }
 
     // MARK: - NSTableViewDataSource
@@ -407,13 +434,19 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
             emojiLabel.translatesAutoresizingMaskIntoConstraints = false
             emojiLabel.tag = 1
             emojiLabel.setContentHuggingPriority(.required, for: .horizontal)
+            emojiLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
             cell.addSubview(emojiLabel)
 
+            // The space name gives way first and truncates (defect 7); the
+            // profile name keeps its width up to 40% of the row, then
+            // truncates too, so both stay readable.
             let nameLabel = NSTextField(labelWithString: "")
             nameLabel.font = .systemFont(ofSize: 13)
             nameLabel.translatesAutoresizingMaskIntoConstraints = false
             nameLabel.tag = 2
             nameLabel.lineBreakMode = .byTruncatingTail
+            nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             cell.addSubview(nameLabel)
 
             let profileLabel = NSTextField(labelWithString: "")
@@ -421,17 +454,20 @@ class SpacesSettingsViewController: NSViewController, NSTableViewDataSource, NST
             profileLabel.textColor = .secondaryLabelColor
             profileLabel.translatesAutoresizingMaskIntoConstraints = false
             profileLabel.tag = 3
+            profileLabel.lineBreakMode = .byTruncatingTail
             profileLabel.setContentHuggingPriority(.required, for: .horizontal)
+            profileLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
             cell.addSubview(profileLabel)
 
             NSLayoutConstraint.activate([
                 emojiLabel.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
                 emojiLabel.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
                 nameLabel.leadingAnchor.constraint(equalTo: emojiLabel.trailingAnchor, constant: 4),
-                nameLabel.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                nameLabel.firstBaselineAnchor.constraint(equalTo: emojiLabel.firstBaselineAnchor),
                 profileLabel.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
-                profileLabel.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: profileLabel.leadingAnchor, constant: -4),
+                profileLabel.firstBaselineAnchor.constraint(equalTo: emojiLabel.firstBaselineAnchor),
+                profileLabel.widthAnchor.constraint(lessThanOrEqualTo: cell.widthAnchor, multiplier: 0.4),
+                nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: profileLabel.leadingAnchor, constant: -6),
             ])
         }
 

@@ -146,7 +146,7 @@ class FolderCellView: NSTableCellView, NSTextFieldDelegate {
             ctx.duration = 0.4
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             hoverBackground.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self else { return }
             if !self.isHovered {
                 self.hoverBackground.isHidden = true

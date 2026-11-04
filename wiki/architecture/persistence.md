@@ -4,7 +4,7 @@ title: Persistence
 description: What Detour saves, where and when — the two databases, the debounced one-transaction session save, its write order and what it does when it cannot be written, session restore, interaction state, and the DETOUR_DATA_DIR switch.
 tags: [architecture, storage, session, restore]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:36:35Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-29T04:30:00Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -57,6 +57,9 @@ sources:
   - id: repair-tests
     resource: ../../DetourTests/SessionSnapshotRepairTests.swift
     title: SessionSnapshotRepairTests.swift
+  - id: task-227
+    resource: backlog:TASK-227
+    title: YouTube tabs come back from a relaunch titled with their URL
 ---
 
 # Summary
@@ -93,6 +96,16 @@ Website data (cookies, local storage) is WebKit's, keyed by profile; see
 one on the main queue. It is called by every structural mutation, by a tab's
 `url` or `favicon` changing, by `sleepStaleTabs`, by a window switching
 space, and by Peek state changes.
+
+A tab's `title` changing schedules a save too, through
+`scheduleSaveUnlessPending(after:)`: 5 s later (`titleSaveDelay`), and not
+at all when a save is already pending, which then writes it. It never
+cancels a pending save, because pages rewrite their titles on timers (unread
+counters, flashing notifications), and a change that repeats faster than
+the delay would otherwise hold every session save off. Before TASK-227 a
+title change saved nothing: a title that settled after the last URL or
+favicon change reached the database only with an unrelated save or the save
+at quit, which a crash or a kill never runs.[^task-227]
 
 ## `saveNow()` write order
 
@@ -397,3 +410,4 @@ it. See [history database](./history-database.md).
 [^task-36]: Stop the test host writing WebKit data into the production app's WebKit directory
 [^task-149]: One session save is one transaction
 [^task-154]: A session save that fails is handled, not only logged
+[^task-227]: YouTube tabs come back from a relaunch titled with their URL

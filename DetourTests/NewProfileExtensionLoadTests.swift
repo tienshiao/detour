@@ -12,15 +12,14 @@ import GRDB
 /// The whole suite runs with `loadsExtensionsIntoAddedProfiles` off
 /// (`TestEnvironmentSetup`), so other tests' `addProfile` calls load nothing;
 /// these tests turn it on for their own duration.
-@MainActor
-final class NewProfileExtensionLoadTests: XCTestCase {
+nonisolated final class NewProfileExtensionLoadTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
     private var createdProfiles: [Profile] = []
     private var probes: [(probe: (window: ProbeExtensionWindow, tab: ProbeExtensionTab), context: WKWebExtensionContext)] = []
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         // Launch's loadInstalledExtensions runs in the test host too; until it has
         // reached its per-profile loop a new profile is left to that loop.
@@ -30,7 +29,7 @@ final class NewProfileExtensionLoadTests: XCTestCase {
         ExtensionManager.shared.loadsExtensionsIntoAddedProfiles = true
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         ExtensionManager.shared.loadsExtensionsIntoAddedProfiles = false
         for entry in probes.reversed() {
             unregisterProbeTab(entry.probe, in: entry.context)
@@ -82,7 +81,7 @@ final class NewProfileExtensionLoadTests: XCTestCase {
 
     /// Write an extension to a temp directory, register it in ExtensionManager and
     /// save its DB row as globally enabled — what an installed extension looks like.
-    private func installFixtureExtension(named name: String, manifest: String,
+    @MainActor private func installFixtureExtension(named name: String, manifest: String,
                                          files: [String: String]) async throws -> WebExtension {
         let ext = try await makeTestExtension(id: "new-profile-\(name)-\(UUID().uuidString.prefix(8))",
                                               manifestJSON: manifest, files: files)
@@ -96,7 +95,7 @@ final class NewProfileExtensionLoadTests: XCTestCase {
 
     /// An extension with an action and a content script on test.example.com, and
     /// no background content.
-    private func installContentScriptExtension() async throws -> WebExtension {
+    @MainActor private func installContentScriptExtension() async throws -> WebExtension {
         try await installFixtureExtension(named: "content", manifest: """
         {
             "manifest_version": 3,
@@ -113,19 +112,19 @@ final class NewProfileExtensionLoadTests: XCTestCase {
         ])
     }
 
-    private func addProfile(_ name: String) -> Profile {
+    @MainActor private func addProfile(_ name: String) -> Profile {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         return profile
     }
 
-    private func isLoaded(_ ext: WebExtension, in profile: Profile) -> Bool {
+    @MainActor private func isLoaded(_ ext: WebExtension, in profile: Profile) -> Bool {
         profile.extensionContext(for: ext.id) != nil
     }
 
     /// Load an https page in a web view on the profile's controller, registered as
     /// a tab of `context` (content scripts need that before the load).
-    private func loadPage(in profile: Profile, context: WKWebExtensionContext) async throws -> WKWebView {
+    @MainActor private func loadPage(in profile: Profile, context: WKWebExtensionContext) async throws -> WKWebView {
         let config = WKWebViewConfiguration()
         config.webExtensionController = profile.extensionController
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
@@ -137,7 +136,7 @@ final class NewProfileExtensionLoadTests: XCTestCase {
 
     // MARK: - AC #1: loads without a relaunch
 
-    func testGloballyEnabledExtensionLoadsIntoAProfileCreatedMidSession() async throws {
+    @MainActor func testGloballyEnabledExtensionLoadsIntoAProfileCreatedMidSession() async throws {
         let ext = try await installContentScriptExtension()
 
         let profile = addProfile("New Profile Loads")
@@ -159,7 +158,7 @@ final class NewProfileExtensionLoadTests: XCTestCase {
 
     // MARK: - AC #2: the per-profile rule is respected
 
-    func testGloballyDisabledExtensionDoesNotLoadIntoANewProfileUntilEnabled() async throws {
+    @MainActor func testGloballyDisabledExtensionDoesNotLoadIntoANewProfileUntilEnabled() async throws {
         let ext = try await installContentScriptExtension()
         ExtensionManager.shared.setEnabled(id: ext.id, enabled: false)
 
@@ -172,7 +171,7 @@ final class NewProfileExtensionLoadTests: XCTestCase {
 
     /// The per-profile Settings toggle (`setEnabled(id:profileID:enabled:)`) works
     /// on the new profile at once.
-    func testPerProfileToggleWorksOnANewProfileImmediately() async throws {
+    @MainActor func testPerProfileToggleWorksOnANewProfileImmediately() async throws {
         let ext = try await installContentScriptExtension()
         let profile = addProfile("New Profile Toggle")
         let other = addProfile("New Profile Toggle Other")
@@ -191,7 +190,7 @@ final class NewProfileExtensionLoadTests: XCTestCase {
 
     /// With the suite-wide opt-out in place (the state every other test runs in),
     /// `TabStore.shared.addProfile` loads nothing.
-    func testAddProfileLoadsNothingWhileTheTestOptOutIsOff() async throws {
+    @MainActor func testAddProfileLoadsNothingWhileTheTestOptOutIsOff() async throws {
         let ext = try await installContentScriptExtension()
         ExtensionManager.shared.loadsExtensionsIntoAddedProfiles = false
 
@@ -203,7 +202,7 @@ final class NewProfileExtensionLoadTests: XCTestCase {
 
     /// A TabStore other than the shared one (what TabStore tests build) never
     /// reaches ExtensionManager, whatever the switch says.
-    func testAProfileAddedToAnotherTabStoreLoadsNothing() async throws {
+    @MainActor func testAProfileAddedToAnotherTabStoreLoadsNothing() async throws {
         let ext = try await installContentScriptExtension()
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()))
 
@@ -219,7 +218,7 @@ final class NewProfileExtensionLoadTests: XCTestCase {
     /// `loadExtensionsIntoProfile` wakes — gets `install`, and the claim advances
     /// the ledger. A later worker start in that profile (a fresh context after a
     /// per-profile disable → enable) gets nothing.
-    func testNewProfilesWorkerGetsInstallExactlyOnce() async throws {
+    @MainActor func testNewProfilesWorkerGetsInstallExactlyOnce() async throws {
         let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
 
         const installEvents = [];
@@ -285,12 +284,12 @@ final class NewProfileExtensionLoadTests: XCTestCase {
 
     /// The script of a worker that throws before it registers anything. The
     /// polyfill's claim timer is already queued by then and still fires.
-    private static let failingBackgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+    @MainActor private static let failingBackgroundJS = ExtensionAPIPolyfill.polyfillJS + """
 
     throw new Error('TASK-134: this background script fails to evaluate');
     """
 
-    private static let reportingBackgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+    @MainActor private static let reportingBackgroundJS = ExtensionAPIPolyfill.polyfillJS + """
 
     const installEvents = [];
     chrome.runtime.onInstalled.addListener((details) => { installEvents.push(details); });
@@ -305,18 +304,18 @@ final class NewProfileExtensionLoadTests: XCTestCase {
 
     /// An extension whose worker throws at evaluation on its first load (and on
     /// each recovery reload), then loads: the working worker gets `install`.
-    func testInstallSurvivesAWorkerThatFailsToLoad() async throws {
+    @MainActor func testInstallSurvivesAWorkerThatFailsToLoad() async throws {
         try await runFailedLoadLeg(deliveredBefore: nil, expected: [["reason": "install"]])
     }
 
     /// The same for `update`: the profile had 0.9.0 delivered, the 1.0.0 worker
     /// fails to load, and the working 1.0.0 worker gets `update` from 0.9.0.
-    func testUpdateSurvivesAWorkerThatFailsToLoad() async throws {
+    @MainActor func testUpdateSurvivesAWorkerThatFailsToLoad() async throws {
         try await runFailedLoadLeg(deliveredBefore: "0.9.0",
                                    expected: [["reason": "update", "previousVersion": "0.9.0"]])
     }
 
-    private func runFailedLoadLeg(deliveredBefore: String?, expected: [[String: String]]) async throws {
+    @MainActor private func runFailedLoadLeg(deliveredBefore: String?, expected: [[String: String]]) async throws {
         let ext = try await installFixtureExtension(named: "failing-worker", manifest: """
         {
             "manifest_version": 3,
@@ -335,8 +334,9 @@ final class NewProfileExtensionLoadTests: XCTestCase {
         // Before the woken worker's claim can be handled (it needs the main
         // queue): what this profile had delivered before this version.
         if let deliveredBefore {
+            let extensionID = ext.id
             try await AppDatabase.shared.dbQueue.write { db in
-                try ExtensionInstalledEventRecord(extensionID: ext.id, profileID: profileID,
+                try ExtensionInstalledEventRecord(extensionID: extensionID, profileID: profileID,
                                                   deliveredVersion: deliveredBefore, deliveredAt: 1).save(db)
             }
         }
@@ -387,7 +387,7 @@ final class NewProfileExtensionLoadTests: XCTestCase {
     /// Ask the extension's worker in `profile` what `runtime.onInstalled` it saw,
     /// from one of the extension's own pages. The worker answers nothing until it
     /// is up, so wait for a reply.
-    private func installEvents(of ext: WebExtension, in profile: Profile, settle: TimeInterval = 0,
+    @MainActor private func installEvents(of ext: WebExtension, in profile: Profile, settle: TimeInterval = 0,
                                until ready: @escaping ([String: Any]) -> Bool = { _ in true }) async throws -> [String: Any] {
         let context = try XCTUnwrap(profile.extensionContext(for: ext.id))
         let config = try XCTUnwrap(context.webViewConfiguration)

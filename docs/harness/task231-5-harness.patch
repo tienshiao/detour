@@ -1,0 +1,112 @@
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 334c0df..1542326 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runVerifyHarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Harness2315.swift b/Detour/App/Harness2315.swift
+new file mode 100644
+index 0000000..3d6d5dd
+--- /dev/null
++++ b/Detour/App/Harness2315.swift
+@@ -0,0 +1,92 @@
++// TEMP verify harness for TASK-231.5 — DO NOT COMMIT
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runVerifyHarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        @Sendable func log(_ line: String) {
++            let data = Data((line + "\n").utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) { h.seekToEndOfFile(); h.write(data); try? h.close() }
++            else { try? data.write(to: logURL) }
++        }
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier)")
++        let base = "http://127.0.0.1:\(port)"
++        Task { @MainActor in
++            func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++            func poll<T>(_ timeout: Double = 10, _ f: () async -> T?) async -> T? {
++                let end = Date().addingTimeInterval(timeout)
++                while Date() < end { if let v = await f() { return v }; await sleep(0.1) }
++                return nil
++            }
++            await sleep(2)
++            NSApp.activate(ignoringOtherApps: true)
++            guard let space = wc.activeSpace else { log("no space"); log("done"); return }
++            wc.window?.orderFrontRegardless()
++            let tab = TabStore.shared.addTab(in: space, url: URL(string: "\(base)/page")!)
++            wc.selectTab(id: tab.id)
++            let fav = await poll(15) { tab.favicon }
++            log("tab favicon size=\(fav.map { "\($0.size)" } ?? "nil") \(fav != nil ? "PASS" : "FAIL")")
++
++            let loaded: NSImage? = await withCheckedContinuation { c in
++                FaviconLoader.shared.load(from: URL(string: "\(base)/icon.png?direct")!) { c.resume(returning: $0) }
++            }
++            log("FaviconLoader image=\(loaded.map { "\($0.size)" } ?? "nil") \(loaded != nil ? "PASS" : "FAIL")")
++
++            let png: Data? = await withCheckedContinuation { c in
++                HistoryDatabase.shared.recordVisit(url: "\(base)/page", title: "fav page", faviconURL: "\(base)/icon.png?png",
++                                                   spaceID: space.id.uuidString) { _ in
++                    FaviconPNGLoader.shared.pngData(forPageURL: "\(base)/page", scope: .spaces([space.id.uuidString]), resizedTo: 32) {
++                        c.resume(returning: $0)
++                    }
++                }
++            }
++            log("FaviconPNGLoader bytes=\(png?.count ?? -1) \(png.flatMap(NSImage.init(data:))?.size == NSSize(width: 32, height: 32) ? "PASS" : "FAIL")")
++
++            let art: NSImage? = await withCheckedContinuation { c in
++                MediaArtworkLoader.shared.load(URL(string: "\(base)/art.png")!, tabID: tab.id, isPrivate: false) { c.resume(returning: $0) }
++            }
++            log("artwork image=\(art.map { "\($0.size)" } ?? "nil") \(art != nil ? "PASS" : "FAIL")")
++
++            let key = UUID()
++            if let art { TabThumbnailCache.shared.store(art, for: key) }
++            let thumb: NSImage? = await withCheckedContinuation { c in
++                TabThumbnailCache.shared.image(for: key) { c.resume(returning: $0) }
++            }
++            log("thumbnail round trip=\(thumb.map { "\($0.size)" } ?? "nil") \(thumb != nil ? "PASS" : "FAIL")")
++
++            if let web = tab.webView {
++                let result: Result<PageCapture.Result, PageCapture.Failure> = await withCheckedContinuation { c in
++                    PageCapture.capture(.visible, of: web) { c.resume(returning: $0) }
++                }
++                switch result {
++                case .success(let r): log("capture png=\(r.png.count) bytes \(r.pixelWidth)x\(r.pixelHeight) PASS")
++                case .failure(let f): log("capture FAIL \(f)")
++                }
++                let full: Result<PageCapture.Result, PageCapture.Failure> = await withCheckedContinuation { c in
++                    PageCapture.capture(.fullPage, of: web) { c.resume(returning: $0) }
++                }
++                switch full {
++                case .success(let r): log("full-page capture png=\(r.png.count) bytes \(r.pixelWidth)x\(r.pixelHeight) PASS")
++                case .failure(let f): log("full-page capture FAIL \(f)")
++                }
++            } else { log("capture FAIL no web view") }
++
++            // The History page's favicon route (InternalPageSchemeHandler → FaviconPNGLoader).
++            let history = TabStore.shared.addTab(in: space, internalPage: .history)
++            wc.selectTab(id: history.id)
++            if let hv = await poll(15, { wc.selectedTab?.webView }) {
++                let ok = await poll(15) { () -> Bool? in
++                    let v: Any? = await withCheckedContinuation { c in
++                        hv.evaluateJavaScript("Array.from(document.images).filter(i => i.complete && i.naturalWidth > 0).length") { r, _ in c.resume(returning: r) }
++                    }
++                    return ((v as? Int) ?? 0) > 0 ? true : nil
++                }
++                log("history page favicon rendered=\(ok == true) \(ok == true ? "PASS" : "FAIL")")
++            } else { log("history page FAIL no web view") }
++            log("done")
++        }
++    }
++}

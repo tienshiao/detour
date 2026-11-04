@@ -376,6 +376,18 @@ Behavior:
   then Option (split) — i.e. the existing branch order with Option appended
   before the download check.
 
+> **As shipped (TASK-185):** a favourite or a lone pinned tab no longer falls
+> back to a background tab. It opens a split in the **normal section**: a new
+> tab loading the parent's current URL on the left (the favourite or entry is
+> not touched), the link on the right, placed where `TabInsertion` puts a new
+> tab opened from that parent (`TabStore.addSplitInNormalSection`). The link
+> menu gained **Open Link in Split View** with the same rules
+> (`openLinkInSplit`), and the Peek panel an **Open in Split View** button that
+> hands the Peek's own web view to the right pane, hidden when the host is
+> already a pane of a split. The background-tab fallback remains for a pinned
+> split pane whose partner is dormant and for a tab showing an extension's
+> page.
+
 ## 9. Interactions with existing systems
 
 - **Peek**: preserved, and **spans the whole split**. `PeekOverlayView` +

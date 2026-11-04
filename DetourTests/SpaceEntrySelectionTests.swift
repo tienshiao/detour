@@ -9,9 +9,9 @@ import GRDB
 /// A favourite's backing tab lives on the space's *profile*, outside `tabs` and
 /// `pinnedEntries`, so a space switch used to drop it and wake the first pinned
 /// tab instead.
-final class SpaceEntrySelectionTests: XCTestCase {
+nonisolated final class SpaceEntrySelectionTests: XCTestCase {
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let store: TabStore
         let profile: Profile
         let space: Space
@@ -24,13 +24,13 @@ final class SpaceEntrySelectionTests: XCTestCase {
         }
     }
 
-    private func sleepingTab(spaceID: UUID, url: String) -> BrowserTab {
+    @MainActor private func sleepingTab(spaceID: UUID, url: String) -> BrowserTab {
         BrowserTab(id: UUID(), title: "Tab", url: URL(string: url), faviconURL: nil,
                    cachedInteractionState: nil, spaceID: spaceID)
     }
 
     /// A space holding one tab of each section the window can display.
-    private func makeFixture(normal: Bool = true,
+    @MainActor private func makeFixture(normal: Bool = true,
                              pinned: Bool = true,
                              favorite: Bool = true,
                              dormantFavorite: Bool = false) throws -> Fixture {
@@ -70,21 +70,21 @@ final class SpaceEntrySelectionTests: XCTestCase {
 
     // MARK: - The selection rule
 
-    func testSavedNormalTabIsKept() throws {
+    @MainActor func testSavedNormalTabIsKept() throws {
         let f = try makeFixture()
         defer { f.teardown() }
         f.space.selectedTabID = f.normalTab?.id
         XCTAssertEqual(f.space.tabToSelectOnEntry()?.id, f.normalTab?.id)
     }
 
-    func testSavedPinnedTabIsKept() throws {
+    @MainActor func testSavedPinnedTabIsKept() throws {
         let f = try makeFixture()
         defer { f.teardown() }
         f.space.selectedTabID = f.pinnedTab?.id
         XCTAssertEqual(f.space.tabToSelectOnEntry()?.id, f.pinnedTab?.id)
     }
 
-    func testSavedFavoriteTabIsKept() throws {
+    @MainActor func testSavedFavoriteTabIsKept() throws {
         let f = try makeFixture()
         defer { f.teardown() }
         f.space.selectedTabID = f.favoriteTab?.id
@@ -92,28 +92,28 @@ final class SpaceEntrySelectionTests: XCTestCase {
                        "a favourite's backing tab is displayable even though it is in no space list")
     }
 
-    func testStaleSavedIDFallsBackToTheFirstLivePinnedTab() throws {
+    @MainActor func testStaleSavedIDFallsBackToTheFirstLivePinnedTab() throws {
         let f = try makeFixture()
         defer { f.teardown() }
         f.space.selectedTabID = UUID()
         XCTAssertEqual(f.space.tabToSelectOnEntry()?.id, f.pinnedTab?.id)
     }
 
-    func testNoSavedIDFallsBackToTheFirstLivePinnedTab() throws {
+    @MainActor func testNoSavedIDFallsBackToTheFirstLivePinnedTab() throws {
         let f = try makeFixture()
         defer { f.teardown() }
         f.space.selectedTabID = nil
         XCTAssertEqual(f.space.tabToSelectOnEntry()?.id, f.pinnedTab?.id)
     }
 
-    func testWithoutPinnedTabsTheFallbackIsTheFirstNormalTab() throws {
+    @MainActor func testWithoutPinnedTabsTheFallbackIsTheFirstNormalTab() throws {
         let f = try makeFixture(pinned: false)
         defer { f.teardown() }
         f.space.selectedTabID = UUID()
         XCTAssertEqual(f.space.tabToSelectOnEntry()?.id, f.normalTab?.id)
     }
 
-    func testDormantFavoriteDoesNotSubstituteForAFallback() throws {
+    @MainActor func testDormantFavoriteDoesNotSubstituteForAFallback() throws {
         // A favourite is never a fallback, and a dormant one has no tab at all:
         // a space with nothing else deselects everything.
         let f = try makeFixture(normal: false, pinned: false, favorite: false, dormantFavorite: true)
@@ -122,7 +122,7 @@ final class SpaceEntrySelectionTests: XCTestCase {
         XCTAssertNil(f.space.tabToSelectOnEntry())
     }
 
-    func testEmptySpaceSelectsNothing() throws {
+    @MainActor func testEmptySpaceSelectsNothing() throws {
         let f = try makeFixture(normal: false, pinned: false, favorite: false)
         defer { f.teardown() }
         f.space.selectedTabID = UUID()
@@ -131,7 +131,7 @@ final class SpaceEntrySelectionTests: XCTestCase {
 
     // MARK: - Space.displayableTab
 
-    func testDisplayableTabResolvesEverySectionAndNothingElse() throws {
+    @MainActor func testDisplayableTabResolvesEverySectionAndNothingElse() throws {
         let f = try makeFixture()
         defer { f.teardown() }
         let normalTab = try XCTUnwrap(f.normalTab)

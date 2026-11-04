@@ -12,8 +12,7 @@ import WebKit
 /// fixture worker here does the same two things at module evaluation and must
 /// come up. TASK-132.12 and TASK-132.13 replace the stand-ins with the real
 /// APIs; until then no method of either API may exist.
-@MainActor
-final class ExtensionInterimNamespacesTests: XCTestCase {
+nonisolated final class ExtensionInterimNamespacesTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
@@ -23,9 +22,9 @@ final class ExtensionInterimNamespacesTests: XCTestCase {
     /// Kept alive for the rest of the test process, as in
     /// `ExtensionTabResolveTests`: releasing a profile whose controller hosted
     /// a web view takes its process pool down inside WebKit's IPC dispatch.
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for page in pages { page.stopLoading() }
         pages.removeAll()
         for profile in createdProfiles {
@@ -51,7 +50,7 @@ final class ExtensionInterimNamespacesTests: XCTestCase {
     /// listener (1.0.98: a class's static field, and a constructor run at
     /// import). A TypeError here fails the whole background load.
     private static let touchAtEvaluationJS = """
-    class __DetourTestGroups {
+    @MainActor class __DetourTestGroups {
         static SESSION_GROUP_COLORS = [
             chrome.tabGroups.Color.BLUE, chrome.tabGroups.Color.CYAN, chrome.tabGroups.Color.GREEN,
             chrome.tabGroups.Color.ORANGE, chrome.tabGroups.Color.RED, chrome.tabGroups.Color.PINK,
@@ -108,7 +107,7 @@ final class ExtensionInterimNamespacesTests: XCTestCase {
     }
     """
 
-    private func makeExtension(permissions: [String], touchingAtEvaluation: Bool) async throws -> WebExtension {
+    @MainActor private func makeExtension(permissions: [String], touchingAtEvaluation: Bool) async throws -> WebExtension {
         let id = "interim-\(UUID().uuidString.prefix(8).lowercased())"
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("detour-test-\(id)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -148,14 +147,14 @@ final class ExtensionInterimNamespacesTests: XCTestCase {
         return ext
     }
 
-    private struct World {
+    @MainActor private struct World {
         let context: WKWebExtensionContext
         let page: WKWebView
     }
 
-    private enum Via: String, CaseIterable { case page, worker }
+    @MainActor private enum Via: String, CaseIterable { case page, worker }
 
-    private func makeWorld(_ ext: WebExtension) async throws -> World {
+    @MainActor private func makeWorld(_ ext: WebExtension) async throws -> World {
         let profile = TabStore.shared.addProfile(name: "Interim \(ext.id)")
         createdProfiles.append(profile)
         _ = profile.extensionController
@@ -164,8 +163,9 @@ final class ExtensionInterimNamespacesTests: XCTestCase {
         let page = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
         pages.append(page)
         try await loadAndWait(page, URLRequest(url: context.baseURL.appendingPathComponent("test.html")))
-        context.loadBackgroundContent { error in
-            if let error { print("loadBackgroundContent failed: \(error)") }
+        // Started, not awaited: the test waits for the worker itself.
+        Task {
+            do { try await context.loadBackgroundContent() } catch { print("loadBackgroundContent failed: \(error)") }
         }
         let world = World(context: context, page: page)
         // The worker is still starting; a worker that failed to load never answers.
@@ -175,12 +175,12 @@ final class ExtensionInterimNamespacesTests: XCTestCase {
         return world
     }
 
-    private struct ProbeFailed: Error, CustomStringConvertible {
+    @MainActor private struct ProbeFailed: Error, CustomStringConvertible {
         let message: String
         var description: String { message }
     }
 
-    private func probe(_ via: Via, in world: World) async throws -> [String: Any] {
+    @MainActor private func probe(_ via: Via, in world: World) async throws -> [String: Any] {
         switch via {
         case .page:
             let raw = try await world.page.callAsyncJavaScript(Self.probeJS + """
@@ -199,7 +199,7 @@ final class ExtensionInterimNamespacesTests: XCTestCase {
         }
     }
 
-    private static let chromeColors = [
+    @MainActor private static let chromeColors = [
         "GREY": "grey", "BLUE": "blue", "RED": "red", "YELLOW": "yellow", "GREEN": "green",
         "PINK": "pink", "PURPLE": "purple", "CYAN": "cyan", "ORANGE": "orange",
     ]
@@ -210,7 +210,7 @@ final class ExtensionInterimNamespacesTests: XCTestCase {
     /// and registers `chrome.debugger` listeners while its module is evaluated
     /// loads, in the shape the Claude extension's does. Both contexts see
     /// constants and never-firing events only — no method of either API.
-    func testWorkerThatTouchesBothNamespacesAtEvaluationLoads() async throws {
+    @MainActor func testWorkerThatTouchesBothNamespacesAtEvaluationLoads() async throws {
         let world = try await makeWorld(
             try await makeExtension(permissions: ["tabGroups", "debugger", "tabs", "storage"], touchingAtEvaluation: true))
 
@@ -251,7 +251,7 @@ final class ExtensionInterimNamespacesTests: XCTestCase {
 
     /// NEGATIVE: an extension that declares neither permission gets neither
     /// namespace, in the worker and in a page.
-    func testWithoutThePermissionsNeitherNamespaceExists() async throws {
+    @MainActor func testWithoutThePermissionsNeitherNamespaceExists() async throws {
         let world = try await makeWorld(
             try await makeExtension(permissions: ["tabs", "storage"], touchingAtEvaluation: false))
         for via in Via.allCases {
@@ -265,7 +265,7 @@ final class ExtensionInterimNamespacesTests: XCTestCase {
     }
 
     /// NEGATIVE: each namespace follows its own permission.
-    func testEachNamespaceFollowsItsOwnPermission() async throws {
+    @MainActor func testEachNamespaceFollowsItsOwnPermission() async throws {
         let world = try await makeWorld(
             try await makeExtension(permissions: ["debugger", "tabs", "storage"], touchingAtEvaluation: false))
         for via in Via.allCases {

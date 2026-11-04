@@ -7,13 +7,13 @@ import AppKit
 /// must land its final state instantly: the right-segment views hidden and
 /// their favicon/title cleared. See `collapseSplitSegment` for the animated
 /// counterpart that only runs on-screen.
-final class TabCellSplitCollapseTests: XCTestCase {
+nonisolated final class TabCellSplitCollapseTests: XCTestCase {
 
-    private func makeImage() -> NSImage {
+    @MainActor private func makeImage() -> NSImage {
         NSImage(size: NSSize(width: 16, height: 16))
     }
 
-    private func makeSplitCell() -> TabCellView {
+    @MainActor private func makeSplitCell() -> TabCellView {
         let cell = TabCellView()
         cell.updateSplitPane(favicon: makeImage(), title: "Right Pane")
         // Sanity: the segment is showing before we collapse it.
@@ -23,7 +23,7 @@ final class TabCellSplitCollapseTests: XCTestCase {
         return cell
     }
 
-    func testCollapseWithoutWindowClearsAndHidesInstantly() {
+    @MainActor func testCollapseWithoutWindowClearsAndHidesInstantly() {
         let cell = makeSplitCell()
         // animatedReveal requested, but window == nil fails the animateCollapse
         // guard, so the clear applies synchronously.
@@ -36,7 +36,7 @@ final class TabCellSplitCollapseTests: XCTestCase {
         XCTAssertEqual(cell.splitTitleLabel.stringValue, "")
     }
 
-    func testUnanimatedCollapseClearsAndHides() {
+    @MainActor func testUnanimatedCollapseClearsAndHides() {
         let cell = makeSplitCell()
         cell.updateSplitPane(favicon: nil, title: nil, animatedReveal: false)
 
@@ -47,7 +47,7 @@ final class TabCellSplitCollapseTests: XCTestCase {
         XCTAssertEqual(cell.splitTitleLabel.stringValue, "")
     }
 
-    func testAnimatedRevealWithoutWindowShowsSegmentInstantly() {
+    @MainActor func testAnimatedRevealWithoutWindowShowsSegmentInstantly() {
         let cell = TabCellView()
         // Reveal guard also requires a window; headless it must apply instantly.
         cell.updateSplitPane(favicon: makeImage(), title: "Right Pane", animatedReveal: true)

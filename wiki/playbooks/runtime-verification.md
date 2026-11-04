@@ -6,6 +6,9 @@ tags: [playbook, verify, runtime, isolation]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T10:25:00Z }
 sources:
+  - id: task-187
+    resource: backlog:TASK-187
+    title: Storage - a per-site settings table, with content blocking's site list migrated into it
   - id: verify-skill
     resource: ../../.claude/skills/verify/SKILL.md
     title: The /verify skill
@@ -145,6 +148,17 @@ space.
 
 Extensions: [seeding extensions](./seeding-extensions.md).
 
+**Seed data, not schema.** A Debug build's session migrator erases the
+database when its schema differs from what the migrations produce
+(`eraseDatabaseOnSchemaChange`), so a table re-created by hand with `sqlite3`
+(to fake an older schema for a migration check) wipes the whole profile on
+the next launch: it looks like a fresh profile with a new id, and the rows
+"lost" go with the old profile. To check a migration on a real database,
+build the commit before it into the same `.derived`, launch it once to make
+the database (wait until the `space` row is saved before stopping it), insert
+rows with `sqlite3`, then build the new code and launch on that data
+directory (TASK-187).[^task-187]
+
 ## 5. Observe
 
 | Channel | Good for | Needs |
@@ -176,7 +190,47 @@ pgrep -f "$APP/Contents/MacOS/Detour"
   "launch, wait, read the log, kill" sequence as one background command.
 - **A locked screen** makes WebKit stop painting and drops posted events;
   check before every harness run
-  ([in-process UI automation](./in-process-ui-automation.md)).
+  ([in-process UI automation](./in-process-ui-automation.md)). A watcher can wait for
+  the unlock by polling `CGSessionCopyCurrentDictionary()`'s
+  `CGSSessionScreenIsLocked` from a tiny compiled Swift tool (the sandbox
+  blocks `ioreg`, and the system Python has no Quartz module). When the
+  session dictionary has no `CGSSessionScreenIsLocked` key at all (such a
+  tool prints `locked=absent`), the screen is unlocked: wait while the value
+  is 1, not until it is 0, or the loop never ends. **Run that probe with
+  the sandbox off**: inside the sandbox it prints `locked=absent` while the
+  screen is locked (TASK-191.2), so a sandboxed watcher reports a false
+  unlock. The screen can also lock in the middle of a run; a capture then
+  fails with "could not create image from window".
+- **Never deliver a URL or file by bundle ID.** The Debug build has the
+  production bundle ID (`com.detourbrowser.mac`), so `open URL`,
+  `open -a <debug app> URL` without `-n`, or `NSWorkspace.open` without a
+  new instance can hand it to the user's running `/Applications/Detour.app`.
+  Safe ways, all used for TASK-191.2 ([link routing](../features/link-routing.md#runtime-check-links-from-other-apps)):
+  a Get URL Apple Event built with `NSAppleEventDescriptor(processIdentifier:)`
+  for the PID you launched, refusing unless that PID's executable is the
+  `.derived` build and unless `AEDeterminePermissionToAutomateTarget(...,
+  askUserIfNeeded: false)` is `noErr` (never prompts); `open -n -a <debug
+  app> --env ... URL` (a new instance gets the URLs); or a copy of the
+  Debug app given its own `CFBundleIdentifier` (PlistBuddy, re-signed ad
+  hoc with only `get-task-allow`), to which plain `open -a` and
+  `NSWorkspace.open(_:withApplicationAt:)` cannot resolve production.
+  Unregister the copy (`lsregister -u`) and delete its defaults domain,
+  WebKit, Caches and HTTPStorages folders afterwards.
+- **`-AppleInterfaceStyle Dark` at launch does not make the app dark.** The
+  argument is accepted but the windows stay light (2026-10-28, TASK-220
+  re-check). Set `NSApp.appearance = NSAppearance(named: .darkAqua)` from the
+  harness instead; an extension page then reports
+  `prefers-color-scheme: dark`.
+- **Make the harness wait for its captures.** On a saturated machine a
+  shell watcher can fall seconds behind a timer-driven harness and shoot a
+  later state under an earlier name (TASK-186.5: up to 9 s at load ~1000).
+  Run the steps in sequence and start each only once every PNG requested so
+  far exists, and have the watcher read only the log's new lines
+  ([TASK-186.5 harness](../../docs/harness/task186-5-harness.patch)).
+- **Capture by window number, not region.** A shell-launched app stays behind
+  the frontmost app, so `screencapture -R` picks up whatever covers it;
+  `screencapture -l <windowNumber>` captures the window even when covered,
+  and a child panel's number gives it composited over its parent.
 - **The isolated app is not the key application** when launched from a
   shell, so behaviour keyed on `NSApp.keyWindow` cannot be driven that
   way.[^notes-updates] A check that needs key windows (the web view hand-off
@@ -217,3 +271,4 @@ pgrep -f "$APP/Contents/MacOS/Detour"
 [^notes-harness]: Session notes on the runtime debug harness
 [^notes-probes]: Session notes on hit-test and resize probes
 [^notes-updates]: Session notes on verifying the extension update UI
+[^task-187]: Storage - a per-site settings table, with content blocking's site list migrated into it

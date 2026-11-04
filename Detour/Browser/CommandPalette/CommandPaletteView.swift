@@ -21,11 +21,30 @@ class CommandPaletteTextField: NSTextField {
 }
 
 class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
+    /// The palette's fixed width.
+    static let width: CGFloat = 500
+
     weak var delegate: CommandPaletteDelegate?
+    /// The store whose tabs the palette offers; nil offers none (a Quick
+    /// Detour's palette, whose window has one page).
     var tabStore: TabStore?
+    /// The space the palette's window shows: which profile's open tabs it
+    /// offers (`PaletteTabScope.offeredSpaceIDs`).
     var activeSpaceID: UUID?
     var currentTabID: UUID?
     var profile: Profile?
+    /// The history the palette suggests from — every history row, the top
+    /// hit, inline completion, the empty-field list and the filler under a
+    /// typed query: its profile's (`PaletteTabScope.historySpaceIDs`,
+    /// TASK-209), set by whoever shows it. Empty, the default, is no history:
+    /// a Private window's palette, a quarantine's.
+    var historySpaceIDs: [String] = []
+    /// A tint for the palette's glass, for a palette with no window content
+    /// behind it (the Quick Detour launcher panel, TASK-193.1).
+    var glassTint: NSColor? {
+        get { glassContainer.tintColor }
+        set { glassContainer.tintColor = newValue }
+    }
 
     private let textField = CommandPaletteTextField()
     private let glassContainer = GlassContainerView(cornerRadius: 12)
@@ -42,6 +61,18 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// defaults. Used to reject stale async search-suggestion responses.
     private var suggestionsQuery: String?
     private var selectedSuggestionIndex: Int? = nil
+    /// The user has moved the keyboard selection since the list last put it
+    /// on its initial row. Tracked apart from the index: Down then Up lands
+    /// back on row 0, which the user then chose (TASK-184).
+    private var selectionMovedByUser = false
+    /// What a typed query's list is composed from (`PaletteRows.compose`):
+    /// the latest local pass, the search suggestions (fetched for
+    /// `searchSuggestionsQuery`, or carried over from it while the current
+    /// query's fetch is pending), and the default list as filler.
+    private var matchRows: [SuggestionItem] = []
+    private var searchSuggestionTexts: [String] = []
+    private var searchSuggestionsQuery: String?
+    private var defaultRows: [SuggestionItem] = []
     private var debounceWorkItem: DispatchWorkItem?
     private var currentTask: Task<Void, Never>?
 
@@ -82,7 +113,14 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private var anchorLeadingConstraint: NSLayoutConstraint?
     private var anchorTopConstraint: NSLayoutConstraint?
 
+    /// The prompt in the empty field.
+    var placeholder: String {
+        get { textField.placeholderString ?? "" }
+        set { textField.placeholderString = newValue }
+    }
+
     private let rowHeight: CGFloat = 36
+    private var listHeight: CGFloat { CGFloat(PaletteRows.visibleRows) * rowHeight }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -155,14 +193,14 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         boxBottomToScroll = scrollView.bottomAnchor.constraint(equalTo: box.bottomAnchor)
 
         centerXConstraint = glassContainer.centerXAnchor.constraint(equalTo: safeAreaLayoutGuide.centerXAnchor)
-        let maxPaletteHeight: CGFloat = 12 + 24 + 8 + 1 + 6 * rowHeight  // top pad + textfield + gap + separator + max suggestions
+        let maxPaletteHeight: CGFloat = 12 + 24 + 8 + 1 + listHeight  // top pad + textfield + gap + separator + list
         centerYConstraint = NSLayoutConstraint(item: glassContainer, attribute: .top, relatedBy: .equal,
                                toItem: self, attribute: .bottom, multiplier: 0.5, constant: -maxPaletteHeight / 2)
 
         NSLayoutConstraint.activate([
             centerXConstraint,
             centerYConstraint,
-            glassContainer.widthAnchor.constraint(equalToConstant: 500),
+            glassContainer.widthAnchor.constraint(equalToConstant: Self.width),
 
             searchIcon.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 16),
             searchIcon.centerYAnchor.constraint(equalTo: textField.centerYAnchor),
@@ -258,6 +296,14 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         loadDefaultSuggestions()
     }
 
+    /// Rebuilds the list for what the field holds, after whoever shows the
+    /// palette changed its scope under it (its window switched to a space of
+    /// another profile with the palette open, TASK-209). Leaves the field
+    /// alone: no inline completion is applied.
+    func reloadSuggestions() {
+        refreshLocalSuggestions(allowAutocomplete: false)
+    }
+
     func dismiss() {
         currentTask?.cancel()
         debounceWorkItem?.cancel()
@@ -277,22 +323,26 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     // MARK: - Suggestions
 
     private func loadDefaultSuggestions() {
-        guard let spaceID = activeSpaceID else { return }
         // Invalidate any in-flight background history read so its result can't
         // overwrite the default list when it lands.
         localSuggestionGeneration &+= 1
-        let items = suggestionProvider.defaultSuggestions(spaceID: spaceID.uuidString, tabs: gatherTabInfos())
+        let items = suggestionProvider.defaultSuggestions(historySpaceIDs: historySpaceIDs, tabs: gatherTabInfos())
         suggestionsQuery = nil
+        defaultRows = items
+        matchRows = []
+        searchSuggestionTexts = []
+        searchSuggestionsQuery = nil
         updateSuggestions(items)
     }
 
     /// The open tabs this palette may offer. Every tab the suggestion pipeline
     /// sees (default list, typed query, top hit) comes from here, so the
-    /// Private-window boundary is `PaletteTabScope`'s rule and nothing else.
+    /// profile and Private-window boundaries are `PaletteTabScope`'s rule and
+    /// nothing else.
     func gatherTabInfos() -> [SuggestionProvider.TabInfo] {
         let allSpaces = tabStore?.spaces ?? []
         let offered = PaletteTabScope.offeredSpaceIDs(
-            spaces: allSpaces.map { .init(id: $0.id, isIncognito: $0.isIncognito) },
+            spaces: allSpaces.map { .init(id: $0.id, isIncognito: $0.isIncognito, profileID: $0.profileID) },
             windowIsPrivate: profile?.isIncognito ?? false,
             activeSpaceID: activeSpaceID)
         let spaces = allSpaces.filter { offered.contains($0.id) }
@@ -309,7 +359,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
     }
 
-    private func updateSuggestions(_ items: [SuggestionItem]) {
+    private func updateSuggestions(_ items: [SuggestionItem], keepingSelection: Bool = false) {
         let old = suggestions
         suggestions = items
 
@@ -331,9 +381,15 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             }
         }
 
-        // `suggestionsQuery` is nil exactly while the default list is showing.
-        setKeyboardSelection(to: PaletteSelection.initialRow(
-            listIsDefault: suggestionsQuery == nil, rowCount: items.count))
+        if keepingSelection {
+            // Re-marks the row view: a reused row may have been reconfigured.
+            setKeyboardSelection(to: selectedSuggestionIndex)
+        } else {
+            // `suggestionsQuery` is nil exactly while the default list is showing.
+            setKeyboardSelection(to: PaletteSelection.initialRow(
+                listIsDefault: suggestionsQuery == nil, rowCount: items.count))
+            selectionMovedByUser = false
+        }
         updatePanelHeight()
     }
 
@@ -353,8 +409,11 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         scrollView.isHidden = !hasSuggestions
 
         if hasSuggestions {
-            let height = min(CGFloat(suggestions.count) * rowHeight, 6 * rowHeight)
-            scrollHeightConstraint.constant = height
+            // One fixed height for any list, however many rows it has: each
+            // keystroke rebuilds the list up to three times (instant, history,
+            // search suggestions), and fitting it to the rows made the box
+            // shrink and grow back while typing (TASK-184).
+            scrollHeightConstraint.constant = listHeight
             boxBottomToTextField.isActive = false
             boxBottomToScroll.isActive = true
         } else {
@@ -379,16 +438,25 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private func appendSearchSuggestions(_ texts: [String], forQuery query: String) {
         // Ignore responses that arrive after the list was rebuilt for different input.
         guard query == suggestionsQuery else { return }
+        searchSuggestionTexts = texts
+        searchSuggestionsQuery = query
+        showQueryRows(isLatePass: true)
+    }
 
-        let room = SuggestionProvider.maxSuggestions - suggestions.count
-        guard room > 0 else { return }
-        let items = texts.prefix(min(SuggestionProvider.maxSearchSuggestions, room)).map { SuggestionItem.searchSuggestion(text: $0) }
-        guard !items.isEmpty else { return }
-
-        let start = suggestions.count
-        suggestions.append(contentsOf: items)
-        tableView.insertRows(at: IndexSet(integersIn: start..<suggestions.count), withAnimation: [])
-        updatePanelHeight()
+    /// Shows the typed query's rows: matches, search suggestions, then
+    /// default-list rows to fill the fixed-height list (TASK-184). A late pass
+    /// (history, network) never changes the row the user has arrowed to.
+    private func showQueryRows(isLatePass: Bool) {
+        let rows = PaletteRows.compose(matches: matchRows, searchSuggestions: searchSuggestionTexts,
+                                       filler: defaultRows)
+        guard isLatePass else { return updateSuggestions(rows) }
+        switch PaletteRows.latePassOutcome(old: suggestions, new: rows,
+                                           selectedRow: selectedSuggestionIndex,
+                                           selectionMoved: selectionMovedByUser) {
+        case .apply: updateSuggestions(rows)
+        case .applyKeepingSelection: updateSuggestions(rows, keepingSelection: true)
+        case .skip: break
+        }
     }
 
     // MARK: - NSTextFieldDelegate
@@ -502,6 +570,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
                                             rowCount: suggestions.count)
 
         setKeyboardSelection(to: newIndex)
+        selectionMovedByUser = true
 
         if let idx = newIndex {
             tableView.scrollRowToVisible(idx)
@@ -519,6 +588,12 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             } else {
                 textField.currentEditor()?.selectedRange = NSRange(location: text.utf16.count, length: 0)
             }
+        }
+
+        // A late pass skipped while the selection sat on a row it would have
+        // changed lands now if the new selection allows it.
+        if suggestionsQuery != nil {
+            showQueryRows(isLatePass: true)
         }
     }
 
@@ -552,7 +627,6 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             loadDefaultSuggestions()
             return
         }
-        guard let spaceID = activeSpaceID else { return }
         let tabs = gatherTabInfos()
 
         // --- Instant synchronous pass: open tabs only ---
@@ -574,21 +648,29 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
         instantItems.append(contentsOf: tabItems)
         suggestionsQuery = query
-        updateSuggestions(Array(instantItems.prefix(SuggestionProvider.maxSuggestions)))
+        matchRows = instantItems
+        if searchSuggestionsQuery != query {
+            // Until this query's suggestions arrive, keep the previous ones it
+            // still prefixes, so the bottom rows do not blank and refill.
+            searchSuggestionTexts = PaletteRows.carriedSearchSuggestions(searchSuggestionTexts, to: query)
+        }
+        showQueryRows(isLatePass: false)
         scheduleSearchSuggestionFetch(for: query)
 
         // --- Background pass: history queries off the main thread ---
         localSuggestionGeneration &+= 1
         let generation = localSuggestionGeneration
         let provider = suggestionProvider
-        let spaceIDString = spaceID.uuidString
+        let historySpaceIDs = historySpaceIDs
         let capturedTabID = currentTabID
+        let completedFromTab = appliedTabCompletion
         historyQueryQueue.async { [weak self] in
             // localSuggestions recomputes the open-tab matches too, but its two
-            // SQLite reads are what we moved off the main thread. It touches no
-            // shared mutable state, so it's safe to run here.
+            // SQLite reads are what we moved off the main thread. It is
+            // nonisolated and its inputs are Sendable, so the compiler checks
+            // that it touches no main-actor state.
             let local = provider.localSuggestions(
-                for: query, spaceID: spaceIDString, tabs: tabs,
+                for: query, historySpaceIDs: historySpaceIDs, tabs: tabs,
                 allowAutocomplete: allowAutocomplete, currentTabID: capturedTabID)
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -600,10 +682,13 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
                 // already complete from an open tab and nothing has completed the
                 // field since — applying it now, after the user typed more, would
                 // fight their typing (which the staleness guard above prevents).
-                if !appliedTabCompletion, self.inlineCompletionSuffix == nil {
+                // Nor once the user has arrowed to a row: the field shows that
+                // row's text.
+                if !completedFromTab, self.inlineCompletionSuffix == nil, !self.selectionMovedByUser {
                     self.applyInlineCompletion(local.inlineCompletion, for: query)
                 }
-                self.updateSuggestions(local.items)
+                self.matchRows = local.items
+                self.showQueryRows(isLatePass: true)
             }
         }
     }

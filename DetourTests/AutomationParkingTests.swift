@@ -14,31 +14,30 @@ private let secondOwner = TabAutomationOwner(extensionID: "ext-a", reason: "comm
 
 // MARK: - The attachment model and the sleep/archive exemption
 
-@MainActor
-final class TabAutomationAttachmentTests: XCTestCase {
+nonisolated final class TabAutomationAttachmentTests: XCTestCase {
 
     /// Nothing listens on port 1, so nothing here reaches the network.
     private let pageURL = URL(string: "http://127.0.0.1:1/page")!
 
     private var createdTabs: [BrowserTab] = []
-    private var defaultFaviconFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         defaultFaviconFetch = FaviconLoader.shared.fetch
         FaviconLoader.shared.resetForTesting()
         FaviconLoader.shared.fetch = { _, completion in completion(nil) }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
         FaviconLoader.shared.fetch = defaultFaviconFetch
         FaviconLoader.shared.resetForTesting()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func makeStore() throws -> (TabStore, Profile, Space) {
+    @MainActor private func makeStore() throws -> (TabStore, Profile, Space) {
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()))
         let profile = store.addProfile(name: "Automation")
         let space = store.addSpace(name: "Automation", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
@@ -46,7 +45,7 @@ final class TabAutomationAttachmentTests: XCTestCase {
     }
 
     @discardableResult
-    private func makeTab(_ store: TabStore, in space: Space) -> BrowserTab {
+    @MainActor private func makeTab(_ store: TabStore, in space: Space) -> BrowserTab {
         let tab = store.addTab(in: space)
         tab.url = pageURL
         createdTabs.append(tab)
@@ -56,13 +55,13 @@ final class TabAutomationAttachmentTests: XCTestCase {
     /// Takes a parked container out of whatever window took it, so that only
     /// the attachment — not "its container is in a window" — can be what keeps
     /// the tab awake.
-    private func unparent(_ tab: BrowserTab) {
+    @MainActor private func unparent(_ tab: BrowserTab) {
         tab.webViewContainer?.removeFromSuperview()
     }
 
     // MARK: Owners
 
-    func testOwnersAreCountedAsASet() throws {
+    @MainActor func testOwnersAreCountedAsASet() throws {
         let (store, _, space) = try makeStore()
         let tab = makeTab(store, in: space)
         XCTAssertFalse(tab.isAutomationAttached)
@@ -84,7 +83,7 @@ final class TabAutomationAttachmentTests: XCTestCase {
         XCTAssertFalse(tab.isAutomationParked)
     }
 
-    func testAttachingWakesASleepingTab() throws {
+    @MainActor func testAttachingWakesASleepingTab() throws {
         let (store, _, space) = try makeStore()
         let tab = makeTab(store, in: space)
         tab.sleep()
@@ -96,7 +95,7 @@ final class TabAutomationAttachmentTests: XCTestCase {
         XCTAssertFalse(tab.isSleeping)
     }
 
-    func testClosingATabDropsItsAttachmentsAndItCannotBeAttachedAgain() throws {
+    @MainActor func testClosingATabDropsItsAttachmentsAndItCannotBeAttachedAgain() throws {
         let (store, _, space) = try makeStore()
         let tab = makeTab(store, in: space)
         tab.attachAutomation(owner)
@@ -111,7 +110,7 @@ final class TabAutomationAttachmentTests: XCTestCase {
         XCTAssertNil(tab.automationDrivableWebView())
     }
 
-    func testDrivableWebViewIsOnlyForAnAttachedTab() throws {
+    @MainActor func testDrivableWebViewIsOnlyForAnAttachedTab() throws {
         let (store, _, space) = try makeStore()
         let tab = makeTab(store, in: space)
         XCTAssertNil(tab.automationDrivableWebView())
@@ -119,7 +118,7 @@ final class TabAutomationAttachmentTests: XCTestCase {
 
     // MARK: Sleep
 
-    func testAnAttachedTabRefusesToSleepAndSleepsAgainOnceReleased() throws {
+    @MainActor func testAnAttachedTabRefusesToSleepAndSleepsAgainOnceReleased() throws {
         let (store, _, space) = try makeStore()
         let tab = makeTab(store, in: space)
         tab.attachAutomation(owner)
@@ -132,7 +131,7 @@ final class TabAutomationAttachmentTests: XCTestCase {
         XCTAssertNil(tab.webView)
     }
 
-    func testIdleRuleSkipsAnAttachedTabUntilItIsReleased() throws {
+    @MainActor func testIdleRuleSkipsAnAttachedTabUntilItIsReleased() throws {
         let (store, _, space) = try makeStore()
         let now = Date()
         let attachedTab = makeTab(store, in: space)
@@ -151,7 +150,7 @@ final class TabAutomationAttachmentTests: XCTestCase {
         XCTAssertTrue(attachedTab.isSleeping, "released, it is an ordinary idle tab")
     }
 
-    func testShowBudgetRuleSkipsAttachedNormalPinnedAndFavoriteTabs() throws {
+    @MainActor func testShowBudgetRuleSkipsAttachedNormalPinnedAndFavoriteTabs() throws {
         let (store, profile, space) = try makeStore()
         let now = Date()
 
@@ -180,7 +179,7 @@ final class TabAutomationAttachmentTests: XCTestCase {
         for tab in tabs { XCTAssertTrue(tab.isSleeping) }
     }
 
-    func testSplitPartnerOfAnAttachedTabStaysAwake() throws {
+    @MainActor func testSplitPartnerOfAnAttachedTabStaysAwake() throws {
         let (store, _, space) = try makeStore()
         let now = Date()
         let left = makeTab(store, in: space)
@@ -198,7 +197,7 @@ final class TabAutomationAttachmentTests: XCTestCase {
         XCTAssertFalse(right.isSleeping, "a split sleeps as a unit, so the partner stays up too")
     }
 
-    func testAForcedSleepOfAnAttachedTabIsFollowedByAWake() async throws {
+    @MainActor func testAForcedSleepOfAnAttachedTabIsFollowedByAWake() async throws {
         let (store, _, space) = try makeStore()
         let tab = makeTab(store, in: space)
         tab.attachAutomation(owner)
@@ -213,7 +212,7 @@ final class TabAutomationAttachmentTests: XCTestCase {
 
     // MARK: Archive
 
-    func testArchiveSweepSkipsAnAttachedTabUntilItIsReleased() throws {
+    @MainActor func testArchiveSweepSkipsAnAttachedTabUntilItIsReleased() throws {
         let (store, _, space) = try makeStore()
         let now = Date()
         let keeper = makeTab(store, in: space)
@@ -235,7 +234,7 @@ final class TabAutomationAttachmentTests: XCTestCase {
         XCTAssertEqual(space.tabs.map(\.id), [keeper.id], "released, it is archived like any stale tab")
     }
 
-    func testAttachedMemberKeepsItsSplitOutOfTheArchive() throws {
+    @MainActor func testAttachedMemberKeepsItsSplitOutOfTheArchive() throws {
         let (store, _, space) = try makeStore()
         let now = Date()
         let keeper = makeTab(store, in: space)
@@ -254,7 +253,7 @@ final class TabAutomationAttachmentTests: XCTestCase {
 
     // MARK: Which window parks a tab
 
-    func testParkingWindowRule() {
+    @MainActor func testParkingWindowRule() {
         let spaceA = UUID(), spaceB = UUID(), profile1 = UUID(), profile2 = UUID()
         let onA = AutomationParkingCandidate(activeSpaceID: spaceA, profileID: profile1)
         let onB = AutomationParkingCandidate(activeSpaceID: spaceB, profileID: profile1)
@@ -285,12 +284,11 @@ final class TabAutomationAttachmentTests: XCTestCase {
 /// Real `BrowserWindowController`s, never shown — so never key, and the app is
 /// never activated — on a real profile and space of `TabStore.shared`, with
 /// pages served by a loopback server.
-@MainActor
-final class AutomationParkingWindowTests: XCTestCase {
+nonisolated final class AutomationParkingWindowTests: XCTestCase {
 
     /// The page from the spike: a button, an input, and a log of every input
     /// event with whether it was trusted.
-    private static func page(_ name: String, background: String) -> String {
+    @MainActor private static func page(_ name: String, background: String) -> String {
         """
         <!doctype html><html><head><title>\(name)</title></head>
         <body style="margin:0;background:\(background)">
@@ -315,7 +313,7 @@ final class AutomationParkingWindowTests: XCTestCase {
     private var otherSpace: Space!
     private var windows: [BrowserWindowController] = []
     private var previousLastActiveSpaceID: UUID?
-    private var defaultFaviconFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
     /// The fixture extension of the context-menu tests: its directory, and its
     /// id in `ExtensionManager`.
     private var tempDirs: [URL] = []
@@ -323,9 +321,9 @@ final class AutomationParkingWindowTests: XCTestCase {
 
     /// Profiles whose configuration hosted a web view stay alive for the rest
     /// of the test process (see `ExtensionTabResolveTests.retainedProfiles`).
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         defaultFaviconFetch = FaviconLoader.shared.fetch
         FaviconLoader.shared.resetForTesting()
@@ -346,7 +344,7 @@ final class AutomationParkingWindowTests: XCTestCase {
         otherSpace = store.addSpace(name: "Other", emoji: "O", colorHex: "34C759", profileID: profile.id)
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         AutomationParking.revealsParkedWebViews = false
         let store = TabStore.shared
         for wc in windows where !wc.hasClosed { wc.window?.close() }
@@ -385,7 +383,7 @@ final class AutomationParkingWindowTests: XCTestCase {
 
     // MARK: Fixtures
 
-    private func makeWindow(on space: Space? = nil, width: CGFloat = 900, height: CGFloat = 640) -> BrowserWindowController {
+    @MainActor private func makeWindow(on space: Space? = nil, width: CGFloat = 900, height: CGFloat = 640) -> BrowserWindowController {
         let wc = BrowserWindowController(incognito: false)
         windows.append(wc)
         // Never let this window's split view touch the autosaved sidebar
@@ -397,15 +395,15 @@ final class AutomationParkingWindowTests: XCTestCase {
         return wc
     }
 
-    private func url(_ name: String) -> URL {
+    @MainActor private func url(_ name: String) -> URL {
         URL(string: "http://127.0.0.1:\(serverPort)/\(name)")!
     }
 
-    private func addTab(_ name: String, in space: Space? = nil) -> BrowserTab {
+    @MainActor private func addTab(_ name: String, in space: Space? = nil) -> BrowserTab {
         TabStore.shared.addTab(in: space ?? self.space, url: url(name))
     }
 
-    private func waitLoaded(_ tab: BrowserTab, _ name: String,
+    @MainActor private func waitLoaded(_ tab: BrowserTab, _ name: String,
                             file: StaticString = #filePath, line: UInt = #line) async throws {
         let expected = url(name)
         try await waitUntil("page \(name) to load", timeout: 60, file: file, line: line) {
@@ -413,28 +411,28 @@ final class AutomationParkingWindowTests: XCTestCase {
         }
     }
 
-    private func js(_ tab: BrowserTab, _ body: String) async throws -> Any? {
+    @MainActor private func js(_ tab: BrowserTab, _ body: String) async throws -> Any? {
         let webView = try XCTUnwrap(tab.webView)
         return try await webView.callAsyncJavaScript(body, arguments: [:], in: nil, contentWorld: .page)
     }
 
-    private func string(_ tab: BrowserTab, _ body: String) async throws -> String {
+    @MainActor private func string(_ tab: BrowserTab, _ body: String) async throws -> String {
         let value = try await js(tab, body)
         return try XCTUnwrap(value as? String)
     }
 
-    private func eventLog(_ tab: BrowserTab) async throws -> String {
+    @MainActor private func eventLog(_ tab: BrowserTab) async throws -> String {
         try await string(tab, "return window.log.join(' ')")
     }
 
-    private func windowPoint(in webView: WKWebView, pageX: CGFloat, pageY: CGFloat) -> NSPoint {
+    @MainActor private func windowPoint(in webView: WKWebView, pageX: CGFloat, pageY: CGFloat) -> NSPoint {
         let inView = NSPoint(x: pageX, y: webView.isFlipped ? pageY : webView.bounds.height - pageY)
         return webView.convert(inView, to: nil)
     }
 
     /// A mouse press and release sent straight to the view, as an extension's
     /// input emulation will.
-    private func click(_ webView: WKWebView, pageX: CGFloat, pageY: CGFloat) throws {
+    @MainActor private func click(_ webView: WKWebView, pageX: CGFloat, pageY: CGFloat) throws {
         let window = try XCTUnwrap(webView.window)
         let location = windowPoint(in: webView, pageX: pageX, pageY: pageY)
         func event(_ type: NSEvent.EventType) throws -> NSEvent {
@@ -447,7 +445,7 @@ final class AutomationParkingWindowTests: XCTestCase {
         webView.mouseUp(with: try event(.leftMouseUp))
     }
 
-    private func key(_ type: NSEvent.EventType, _ characters: String, keyCode: UInt16, in webView: WKWebView) throws -> NSEvent {
+    @MainActor private func key(_ type: NSEvent.EventType, _ characters: String, keyCode: UInt16, in webView: WKWebView) throws -> NSEvent {
         let window = try XCTUnwrap(webView.window)
         return try XCTUnwrap(NSEvent.keyEvent(
             with: type, location: .zero, modifierFlags: [],
@@ -456,14 +454,14 @@ final class AutomationParkingWindowTests: XCTestCase {
             isARepeat: false, keyCode: keyCode))
     }
 
-    private func typeKey(_ characters: String, keyCode: UInt16, in webView: WKWebView) throws {
+    @MainActor private func typeKey(_ characters: String, keyCode: UInt16, in webView: WKWebView) throws {
         AutomationInput.sendKey(try key(.keyDown, characters, keyCode: keyCode, in: webView), to: webView)
         AutomationInput.sendKey(try key(.keyUp, characters, keyCode: keyCode, in: webView), to: webView)
     }
 
     /// The sRGB colour of a snapshot's pixel three quarters of the way down
     /// its middle column — clear of the page's controls.
-    private func snapshot(_ webView: WKWebView) async throws -> (size: NSSize, red: CGFloat, green: CGFloat, blue: CGFloat) {
+    @MainActor private func snapshot(_ webView: WKWebView) async throws -> (size: NSSize, red: CGFloat, green: CGFloat, blue: CGFloat) {
         let image = try await webView.takeSnapshot(configuration: nil)
         let tiff = try XCTUnwrap(image.tiffRepresentation)
         let rep = try XCTUnwrap(NSBitmapImageRep(data: tiff))
@@ -473,7 +471,7 @@ final class AutomationParkingWindowTests: XCTestCase {
     }
 
     /// The selected tab is hosted live, visibly, filling the content area.
-    private func assertDisplays(_ wc: BrowserWindowController, _ tab: BrowserTab,
+    @MainActor private func assertDisplays(_ wc: BrowserWindowController, _ tab: BrowserTab,
                                 file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(wc.selectedTabID, tab.id, file: file, line: line)
         let container = tab.webViewContainer
@@ -485,7 +483,7 @@ final class AutomationParkingWindowTests: XCTestCase {
     }
 
     /// The tab is parked in `wc`: in its window, hidden, at content-area size.
-    private func assertParked(_ tab: BrowserTab, in wc: BrowserWindowController,
+    @MainActor private func assertParked(_ tab: BrowserTab, in wc: BrowserWindowController,
                               file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(tab.automationHosting, .parked, file: file, line: line)
         let container = tab.webViewContainer
@@ -497,14 +495,14 @@ final class AutomationParkingWindowTests: XCTestCase {
         XCTAssertFalse(wc.contentContainerView.bounds.isEmpty, file: file, line: line)
     }
 
-    private func assertNotInAnyWindow(_ tab: BrowserTab, file: StaticString = #filePath, line: UInt = #line) {
+    @MainActor private func assertNotInAnyWindow(_ tab: BrowserTab, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertNil(tab.webView?.window, file: file, line: line)
         XCTAssertNil(tab.webViewContainer?.superview, file: file, line: line)
     }
 
     // MARK: Attach
 
-    func testAttachingParksAHiddenTabAndChangesNeitherSelectionNorFocus() async throws {
+    @MainActor func testAttachingParksAHiddenTabAndChangesNeitherSelectionNorFocus() async throws {
         let wc = makeWindow()
         let window = try XCTUnwrap(wc.window)
         let a = addTab("a"), b = addTab("b"), c = addTab("c")
@@ -533,7 +531,7 @@ final class AutomationParkingWindowTests: XCTestCase {
         XCTAssertEqual(wc.automationParkedContainers.count, 1)
     }
 
-    func testAttachingTheDisplayedTabLeavesItDisplayed() async throws {
+    @MainActor func testAttachingTheDisplayedTabLeavesItDisplayed() async throws {
         let wc = makeWindow()
         let a = addTab("a")
         wc.selectTab(id: a.id)
@@ -545,7 +543,7 @@ final class AutomationParkingWindowTests: XCTestCase {
         XCTAssertTrue(a.automationDrivableWebView() === a.webView)
     }
 
-    func testAttachingWakesASleepingTabAndParksIt() async throws {
+    @MainActor func testAttachingWakesASleepingTabAndParksIt() async throws {
         let wc = makeWindow()
         let a = addTab("a"), b = addTab("b")
         wc.selectTab(id: a.id)
@@ -564,7 +562,7 @@ final class AutomationParkingWindowTests: XCTestCase {
 
     // MARK: Snapshot
 
-    func testAParkedTabSnapshotsItsCurrentPageAtTheContentAreaSize() async throws {
+    @MainActor func testAParkedTabSnapshotsItsCurrentPageAtTheContentAreaSize() async throws {
         let wc = makeWindow()
         let a = addTab("a"), b = addTab("b")
         wc.selectTab(id: a.id)
@@ -591,7 +589,7 @@ final class AutomationParkingWindowTests: XCTestCase {
         assertParked(b, in: wc)
     }
 
-    func testTheParkedContainerFollowsTheContentAreaSize() async throws {
+    @MainActor func testTheParkedContainerFollowsTheContentAreaSize() async throws {
         let wc = makeWindow(width: 900, height: 640)
         let a = addTab("a"), b = addTab("b")
         wc.selectTab(id: a.id)
@@ -615,7 +613,7 @@ final class AutomationParkingWindowTests: XCTestCase {
 
     // MARK: Input
 
-    func testSynthesizedInputReachesAParkedPageAsTrustedEventsWhileTheSelectedTabKeepsFocus() async throws {
+    @MainActor func testSynthesizedInputReachesAParkedPageAsTrustedEventsWhileTheSelectedTabKeepsFocus() async throws {
         let wc = makeWindow()
         let window = try XCTUnwrap(wc.window as? BrowserWindow)
         let a = addTab("a"), b = addTab("b")
@@ -691,7 +689,7 @@ final class AutomationParkingWindowTests: XCTestCase {
     /// first responder — the page the user is in (the spike saw it typed into
     /// that page's focused field, and a declined Cmd-key fire a menu item).
     /// Sent through `AutomationInput` it is dropped on the way back.
-    func testAKeyTheParkedPageDeclinesIsDroppedWhenWebKitHandsItBack() async throws {
+    @MainActor func testAKeyTheParkedPageDeclinesIsDroppedWhenWebKitHandsItBack() async throws {
         final class Probe: NSResponder {
             var received: [NSEvent] = []
             override func keyDown(with event: NSEvent) { received.append(event) }
@@ -743,7 +741,7 @@ final class AutomationParkingWindowTests: XCTestCase {
         XCTAssertEqual(AutomationInput.droppedKeyDownCount, droppedBefore + 1)
     }
 
-    func testOnlyKeyDownsSentThroughAutomationInputAreDropped() throws {
+    @MainActor func testOnlyKeyDownsSentThroughAutomationInputAreDropped() throws {
         let wc = makeWindow()
         let window = try XCTUnwrap(wc.window)
         func keyDown() throws -> NSEvent {
@@ -770,14 +768,14 @@ final class AutomationParkingWindowTests: XCTestCase {
 
     // MARK: Context menu
 
-    private static let extensionMenuItemTitle = "Parking test item"
+    @MainActor private static let extensionMenuItemTitle = "Parking test item"
 
     /// An extension with `activeTab` and one context-menu item, loaded into
     /// the fixture profile with its worker started. Call it after the window
     /// exists: WebKit asks for the open windows when a context loads, and
     /// afterwards only hears of a window when it becomes key — which these
     /// never do.
-    private func loadMenuExtension() async throws -> WKWebExtensionContext {
+    @MainActor private func loadMenuExtension() async throws -> WKWebExtensionContext {
         let ext = try await makeTestExtension(
             id: "parking-menu-\(UUID().uuidString.prefix(8).lowercased())",
             manifestJSON: """
@@ -800,14 +798,15 @@ final class AutomationParkingWindowTests: XCTestCase {
         // What an install records and a load restores (`recordDeclaredPermissions`).
         context.setPermissionStatus(.grantedExplicitly, for: .activeTab)
         context.setPermissionStatus(.grantedExplicitly, for: .contextMenus)
-        context.loadBackgroundContent { error in
-            if let error { print("loadBackgroundContent failed: \(error)") }
+        // Started, not awaited: the test waits for the worker itself.
+        Task {
+            do { try await context.loadBackgroundContent() } catch { print("loadBackgroundContent failed: \(error)") }
         }
         return context
     }
 
     /// The event WebKit hands `willOpenMenu` for a right click on the page.
-    private func rightMouseDown(in webView: WKWebView) throws -> NSEvent {
+    @MainActor private func rightMouseDown(in webView: WKWebView) throws -> NSEvent {
         let window = try XCTUnwrap(webView.window)
         return try XCTUnwrap(NSEvent.mouseEvent(
             with: .rightMouseDown, location: windowPoint(in: webView, pageX: 300, pageY: 300), modifierFlags: [],
@@ -817,7 +816,7 @@ final class AutomationParkingWindowTests: XCTestCase {
 
     /// The selected tab `a` and the parked, attached tab `b`, both loaded, in
     /// a window whose profile has the menu extension running.
-    private func makeMenuFixture() async throws
+    @MainActor private func makeMenuFixture() async throws
         -> (wc: BrowserWindowController, context: WKWebExtensionContext, a: BrowserTab, b: BrowserTab) {
         let wc = makeWindow()
         let context = try await loadMenuExtension()
@@ -843,7 +842,7 @@ final class AutomationParkingWindowTests: XCTestCase {
     /// *selected* tab, and reports a user gesture in it — which is what hands
     /// an extension `activeTab` there. For a parked page that tab is the one
     /// the user is looking at, and nobody clicked in it.
-    func testAContextMenuOnAParkedPageGrantsNoUserGestureInTheSelectedTab() async throws {
+    @MainActor func testAContextMenuOnAParkedPageGrantsNoUserGestureInTheSelectedTab() async throws {
         let (wc, context, a, b) = try await makeMenuFixture()
         let parked = try XCTUnwrap(b.automationDrivableWebView() as? BrowserWebView)
         XCTAssertTrue(parked.isInAutomationParking)
@@ -864,7 +863,7 @@ final class AutomationParkingWindowTests: XCTestCase {
     /// The other side of the rule above: the page the user right-clicked is
     /// the selected tab, and its menu still carries the extensions' items and
     /// still counts as a gesture — with a tab parked in the same window.
-    func testAContextMenuOnTheDisplayedPageStillGrantsTheUserGestureAndAddsExtensionItems() async throws {
+    @MainActor func testAContextMenuOnTheDisplayedPageStillGrantsTheUserGestureAndAddsExtensionItems() async throws {
         let (wc, context, a, b) = try await makeMenuFixture()
         let displayed = try XCTUnwrap(a.webView as? BrowserWebView)
         XCTAssertFalse(displayed.isInAutomationParking)
@@ -881,7 +880,7 @@ final class AutomationParkingWindowTests: XCTestCase {
 
     // MARK: Selection round trip
 
-    func testSelectingAnAttachedTabDisplaysItAndDeselectingParksItAgain() async throws {
+    @MainActor func testSelectingAnAttachedTabDisplaysItAndDeselectingParksItAgain() async throws {
         let wc = makeWindow()
         let window = try XCTUnwrap(wc.window)
         let a = addTab("a"), b = addTab("b")
@@ -910,7 +909,7 @@ final class AutomationParkingWindowTests: XCTestCase {
         XCTAssertEqual(title, "b", "the page survived the round trip")
     }
 
-    func testDeselectingEverythingParksTheAttachedTab() async throws {
+    @MainActor func testDeselectingEverythingParksTheAttachedTab() async throws {
         let wc = makeWindow()
         let a = addTab("a")
         wc.selectTab(id: a.id)
@@ -924,7 +923,7 @@ final class AutomationParkingWindowTests: XCTestCase {
         assertDisplays(wc, a)
     }
 
-    func testSwitchingSpacesParksTheAttachedTab() async throws {
+    @MainActor func testSwitchingSpacesParksTheAttachedTab() async throws {
         let wc = makeWindow()
         let a = addTab("a")
         let elsewhere = addTab("c", in: otherSpace)
@@ -941,7 +940,7 @@ final class AutomationParkingWindowTests: XCTestCase {
         assertNotInAnyWindow(elsewhere)
     }
 
-    func testASplitPaneCountsAsDisplayed() async throws {
+    @MainActor func testASplitPaneCountsAsDisplayed() async throws {
         let wc = makeWindow()
         let a = addTab("a"), b = addTab("b"), c = addTab("c")
         TabStore.shared.createSplit(draggedTabID: c.id, targetTabID: b.id, edge: .right, in: space)
@@ -967,7 +966,7 @@ final class AutomationParkingWindowTests: XCTestCase {
 
     // MARK: Two windows
 
-    func testAParkedTabFollowsOwnershipToASecondWindow() async throws {
+    @MainActor func testAParkedTabFollowsOwnershipToASecondWindow() async throws {
         let first = makeWindow(width: 900)
         let second = makeWindow(width: 1000)
         let a = addTab("a"), b = addTab("b"), c = addTab("c")
@@ -999,7 +998,7 @@ final class AutomationParkingWindowTests: XCTestCase {
         assertDisplays(second, c)
     }
 
-    func testAWindowShowingASnapshotClaimsTheTabOutOfParking() async throws {
+    @MainActor func testAWindowShowingASnapshotClaimsTheTabOutOfParking() async throws {
         let first = makeWindow(width: 900)
         let second = makeWindow(width: 1000)
         let a = addTab("a"), b = addTab("b")
@@ -1021,7 +1020,7 @@ final class AutomationParkingWindowTests: XCTestCase {
         assertDisplays(first, a)
     }
 
-    func testClosingTheWindowMovesItsAttachedTabsToAnotherWindow() async throws {
+    @MainActor func testClosingTheWindowMovesItsAttachedTabsToAnotherWindow() async throws {
         let first = makeWindow(width: 900)
         let second = makeWindow(width: 1000)
         let a = addTab("a"), b = addTab("b"), c = addTab("c")
@@ -1068,7 +1067,7 @@ final class AutomationParkingWindowTests: XCTestCase {
 
     // MARK: Close
 
-    func testClosingAParkedTabTearsParkingDown() async throws {
+    @MainActor func testClosingAParkedTabTearsParkingDown() async throws {
         let wc = makeWindow()
         let a = addTab("a"), b = addTab("b")
         wc.selectTab(id: a.id)
@@ -1091,7 +1090,7 @@ final class AutomationParkingWindowTests: XCTestCase {
         XCTAssertTrue(wc.automationParkedContainers.isEmpty)
     }
 
-    func testClosingTheDisplayedAttachedTabLeavesTheWindowOnItsNeighbour() async throws {
+    @MainActor func testClosingTheDisplayedAttachedTabLeavesTheWindowOnItsNeighbour() async throws {
         let wc = makeWindow()
         let a = addTab("a"), b = addTab("b")
         wc.selectTab(id: b.id)
@@ -1107,7 +1106,7 @@ final class AutomationParkingWindowTests: XCTestCase {
 
     // MARK: Release
 
-    func testReleasingTheAttachmentMakesItAnOrdinaryHiddenTabAgain() async throws {
+    @MainActor func testReleasingTheAttachmentMakesItAnOrdinaryHiddenTabAgain() async throws {
         let wc = makeWindow()
         let a = addTab("a"), b = addTab("b")
         wc.selectTab(id: a.id)
@@ -1143,7 +1142,7 @@ final class AutomationParkingWindowTests: XCTestCase {
 
     // MARK: The reserve switch
 
-    func testRevealSwitchUnhidesOnlyParkedContainersAndKeepsThemOffScreen() async throws {
+    @MainActor func testRevealSwitchUnhidesOnlyParkedContainersAndKeepsThemOffScreen() async throws {
         let wc = makeWindow()
         let a = addTab("a"), b = addTab("b")
         wc.selectTab(id: a.id)
@@ -1171,7 +1170,7 @@ final class AutomationParkingWindowTests: XCTestCase {
     /// assertion comparison of acceptance criterion 7. It puts a window on
     /// screen (never key, the app never activated), so it only runs when asked:
     /// `TEST_RUNNER_DETOUR_TASK132_3_PROBE=1 xcodebuild … -only-testing:…/testProcessAssertionProbe`.
-    func testProcessAssertionProbe() async throws {
+    @MainActor func testProcessAssertionProbe() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["DETOUR_TASK132_3_PROBE"] == "1",
                           "by-hand probe; set TEST_RUNNER_DETOUR_TASK132_3_PROBE=1")
         let wc = makeWindow()

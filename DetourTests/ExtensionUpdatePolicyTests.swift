@@ -3,22 +3,22 @@ import XCTest
 
 /// TASK-113: which updates are taken, and which permissions an update must have
 /// approved before it runs.
-final class ExtensionUpdatePolicyTests: XCTestCase {
+nonisolated final class ExtensionUpdatePolicyTests: XCTestCase {
 
-    private func manifest(_ json: String) throws -> ExtensionManifest {
+    @MainActor private func manifest(_ json: String) throws -> ExtensionManifest {
         try JSONDecoder().decode(ExtensionManifest.self, from: Data(json.utf8))
     }
 
     // MARK: - Added permissions (AC #4)
 
-    func testNoChangeIsNoDelta() throws {
+    @MainActor func testNoChangeIsNoDelta() throws {
         let m = try manifest("""
         {"manifest_version":3,"name":"x","version":"1","permissions":["tabs","storage"],"host_permissions":["https://a.example/*"]}
         """)
         XCTAssertTrue(ExtensionUpdatePolicy.addedPermissions(from: m, to: m).isEmpty)
     }
 
-    func testAddedAPIPermissionIsReportedUnlessWarningFree() throws {
+    @MainActor func testAddedAPIPermissionIsReportedUnlessWarningFree() throws {
         let old = try manifest("""
         {"manifest_version":3,"name":"x","version":"1","permissions":["tabs"]}
         """)
@@ -31,7 +31,7 @@ final class ExtensionUpdatePolicyTests: XCTestCase {
         XCTAssertFalse(delta.isEmpty)
     }
 
-    func testRemovedPermissionsAreNotADelta() throws {
+    @MainActor func testRemovedPermissionsAreNotADelta() throws {
         let old = try manifest("""
         {"manifest_version":3,"name":"x","version":"1","permissions":["tabs","history"],"host_permissions":["<all_urls>"]}
         """)
@@ -41,7 +41,7 @@ final class ExtensionUpdatePolicyTests: XCTestCase {
         XCTAssertTrue(ExtensionUpdatePolicy.addedPermissions(from: old, to: new).isEmpty)
     }
 
-    func testHostPatternCoveredByAnExistingBroaderPatternIsNotNew() throws {
+    @MainActor func testHostPatternCoveredByAnExistingBroaderPatternIsNotNew() throws {
         let old = try manifest("""
         {"manifest_version":3,"name":"x","version":"1","host_permissions":["<all_urls>"]}
         """)
@@ -60,7 +60,7 @@ final class ExtensionUpdatePolicyTests: XCTestCase {
                        ["https://other.test/*"])
     }
 
-    func testContentScriptMatchesCountAsHostAccessOnBothSides() throws {
+    @MainActor func testContentScriptMatchesCountAsHostAccessOnBothSides() throws {
         let old = try manifest("""
         {"manifest_version":3,"name":"x","version":"1",
          "content_scripts":[{"matches":["https://*.example.com/*"],"js":["c.js"]}]}
@@ -78,7 +78,7 @@ final class ExtensionUpdatePolicyTests: XCTestCase {
                        ["https://bank.test/*"])
     }
 
-    func testOptionalPermissionsAreNotCounted() throws {
+    @MainActor func testOptionalPermissionsAreNotCounted() throws {
         let old = try manifest("""
         {"manifest_version":3,"name":"x","version":"1"}
         """)
@@ -88,7 +88,7 @@ final class ExtensionUpdatePolicyTests: XCTestCase {
         XCTAssertTrue(ExtensionUpdatePolicy.addedPermissions(from: old, to: new).isEmpty)
     }
 
-    func testAnUnparsablePatternCountsAsNewWhenAddedAndCoversNothingWhenOld() throws {
+    @MainActor func testAnUnparsablePatternCountsAsNewWhenAddedAndCoversNothingWhenOld() throws {
         let old = try manifest("""
         {"manifest_version":3,"name":"x","version":"1","host_permissions":["not a pattern"]}
         """)
@@ -99,7 +99,7 @@ final class ExtensionUpdatePolicyTests: XCTestCase {
                        ["not a pattern", "https://a.example/*"])
     }
 
-    func testDeltaMergeDeduplicatesInOrder() {
+    @MainActor func testDeltaMergeDeduplicatesInOrder() {
         let a = ExtensionUpdatePolicy.PermissionDelta(permissions: ["tabs"], hostPermissions: ["https://a/*"])
         let b = ExtensionUpdatePolicy.PermissionDelta(permissions: ["history", "tabs"], hostPermissions: ["https://a/*", "https://b/*"])
         XCTAssertEqual(a.merged(with: b),
@@ -107,7 +107,7 @@ final class ExtensionUpdatePolicyTests: XCTestCase {
         XCTAssertEqual(ExtensionUpdatePolicy.PermissionDelta.none.merged(with: .none), .none)
     }
 
-    func testPendingApprovalRoundTripsThroughJSON() throws {
+    @MainActor func testPendingApprovalRoundTripsThroughJSON() throws {
         let pending = ExtensionUpdatePolicy.PendingApproval(
             version: "2.0", delta: .init(permissions: ["history"], hostPermissions: ["<all_urls>"]))
         let data = try JSONEncoder().encode(pending)
@@ -116,7 +116,7 @@ final class ExtensionUpdatePolicyTests: XCTestCase {
 
     // MARK: - Candidate validation (AC #3)
 
-    func testCandidateMustDeriveTheSameIDAndBeNewer() {
+    @MainActor func testCandidateMustDeriveTheSameIDAndBeNewer() {
         XCTAssertNoThrow(try ExtensionUpdatePolicy.validateCandidate(
             installedID: "abc", installedVersion: "1.0", candidateID: "abc", candidateVersion: "1.0.1"))
         XCTAssertThrowsError(try ExtensionUpdatePolicy.validateCandidate(
@@ -131,7 +131,7 @@ final class ExtensionUpdatePolicyTests: XCTestCase {
             installedID: "abc", installedVersion: "2.0", candidateID: "abc", candidateVersion: "1.9"))
     }
 
-    func testSHA256IsCheckedOnlyWhenAnnounced() throws {
+    @MainActor func testSHA256IsCheckedOnlyWhenAnnounced() throws {
         let data = Data("crx bytes".utf8)
         XCTAssertNoThrow(try ExtensionUpdatePolicy.validateSHA256(expected: nil, of: data))
         let good = Data(hex: "1c8d0e5b3c8b3aefbd5a7d93a26d5bd8b2ae7a2c1fa12e6a2ec6d2e66d0a4a95")

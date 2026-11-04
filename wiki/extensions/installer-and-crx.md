@@ -5,8 +5,11 @@ description: How an extension gets from a Chrome Web Store download or an unpack
 resource: ../../Detour/Extensions/Installer
 tags: [extensions, install, crx, security]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T10:05:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T04:48:28Z }
 sources:
+  - id: task-231-8
+    resource: backlog:TASK-231.8
+    title: Memory safety audit of raw-pointer code and untrusted-byte parsing
   - id: installer
     resource: ../../Detour/Extensions/Installer/ExtensionInstaller.swift
     title: ExtensionInstaller.swift
@@ -272,6 +275,18 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
   companion for the lengths inside a proof and inside `signed_header_data`.
   The rule for any new parsing here: compare a length against the bytes that
   remain, as `UInt64`, before converting or adding it.
+- The container's fixed fields (magic, version, header length) are read in
+  one place, `CRXUnpacker.container(of:)`, which the verifier and the
+  unpacker both call, so the archive whose signature was checked is the one
+  extracted. It reads them with `Data.littleEndianUInt32(at:)`, byte by byte
+  through the bounds-checked subscript, not with a raw-pointer load, and
+  every offset counts from
+  `startIndex`, so a `Data` slice parses as its own bytes (it used to trap).
+  A header length that runs past the file, or exactly to its end, is
+  refused by both readers before either slices it. Strict memory safety
+  checking reports nothing in either file; the one `unsafe` left is the
+  `Unmanaged` CFError out of `SecKeyCreateWithData`. See
+  [Strict memory safety](../platform/strict-memory-safety.md).[^task-231-8]
 - An install recorded as `webStore` before TASK-157 was classified by its
   host alone and is not re-checked; its next update has to carry the store's
   proof like any other. A copy that was already staged for it under the old
@@ -284,7 +299,7 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
 # Tests
 
 - [ExtensionIDDerivationTests](../../DetourTests/ExtensionIDDerivationTests.swift) — the id algorithm against a known value, and key extraction.
-- [CRX3VerifierTests](../../DetourTests/CRX3VerifierTests.swift) — RSA and ECDSA, tampering, a valid proof for the wrong key, one bad proof among good ones, malformed containers. `CRX3TestSupport` builds signed CRX3 files in the test.
+- [CRX3VerifierTests](../../DetourTests/CRX3VerifierTests.swift) — RSA and ECDSA, tampering, a valid proof for the wrong key, one bad proof among good ones, malformed containers (including a header length past the end of the file, from just past it to `UInt32.max`, in the verifier and the unpacker, and a CRX inside a larger buffer). `CRX3TestSupport` builds signed CRX3 files in the test.
 - [CRXInstallGateTests](../../DetourTests/CRXInstallGateTests.swift) — each refusal (a header key that did not sign the file, a forged proof beside a valid one, a tampered archive, unsigned, CRX2, truncated header, an installed id, a disagreeing manifest key), that nothing is unpacked or looked up for an unverified file, and the origin line. One test, off by default, runs real store files through the gate (`TEST_RUNNER_DETOUR_REAL_CRX_FILES`).
 - `ExtensionUpdateMigrationTests` — the v17 classification.
 
@@ -297,6 +312,7 @@ a small DER reader (`DER.pkcs1RSAPublicKey`). The real 1Password store CRX
 
 [^task-113]: Check for and install extension updates
 [^task-139]: A crafted CRX header can crash the app at install
+[^task-231-8]: Memory safety audit of raw-pointer code and untrusted-byte parsing
 [^task-151]: A first install from a CRX does not verify its signature
 [^task-158]: Remove CRXUnpacker.extractPublicKey and UnpackResult.publicKey, the unverified key nothing uses
 [^task-157]: A CRX is called 'From the Chrome Web Store' by its download host; the store's publisher proof is not checked

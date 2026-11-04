@@ -6,13 +6,13 @@ import AppKit
 /// The tile keeps its centred main favicon and adds a small chip in the
 /// top-right corner whenever the backing tab has a live or parked Peek; a
 /// favourite with no peek must render with no badge and no reserved space.
-final class FavoriteTileBadgeTests: XCTestCase {
+nonisolated final class FavoriteTileBadgeTests: XCTestCase {
 
-    private func makeImage() -> NSImage {
+    @MainActor private func makeImage() -> NSImage {
         NSImage(size: NSSize(width: 16, height: 16))
     }
 
-    private func makeSleepingTab(url: String = "https://fav.example.com/home") -> BrowserTab {
+    @MainActor private func makeSleepingTab(url: String = "https://fav.example.com/home") -> BrowserTab {
         BrowserTab(
             id: UUID(),
             title: "Tab",
@@ -23,32 +23,32 @@ final class FavoriteTileBadgeTests: XCTestCase {
         )
     }
 
-    private func makeFavorite(tab: BrowserTab?, url: String = "https://fav.example.com/home") -> Favorite {
+    @MainActor private func makeFavorite(tab: BrowserTab?, url: String = "https://fav.example.com/home") -> Favorite {
         Favorite(url: URL(string: url)!, title: "Fav", tab: tab)
     }
 
-    private func spinRunLoop(_ interval: TimeInterval = 0.05) {
+    @MainActor private func spinRunLoop(_ interval: TimeInterval = 0.05) {
         RunLoop.main.run(until: Date().addingTimeInterval(interval))
     }
 
-    private func showsPeekBadge(_ tile: FavoriteTileView) -> Bool {
+    @MainActor private func showsPeekBadge(_ tile: FavoriteTileView) -> Bool {
         !tile.peekBadgeView.isHidden
     }
 
     // MARK: - Tile
 
-    func testDormantFavoriteHasNoBadge() {
+    @MainActor func testDormantFavoriteHasNoBadge() {
         let tile = FavoriteTileView(favorite: makeFavorite(tab: nil), index: 0)
         XCTAssertFalse(showsPeekBadge(tile))
         XCTAssertNil(tile.peekFaviconImageView.image)
     }
 
-    func testLiveTabWithoutPeekHasNoBadge() {
+    @MainActor func testLiveTabWithoutPeekHasNoBadge() {
         let tile = FavoriteTileView(favorite: makeFavorite(tab: makeSleepingTab()), index: 0)
         XCTAssertFalse(showsPeekBadge(tile))
     }
 
-    func testPeekFaviconSetBeforeTileCreationShowsBadge() {
+    @MainActor func testPeekFaviconSetBeforeTileCreationShowsBadge() {
         let tab = makeSleepingTab()
         let favicon = makeImage()
         tab.peekURL = URL(string: "https://peek.example.org/article")
@@ -60,7 +60,7 @@ final class FavoriteTileBadgeTests: XCTestCase {
         XCTAssertTrue(tile.peekFaviconImageView.image === favicon)
     }
 
-    func testPeekFaviconPublishedAfterTileCreationShowsBadge() {
+    @MainActor func testPeekFaviconPublishedAfterTileCreationShowsBadge() {
         let tab = makeSleepingTab()
         let tile = FavoriteTileView(favorite: makeFavorite(tab: tab), index: 0)
         XCTAssertFalse(showsPeekBadge(tile))
@@ -74,7 +74,7 @@ final class FavoriteTileBadgeTests: XCTestCase {
         XCTAssertTrue(tile.peekFaviconImageView.image === favicon)
     }
 
-    func testClearPeekStateHidesBadgeOnRefresh() {
+    @MainActor func testClearPeekStateHidesBadgeOnRefresh() {
         let tab = makeSleepingTab()
         tab.peekURL = URL(string: "https://peek.example.org/article")
         tab.peekFavicon = makeImage()
@@ -88,7 +88,7 @@ final class FavoriteTileBadgeTests: XCTestCase {
         XCTAssertNil(tile.peekFaviconImageView.image)
     }
 
-    func testLivePeekFaviconShowsBadgeAndWinsOverParkedFavicon() {
+    @MainActor func testLivePeekFaviconShowsBadgeAndWinsOverParkedFavicon() {
         let tab = makeSleepingTab()
         let parked = makeImage()
         tab.peekFavicon = parked
@@ -107,7 +107,7 @@ final class FavoriteTileBadgeTests: XCTestCase {
         XCTAssertTrue(tile.peekFaviconImageView.image === live, "the live peek favicon wins over the parked one")
     }
 
-    func testBadgeFollowsFavoriteTabSwapOnRefresh() {
+    @MainActor func testBadgeFollowsFavoriteTabSwapOnRefresh() {
         let favorite = makeFavorite(tab: nil)
         let tile = FavoriteTileView(favorite: favorite, index: 0)
         XCTAssertFalse(showsPeekBadge(tile))
@@ -131,7 +131,7 @@ final class FavoriteTileBadgeTests: XCTestCase {
 
     // MARK: - Bar routing
 
-    func testRefreshTileRefreshesTheMatchingFavorite() throws {
+    @MainActor func testRefreshTileRefreshesTheMatchingFavorite() throws {
         let bar = FavoritesBarView(frame: .zero)
         let tabA = makeSleepingTab(url: "https://a.example.com/")
         let tabB = makeSleepingTab(url: "https://b.example.com/")
@@ -160,7 +160,7 @@ final class FavoriteTileBadgeTests: XCTestCase {
         XCTAssertTrue(tileB.peekFaviconImageView.image === favicon)
     }
 
-    func testReusedTileRefreshesBadgeOnUpdate() throws {
+    @MainActor func testReusedTileRefreshesBadgeOnUpdate() throws {
         let bar = FavoritesBarView(frame: NSRect(x: 0, y: 0, width: 200, height: 48))
         let tab = makeSleepingTab()
         let favorite = makeFavorite(tab: tab)

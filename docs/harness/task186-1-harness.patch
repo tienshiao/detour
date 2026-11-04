@@ -1,0 +1,184 @@
+TASK-186.1 runtime harness: dev mode's sidebar row (hazard border and host
+line) on a normal tab, a pinned tab, a favourite and a split pane, against
+non-local rows, light and dark, and following navigation. Temporary code,
+never committed to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task186-1-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # fixture pages app/pinned/fav/split.html in $SITE, each a <title> + <h1>:
+    python3 -m http.server 8186 --bind 127.0.0.1 --directory "$SITE" &
+    DETOUR_DATA_DIR=DetourVerify1861 DETOUR_VERIFY_DIR="$OUT" DETOUR_VERIFY_PORT=8186 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # a watcher polls $OUT/verify.log every 0.2 s and runs
+    # `screencapture -x -o -l <windowNumber> $OUT/<name>.png` for each
+    # "SHOOT <name> <windowNumber>" line (each shot has 2 s before the next
+    # change); wait for "done" (about 37 s), then kill that pid and the server.
+    git apply -R docs/harness/task186-1-harness.patch && xcodegen generate
+    rm -r -- ~/Library/Application\ Support/DetourVerify1861
+
+Seeds Dev App (localhost:8186), Remote Docs (a data: page), a pinned tab on
+127.0.0.1:8186, favourites on localhost:8186 and on a data: page, and a split
+of localhost:8186 (left) with a data: page (right). Each SHOOT also logs every
+visible row's title, host line, border frames and label frames, and every
+tile's border.
+
+Results (2026-10-24, all eight captures read and matching the log):
+- Light and dark, the selected dev row and unselected: Dev App and the pinned
+  row show the yellow/black dashed border round the row (x=-6 w=200 h=34, the
+  hover rect) and a second line, "localhost:8186" / "127.0.0.1:8186"; the
+  cell stays 36 pt (title 16..32, host line 5..18). The split row borders the
+  local left half only (w=96), with no host line. The local favourite tile has
+  the border, the data: one none. Remote Docs and the Reference pane: nothing.
+- Dev App loading a data: page dropped the border and host line ("Left
+  Local"); webView.goBack() to localhost restored both.
+- The pinned tab loading a data: page dropped them ("Pinned Elsewhere");
+  making the entry dormant restored them from the pinned URL (moon badge,
+  border, 127.0.0.1:8186).
+Not driven: hover over a dev row, a sleeping (not dormant) normal tab, a live
+favourite navigating away (covered by DevModeTests).
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..0f79b61 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask1861HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task1861Harness.swift b/Detour/App/Task1861Harness.swift
+new file mode 100644
+index 0000000..d36350f
+--- /dev/null
++++ b/Detour/App/Task1861Harness.swift
+@@ -0,0 +1,125 @@
++// TEMP TASK-186.1 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask1861HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var clock: TimeInterval = 3.0
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) {
++            clock += dt
++            let timer = Timer(timeInterval: clock, repeats: false) { _ in block() }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        guard let window = wc.window, let space = wc.activeSpace else { return log("no window/space") }
++        let store = TabStore.shared
++        func allSubviews(_ view: NSView) -> [NSView] {
++            view.subviews + view.subviews.flatMap(allSubviews)
++        }
++        func local(_ host: String, _ path: String) -> URL { URL(string: "http://\(host):\(port)/\(path)")! }
++        func dataPage(_ title: String) -> URL {
++            URL(string: "data:text/html,<title>\(title)</title><h1>\(title)</h1>".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)!
++        }
++        var tabs: [String: BrowserTab] = [:]
++
++        /// Every visible tab row and favourite tile, with its dev-mode state.
++        func describeRows(_ label: String) {
++            guard let content = window.contentView else { return }
++            let views = allSubviews(content)
++            for cell in views.compactMap({ $0 as? TabCellView }) where cell.window != nil && !cell.isHiddenOrHasHiddenAncestor {
++                let split = cell.splitTitleLabel.isHidden ? "" : " | \(cell.splitTitleLabel.stringValue)"
++                let host = cell.hostLineLabel.isHidden ? "-" : cell.hostLineLabel.stringValue
++                let borders = cell.devModeBorderFrames.map { "x=\(Int($0.minX)) w=\(Int($0.width)) h=\(Int($0.height))" }
++                log("\(label) ROW \"\(cell.titleLabel.stringValue)\(split)\" cellH=\(Int(cell.bounds.height)) host=\(host) borders=\(borders) "
++                    + "titleY=\(Int(cell.titleLabel.frame.minY))..\(Int(cell.titleLabel.frame.maxY)) hostY=\(Int(cell.hostLineLabel.frame.minY))..\(Int(cell.hostLineLabel.frame.maxY))")
++            }
++            for tile in views.compactMap({ $0 as? FavoriteTileView }) {
++                log("\(label) TILE \(tile.favorite.devModeURL?.absoluteString.prefix(40) ?? "nil") border=\(tile.showsDevModeBorder)")
++            }
++        }
++        func shoot(_ name: String) {
++            describeRows(name)
++            log("SHOOT \(name) \(window.windowNumber)")
++        }
++        func activate() {
++            NSApp.activate(ignoringOtherApps: true)
++            window.makeKeyAndOrderFront(nil)
++        }
++
++        // MARK: Seed
++        at(0) {
++            activate()
++            NSApp.appearance = NSAppearance(named: .aqua)
++            tabs["normal"] = store.addTab(in: space, url: local("localhost", "app.html"))
++            tabs["remote"] = store.addTab(in: space, url: dataPage("Remote Docs"))
++            tabs["pinned"] = store.addTab(in: space, url: local("127.0.0.1", "pinned.html"))
++            tabs["fav"] = store.addTab(in: space, url: local("localhost", "fav.html"))
++            tabs["favRemote"] = store.addTab(in: space, url: dataPage("Remote Fav"))
++            tabs["splitA"] = store.addTab(in: space, url: local("localhost", "split.html"))
++            tabs["splitB"] = store.addTab(in: space, url: dataPage("Reference"))
++            log("seeded")
++        }
++        at(3.0) {
++            guard let profileID = space.profile?.id else { return log("no profile") }
++            store.pinTab(id: tabs["pinned"]!.id, in: space)
++            _ = store.moveTabToFavorites(id: tabs["fav"]!.id, from: space, profileID: profileID)
++            _ = store.moveTabToFavorites(id: tabs["favRemote"]!.id, from: space, profileID: profileID)
++            store.createSplit(draggedTabID: tabs["splitB"]!.id, targetTabID: tabs["splitA"]!.id, edge: .right, in: space)
++            for tab in space.tabs where !tabs.values.contains(where: { $0 === tab }) {
++                store.closeTab(id: tab.id, in: space, undoable: false)
++            }
++            store.undoManager.removeAllActions()
++            wc.selectTab(id: tabs["remote"]!.id)
++            log("arranged: tabs=\(space.tabs.map { "\($0.title)<\($0.url?.absoluteString.prefix(30) ?? "")>" }) pinned=\(space.pinnedEntries.map(\.pinnedTitle))")
++        }
++        // Light: dev rows unselected, then the local tab selected.
++        at(2.0) { shoot("1-light-arranged") }
++        at(2.0) { wc.selectTab(id: tabs["normal"]!.id) }
++        at(1.5) { shoot("2-light-local-selected") }
++        // Dark.
++        at(2.0) { NSApp.appearance = NSAppearance(named: .darkAqua) }
++        at(1.0) { shoot("3-dark-local-selected") }
++        at(2.0) { wc.selectTab(id: tabs["remote"]!.id) }
++        at(1.5) { shoot("4-dark-arranged") }
++        // Navigate the local tab away and back (light).
++        at(2.0) {
++            NSApp.appearance = NSAppearance(named: .aqua)
++            tabs["normal"]!.load(dataPage("Left Local"))
++            log("normal: loading data page")
++        }
++        at(2.5) {
++            log("normal after leaving: url=\(tabs["normal"]!.url?.absoluteString.prefix(40) ?? "nil") active=\(DevMode.isActive(for: tabs["normal"]!))")
++            shoot("5-light-navigated-away")
++        }
++        at(2.0) {
++            tabs["normal"]!.webView?.goBack()
++            log("normal: goBack")
++        }
++        at(2.5) {
++            log("normal after back: url=\(tabs["normal"]!.url?.absoluteString ?? "nil") active=\(DevMode.isActive(for: tabs["normal"]!))")
++            shoot("6-light-navigated-back")
++        }
++        // A pinned entry whose live tab leaves the local URL loses the style; dormant restores it from the pinned URL.
++        at(2.0) { tabs["pinned"]!.load(dataPage("Pinned Elsewhere")) }
++        at(2.5) { shoot("7-light-pinned-away") }
++        at(2.0) {
++            if let index = space.pinnedEntries.firstIndex(where: { $0.tab === tabs["pinned"] }) {
++                wc.tabSidebar(wc.tabSidebar, didRequestClosePinnedTabAt: index)
++                log("pinned: made dormant, live=\(space.pinnedEntries[index].isLive)")
++            }
++        }
++        at(1.5) { shoot("8-light-pinned-dormant") }
++        at(2.0) { log("done") }
++    }
++}
++#endif

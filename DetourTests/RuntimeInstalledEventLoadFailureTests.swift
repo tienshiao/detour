@@ -7,23 +7,23 @@ import GRDB
 /// background content did not fail to load. The rule, the ledger undo behind it
 /// and the record of provisional claims; the worker side is in
 /// `NewProfileExtensionLoadTests`.
-final class RuntimeInstalledEventLoadFailureTests: XCTestCase {
+nonisolated final class RuntimeInstalledEventLoadFailureTests: XCTestCase {
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         try AppDatabase(dbQueue: try DatabaseQueue(configuration: Configuration()))
     }
 
-    private func claim(_ db: AppDatabase, version: String, profile: String = "p1") -> RuntimeInstalledEventClaim? {
+    @MainActor private func claim(_ db: AppDatabase, version: String, profile: String = "p1") -> RuntimeInstalledEventClaim? {
         db.claimRuntimeInstalledEventKeepingPrevious(extensionID: "ext", profileID: profile,
                                                      isPrivateProfile: false, currentVersion: version)
     }
 
-    private func pending(_ db: AppDatabase, version: String, profile: String = "p1") -> RuntimeInstalledEvent.Details? {
+    @MainActor private func pending(_ db: AppDatabase, version: String, profile: String = "p1") -> RuntimeInstalledEvent.Details? {
         db.pendingRuntimeInstalledEvent(extensionID: "ext", profileID: profile,
                                         isPrivateProfile: false, currentVersion: version)
     }
 
-    private func rows(_ db: AppDatabase) throws -> [ExtensionInstalledEventRecord] {
+    @MainActor private func rows(_ db: AppDatabase) throws -> [ExtensionInstalledEventRecord] {
         try db.dbQueue.read { db in
             try ExtensionInstalledEventRecord.order(Column("profileID")).fetchAll(db)
         }
@@ -31,7 +31,7 @@ final class RuntimeInstalledEventLoadFailureTests: XCTestCase {
 
     // MARK: - The rule
 
-    func testAClaimWithAListenerIsDelivered() {
+    @MainActor func testAClaimWithAListenerIsDelivered() {
         XCTAssertEqual(RuntimeInstalledEvent.claimDisposition(listenerCount: 1, backgroundLoadFailed: false), .deliver)
         XCTAssertEqual(RuntimeInstalledEvent.claimDisposition(listenerCount: 3, backgroundLoadFailed: false), .deliver)
         // A listener was there, so it is a delivery even from a context whose
@@ -39,25 +39,25 @@ final class RuntimeInstalledEventLoadFailureTests: XCTestCase {
         XCTAssertEqual(RuntimeInstalledEvent.claimDisposition(listenerCount: 1, backgroundLoadFailed: true), .deliver)
     }
 
-    func testAClaimWithoutAListenerIsProvisionalWhileTheLoadHasNotFailed() {
+    @MainActor func testAClaimWithoutAListenerIsProvisionalWhileTheLoadHasNotFailed() {
         XCTAssertEqual(RuntimeInstalledEvent.claimDisposition(listenerCount: 0, backgroundLoadFailed: false),
                        .deliverProvisionally)
     }
 
-    func testAClaimWithoutAListenerFromAFailedLoadIsWithheld() {
+    @MainActor func testAClaimWithoutAListenerFromAFailedLoadIsWithheld() {
         XCTAssertEqual(RuntimeInstalledEvent.claimDisposition(listenerCount: 0, backgroundLoadFailed: true), .withhold)
     }
 
     /// A caller that does not say how many listeners it has (a claim sent by
     /// hand) is treated as before the count existed.
-    func testAClaimThatDoesNotReportItsListenersIsDelivered() {
+    @MainActor func testAClaimThatDoesNotReportItsListenersIsDelivered() {
         XCTAssertEqual(RuntimeInstalledEvent.claimDisposition(listenerCount: nil, backgroundLoadFailed: false), .deliver)
         XCTAssertEqual(RuntimeInstalledEvent.claimDisposition(listenerCount: nil, backgroundLoadFailed: true), .deliver)
     }
 
     // MARK: - Undoing a claim
 
-    func testUndoingAnInstallClaimLeavesTheInstallOwed() throws {
+    @MainActor func testUndoingAnInstallClaimLeavesTheInstallOwed() throws {
         let db = try makeDatabase()
         let made = try XCTUnwrap(claim(db, version: "1.0"))
         XCTAssertEqual(made.details, .init(reason: .install, previousVersion: nil))
@@ -72,7 +72,7 @@ final class RuntimeInstalledEventLoadFailureTests: XCTestCase {
         XCTAssertNil(claim(db, version: "1.0"))
     }
 
-    func testUndoingAnUpdateClaimRestoresTheRowItReplaced() throws {
+    @MainActor func testUndoingAnUpdateClaimRestoresTheRowItReplaced() throws {
         let db = try makeDatabase()
         let first = try XCTUnwrap(claim(db, version: "1.0"))
         let update = try XCTUnwrap(claim(db, version: "2.0"))
@@ -86,7 +86,7 @@ final class RuntimeInstalledEventLoadFailureTests: XCTestCase {
 
     /// A reinstall owes `update` from the installed version; undoing the claim
     /// that answered it brings the reinstall mark back.
-    func testUndoingAReinstallClaimRestoresTheReinstallMark() throws {
+    @MainActor func testUndoingAReinstallClaimRestoresTheReinstallMark() throws {
         let db = try makeDatabase()
         _ = try XCTUnwrap(claim(db, version: "1.0"))
         db.markRuntimeInstalledEventReinstalled(extensionID: "ext")
@@ -98,7 +98,7 @@ final class RuntimeInstalledEventLoadFailureTests: XCTestCase {
         XCTAssertEqual(pending(db, version: "1.0"), .init(reason: .update, previousVersion: "1.0"))
     }
 
-    func testUndoIsOnlyForTheProfileAndExtensionThatClaimed() throws {
+    @MainActor func testUndoIsOnlyForTheProfileAndExtensionThatClaimed() throws {
         let db = try makeDatabase()
         let other = try XCTUnwrap(claim(db, version: "1.0", profile: "p2"))
         let made = try XCTUnwrap(claim(db, version: "1.0", profile: "p1"))
@@ -108,7 +108,7 @@ final class RuntimeInstalledEventLoadFailureTests: XCTestCase {
 
     /// The ledger moved on after the claim: a later delivery, a reinstall mark or
     /// a removed extension is not overwritten by a late failure report.
-    func testUndoLeavesALedgerThatMovedOn() throws {
+    @MainActor func testUndoLeavesALedgerThatMovedOn() throws {
         let db = try makeDatabase()
         let made = try XCTUnwrap(claim(db, version: "1.0"))
 
@@ -125,7 +125,7 @@ final class RuntimeInstalledEventLoadFailureTests: XCTestCase {
         XCTAssertEqual(try rows(db), [])
     }
 
-    func testAnUndoneClaimCannotBeUndoneTwice() throws {
+    @MainActor func testAnUndoneClaimCannotBeUndoneTwice() throws {
         let db = try makeDatabase()
         let made = try XCTUnwrap(claim(db, version: "1.0"))
         XCTAssertTrue(db.undoRuntimeInstalledEventClaim(made))
@@ -138,9 +138,9 @@ final class RuntimeInstalledEventLoadFailureTests: XCTestCase {
 
     // MARK: - Provisional claims
 
-    private final class FakeContext {}
+    @MainActor private final class FakeContext {}
 
-    func testTheClaimingContextsLoadFailureUndoesItsClaim() throws {
+    @MainActor func testTheClaimingContextsLoadFailureUndoesItsClaim() throws {
         let db = try makeDatabase()
         let claims = ProvisionalInstalledEventClaims()
         let context = FakeContext()
@@ -157,7 +157,7 @@ final class RuntimeInstalledEventLoadFailureTests: XCTestCase {
     /// The recovery reload gives the extension a new context; a late or
     /// repeated failure report from the old one must not undo the new one's
     /// claim, nor one from another profile or extension.
-    func testAnotherContextsFailureUndoesNothing() throws {
+    @MainActor func testAnotherContextsFailureUndoesNothing() throws {
         let db = try makeDatabase()
         let claims = ProvisionalInstalledEventClaims()
         let claimant = FakeContext()
@@ -173,7 +173,7 @@ final class RuntimeInstalledEventLoadFailureTests: XCTestCase {
         XCTAssertNotNil(claims.contextFailedToLoad(claimant, extensionID: "ext", profileID: "p1", database: db))
     }
 
-    func testANewerClaimReplacesAnOlderOneOnRecord() throws {
+    @MainActor func testANewerClaimReplacesAnOlderOneOnRecord() throws {
         let db = try makeDatabase()
         let claims = ProvisionalInstalledEventClaims()
         let old = FakeContext()
@@ -189,7 +189,7 @@ final class RuntimeInstalledEventLoadFailureTests: XCTestCase {
         XCTAssertEqual(try rows(db), [first.written])
     }
 
-    func testAClaimWithoutARecordIsNotUndoneByAFailure() throws {
+    @MainActor func testAClaimWithoutARecordIsNotUndoneByAFailure() throws {
         let db = try makeDatabase()
         let claims = ProvisionalInstalledEventClaims()
         _ = try XCTUnwrap(claim(db, version: "1.0"))

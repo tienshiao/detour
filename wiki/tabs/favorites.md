@@ -202,6 +202,9 @@ next save. A profile with no space left restores its favourites dormant.
 - The peek chip and the favicon are decorative for hit-testing
   (`FavoriteTileView.hitTest`). A plain non-opaque subview there would become
   the hit view and turn a click on the badge corner into a window drag.
+  Hovering the chip still shows the Peek's
+  [hover card](../features/tab-hover-card.md): the tile's own tracking area
+  decides it from the pointer's position (TASK-229).
 - The "Drop to add favorite" hint overlays the space header while the bar is
   empty; it never changes the list's layout.
 

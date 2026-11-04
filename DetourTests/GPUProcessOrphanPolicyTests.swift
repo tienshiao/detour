@@ -6,18 +6,18 @@ import WebKit
 /// process WebKit "terminated" while its main thread was blocked never exits,
 /// and every web process still connected to it freezes on its next synchronous
 /// call to it.
-final class GPUProcessOrphanPolicyTests: XCTestCase {
+nonisolated final class GPUProcessOrphanPolicyTests: XCTestCase {
 
     private let policy = GPUProcessOrphanPolicy()
     private let now = Date(timeIntervalSinceReferenceDate: 1_000_000)
 
-    private func process(_ pid: pid_t, age: TimeInterval) -> GPUProcessTable.Entry {
+    @MainActor private func process(_ pid: pid_t, age: TimeInterval) -> GPUProcessTable.Entry {
         .init(pid: pid, startedAt: now.addingTimeInterval(-age))
     }
 
     /// What two looks `confirmationDelay` apart conclude: the second look's
     /// verdict, given the first look's suspects. `now` is the second look.
-    private func confirmed(_ processes: [GPUProcessTable.Entry],
+    @MainActor private func confirmed(_ processes: [GPUProcessTable.Entry],
                            current: GPUProcessRecycler.WebKitGPUProcess) -> GPUProcessOrphanPolicy.Verdict {
         let firstLook = now.addingTimeInterval(-policy.confirmationDelay)
         let first = policy.verdict(processes: processes, current: current, suspects: [], now: firstLook)
@@ -27,7 +27,7 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
 
     // MARK: - What is never an orphan
 
-    func testNothingIsAnOrphanWhenWebKitCouldNotBeAsked() {
+    @MainActor func testNothingIsAnOrphanWhenWebKitCouldNotBeAsked() {
         // Not knowing is not "disowned".
         let verdict = confirmed([process(100, age: 3600)], current: .unknown)
         XCTAssertEqual(verdict.orphans, [])
@@ -35,7 +35,7 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
         XCTAssertNil(verdict.recheckAt)
     }
 
-    func testWhenWebKitHasNoGPUProcessEveryOldOneOfOursIsAnOrphan() {
+    @MainActor func testWhenWebKitHasNoGPUProcessEveryOldOneOfOursIsAnOrphan() {
         // WebKit dropped its GPU process and nothing has asked for another: the
         // one tab is frozen on the process that was dropped, so it never will.
         let young = process(300, age: 3)
@@ -45,14 +45,14 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
                        "one that is still launching is not named yet either")
     }
 
-    func testTheCurrentGPUProcessIsNeverAnOrphan() {
+    @MainActor func testTheCurrentGPUProcessIsNeverAnOrphan() {
         let verdict = confirmed([process(100, age: 3600)], current: .running(100))
         XCTAssertEqual(verdict.orphans, [])
         XCTAssertEqual(verdict.suspects, [])
         XCTAssertNil(verdict.recheckAt)
     }
 
-    func testAYoungProcessIsLeftAloneAndLookedAtAgainWhenItIsOldEnough() {
+    @MainActor func testAYoungProcessIsLeftAloneAndLookedAtAgainWhenItIsOldEnough() {
         // Still launching, or just terminated and on its way out.
         let young = process(200, age: 59)
         let verdict = confirmed([process(100, age: 3600), young], current: .running(100))
@@ -62,13 +62,13 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
 
     // MARK: - Orphans
 
-    func testAnOldProcessThatIsNotTheCurrentOneIsAnOrphan() {
+    @MainActor func testAnOldProcessThatIsNotTheCurrentOneIsAnOrphan() {
         let verdict = confirmed([process(100, age: 3600), process(200, age: 65)], current: .running(100))
         XCTAssertEqual(verdict.orphans, [process(200, age: 65)])
         XCTAssertNil(verdict.recheckAt)
     }
 
-    func testEveryOldDisownedProcessIsAnOrphan() {
+    @MainActor func testEveryOldDisownedProcessIsAnOrphan() {
         let processes = [process(100, age: 10), process(200, age: 7200), process(300, age: 66), process(400, age: 5)]
         let verdict = confirmed(processes, current: .running(100))
         XCTAssertEqual(verdict.orphans, [process(200, age: 7200), process(300, age: 66)])
@@ -76,13 +76,13 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
                        "the young one is looked at again")
     }
 
-    func testTheEarliestYoungProcessSetsTheRecheck() {
+    @MainActor func testTheEarliestYoungProcessSetsTheRecheck() {
         let processes = [process(200, age: 10), process(300, age: 40)]
         let verdict = confirmed(processes, current: .running(100))
         XCTAssertEqual(verdict.recheckAt, now.addingTimeInterval(20))
     }
 
-    func testAStartTimeInTheFutureCountsAsYoungAndIsRecheckedWithinOneMinimumAge() {
+    @MainActor func testAStartTimeInTheFutureCountsAsYoungAndIsRecheckedWithinOneMinimumAge() {
         // The wall clock was set back after the process started.
         let verdict = confirmed([process(200, age: -3600)], current: .running(100))
         XCTAssertEqual(verdict.orphans, [])
@@ -91,7 +91,7 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
 
     // MARK: - Two looks
 
-    func testAProcessThatLooksAbandonedIsOnlySuspectedAtFirst() {
+    @MainActor func testAProcessThatLooksAbandonedIsOnlySuspectedAtFirst() {
         // Its age is wall-clock time. If the Mac slept right after WebKit
         // spawned it, it is a minute old on wake and WebKit has not named it
         // yet: one look cannot tell that from abandoned.
@@ -102,7 +102,7 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
         XCTAssertEqual(first.recheckAt, now.addingTimeInterval(policy.confirmationDelay))
     }
 
-    func testASuspectWebKitAdoptsInTheMeantimeIsCleared() {
+    @MainActor func testASuspectWebKitAdoptsInTheMeantimeIsCleared() {
         let old = process(200, age: 75)
         let first = policy.verdict(processes: [old], current: .notRunning, suspects: [], now: now)
         let later = now.addingTimeInterval(policy.confirmationDelay)
@@ -111,7 +111,7 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
         XCTAssertEqual(second.suspects, [])
     }
 
-    func testASecondLookTooSoonConfirmsNothing() {
+    @MainActor func testASecondLookTooSoonConfirmsNothing() {
         // Two web processes reported unresponsive a moment apart: two sweeps.
         let old = process(200, age: 75)
         let first = policy.verdict(processes: [old], current: .notRunning, suspects: [], now: now)
@@ -122,7 +122,7 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
         XCTAssertEqual(second.recheckAt, now.addingTimeInterval(policy.confirmationDelay))
     }
 
-    func testASuspicionIsAboutOneProcessNotOnePid() {
+    @MainActor func testASuspicionIsAboutOneProcessNotOnePid() {
         // The pid was reused by a new GPU process between the looks.
         let first = policy.verdict(processes: [process(200, age: 75)], current: .notRunning, suspects: [], now: now)
         let later = now.addingTimeInterval(policy.confirmationDelay)
@@ -132,7 +132,7 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
         XCTAssertEqual(second.suspects, [.init(process: reused, since: later)])
     }
 
-    func testNotBeingAbleToAskForgetsTheSuspects() {
+    @MainActor func testNotBeingAbleToAskForgetsTheSuspects() {
         let first = policy.verdict(processes: [process(200, age: 75)], current: .notRunning, suspects: [], now: now)
         let second = policy.verdict(processes: [process(200, age: 75)], current: .unknown, suspects: first.suspects,
                                     now: now.addingTimeInterval(policy.confirmationDelay))
@@ -142,7 +142,7 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
 
     // MARK: - Kill allowance
 
-    func testThreeKillsAnHourAndNoMore() {
+    @MainActor func testThreeKillsAnHourAndNoMore() {
         func ago(_ seconds: TimeInterval) -> Date { now.addingTimeInterval(-seconds) }
         XCTAssertEqual(policy.killAllowance(earlierKills: [], now: now), 3)
         XCTAssertEqual(policy.killAllowance(earlierKills: [ago(10), ago(600)], now: now), 1)
@@ -154,11 +154,11 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
 
     // MARK: - Environment overrides
 
-    func testEnvironmentOverridesTheMinimumAge() {
+    @MainActor func testEnvironmentOverridesTheMinimumAge() {
         XCTAssertEqual(GPUProcessOrphanPolicy.fromEnvironment(["DETOUR_GPU_ORPHAN_MIN_AGE_SECONDS": "5"]).minimumAge, 5)
     }
 
-    func testEnvironmentIgnoresNonsense() {
+    @MainActor func testEnvironmentIgnoresNonsense() {
         for raw in ["", "abc", "-1", "nan", "inf"] {
             XCTAssertEqual(GPUProcessOrphanPolicy.fromEnvironment(["DETOUR_GPU_ORPHAN_MIN_AGE_SECONDS": raw]),
                            GPUProcessOrphanPolicy(), raw)
@@ -167,21 +167,21 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
 
     // MARK: - The process table
 
-    func testThisProcessIsNotAGPUProcess() {
+    @MainActor func testThisProcessIsNotAGPUProcess() {
         XCTAssertNil(GPUProcessTable.entry(pid: getpid(), owner: getpid()))
     }
 
-    func testAMissingProcessHasNoEntry() {
+    @MainActor func testAMissingProcessHasNoEntry() {
         XCTAssertNil(GPUProcessTable.entry(pid: 999_999, owner: getpid()))
     }
 
-    func testStartTimeOfThisProcessIsInThePast() throws {
+    @MainActor func testStartTimeOfThisProcessIsInThePast() throws {
         let started = try XCTUnwrap(GPUProcessTable.startTime(of: getpid()))
         XCTAssertLessThan(started, Date())
         XCTAssertGreaterThan(started, Date().addingTimeInterval(-7 * 24 * 3600))
     }
 
-    func testTheResponsibilityLookupResolves() {
+    @MainActor func testTheResponsibilityLookupResolves() {
         // The reaper tells this app's GPU processes from another app's by the
         // process the system holds responsible for them. If the lookup ever
         // stops resolving, the reaper finds nothing and the freeze of TASK-175
@@ -192,8 +192,7 @@ final class GPUProcessOrphanPolicyTests: XCTestCase {
     /// The GPU process a live web view reports is found in the process table
     /// and attributed to this process. Skipped when WebKit launches no GPU
     /// process for a plain page in this environment.
-    @MainActor
-    func testTheGPUProcessOfALiveWebViewIsListedAsOurs() async throws {
+    @MainActor func testTheGPUProcessOfALiveWebViewIsListedAsOurs() async throws {
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
         webView.loadHTMLString("<canvas id=c></canvas><script>document.getElementById('c').getContext('webgl')</script>",
                                baseURL: nil)

@@ -25,14 +25,61 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// `runtime.lastError` for a failed callback-style call (TASK-23).
     static let lastErrorRelayType = "runtime.lastErrorRelay"
 
+    /// A worker's polyfill request sets `errorEnvelope: true`, and a failure
+    /// is then answered as a successful reply `{ errorEnvelopeKey: text }`
+    /// rather than an error: WebKit rewrites any error crossing
+    /// `runtime.sendNativeMessage` ("Invalid call to
+    /// runtime.sendNativeMessage(). <Text>."), and the polyfill rejects with
+    /// the text exactly as a page would see it (TASK-255).
+    static let errorEnvelopeKey = "__detourPolyfillError"
+
+    /// On the same requests a success is wrapped too, as
+    /// `{ successEnvelopeKey: true, successEnvelopeValueKey: result }` (the
+    /// value key left out for a nil result), so a handler result that happens
+    /// to carry `errorEnvelopeKey` is never read as a failure (TASK-262).
+    static let successEnvelopeKey = "__detourPolyfillOk"
+    static let successEnvelopeValueKey = "value"
+
+    /// Answers a failed native-message request from a worker: as the
+    /// `errorEnvelopeKey` reply when the request asked for it, otherwise as
+    /// an error (which WebKit rewrites).
+    static func replyFailure(_ text: String, to body: [String: Any],
+                             replyHandler: (Any?, (any Error)?) -> Void) {
+        if body["errorEnvelope"] as? Bool == true {
+            replyHandler([errorEnvelopeKey: text], nil)
+        } else {
+            replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
+                                      userInfo: [NSLocalizedDescriptionKey: text]))
+        }
+    }
+
+    /// Answers a successful native-message request from a worker: wrapped in
+    /// the success envelope when the request asked for envelopes, otherwise
+    /// as the bare result.
+    static func replySuccess(_ result: Any?, to body: [String: Any],
+                             replyHandler: (Any?, (any Error)?) -> Void) {
+        guard body["errorEnvelope"] as? Bool == true else {
+            replyHandler(result, nil)
+            return
+        }
+        var envelope: [String: Any] = [successEnvelopeKey: true]
+        if let result { envelope[successEnvelopeValueKey] = result }
+        replyHandler(envelope, nil)
+    }
+
     /// Longest relayed lastError message, in characters.
     static let lastErrorRelayMessageLimit = 2048
+
+    /// The answer to a `notifications.*` request whose profile has been
+    /// released, so no owner can be named for it.
+    static let notificationsProfileGone = "notifications: the profile is gone"
 
     /// The profile whose extension controller this handler serves.
     private(set) weak var profile: Profile?
 
     init(profile: Profile) {
         self.profile = profile
+        self.profileID = profile.id
         super.init()
     }
 
@@ -45,6 +92,74 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// The clock `history.search` measures its default range from (TASK-153),
     /// as a test seam for the same reason. Production never assigns it.
     var now: () -> Date = Date.init
+
+    /// The manager behind `notifications.*`, as a test seam for the same
+    /// reason: a test hands it a fake notification center (TASK-234), and
+    /// hands the same one to two profiles' handlers to check they stay apart
+    /// (TASK-238). Production never assigns it, and a test sets it back to nil.
+    var notificationManagerOverride: ExtensionNotificationManager?
+
+    /// One manager for every profile; requests are scoped by `profile` (see
+    /// `notificationOwner`). Read at the first notification call, so the
+    /// shared manager (and with it the system center's delegate) is not set
+    /// up when a profile builds its handler.
+    private var notificationManager: ExtensionNotificationManager {
+        notificationManagerOverride ?? .shared
+    }
+
+    /// Who a `notifications.*` request acts for: this handler's profile and the
+    /// verified extension id. Once the profile is gone there is no owner to
+    /// name, so this answers the request with `notificationsProfileGone` and
+    /// returns nil.
+    private func notificationOwner(_ extensionID: String,
+                                   orRefuse replyHandler: (Any?, String?) -> Void) -> ExtensionNotificationManager.Owner? {
+        guard profile != nil else {
+            replyHandler(nil, Self.notificationsProfileGone)
+            return nil
+        }
+        return ExtensionNotificationManager.Owner(profileID: profileID, extensionID: extensionID)
+    }
+
+    /// Whether `extensionID` holds the `notifications` permission — declared,
+    /// or optional and granted in this profile (TASK-250) — as Chrome gates
+    /// the namespace (TASK-239). If not, answers the request with the refusal
+    /// and returns false.
+    private func notificationsPermitted(_ extensionID: String,
+                                        orRefuse replyHandler: (Any?, String?) -> Void) -> Bool {
+        if let refusal = permissionRefusal("notifications", extensionID: extensionID) {
+            replyHandler(nil, refusal)
+            return false
+        }
+        return true
+    }
+
+    /// This handler's profile id: every owner it names. Kept rather than read
+    /// from `profile`, because the removals below run while the profile is
+    /// being torn down.
+    private let profileID: UUID
+
+    /// The manager whose notifications a removal takes away: the override, or
+    /// the shared one only if something created it this launch (otherwise
+    /// there is nothing to remove, and the system center stays untouched).
+    private var existingNotificationManager: ExtensionNotificationManager? {
+        notificationManagerOverride ?? .sharedIfCreated
+    }
+
+    /// Takes away the notifications `extensionID` created in this profile.
+    /// `Profile.unloadExtension` calls it: a context that is gone cannot hear
+    /// about them or clear them, and a reloaded one starts with none.
+    func removeNotifications(ofExtension extensionID: String) {
+        existingNotificationManager?.removeAll(
+            for: ExtensionNotificationManager.Owner(profileID: profileID, extensionID: extensionID))
+    }
+
+    /// Takes away every extension's notifications in this profile: when the
+    /// profile is deleted, and when the Private session ends
+    /// (`TabStore.endPrivateSessionIfUnused`) or the app quits, so none carries
+    /// over into the next one.
+    func removeAllNotifications() {
+        existingNotificationManager?.removeAll(profileID: profileID)
+    }
 
     /// Active offscreen document hosts, keyed by extensionID.
     var offscreenHosts: [String: OffscreenDocumentHost] = [:]
@@ -270,6 +385,86 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         }
     }
 
+    // MARK: - chrome.permissions for permissions WebKit does not know (TASK-260)
+
+    /// Chromium's refusal of a `permissions.request` naming a permission the
+    /// manifest lists in neither `permissions` nor `optional_permissions`.
+    static let permissionRequestNotInManifestError = "Only permissions specified in the manifest may be requested."
+
+    /// Chromium's refusal of a `permissions.remove` naming a permission the
+    /// manifest does not list.
+    static let permissionRemoveNotInManifestError = "Only permissions specified in the manifest may be removed."
+
+    /// Chromium's refusal of a `permissions.remove` naming a required permission.
+    static let permissionRemoveRequiredError = "You cannot remove required permissions."
+
+    /// The `permissions` of a `permissions.*` request from the polyfill's
+    /// wrapper: a non-empty array of names in
+    /// `WebExtension.permissionsOutsideWebKit`, without repeats. Anything else
+    /// is refused: the wrapper sends WebKit's own names to WebKit, and a
+    /// request made past it gets no other name answered here.
+    static func outsideWebKitPermissionNames(from params: [String: Any]) -> Result<[String], PolyfillArgumentError> {
+        guard let raw = params["permissions"] as? [Any], !raw.isEmpty else {
+            return .failure(PolyfillArgumentError(message: "permissions: a non-empty permissions array is required"))
+        }
+        var names: [String] = []
+        for value in raw {
+            guard let name = value as? String, WebExtension.permissionsOutsideWebKit.contains(name) else {
+                return .failure(PolyfillArgumentError(
+                    message: "permissions: \(value) is not a permission Detour answers for"))
+            }
+            if !names.contains(name) { names.append(name) }
+        }
+        return .success(names)
+    }
+
+    /// What a `permissions.request` of `names` does, before anyone is asked.
+    enum PermissionRequestPlan: Equatable {
+        /// Refused with this message: a name the manifest does not list.
+        case refuse(String)
+        /// Answered without a prompt: true when every name is already held,
+        /// false when one is required but switched off in Settings, or denied.
+        case answer(Bool)
+        /// Prompt for these names: optional, undecided and not held.
+        case prompt([String])
+    }
+
+    /// Chrome's rule for which names a request may carry: only manifest
+    /// names (a required one is granted already, so it counts as held). A
+    /// held name needs no prompt. A denied name, and a required one switched
+    /// off in Settings, make the request answer false without asking, as
+    /// WebKit answers a request for a permission it holds as denied: only the
+    /// Settings switch turns those back on.
+    static func permissionRequestPlan(_ names: [String], manifest: ExtensionManifest,
+                                      context: WKWebExtensionContext?, now: Date = Date()) -> PermissionRequestPlan {
+        // Every name is checked against the manifest before any is answered,
+        // as in Chrome: a denied name must not hide an undeclared one.
+        for name in names where manifest.permissions?.contains(name) != true
+            && manifest.optionalPermissions?.contains(name) != true {
+            return .refuse(permissionRequestNotInManifestError)
+        }
+        var undecided: [String] = []
+        for name in names {
+            let required = manifest.permissions?.contains(name) == true
+            if permissionIsActive(name, manifest: manifest, context: context, now: now) { continue }
+            let key = WKWebExtension.Permission(rawValue: name)
+            if required { return .answer(false) }
+            if let deniedUntil = context?.deniedPermissions[key], deniedUntil > now { return .answer(false) }
+            undecided.append(name)
+        }
+        return undecided.isEmpty ? .answer(true) : .prompt(undecided)
+    }
+
+    /// Chrome's refusal of a `permissions.remove` of `names`, or nil when
+    /// each is optional: not one the manifest lists, or a required one.
+    static func permissionRemovalRefusal(_ names: [String], manifest: ExtensionManifest) -> String? {
+        for name in names {
+            if manifest.permissions?.contains(name) == true { return permissionRemoveRequiredError }
+            if manifest.optionalPermissions?.contains(name) != true { return permissionRemoveNotInManifestError }
+        }
+        return nil
+    }
+
     /// Chrome's `runtime.requestUpdateCheck` answer for an updater outcome.
     /// An extension that cannot update, and a check that failed, both read as
     /// `no_update` — Chrome reports no error for either. An update Detour just
@@ -289,7 +484,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
 
     /// A `chrome.history.search` query that passed validation (TASK-138), with
     /// Chrome's defaults applied.
-    struct HistorySearchQuery: Equatable {
+    nonisolated struct HistorySearchQuery: Equatable, Sendable {
         var text: String
         var maxResults: Int
         /// Seconds since 1970, as the history database stores visit times
@@ -380,6 +575,47 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         return .success(parsed)
     }
 
+    /// `management.getPermissionWarningsByManifest(manifestStr)` (TASK-257):
+    /// the lines Detour's install prompt lists for the manifest — its required
+    /// permissions and its site access, not what it may request later — as
+    /// `ExtensionPermissionDescriptions.warnings` gives them. That is not
+    /// Chrome's list: Chrome leaves out permissions that carry no warning
+    /// (`storage`, `alarms`) and merges hosts, where Detour's prompt names
+    /// every permission. The refusals use Chromium's texts
+    /// (`management_api_constants.h`), except that malformed JSON reads
+    /// `kManifestParseError` rather than the JSON parser's own message.
+    static func permissionWarnings(from params: [String: Any]) -> Result<[String], PolyfillArgumentError> {
+        guard let manifestString = params["manifestStr"] as? String else {
+            return .failure(PolyfillArgumentError(
+                message: "management.getPermissionWarningsByManifest: manifestStr must be a string"))
+        }
+        let data = Data(manifestString.utf8)
+        guard (try? JSONSerialization.jsonObject(with: data)) is [String: Any] else {
+            return .failure(PolyfillArgumentError(message: "Failed to parse manifest."))
+        }
+        guard let manifest = try? JSONDecoder().decode(ExtensionManifest.self, from: data) else {
+            return .failure(PolyfillArgumentError(message: "Failed to create extension from manifest."))
+        }
+        return .success(ExtensionPermissionDescriptions.warnings(
+            permissions: manifest.permissions ?? [], hostPermissions: manifest.hostPermissions ?? []))
+    }
+
+    /// `management.uninstallSelf(options)`'s `showConfirmDialog`: `options`
+    /// absent or null, or an object whose `showConfirmDialog` is absent, null
+    /// or a boolean. Anything else is refused, as Chrome's schema check does.
+    static func uninstallSelfShowsConfirmDialog(from params: [String: Any]) -> Result<Bool, PolyfillArgumentError> {
+        guard let raw = params["options"], !(raw is NSNull) else { return .success(false) }
+        guard let options = raw as? [String: Any] else {
+            return .failure(PolyfillArgumentError(message: "management.uninstallSelf: options must be an object"))
+        }
+        guard let flag = options["showConfirmDialog"], !(flag is NSNull) else { return .success(false) }
+        guard let boxed = flag as? NSNumber, CFGetTypeID(boxed) == CFBooleanGetTypeID() else {
+            return .failure(PolyfillArgumentError(
+                message: "management.uninstallSelf: options.showConfirmDialog must be a boolean"))
+        }
+        return .success(boxed.boolValue)
+    }
+
     /// Chrome's `HistoryItem` for one URL of the calling profile's history.
     private static func historyItem(_ entry: HistoryURLEntry) -> [String: Any] {
         [
@@ -403,7 +639,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     func userContentController(
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage,
-        replyHandler: @escaping (Any?, String?) -> Void
+        replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void
     ) {
         guard let body = message.body as? [String: Any] else {
             replyHandler(nil, "Invalid message format")
@@ -484,11 +720,10 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                                           userInfo: [NSLocalizedDescriptionKey: errorString]))
             } else if let errorString {
                 log.error("Polyfill error for \(type, privacy: .public): \(errorString, privacy: .public)")
-                replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
-                                          userInfo: [NSLocalizedDescriptionKey: errorString]))
+                Self.replyFailure(errorString, to: body, replyHandler: replyHandler)
             } else {
                 log.debug("Polyfill success for \(type, privacy: .public)")
-                replyHandler(result, nil)
+                Self.replySuccess(result, to: body, replyHandler: replyHandler)
             }
         }
     }
@@ -547,46 +782,67 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             replyHandler(true, nil)
 
         // MARK: - Notifications
+        // Gated on the manifest's `notifications` permission, as Chrome gates
+        // the namespace (TASK-239), and scoped by this handler's profile as
+        // well as the extension: the same extension in another profile,
+        // Private included, is another owner (TASK-238).
         case "notifications.create":
+            guard notificationsPermitted(extensionID, orRefuse: replyHandler) else { return }
+            guard let owner = notificationOwner(extensionID, orRefuse: replyHandler) else { return }
             let notificationId = params["notificationId"] as? String
             let options = params["options"] as? [String: Any] ?? [:]
-            ExtensionNotificationManager.shared.create(
-                extensionID: extensionID, notificationID: notificationId, options: options
-            ) { id in
+            notificationManager.create(owner: owner, notificationID: notificationId, options: options) { id in
                 replyHandler(["notificationId": id], nil)
             }
 
         case "notifications.update":
+            guard notificationsPermitted(extensionID, orRefuse: replyHandler) else { return }
             guard let notificationId = params["notificationId"] as? String else {
                 replyHandler(nil, "notificationId required")
                 return
             }
+            guard let owner = notificationOwner(extensionID, orRefuse: replyHandler) else { return }
             let options = params["options"] as? [String: Any] ?? [:]
-            ExtensionNotificationManager.shared.update(
-                extensionID: extensionID, notificationID: notificationId, options: options
-            ) { updated in
+            notificationManager.update(owner: owner, notificationID: notificationId, options: options) { updated in
                 replyHandler(["wasUpdated": updated], nil)
             }
 
         case "notifications.clear":
+            guard notificationsPermitted(extensionID, orRefuse: replyHandler) else { return }
             guard let notificationId = params["notificationId"] as? String else {
                 replyHandler(nil, "notificationId required")
                 return
             }
-            ExtensionNotificationManager.shared.clear(
-                extensionID: extensionID, notificationID: notificationId
-            ) { cleared in
+            guard let owner = notificationOwner(extensionID, orRefuse: replyHandler) else { return }
+            notificationManager.clear(owner: owner, notificationID: notificationId) { cleared in
                 replyHandler(["wasCleared": cleared], nil)
             }
 
         case "notifications.getAll":
-            let all = ExtensionNotificationManager.shared.getAll(extensionID: extensionID)
-            replyHandler(all, nil)
+            guard notificationsPermitted(extensionID, orRefuse: replyHandler) else { return }
+            guard let owner = notificationOwner(extensionID, orRefuse: replyHandler) else { return }
+            replyHandler(notificationManager.getAll(owner: owner), nil)
+
+        case "notifications.awaitEvent":
+            // The background polyfill parks this for `onClicked` / `onClosed`
+            // (TASK-247); the manager answers it with the owner's events. Only
+            // the background context may wait: a page's park would supersede
+            // the worker's and take its events (pages do not get them; see the
+            // polyfill-layer wiki).
+            guard notificationsPermitted(extensionID, orRefuse: replyHandler) else { return }
+            let registered = ExtensionManager.shared.extension(withID: extensionID)
+            guard Self.senderIsBackgroundContext(sender, background: registered?.manifest.background) else {
+                replyHandler(nil, "notifications events: only the background context receives them")
+                return
+            }
+            guard let owner = notificationOwner(extensionID, orRefuse: replyHandler) else { return }
+            notificationManager.awaitEvent(owner: owner, instance: params["instance"] as? String,
+                                           ack: (params["ack"] as? NSNumber)?.intValue, reply: replyHandler)
 
         // MARK: - History
         case "history.search":
-            guard hasPermission("history", extensionID: extensionID) else {
-                replyHandler(nil, "history permission not declared")
+            if let refusal = permissionRefusal("history", extensionID: extensionID) {
+                replyHandler(nil, refusal)
                 return
             }
             let query: HistorySearchQuery
@@ -602,7 +858,8 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             // and from nothing else — the same scope, by the same rule, as that
             // profile's History page. No scope means no history, never
             // everyone's: the Private profile records none, and a profile that
-            // is deleted, released or used by no space has none to show.
+            // is deleted or released has none to show. The profile's Quick
+            // Detour visits are in its scope (TASK-193.1).
             guard let spaceIDs = HistoryPageBridge.scope(forProfile: profile), !spaceIDs.isEmpty else {
                 replyHandler(["results": [[String: Any]]()], nil)
                 return
@@ -612,14 +869,96 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             // read on the main thread waits for it: the default range above
             // and `searchURLs`' listing path are what keep that wait short
             // (TASK-153).
+            // The read runs on a global queue; the reply, a dictionary of
+            // non-Sendable values, is built back on the main actor.
             let database = historyDatabase
-            DispatchQueue.global(qos: .userInitiated).async {
-                let items = database.searchURLs(
-                    query: query.text, spaceIDs: spaceIDs,
-                    from: query.startTime, until: query.endTime, limit: query.maxResults
-                ).map(Self.historyItem)
-                DispatchQueue.main.async { replyHandler(["results": items], nil) }
+            Task {
+                let entries = await withCheckedContinuation { continuation in
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        continuation.resume(returning: database.searchURLs(
+                            query: query.text, spaceIDs: spaceIDs,
+                            from: query.startTime, until: query.endTime, limit: query.maxResults))
+                    }
+                }
+                replyHandler(["results": entries.map(Self.historyItem)], nil)
             }
+
+        // MARK: - Permissions WebKit does not know (TASK-260)
+        // The polyfill's `chrome.permissions` wrapper sends the `history` and
+        // `management` part of a call here and the rest to WebKit, which
+        // refuses these names in the web process.
+        case "permissions.contains":
+            switch Self.outsideWebKitPermissionNames(from: params) {
+            case .failure(let error):
+                replyHandler(nil, error.message)
+            case .success(let names):
+                // Chrome answers false for a name the manifest does not list.
+                guard let ext = ExtensionManager.shared.extension(withID: extensionID) else {
+                    replyHandler(false, nil)
+                    return
+                }
+                let context = profile?.extensionContext(for: extensionID)
+                replyHandler(names.allSatisfy {
+                    Self.permissionIsActive($0, manifest: ext.manifest, context: context)
+                }, nil)
+            }
+
+        case "permissions.request":
+            let names: [String]
+            switch Self.outsideWebKitPermissionNames(from: params) {
+            case .failure(let error):
+                replyHandler(nil, error.message)
+                return
+            case .success(let parsed):
+                names = parsed
+            }
+            guard let ext = ExtensionManager.shared.extension(withID: extensionID) else {
+                replyHandler(nil, "Failed to find extension with id \(extensionID).")
+                return
+            }
+            switch Self.permissionRequestPlan(names, manifest: ext.manifest,
+                                              context: profile?.extensionContext(for: extensionID)) {
+            case .refuse(let message):
+                replyHandler(nil, message)
+            case .answer(let granted):
+                replyHandler(["granted": granted], nil)
+            case .prompt(let undecided):
+                ExtensionManager.shared.requestOutsideWebKitPermissions(
+                    extensionID: extensionID, names: undecided) { outcome in
+                    switch outcome {
+                    case .approved:
+                        replyHandler(["granted": true], nil)
+                    case .denied:
+                        replyHandler(["granted": false], nil)
+                    case .refused(let message):
+                        replyHandler(nil, message)
+                    }
+                }
+            }
+
+        case "permissions.remove":
+            let names: [String]
+            switch Self.outsideWebKitPermissionNames(from: params) {
+            case .failure(let error):
+                replyHandler(nil, error.message)
+                return
+            case .success(let parsed):
+                names = parsed
+            }
+            guard let ext = ExtensionManager.shared.extension(withID: extensionID) else {
+                replyHandler(nil, "Failed to find extension with id \(extensionID).")
+                return
+            }
+            if let refusal = Self.permissionRemovalRefusal(names, manifest: ext.manifest) {
+                replyHandler(nil, refusal)
+                return
+            }
+            // The wrapper checks first, before WebKit removes the rest of a
+            // mixed call, and removes only once WebKit has.
+            if params["checkOnly"] as? Bool != true {
+                ExtensionManager.shared.removeOutsideWebKitPermissions(extensionID: extensionID, names: names)
+            }
+            replyHandler(true, nil)
 
         // MARK: - Font Settings
         case "fontSettings.getFontList":
@@ -638,9 +977,29 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         case "management.getSelf":
             replyHandler(buildExtensionInfo(extensionID: extensionID), nil)
 
+        case "management.getPermissionWarningsByManifest":
+            // Permission-free in Chrome, like getSelf and uninstallSelf (TASK-257).
+            switch Self.permissionWarnings(from: params) {
+            case .success(let warnings): replyHandler(warnings, nil)
+            case .failure(let error): replyHandler(nil, error.message)
+            }
+
+        case "management.uninstallSelf":
+            // Permission-free in Chrome. The verified id is the only one this
+            // can act on: an extension uninstalls itself, never another.
+            switch Self.uninstallSelfShowsConfirmDialog(from: params) {
+            case .failure(let error):
+                replyHandler(nil, error.message)
+            case .success(let showConfirmDialog):
+                ExtensionManager.shared.uninstallSelf(extensionID: extensionID,
+                                                      showConfirmDialog: showConfirmDialog) { error in
+                    replyHandler(error == nil ? true : nil, error)
+                }
+            }
+
         case "management.getAll":
-            guard hasPermission("management", extensionID: extensionID) else {
-                replyHandler(nil, "management permission not declared")
+            if let refusal = permissionRefusal("management", extensionID: extensionID) {
+                replyHandler(nil, refusal)
                 return
             }
             let allInfos = ExtensionManager.shared.extensions.map { ext in
@@ -660,8 +1019,8 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             // getSelf/uninstallSelf are permission-free), so an extension that
             // never declared it gets the same rejection it would get in Chrome
             // rather than a silent success.
-            guard hasPermission("management", extensionID: extensionID) else {
-                replyHandler(nil, "management permission not declared")
+            if let refusal = permissionRefusal("management", extensionID: extensionID) {
+                replyHandler(nil, refusal)
                 return
             }
             let targetID = params["id"] as? String ?? "(none)"
@@ -1154,25 +1513,95 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// handler is profile-scoped, so such a tab belongs in one of *this*
     /// profile's spaces — it gets that profile's cookies and search engine, and
     /// its closed-tab stack is the only one this profile's extensions may
-    /// reopen from. The last-active space is preferred only when it is one of
-    /// them (it is global, and the focused window can belong to another
-    /// profile); otherwise the profile's first space. Nil when the profile is
-    /// gone, or has no space at all — never another profile's space.
+    /// reopen from. Which one is `tabs.create`'s rule,
+    /// `ExtensionManager.newTabSpace(for:)`: the space the profile used last
+    /// (TASK-226). Nil when the profile is gone, or has no space at all —
+    /// never another profile's space.
     private func targetSpace() -> Space? {
         guard let profile else { return nil }
-        if let lastActiveID = ExtensionManager.shared.lastActiveSpaceID,
-           let lastActive = TabStore.shared.space(withID: lastActiveID),
-           lastActive.profileID == profile.id {
-            return lastActive
-        }
-        return TabStore.shared.spaces.first { $0.profileID == profile.id }
+        return ExtensionManager.shared.newTabSpace(for: profile)
     }
 
-    /// Whether the extension declared a given manifest permission. Used to gate
-    /// polyfilled APIs (history, management) that WKWebExtension doesn't itself
-    /// permission-check because they're implemented natively here.
-    func hasPermission(_ permission: String, extensionID: String) -> Bool {
-        ExtensionManager.shared.extension(withID: extensionID)?.manifest.permissions?.contains(permission) ?? false
+    /// Why the extension may not use `permission` now, in this handler's
+    /// profile, or nil when it may. Gates the polyfilled APIs (history,
+    /// management, notifications) that WKWebExtension doesn't itself
+    /// permission-check because they're implemented natively here. See
+    /// `permissionRefusal(_:manifest:context:now:)`.
+    func permissionRefusal(_ permission: String, extensionID: String) -> String? {
+        guard let ext = ExtensionManager.shared.extension(withID: extensionID) else {
+            return Self.permissionNotDeclared(permission)
+        }
+        return Self.permissionRefusal(permission, manifest: ext.manifest,
+                                      context: profile?.extensionContext(for: extensionID))
+    }
+
+    /// The refusal of a call whose permission is not active
+    /// (`permissionIsActive`), saying which of three states it is in
+    /// (TASK-260), or nil when it is active:
+    /// - not in either manifest list: "<name> permission not declared";
+    /// - denied in this context, by the Settings switch, a prompt answered
+    ///   Deny, or that saved denial restored: "<name> permission denied by
+    ///   the user";
+    /// - listed only under `optional_permissions` and not granted:
+    ///   "<name> permission is optional and has not been granted", which
+    ///   `permissions.request` can change.
+    static func permissionRefusal(_ permission: String, manifest: ExtensionManifest,
+                                  context: WKWebExtensionContext?, now: Date = Date()) -> String? {
+        if permissionIsActive(permission, manifest: manifest, context: context, now: now) { return nil }
+        let required = manifest.permissions?.contains(permission) == true
+        let optional = manifest.optionalPermissions?.contains(permission) == true
+        guard required || optional else { return permissionNotDeclared(permission) }
+        let key = WKWebExtension.Permission(rawValue: permission)
+        if let deniedUntil = context?.deniedPermissions[key], deniedUntil > now {
+            return "\(permission) permission denied by the user"
+        }
+        return "\(permission) permission is optional and has not been granted"
+    }
+
+    static func permissionNotDeclared(_ permission: String) -> String {
+        "\(permission) permission not declared"
+    }
+
+    /// The rule behind `permissionRefusal`, WebKit's own order for the APIs it
+    /// implements (`WebExtensionContext::permissionState`): a denial in
+    /// `context` refuses first, then a grant serves.
+    ///
+    /// - A permission the manifest requires is active unless `context` holds
+    ///   an unexpired denial of it: the Settings switch turned off
+    ///   (`ExtensionManager.setPermissionDecision`), or that saved denial
+    ///   restored at load (`Profile.loadExtensionContext`). Switched on again,
+    ///   it is active at once (TASK-259). With no decision at all it stays
+    ///   active: install saves the required permissions as granted, and
+    ///   WebKit never prompts for `history` or `management`, so an undecided
+    ///   required one has no way to become granted. No context, no denial to
+    ///   read: active, as before.
+    /// - One listed only under `optional_permissions` is active while
+    ///   `context` holds an unexpired grant for it, and Chrome makes it
+    ///   available as soon as it is granted and takes it away on revocation
+    ///   (TASK-250). The grant gets there from a `permissions.request`
+    ///   prompt (WebKit's, or Detour's for the names WebKit does not know),
+    ///   from the Settings switch and from the
+    ///   restore of a saved decision at load. A switch turned off takes it out
+    ///   again, and so does `permissions.remove`. WebKit refuses
+    ///   `permissions.request`, `contains` and `remove` for `history` and
+    ///   `management` in the web process ("is not a valid permission"), so the
+    ///   polyfill takes those two names out of the call and the
+    ///   `permissions.*` requests here answer for them (TASK-260). No context
+    ///   means no grant.
+    ///
+    /// The grant and denial dictionaries are read rather than
+    /// `WKWebExtensionContext.hasPermission(_:)`, because WebKit answers `.unknown` for every name
+    /// outside its own permission set (`history`, `management`) while still
+    /// storing the status it is given.
+    static func permissionIsActive(_ permission: String, manifest: ExtensionManifest,
+                                   context: WKWebExtensionContext?, now: Date = Date()) -> Bool {
+        let key = WKWebExtension.Permission(rawValue: permission)
+        if let deniedUntil = context?.deniedPermissions[key], deniedUntil > now { return false }
+        if manifest.permissions?.contains(permission) == true { return true }
+        guard manifest.optionalPermissions?.contains(permission) == true,
+              let expiry = context?.grantedPermissions[key]
+        else { return false }
+        return expiry > now
     }
 
     static let declarativeNetRequestPermissionRefusal = "declarativeNetRequest: the extension does not hold the declarativeNetRequest permission"
@@ -1212,10 +1641,77 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         if let desc = ExtensionManager.shared.displayDescription(for: ext.id) {
             info["description"] = desc
         }
-        if let permissions = ext.manifest.permissions {
-            info["permissions"] = permissions
-        }
+        let context = profile?.extensionContext(for: ext.id)
+        info["permissions"] = Self.activeAPIPermissions(manifest: ext.manifest, context: context)
+        info["hostPermissions"] = context.map {
+            Self.activeHostPermissions(granted: $0.grantedPermissionMatchPatterns,
+                                       denied: $0.deniedPermissionMatchPatterns,
+                                       askable: ext.askableMatchPatterns,
+                                       implicit: Self.implicitContentScriptPatterns(ext.manifest))
+        } ?? Self.declaredRequiredHosts(ext.manifest)
         return info
+    }
+
+    /// `ExtensionInfo.permissions` (TASK-261): the API permissions active in
+    /// `context`, as Chromium's `CreateExtensionInfo` lists
+    /// `active_permissions().GetAPIsAsStrings()` — required ones not switched
+    /// off, optional ones while granted. Manifest order, required first.
+    static func activeAPIPermissions(manifest: ExtensionManifest, context: WKWebExtensionContext?,
+                                     now: Date = Date()) -> [String] {
+        var seen = Set<String>()
+        return ((manifest.permissions ?? []) + (manifest.optionalPermissions ?? [])).filter {
+            !isHostPermissionString($0) && seen.insert($0).inserted
+                && permissionIsActive($0, manifest: manifest, context: context, now: now)
+        }
+    }
+
+    /// With no context in the asking profile there is no grant or denial to
+    /// read, so, as `permissionIsActive` treats required API permissions, the
+    /// required hosts: `host_permissions`, or MV2's origins in `permissions`.
+    private static func declaredRequiredHosts(_ manifest: ExtensionManifest) -> [String] {
+        (manifest.hostPermissions ?? []) + (manifest.permissions ?? []).filter(isHostPermissionString)
+    }
+
+    /// A Manifest V2 `permissions` / `optional_permissions` entry that is an
+    /// origin rather than an API name. Chromium lists those under
+    /// `hostPermissions`, never `permissions`.
+    private static func isHostPermissionString(_ entry: String) -> Bool {
+        entry == "<all_urls>" || entry.contains("://")
+    }
+
+    /// The content-script match patterns `Profile.loadExtensionContext` grants
+    /// for `activeTab` that the manifest does not also list as a host
+    /// permission. A manifest host pattern can cover them (`<all_urls>` over a
+    /// `https://*/*` content script), so the `askable` filter alone keeps them.
+    static func implicitContentScriptPatterns(_ manifest: ExtensionManifest) -> Set<String> {
+        guard manifest.permissions?.contains("activeTab") == true else { return [] }
+        let declared = Set((manifest.hostPermissions ?? []) + (manifest.optionalHostPermissions ?? [])
+            + ((manifest.permissions ?? []) + (manifest.optionalPermissions ?? [])).filter(isHostPermissionString))
+        return Set((manifest.contentScripts ?? []).flatMap(\.matches)).subtracting(declared)
+    }
+
+    /// `ExtensionInfo.hostPermissions` (TASK-261): Chromium lists
+    /// `active_permissions().explicit_hosts()`, the granted `host_permissions`
+    /// and `optional_host_permissions` origins, not the content-script hosts.
+    /// So: the unexpired granted patterns some manifest host pattern covers
+    /// (`askable` — this leaves out the content-script patterns
+    /// `Profile.loadExtensionContext` grants for `activeTab`), minus those
+    /// an unexpired denial covers (WebKit keeps a narrower grant under a
+    /// denied `<all_urls>`) and those in `implicit` (the `activeTab`
+    /// content-script grants a manifest host pattern covers). Sorted, each
+    /// string once.
+    static func activeHostPermissions(granted: [WKWebExtension.MatchPattern: Date],
+                                      denied: [WKWebExtension.MatchPattern: Date],
+                                      askable: Set<WKWebExtension.MatchPattern>,
+                                      implicit: Set<String> = [],
+                                      now: Date = Date()) -> [String] {
+        let liveDenials = denied.filter { $0.value > now }.keys
+        let active = granted.filter { pattern, expiry in
+            expiry > now && !implicit.contains(pattern.string)
+                && !liveDenials.contains { $0.string == pattern.string || $0.matches(pattern) }
+                && askable.contains { $0.matches(pattern) }
+        }
+        return Set(active.keys.map(\.string)).sorted()
     }
 
     /// Font families bundled with macOS. Used to filter getFontList results

@@ -9,19 +9,18 @@ import WebKit
 /// Production wiring throughout: real `Profile`s, `TabStore.shared`, tabs
 /// added through the store, and real `BrowserWindowController`s that are never
 /// shown (so never key).
-@MainActor
-final class ExtensionSidePanelTests: XCTestCase {
+nonisolated final class ExtensionSidePanelTests: XCTestCase {
 
     private typealias Via = SidePanelTestWorld.Via
     private var world: SidePanelTestWorld!
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         world = SidePanelTestWorld()
         try await world.setUp()
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         await world.tearDown()
         world = nil
         try await super.tearDown()
@@ -29,7 +28,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     /// One profile, one space, one window, the extension loaded, two tabs with
     /// the first selected.
-    private struct Scene {
+    @MainActor private struct Scene {
         let loaded: SidePanelTestWorld.Loaded
         let space: Space
         let window: BrowserWindowController
@@ -39,7 +38,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         var panels: ExtensionSidePanelController { loaded.profile.sidePanels }
     }
 
-    private func makeScene(_ name: String, permissions: [String] = ["sidePanel"],
+    @MainActor private func makeScene(_ name: String, permissions: [String] = ["sidePanel"],
                            defaultPath: String? = "panel.html") async throws -> Scene {
         let ext = try await world.makeExtension(permissions: permissions, defaultPath: defaultPath)
         let profile = world.makeProfile(name)
@@ -54,7 +53,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     /// As the Claude extension opens its panel: tab options, then open.
     @discardableResult
-    private func openTabPanel(_ via: Via, in scene: Scene, for tab: BrowserTab,
+    @MainActor private func openTabPanel(_ via: Via, in scene: Scene, for tab: BrowserTab,
                               file: StaticString = #filePath, line: UInt = #line) async throws -> ExtensionSidePanel {
         let tabID = try await world.tabID(of: tab, via, in: scene.loaded)
         let settled = try await world.run(via, in: scene.loaded, [
@@ -68,14 +67,14 @@ final class ExtensionSidePanelTests: XCTestCase {
         return panel
     }
 
-    private func layoutFrames(of window: BrowserWindowController) -> (content: NSRect, panel: NSRect?) {
+    @MainActor private func layoutFrames(of window: BrowserWindowController) -> (content: NSRect, panel: NSRect?) {
         window.window?.layoutIfNeeded()
         return (window.contentContainerView.frame, window.contentAreaView.panelView?.frame)
     }
 
     // MARK: - The API exists only with the permission (AC #9)
 
-    func testTheNamespaceExistsInTheWorkerAndInAPageWithThePermission() async throws {
+    @MainActor func testTheNamespaceExistsInTheWorkerAndInAPageWithThePermission() async throws {
         let scene = try await makeScene("Panel Namespace")
         for via in Via.allCases {
             let state = try await world.runDict(via, in: scene.loaded, ["op": "install"])
@@ -87,7 +86,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         }
     }
 
-    func testAnExtensionWithoutThePermissionGetsNoNamespaceAndIsRefusedByTheBridge() async throws {
+    @MainActor func testAnExtensionWithoutThePermissionGetsNoNamespaceAndIsRefusedByTheBridge() async throws {
         let scene = try await makeScene("Panel No Permission", permissions: [])
         for via in Via.allCases {
             let state = try await world.runDict(via, in: scene.loaded, ["op": "install"])
@@ -110,7 +109,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     // MARK: - Options (every method, both transports)
 
-    func testOptionsRoundTripFromBothTransports() async throws {
+    @MainActor func testOptionsRoundTripFromBothTransports() async throws {
         let scene = try await makeScene("Panel Options")
         for via in Via.allCases {
             let tabID = try await world.tabID(of: scene.first, via, in: scene.loaded)
@@ -148,7 +147,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         }
     }
 
-    func testOptionErrorsFromBothTransports() async throws {
+    @MainActor func testOptionErrorsFromBothTransports() async throws {
         let scene = try await makeScene("Panel Option Errors")
         for via in Via.allCases {
             let unknownTab = try await world.failure(via, in: scene.loaded, ["op": "call", "method": "setOptions",
@@ -174,7 +173,7 @@ final class ExtensionSidePanelTests: XCTestCase {
                        "panel.html", "a refused path changes nothing")
     }
 
-    func testPanelBehaviourFromBothTransports() async throws {
+    @MainActor func testPanelBehaviourFromBothTransports() async throws {
         let scene = try await makeScene("Panel Behaviour")
         for via in Via.allCases {
             let before = try await world.runDict(via, in: scene.loaded, ["op": "call", "method": "getPanelBehavior"])
@@ -191,7 +190,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     // MARK: - Opening (AC #1, #3)
 
-    func testOpeningATabPanelShowsItBesideTheTabAndItIsNotATab() async throws {
+    @MainActor func testOpeningATabPanelShowsItBesideTheTabAndItIsNotATab() async throws {
         for via in Via.allCases {
             let scene = try await makeScene("Panel Open \(via.rawValue)")
             let tabsBefore = scene.space.tabs.count
@@ -258,7 +257,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         }
     }
 
-    func testOpenErrorsFromBothTransports() async throws {
+    @MainActor func testOpenErrorsFromBothTransports() async throws {
         let scene = try await makeScene("Panel Open Errors", defaultPath: nil)
         for via in Via.allCases {
             let tabID = try await world.tabID(of: scene.first, via, in: scene.loaded)
@@ -295,7 +294,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     // MARK: - Tab switching (AC #2)
 
-    func testATabPanelHidesWithItsTabAndComesBackWithoutReloading() async throws {
+    @MainActor func testATabPanelHidesWithItsTabAndComesBackWithoutReloading() async throws {
         let scene = try await makeScene("Panel Switch")
         let panel = try await openTabPanel(.worker, in: scene, for: scene.first)
         try await world.waitForPanelPage(panel)
@@ -319,7 +318,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         XCTAssertEqual(layoutFrames(of: scene.window).panel?.width, SidePanelLayout.defaultPanelWidth)
     }
 
-    func testEachTabsPanelSwapsInWhenItsTabIsSelected() async throws {
+    @MainActor func testEachTabsPanelSwapsInWhenItsTabIsSelected() async throws {
         let scene = try await makeScene("Panel Swap")
         let firstPanel = try await openTabPanel(.page, in: scene, for: scene.first)
         let secondPanel = try await openTabPanel(.page, in: scene, for: scene.second)
@@ -334,7 +333,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         XCTAssertNil(secondPanel.view.superview)
     }
 
-    func testAWindowPanelShowsForEveryTabThatHasNoOpenPanelOfItsOwn() async throws {
+    @MainActor func testAWindowPanelShowsForEveryTabThatHasNoOpenPanelOfItsOwn() async throws {
         for via in Via.allCases {
             let scene = try await makeScene("Panel Window \(via.rawValue)")
             let windowID = try await world.windowID(listing: scene.first, via, in: scene.loaded)
@@ -365,7 +364,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         }
     }
 
-    func testAWindowPanelHidesBesideATabItIsDisabledFor() async throws {
+    @MainActor func testAWindowPanelHidesBesideATabItIsDisabledFor() async throws {
         let scene = try await makeScene("Panel Window Disabled Tab")
         let windowID = try await world.windowID(listing: scene.first, .page, in: scene.loaded)
         _ = try await world.run(.page, in: scene.loaded, ["op": "call", "method": "open", "args": [["windowId": windowID]]])
@@ -391,7 +390,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     // MARK: - Closing (AC #6)
 
-    func testCloseFromBothTransports() async throws {
+    @MainActor func testCloseFromBothTransports() async throws {
         for via in Via.allCases {
             let scene = try await makeScene("Panel Close \(via.rawValue)")
             let tabID = try await world.tabID(of: scene.first, via, in: scene.loaded)
@@ -419,7 +418,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         }
     }
 
-    func testTheCloseButtonClosesThePanelAndCmdWStillClosesTheTab() async throws {
+    @MainActor func testTheCloseButtonClosesThePanelAndCmdWStillClosesTheTab() async throws {
         let scene = try await makeScene("Panel Close Button")
         let closedRecordsBefore = AppDatabase.shared.closedTabs(spaceID: scene.space.id.uuidString).count
         let panel = try await openTabPanel(.worker, in: scene, for: scene.first)
@@ -452,7 +451,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         XCTAssertNil(scene.window.displayedSidePanel)
     }
 
-    func testWindowCloseInThePanelPageClosesThePanel() async throws {
+    @MainActor func testWindowCloseInThePanelPageClosesThePanel() async throws {
         let scene = try await makeScene("Panel window.close")
         let panel = try await openTabPanel(.worker, in: scene, for: scene.first)
         try await world.waitForPanelPage(panel)
@@ -465,7 +464,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         XCTAssertNil(scene.window.displayedSidePanel)
     }
 
-    func testAPanelThatFailsToLoadCloses() async throws {
+    @MainActor func testAPanelThatFailsToLoadCloses() async throws {
         let scene = try await makeScene("Panel Missing Page")
         let tabID = try await world.tabID(of: scene.first, .page, in: scene.loaded)
         _ = try await world.run(.page, in: scene.loaded, ["op": "setOptionsThenOpen",
@@ -475,7 +474,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         XCTAssertNil(scene.window.displayedSidePanel)
     }
 
-    func testClosingAPanelDisconnectsItsPorts() async throws {
+    @MainActor func testClosingAPanelDisconnectsItsPorts() async throws {
         let scene = try await makeScene("Panel Ports")
         let panel = try await openTabPanel(.worker, in: scene, for: scene.first)
         try await world.waitForPanelPage(panel)
@@ -491,7 +490,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         }
     }
 
-    func testDisablingThePanelOrChangingItsPathActsOnTheOpenPanel() async throws {
+    @MainActor func testDisablingThePanelOrChangingItsPathActsOnTheOpenPanel() async throws {
         let scene = try await makeScene("Panel Options Live")
         let panel = try await openTabPanel(.page, in: scene, for: scene.first)
         try await world.waitForPanelPage(panel)
@@ -512,7 +511,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         XCTAssertNil(scene.window.displayedSidePanel)
     }
 
-    func testClosingTheTabTearsItsPanelDown() async throws {
+    @MainActor func testClosingTheTabTearsItsPanelDown() async throws {
         let scene = try await makeScene("Panel Tab Close")
         let panel = try await openTabPanel(.worker, in: scene, for: scene.second)
         scene.window.selectTab(id: scene.second.id)
@@ -530,7 +529,7 @@ final class ExtensionSidePanelTests: XCTestCase {
     /// it. The window registered script message handlers on that web view's
     /// content controller, which holds them strongly: left there, they kept
     /// the window's controller alive after the window closed.
-    func testAWindowWhoseSelectedTabTheStoreClosedIsReleased() async throws {
+    @MainActor func testAWindowWhoseSelectedTabTheStoreClosedIsReleased() async throws {
         weak var window: BrowserWindowController?
         do {
             let scene = try await makeScene("Panel Window Released")
@@ -545,7 +544,7 @@ final class ExtensionSidePanelTests: XCTestCase {
     /// `TabStore.moveTab` takes the tab out of one list, notifies, and only
     /// then puts it in the other; the window answers the removal by selecting
     /// the next tab, which reconciles the panels while the tab is in no list.
-    func testMovingTheSelectedTabToAnotherSpaceKeepsItsPanel() async throws {
+    @MainActor func testMovingTheSelectedTabToAnotherSpaceKeepsItsPanel() async throws {
         let scene = try await makeScene("Panel Tab Move")
         let panel = try await openTabPanel(.worker, in: scene, for: scene.first)
         XCTAssertTrue(scene.window.displayedSidePanel === panel)
@@ -570,7 +569,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         XCTAssertTrue(scene.panels.panels.isEmpty)
     }
 
-    func testUnloadingTheExtensionTearsItsPanelsDownAndForgetsItsOptions() async throws {
+    @MainActor func testUnloadingTheExtensionTearsItsPanelsDownAndForgetsItsOptions() async throws {
         let scene = try await makeScene("Panel Unload")
         let panel = try await openTabPanel(.worker, in: scene, for: scene.first)
         XCTAssertTrue(scene.window.displayedSidePanel === panel)
@@ -587,7 +586,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         XCTAssertEqual(ExtensionManager.shared.activity(for: scene.loaded.ext.id).openSidePanels, 0)
     }
 
-    func testClosingTheWindowClosesItsOwnPanelAndLetsATabPanelGo() async throws {
+    @MainActor func testClosingTheWindowClosesItsOwnPanelAndLetsATabPanelGo() async throws {
         let scene = try await makeScene("Panel Window Close")
         let windowID = try await world.windowID(listing: scene.first, .page, in: scene.loaded)
         _ = try await world.run(.page, in: scene.loaded, ["op": "call", "method": "open", "args": [["windowId": windowID]]])
@@ -611,7 +610,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     // MARK: - Split tabs (AC #4)
 
-    func testASplitTabShowsBothPanesAndThePanel() async throws {
+    @MainActor func testASplitTabShowsBothPanesAndThePanel() async throws {
         let scene = try await makeScene("Panel Split")
         TabStore.shared.createSplit(draggedTabID: scene.second.id, targetTabID: scene.first.id, edge: .right, in: scene.space)
         scene.window.selectTab(id: scene.first.id)
@@ -642,7 +641,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     // MARK: - The divider (AC #5)
 
-    func testTheDividerDragsToAMinimumAndTheWidthIsRemembered() async throws {
+    @MainActor func testTheDividerDragsToAMinimumAndTheWidthIsRemembered() async throws {
         let scene = try await makeScene("Panel Divider")
         let panel = try await openTabPanel(.worker, in: scene, for: scene.first)
         let area = scene.window.contentAreaView
@@ -684,7 +683,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     // MARK: - Two windows (AC #7)
 
-    func testATabShownInTwoWindowsShowsItsPanelOnlyWhereItsWebViewIs() async throws {
+    @MainActor func testATabShownInTwoWindowsShowsItsPanelOnlyWhereItsWebViewIs() async throws {
         let scene = try await makeScene("Panel Ownership")
         let other = world.makeWindow(on: scene.space)
         other.selectTab(id: scene.first.id)
@@ -717,7 +716,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     // MARK: - Isolation
 
-    func testAnotherExtensionCannotTouchThisExtensionsPanel() async throws {
+    @MainActor func testAnotherExtensionCannotTouchThisExtensionsPanel() async throws {
         let scene = try await makeScene("Panel Two Extensions")
         let panel = try await openTabPanel(.worker, in: scene, for: scene.first)
 
@@ -740,7 +739,7 @@ final class ExtensionSidePanelTests: XCTestCase {
                        "each panel is a page of its own extension's origin")
     }
 
-    func testAnotherProfileCannotReachThisProfilesTabsOrPanels() async throws {
+    @MainActor func testAnotherProfileCannotReachThisProfilesTabsOrPanels() async throws {
         let scene = try await makeScene("Panel Profile A")
         let panel = try await openTabPanel(.worker, in: scene, for: scene.first)
 
@@ -784,7 +783,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         XCTAssertTrue(scene.window.displayedSidePanel === panel)
     }
 
-    private func openTabPanelIn(_ loaded: SidePanelTestWorld.Loaded, window: BrowserWindowController,
+    @MainActor private func openTabPanelIn(_ loaded: SidePanelTestWorld.Loaded, window: BrowserWindowController,
                                 tab: BrowserTab) async throws -> ExtensionSidePanel {
         let tabID = try await world.tabID(of: tab, .worker, in: loaded)
         _ = try await world.run(.worker, in: loaded, ["op": "setOptionsThenOpen",
@@ -795,7 +794,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     // MARK: - Private (AC #8)
 
-    func testInAPrivateProfileThePanelNeedsTheExtensionToBeAllowedThere() async throws {
+    @MainActor func testInAPrivateProfileThePanelNeedsTheExtensionToBeAllowedThere() async throws {
         let ext = try await world.makeExtension()
         let privateProfile = Profile(name: "Panel Private", isIncognito: true)
         _ = privateProfile.extensionController
@@ -825,7 +824,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     // MARK: - Keyboard focus
 
-    func testAPanelOpenedByTheExtensionTakesFocusOnlyAfterAUserGesture() async throws {
+    @MainActor func testAPanelOpenedByTheExtensionTakesFocusOnlyAfterAUserGesture() async throws {
         let scene = try await makeScene("Panel Focus")
         var now: TimeInterval = 1_000
         scene.panels.clock = { now }
@@ -868,7 +867,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     /// The page cannot take the keys for its panel, but the user can give
     /// them to it: a mouse press in the panel hands them over.
-    func testAClickInThePanelGivesItTheKeys() async throws {
+    @MainActor func testAClickInThePanelGivesItTheKeys() async throws {
         let scene = try await makeScene("Panel Click Focus")
         let window = try XCTUnwrap(scene.window.window)
         let pageWebView = try XCTUnwrap(scene.first.webView)
@@ -889,7 +888,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === webView, "a click in the panel must give it keyboard focus")
     }
 
-    func testAPanelLeavingWithItsTabHandsTheKeysToThePage() async throws {
+    @MainActor func testAPanelLeavingWithItsTabHandsTheKeysToThePage() async throws {
         let scene = try await makeScene("Panel Focus Leaves")
         let panel = try await openTabPanel(.worker, in: scene, for: scene.first)
         XCTAssertTrue(scene.window.window?.makeFirstResponder(panel.webView) == true)
@@ -900,7 +899,7 @@ final class ExtensionSidePanelTests: XCTestCase {
 
     // MARK: - The toolbar action and the command shortcut (AC #1)
 
-    func testTheToolbarActionFiresOnClickedAndTheExtensionOpensItsPanel() async throws {
+    @MainActor func testTheToolbarActionFiresOnClickedAndTheExtensionOpensItsPanel() async throws {
         let scene = try await makeScene("Panel Action")
         let anchor = scene.window.tabSidebar.fauxAddressBar
         let popover = ExtensionPopoverController(extensionID: scene.loaded.ext.id)
@@ -915,7 +914,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         XCTAssertEqual(events?.first?["event"] as? String, "action.onClicked")
     }
 
-    func testWithOpenPanelOnActionClickTheClickTogglesThePanelAndFiresNoEvent() async throws {
+    @MainActor func testWithOpenPanelOnActionClickTheClickTogglesThePanelAndFiresNoEvent() async throws {
         let scene = try await makeScene("Panel Action Behaviour")
         _ = try await world.run(.worker, in: scene.loaded, ["op": "call", "method": "setPanelBehavior",
                                                             "args": [["openPanelOnActionClick": true]]])
@@ -942,7 +941,7 @@ final class ExtensionSidePanelTests: XCTestCase {
         XCTAssertEqual(events?.count, 0, "action.onClicked does not fire when the click opens the panel")
     }
 
-    func testTheCommandShortcutReachesTheExtension() async throws {
+    @MainActor func testTheCommandShortcutReachesTheExtension() async throws {
         let scene = try await makeScene("Panel Command")
         let event = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown, location: .zero, modifierFlags: [.option, .shift], timestamp: ProcessInfo.processInfo.systemUptime,

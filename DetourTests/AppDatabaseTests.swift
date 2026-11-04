@@ -2,11 +2,11 @@ import XCTest
 import GRDB
 @testable import Detour
 
-final class AppDatabaseTests: XCTestCase {
+nonisolated final class AppDatabaseTests: XCTestCase {
 
     private let testProfileID = "test-profile-id"
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         let dbQueue = try DatabaseQueue()
         let db = try AppDatabase(dbQueue: dbQueue)
         // Insert a test profile for foreign key references
@@ -14,13 +14,13 @@ final class AppDatabaseTests: XCTestCase {
         return db
     }
 
-    private func spaceRecord(id: String, name: String, emoji: String, colorHex: String, sortOrder: Int, selectedTabID: String? = nil) -> SpaceRecord {
+    @MainActor private func spaceRecord(id: String, name: String, emoji: String, colorHex: String, sortOrder: Int, selectedTabID: String? = nil) -> SpaceRecord {
         SpaceRecord(id: id, name: name, emoji: emoji, colorHex: colorHex, sortOrder: sortOrder, selectedTabID: selectedTabID, profileID: testProfileID)
     }
 
     // MARK: - saveSession / loadSession round-trip
 
-    func testSaveAndLoadEmptySession() throws {
+    @MainActor func testSaveAndLoadEmptySession() throws {
         let db = try makeDatabase()
         db.saveSession(spaces: [], lastActiveSpaceID: nil)
 
@@ -28,7 +28,7 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertNil(result)
     }
 
-    func testSaveAndLoadSingleSpaceWithTabs() throws {
+    @MainActor func testSaveAndLoadSingleSpaceWithTabs() throws {
         let db = try makeDatabase()
         let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0, selectedTabID: "t2")
         let tabs = [
@@ -50,7 +50,7 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(result!.lastActiveSpaceID, "s1")
     }
 
-    func testSaveAndLoadMultipleSpacesPreservesOrder() throws {
+    @MainActor func testSaveAndLoadMultipleSpacesPreservesOrder() throws {
         let db = try makeDatabase()
         let spaces: [(SpaceRecord, [TabRecord])] = [
             (spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0), []),
@@ -65,7 +65,7 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(result.lastActiveSpaceID, "s2")
     }
 
-    func testTabsReturnedInSortOrder() throws {
+    @MainActor func testTabsReturnedInSortOrder() throws {
         let db = try makeDatabase()
         let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0)
         let tabs = [
@@ -80,7 +80,7 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(result.spaces[0].1.map(\.id), ["t1", "t2", "t3"])
     }
 
-    func testTabsAreGroupedBySpace() throws {
+    @MainActor func testTabsAreGroupedBySpace() throws {
         let db = try makeDatabase()
         let spaces: [(SpaceRecord, [TabRecord])] = [
             (spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0), [
@@ -101,7 +101,7 @@ final class AppDatabaseTests: XCTestCase {
 
     // MARK: - saveSession replaces previous data
 
-    func testSaveSessionReplacesExistingData() throws {
+    @MainActor func testSaveSessionReplacesExistingData() throws {
         let db = try makeDatabase()
 
         // Save initial session
@@ -131,7 +131,7 @@ final class AppDatabaseTests: XCTestCase {
 
     // MARK: - lastActiveSpaceID
 
-    func testLoadSessionWithNoActiveSpaceID() throws {
+    @MainActor func testLoadSessionWithNoActiveSpaceID() throws {
         let db = try makeDatabase()
         db.saveSession(spaces: [
             (spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0), []),
@@ -143,7 +143,7 @@ final class AppDatabaseTests: XCTestCase {
 
     // MARK: - Tab data preservation
 
-    func testTabPreservesAllFields() throws {
+    @MainActor func testTabPreservesAllFields() throws {
         let db = try makeDatabase()
         let stateData = "fake-state".data(using: .utf8)
         let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0)
@@ -161,7 +161,7 @@ final class AppDatabaseTests: XCTestCase {
 
     // MARK: - Closed Tab Stack
 
-    func testPushAndPopClosedTabRoundTrip() throws {
+    @MainActor func testPushAndPopClosedTabRoundTrip() throws {
         let db = try makeDatabase()
         let record = ClosedTabRecord(id: nil, tabID: "t1", spaceID: "s1", url: "https://example.com", title: "Example", faviconURL: "https://example.com/icon.png", interactionState: "state".data(using: .utf8), sortOrder: 2)
 
@@ -178,13 +178,13 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(popped!.sortOrder, 2)
     }
 
-    func testPopReturnsNilWhenEmpty() throws {
+    @MainActor func testPopReturnsNilWhenEmpty() throws {
         let db = try makeDatabase()
         let result = db.popClosedTab(spaceID: "s1")
         XCTAssertNil(result)
     }
 
-    func testPopFiltersBySpaceID() throws {
+    @MainActor func testPopFiltersBySpaceID() throws {
         let db = try makeDatabase()
         db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t1", spaceID: "s1", url: nil, title: "Tab 1", faviconURL: nil, interactionState: nil, sortOrder: 0))
         db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t2", spaceID: "s2", url: nil, title: "Tab 2", faviconURL: nil, interactionState: nil, sortOrder: 0))
@@ -207,7 +207,7 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(popped4?.tabID, "t2")
     }
 
-    func testClosedTabLIFOOrdering() throws {
+    @MainActor func testClosedTabLIFOOrdering() throws {
         let db = try makeDatabase()
         db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t1", spaceID: "s1", url: nil, title: "First", faviconURL: nil, interactionState: nil, sortOrder: 0))
         db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t2", spaceID: "s1", url: nil, title: "Second", faviconURL: nil, interactionState: nil, sortOrder: 1))
@@ -218,7 +218,7 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(db.popClosedTab(spaceID: "s1")?.tabID, "t1")
     }
 
-    func testDeleteClosedTabsBySpaceID() throws {
+    @MainActor func testDeleteClosedTabsBySpaceID() throws {
         let db = try makeDatabase()
         db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t1", spaceID: "s1", url: nil, title: "Tab 1", faviconURL: nil, interactionState: nil, sortOrder: 0))
         db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t2", spaceID: "s2", url: nil, title: "Tab 2", faviconURL: nil, interactionState: nil, sortOrder: 0))
@@ -234,7 +234,7 @@ final class AppDatabaseTests: XCTestCase {
 
     // MARK: - Closed tabs read from the database only (TASK-117)
 
-    func testClosedTabSpaceIndexExists() throws {
+    @MainActor func testClosedTabSpaceIndexExists() throws {
         let db = try makeDatabase()
         let names = try db.dbQueue.read { db in
             try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'closedTab'")
@@ -242,7 +242,7 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertTrue(names.contains("closedTab_on_spaceID_id"))
     }
 
-    func testClosedTabSummariesAreNewestFirstPerSpaceAndFullRowCarriesTheBlob() throws {
+    @MainActor func testClosedTabSummariesAreNewestFirstPerSpaceAndFullRowCarriesTheBlob() throws {
         let db = try makeDatabase()
         let blob = Data("state".utf8)
         db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t1", spaceID: "s1", url: "https://a/", title: "A", faviconURL: nil, interactionState: blob, sortOrder: 0))
@@ -264,7 +264,7 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(db.closedTabSummaries(spaceID: "s1").map(\.tabID), ["t3"])
     }
 
-    func testInsertClosedTabsKeepsOriginalIds() throws {
+    @MainActor func testInsertClosedTabsKeepsOriginalIds() throws {
         let db = try makeDatabase()
         db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t1", spaceID: "s1", url: nil, title: "1", faviconURL: nil, interactionState: nil, sortOrder: 0))
         db.pushClosedTab(ClosedTabRecord(id: nil, tabID: "t2", spaceID: "s1", url: nil, title: "2", faviconURL: nil, interactionState: nil, sortOrder: 0))
@@ -282,12 +282,12 @@ final class AppDatabaseTests: XCTestCase {
 
     // MARK: - Archived vs closed records (TASK-116)
 
-    private func closedRecord(_ tabID: String, spaceID: String = "s1", archivedAt: Double? = nil) -> ClosedTabRecord {
+    @MainActor private func closedRecord(_ tabID: String, spaceID: String = "s1", archivedAt: Double? = nil) -> ClosedTabRecord {
         ClosedTabRecord(id: nil, tabID: tabID, spaceID: spaceID, url: nil, title: tabID, faviconURL: nil,
                         interactionState: nil, sortOrder: 0, archivedAt: archivedAt, closedAt: archivedAt)
     }
 
-    func testClosedTabSummariesCanLeaveOutArchivedRecords() throws {
+    @MainActor func testClosedTabSummariesCanLeaveOutArchivedRecords() throws {
         let db = try makeDatabase()
         db.pushClosedTab(closedRecord("close1"))
         db.pushClosedTab(closedRecord("arch", archivedAt: 42))
@@ -299,7 +299,7 @@ final class AppDatabaseTests: XCTestCase {
     }
 
     /// No row cap (TASK-120): neither kind is ever evicted by count.
-    func testClosedTabRecordsAreNeverEvictedByCount() throws {
+    @MainActor func testClosedTabRecordsAreNeverEvictedByCount() throws {
         let db = try makeDatabase()
         for i in 1...150 {
             db.pushClosedTab(closedRecord("c\(i)", spaceID: "s2"))
@@ -331,7 +331,7 @@ final class AppDatabaseTests: XCTestCase {
 
     /// v16 adds closedAt and backfills it from archivedAt; plain closes written
     /// before it stay NULL and keep sorting by id.
-    func testMigrationV16BackfillsClosedAtFromArchivedAt() throws {
+    @MainActor func testMigrationV16BackfillsClosedAtFromArchivedAt() throws {
         let dbQueue = try DatabaseQueue()
         try AppDatabase.migrator.migrate(dbQueue, upTo: "v15")
         try dbQueue.write { db in
@@ -353,11 +353,11 @@ final class AppDatabaseTests: XCTestCase {
 
     // MARK: - Profile deletion with FK constraints
 
-    private func makeProfile(id: String, name: String) -> ProfileRecord {
+    @MainActor private func makeProfile(id: String, name: String) -> ProfileRecord {
         ProfileRecord(id: id, name: name, userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true)
     }
 
-    func testSaveProfilesBeforeSessionLeavesOrphanProfiles() throws {
+    @MainActor func testSaveProfilesBeforeSessionLeavesOrphanProfiles() throws {
         let db = try makeDatabase()
 
         // Create a second profile
@@ -376,7 +376,7 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(profiles.count, 2, "Profile referenced by a space should not be deleted by saveProfiles")
     }
 
-    func testSaveSessionBeforeProfilesDeletesOrphans() throws {
+    @MainActor func testSaveSessionBeforeProfilesDeletesOrphans() throws {
         let db = try makeDatabase()
 
         // Create a second profile
@@ -399,7 +399,7 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(profiles[0].id, "profile-2")
     }
 
-    func testSaveProfilesAfterSessionDoesNotLeaveOrphans() throws {
+    @MainActor func testSaveProfilesAfterSessionDoesNotLeaveOrphans() throws {
         let db = try makeDatabase()
 
         // Create a second profile and save it
@@ -424,14 +424,14 @@ final class AppDatabaseTests: XCTestCase {
 
     // MARK: - deleteProfile (TASK-31)
 
-    private let perProfileTables = ["profileExtension", "extensionInstalledEvent", "favorite", "contentBlockerWhitelist",
+    private let perProfileTables = ["profileExtension", "extensionInstalledEvent", "favorite", "siteSetting",
                                     "externalAppPermission"]
     private let extensionKeyedTables = ["extension", "extensionStorage", "extensionPermission"]
 
     /// An in-memory database with two profiles, an installed extension, and one
     /// row per profile in every profileID-keyed table. `foreignKeysEnabled: false`
     /// shows the rows go without relying on the `profile` cascades.
-    private func makeDatabaseWithPerProfileRows(foreignKeysEnabled: Bool = true) throws -> AppDatabase {
+    @MainActor private func makeDatabaseWithPerProfileRows(foreignKeysEnabled: Bool = true) throws -> AppDatabase {
         var config = Configuration()
         config.foreignKeysEnabled = foreignKeysEnabled
         let db = try AppDatabase(dbQueue: DatabaseQueue(configuration: config))
@@ -452,14 +452,15 @@ final class AppDatabaseTests: XCTestCase {
             db.saveFavorites([FavoriteRecord(id: "fav-\(profileID)", profileID: profileID, url: "https://a.example/",
                                              title: "A", faviconURL: nil, sortOrder: 0)],
                              profileID: profileID)
-            db.saveContentBlockerWhitelistEntry(ContentBlockerWhitelistRecord(profileID: profileID, host: "a.example"))
+            db.saveSiteSetting(SiteSettingRecord(profileID: profileID, site: "a.example",
+                                                 setting: "contentBlocking", value: false))
             db.saveExternalAppPermission(ExternalAppPermissionRecord(profileID: profileID, origin: "https://a.example",
                                                                      scheme: "zoommtg"))
         }
         return db
     }
 
-    private func rowCount(_ table: String, profileID: String? = nil, in db: AppDatabase) throws -> Int {
+    @MainActor private func rowCount(_ table: String, profileID: String? = nil, in db: AppDatabase) throws -> Int {
         try db.dbQueue.read { d in
             if let profileID {
                 return try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM \"\(table)\" WHERE profileID = ?",
@@ -469,7 +470,7 @@ final class AppDatabaseTests: XCTestCase {
         }
     }
 
-    func testDeleteProfileRemovesItsPerProfileRowsAndNoOthers() throws {
+    @MainActor func testDeleteProfileRemovesItsPerProfileRowsAndNoOthers() throws {
         for foreignKeysEnabled in [true, false] {
             let db = try makeDatabaseWithPerProfileRows(foreignKeysEnabled: foreignKeysEnabled)
             for table in perProfileTables {
@@ -492,7 +493,7 @@ final class AppDatabaseTests: XCTestCase {
         }
     }
 
-    func testDeleteProfileRefusedBecauseASpaceReferencesItDeletesNothing() throws {
+    @MainActor func testDeleteProfileRefusedBecauseASpaceReferencesItDeletesNothing() throws {
         let db = try makeDatabaseWithPerProfileRows()
         let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0)
         db.saveSession(spaces: [(space, [])], lastActiveSpaceID: nil)
@@ -511,7 +512,7 @@ final class AppDatabaseTests: XCTestCase {
 
     // MARK: - Pending profile data removal (TASK-32)
 
-    func testDeleteProfileRecordsAPendingDataRemovalOnlyWhenItDeletes() throws {
+    @MainActor func testDeleteProfileRecordsAPendingDataRemovalOnlyWhenItDeletes() throws {
         let db = try makeDatabaseWithPerProfileRows()
         let space = spaceRecord(id: "s1", name: "Home", emoji: "🏠", colorHex: "007AFF", sortOrder: 0)
         db.saveSession(spaces: [(space, [])], lastActiveSpaceID: nil)
@@ -531,7 +532,7 @@ final class AppDatabaseTests: XCTestCase {
 
     // MARK: - saveProfiles removal (TASK-33)
 
-    func testSaveProfilesRemovesAMissingProfileWithItsPerProfileRows() throws {
+    @MainActor func testSaveProfilesRemovesAMissingProfileWithItsPerProfileRows() throws {
         let incognitoID = TabStore.incognitoProfileID.uuidString
         for foreignKeysEnabled in [true, false] {
             let label = "foreign keys \(foreignKeysEnabled ? "on" : "off")"
@@ -558,7 +559,7 @@ final class AppDatabaseTests: XCTestCase {
         }
     }
 
-    func testSaveProfilesKeepsAMissingProfileASpaceReferencesAndSavesTheRest() throws {
+    @MainActor func testSaveProfilesKeepsAMissingProfileASpaceReferencesAndSavesTheRest() throws {
         for foreignKeysEnabled in [true, false] {
             let label = "foreign keys \(foreignKeysEnabled ? "on" : "off")"
             let db = try makeDatabaseWithPerProfileRows(foreignKeysEnabled: foreignKeysEnabled)
@@ -588,7 +589,7 @@ final class AppDatabaseTests: XCTestCase {
     /// extension page means "uninstalled since", which restore drops. Rows saved
     /// before the column existed are back-filled with the sentinel instead, so an
     /// upgrade keeps the user's extension-page pins, favourites and closed tabs.
-    func testMigrationV8TagsPreExistingExtensionPagesWithTheUnknownID() throws {
+    @MainActor func testMigrationV8TagsPreExistingExtensionPagesWithTheUnknownID() throws {
         let dbQueue = try DatabaseQueue()
         try AppDatabase.migrator.migrate(dbQueue, upTo: "v7")
         try dbQueue.write { db in

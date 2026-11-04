@@ -12,12 +12,11 @@ import AppKit
 /// "menus that ship" tests hold the invariants the delegate relies on against
 /// the real main menu (the test host runs `applicationDidFinishLaunching`, so
 /// `NSApp.mainMenu` is the production one).
-@MainActor
-final class MenuKeyEquivalentMatcherTests: XCTestCase {
+nonisolated final class MenuKeyEquivalentMatcherTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func keyEvent(_ characters: String, _ modifiers: NSEvent.ModifierFlags) -> NSEvent {
+    @MainActor private func keyEvent(_ characters: String, _ modifiers: NSEvent.ModifierFlags) -> NSEvent {
         guard let event = NSEvent.keyEvent(with: .keyDown,
                                            location: .zero,
                                            modifierFlags: modifiers,
@@ -35,7 +34,7 @@ final class MenuKeyEquivalentMatcherTests: XCTestCase {
 
     /// The Spaces menu's static layout: Next/Previous Space on the arrow keys,
     /// a separator, then a plain item with no key equivalent.
-    private func spacesMenuItems() -> [NSMenuItem] {
+    @MainActor private func spacesMenuItems() -> [NSMenuItem] {
         let next = NSMenuItem(title: "Next Space",
                               action: #selector(BrowserWindowController.nextSpace(_:)),
                               keyEquivalent: "\u{F703}")
@@ -51,7 +50,7 @@ final class MenuKeyEquivalentMatcherTests: XCTestCase {
     }
 
     /// The Develop menu's static layout: Web Inspector on Cmd+Option+I.
-    private func developMenuItems() -> [NSMenuItem] {
+    @MainActor private func developMenuItems() -> [NSMenuItem] {
         let inspector = NSMenuItem(title: "Web Inspector",
                                    action: #selector(BrowserWindowController.showWebInspector(_:)),
                                    keyEquivalent: "i")
@@ -61,14 +60,14 @@ final class MenuKeyEquivalentMatcherTests: XCTestCase {
 
     // MARK: - Hits
 
-    func testCommandOptionIMatchesWebInspector() {
+    @MainActor func testCommandOptionIMatchesWebInspector() {
         let match = MenuKeyEquivalentMatcher.item(matching: keyEvent("i", [.command, .option]),
                                                   in: developMenuItems())
         XCTAssertEqual(match?.title, "Web Inspector")
         XCTAssertEqual(match?.action, #selector(BrowserWindowController.showWebInspector(_:)))
     }
 
-    func testCommandOptionRightArrowMatchesNextSpace() {
+    @MainActor func testCommandOptionRightArrowMatchesNextSpace() {
         // Real arrow-key events also carry `.function`, which no key equivalent
         // requires: the matcher must ignore modifiers outside the significant set.
         let event = keyEvent("\u{F703}", [.command, .option, .function])
@@ -76,13 +75,13 @@ final class MenuKeyEquivalentMatcherTests: XCTestCase {
         XCTAssertEqual(match?.title, "Next Space")
     }
 
-    func testCommandOptionLeftArrowMatchesPreviousSpace() {
+    @MainActor func testCommandOptionLeftArrowMatchesPreviousSpace() {
         let event = keyEvent("\u{F702}", [.command, .option, .function])
         let match = MenuKeyEquivalentMatcher.item(matching: event, in: spacesMenuItems())
         XCTAssertEqual(match?.title, "Previous Space")
     }
 
-    func testAPlainCommandLetterItemWithTheDefaultMaskMatchesACommandPress() {
+    @MainActor func testAPlainCommandLetterItemWithTheDefaultMaskMatchesACommandPress() {
         // `addItem(withTitle:action:keyEquivalent:)` leaves the mask at its
         // default of [.command].
         let menu = NSMenu(title: "View")
@@ -95,7 +94,7 @@ final class MenuKeyEquivalentMatcherTests: XCTestCase {
         XCTAssertEqual(match?.title, "Reload Page")
     }
 
-    func testAnUppercaseKeyEquivalentImpliesShift() {
+    @MainActor func testAnUppercaseKeyEquivalentImpliesShift() {
         let item = NSMenuItem(title: "Redo",
                               action: #selector(BrowserWindowController.browserRedo(_:)),
                               keyEquivalent: "Z")
@@ -107,24 +106,24 @@ final class MenuKeyEquivalentMatcherTests: XCTestCase {
 
     // MARK: - Misses
 
-    func testCommandIAloneDoesNotMatchTheCommandOptionItem() {
+    @MainActor func testCommandIAloneDoesNotMatchTheCommandOptionItem() {
         XCTAssertNil(MenuKeyEquivalentMatcher.item(matching: keyEvent("i", [.command]),
                                                    in: developMenuItems()))
     }
 
-    func testExtraModifiersDoNotMatch() {
+    @MainActor func testExtraModifiersDoNotMatch() {
         XCTAssertNil(MenuKeyEquivalentMatcher.item(matching: keyEvent("i", [.command, .option, .shift]),
                                                    in: developMenuItems()))
     }
 
-    func testAKeyNoItemClaimsDoesNotMatch() {
+    @MainActor func testAKeyNoItemClaimsDoesNotMatch() {
         XCTAssertNil(MenuKeyEquivalentMatcher.item(matching: keyEvent("k", [.command, .option]),
                                                    in: developMenuItems()))
         XCTAssertNil(MenuKeyEquivalentMatcher.item(matching: keyEvent("t", [.command]),
                                                    in: spacesMenuItems()))
     }
 
-    func testSeparatorsNeverMatch() {
+    @MainActor func testSeparatorsNeverMatch() {
         // A separator's keyEquivalent is empty, but assert the behaviour that
         // matters: an all-separator menu answers nothing, whatever is pressed.
         let separators = [NSMenuItem.separator(), NSMenuItem.separator()]
@@ -133,7 +132,7 @@ final class MenuKeyEquivalentMatcherTests: XCTestCase {
         XCTAssertNil(MenuKeyEquivalentMatcher.item(matching: keyEvent("q", [.command]), in: separators))
     }
 
-    func testAnItemWithNoActionNeverMatches() {
+    @MainActor func testAnItemWithNoActionNeverMatches() {
         // The Extensions menu gives a popup-less extension a nil action; AppKit
         // could not dispatch to it, so it must not claim the keystroke.
         let item = NSMenuItem(title: "Some Extension", action: nil, keyEquivalent: "i")
@@ -142,7 +141,7 @@ final class MenuKeyEquivalentMatcherTests: XCTestCase {
                                                    in: [item]))
     }
 
-    func testAHiddenItemNeverMatches() {
+    @MainActor func testAHiddenItemNeverMatches() {
         let item = NSMenuItem(title: "Web Inspector",
                               action: #selector(BrowserWindowController.showWebInspector(_:)),
                               keyEquivalent: "i")
@@ -152,7 +151,7 @@ final class MenuKeyEquivalentMatcherTests: XCTestCase {
                                                    in: [item]))
     }
 
-    func testTheFirstMatchWins() {
+    @MainActor func testTheFirstMatchWins() {
         let first = NSMenuItem(title: "First",
                                action: #selector(BrowserWindowController.reloadPage(_:)),
                                keyEquivalent: "r")
@@ -166,21 +165,21 @@ final class MenuKeyEquivalentMatcherTests: XCTestCase {
 
     // MARK: - The menus that ship
 
-    private func mainMenu(titled title: String) -> NSMenu? {
+    @MainActor private func mainMenu(titled title: String) -> NSMenu? {
         NSApp.mainMenu?.items.compactMap(\.submenu).first { $0.title == title }
     }
 
     /// The menus whose key-equivalent query AppDelegate answers.
-    private func delegateDrivenMenus() -> [NSMenu] {
+    @MainActor private func delegateDrivenMenus() -> [NSMenu] {
         guard let delegate = NSApp.delegate as? AppDelegate, let mainMenu = NSApp.mainMenu else { return [] }
         return mainMenu.items.compactMap(\.submenu).filter { $0.delegate === delegate }
     }
 
-    func testOnlyTheSpacesAndExtensionsMenusAreDelegateDriven() {
+    @MainActor func testOnlyTheSpacesAndExtensionsMenusAreDelegateDriven() {
         XCTAssertEqual(Set(delegateDrivenMenus().map(\.title)), ["Spaces", "Extensions"])
     }
 
-    func testTheDevelopMenuHasNoDelegateSoAppKitMatchesWebInspectorItself() {
+    @MainActor func testTheDevelopMenuHasNoDelegateSoAppKitMatchesWebInspectorItself() {
         // Cmd+Option+I is the one letter shortcut among the dynamic menus. A
         // letter is what a hand-rolled matcher gets wrong on a non-Latin
         // keyboard layout, so it must stay in a menu AppKit matches natively.
@@ -196,7 +195,7 @@ final class MenuKeyEquivalentMatcherTests: XCTestCase {
     /// no dynamic item (space, extension) carries one, since such an item
     /// would only exist after the menu had been opened once and would be
     /// dispatched without an `NSMenuItem` sender.
-    func testEveryShortcutInADelegateDrivenMenuIsAStaticFunctionKeyTheMatcherAnswers() throws {
+    @MainActor func testEveryShortcutInADelegateDrivenMenuIsAStaticFunctionKeyTheMatcherAnswers() throws {
         let delegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         let menus = delegateDrivenMenus()
         XCTAssertFalse(menus.isEmpty)

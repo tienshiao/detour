@@ -12,6 +12,38 @@ struct ArchiveEntry: Equatable {
     let closedAt: Date?
     /// False for a disabled extension's page: listed, but nothing could show it.
     let isRestorable: Bool
+    /// A space's closed tab, or a closed Quick Detour (TASK-193.5), whose
+    /// `spaceID` is then its profile's Quick Detour scope.
+    var kind: ArchiveEntryKind = .tab
+}
+
+/// What an Archived Tabs entry was.
+enum ArchiveEntryKind: Equatable {
+    case tab
+    /// A Quick Detour window of `profileID`, closed by hand (or at quit) or
+    /// by the idle timer (`autoClosed`).
+    case quickDetour(profileID: UUID, autoClosed: Bool)
+}
+
+/// The second line of an archive row: the address (`archiveDisplayURL`),
+/// after "Quick Detour" (and "auto-closed") for a closed Quick Detour.
+func archiveEntrySubtitle(_ entry: ArchiveEntry) -> String {
+    let address = archiveDisplayURL(entry.url)
+    guard case .quickDetour(_, let autoClosed) = entry.kind else { return address }
+    let label = QuickDetour.archiveLabel(autoClosed: autoClosed)
+    return address.isEmpty ? label : "\(label) · \(address)"
+}
+
+/// The record scopes Clear Archive… deletes: the filtered space, or with no
+/// filter every listed space and every Quick Detour scope among the entries.
+func archiveClearScope(spaceFilter: UUID?, spaceIDs: [UUID], entries: [ArchiveEntry]) -> [UUID] {
+    if let spaceFilter { return [spaceFilter] }
+    var scopes = spaceIDs
+    for entry in entries {
+        guard case .quickDetour = entry.kind, !scopes.contains(entry.spaceID) else { continue }
+        scopes.append(entry.spaceID)
+    }
+    return scopes
 }
 
 /// The relative-date group an entry is listed under, Arc-style.

@@ -9,25 +9,24 @@ import WebKit
 ///
 /// Same world as `ExtensionSidePanelTests`: production profiles and store,
 /// browser windows that are never shown.
-@MainActor
-final class ExtensionRuntimeGetContextsTests: XCTestCase {
+nonisolated final class ExtensionRuntimeGetContextsTests: XCTestCase {
 
     private typealias Via = SidePanelTestWorld.Via
     private var world: SidePanelTestWorld!
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         world = SidePanelTestWorld()
         try await world.setUp()
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         await world.tearDown()
         world = nil
         try await super.tearDown()
     }
 
-    private struct Scene {
+    @MainActor private struct Scene {
         let loaded: SidePanelTestWorld.Loaded
         let space: Space
         let window: BrowserWindowController
@@ -36,7 +35,7 @@ final class ExtensionRuntimeGetContextsTests: XCTestCase {
         var panels: ExtensionSidePanelController { loaded.profile.sidePanels }
     }
 
-    private func makeScene(_ name: String, permissions: [String] = ["sidePanel"]) async throws -> Scene {
+    @MainActor private func makeScene(_ name: String, permissions: [String] = ["sidePanel"]) async throws -> Scene {
         let ext = try await world.makeExtension(name: name, permissions: permissions)
         let profile = world.makeProfile(name)
         let space = world.makeSpace(name, in: profile)
@@ -48,13 +47,13 @@ final class ExtensionRuntimeGetContextsTests: XCTestCase {
         return Scene(loaded: loaded, space: space, window: window, first: first, second: second)
     }
 
-    private func contexts(_ via: Via, in loaded: SidePanelTestWorld.Loaded,
+    @MainActor private func contexts(_ via: Via, in loaded: SidePanelTestWorld.Loaded,
                           filter: [String: Any] = [:]) async throws -> [[String: Any]] {
         let value = try await world.run(via, in: loaded, ["op": "getContexts", "filter": filter])
         return try XCTUnwrap(value as? [[String: Any]], "expected an array, got \(value)")
     }
 
-    private func openTabPanel(_ via: Via, in scene: Scene, for tab: BrowserTab) async throws -> (panel: ExtensionSidePanel, tabID: Int) {
+    @MainActor private func openTabPanel(_ via: Via, in scene: Scene, for tab: BrowserTab) async throws -> (panel: ExtensionSidePanel, tabID: Int) {
         let tabID = try await world.tabID(of: tab, via, in: scene.loaded)
         _ = try await world.run(via, in: scene.loaded, [
             "op": "setOptionsThenOpen",
@@ -67,7 +66,7 @@ final class ExtensionRuntimeGetContextsTests: XCTestCase {
 
     // MARK: - AC #1
 
-    func testContextTypeAndGetContextsExistInTheWorkerAndInAPage() async throws {
+    @MainActor func testContextTypeAndGetContextsExistInTheWorkerAndInAPage() async throws {
         // No sidePanel permission: getContexts is the runtime's, not the panel's.
         let scene = try await makeScene("Contexts Enum", permissions: [])
         for via in Via.allCases {
@@ -84,7 +83,7 @@ final class ExtensionRuntimeGetContextsTests: XCTestCase {
 
     // MARK: - AC #2, #3
 
-    func testTheWorkerATabPageAndAnOpenPanelAreListedWithTheirIds() async throws {
+    @MainActor func testTheWorkerATabPageAndAnOpenPanelAreListedWithTheirIds() async throws {
         let scene = try await makeScene("Contexts List")
         let base = scene.loaded.context.baseURL
         let origin = "webkit-extension://\(try XCTUnwrap(base.host))"
@@ -164,7 +163,7 @@ final class ExtensionRuntimeGetContextsTests: XCTestCase {
         }
     }
 
-    func testAPanelHiddenWithItsTabIsStillAContextAndAWindowPanelNamesItsWindow() async throws {
+    @MainActor func testAPanelHiddenWithItsTabIsStillAContextAndAWindowPanelNamesItsWindow() async throws {
         let scene = try await makeScene("Contexts Hidden Panel")
         let (panel, tabID) = try await openTabPanel(.worker, in: scene, for: scene.first)
         scene.window.selectTab(id: scene.second.id)
@@ -182,7 +181,7 @@ final class ExtensionRuntimeGetContextsTests: XCTestCase {
         XCTAssertEqual(windowPanel["tabId"] as? Int, -1)
     }
 
-    func testAnOffscreenDocumentIsListedOnceItHasLoaded() async throws {
+    @MainActor func testAnOffscreenDocumentIsListedOnceItHasLoaded() async throws {
         let scene = try await makeScene("Contexts Offscreen")
         let host = try XCTUnwrap(scene.loaded.context.baseURL.host)
         let created = try await postRawPolyfillEnvelope(from: scene.loaded.page, type: "offscreen.createDocument",
@@ -202,7 +201,7 @@ final class ExtensionRuntimeGetContextsTests: XCTestCase {
 
     // MARK: - The Claude extension's toggle (TASK-132.8 AC #1, second half)
 
-    func testTheShortcutOpensThePanelAndPressedAgainClosesIt() async throws {
+    @MainActor func testTheShortcutOpensThePanelAndPressedAgainClosesIt() async throws {
         let scene = try await makeScene("Contexts Toggle")
         let event = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown, location: .zero, modifierFlags: [.option, .shift], timestamp: ProcessInfo.processInfo.systemUptime,
@@ -228,7 +227,7 @@ final class ExtensionRuntimeGetContextsTests: XCTestCase {
 
     // MARK: - AC #4: isolation
 
-    func testAnotherExtensionsAndAnotherProfilesContextsAreNeverReturned() async throws {
+    @MainActor func testAnotherExtensionsAndAnotherProfilesContextsAreNeverReturned() async throws {
         let scene = try await makeScene("Contexts Isolation A")
         let (panel, _) = try await openTabPanel(.worker, in: scene, for: scene.first)
         let panelContextID = ExtensionContextIdentity.id(for: try XCTUnwrap(panel.webView))
@@ -266,7 +265,7 @@ final class ExtensionRuntimeGetContextsTests: XCTestCase {
         XCTAssertEqual(forged.error, "Extension identity mismatch")
     }
 
-    func testAPrivateProfilesContextsAreIncognito() async throws {
+    @MainActor func testAPrivateProfilesContextsAreIncognito() async throws {
         let ext = try await world.makeExtension(name: "Contexts Private")
         let privateProfile = Profile(name: "Contexts Private", isIncognito: true)
         _ = privateProfile.extensionController
@@ -281,7 +280,7 @@ final class ExtensionRuntimeGetContextsTests: XCTestCase {
 
     // MARK: - AC #5: garbage collection
 
-    func testThePatchSurvivesGarbageCollection() async throws {
+    @MainActor func testThePatchSurvivesGarbageCollection() async throws {
         let scene = try await makeScene("Contexts GC", permissions: [])
         let raw = try await scene.loaded.page.callAsyncJavaScript("""
             const before = typeof chrome.runtime.getContexts;

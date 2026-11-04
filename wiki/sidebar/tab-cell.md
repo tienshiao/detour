@@ -5,7 +5,7 @@ description: "The sidebar's row views — TabCellView, FolderCellView and friend
 tags: [sidebar, cells, progress, split-tabs, appkit]
 status: stable
 resource: ../../Detour/Browser/Sidebar/TabCellView.swift
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:41:30Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:17:19Z }
 sources:
   - id: tab-cell
     resource: ../../Detour/Browser/Sidebar/TabCellView.swift
@@ -37,6 +37,9 @@ sources:
   - id: task-124
     resource: backlog:TASK-124
     title: Fade out the progress bar on a background tab whose load has stalled
+  - id: dev-mode
+    resource: ../features/dev-mode.md
+    title: Dev mode
   - id: commit-b9ef265
     resource: commit:b9ef265
     title: "Sidebar: ID-based drag payloads, pure drop resolver, drag fixes"
@@ -61,9 +64,11 @@ mute, rename and collapse.
 | Favicon | always | Globe symbol when the tab has none. Leading inset is `4 + 16 × indentLevel` (folder depth) |
 | Sleep badge (moon) | the tab is sleeping, or a pinned entry is dormant | A split row shows it only when *both* members are asleep or dormant |
 | Speaker button | playing audio or muted | Slides the title from 8 to 24 pt. The icon is updated even when the playing/muted union did not change, or muting a playing tab would not swap it |
-| Title | always | Pinned entries show `displayTitle`; the tooltip is the pinned title |
+| Title | always | Pinned entries show `displayTitle`. There is no tooltip: the sidebar's [tab hover card](../features/tab-hover-card.md) replaced it, and the cell's `accessibilityHelp` keeps the old tooltip text (the tab title, a pinned entry's pinned title, a split row's "left — right") |
+| Host line | the row is in [dev mode](../features/dev-mode.md) (single rows only) | 10 pt `secondaryLabelColor` label under the title, `hostLineLabel`; the title moves up so both lines are centred in the unchanged 36 pt row |
+| Hazard border | the row, or a split half, is in dev mode **and the row is the window's selected row** (`isRowSelected`, pushed by `TabRowView.isSelected`) | Orange/black dashed `HazardBorderView`, made on first use and only hidden on deselection, framed like the hover background (a split half's border matches its half highlight); over the progress bar, under the content |
 | Close button | hover only | Glyph says what it will do: xmark closes a normal tab; **minus** makes a live pinned entry dormant; xmark on a dormant entry removes the pin (`updatePinnedMode`) |
-| Peek favicon | the tab has a parked [Peek](../tabs/peek.md) | Trailing chip; never used for split rendering |
+| Peek favicon | the tab has a live or parked [Peek](../tabs/peek.md) | Trailing chip: a single tab's, or a split row's right pane's. A split's left pane has its own (`leftPanePeekFaviconImageView`) between its close button and the divider, shown only while the row is a split. Hovering either shows that Peek's [hover card](../features/tab-hover-card.md) (TASK-229) |
 | Split segment | the row is a split | See below |
 | Progress bar | a load is in flight | See below |
 | Hover background | pointer over the row | Extends 6 pt beyond the cell on each side; the drag image and the split-drop overlay mirror this rect |
@@ -145,6 +150,13 @@ Passing `nil` for both favicon and title clears split rendering.
   its own entry's live or dormant state (`updateSplitPinnedMode`).
 - **Hover is per half.** The tracking area includes `.mouseMoved` so the
   highlight and close button follow the pointer across the divider.
+  `updateHover(to:at:)` is the one place hover, the half and whether the
+  pointer is over the Peek badge (`peekBadgeHoverRect(in:)`) are decided; it
+  reports every change to the cell's `hoverDelegate` (the sidebar, for the
+  [tab hover card](../features/tab-hover-card.md)), as do `prepareForReuse`
+  and `viewWillMove(toWindow: nil)` for a hovered cell whose row is gone.
+  `mouseMoved` re-reports on any row, not only split rows, so the card can
+  follow the pointer onto the badge.
 - **Formation and dissolve animate inside the row.** The table diff keeps
   the row in place across a split forming or dissolving
   ([row layout](./row-layout.md)), so the same cell is reconfigured from
@@ -190,6 +202,11 @@ background; Esc restores the original text and gives focus to the table.
 - **Every path that fills a cell must pass `sidebarProgress`.** There are
   six; a seventh that reads `estimatedProgress` brings the stuck bar back
   for that row kind.
+- **The same paths set the dev-mode marking** (`updateDevMode`, through
+  `DevMode.rowMarking` / `splitRowMarking`), as does the `applyState` loop
+  that turns a dissolved pinned split back into a single row. A path that
+  skips it leaves a reused cell with another row's border and host line;
+  `prepareForReuse` clears it.
 
 # Gotchas
 
@@ -213,6 +230,8 @@ background; Esc restores the original text and gives focus to the table.
   that holds a request open so the load never ends.
 - `TabCellSplitCollapseTests` — collapse and reveal without a window apply
   instantly and leave the segment cleared and hidden.
+- `DevModeTests` — the host line and border for a dev-mode row, clearing on
+  `.none` and on reuse, and a split's borders on the local halves only.
 - Live check of the fade: a background tab whose image request never
   answers showed the bar at 1 s, no bar at 4.5 s, and the bar again after
   selecting the tab.[^task-124]
@@ -225,6 +244,7 @@ background; Esc restores the original text and gives focus to the table.
 - [Favicons](../features/favicons.md) and [BrowserTab](../architecture/browser-tab.md) — where the row's icon and title come from.
 - [Pinned tabs and folders](../tabs/pinned-tabs-and-folders.md) — live and dormant entries, which decide the close glyph.
 - [Split tabs](../tabs/split-tabs.md)
+- [Dev mode](../features/dev-mode.md) — the hazard border and host line.
 
 [^task-112]: Some sites never get their favicon and their sidebar rows show a stray grey box
 [^task-114]: A background tab whose load stalls shows its URL as the title until it is first shown

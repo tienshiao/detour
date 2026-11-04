@@ -10,13 +10,12 @@ import WebKit
 /// ids a URL may reach, and how the script is kept on a content controller.
 ///
 /// Delivery through a real extension context is `ExtensionExternallyConnectableTests`.
-@MainActor
-final class ExternallyConnectableShimTests: XCTestCase {
+nonisolated final class ExternallyConnectableShimTests: XCTestCase {
 
     private var views: [WKWebView] = []
     private var tempDirs: [URL] = []
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for view in views { view.stopLoading() }
         views.removeAll()
         for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
@@ -24,9 +23,9 @@ final class ExternallyConnectableShimTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private static let claudeID = "fcoeoabgfenejglbffodgkkbkcdhcgfn"
-    private static let otherID = "abcdefghijklmnopabcdefghijklmnop"
-    private static let noReceiver = "Could not establish connection. Receiving end does not exist."
+    @MainActor private static let claudeID = "fcoeoabgfenejglbffodgkkbkcdhcgfn"
+    @MainActor private static let otherID = "abcdefghijklmnopabcdefghijklmnop"
+    @MainActor private static let noReceiver = "Could not establish connection. Receiving end does not exist."
 
     /// What WebKit puts on a web page, reduced to a recorder. `sendMessage`
     /// answers `{ native: true, … }`, rejects for `{ type: 'reject' }` and
@@ -59,16 +58,16 @@ final class ExternallyConnectableShimTests: XCTestCase {
         } };
         """
 
-    private func table(_ entries: [String: [String]]) throws -> ExternallyConnectable.Table {
+    @MainActor private func table(_ entries: [String: [String]]) throws -> ExternallyConnectable.Table {
         try entries.mapValues { try $0.map { try WKWebExtension.MatchPattern(string: $0) } }
     }
 
-    private static let claudeTable = [claudeID: ["https://claude.ai/*", "https://*.claude.ai/*"]]
+    @MainActor private static let claudeTable = [claudeID: ["https://claude.ai/*", "https://*.claude.ai/*"]]
 
     /// A web view with the stand-in (unless `stub` is false), then `before`,
     /// then the shim for `table` — all at document start, in that order — showing
     /// `html` under `url`.
-    private func makePage(_ url: String, table entries: [String: [String]] = claudeTable, stub: Bool = true,
+    @MainActor private func makePage(_ url: String, table entries: [String: [String]] = claudeTable, stub: Bool = true,
                           before: String? = nil, html: String = "<html><body>page</body></html>") async throws -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
@@ -85,7 +84,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
         return view
     }
 
-    private func evaluate(_ view: WKWebView, _ body: String, _ arguments: [String: Any] = [:],
+    @MainActor private func evaluate(_ view: WKWebView, _ body: String, _ arguments: [String: Any] = [:],
                           file: StaticString = #filePath, line: UInt = #line) async throws -> [String: Any] {
         let raw = try await view.callAsyncJavaScript(body, arguments: arguments, contentWorld: .page)
         let json = try XCTUnwrap(raw as? String, "expected a JSON string from the page", file: file, line: line)
@@ -94,7 +93,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// The callback form, and everything around it: what the callback got,
     /// `lastError` inside and after it, what reached WebKit, what was logged.
-    private func callbackOutcome(_ view: WKWebView, id: String, message: [String: Any],
+    @MainActor private func callbackOutcome(_ view: WKWebView, id: String, message: [String: Any],
                                  readLastError: Bool = true) async throws -> [String: Any] {
         try await evaluate(view, """
             const out = await new Promise((resolve) => {
@@ -114,7 +113,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
             """, ["id": id, "message": message, "readLastError": readLastError])
     }
 
-    private func promiseOutcome(_ view: WKWebView, id: String, message: [String: Any]) async throws -> [String: Any] {
+    @MainActor private func promiseOutcome(_ view: WKWebView, id: String, message: [String: Any]) async throws -> [String: Any] {
         try await evaluate(view, """
             const out = {};
             try {
@@ -132,7 +131,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// The shim's own match must agree with WebKit's for every pattern and URL
     /// here: WebKit's decides delivery, the shim's decides what a page is shown.
-    func testShimMatchesTheURLsWebKitsMatchPatternsMatch() async throws {
+    @MainActor func testShimMatchesTheURLsWebKitsMatchPatternsMatch() async throws {
         let patterns = [
             "https://claude.ai/*", "https://*.claude.ai/*", "*://claude.ai/*", "http://claude.ai/*",
             "https://claude.ai/login*", "https://claude.ai/*/chat", "https://CLAUDE.ai/*",
@@ -174,7 +173,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// Claude's two patterns, spelled out: claude.ai and its subdomains over
     /// https, and nothing that merely looks like them.
-    func testClaudePatternsCoverClaudeAIAndItsSubdomainsOnly() async throws {
+    @MainActor func testClaudePatternsCoverClaudeAIAndItsSubdomainsOnly() async throws {
         for (url, listed) in [
             ("https://claude.ai/login?returnTo=%2Foauth%2Fauthorize", true),
             ("https://claude.ai/oauth/authorize?client_id=x", true),
@@ -197,7 +196,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
     /// The shim only exposes what WebKit vends: without WebKit's
     /// `browser.runtime` (a web view with no extension controller) it defines
     /// nothing, even on a listed page.
-    func testNothingIsDefinedWithoutWebKitsBrowserRuntime() async throws {
+    @MainActor func testNothingIsDefinedWithoutWebKitsBrowserRuntime() async throws {
         let view = try await makePage("https://claude.ai/", stub: false)
         let seen = try await evaluate(view, "return JSON.stringify({ chrome: typeof globalThis.chrome, browser: typeof globalThis.browser });")
         XCTAssertEqual(seen["chrome"] as? String, "undefined")
@@ -209,7 +208,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
     /// A `chrome` that is already there when the shim runs (another script
     /// defined it at document start) keeps every member; `runtime` is added
     /// only if it has none.
-    func testAnExistingChromeObjectIsExtendedAndNeverReplaced() async throws {
+    @MainActor func testAnExistingChromeObjectIsExtendedAndNeverReplaced() async throws {
         let withoutRuntime = try await makePage("https://claude.ai/",
             before: "window.chrome = { webstore: { install() { return 'own'; } } }; window.__own = window.chrome;")
         let extended = try await evaluate(withoutRuntime, """
@@ -234,7 +233,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// A `chrome` the shim cannot extend — a primitive, a frozen object — is
     /// left exactly as it is, and the shim does not throw.
-    func testAChromeTheShimCannotExtendIsLeftAlone() async throws {
+    @MainActor func testAChromeTheShimCannotExtendIsLeftAlone() async throws {
         let errors = "window.__errors = []; window.addEventListener('error', (e) => window.__errors.push(String(e.message)));"
         let primitive = try await makePage("https://claude.ai/", before: errors + "window.chrome = 'a string';")
         let primitiveSeen = try await evaluate(primitive, "return JSON.stringify({ chrome: window.chrome, errors: window.__errors });")
@@ -252,7 +251,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// The global is an ordinary property: writable, configurable, and what the
     /// shim adds is messaging only.
-    func testChromeIsAnOrdinaryGlobalWithMessagingOnly() async throws {
+    @MainActor func testChromeIsAnOrdinaryGlobalWithMessagingOnly() async throws {
         let view = try await makePage("https://claude.ai/")
         let seen = try await evaluate(view, """
             const d = Object.getOwnPropertyDescriptor(globalThis, 'chrome');
@@ -277,7 +276,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// A listed id is forwarded to WebKit's function with the id and the
     /// message only, and its answer comes back in both forms.
-    func testListedIDIsForwardedToWebKitInBothForms() async throws {
+    @MainActor func testListedIDIsForwardedToWebKitInBothForms() async throws {
         let view = try await makePage("https://claude.ai/login")
         let viaCallback = try await callbackOutcome(view, id: Self.claudeID,
                                                     message: ["type": "oauth_redirect", "redirect_uri": "x"])
@@ -316,7 +315,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// An id this page may not reach is never passed to WebKit, and fails with
     /// Chrome's error in both forms.
-    func testUnlistedIDFailsLikeChromeAndNeverReachesWebKit() async throws {
+    @MainActor func testUnlistedIDFailsLikeChromeAndNeverReachesWebKit() async throws {
         let view = try await makePage("https://claude.ai/", table: [
             Self.claudeID: ["https://claude.ai/*"], Self.otherID: ["https://example.com/*"],
         ])
@@ -337,7 +336,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// The failure is asynchronous — the call returns first — exactly as a
     /// delivered message's answer is.
-    func testFailureIsReportedAfterTheCallReturns() async throws {
+    @MainActor func testFailureIsReportedAfterTheCallReturns() async throws {
         let view = try await makePage("https://claude.ai/")
         let order = try await evaluate(view, """
             const events = [];
@@ -353,7 +352,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
     /// A WebKit failure for a listed id surfaces the same two ways; a
     /// synchronous throw from WebKit (a message it cannot serialise) stays a
     /// synchronous throw.
-    func testWebKitFailureSurfacesAsLastErrorRejectionOrThrow() async throws {
+    @MainActor func testWebKitFailureSurfacesAsLastErrorRejectionOrThrow() async throws {
         let view = try await makePage("https://claude.ai/")
         let viaCallback = try await callbackOutcome(view, id: Self.claudeID, message: ["type": "reject"])
         XCTAssertEqual(viaCallback["lastError"] as? String, "native failure", "\(viaCallback)")
@@ -370,7 +369,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// Chrome logs a `lastError` nobody read; so does the shim, and a callback
     /// that throws is reported as an uncaught error rather than swallowed.
-    func testUnreadLastErrorIsLoggedAndACallbackExceptionIsReported() async throws {
+    @MainActor func testUnreadLastErrorIsLoggedAndACallbackExceptionIsReported() async throws {
         let view = try await makePage("https://claude.ai/")
         let unread = try await callbackOutcome(view, id: Self.otherID, message: [:], readLastError: false)
         XCTAssertEqual(unread["consoleErrors"] as? [String], ["Unchecked runtime.lastError: \(Self.noReceiver)"])
@@ -411,7 +410,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// The argument forms Chrome refuses from a web page throw a TypeError
     /// before anything is sent.
-    func testCallsWithoutAnExtensionIDThrow() async throws {
+    @MainActor func testCallsWithoutAnExtensionIDThrow() async throws {
         let view = try await makePage("https://claude.ai/")
         let outcome = try await evaluate(view, """
             const attempt = (run) => { try { run(); return 'no throw'; } catch (e) { return (e instanceof TypeError ? 'TypeError: ' : 'Error: ') + e.message; } };
@@ -445,7 +444,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// A listed id gets WebKit's own port; a connection WebKit reports as
     /// failed (`port.error`) shows as `runtime.lastError` in `onDisconnect`.
-    func testConnectForwardsAListedIDAndMapsWebKitsPortError() async throws {
+    @MainActor func testConnectForwardsAListedIDAndMapsWebKitsPortError() async throws {
         let view = try await makePage("https://claude.ai/")
         let outcome = try await evaluate(view, """
             const port = chrome.runtime.connect(id, { name: 'p' });
@@ -475,7 +474,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
     /// An unlisted id gets a port that never reaches WebKit: it accepts a post
     /// until it reports the disconnect with `lastError`, then refuses; a port
     /// the page disconnects first reports nothing.
-    func testConnectToAnUnlistedIDGivesAPortThatDisconnectsWithLastError() async throws {
+    @MainActor func testConnectToAnUnlistedIDGivesAPortThatDisconnectsWithLastError() async throws {
         let view = try await makePage("https://claude.ai/")
         let outcome = try await evaluate(view, """
             const out = { events: [] };
@@ -526,7 +525,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// `updateJS` replaces the ids an open document may reach: a revoked id
     /// fails like any unlisted one, an added id is forwarded.
-    func testUpdateEventReplacesTheReachableIDs() async throws {
+    @MainActor func testUpdateEventReplacesTheReachableIDs() async throws {
         let view = try await makePage("https://claude.ai/")
         _ = try await view.evaluateJavaScript(ExternallyConnectable.updateJS(ids: []))
         let revoked = try await promiseOutcome(view, id: Self.claudeID, message: ["n": 1])
@@ -549,7 +548,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
     /// The update is for one document: `WKWebView.url` is the pending URL
     /// during a provisional navigation, and the page still showing must not
     /// be handed the ids of the extensions that list the page being loaded.
-    func testUpdateForAnotherDocumentIsNotDispatched() async throws {
+    @MainActor func testUpdateForAnotherDocumentIsNotDispatched() async throws {
         let view = try await makePage("https://example.com/", before: """
             window.__updates = [];
             window.addEventListener('\(ExternallyConnectable.updateEventName)', (event) => { window.__updates.push(event.detail); });
@@ -567,7 +566,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// Trailing optional arguments passed as `undefined` are the same as
     /// leaving them out, as in Chrome.
-    func testTrailingUndefinedArgumentsAreAccepted() async throws {
+    @MainActor func testTrailingUndefinedArgumentsAreAccepted() async throws {
         let view = try await makePage("https://claude.ai/")
         let outcome = try await evaluate(view, """
             const a = await chrome.runtime.sendMessage(id, { n: 1 }, undefined, undefined);
@@ -581,11 +580,11 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     // MARK: - The table
 
-    private func pattern(_ string: String) throws -> WKWebExtension.MatchPattern {
+    @MainActor private func pattern(_ string: String) throws -> WKWebExtension.MatchPattern {
         try WKWebExtension.MatchPattern(string: string)
     }
 
-    func testOnlyPatternsWebKitHonoursAreOffered() throws {
+    @MainActor func testOnlyPatternsWebKitHonoursAreOffered() throws {
         let accepted: Set = [try pattern("https://claude.ai/*"), try pattern("https://*.claude.ai/*"),
                              try pattern("<all_urls>"), try pattern("*://*/*")]
         let offered = ExternallyConnectable.matchPatterns(
@@ -598,7 +597,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     /// Against a real `WKWebExtension`: WebKit drops `<all_urls>` and a public
     /// suffix from `externally_connectable`, and so does the table.
-    func testMatchPatternsOfARealExtensionFollowWebKit() async throws {
+    @MainActor func testMatchPatternsOfARealExtensionFollowWebKit() async throws {
         let manifest = """
         { "manifest_version": 3, "name": "EC", "version": "1.0",
           "externally_connectable": { "matches": ["https://claude.ai/*", "https://*.claude.ai/*", "<all_urls>", "*://*.com/*"] } }
@@ -620,7 +619,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
         XCTAssertEqual(ExternallyConnectable.matchPatterns(for: malformed), [], "a malformed entry offers nothing")
     }
 
-    func testConnectableIDsAreTheOnesWhosePatternsMatchTheURL() throws {
+    @MainActor func testConnectableIDsAreTheOnesWhosePatternsMatchTheURL() throws {
         let table = try table([Self.claudeID: ["https://claude.ai/*", "https://*.claude.ai/*"],
                                Self.otherID: ["https://example.com/app/*"]])
         XCTAssertEqual(ExternallyConnectable.connectableIDs(in: table, for: URL(string: "https://claude.ai/login")), [Self.claudeID])
@@ -629,7 +628,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
         XCTAssertEqual(ExternallyConnectable.connectableIDs(in: table, for: nil), [])
     }
 
-    func testNoScriptWithoutAnyPattern() throws {
+    @MainActor func testNoScriptWithoutAnyPattern() throws {
         XCTAssertNil(ExternallyConnectable.userScriptSource(for: [:]))
         XCTAssertNil(ExternallyConnectable.userScriptSource(for: [Self.claudeID: []]))
         let source = try XCTUnwrap(ExternallyConnectable.userScriptSource(for: try table(Self.claudeTable)))
@@ -639,14 +638,14 @@ final class ExternallyConnectableShimTests: XCTestCase {
 
     // MARK: - Keeping the script on a content controller
 
-    private func shimCount(_ controller: WKUserContentController) -> Int {
+    @MainActor private func shimCount(_ controller: WKUserContentController) -> Int {
         controller.userScripts.filter { $0.source.hasPrefix(ExternallyConnectable.scriptMarker) }.count
     }
 
     /// The script follows the loaded extensions: absent with none, one copy
     /// with some, replaced when the table changes, gone when the last listing
     /// extension unloads — and the controller's other scripts stay, in order.
-    func testPagesKeepsOneCurrentScriptAndEveryOtherScript() throws {
+    @MainActor func testPagesKeepsOneCurrentScriptAndEveryOtherScript() throws {
         let pages = ExternallyConnectablePages()
         let controller = WKUserContentController()
         let world = WKContentWorld.world(name: "DetourTestWorld")
@@ -701,7 +700,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
     /// The profile wiring: a tab configuration built by `Space` carries the
     /// script exactly when an extension loaded in that profile lists a page,
     /// and another profile's configuration never does.
-    func testSpaceConfigurationCarriesTheScriptOfItsOwnProfileOnly() async throws {
+    @MainActor func testSpaceConfigurationCarriesTheScriptOfItsOwnProfileOnly() async throws {
         let manifest = """
         { "manifest_version": 3, "name": "EC", "version": "1.0",
           "externally_connectable": { "matches": ["https://claude.ai/*"] } }
@@ -735,7 +734,7 @@ final class ExternallyConnectableShimTests: XCTestCase {
         XCTAssertEqual(shimCount(homeSpace.makeWebViewConfiguration().userContentController), 0)
     }
 
-    private static func chromeStyleID() -> String {
+    @MainActor private static func chromeStyleID() -> String {
         String((0..<32).map { _ in "abcdefghijklmnop".randomElement()! })
     }
 }

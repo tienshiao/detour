@@ -63,7 +63,7 @@ class LinkStatusBar: NSView {
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.15
             self.animator().alphaValue = 0
-        }, completionHandler: {
+        }, onMain: {
             guard self.hideGeneration == gen else { return }
             self.isHidden = true
             self.label.stringValue = ""

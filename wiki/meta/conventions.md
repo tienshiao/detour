@@ -30,7 +30,7 @@ markdown files with YAML frontmatter. `wiki/` is the bundle root.
 
 | Kind of information | Home |
 |---|---|
-| Rules an agent must follow (build commands, TDD policy, commit checklist) | `CLAUDE.md` |
+| Rules an agent must follow (build commands, testing policy, commit checklist) | `CLAUDE.md` |
 | Committed work, its status, plans and notes | Backlog (`backlog` CLI) |
 | Long-form design documents written for one feature | `docs/` |
 | Knowledge that outlives a task: behaviour, invariants, rationale, quirks, investigations, playbooks | **this wiki** |

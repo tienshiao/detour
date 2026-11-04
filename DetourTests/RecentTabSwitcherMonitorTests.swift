@@ -6,14 +6,13 @@ import Carbon.HIToolbox
 /// The Control+Tab switcher's event monitor must swallow the keys it acts on
 /// (TASK-133): a key it handled that also reaches the first responder is
 /// typed into the page.
-@MainActor
-final class RecentTabSwitcherMonitorTests: XCTestCase {
+nonisolated final class RecentTabSwitcherMonitorTests: XCTestCase {
 
     private var window: NSWindow!
     private var switcher: RecentTabSwitcher!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
                           styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -25,34 +24,34 @@ final class RecentTabSwitcherMonitorTests: XCTestCase {
         }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         switcher?.invalidate()
         switcher = nil
         window.close()
         window = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    func testControlTabIsSwallowed() throws {
+    @MainActor func testControlTabIsSwallowed() throws {
         let event = try keyDown(kVK_Tab, modifiers: .control)
         XCTAssertNil(RecentTabSwitcher.monitorResult(for: event, switcher: switcher))
         XCTAssertTrue(switcher.isActive)
     }
 
-    func testControlShiftTabIsSwallowed() throws {
+    @MainActor func testControlShiftTabIsSwallowed() throws {
         let event = try keyDown(kVK_Tab, modifiers: [.control, .shift])
         XCTAssertNil(RecentTabSwitcher.monitorResult(for: event, switcher: switcher))
         XCTAssertTrue(switcher.isActive)
     }
 
-    func testControlTabIsSwallowedWithNothingToSwitchTo() throws {
+    @MainActor func testControlTabIsSwallowedWithNothingToSwitchTo() throws {
         switcher.entries = { [] }
         let event = try keyDown(kVK_Tab, modifiers: .control)
         XCTAssertNil(RecentTabSwitcher.monitorResult(for: event, switcher: switcher))
         XCTAssertFalse(switcher.isActive)
     }
 
-    func testKeysTypedWhileSwitchingAreSwallowed() throws {
+    @MainActor func testKeysTypedWhileSwitchingAreSwallowed() throws {
         let keys: [(Int, String)] = [
             (kVK_RightArrow, "right arrow"), (kVK_LeftArrow, "left arrow"),
             (kVK_ANSI_A, "a letter"), (kVK_Space, "space"),
@@ -66,14 +65,14 @@ final class RecentTabSwitcherMonitorTests: XCTestCase {
         }
     }
 
-    func testEscapeCancelsAndIsSwallowed() throws {
+    @MainActor func testEscapeCancelsAndIsSwallowed() throws {
         try begin()
         let event = try keyDown(kVK_Escape, modifiers: .control)
         XCTAssertNil(RecentTabSwitcher.monitorResult(for: event, switcher: switcher))
         XCTAssertFalse(switcher.isActive)
     }
 
-    func testReturnCommitsAndIsSwallowed() throws {
+    @MainActor func testReturnCommitsAndIsSwallowed() throws {
         var chosen: RecentTabSwitcher.Entry?
         switcher.didChoose = { chosen = $0 }
         try begin()
@@ -83,7 +82,7 @@ final class RecentTabSwitcherMonitorTests: XCTestCase {
         XCTAssertNotNil(chosen)
     }
 
-    func testKeysTheSwitcherDoesNotHandlePassThrough() throws {
+    @MainActor func testKeysTheSwitcherDoesNotHandlePassThrough() throws {
         let keys: [(Int, NSEvent.ModifierFlags)] = [
             (kVK_ANSI_A, []), (kVK_Return, []), (kVK_Escape, []), (kVK_Tab, []), (kVK_Tab, .shift),
             (kVK_Tab, [.control, .command]), (kVK_Tab, [.control, .option]),
@@ -96,7 +95,7 @@ final class RecentTabSwitcherMonitorTests: XCTestCase {
         }
     }
 
-    func testEventsForAnotherWindowPassThrough() throws {
+    @MainActor func testEventsForAnotherWindowPassThrough() throws {
         let other = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
                              styleMask: [.titled], backing: .buffered, defer: false)
         other.isReleasedWhenClosed = false
@@ -106,7 +105,7 @@ final class RecentTabSwitcherMonitorTests: XCTestCase {
         XCTAssertFalse(switcher.isActive)
     }
 
-    func testReleasingControlCommitsAndPassesTheEventOn() throws {
+    @MainActor func testReleasingControlCommitsAndPassesTheEventOn() throws {
         var chosen: RecentTabSwitcher.Entry?
         switcher.didChoose = { chosen = $0 }
         try begin()
@@ -120,20 +119,20 @@ final class RecentTabSwitcherMonitorTests: XCTestCase {
         XCTAssertNotNil(chosen)
     }
 
-    func testADeallocatedSwitcherPassesEverythingThrough() throws {
+    @MainActor func testADeallocatedSwitcherPassesEverythingThrough() throws {
         let event = try keyDown(kVK_Tab, modifiers: .control)
         XCTAssertTrue(RecentTabSwitcher.monitorResult(for: event, switcher: nil) === event)
     }
 
     // MARK: - Helpers
 
-    private func begin() throws {
+    @MainActor private func begin() throws {
         let event = try keyDown(kVK_Tab, modifiers: .control)
         _ = RecentTabSwitcher.monitorResult(for: event, switcher: switcher)
         XCTAssertTrue(switcher.isActive)
     }
 
-    private func keyDown(_ keyCode: Int, modifiers: NSEvent.ModifierFlags, in target: NSWindow? = nil) throws -> NSEvent {
+    @MainActor private func keyDown(_ keyCode: Int, modifiers: NSEvent.ModifierFlags, in target: NSWindow? = nil) throws -> NSEvent {
         try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown, location: .zero, modifierFlags: modifiers,
             timestamp: ProcessInfo.processInfo.systemUptime,

@@ -1,25 +1,25 @@
 import XCTest
 @testable import Detour
 
-final class SidebarDragDropTests: XCTestCase {
+nonisolated final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func makeEntry(id: UUID = UUID(), title: String = "Entry", folderID: UUID? = nil, sortOrder: Int = 0) -> PinnedEntry {
+    @MainActor private func makeEntry(id: UUID = UUID(), title: String = "Entry", folderID: UUID? = nil, sortOrder: Int = 0) -> PinnedEntry {
         PinnedEntry(id: id, pinnedURL: URL(string: "https://example.com")!, pinnedTitle: title, folderID: folderID, sortOrder: sortOrder)
     }
 
-    private func makeFolder(id: UUID = UUID(), name: String = "Folder", parentID: UUID? = nil, isCollapsed: Bool = false, sortOrder: Int = 0) -> PinnedFolder {
+    @MainActor private func makeFolder(id: UUID = UUID(), name: String = "Folder", parentID: UUID? = nil, isCollapsed: Bool = false, sortOrder: Int = 0) -> PinnedFolder {
         PinnedFolder(id: id, name: name, parentFolderID: parentID, isCollapsed: isCollapsed, sortOrder: sortOrder)
     }
 
-    private func flatItems(_ entries: [PinnedEntry] = [], folders: [PinnedFolder] = [],
+    @MainActor private func flatItems(_ entries: [PinnedEntry] = [], folders: [PinnedFolder] = [],
                            collapsed: Set<UUID> = []) -> [PinnedItem] {
         flattenPinnedTree(entries: entries, folders: folders, collapsedFolderIDs: collapsed, selectedTabID: nil)
     }
 
     /// folderA(0) > entryInA(1), entryTop(2) — a folder with one child, then a top-level entry.
-    private func standardTree() -> (items: [PinnedItem], folderA: PinnedFolder, entryInA: PinnedEntry, entryTop: PinnedEntry) {
+    @MainActor private func standardTree() -> (items: [PinnedItem], folderA: PinnedFolder, entryInA: PinnedEntry, entryTop: PinnedEntry) {
         let folderA = makeFolder(name: "A", sortOrder: 0)
         let entryInA = makeEntry(title: "inA", folderID: folderA.id, sortOrder: 0)
         let entryTop = makeEntry(title: "top", sortOrder: 1)
@@ -29,27 +29,27 @@ final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - Payload round-trip
 
-    func testDragPayloadRoundTrip() {
+    @MainActor func testDragPayloadRoundTrip() {
         let payload = SidebarDragPayload(kind: .pinnedEntry, itemID: UUID(), spaceID: UUID(), sidebarID: UUID())
         let string = payload.pasteboardString
         XCTAssertNotNil(string)
         XCTAssertEqual(SidebarDragPayload(pasteboardString: string!), payload)
     }
 
-    func testFavoritePayloadRoundTrip() {
+    @MainActor func testFavoritePayloadRoundTrip() {
         let payload = FavoriteDragPayload(favoriteID: UUID(), sidebarID: UUID())
         let string = payload.pasteboardString
         XCTAssertNotNil(string)
         XCTAssertEqual(FavoriteDragPayload(pasteboardString: string!), payload)
     }
 
-    func testDragPayloadRejectsGarbage() {
+    @MainActor func testDragPayloadRejectsGarbage() {
         XCTAssertNil(SidebarDragPayload(pasteboardString: "3"))
         XCTAssertNil(SidebarDragPayload(pasteboardString: ""))
         XCTAssertNil(FavoriteDragPayload(pasteboardString: "{\"nope\":true}"))
     }
 
-    func testSplitMemberPayloadRoundTrip() {
+    @MainActor func testSplitMemberPayloadRoundTrip() {
         let payload = SidebarDragPayload(kind: .splitMember, itemID: UUID(), spaceID: UUID(), sidebarID: UUID())
         let string = payload.pasteboardString
         XCTAssertNotNil(string)
@@ -58,7 +58,7 @@ final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - validateSidebarDrop
 
-    func testValidateOnDropOntoFolderAccepted() {
+    @MainActor func testValidateOnDropOntoFolderAccepted() {
         let (items, folderA, _, _) = standardTree()
         XCTAssertEqual(validateSidebarDrop(kind: .normalTab, sourceItemID: UUID(),
                                            row: .pinnedItem(index: 0), operation: .on, items: items),
@@ -71,7 +71,7 @@ final class SidebarDragDropTests: XCTestCase {
                        .reject, "folder onto itself")
     }
 
-    func testValidateOnDropOntoNonFolderRejected() {
+    @MainActor func testValidateOnDropOntoNonFolderRejected() {
         let (items, _, _, _) = standardTree()
         // index 1 = entryInA, index 2 = entryTop
         XCTAssertEqual(validateSidebarDrop(kind: .normalTab, sourceItemID: UUID(),
@@ -82,7 +82,7 @@ final class SidebarDragDropTests: XCTestCase {
                        .reject)
     }
 
-    func testValidateAboveRetargetsChromeRows() {
+    @MainActor func testValidateAboveRetargetsChromeRows() {
         let (items, _, _, _) = standardTree()
         XCTAssertEqual(validateSidebarDrop(kind: .normalTab, sourceItemID: UUID(),
                                            row: .topSpacer, operation: .above, items: items),
@@ -95,7 +95,7 @@ final class SidebarDragDropTests: XCTestCase {
                        .retargetToNormalTabGap(index: 0))
     }
 
-    func testValidateFolderCannotEnterNormalSection() {
+    @MainActor func testValidateFolderCannotEnterNormalSection() {
         let (items, folderA, _, _) = standardTree()
         XCTAssertEqual(validateSidebarDrop(kind: .pinnedFolder, sourceItemID: folderA.id,
                                            row: .newTab, operation: .above, items: items),
@@ -110,7 +110,7 @@ final class SidebarDragDropTests: XCTestCase {
 
     /// TASK-34: a favourite that may only enter some sections (a disabled
     /// extension's page: pinned only; an uninstalled one's: nowhere).
-    func testValidateFavoriteRespectsItsDropTargets() {
+    @MainActor func testValidateFavoriteRespectsItsDropTargets() {
         let (items, _, _, _) = standardTree()
         func validate(_ row: SidebarRow, _ operation: SidebarDropOperation,
                       _ targets: FavoriteDropTargets) -> SidebarDropValidation {
@@ -138,7 +138,7 @@ final class SidebarDragDropTests: XCTestCase {
                        .accept)
     }
 
-    func testFavoriteDropSectionOfADestination() {
+    @MainActor func testFavoriteDropSectionOfADestination() {
         XCTAssertEqual(favoriteDropSection(destination: .beforeNormalTab(gapIndex: 0)), .tabList)
         XCTAssertEqual(favoriteDropSection(destination: .beforePinnedItem(flatIndex: 0)), .pinned)
         XCTAssertEqual(favoriteDropSection(destination: .intoFolder(folderID: UUID())), .pinned)
@@ -148,7 +148,7 @@ final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - sidebarDropDestination
 
-    func testDestinationNormalization() {
+    @MainActor func testDestinationNormalization() {
         let (items, folderA, _, _) = standardTree()
         XCTAssertEqual(sidebarDropDestination(row: .topSpacer, operation: .above, items: items),
                        .beforePinnedItem(flatIndex: 0))
@@ -168,7 +168,7 @@ final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - Drop landing
 
-    func testWholeRowCommandsLandAndSplitRewritesDoNot() {
+    @MainActor func testWholeRowCommandsLandAndSplitRewritesDoNot() {
         let id = UUID()
         let landing: [SidebarDropCommand] = [
             .reorderNormalTab(tabID: id, fromIndex: 0, toGapIndex: 2),
@@ -198,7 +198,7 @@ final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - resolveSidebarDrop: normal tab reorder
 
-    func testReorderNoOpGaps() {
+    @MainActor func testReorderNoOpGaps() {
         let tabID = UUID()
         let items: [PinnedItem] = []
         // Gap at own position and gap just after are both no-ops
@@ -208,7 +208,7 @@ final class SidebarDragDropTests: XCTestCase {
                                         destination: .beforeNormalTab(gapIndex: 3), items: items))
     }
 
-    func testReorderForwardAndBackward() {
+    @MainActor func testReorderForwardAndBackward() {
         let tabID = UUID()
         let items: [PinnedItem] = []
         XCTAssertEqual(resolveSidebarDrop(source: .normalTab(index: 0, tabID: tabID),
@@ -221,7 +221,7 @@ final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - resolveSidebarDrop: pinning
 
-    func testPinTabInheritsFolderFromDropPosition() {
+    @MainActor func testPinTabInheritsFolderFromDropPosition() {
         let (items, folderA, entryInA, _) = standardTree()
         let tabID = UUID()
         // Dropping above the entry inside folderA joins folderA, anchored before that entry
@@ -230,7 +230,7 @@ final class SidebarDragDropTests: XCTestCase {
                        .pinTab(tabID: tabID, folderID: folderA.id, beforeItemID: entryInA.id))
     }
 
-    func testPinTabAtTopLevelAndEnd() {
+    @MainActor func testPinTabAtTopLevelAndEnd() {
         let (items, folderA, _, _) = standardTree()
         let tabID = UUID()
         // Above the folder itself → top level, before the folder
@@ -243,7 +243,7 @@ final class SidebarDragDropTests: XCTestCase {
                        .pinTab(tabID: tabID, folderID: nil, beforeItemID: nil))
     }
 
-    func testPinTabIntoFolder() {
+    @MainActor func testPinTabIntoFolder() {
         let (items, folderA, _, _) = standardTree()
         let tabID = UUID()
         XCTAssertEqual(resolveSidebarDrop(source: .normalTab(index: 0, tabID: tabID),
@@ -253,7 +253,7 @@ final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - resolveSidebarDrop: pinned entry moves
 
-    func testMovePinnedEntryOntoOwnPositionIsNoOp() {
+    @MainActor func testMovePinnedEntryOntoOwnPositionIsNoOp() {
         // Regression: the store excludes the moved item from its sibling scan, so
         // anchoring an item to itself would send it to the end of its level.
         let (items, _, entryInA, _) = standardTree()
@@ -261,7 +261,7 @@ final class SidebarDragDropTests: XCTestCase {
                                         destination: .beforePinnedItem(flatIndex: 1), items: items))
     }
 
-    func testMovePinnedEntryBetweenLevels() {
+    @MainActor func testMovePinnedEntryBetweenLevels() {
         let (items, folderA, entryInA, entryTop) = standardTree()
         // Move top-level entry above the entry inside folderA → joins the folder
         XCTAssertEqual(resolveSidebarDrop(source: .pinnedEntry(entryID: entryTop.id),
@@ -273,7 +273,7 @@ final class SidebarDragDropTests: XCTestCase {
                        .movePinnedEntry(entryID: entryInA.id, folderID: nil, beforeItemID: nil))
     }
 
-    func testUnpinEntryToNormalSection() {
+    @MainActor func testUnpinEntryToNormalSection() {
         let (items, _, _, entryTop) = standardTree()
         XCTAssertEqual(resolveSidebarDrop(source: .pinnedEntry(entryID: entryTop.id),
                                           destination: .beforeNormalTab(gapIndex: 2), items: items),
@@ -282,7 +282,7 @@ final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - resolveSidebarDrop: folder moves
 
-    func testMoveFolderRejectsCycles() {
+    @MainActor func testMoveFolderRejectsCycles() {
         // outer(0) > inner(1) > entryInInner(2)
         let outer = makeFolder(name: "outer", sortOrder: 0)
         let inner = makeFolder(name: "inner", parentID: outer.id, sortOrder: 0)
@@ -304,19 +304,19 @@ final class SidebarDragDropTests: XCTestCase {
                        .movePinnedFolder(folderID: inner.id, parentFolderID: nil, beforeItemID: nil))
     }
 
-    func testMoveFolderOntoOwnPositionIsNoOp() {
+    @MainActor func testMoveFolderOntoOwnPositionIsNoOp() {
         let (items, folderA, _, _) = standardTree()
         XCTAssertNil(resolveSidebarDrop(source: .pinnedFolder(folderID: folderA.id),
                                         destination: .beforePinnedItem(flatIndex: 0), items: items))
     }
 
-    func testMoveFolderCannotDropInNormalSection() {
+    @MainActor func testMoveFolderCannotDropInNormalSection() {
         let (items, folderA, _, _) = standardTree()
         XCTAssertNil(resolveSidebarDrop(source: .pinnedFolder(folderID: folderA.id),
                                         destination: .beforeNormalTab(gapIndex: 0), items: items))
     }
 
-    func testMoveFolderIntoSiblingFolder() {
+    @MainActor func testMoveFolderIntoSiblingFolder() {
         let folderA = makeFolder(name: "A", sortOrder: 0)
         let folderB = makeFolder(name: "B", sortOrder: 1)
         let items = flatItems([], folders: [folderA, folderB])
@@ -327,13 +327,13 @@ final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - Split fixtures
 
-    private func makeTab() -> BrowserTab {
+    @MainActor private func makeTab() -> BrowserTab {
         BrowserTab(id: UUID(), title: "Tab", url: URL(string: "https://example.com"),
                    faviconURL: nil, cachedInteractionState: nil, spaceID: UUID())
     }
 
     /// Tabs 0–3 where 1+2 form a split → items [single(0), split(1,2), single(3)].
-    private func splitTabItems() -> (items: [TabListItem], tabs: [BrowserTab], groupID: UUID) {
+    @MainActor private func splitTabItems() -> (items: [TabListItem], tabs: [BrowserTab], groupID: UUID) {
         let tabs = (0..<4).map { _ in makeTab() }
         let groupID = UUID()
         tabs[1].splitGroupID = groupID
@@ -343,7 +343,7 @@ final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - Drop geometry
 
-    func testRowDropZoneEdgesAndMiddleBand() {
+    @MainActor func testRowDropZoneEdgesAndMiddleBand() {
         let size = CGSize(width: 100, height: 36)
         XCTAssertEqual(rowDropZone(forX: 10, y: 18, rowSize: size), .splitEdge(.left))
         XCTAssertEqual(rowDropZone(forX: 39, y: 18, rowSize: size), .splitEdge(.left))
@@ -356,7 +356,7 @@ final class SidebarDragDropTests: XCTestCase {
         XCTAssertEqual(rowDropZone(forX: 0, y: 0, rowSize: .zero), .reorderGap(offset: 0))
     }
 
-    func testSplitRowDragKindGrabZones() {
+    @MainActor func testSplitRowDragKindGrabZones() {
         // Each half's leading 34pt (the favicon segment) grabs that member.
         XCTAssertEqual(splitRowDragKind(forX: 0, rowWidth: 200), .member(.left))
         XCTAssertEqual(splitRowDragKind(forX: 33, rowWidth: 200), .member(.left))
@@ -371,7 +371,7 @@ final class SidebarDragDropTests: XCTestCase {
         XCTAssertEqual(splitRowDragKind(forX: 205, rowWidth: 200), .group)
     }
 
-    func testSplitRowDragKindIndentedRow() {
+    @MainActor func testSplitRowDragKindIndentedRow() {
         // A pinned split row at folder depth 1 is indented 16pt: the left
         // grab band follows the favicon; the indent gutter drags the group.
         XCTAssertEqual(splitRowDragKind(forX: 8, rowWidth: 200, indent: 16), .group)
@@ -389,7 +389,7 @@ final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - validateSidebarDrop: split edges
 
-    func testValidateEdgeDropOntoSingleTab() {
+    @MainActor func testValidateEdgeDropOntoSingleTab() {
         let (tabItems, tabs, _) = splitTabItems()
         XCTAssertEqual(validateSidebarDrop(kind: .normalTab, sourceItemID: tabs[3].id,
                                            row: .normalTab(index: 0), operation: .on, items: [],
@@ -421,7 +421,7 @@ final class SidebarDragDropTests: XCTestCase {
                        .reject)
     }
 
-    func testValidateEdgeDropRejectsNonNormalTabSources() {
+    @MainActor func testValidateEdgeDropRejectsNonNormalTabSources() {
         let (tabItems, tabs, _) = splitTabItems()
         for kind: SidebarDragKind in [.pinnedEntry, .pinnedFolder, .favorite, .splitGroup, .splitMember] {
             XCTAssertEqual(validateSidebarDrop(kind: kind, sourceItemID: UUID(),
@@ -432,7 +432,7 @@ final class SidebarDragDropTests: XCTestCase {
         _ = tabs
     }
 
-    func testValidateSplitMemberSectionRules() {
+    @MainActor func testValidateSplitMemberSectionRules() {
         let (items, folderA, _, _) = standardTree()
         // Members can only land in the normal section (v1: no pin/favorite by drag)
         XCTAssertEqual(validateSidebarDrop(kind: .splitMember, sourceItemID: UUID(),
@@ -453,7 +453,7 @@ final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - sidebarDropDestination: split edges
 
-    func testDestinationIntoSplit() {
+    @MainActor func testDestinationIntoSplit() {
         let (tabItems, tabs, _) = splitTabItems()
         XCTAssertEqual(sidebarDropDestination(row: .normalTab(index: 0), operation: .on, items: [],
                                               tabItems: tabItems, dropZone: .splitEdge(.right)),
@@ -473,7 +473,7 @@ final class SidebarDragDropTests: XCTestCase {
 
     // MARK: - resolveSidebarDrop: split commands
 
-    func testResolveCreateSplit() {
+    @MainActor func testResolveCreateSplit() {
         let dragged = UUID()
         let target = UUID()
         XCTAssertEqual(resolveSidebarDrop(source: .normalTab(index: 3, tabID: dragged),
@@ -493,7 +493,7 @@ final class SidebarDragDropTests: XCTestCase {
                                         destination: .intoSplit(targetTabID: target, edge: .left), items: []))
     }
 
-    func testResolveRemoveFromSplit() {
+    @MainActor func testResolveRemoveFromSplit() {
         let (items, _, _, _) = standardTree()
         let tabID = UUID()
         let groupID = UUID()
@@ -514,7 +514,7 @@ final class SidebarDragDropTests: XCTestCase {
     // MARK: - Pinned splits (§12)
 
     /// A pinned split pair (left, right) followed by a lone entry, all top-level.
-    private func pinnedSplitTree() -> (items: [PinnedItem], groupID: UUID,
+    @MainActor private func pinnedSplitTree() -> (items: [PinnedItem], groupID: UUID,
                                        left: PinnedEntry, right: PinnedEntry, lone: PinnedEntry) {
         let groupID = UUID()
         let left = makeEntry(title: "left", sortOrder: 0)
@@ -526,7 +526,7 @@ final class SidebarDragDropTests: XCTestCase {
         return (items, groupID, left, right, lone)
     }
 
-    func testFlattenerHelpersOnPinnedSplitItems() {
+    @MainActor func testFlattenerHelpersOnPinnedSplitItems() {
         let (items, groupID, left, _, lone) = pinnedSplitTree()
         XCTAssertEqual(items.count, 2)
         XCTAssertEqual(pinnedItemID(items[0]), groupID)
@@ -536,7 +536,7 @@ final class SidebarDragDropTests: XCTestCase {
         XCTAssertNil(folderIDForDropIndex(0, in: items), "top-level split inherits no folder")
     }
 
-    func testValidatePinnedSplitGroupTargets() {
+    @MainActor func testValidatePinnedSplitGroupTargets() {
         let (items, _, left, _, _) = pinnedSplitTree()
         let folder = makeFolder(name: "F", sortOrder: 3)
         let withFolder = flatItems([left], folders: [folder])
@@ -558,7 +558,7 @@ final class SidebarDragDropTests: XCTestCase {
                                            tabItems: [], dropZone: .splitEdge(.left)), .reject)
     }
 
-    func testValidatePinnedSplitMemberTargets() {
+    @MainActor func testValidatePinnedSplitMemberTargets() {
         let (items, _, left, _, _) = pinnedSplitTree()
         let folder = makeFolder(name: "F", sortOrder: 3)
         let withFolder = flatItems([left], folders: [folder])
@@ -576,7 +576,7 @@ final class SidebarDragDropTests: XCTestCase {
                                            row: .pinnedItem(index: 1), operation: .on, items: withFolder), .reject)
     }
 
-    func testResolvePinnedSplitGroupMoves() {
+    @MainActor func testResolvePinnedSplitGroupMoves() {
         let (items, groupID, left, right, lone) = pinnedSplitTree()
         let memberIDs = [left.id, right.id]
 
@@ -612,7 +612,7 @@ final class SidebarDragDropTests: XCTestCase {
                                         destination: .intoSplit(targetTabID: UUID(), edge: .left), items: items))
     }
 
-    func testResolvePinnedSplitMemberBreakouts() {
+    @MainActor func testResolvePinnedSplitMemberBreakouts() {
         let (items, groupID, left, right, lone) = pinnedSplitTree()
 
         // Member → tab gap: unpin alone (the pinned split dissolves).
@@ -638,7 +638,7 @@ final class SidebarDragDropTests: XCTestCase {
                                         destination: .intoFolder(folderID: UUID()), items: items))
     }
 
-    func testPinnedSplitPayloadRoundTrip() {
+    @MainActor func testPinnedSplitPayloadRoundTrip() {
         for kind: SidebarDragPayload.Kind in [.pinnedSplitGroup, .pinnedSplitMember] {
             let payload = SidebarDragPayload(kind: kind, itemID: UUID(), spaceID: UUID(), sidebarID: UUID())
             let string = payload.pasteboardString

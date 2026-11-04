@@ -193,7 +193,8 @@ final class ExtensionOriginInteractionKeeper {
                 timer.invalidate()
                 return
             }
-            self.refreshNow()
+            // Scheduled from the main thread, so on the main run loop.
+            MainActor.assumeIsolated { self.refreshNow() }
         }
         timer.tolerance = Self.refreshTolerance
         self.timer = timer

@@ -92,7 +92,7 @@ deleted profile never recreates persistent storage.
 `AppDatabase.deleteProfileRows` is the only place a profile row is deleted.
 Per id, inside the caller's transaction: skip if a space references it;
 delete `profileExtension`, `extensionInstalledEvent`, `favorite`,
-`contentBlockerWhitelist` and `externalAppPermission` rows; delete the
+`siteSetting` and `externalAppPermission` rows; delete the
 `profile` row; optionally record the pending removal.
 
 Two callers, with one important difference:

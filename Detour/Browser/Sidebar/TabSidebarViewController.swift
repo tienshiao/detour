@@ -77,9 +77,15 @@ protocol TabSidebarDelegate: AnyObject {
     /// a page that held focus left the screen, a rename ended, or a tab list
     /// was clicked.
     func tabSidebarDidReleaseKeyboardFocus(_ sidebar: TabSidebarViewController)
+    /// A control on the now-playing bar for the tab `tabID` (TASK-192).
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestNowPlaying action: NowPlayingBarAction, tabID: UUID)
+    /// Opt-Cmd-click on a tab, pinned entry or favourite (TASK-193.5): a new
+    /// Quick Detour on `url`, the sidebar's profile; the tab is left alone.
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestQuickDetourCopyOf url: URL)
 }
 
 extension TabSidebarDelegate {
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestQuickDetourCopyOf url: URL) {}
     func tabSidebarDidRequestShowDownloads(_ sidebar: TabSidebarViewController, sourceButton: NSButton) {}
     func tabSidebarDidRequestShowSettings(_ sidebar: TabSidebarViewController, sourceButton: NSView) {}
     func tabSidebarDidRequestShowExtensionPopup(_ sidebar: TabSidebarViewController, extensionID: String, sourceButton: NSView) {}
@@ -123,6 +129,7 @@ extension TabSidebarDelegate {
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestDeleteArchivedTab recordID: Int64) {}
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestClearArchiveOf spaceIDs: [UUID], count: Int) {}
     func tabSidebarDidReleaseKeyboardFocus(_ sidebar: TabSidebarViewController) {}
+    func tabSidebar(_ sidebar: TabSidebarViewController, didRequestNowPlaying action: NowPlayingBarAction, tabID: UUID) {}
 }
 
 class TabSidebarViewController: NSViewController {
@@ -139,6 +146,12 @@ class TabSidebarViewController: NSViewController {
     private static let bottomBarButtonInset: CGFloat = 6
 
     weak var delegate: TabSidebarDelegate?
+    /// The window's tab hover card (TASK-190), told about hovered rows.
+    weak var hoverCard: TabHoverCardController?
+    /// The row the hover card was last told about, and the cell showing it
+    /// (or the favourite tile): an exit ends that target even if the cell has
+    /// been reconfigured since.
+    private var cardHover: (view: NSView, target: HoverCardTarget)?
     var isIncognito = false
     private var isBatchUpdating = false
 
@@ -227,6 +240,13 @@ class TabSidebarViewController: NSViewController {
     /// (`landDroppedRowIfNeeded`). `itemIDs` identify that row in either section.
     private var pendingDropLanding: (itemIDs: Set<UUID>, proxy: NSImageView, frameInRow: NSRect)?
     private var bottomBar = DraggableBarView()
+    /// Media playing in a tab the user has left (TASK-192). Sits above the
+    /// bottom bar; the tab list's visible area ends above its compact height
+    /// (`pageClipBottomConstraint`), and its hover expansion overlays the list.
+    let nowPlayingBar = NowPlayingBarView()
+    private var pageClipBottomConstraint: NSLayoutConstraint!
+    private var nowPlayingBarIsHiding = false
+    private static let nowPlayingBarGap: CGFloat = 4
     private let spaceClipView = NSView()
     private let spaceStripView = NSView()
     private var spaceButtons: [NSButton] = []
@@ -483,6 +503,7 @@ class TabSidebarViewController: NSViewController {
             flattenedPinnedItems = newPinnedItems
         }
 
+        let profileID = activeProfileID
         // Refresh pinned cells (indentation, chevron, folder name)
         for (idx, item) in flattenedPinnedItems.enumerated() {
             let row = rowForPinnedItem(at: idx)
@@ -501,6 +522,7 @@ class TabSidebarViewController: NSViewController {
                     cell.updateSplitPane(favicon: nil, title: nil, animatedReveal: true,
                                          departingFavicon: departed?.displayFavicon,
                                          departingTitle: departed?.displayTitle)
+                    cell.updateDevMode(DevMode.rowMarking(for: entry.devModeURL, profileID: profileID))
                     cell.onClose = { [weak self] in
                         guard let self else { return }
                         let row = self.tableView.row(for: cell)
@@ -523,7 +545,7 @@ class TabSidebarViewController: NSViewController {
                     // around its row (the diff renders formation as a row
                     // continuation) — reveal the new segment in place.
                     configurePinnedSplitCell(cell, entries: entries, depth: depth, isActive: true,
-                                             animatedReveal: true)
+                                             profileID: profileID, animatedReveal: true)
                 }
             }
         }
@@ -543,8 +565,8 @@ class TabSidebarViewController: NSViewController {
                     guard case .single(let tab) = item else { return nil }
                     return departedSplitMember(survivorID: tab.id, in: oldTabItems)
                 }()
-                configureItemCell(cell, item: item, isActive: true, animatedReveal: true,
-                                  departingFavicon: departed?.favicon,
+                configureItemCell(cell, item: item, isActive: true, profileID: profileID,
+                                  animatedReveal: true, departingFavicon: departed?.favicon,
                                   departingTitle: departed?.title)
             }
         }
@@ -696,7 +718,7 @@ class TabSidebarViewController: NSViewController {
             ctx.duration = Self.dropLandingDuration
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             proxy.animator().frame = destination
-        } completionHandler: { [weak self, weak rowView] in
+        } onMain: { [weak self, weak rowView] in
             rowView?.alphaValue = 1
             self?.fadeOutDropProxy(proxy)
             self?.recheckHoverForVisibleCells()
@@ -709,7 +731,7 @@ class TabSidebarViewController: NSViewController {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.12
             proxy.animator().alphaValue = 0
-        } completionHandler: {
+        } onMain: {
             proxy.removeFromSuperview()
         }
     }
@@ -942,6 +964,16 @@ class TabSidebarViewController: NSViewController {
         container.addSubview(navStack)
         container.addSubview(pageClipView)
         container.addSubview(bottomBar)
+        nowPlayingBar.translatesAutoresizingMaskIntoConstraints = false
+        nowPlayingBar.isHidden = true
+        nowPlayingBar.alphaValue = 0
+        nowPlayingBar.onAction = { [weak self] action, tabID in
+            guard let self else { return }
+            self.delegate?.tabSidebar(self, didRequestNowPlaying: action, tabID: tabID)
+        }
+        container.addSubview(nowPlayingBar)
+
+        pageClipBottomConstraint = pageClipView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor)
 
         // Title-bar row: created with the Tahoe defaults, re-derived from the real
         // traffic-light frames on macOS 27+ in alignTitleBarControls(). The toggle
@@ -970,7 +1002,14 @@ class TabSidebarViewController: NSViewController {
             pageClipView.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 8),
             pageClipView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             pageClipView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            pageClipView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
+            pageClipBottomConstraint,
+
+            // Edge to edge with a row's highlight (TabRowView.selectionRect).
+            nowPlayingBar.leadingAnchor.constraint(equalTo: container.leadingAnchor,
+                                                   constant: UIConstants.sidebarRowHighlightInset),
+            nowPlayingBar.trailingAnchor.constraint(equalTo: container.trailingAnchor,
+                                                    constant: -UIConstants.sidebarRowHighlightInset),
+            nowPlayingBar.bottomAnchor.constraint(equalTo: bottomBar.topAnchor, constant: -Self.nowPlayingBarGap),
 
             // Bottom bar: pinned to bottom
             bottomBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -981,6 +1020,59 @@ class TabSidebarViewController: NSViewController {
 
         container.allowedTouchTypes = .indirect
         self.view = container
+
+        NotificationCenter.default.addObserver(self, selector: #selector(siteSettingsDidChange(_:)),
+                                               name: SiteSettingsStore.didChangeNotification,
+                                               object: SiteSettingsStore.shared)
+    }
+
+    // MARK: - Now playing (TASK-192)
+
+    /// Shows the now-playing bar for `model`, updates it in place, or hides it
+    /// (nil). Appearing and disappearing animate: the bar fades and slides,
+    /// and the tab list's visible area shrinks or grows by the compact bar's
+    /// height at the same time. Rows keep their positions; only how much of
+    /// the list is visible changes.
+    func setNowPlaying(_ model: NowPlayingBarModel?, animated: Bool = true) {
+        let reserved = NowPlayingBarView.compactHeight + Self.nowPlayingBarGap * 2
+        if let model {
+            // Every tab's change re-evaluates every window: redraw only on a change.
+            if nowPlayingBar.model != model { nowPlayingBar.apply(model) }
+            guard nowPlayingBar.isHidden || nowPlayingBarIsHiding else { return }
+            nowPlayingBarIsHiding = false
+            nowPlayingBar.isHidden = false
+            nowPlayingBar.setExpanded(false, animated: false)
+            guard animated, view.window != nil else {
+                nowPlayingBar.alphaValue = 1
+                pageClipBottomConstraint.constant = -reserved
+                return
+            }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                nowPlayingBar.animator().alphaValue = 1
+                pageClipBottomConstraint.animator().constant = -reserved
+            }
+        } else {
+            guard !nowPlayingBar.isHidden, !nowPlayingBarIsHiding else { return }
+            guard animated, view.window != nil else {
+                nowPlayingBar.alphaValue = 0
+                nowPlayingBar.isHidden = true
+                pageClipBottomConstraint.constant = 0
+                return
+            }
+            nowPlayingBarIsHiding = true
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                nowPlayingBar.animator().alphaValue = 0
+                pageClipBottomConstraint.animator().constant = 0
+            }, onMain: { [weak self] in
+                guard let self, self.nowPlayingBarIsHiding else { return }
+                self.nowPlayingBarIsHiding = false
+                self.nowPlayingBar.isHidden = true
+            })
+        }
     }
 
     private func updateFadeShadows() {
@@ -1071,12 +1163,19 @@ class TabSidebarViewController: NSViewController {
             page.favoritesBar.delegate = self
             page.favoritesBar.sidebarID = sidebarID
             page.favoritesBar.selectionColor = safeTintColor
+            page.favoritesBar.profileID = space.profileID
             // The delegate hears nothing when a drag leaves the table — clear
             // the split-edge highlight from the view's own exit notifications.
             page.tableView.onDragTargetingEnded = { [weak self] in self?.hideSplitDropOverlay() }
             page.tableView.onReleaseKeyboardFocus = { [weak self] in
                 guard let self else { return }
                 self.delegate?.tabSidebarDidReleaseKeyboardFocus(self)
+            }
+            page.tableView.onQuickDetourClick = { [weak self, weak table = page.tableView] row, point in
+                guard let self, let table, table === self.tableView,
+                      let url = self.quickDetourCopyURL(forRow: row, at: point) else { return false }
+                self.delegate?.tabSidebar(self, didRequestQuickDetourCopyOf: url)
+                return true
             }
 
             // Update favorites from profile
@@ -1145,6 +1244,7 @@ class TabSidebarViewController: NSViewController {
         )
         page.update(emoji: space.emoji, name: space.name)
         page.favoritesBar.selectionColor = tint
+        page.favoritesBar.profileID = space.profileID
         page.updateFavorites(space.profile?.favorites ?? [], animated: false)
         page.tableView.reloadData()
     }
@@ -1210,6 +1310,9 @@ class TabSidebarViewController: NSViewController {
         scrollView = spacePages[newIndex].scrollView
         tableView = spacePages[newIndex].tableView
         inactivePageContents[ObjectIdentifier(tableView)] = nil
+        // The space's profile can change under an unchanged page (Edit Space),
+        // and the tiles read its dev-mode overrides (TASK-186.5).
+        spacePages[newIndex].favoritesBar.profileID = activeProfileID
         // The outgoing page was loaded from the controller's model (possibly an
         // empty one, before a new window's space was assigned) — reload it from
         // its own space so it is correct the next time a swipe reveals it.
@@ -1467,14 +1570,14 @@ class TabSidebarViewController: NSViewController {
             if let targetColor {
                 view.animator().layer?.backgroundColor = targetColor.withAlphaComponent(0.1).cgColor
             }
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self, self.stripAnimationGeneration == generation else { return }
             self.isAnimatingSwipe = false
             completion()
         })
 
         let startTime = CACurrentMediaTime()
-        let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
+        let timer = Timer.scheduledMainTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
             let elapsed = CACurrentMediaTime() - startTime
             let rawT = (elapsed / duration).clamped(to: 0...1)
@@ -1598,6 +1701,55 @@ class TabSidebarViewController: NSViewController {
         for page in spacePages {
             page.refreshFavoriteTile(forTabID: tabID)
         }
+    }
+
+    /// A site's dev-mode override changed (TASK-186.5): re-marks the rows and
+    /// favourite tiles of every page in that profile in place, so they follow
+    /// the popover's switch without a reload. `updateDevMode` returns early
+    /// for an unchanged marking, so only that site's rows redraw.
+    @objc private func siteSettingsDidChange(_ notification: Notification) {
+        guard notification.userInfo?[SiteSettingsStore.settingKey] as? SiteSetting == .devMode,
+              let profileID = notification.userInfo?[SiteSettingsStore.profileIDKey] as? UUID else { return }
+        for page in spacePages where profileIDForTableView(page.tableView) == profileID {
+            refreshDevMode(in: page.tableView, profileID: profileID)
+            page.favoritesBar.refreshDevMode()
+        }
+    }
+
+    private func refreshDevMode(in tv: NSTableView, profileID: UUID) {
+        let pinnedItems = pinnedItemsForTableView(tv)
+        let items = tabItemsForTableView(tv)
+        for row in 0..<tv.numberOfRows {
+            guard let cell = tv.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView else { continue }
+            switch sidebarRow(for: row, pinnedItemCount: pinnedItems.count) {
+            case .pinnedItem(let index) where index < pinnedItems.count:
+                switch pinnedItems[index] {
+                case .entry(let entry, _):
+                    cell.updateDevMode(DevMode.rowMarking(for: entry.devModeURL, profileID: profileID))
+                case .split(_, let entries, _):
+                    cell.updateDevMode(Self.splitDevModeMarking(entries.map(\.devModeURL), profileID: profileID))
+                case .folder:
+                    break
+                }
+            case .normalTab(let index) where index < items.count:
+                switch items[index] {
+                case .single(let tab):
+                    cell.updateDevMode(DevMode.rowMarking(for: tab.url, profileID: profileID))
+                case .split(_, let members):
+                    cell.updateDevMode(Self.splitDevModeMarking(members.map(\.url), profileID: profileID))
+                }
+            default:
+                break
+            }
+        }
+    }
+
+    /// A split row's dev-mode marking from its members' URLs in pane order,
+    /// halves resolved as `configureSplitCell` lays them out.
+    private static func splitDevModeMarking(_ urls: [URL?], profileID: UUID?) -> DevModeRowMarking {
+        let left = urls.first ?? nil
+        let right = urls.count > 1 ? urls[1] : left
+        return DevMode.splitRowMarking(left: left, right: right, profileID: profileID)
     }
 
     func updateSpaceButtons(spaces: [Space], activeSpaceID: UUID?) {
@@ -2129,7 +2281,7 @@ class TabSidebarViewController: NSViewController {
             var spaceFrame = spaceStripView.frame
             spaceFrame.origin.x = spaceTargetX
             spaceStripView.animator().frame = spaceFrame
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self, self.stripAnimationGeneration == generation else { return }
             self.isAnimatingSwipe = false
             self.isSwipingSpaces = false
@@ -2172,6 +2324,17 @@ class TabSidebarViewController: NSViewController {
         return inactivePageContents[ObjectIdentifier(tv)]
     }
 
+    /// The profile a page's rows belong to — its space's. Dev mode reads the
+    /// profile's per-site override (TASK-186.5), and a dormant pinned entry or
+    /// favourite has no tab to ask.
+    private func profileIDForTableView(_ tv: NSTableView) -> UUID? {
+        guard let index = spacePages.firstIndex(where: { $0.tableView === tv }),
+              index < pageSpaceIDs.count else { return nil }
+        return TabStore.shared.space(withID: pageSpaceIDs[index])?.profileID
+    }
+
+    private var activeProfileID: UUID? { profileIDForTableView(tableView) }
+
     private func tabItemsForTableView(_ tv: NSTableView) -> [TabListItem] {
         inactivePageContent(for: tv)?.tabItems ?? tabItems
     }
@@ -2200,15 +2363,16 @@ class TabSidebarViewController: NSViewController {
         if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
             // A split row's state is a fold over both members — reconfigure it whole.
             if case .split = item {
-                configureItemCell(cell, item: item, isActive: true)
+                configureItemCell(cell, item: item, isActive: true, profileID: activeProfileID)
                 return
             }
             let tab = tabs[index]
             cell.titleLabel.stringValue = tab.title
-            cell.toolTip = tab.title
+            cell.setAccessibilityHelp(tab.title)
             cell.updateFavicon(tab.favicon)
             cell.updatePeekFavicon(tab.displayPeekFavicon)
             cell.updateSplitPane(favicon: nil, title: nil)
+            cell.updateDevMode(DevMode.rowMarking(for: tab.url, profileID: activeProfileID))
             cell.updateSleeping(tab.isSleeping)
             cell.updateLoading(tab.isLoading)
             cell.updateProgress(tab.sidebarProgress)
@@ -2233,7 +2397,8 @@ class TabSidebarViewController: NSViewController {
         // A pinned split row's state is a fold over both members — reconfigure it whole.
         if case .split(_, let entries, let depth) = flattenedPinnedItems[flatIdx] {
             if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
-                configurePinnedSplitCell(cell, entries: entries, depth: depth, isActive: true)
+                configurePinnedSplitCell(cell, entries: entries, depth: depth, isActive: true,
+                                         profileID: activeProfileID)
             } else {
                 tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
             }
@@ -2244,10 +2409,11 @@ class TabSidebarViewController: NSViewController {
             let entry = pinnedEntries[index]
             let tab = entry.tab
             cell.titleLabel.stringValue = entry.displayTitle
-            cell.toolTip = entry.pinnedTitle
+            cell.setAccessibilityHelp(entry.pinnedTitle)
             cell.updateFavicon(entry.displayFavicon)
             cell.updatePeekFavicon(tab?.displayPeekFavicon)
             cell.updateSplitPane(favicon: nil, title: nil)
+            cell.updateDevMode(DevMode.rowMarking(for: entry.devModeURL, profileID: activeProfileID))
             cell.updateSleeping((tab?.isSleeping ?? false) || !entry.isLive)
             cell.updateLoading(tab?.isLoading ?? false)
             cell.updateProgress(tab?.sidebarProgress ?? 0)
@@ -2738,6 +2904,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
         let pinnedItems = pinnedItemsForTableView(tableView)
         let sRow = sidebarRow(for: row, pinnedItemCount: pinnedItems.count)
         let isActive = tableView === self.tableView
+        let profileID = profileIDForTableView(tableView)
 
         switch sRow {
         case .topSpacer:
@@ -2775,10 +2942,11 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 let isPlayingAudio = tab?.isPlayingAudio ?? false
                 let isMuted = tab?.isMuted ?? false
                 cell.titleLabel.stringValue = title
-                cell.toolTip = entry.pinnedTitle
+                cell.setAccessibilityHelp(entry.pinnedTitle)
                 cell.updateFavicon(favicon)
                 cell.updatePeekFavicon(tab?.displayPeekFavicon)
                 cell.updateSplitPane(favicon: nil, title: nil)
+                cell.updateDevMode(DevMode.rowMarking(for: entry.devModeURL, profileID: profileID))
                 cell.updateSleeping(isSleeping || !entry.isLive)
                 cell.updateLoading(isLoading)
                 cell.updateProgress(progress)
@@ -2809,7 +2977,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 return cell
             case .split(_, let entries, let depth):
                 let cell = makeTabCell(tableView)
-                configurePinnedSplitCell(cell, entries: entries, depth: depth, isActive: isActive)
+                configurePinnedSplitCell(cell, entries: entries, depth: depth, isActive: isActive,
+                                         profileID: profileID)
                 return cell
             }
 
@@ -2817,7 +2986,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
             let items = tabItemsForTableView(tableView)
             guard itemIndex < items.count else { return makeTabCell(tableView) }
             let cell = makeTabCell(tableView)
-            configureItemCell(cell, item: items[itemIndex], isActive: isActive)
+            configureItemCell(cell, item: items[itemIndex], isActive: isActive, profileID: profileID)
             return cell
         }
     }
@@ -2825,20 +2994,22 @@ extension TabSidebarViewController: NSTableViewDelegate {
     private func makeTabCell(_ tableView: NSTableView) -> TabCellView {
         let cellID = NSUserInterfaceItemIdentifier("TabCell")
         if let existing = tableView.makeView(withIdentifier: cellID, owner: nil) as? TabCellView {
+            existing.hoverDelegate = self
             return existing
         }
         let cell = TabCellView()
         cell.identifier = cellID
+        cell.hoverDelegate = self
         return cell
     }
 
     /// Configures a tab-section cell for a `TabListItem` (single tab or split row).
-    private func configureItemCell(_ cell: TabCellView, item: TabListItem, isActive: Bool,
+    private func configureItemCell(_ cell: TabCellView, item: TabListItem, isActive: Bool, profileID: UUID?,
                                    animatedReveal: Bool = false,
                                    departingFavicon: NSImage? = nil, departingTitle: String? = nil) {
         switch item {
         case .single(let tab):
-            configureTabCell(cell, tab: tab, title: tab.title, isActive: isActive,
+            configureTabCell(cell, tab: tab, title: tab.title, isActive: isActive, profileID: profileID,
                              animatedReveal: animatedReveal,
                              departingFavicon: departingFavicon,
                              departingTitle: departingTitle) { [weak self] row in
@@ -2847,7 +3018,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 self.delegate?.tabSidebar(self, didRequestCloseTabAt: tabIdx)
             }
         case .split(_, let members):
-            configureSplitCell(cell, item: item, members: members, isActive: isActive,
+            configureSplitCell(cell, item: item, members: members, isActive: isActive, profileID: profileID,
                                animatedReveal: animatedReveal)
         }
     }
@@ -2860,6 +3031,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
         let favicon: NSImage?
         let title: String
         let emphasized: Bool
+        /// The pane's live or parked Peek's favicon, its badge (TASK-229).
+        let peekFavicon: NSImage?
     }
 
     /// Section-agnostic description of a split row. The two-half rendering is
@@ -2870,6 +3043,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
         let left: SplitCellHalf
         let right: SplitCellHalf
         let tooltip: String
+        /// Which halves are dev-mode pages (TASK-186.1).
+        let devMode: DevModeRowMarking
         let isSleeping: Bool
         let isLoading: Bool
         let progress: Double
@@ -2893,13 +3068,17 @@ extension TabSidebarViewController: NSTableViewDelegate {
                                     animatedReveal: Bool = false) {
         cell.titleLabel.stringValue = descriptor.left.title
         cell.titleLabel.textColor = descriptor.left.emphasized ? .labelColor : .secondaryLabelColor
-        cell.toolTip = descriptor.tooltip
+        cell.setAccessibilityHelp(descriptor.tooltip)
         cell.updateFavicon(descriptor.left.favicon)
-        cell.updatePeekFavicon(nil)
+        // Before the split segment, so an animated reveal measures and lands
+        // the half-row layout with the panes' Peek badges already in place.
+        cell.updateLeftPanePeekFavicon(descriptor.left.peekFavicon)
+        cell.updatePeekFavicon(descriptor.right.peekFavicon)
         cell.updateSplitPane(favicon: descriptor.right.favicon ?? NSImage(systemSymbolName: "globe", accessibilityDescription: "Website"),
                              title: descriptor.right.title,
                              emphasized: descriptor.right.emphasized,
                              animatedReveal: animatedReveal)
+        cell.updateDevMode(descriptor.devMode)
         cell.updateSleeping(descriptor.isSleeping)
         cell.updateLoading(descriptor.isLoading)
         cell.updateProgress(descriptor.progress)
@@ -2924,15 +3103,18 @@ extension TabSidebarViewController: NSTableViewDelegate {
     /// members. Titles and sleeping mirror the single normal-tab cell
     /// (`tab.title`, `tab.isSleeping`); close glyphs are plain xmarks.
     private func configureSplitCell(_ cell: TabCellView, item: TabListItem, members: [BrowserTab], isActive: Bool,
-                                    animatedReveal: Bool = false) {
+                                    profileID: UUID?, animatedReveal: Bool = false) {
         let left = members[0]
         let right = members.count > 1 ? members[1] : members[0]
         let rep = representativeTab(for: item)
         let audioMember = members.first { $0.isPlayingAudio || $0.isMuted }
         let descriptor = SplitCellDescriptor(
-            left: SplitCellHalf(favicon: left.favicon, title: left.title, emphasized: rep === left),
-            right: SplitCellHalf(favicon: right.favicon, title: right.title, emphasized: rep === right),
+            left: SplitCellHalf(favicon: left.favicon, title: left.title, emphasized: rep === left,
+                                peekFavicon: left.displayPeekFavicon),
+            right: SplitCellHalf(favicon: right.favicon, title: right.title, emphasized: rep === right,
+                                 peekFavicon: right.displayPeekFavicon),
             tooltip: "\(left.title) — \(right.title)",
+            devMode: Self.splitDevModeMarking(members.map(\.url), profileID: profileID),
             isSleeping: members.allSatisfy { $0.isSleeping },
             isLoading: members.contains { $0.isLoading },
             progress: members.map(\.sidebarProgress).max() ?? 0,
@@ -2951,15 +3133,18 @@ extension TabSidebarViewController: NSTableViewDelegate {
     /// (`entry.displayTitle`, dormant when not live); close glyphs carry the
     /// pinned per-half semantics (live → dormant, dormant → delete entry).
     private func configurePinnedSplitCell(_ cell: TabCellView, entries: [PinnedEntry], depth: Int, isActive: Bool,
-                                          animatedReveal: Bool = false) {
+                                          profileID: UUID?, animatedReveal: Bool = false) {
         let left = entries[0]
         let right = entries.count > 1 ? entries[1] : entries[0]
         let rep = representativePinnedEntry(of: entries)
         let audioTab = entries.compactMap(\.tab).first { $0.isPlayingAudio || $0.isMuted }
         let descriptor = SplitCellDescriptor(
-            left: SplitCellHalf(favicon: left.displayFavicon, title: left.displayTitle, emphasized: rep === left),
-            right: SplitCellHalf(favicon: right.displayFavicon, title: right.displayTitle, emphasized: rep === right),
+            left: SplitCellHalf(favicon: left.displayFavicon, title: left.displayTitle, emphasized: rep === left,
+                                peekFavicon: left.tab?.displayPeekFavicon),
+            right: SplitCellHalf(favicon: right.displayFavicon, title: right.displayTitle, emphasized: rep === right,
+                                 peekFavicon: right.tab?.displayPeekFavicon),
             tooltip: "\(left.displayTitle) — \(right.displayTitle)",
+            devMode: Self.splitDevModeMarking(entries.map(\.devModeURL), profileID: profileID),
             isSleeping: entries.allSatisfy { !$0.isLive || $0.tab?.isSleeping == true },
             isLoading: entries.contains { $0.tab?.isLoading == true },
             progress: entries.compactMap { $0.tab?.sidebarProgress }.max() ?? 0,
@@ -3018,13 +3203,14 @@ extension TabSidebarViewController: NSTableViewDelegate {
         delegate?.tabSidebar(self, didRequestCloseTabAt: tabIdx)
     }
 
-    private func configureTabCell(_ cell: TabCellView, tab: BrowserTab, title: String, isActive: Bool, indentLevel: Int = 0, animatedReveal: Bool = false, departingFavicon: NSImage? = nil, departingTitle: String? = nil, onClose: @escaping (Int) -> Void) {
+    private func configureTabCell(_ cell: TabCellView, tab: BrowserTab, title: String, isActive: Bool, profileID: UUID?, indentLevel: Int = 0, animatedReveal: Bool = false, departingFavicon: NSImage? = nil, departingTitle: String? = nil, onClose: @escaping (Int) -> Void) {
         cell.titleLabel.stringValue = title
-        cell.toolTip = tab.title
+        cell.setAccessibilityHelp(tab.title)
         cell.updateFavicon(tab.favicon)
         cell.updatePeekFavicon(tab.displayPeekFavicon)
         cell.updateSplitPane(favicon: nil, title: nil, animatedReveal: animatedReveal,
                              departingFavicon: departingFavicon, departingTitle: departingTitle)
+        cell.updateDevMode(DevMode.rowMarking(for: tab.url, profileID: profileID))
         cell.updateSleeping(tab.isSleeping)
         cell.updateLoading(tab.isLoading)
         cell.updateProgress(tab.sidebarProgress)
@@ -3523,6 +3709,50 @@ extension TabSidebarViewController: FavoritesBarDelegate {
         delegate?.tabSidebar(self, didClickFavoriteAt: index)
     }
 
+    /// Opt-Cmd-click on a favourite (TASK-193.5): a Quick Detour copy of where
+    /// its tab is, or of its saved address while it is dormant.
+    func favoritesBar(_ bar: FavoritesBarView, didQuickDetourClickFavoriteAt index: Int) -> Bool {
+        let favorites = activeSpaceID.flatMap { TabStore.shared.space(withID: $0) }?.profile?.favorites ?? []
+        guard index >= 0, index < favorites.count else { return false }
+        let favorite = favorites[index]
+        guard let url = QuickDetour.sidebarCopyURL(liveURL: favorite.tab?.url, storedURL: favorite.url) else { return false }
+        delegate?.tabSidebar(self, didRequestQuickDetourCopyOf: url)
+        return true
+    }
+
+    /// The address an Opt-Cmd-click on table row `row` copies into a Quick
+    /// Detour (TASK-193.5): a normal tab's page (a sleeping tab's stored
+    /// address), a pinned entry's page or its saved address while dormant; in
+    /// a split row, the pane clicked. Nil for every other row (a folder, New
+    /// Tab), whose click then does what it always did.
+    func quickDetourCopyURL(forRow row: Int, at point: NSPoint) -> URL? {
+        let rowRect = tableView.rect(ofRow: row)
+        let pane = QuickDetour.splitRowPane(forX: point.x - rowRect.minX, rowWidth: rowRect.width)
+        func pick<T>(_ members: [T]) -> T? { pane == .left ? members.first : members.last }
+        func copy(_ entry: PinnedEntry) -> URL? {
+            QuickDetour.sidebarCopyURL(liveURL: entry.tab?.url, storedURL: entry.pinnedURL)
+        }
+        switch sidebarRow(for: row) {
+        case .normalTab(let index):
+            guard index < tabItems.count else { return nil }
+            switch tabItems[index] {
+            case .single(let tab):
+                return QuickDetour.sidebarCopyURL(liveURL: tab.url, storedURL: nil)
+            case .split(_, let members):
+                return pick(members).flatMap { QuickDetour.sidebarCopyURL(liveURL: $0.url, storedURL: nil) }
+            }
+        case .pinnedItem(let index):
+            guard index < flattenedPinnedItems.count else { return nil }
+            switch flattenedPinnedItems[index] {
+            case .entry(let entry, _): return copy(entry)
+            case .split(_, let entries, _): return pick(entries).flatMap(copy)
+            case .folder: return nil
+            }
+        default:
+            return nil
+        }
+    }
+
     func favoritesBar(_ bar: FavoritesBarView, didDoubleClickFavoriteAt index: Int) {
         delegate?.tabSidebar(self, didDoubleClickFavoriteAt: index)
     }
@@ -3539,5 +3769,76 @@ extension TabSidebarViewController: FavoritesBarDelegate {
 private extension Comparable {
     func clamped(to range: ClosedRange<Self>) -> Self {
         min(max(self, range.lowerBound), range.upperBound)
+    }
+}
+
+// MARK: - Hover card (TASK-190)
+
+extension TabSidebarViewController: TabCellHoverDelegate {
+    func tabCell(_ cell: TabCellView, hoverChanged hovering: Bool, splitSide: Int?, overPeekBadge: Bool) {
+        guard hovering else {
+            endCardHover(for: cell)
+            return
+        }
+        // Only the active page's rows: a page sliding past mid-swipe is not
+        // the list the user is pointing into.
+        let row = tableView.row(for: cell)
+        guard row >= 0, !isShowingArchivePage, let target = hoverCardTarget(forRow: row, splitSide: splitSide) else {
+            endCardHover(for: cell)
+            return
+        }
+        beginCardHover(cardTarget(target, overPeekBadge: overPeekBadge), view: cell)
+    }
+
+    /// Over the Peek badge the card is the Peek's (TASK-229), else the row's
+    /// or tile's own.
+    private func cardTarget(_ target: HoverCardTarget, overPeekBadge: Bool) -> HoverCardTarget {
+        guard overPeekBadge else { return target }
+        return HoverCardTarget.peekBadge(of: target) ?? target
+    }
+
+    /// The card target for a table row: a tab, a pinned entry, or the hovered
+    /// half of a split. Folders, the New Tab row and the separator get none.
+    private func hoverCardTarget(forRow row: Int, splitSide: Int?) -> HoverCardTarget? {
+        switch sidebarRow(for: row) {
+        case .pinnedItem(let index):
+            guard index < flattenedPinnedItems.count else { return nil }
+            return HoverCardTarget.forPinnedItem(flattenedPinnedItems[index], splitSide: splitSide)
+        case .normalTab(let index):
+            guard index < tabItems.count else { return nil }
+            return HoverCardTarget.forTabItem(tabItems[index], splitSide: splitSide)
+        case .topSpacer, .separator, .newTab:
+            return nil
+        }
+    }
+
+    private func beginCardHover(_ target: HoverCardTarget, view: NSView) {
+        // A split half ends the other half's hover; crossing the Peek badge's
+        // edge does not leave the row (TASK-229): the begin swaps the card,
+        // and a dismissal's suppression holds until the row is left.
+        if let current = cardHover, current.view === view, !current.target.isSameRow(as: target) {
+            hoverCard?.hoverEnded(current.target)
+        }
+        cardHover = (view, target)
+        hoverCard?.hoverBegan(target, rowRectInWindow: view.convert(view.bounds, to: nil))
+    }
+
+    private func endCardHover(for view: NSView) {
+        guard let current = cardHover, current.view === view else { return }
+        cardHover = nil
+        hoverCard?.hoverEnded(current.target)
+    }
+
+    func favoritesBar(_ bar: FavoritesBarView, tile: FavoriteTileView, hoverChanged hovering: Bool, overPeekBadge: Bool) {
+        guard hovering else {
+            endCardHover(for: tile)
+            return
+        }
+        guard !isShowingArchivePage, activePageIndex < spacePages.count,
+              spacePages[activePageIndex].favoritesBar === bar else {
+            endCardHover(for: tile)
+            return
+        }
+        beginCardHover(cardTarget(.favorite(tile.favorite), overPeekBadge: overPeekBadge), view: tile)
     }
 }

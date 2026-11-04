@@ -34,6 +34,12 @@ sources:
   - id: task-23
     resource: backlog:TASK-23
     title: Callback-form polyfill APIs must route rejections to runtime.lastError
+  - id: task-255
+    resource: backlog:TASK-255
+    title: "Extensions: native polyfill errors read differently from the worker and from a page"
+  - id: task-262
+    resource: backlog:TASK-262
+    title: "Extensions: polyfill error envelope edge cases (browser.runtime.lastError identity, envelope key collision)"
   - id: task-3
     resource: backlog:TASK-3
     title: Polyfill stubs for privacy, onAuthRequired, management.setEnabled, getUserSettings
@@ -70,6 +76,54 @@ sources:
   - id: favicon-scope-tests
     resource: ../../DetourTests/ExtensionFaviconScopeTests.swift
     title: ExtensionFaviconScopeTests
+  - id: task-234
+    resource: backlog:TASK-234
+    title: notifications.clear issued while notifications.create is still adding the notification is lost
+  - id: notification-manager
+    resource: ../../Detour/Extensions/Runtime/ExtensionNotificationManager.swift
+    title: ExtensionNotificationManager.swift
+  - id: task-238
+    resource: backlog:TASK-238
+    title: "Extensions: one profile's notifications are visible to and clearable by the same extension in another profile"
+  - id: task-239
+    resource: backlog:TASK-239
+    title: "Extensions: the notifications API is available without the notifications permission"
+  - id: task-251
+    resource: backlog:TASK-251
+    title: "Extensions: the history and management namespaces exist for extensions without the permission"
+  - id: task-250
+    resource: backlog:TASK-250
+    title: "Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions"
+  - id: task-257
+    resource: backlog:TASK-257
+    title: "Extensions: management.uninstallSelf and management.getPermissionWarningsByManifest are missing"
+  - id: chromium-management-api
+    resource: https://source.chromium.org/chromium/chromium/src/+/main:extensions/browser/api/management/management_api.cc
+    title: "Chromium: management_api.cc (Uninstall, GetPermissionWarningsByManifest) and management_api_constants.h"
+  - id: chromium-api-features
+    resource: https://github.com/chromium/chromium/blob/main/extensions/common/api/_api_features.json
+    title: "Chromium, extensions/common/api/_api_features.json (management.getSelf etc. have no dependency)"
+  - id: task-240
+    resource: backlog:TASK-240
+    title: "Extensions: notifications.clear and notifications.update diverge from Chrome"
+  - id: task-254
+    resource: backlog:TASK-254
+    title: "Extensions: notifications.create(null, options) is treated as create(options) with empty options"
+  - id: chrome-notifications-api
+    resource: https://developer.chrome.com/docs/extensions/reference/api/notifications
+    title: chrome.notifications API reference
+  - id: task-253
+    resource: backlog:TASK-253
+    title: "Extensions: Detour never requests notification permission, so extension notifications may never be shown"
+  - id: task-247
+    resource: backlog:TASK-247
+    title: "Extensions: notifications.onClicked and onClosed are never delivered to the extension"
+  - id: chromium-notifications-clear
+    resource: https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/extensions/api/notifications/
+    title: "Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)"
+  - id: task-248
+    resource: backlog:TASK-248
+    title: "Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared"
 ---
 
 `ExtensionAPIPolyfill` generates one JavaScript bundle (`polyfillJS`) that runs
@@ -143,6 +197,7 @@ Preamble helpers every module uses:
 | `__detourContextKind` | `'worker'`, `'background-page'` or `'page'`, decided once |
 | `__detourContextInstance` | A token minted per evaluation, so Swift can tell one start of a context from the next |
 | `__detourManifestPermissions()` | The manifest's declared permissions, for modules that must stay absent unless asked for |
+| `__detourDeclaresPermission(name)` | Whether `permissions` or `optional_permissions` lists `name`: the gate of the namespaces an extension may be granted at runtime (notifications, history, the full management) |
 | `__detourNativeness(fn)` | `'native'`, `'non-native'` or `'missing'`, by the `[native code]` check |
 
 `__detourContextKind` matters because a `ServiceWorkerGlobalScope` check alone
@@ -193,8 +248,10 @@ Other consequences:
 WebKit does not permission-check APIs it does not implement, so the handler
 does:
 
-- `history.search`, `management.getAll`, `management.setEnabled` require the
-  manifest permission (`hasPermission`).
+- `history.search`, `management.getAll`, `management.setEnabled` and every
+  `notifications.*` request require the manifest permission
+  (`hasPermission`), checked before anything else the request is
+  answered with.[^task-239]
 - `history.search` answers from the handler's own profile only; see
   [chrome.history](#chromehistory-is-profile-scoped) below.
 - `runtime.getURL('/_favicon/…')` is not a handler request at all: the
@@ -209,13 +266,82 @@ does:
   handed the sending web view.
 - `runtime.getContexts` has no permission gate, as in Chrome. It can only
   answer with the verified extension's contexts in the handler's own profile.
-- `sessions.restore` and `search.query` act in `targetSpace()`: the last-active
-  space when it belongs to this profile, else the profile's first space, never
-  another profile's.
+- `sessions.restore` and `search.query` act in `targetSpace()`, which is
+  `tabs.create`'s rule (`ExtensionManager.newTabSpace(for:)`): a normal
+  profile's most recently used space, never another profile's (TASK-226;
+  before, the global last active space when it was this profile's, else the
+  profile's first). See [opening a tab](./tab-and-window-bridge.md#opening-a-tab).
 - Gap-filling namespaces that Chrome leaves undefined without a permission
-  (`privacy`, `webRequest`) are installed only when the manifest declares it,
-  so feature detection stays truthful.[^task-3] `sidePanel` follows the same
-  rule.
+  (`privacy`, `webRequest`, `notifications`, `history`) are installed only when the
+  manifest declares it, so feature detection stays truthful.[^task-3]
+  `sidePanel` follows the same rule. Before
+  TASK-239 `notifications` was installed for every extension and the handler
+  served it unchecked. Both sides gate: the bundle gate is what the extension
+  sees, the handler's is what holds against a caller that goes straight to
+  `__detourPolyfillRequest`. Without the permission WebKit vends no
+  `notifications` namespace of its own either (measured from a page and a
+  worker in `ExtensionNotificationOrderingTests`).[^task-239]
+- `history` and `management` were installed whole for every extension until
+  TASK-251, gated only in the handler. Now `history` is absent without its
+  permission, and `management` without its permission holds `getSelf` alone.
+  Chromium's `extensions/common/api/_api_features.json` gives `management` the
+  dependency `permission:management` but gives `getSelf`, `uninstallSelf` and
+  `getPermissionWarningsByManifest` empty dependencies, and since TASK-257
+  Detour implements all three ([below](#the-permission-free-management-methods)).
+  WebKit vends neither namespace (measured from a
+  page and a worker in `ExtensionHistoryScopeTests`: with neither permission
+  `chrome.history` is undefined and `chrome.management` has only Detour's
+  permission-free methods).[^task-251] In a plain `WKWebView` (the `ExtensionPolyfillTests`
+  harness) `browser` is a separate object from `chrome`, so the alias can only
+  be checked in a real context.
+- Since TASK-250 those three namespaces also install for a permission listed
+  only under `optional_permissions`, and the handler refuses each call until
+  the profile's context holds the grant, and again after a revocation. Chrome
+  adds a granted namespace to running contexts; installing ours on a later
+  event would leave a restarted worker's top-level code without it. The rule
+  and the WebKit behaviour behind it are in
+  [Permissions](./permissions.md#permissions-the-polyfill-gates).[^task-250]
+
+## The permission-free management methods
+
+`getSelf`, `uninstallSelf` and `getPermissionWarningsByManifest` are in
+`chrome.management` with or without the `management` permission, as in
+Chrome.[^task-257]
+
+`uninstallSelf(options?, callback?)` goes to
+`ExtensionManager.uninstallSelf`, which ends in `uninstall(id:)`, the path
+Settings' Uninstall button takes. It acts only on the verified caller.
+
+| Rule | Detail |
+|---|---|
+| Scope | Every profile. Detour installs an extension once and each profile only turns it on or off, so an uninstall cannot be per profile. Chrome's profiles install separately, so Chrome removes it from the calling profile only |
+| `showConfirmDialog: true` | An `NSAlert` in the Settings style: "Uninstall "X"?", saying the extension asked, Uninstall / Cancel. Tests answer it through `uninstallSelfConfirmationAnswerOverride`. A second call while one alert is up is refused |
+| Cancel | Rejects with Chromium's `kUninstallCanceledError`: `Extension <id> uninstall canceled by user.` |
+| Order | The reply (`undefined`) goes first, and the uninstall runs on the next main-actor turn. The uninstall unloads the caller's worker and closes its pages, so the reply may still never arrive. Chrome uninstalls first and then answers |
+| Arguments | `options` absent, null or an object; `showConfirmDialog` absent, null or a boolean. Anything else is refused (`management.uninstallSelf: options must be an object`) |
+| A second dialog | Refused at once, with the cancel text, while the extension's alert is up. The claim is taken before the alert's task runs, because WebKit can hand two messages over in one batch. A call without a dialog is not affected |
+| Not carried over | Chrome refuses a dialog without a user gesture (`kGestureNeededForUninstallError`). The polyfill has no gesture signal, so Detour shows the dialog anyway. As a result a worker that calls again after every Cancel can keep the app-modal alert up (`permissions.request` prompts have the same exposure) |
+
+`getPermissionWarningsByManifest(manifestStr)` returns the lines Detour's
+install prompt shows for the manifest: its required permissions, each through
+`ExtensionPermissionDescriptions.describe`, then its `host_permissions`
+(`<all_urls>` reads "All websites"). It leaves out `optional_permissions`, as
+Chrome does. `ExtensionPermissionDescriptions.warnings` builds the list, and
+the prompt's `formatForAlert` uses the same host wording.
+
+This is not Chrome's list. Chrome leaves out permissions that carry no warning
+(`storage`, `alarms`), merges hosts and adds content-script matches. Detour's
+prompt names every permission it is asked for, so this list does too. Errors
+use Chromium's `management_api_constants.h` texts:
+
+| Input | Error |
+|---|---|
+| Malformed JSON, or JSON that is not an object | `Failed to parse manifest.` Chrome uses its JSON parser's message for malformed JSON. Detour does not reproduce that message |
+| An object `ExtensionManifest` cannot decode (no `name`, `version` or `manifest_version`) | `Failed to create extension from manifest.` |
+| Not a string | `management.getPermissionWarningsByManifest: manifestStr must be a string` |
+
+Both are tested from a page and a worker, in the promise and the callback
+form, in `ExtensionManagementSelfTests`.
 
 ## chrome.history is profile-scoped
 
@@ -315,6 +441,265 @@ rather than gated; both transports now get `Unknown polyfill message type`.
 A message type nothing sends is still reachable: every `case` in the
 handler's dispatch is API surface.
 
+## chrome.notifications applies calls in the order they were made
+
+`ExtensionNotificationManager` (one shared instance for every profile; each
+profile's handler reaches it through `notificationManager`) records a notification when `create` is
+called, before `UNUserNotificationCenter.add` returns. An extension that does
+not await `create` before `clear` or `update` therefore gets what it asked
+for:[^task-234]
+
+| Calls, none awaited | Result |
+|---|---|
+| `create('x')`, `clear('x')` | The clear drops the entry at once and removes the notification; when the `add` returns, the manager removes it once more, because the clear's removal can reach the center before the notification does. `getAll` does not list it |
+| `create('x')`, `update('x')` | The update finds the entry and re-creates it; `wasUpdated` is `true` and the update's content shows |
+| `create('x')`, `clear('x')`, `create('x')` | Each `create` carries a generation. The first `add` returning finds a newer generation and does nothing (the newer `add` replaces what it showed), so the second notification stands |
+
+`getAll` lists a notification whose `add` is still in flight. A failed `add`
+drops the entry only if no later `create` has replaced it, and also removes
+any notification shown under that id, so `getAll` and the screen agree. Before
+TASK-234 the entry was recorded only after `add` returned, so a clear issued
+meanwhile found nothing and the notification came back.
+
+Rejected: serializing the operations per notification id. It would also make
+calls apply in order, but it needs a queue per id, makes `clear` wait for the
+`add`, and still has to decide what `getAll` says in between.
+
+The manager talks to the center through `ExtensionNotificationCenter` (`add`,
+`removeNotifications`, `authorizationStatus`, `requestAuthorization`,
+`deliveredIdentifiers`, `pendingIdentifiers`), a seam
+for tests: `HeldNotificationCenter` holds every `add`, and optionally every
+authorization prompt, until the test releases it.[^notification-manager]
+
+## Notifications left by an earlier launch are removed at launch
+
+The manager's map from identifier to owner lives in memory only, so a
+notification still in Notification Center after a relaunch belongs to nobody:
+a click on it is ignored and the extension's `clear` cannot reach it. At
+launch `AppDelegate` calls `removeLeftoverNotifications()`, which lists
+delivered and pending identifiers and removes every one shaped like an
+extension notification of any build:[^task-248]
+
+| Form | Builds | Matched by |
+|---|---|---|
+| `detour-ext-notification.v3\|<UUID>` | since TASK-238's second pass | prefix |
+| `detour-ext-notification.v2\|<profile>\|<ext>\|<id>` | TASK-238's first pass | prefix |
+| `<extension id>:<id>` | before TASK-238 | the id must be 32 letters a–p (a CRX key's) or a UUID string (an unpacked extension with no key), anchored at the start |
+
+- Nothing else in Detour posts a UNNotification today (downloads and the
+  updater do not; Sparkle could only with gentle reminders, which Detour does
+  not enable), but the legacy form is still anchored on the extension id's
+  shape rather than "anything with a colon", so a later poster is safe unless
+  its identifiers start with such an id and a colon.
+- Identifiers this launch has an entry for are kept: the filter runs after the
+  listing returns, so a create made while it was in flight survives. No need
+  to run before the first extension loads.
+- Not gated on authorization: listing never prompts.
+- Skipped in the XCTest host (launch runs before the bundle installs its fake
+  center) and whenever another process with Detour's bundle id is running:
+  the production app and a `DETOUR_DATA_DIR` run share one Notification
+  Center, and one would take the other's live notifications for leftovers.
+  A run that skips it says so in a `notice` log line.
+
+`create(notificationId?, options, callback?)` follows Chrome's signature: a
+`null` or `undefined` id counts as absent, so the options are used and an id is
+generated. Only a non-null object in the first slot means the id was left out
+(`typeof null` is `'object'`, which once made `create(null, options)` create
+an empty notification).[^task-254]
+
+## chrome.notifications asks for authorization at the first create
+
+Detour asks for notification authorization the first time any extension calls
+`notifications.create` (a product decision; at install or from Settings were
+the alternatives), and that create waits for the user's answer. Before
+TASK-253 nothing asked, so on a fresh install `create` reported success and
+nothing appeared.[^task-253]
+
+- Every create and update asks the center for the status first, so a change
+  the user makes in System Settings applies to the next call. `provisional`
+  counts as allowed (`ephemeral` is unavailable on macOS).
+- One check at a time: creates and updates arriving while the status query or
+  the prompt is in flight wait on that check, so one prompt answers them all.
+  They resume in call order (a list of continuations; awaiting a shared
+  `Task`'s `value` resumed four waiters in reverse order, which reorders the
+  adds).
+- The entry is recorded before the wait, as before the `add`, so a `clear`
+  during the wait answers true and an `update` merges into the waiting
+  create. A create cleared or superseded during the wait never calls `add`:
+  the superseding update or create adds its own, and skipping the stale one
+  keeps it from landing after the newer content.
+- Not allowed (declined now or earlier): `create` answers its id, as Chrome
+  does when the OS blocks notifications, but nothing is shown and the entry
+  goes, so `getAll` does not list it and `clear` and `update` answer false
+  for it. A notification shown earlier under that identifier is taken away,
+  since the extension no longer has it.
+- The prompt is a banner ("“Detour” Notifications", Allow / Don't Allow). The
+  unified log shows it as a NotificationCenter record with
+  `app:"com.apple.notificationcenter.askpermissions" req:"com.detourbrowser.mac"`.
+  Until the user answers, every create and update waits, with no timeout;
+  a prompt the user ignores into Notification Center keeps them waiting. On
+  the development Mac the bundle id was still not determined in the TASK-253
+  run, which is why earlier runs saw `add` succeed with nothing on screen.
+  A Debug build shares `com.detourbrowser.mac` with the installed app, so
+  answering a Debug build's prompt sets the installed app's permission too.
+
+## chrome.notifications events reach the background through a parked request
+
+`notifications.onClicked` and `onClosed` fire in the background context of the
+owner (profile and extension) whose notification it was, and nowhere
+else.[^task-247] There is no push channel into a context (see Gotchas), so the
+first `addListener` on either parks a `notifications.awaitEvent` request,
+which the manager answers with the owner's unacknowledged events
+`{events: [{seq, kind, notificationId, byUser?}]}`. The polyfill dispatches
+them in order and parks again with `ack` = the last `seq`.
+
+| Event | Fires |
+|---|---|
+| Click on the banner (`UNNotificationDefaultActionIdentifier`) | `onClicked(id)`; the entry stays |
+| User dismisses it (`UNNotificationDismissActionIdentifier`) | `onClosed(id, true)`; the entry goes, so `clear`/`update` answer false and `getAll` leaves it out |
+| The extension's `clear` finds it | `onClosed(id, false)` |
+| Unload of the extension, end of the profile or Private session, not-allowed or failed add | nothing |
+
+- **Dismissals need a category.** Every notification carries the
+  `detour-ext-notification` category with `.customDismissAction`
+  (`ExtensionNotificationManager.dismissCategory`); without it macOS never
+  reports a dismissal. The system center registers it alongside any other
+  category (`setNotificationCategories` replaces the set). The registration
+  is awaited before the first authorization check, so no banner is shown
+  before its category exists.
+- **Chrome's clear fires `onClosed(byUser false)`.** `notifications.clear` →
+  `ExtensionNotificationDisplayHelper::Close` → the display service →
+  `NotificationUIManagerImpl::CancelById` → `MessageCenter::RemoveNotification(id,
+  /* by_user */ false)` → `ExtensionNotificationHandler::OnClose`, which sends
+  `onClosed` with `by_user`.[^chromium-notifications-clear] That is the
+  message-center path; Chrome's native macOS bridge was not traced.
+- **Acknowledged, not answered.** An event stays in the per-owner backlog
+  (at most 32, oldest dropped) until a park acknowledges it. A parked reply
+  whose worker WebKit has unloaded goes nowhere and nothing says so; the next
+  incarnation's first park acknowledges nothing and receives the events again.
+  The polyfill skips a `seq` it has already dispatched.
+- **The park keeps nothing alive.** It is a pending `runtime.sendNativeMessage`,
+  not a port or a permission request, so WebKit's idle unload ignores it.
+  Measured: a worker parked and left alone was replaced by a new incarnation
+  within 45 s (the gated leg `testAClickAfterTheWorkerUnloadsWakesItAndIsDelivered`,
+  `TEST_RUNNER_NOTIFICATION_UNLOAD_LEG=1`). So parking for every listening
+  extension is safe, and parking only while it has live notifications was
+  not needed.
+- **An event wakes the background.** Once an owner has parked this launch, each
+  event calls `loadBackgroundContent` on its context (a no-op while it is
+  loaded), as Chrome starts a worker for an event it listens to. The new
+  worker's top-level `addListener` parks and drains the backlog. An owner
+  that never parked is never woken; its events wait in the backlog.
+- **A newer incarnation supersedes.** The park carries `__detourContextInstance`.
+  A token not seen before settles the parked request with "superseded" and
+  takes its place; from then on an older token is refused, so an old worker
+  still running beside its replacement (`runtime.reload()`) cannot take the
+  park back and ping-pong.
+- **Background only.** The handler refuses `awaitEvent` from any sender that
+  fails `senderIsBackgroundContext`. Chrome fires these events in every
+  context with a listener; Detour does not deliver them to popups, options
+  pages or extension tabs. A page's park would need its own slot per page
+  instance and nothing tells the manager a page closed, so dead pages'
+  replies would pile up; extensions handle clicks in the background in
+  practice. Rejected for now, not ruled out.
+- **A refused wait stops, with one exception.** A refusal for "not the
+  background", "superseded", "unloaded" or "profile gone" is final for that
+  context. A refusal for the permission (an optional `notifications` not yet
+  granted) is retried at the next `create`/`update`/`clear`/`getAll` while a
+  listener exists, so the grant does not leave the worker deaf until restart.
+- `onButtonClicked` still never fires: buttons are not shown.
+
+The manager-level behaviour is in `ExtensionNotificationEventManagerTests`, the
+real-worker behaviour (profile isolation, byUser, backlog before the park,
+`runtime.reload()` superseding) in `ExtensionNotificationEventDeliveryTests`.
+
+## chrome.notifications is scoped by profile
+
+The system center has one delegate, so one manager serves every profile, and
+every notification belongs to an `Owner`: the handler's profile plus the
+verified extension id, never anything from the request body. The same
+extension installed in two profiles, the Private one included, is two owners.
+Before TASK-238 the key was the extension id alone, so a normal-profile copy
+listed, cleared and updated what its Private copy had created, and the reverse
+also held.[^task-238]
+
+| What | Scoped how |
+|---|---|
+| `getAll` | lists only the calling owner's entries |
+| `clear`, `update` | find the owner's own notification; another profile's notification with the same id is untouched (both answer false and take nothing away) |
+| The UNNotification identifier | opaque: `detour-ext-notification.v3\|<random UUID>`, one per notification, mapped back to (owner, id) by the manager only. Each owner's notification has its own, so one profile's `create` never replaces the other's banner and one profile's `clear` never takes it away. An `update` keeps the identifier (the center replaces the banner); a notification cleared and created again gets a new one |
+| A click or close | `handleResponse` resolves the identifier to its owner and id and returns it; a close drops only that entry |
+
+The identifier is opaque because usernoted keeps delivered identifiers on
+disk. The first TASK-238 draft used
+`detour-ext-notification.v2|<profile UUID>|<extension id>|<id>`; for Private
+the profile UUID is the well-known constant `TabStore.incognitoProfileID`, so
+the system's store would have recorded which notifications came from Private,
+and what the extension called them. The content handed to the center carries
+only title, body and subtitle: no `threadIdentifier`, no `userInfo`.[^task-238]
+
+Identifiers from earlier builds (`<extensionID>:<notificationID>` before
+TASK-238, the v2 form) match no entry, so a click or close on one still on
+screen is ignored. The map lives in memory only, so the same holds for a v3
+identifier left over from an earlier launch.
+
+### An owner's notifications go with its scope
+
+Entries would otherwise outlive what created them, and the Private profile's
+id is a constant, so a Private session's notifications would carry over into
+the next one. They are taken away, from `getAll` and off screen (delivered
+and pending), when:
+
+| When | Called from | Manager call |
+|---|---|---|
+| The extension is unloaded from a profile: disabled there, uninstalled, updated, or its context reloaded by background recovery | `Profile.unloadExtension` → handler `removeNotifications(ofExtension:)` | `removeAll(for: owner)` |
+| The profile is deleted | `TabStore.deleteProfile`, after `unloadAllExtensions` → handler `removeAllNotifications()` | `removeAll(profileID:)` |
+| The Private session ends: the last Private window's space is removed, or the last Private Quick Detour closes or switches profile | `TabStore.endPrivateSessionIfUnused()`, the one place that also calls `siteSettings.discardPrivateSession()` | `removeAll(profileID: incognitoProfileID)` on the Private profile's handler |
+| A Private session starts (a Private window's space or a Private Quick Detour, when none was live): the Private profile's contexts stay loaded between sessions, so a worker can create one while no Private page is open | `TabStore.startPrivateSessionIfNeeded()`, from `addIncognitoSpace` and `openQuickDetourTab` | the same |
+| The app quits, which ends the Private session without closing its windows | `applicationWillTerminate` → `TabStore.removePrivateProfileNotifications()`; best effort, the request may not reach usernoted before exit | the same |
+
+A notification whose `add` is still in flight when its owner goes is taken
+away again when the `add` returns, as after a `clear`. The handler's removals
+use the shared manager only if something created it this launch
+(`sharedIfCreated`), so ending a session never sets up the system center.
+A persistent profile's notifications still on screen when the app quits stay
+there until dismissed; the next launch cannot map their identifiers back, so
+a click on one is ignored and `clear` or `create` with the same id no longer
+reaches it (before TASK-238 the fixed `<extensionID>:<id>` identifier did,
+by accident).
+
+### What clear and update answer, and what a notification shows
+
+As in Chrome, whose `clear` "resolves to indicate whether a matching
+notification existed"[^chrome-notifications-api] (Chromium's
+`NotificationsClearFunction` answers the display helper's `Close`), `clear`
+answers true only when the owner had the notification, one whose `create` is
+still in flight included, and false for a missing, already cleared or refused
+id and for another owner's. Before TASK-240 it always answered true.
+
+`update` merges the given options into the notification's, as Chromium's
+`NotificationsUpdateFunction` copies the existing notification and
+`UpdateNotification` applies only the fields passed: an update that sets only
+`message` keeps the title. The entry keeps the merged options, so updates
+compose, one made while the `create` is in flight included; a `null` field
+counts as not given. Before TASK-240 the update replaced the whole options
+object.[^task-240]
+
+The content follows Chrome's macOS bridge (`CreateMacNotificationContext`
+returns `context_message` for a notification that needs no origin attribution):
+
+| Option | Shown as |
+|---|---|
+| `title` | title |
+| `message` | body |
+| `contextMessage` | subtitle |
+| `iconUrl` | nothing: the banner shows Detour's icon. An attachment would need the extension-relative URL loaded into a file first. Before TASK-240 the URL itself was the subtitle |
+| `imageUrl`, `buttons`, `items`, `progress`, `priority`, `eventTime`, `requireInteraction`, `silent` | nothing (no sound is ever set, so `silent` holds by default) |
+
+`handleResponse` returns the resolved response, and nothing delivers it yet:
+`notifications.onClicked` and `onClosed` never fire (see Gotchas). Delivery
+would start there and go to the returned owner's profile only.
+
 ## Callback form and `runtime.lastError`
 
 Every promise-backed polyfill API takes an optional trailing callback and
@@ -326,33 +711,73 @@ achieved depends on the runtime object (`__detourCallbackLastError.lastMode`):
 | Mode | When | What happens |
 |---|---|---|
 | `js` | `lastError` can be redefined, verified by reading it back | A getter is installed for the callback and the original restored; an unread error is reported as `Unchecked runtime.lastError: …` |
-| `native-relay` | WebKit's real runtime | The message is bounced off Detour through the callback form of `runtime.sendNativeMessage` with type `runtime.lastErrorRelay`. The native side always fails with that text, so WebKit runs the callback inside its own `lastError` scope |
+| `native-relay` | WebKit's real runtime | The message is bounced off Detour through the callback form of `runtime.sendNativeMessage` with type `runtime.lastErrorRelay`. The native side always fails with that text, so WebKit runs the callback inside its own `lastError` scope; the relay's callback first puts the original text back on WebKit's `lastError` object (below) |
 | `console` | Neither is possible | The callback runs without `lastError`; the message goes to `console.error` |
 
 WebKit's `runtime.lastError` reports as a configurable data property, yet
 `defineProperty`, assignment and `delete` all complete without effect and reads
 stay `null`. A "configurable" check is therefore not enough; the write has to
-be read back.[^task-23] In `native-relay` mode the extension sees
-`Invalid call to runtime.sendNativeMessage(). <Message>.` — WebKit's prefix is
-the visible difference from Chrome, and WebKit also capitalises the first
-letter of the text and ends it with a full stop. The relay needs no
-permission: it echoes the sender's own text (capped at 2048 characters) to the
-sender.
+be read back.[^task-23]
 
-The same rewriting applies to every failure that crosses
-`runtime.sendNativeMessage`, which is every polyfill request a **worker**
-makes. Measured with `history.search` refused for want of the permission
-(native text `history permission not declared`):[^task-138]
+## Error text from both transports
 
-| Caller | Form | Text the extension sees |
+WebKit rewrites every error that crosses `runtime.sendNativeMessage`
+(`toErrorString` in WebKit's `WebExtensionUtilities.cpp`): it trims dots from
+both ends of the text, capitalises the first letter, and makes it
+`Invalid call to runtime.sendNativeMessage(). <Text>.` Before TASK-255 the
+extension saw that rewrite on three of the four legs. Measured with
+`history.search` refused for want of the permission (native text
+`history permission not declared`):[^task-138]
+
+| Caller | Form | Text before TASK-255 |
 |---|---|---|
 | Extension page | promise | `history permission not declared` |
 | Extension page | callback | `Invalid call to runtime.sendNativeMessage(). History permission not declared.` |
 | Worker | promise | `Invalid call to runtime.sendNativeMessage(). History permission not declared.` |
 | Worker | callback | `Invalid call to runtime.sendNativeMessage(). Invalid call to runtime.sendNativeMessage(). History permission not declared.` |
 
-So a test, or an extension, that looks for a native error text has to search
-for it as a substring and ignore case.
+Now every leg reads `history permission not declared`, the handler's text
+verbatim:[^task-255]
+
+- **Worker requests** set `errorEnvelope: true`. `handleNativeMessage` then
+  answers a failure as a *successful* reply
+  `{ __detourPolyfillError: <text> }` (`ExtensionPolyfillHandler.errorEnvelopeKey`),
+  and `__detourPolyfillRequest` rejects with that text. Stripping the prefix
+  alone would not do: the capital letter and the trimmed dots cannot be undone.
+  The relay ignores the flag, since it must fail for WebKit to set `lastError`.
+- **A success on the envelope path is wrapped too**, as
+  `{ __detourPolyfillOk: true, value: <result> }` (`successEnvelopeKey`,
+  `replySuccess`; `value` is left out for a nil result, which reads as
+  `undefined`). Otherwise a handler result that is a map with the error key
+  (notification ids are the extension's own keys in `notifications.getAll`)
+  would be read as a failure. The polyfill rejects a reply in neither shape
+  with `Malformed polyfill reply`, so a test stub of the worker's
+  `sendNativeMessage` must answer with the success envelope.[^task-262]
+  The delegate's own refusals before the handler (`Unrecognized extension
+  context`, `No polyfill handler for profile`) use the same
+  `ExtensionPolyfillHandler.replyFailure`.
+- **An error WebKit still delivers as one** (a non-object payload, WebKit's
+  own limits such as too many active native message requests) loses exactly
+  `Invalid call to runtime.sendNativeMessage(). ` and the full stop WebKit
+  appended. Any other text is left as it is. The capital stays.
+- **The callback form**: WebKit's `lastError` is a JS `Error` made per report
+  (`makeErrorValue` in `WebExtensionAPIRuntime.cpp`) whose `message` is an own,
+  configurable property. Inside the relay's callback the polyfill reads it and
+  redefines `message` as the original text, then runs the extension's
+  callback. In a worker `browser.runtime` is the same object as
+  `chrome.runtime`, and both hand back the same `lastError` object, so
+  `browser.runtime.lastError.message` reads the original text as well
+  (measured in the test host, TASK-262). Reading `lastError` marks it checked for WebKit, so **in
+  `native-relay` mode nothing reports an unchecked `lastError` any more**.
+  Reporting it from the polyfill, keyed on reads of `message`, was tried and
+  rejected: no read of WebKit's native getter can be observed, so a callback
+  that handles the error with `if (chrome.runtime.lastError) return;` would be
+  reported as unchecked. A false report on correct code was judged worse than
+  no report on code that ignores the error; the handler still logs every
+  failure on the Swift side.
+
+Real `runtime.sendNativeMessage` and `connectNative` calls to native hosts do
+not go through `__detourPolyfillRequest` and keep WebKit's text.
 
 An exception thrown by the callback is rethrown on a fresh task, so it is an
 uncaught error rather than an unhandled rejection.
@@ -377,11 +802,13 @@ uncaught error rather than an unhandled rejection.
 - **There is no push channel into a context.** WebKit offers the host no way
   to call into a worker. Events Detour originates are delivered by one of:
   a claim at context start (`onInstalled`), a parked request that is answered
-  later (`onUpdateAvailable`), a relayed message from a content script
+  later (`onUpdateAvailable`, `notifications.onClicked` / `onClosed` in the
+  background), a relayed message from a content script
   (`webNavigation` history events), or the keep-alive native port. The other
-  polyfill event objects — `idle.onStateChanged`, `notifications.onClicked`
-  and friends, `history.onVisited`, `management.on*` — accept listeners and
-  never fire: nothing calls their `__extensionDispatch…` hooks.
+  polyfill event objects — `idle.onStateChanged`,
+  `notifications.onButtonClicked`, `history.onVisited`, `management.on*` —
+  accept listeners and never fire: nothing calls their `__extensionDispatch…`
+  hooks.
 - `sessions.restore` answers with `tab.id.hashValue`, not the id WebKit uses
   for that tab.
 - Worker `console` output is invisible in Web Inspector for these contexts; it
@@ -397,6 +824,8 @@ uncaught error rather than an unhandled rejection.
 | [ExtensionPolyfillIntegrationTests](../../DetourTests/ExtensionPolyfillIntegrationTests.swift) | A real `WKWebExtensionContext`: what WebKit's wrappers actually do, garbage-collection survival, real origins |
 | [ExtensionPolyfillProfileWiringTests](../../DetourTests/ExtensionPolyfillProfileWiringTests.swift) | The production wiring in `Profile.extensionController`, with no test-side setup: deleting the wiring fails it |
 | [ExtensionHistoryScopeTests](../../DetourTests/ExtensionHistoryScopeTests.swift) | `chrome.history.search` through the same production wiring, one extension in two profiles: isolation, the permission gate, bad arguments and the default range from an extension page and a worker, promise and callback form |
+| [ExtensionNotificationManagerTests](../../DetourTests/ExtensionNotificationManagerTests.swift) | The `notifications` call orderings above against `HeldNotificationCenter`: clear or update while the `add` is in flight, create–clear–create, an `add` answering out of order or failing, another extension's clear; the same extension in another profile (getAll, clear, update, click and close resolution, legacy identifiers); opaque identifiers; `removeAll` and its hooks (Private session end in a `TabStore` of its own, profile deletion) |
+| [ExtensionNotificationOrderingTests](../../DetourTests/ExtensionNotificationOrderingTests.swift) | The same orderings from an extension page and its worker through the production wiring, with the profile's handler on a held center; one extension in two persistent profiles, and in a persistent profile plus the built-in Private profile, sharing one manager, from both transports and in both directions; the Private session ending in the shared store, and unloading the extension from one profile |
 | [ExtensionFaviconScopeTests](../../DetourTests/ExtensionFaviconScopeTests.swift) | `_favicon` through the same wiring: one extension in two profiles, another profile's WebKit host, a tab's handler, the `favicon` permission, the Private profile, what a worker's `fetch` gets, and the removed `favicon.lookup` message from a page and a worker |
 
 A new or changed API needs all three kinds, from both transports; the policy is
@@ -414,6 +843,22 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-23]: Callback-form polyfill APIs must route rejections to runtime.lastError
 [^task-3]: Polyfill stubs for privacy, onAuthRequired, management.setEnabled, getUserSettings
 [^task-138]: chrome.history.search returns history from every profile
+[^task-255]: Extensions: native polyfill errors read differently from the worker and from a page
+[^task-262]: Extensions: polyfill error envelope edge cases (browser.runtime.lastError identity, envelope key collision)
 [^task-152]: favicon.lookup answers from every profile's history, without a permission check
 [^task-153]: chrome.history.search with empty text scans every visit of the profile
 [^chrome-history-api]: Chromium, history_api.cc (HistorySearchFunction)
+[^task-234]: notifications.clear issued while notifications.create is still adding the notification is lost
+[^notification-manager]: ExtensionNotificationManager.swift
+[^task-238]: Extensions: one profile's notifications are visible to and clearable by the same extension in another profile
+[^task-239]: Extensions: the notifications API is available without the notifications permission
+[^task-251]: Extensions: the history and management namespaces exist for extensions without the permission
+[^task-250]: Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions
+[^task-257]: Extensions: management.uninstallSelf and management.getPermissionWarningsByManifest are missing
+[^task-240]: Extensions: notifications.clear and notifications.update diverge from Chrome
+[^task-254]: Extensions: notifications.create(null, options) is treated as create(options) with empty options
+[^chrome-notifications-api]: chrome.notifications API reference
+[^task-247]: Extensions: notifications.onClicked and onClosed are never delivered to the extension
+[^chromium-notifications-clear]: Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)
+[^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared
+[^task-253]: Extensions: Detour never requests notification permission, so extension notifications may never be shown

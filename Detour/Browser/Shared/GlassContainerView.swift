@@ -3,6 +3,21 @@ import AppKit
 class GlassContainerView: NSView {
     let contentView = NSView()
     private var effectView: NSVisualEffectView?
+    private var glassView: NSView?
+
+    /// Tints the glass. Liquid Glass takes its brightness from what is behind
+    /// it, so a palette alone in a transparent panel over a light window reads
+    /// light even in dark mode; a tint that follows the appearance keeps it
+    /// dark there (TASK-193.1). Nil leaves the glass as it is.
+    var tintColor: NSColor? {
+        didSet {
+            if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
+                glass.tintColor = tintColor
+            } else {
+                effectView?.layer?.backgroundColor = tintColor?.cgColor
+            }
+        }
+    }
     private var _cornerRadius: CGFloat
 
     var cornerRadius: CGFloat {
@@ -31,6 +46,7 @@ class GlassContainerView: NSView {
             glass.translatesAutoresizingMaskIntoConstraints = false
             glass.contentView = contentView
             addSubview(glass)
+            glassView = glass
 
             NSLayoutConstraint.activate([
                 glass.topAnchor.constraint(equalTo: topAnchor),

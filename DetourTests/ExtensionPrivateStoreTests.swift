@@ -33,8 +33,7 @@ import WebKit
 ///     delay (the ≥60 s delay is env-gated like TASK-62's long legs);
 ///  3. the negative control that pins the cause — the same setup with
 ///     `hasAccessToPrivateData` never set must *not* deliver the message.
-@MainActor
-final class ExtensionPrivateStoreTests: XCTestCase {
+nonisolated final class ExtensionPrivateStoreTests: XCTestCase {
 
     // MARK: - Fixture bookkeeping
 
@@ -51,9 +50,9 @@ final class ExtensionPrivateStoreTests: XCTestCase {
     /// (and the web process behind the page) down with it, and WebKit traps
     /// when that happens inside an IPC dispatch — the same hazard
     /// `ExtensionOriginTrackingPreventionTests` works around.
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for webView in openWebViews {
             webView.stopLoading()
             webView.loadHTMLString("", baseURL: nil)
@@ -86,13 +85,13 @@ final class ExtensionPrivateStoreTests: XCTestCase {
     /// An incognito profile of its own — a random id, so it is never the
     /// built-in Private profile whose rows other suites share, but the same
     /// `isIncognito` wiring.
-    private func makeIncognitoProfile(_ name: String) -> Profile {
+    @MainActor private func makeIncognitoProfile(_ name: String) -> Profile {
         let profile = Profile(name: name, isIncognito: true)
         createdProfiles.append(profile)
         return profile
     }
 
-    private func makePersistentProfile(_ name: String) -> Profile {
+    @MainActor private func makePersistentProfile(_ name: String) -> Profile {
         let profile = TabStore.shared.addProfile(name: name)
         createdProfiles.append(profile)
         return profile
@@ -123,7 +122,7 @@ final class ExtensionPrivateStoreTests: XCTestCase {
     });
     """
 
-    private func makeProbeExtension(idPrefix: String) async throws -> WebExtension {
+    @MainActor private func makeProbeExtension(idPrefix: String) async throws -> WebExtension {
         let id = "\(idPrefix)-\(UUID().uuidString.prefix(8))"
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-test-\(id)")
@@ -158,7 +157,7 @@ final class ExtensionPrivateStoreTests: XCTestCase {
     /// restores decisions the database already holds, and the fixture saves none
     /// — so without this the worker has no `chrome.storage` to count its starts
     /// in. Profile-independent, and unrelated to which store the pages run in.
-    private func grantRequestedPermissions(of ext: WebExtension, on context: WKWebExtensionContext) {
+    @MainActor private func grantRequestedPermissions(of ext: WebExtension, on context: WKWebExtensionContext) {
         for permission in ext.wkExtension?.requestedPermissions ?? [] {
             context.setPermissionStatus(.grantedExplicitly, for: permission)
         }
@@ -166,7 +165,7 @@ final class ExtensionPrivateStoreTests: XCTestCase {
 
     /// An extension page of the context, built from the controller's own
     /// configuration — the only place a test can talk to the worker from.
-    private func makeExtensionPage(for context: WKWebExtensionContext) async throws -> WKWebView {
+    @MainActor private func makeExtensionPage(for context: WKWebExtensionContext) async throws -> WKWebView {
         let config = try XCTUnwrap(context.webViewConfiguration,
                                    "webViewConfiguration is nil — context not loaded in a controller")
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300),
@@ -186,7 +185,7 @@ final class ExtensionPrivateStoreTests: XCTestCase {
     ///  - `timeout` — the callback never fired;
     ///  - `threw` — the page could not ask at all (no `chrome.runtime`, or the
     ///    script failed), with the error.
-    private struct PingOutcome {
+    @MainActor private struct PingOutcome {
         var outcome: String
         var starts: Int?
         var startsError: String?
@@ -202,7 +201,7 @@ final class ExtensionPrivateStoreTests: XCTestCase {
 
     /// One `askWorker` round trip (`ExtensionTestSupport`), sorted into the
     /// outcomes above.
-    private func ping(_ page: WKWebView, timeout: TimeInterval = 10) async -> PingOutcome {
+    @MainActor private func ping(_ page: WKWebView, timeout: TimeInterval = 10) async -> PingOutcome {
         do {
             let envelope = try await askWorker(from: page, message: ["type": "ping"], timeout: timeout)
             let lastError = envelope["lastError"] as? String
@@ -226,7 +225,7 @@ final class ExtensionPrivateStoreTests: XCTestCase {
     /// only passes a variable through when it is given as `TEST_RUNNER_…`).
     /// Default: a few seconds, which still crosses a worker's idle window often
     /// enough to be worth asserting.
-    private var secondPingDelay: TimeInterval {
+    @MainActor private var secondPingDelay: TimeInterval {
         let environment = ProcessInfo.processInfo.environment
         if let raw = environment["DETOUR_MEASURE_PRIVATE_WORKER_SECONDS"], let seconds = Double(raw) {
             return seconds
@@ -239,7 +238,7 @@ final class ExtensionPrivateStoreTests: XCTestCase {
     /// AC #4, the wiring half: the incognito profile's controller builds its
     /// extension web views on the profile's own non-persistent store, and a
     /// loaded context's configuration carries it.
-    func testIncognitoExtensionPagesUseTheProfilesNonPersistentStore() async throws {
+    @MainActor func testIncognitoExtensionPagesUseTheProfilesNonPersistentStore() async throws {
         let profile = makeIncognitoProfile("Private Store Wiring")
         let pagesStore = profile.extensionController.configuration.webViewConfiguration.websiteDataStore
 
@@ -265,7 +264,7 @@ final class ExtensionPrivateStoreTests: XCTestCase {
 
     /// The other side of the same line: a persistent profile is unchanged — its
     /// pages run in its own identifier-backed store, still not the default one.
-    func testPersistentProfileExtensionPagesStillUseItsOwnStore() async throws {
+    @MainActor func testPersistentProfileExtensionPagesStillUseItsOwnStore() async throws {
         let profile = makePersistentProfile("Private Store Persistent")
         let pagesStore = profile.extensionController.configuration.webViewConfiguration.websiteDataStore
 
@@ -300,7 +299,7 @@ final class ExtensionPrivateStoreTests: XCTestCase {
     /// with its `chrome.storage.local` counter intact across the restart in the
     /// ephemeral store. Which start answers is deliberately not asserted; that
     /// the event arrives is.
-    func testWorkerInAnEphemeralStoreReceivesEventsNowAndAfterADelay() async throws {
+    @MainActor func testWorkerInAnEphemeralStoreReceivesEventsNowAndAfterADelay() async throws {
         let ext = try await makeProbeExtension(idPrefix: "private-store-positive")
         let profile = makeIncognitoProfile("Private Store Positive")
         _ = profile.loadExtensionContext(ext)
@@ -348,7 +347,7 @@ final class ExtensionPrivateStoreTests: XCTestCase {
     /// A page that will not come up is recorded rather than failed: a page
     /// WebKit refuses to dispatch to is no use either way, and the outcome
     /// string says which happened.
-    private func pingManuallyLoadedProbe(
+    @MainActor private func pingManuallyLoadedProbe(
         privateDataAccess: Bool, label: String
     ) async throws -> PingOutcome {
         let ext = try await makeProbeExtension(idPrefix: "private-store-\(label)")
@@ -373,19 +372,17 @@ final class ExtensionPrivateStoreTests: XCTestCase {
             context.loadBackgroundContent { error in
                 if let error { print("private-store \(label): loadBackgroundContent failed: \(error)") }
             }
-            // Polled by hand rather than with `waitUntil`, which fails the test
+            // Polled with `pollUntil` rather than `waitUntil`, which fails the test
             // when it times out: the closed-gate leg *expects* to run out, and
             // needs the last outcome rather than a failure. Long enough that a
             // reachable worker answers many times over — with the gate open it
             // replies in well under a second once it is up.
-            let deadline = Date().addingTimeInterval(20)
-            repeat {
+            // `empty` comes back at once: without the pause between pings the
+            // closed-gate leg would flood the context with messages for 20 s.
+            _ = try await pollUntil(timeout: 20, pollInterval: 0.25) {
                 outcome = await ping(page, timeout: 5)
-                if outcome.answered { break }
-                // `empty` comes back at once: without a pause the closed-gate
-                // leg would flood the context with messages for 20 s.
-                try? await Task.sleep(nanoseconds: 250_000_000)
-            } while Date() < deadline
+                return outcome.answered
+            }
         } catch {
             print("private-store \(label): \(error)")
         }
@@ -404,7 +401,7 @@ final class ExtensionPrivateStoreTests: XCTestCase {
     /// with `ExtensionConsoleLogPublic`; next suspects IndexedDB / Cache Storage
     /// in a non-persistent session, the `_renameOrigin` LastSeenBaseURL
     /// migration, and the relay / native-port setup).
-    func testWithoutPrivateDataAccessTheWorkerNeverHearsTheMessage() async throws {
+    @MainActor func testWithoutPrivateDataAccessTheWorkerNeverHearsTheMessage() async throws {
         let outcome = try await pingManuallyLoadedProbe(privateDataAccess: false, label: "control-closed")
         XCTAssertFalse(outcome.answered,
                        "REFUTES TASK-73's cause: a worker in an ephemeral session answered without "
@@ -418,7 +415,7 @@ final class ExtensionPrivateStoreTests: XCTestCase {
     /// The matched positive for that control: the identical hand-built load with
     /// the flag set does deliver, so the silence above is the flag and nothing
     /// else about loading a context by hand.
-    func testTheSameLoadWithPrivateDataAccessDoesDeliver() async throws {
+    @MainActor func testTheSameLoadWithPrivateDataAccessDoesDeliver() async throws {
         let outcome = try await pingManuallyLoadedProbe(privateDataAccess: true, label: "control-open")
         XCTAssertTrue(outcome.answered,
                       "the only difference from the control is hasAccessToPrivateData — \(outcome.describe)")

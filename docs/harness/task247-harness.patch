@@ -1,0 +1,138 @@
+TASK-247 runtime harness: notifications.onClicked / onClosed reach the API
+Explorer's worker in the running app. Temporary code, never committed to
+Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task247-harness.patch
+    xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    OUT="<scratch dir>"; mkdir -p "$OUT"
+    DETOUR_DATA_DIR=DetourVerify247 DETOUR_VERIFY_DIR="$OUT" DETOUR_REPO="$PWD" \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour -ExtensionConsoleLogPublic YES &
+    # wait for "done" in $OUT/verify.log (about 65 s), then kill that pid
+    git apply -R docs/harness/task247-harness.patch && xcodegen generate
+    # delete the -DetourVerify247 autosave keys from com.detourbrowser.mac and
+    # ~/Library/Application Support/DetourVerify247
+
+Installs a fake notification center as `shared` (the Debug build's permission
+is not asked for and the user's Notification Center is never touched), installs
+TestExtensions/api-explorer, waits for its worker to park, creates three
+notifications through the manager, then calls handleResponse with their
+delivered identifiers (click, dismiss) and clears the third. It logs the
+owner's event channel after each step, idles 50 s so WebKit unloads the
+worker, and clicks again: a new incarnation must take the event. The worker's
+"[API Explorer] notifications.onClicked/onClosed" lines are in the unified log
+(category extension-polyfill).
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 68ac340..71ec8a1 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -149,6 +149,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask247HarnessIfRequested()   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task247Harness.swift b/Detour/App/Task247Harness.swift
+new file mode 100644
+index 0000000..015285b
+--- /dev/null
++++ b/Detour/App/Task247Harness.swift
+@@ -0,0 +1,93 @@
++// TEMP TASK-247 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import UserNotifications
++import WebKit
++
++/// Answers every add at once and never touches the system center.
++final class Task247HarnessCenter: ExtensionNotificationCenter {
++    var added: [String] = []
++    func add(_ request: UNNotificationRequest) async throws { added.append(request.identifier) }
++    func removeNotifications(withIdentifiers identifiers: [String]) {}
++    func authorizationStatus() async -> ExtensionNotificationAuthorization { .authorized }
++    func requestAuthorization() async -> Bool { true }
++    func deliveredIdentifiers() async -> [String] { [] }
++    func pendingIdentifiers() async -> [String] { [] }
++}
++
++extension AppDelegate {
++    func runTask247HarnessIfRequested() {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let repo = ProcessInfo.processInfo.environment["DETOUR_REPO"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.2f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        func pause(_ seconds: Double) async { try? await Task.sleep(for: .seconds(seconds)) }
++
++        let center = Task247HarnessCenter()
++        ExtensionNotificationManager.installSharedForTesting(center: center)
++        let manager = ExtensionNotificationManager.shared
++        Task { @MainActor in
++            await pause(3)
++            let ext: WebExtension
++            do {
++                ext = try ExtensionManager.shared.install(
++                    from: URL(fileURLWithPath: repo).appendingPathComponent("TestExtensions/api-explorer"))
++            } catch { return log("install FAIL \(error)") }
++            guard let profile = TabStore.shared.profiles.first(where: { !$0.isIncognito }) else { return log("no profile") }
++            let owner = ExtensionNotificationManager.Owner(profileID: profile.id, extensionID: ext.id)
++            log("installed api-explorer id=\(ext.id) in profile \(profile.name)")
++            @MainActor func state() -> String {
++                let channel = manager.eventChannelForTesting(owner)
++                return "parked=\(String(describing: channel.parkedInstance ?? nil)) backlog=\(channel.backlog.map { "\($0.kind):\($0.notificationID):\($0.byUser)" }) listens=\(channel.listens)"
++            }
++            for _ in 0..<40 {
++                if manager.eventChannelForTesting(owner).parkedInstance != nil { break }
++                profile.extensionContext(for: ext.id)?.loadBackgroundContent { _ in }
++                await pause(0.5)
++            }
++            log("after start: \(state())")
++            let firstInstance = manager.eventChannelForTesting(owner).parkedInstance ?? nil
++
++            for id in ["h-click", "h-dismiss", "h-clear"] {
++                manager.create(owner: owner, notificationID: id, options: ["title": id, "message": "harness"]) { _ in }
++            }
++            await pause(1)
++            log("created: getAll=\(manager.getAll(owner: owner).keys.sorted()) added=\(center.added.count)")
++
++            manager.handleResponse(identifier: manager.identifier(for: owner, notificationID: "h-click") ?? "",
++                                   action: UNNotificationDefaultActionIdentifier)
++            await pause(2)
++            log("after click: \(state())")
++
++            manager.handleResponse(identifier: manager.identifier(for: owner, notificationID: "h-dismiss") ?? "",
++                                   action: UNNotificationDismissActionIdentifier)
++            await pause(2)
++            log("after dismiss: \(state()) getAll=\(manager.getAll(owner: owner).keys.sorted())")
++
++            manager.clear(owner: owner, notificationID: "h-clear") { log("clear answered \($0)") }
++            await pause(2)
++            log("after clear: \(state())")
++
++            log("idle 50 s so WebKit can unload the worker")
++            await pause(50)
++            log("before late click: \(state())")
++            manager.handleResponse(identifier: manager.identifier(for: owner, notificationID: "h-click") ?? "",
++                                   action: UNNotificationDefaultActionIdentifier)
++            for _ in 0..<40 {
++                let channel = manager.eventChannelForTesting(owner)
++                if channel.backlog.isEmpty, let parked = channel.parkedInstance ?? nil, parked != firstInstance { break }
++                await pause(0.5)
++            }
++            log("after late click: \(state()) firstInstance=\(firstInstance ?? "nil")")
++            log("done")
++        }
++    }
++}
++#endif

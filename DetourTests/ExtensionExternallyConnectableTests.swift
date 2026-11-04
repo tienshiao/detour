@@ -20,10 +20,9 @@ import WebKit
 ///
 /// 127.0.0.1 and localhost stand in for two sites: the server listens on the
 /// loopback interface and a match pattern's host ignores the port.
-@MainActor
-final class ExtensionExternallyConnectableTests: XCTestCase {
+nonisolated final class ExtensionExternallyConnectableTests: XCTestCase {
 
-    private static var retainedProfiles: [Profile] = []
+    @MainActor private static var retainedProfiles: [Profile] = []
     private var tempDirs: [URL] = []
     private var registeredExtensionIDs: [String] = []
     private var createdProfiles: [Profile] = []
@@ -35,9 +34,9 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     private var port: UInt16 = 0
     private var previousLastActiveSpaceID: UUID?
 
-    private static let noReceiver = "Could not establish connection. Receiving end does not exist."
+    @MainActor private static let noReceiver = "Could not establish connection. Receiving end does not exist."
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         previousLastActiveSpaceID = TabStore.shared.lastActiveSpaceID
         server = try LoopbackHTTPServer(routes: [
@@ -91,7 +90,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
         port = try await server.start()
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for page in pages { page.stopLoading() }
         pages.removeAll()
         for id in createdSpaceIDs {
@@ -134,15 +133,15 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     // MARK: - Fixture extensions
 
     /// An id shaped like Chrome's: 32 letters a–p.
-    private func chromeStyleID() -> String {
+    @MainActor private func chromeStyleID() -> String {
         String((0..<32).map { _ in "abcdefghijklmnop".randomElement()! })
     }
 
-    private enum Listener { case worker, page, none }
+    @MainActor private enum Listener { case worker, page, none }
 
     /// What every receiver does with an external message or port: record it,
     /// and answer with who it is, what it got and how the sender looked.
-    private static func receiverJS(name: String) -> String {
+    @MainActor private static func receiverJS(name: String) -> String {
         """
         const NAME = '\(name)';
         const received = [];
@@ -175,7 +174,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// which of them listens on `onMessageExternal` / `onConnectExternal`; the
     /// worker always answers `received` (what reached this extension's
     /// listeners in the worker) and `tabURL` (the URL of a tab id) for the test.
-    private func makeExtension(name: String, connectable: [String]?,
+    @MainActor private func makeExtension(name: String, connectable: [String]?,
                                hostPermissions: [String] = ["<all_urls>"],
                                listener: Listener = .worker) async throws -> WebExtension {
         let id = chromeStyleID()
@@ -224,20 +223,21 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     }
 
     /// One extension loaded into one profile: its page and its started worker.
-    private struct Loaded {
+    @MainActor private struct Loaded {
         let ext: WebExtension
         let context: WKWebExtensionContext
         let page: WKWebView
     }
 
-    private func load(_ ext: WebExtension, in profile: Profile) async throws -> Loaded {
+    @MainActor private func load(_ ext: WebExtension, in profile: Profile) async throws -> Loaded {
         let context = try loadTestContext(ext, in: profile)
         let config = try XCTUnwrap(context.webViewConfiguration)
         let page = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
         pages.append(page)
         try await loadAndWait(page, URLRequest(url: context.baseURL.appendingPathComponent("test.html")))
-        context.loadBackgroundContent { error in
-            if let error { print("loadBackgroundContent failed: \(error)") }
+        // Started, not awaited: the test waits for the worker itself.
+        Task {
+            do { try await context.loadBackgroundContent() } catch { print("loadBackgroundContent failed: \(error)") }
         }
         let loaded = Loaded(ext: ext, context: context, page: page)
         try await waitUntil("the worker of \(ext.manifest.name) to answer", timeout: 30) {
@@ -246,11 +246,11 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
         return loaded
     }
 
-    private struct WorkerSilent: Error {}
+    @MainActor private struct WorkerSilent: Error {}
 
     /// Everything that reached the `onMessageExternal` / `onConnectExternal`
     /// listeners in `loaded`'s worker so far.
-    private func receivedByWorker(_ loaded: Loaded) async throws -> [[String: Any]] {
+    @MainActor private func receivedByWorker(_ loaded: Loaded) async throws -> [[String: Any]] {
         let asked = try await askWorker(from: loaded.page, message: ["type": "received"], timeout: 5)
         guard let reply = asked["reply"] as? [String: Any],
               let received = reply["received"] as? [[String: Any]] else { throw WorkerSilent() }
@@ -259,7 +259,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
 
     // MARK: - Profiles, spaces and tabs
 
-    private func makeProfile(_ name: String) -> (Profile, Space) {
+    @MainActor private func makeProfile(_ name: String) -> (Profile, Space) {
         let profile = TabStore.shared.addProfile(name: "EC \(name) \(UUID().uuidString.prefix(4))")
         createdProfiles.append(profile)
         _ = profile.extensionController
@@ -268,10 +268,10 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
         return (profile, space)
     }
 
-    private func url(_ host: String, _ path: String = "/page") -> String { "http://\(host):\(port)\(path)" }
+    @MainActor private func url(_ host: String, _ path: String = "/page") -> String { "http://\(host):\(port)\(path)" }
 
     /// Opens a tab the way the app does and waits for its page.
-    private func openTab(_ url: String, in space: Space) async throws -> WKWebView {
+    @MainActor private func openTab(_ url: String, in space: Space) async throws -> WKWebView {
         let tab = TabStore.shared.addTab(in: space, url: URL(string: url)!)
         let view = try XCTUnwrap(tab.webView, "a tab added through the store has a web view")
         try await waitUntil("the tab to load \(url)", timeout: 30, pollInterval: 0.25) {
@@ -282,7 +282,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
 
     // MARK: - Running page script
 
-    private func evaluate(_ view: WKWebView, _ body: String, _ arguments: [String: Any] = [:],
+    @MainActor private func evaluate(_ view: WKWebView, _ body: String, _ arguments: [String: Any] = [:],
                           file: StaticString = #filePath, line: UInt = #line) async throws -> [String: Any] {
         let raw = try await view.callAsyncJavaScript(body, arguments: arguments, contentWorld: .page)
         let json = try XCTUnwrap(raw as? String, "expected a JSON string from the page", file: file, line: line)
@@ -290,7 +290,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     }
 
     /// What a page sees of the two globals.
-    private func globals(_ view: WKWebView) async throws -> [String: Any] {
+    @MainActor private func globals(_ view: WKWebView) async throws -> [String: Any] {
         try await evaluate(view, """
             const c = globalThis.chrome;
             return JSON.stringify({
@@ -311,7 +311,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// the callback saw: `{ argc, reply, lastError, returned, lastErrorAfter }`,
     /// or `{ missing: true }` when the page has no `chrome.runtime`, `{ threw }`
     /// when the call itself threw, `{ timedOut: true }` when it never ran.
-    private func sendWithCallback(_ view: WKWebView, to id: String, _ message: [String: Any],
+    @MainActor private func sendWithCallback(_ view: WKWebView, to id: String, _ message: [String: Any],
                                   options: [String: Any]? = nil) async throws -> [String: Any] {
         var arguments: [String: Any] = ["id": id, "message": message]
         if let options { arguments["options"] = options }
@@ -344,7 +344,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
 
     /// The promise form: `{ settled: 'resolved' | 'rejected', value, message }`,
     /// or `{ missing: true }` / `{ threw }`.
-    private func sendWithPromise(_ view: WKWebView, to id: String, _ message: [String: Any]) async throws -> [String: Any] {
+    @MainActor private func sendWithPromise(_ view: WKWebView, to id: String, _ message: [String: Any]) async throws -> [String: Any] {
         try await evaluate(view, """
             if (typeof chrome === 'undefined' || !chrome.runtime) return JSON.stringify({ missing: true });
             let promise;
@@ -365,7 +365,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// `chrome.runtime.connect(id, { name })`, one message posted, and what
     /// happened within `wait` seconds: `{ events: [...], name }`. An event is
     /// `{ message }` or `{ disconnect: true, lastError, samePort }`.
-    private func connect(_ view: WKWebView, to id: String, name: String = "test-port",
+    @MainActor private func connect(_ view: WKWebView, to id: String, name: String = "test-port",
                          post: [String: Any] = ["hi": 1], wait: TimeInterval = 4) async throws -> [String: Any] {
         try await evaluate(view, """
             if (typeof chrome === 'undefined' || !chrome.runtime) return JSON.stringify({ missing: true });
@@ -393,7 +393,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
             """, ["id": id, "name": name, "post": post, "waitMS": Int(wait * 1000)])
     }
 
-    private func assertFailsLikeChrome(_ view: WKWebView, to id: String, _ what: String,
+    @MainActor private func assertFailsLikeChrome(_ view: WKWebView, to id: String, _ what: String,
                                        file: StaticString = #filePath, line: UInt = #line) async throws {
         let viaCallback = try await sendWithCallback(view, to: id, ["type": "hello", "via": "callback"])
         XCTAssertEqual(viaCallback["lastError"] as? String, Self.noReceiver,
@@ -415,7 +415,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// (id, message)` reaches `runtime.onMessageExternal` in the service worker
     /// with the page's origin, URL and tab, and the reply comes back — callback
     /// form, promise form, an asynchronous reply, and with an options argument.
-    func testListedPageReachesOnMessageExternalInTheWorkerAndGetsTheReply() async throws {
+    @MainActor func testListedPageReachesOnMessageExternalInTheWorkerAndGetsTheReply() async throws {
         let (profile, space) = makeProfile("positive")
         let ext = try await makeExtension(name: "A", connectable: ["http://127.0.0.1/*"])
         let loaded = try await load(ext, in: profile)
@@ -469,7 +469,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
 
     /// POSITIVE, the second receiver: a listener in an open extension *page*
     /// (not the worker) is reached the same way.
-    func testListedPageReachesOnMessageExternalInAnExtensionPage() async throws {
+    @MainActor func testListedPageReachesOnMessageExternalInAnExtensionPage() async throws {
         let (profile, space) = makeProfile("page-listener")
         let ext = try await makeExtension(name: "P", connectable: ["http://127.0.0.1/*"], listener: .page)
         let loaded = try await load(ext, in: profile)
@@ -489,7 +489,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// POSITIVE: `chrome.runtime.connect(id, { name })` opens a port to
     /// `runtime.onConnectExternal`, messages go both ways, and a disconnect by
     /// the extension is reported without an error.
-    func testListedPageConnectsToOnConnectExternal() async throws {
+    @MainActor func testListedPageConnectsToOnConnectExternal() async throws {
         let (profile, space) = makeProfile("connect")
         let ext = try await makeExtension(name: "A", connectable: ["http://127.0.0.1/*"])
         let loaded = try await load(ext, in: profile)
@@ -530,7 +530,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// POSITIVE: a listed page in a *frame* gets `chrome.runtime` too, even
     /// under a top page that is not listed, and the extension sees the frame as
     /// the sender. (The top page gets nothing.)
-    func testListedFrameUnderAnUnlistedPageReachesTheExtension() async throws {
+    @MainActor func testListedFrameUnderAnUnlistedPageReachesTheExtension() async throws {
         let (profile, space) = makeProfile("frame")
         let ext = try await makeExtension(name: "A", connectable: ["http://127.0.0.1/*"])
         _ = try await load(ext, in: profile)
@@ -556,7 +556,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// NEGATIVE: with an extension that lists another site, with one that lists
     /// nothing, and with no extension at all, a page gets no `chrome` from
     /// Detour — while WebKit's own `browser.runtime` is there regardless.
-    func testPageNoEnabledExtensionListsGetsNoChromeRuntime() async throws {
+    @MainActor func testPageNoEnabledExtensionListsGetsNoChromeRuntime() async throws {
         let (profile, space) = makeProfile("unlisted")
         let before = try await openTab(url("127.0.0.1", "/other"), in: space)
         let nothingLoaded = try await globals(before)
@@ -590,7 +590,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
 
     /// NEGATIVE: a path pattern is honoured — the same host, another path, no
     /// `chrome.runtime`.
-    func testPathOfThePatternIsHonoured() async throws {
+    @MainActor func testPathOfThePatternIsHonoured() async throws {
         let (profile, space) = makeProfile("path")
         let ext = try await makeExtension(name: "A", connectable: ["http://127.0.0.1/page*"])
         _ = try await load(ext, in: profile)
@@ -604,7 +604,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// same-document navigation to a path the pattern does not cover, the page
     /// still has `chrome.runtime`, and WebKit — which matches the frame's URL
     /// for every message — delivers nothing and reports nothing.
-    func testSameDocumentNavigationOffThePatternIsRefusedByWebKit() async throws {
+    @MainActor func testSameDocumentNavigationOffThePatternIsRefusedByWebKit() async throws {
         let (profile, space) = makeProfile("pushstate")
         let ext = try await makeExtension(name: "A", connectable: ["http://127.0.0.1/page*"])
         let loaded = try await load(ext, in: profile)
@@ -627,7 +627,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// NEGATIVE: an id that is not installed fails with Chrome's error —
     /// `runtime.lastError` in the callback, a rejection from the promise, an
     /// `onDisconnect` with `lastError` for `connect` — and reaches no extension.
-    func testMessageToAnIDThatIsNotInstalledFailsLikeChrome() async throws {
+    @MainActor func testMessageToAnIDThatIsNotInstalledFailsLikeChrome() async throws {
         let (profile, space) = makeProfile("unknown-id")
         let ext = try await makeExtension(name: "A", connectable: ["http://127.0.0.1/*"])
         let loaded = try await load(ext, in: profile)
@@ -652,7 +652,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// NEGATIVE: an installed, enabled extension that does not list this page
     /// (it lists another host, or nothing) is not reachable from it, and gets
     /// nothing.
-    func testMessageToAnExtensionThatDoesNotListThePageFailsLikeChrome() async throws {
+    @MainActor func testMessageToAnExtensionThatDoesNotListThePageFailsLikeChrome() async throws {
         let (profile, space) = makeProfile("not-listed")
         let listsLoopback = try await load(try await makeExtension(name: "A", connectable: ["http://127.0.0.1/*"]), in: profile)
         let listsLocalhost = try await load(try await makeExtension(name: "B", connectable: ["http://localhost/*"]), in: profile)
@@ -679,7 +679,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// is not reachable from a listed page in another — neither where another
     /// extension lists that page (Chrome's error) nor where none does (no
     /// `chrome.runtime` at all).
-    func testExtensionNotEnabledInThePagesProfileIsNotReachable() async throws {
+    @MainActor func testExtensionNotEnabledInThePagesProfileIsNotReachable() async throws {
         let (homeProfile, homeSpace) = makeProfile("home")
         let (otherProfile, otherSpace) = makeProfile("other")
         let (emptyProfile, emptySpace) = makeProfile("empty")
@@ -714,7 +714,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// keeps its `chrome.runtime` and gets Chrome's error, and from a page
     /// loaded afterwards, which gets no `chrome.runtime`. Enabling it again
     /// makes both work again.
-    func testDisablingTheExtensionMakesItUnreachableAndEnablingBringsItBack() async throws {
+    @MainActor func testDisablingTheExtensionMakesItUnreachableAndEnablingBringsItBack() async throws {
         let (profile, space) = makeProfile("disable")
         let ext = try await makeExtension(name: "A", connectable: ["http://127.0.0.1/*"])
         _ = try await load(ext, in: profile)
@@ -783,13 +783,13 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
                       "Detour's own content-world scripts are still installed")
     }
 
-    private func pageWorldMarker(_ view: WKWebView) async throws -> String? {
+    @MainActor private func pageWorldMarker(_ view: WKWebView) async throws -> String? {
         try await view.callAsyncJavaScript("return document.documentElement.dataset.detourTestPage || null;",
                                            contentWorld: .page) as? String
     }
 
     /// The argument forms Chrome refuses from a web page: no extension id.
-    func testSendMessageAndConnectWithoutAnExtensionIDThrow() async throws {
+    @MainActor func testSendMessageAndConnectWithoutAnExtensionIDThrow() async throws {
         let (profile, space) = makeProfile("arguments")
         let ext = try await makeExtension(name: "A", connectable: ["http://127.0.0.1/*"])
         let loaded = try await load(ext, in: profile)
@@ -819,7 +819,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// A page that defines `window.chrome` itself keeps exactly what it
     /// defined: an assignment replaces Detour's object, an extension of it
     /// keeps both, and a lexical `let chrome` is not a redeclaration error.
-    func testPagesOwnChromeIsNotClobbered() async throws {
+    @MainActor func testPagesOwnChromeIsNotClobbered() async throws {
         let (profile, space) = makeProfile("own-chrome")
         let ext = try await makeExtension(name: "A", connectable: ["http://127.0.0.1/*"])
         _ = try await load(ext, in: profile)
@@ -861,7 +861,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// scripts are what must keep working: one declared in the manifest and
     /// one the worker registers with `scripting.registerContentScripts`. Each
     /// marks the document and relays a page `postMessage` to the worker.
-    private func makeContentScriptExtension() async throws -> WebExtension {
+    @MainActor private func makeContentScriptExtension() async throws -> WebExtension {
         let id = chromeStyleID()
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("detour-test-\(id)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -930,7 +930,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
 
     /// What the two content scripts did in the page `view` shows now: whether
     /// each marked the document, and what the worker answered each through it.
-    private func contentScriptState(_ view: WKWebView, n: Int) async throws -> [String: Any] {
+    @MainActor private func contentScriptState(_ view: WKWebView, n: Int) async throws -> [String: Any] {
         try await evaluate(view, """
             const ask = (which) => new Promise((resolve) => {
                 const id = which + ':' + Math.random();
@@ -955,7 +955,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
             """, ["n": n])
     }
 
-    private func assertContentScriptsWork(_ view: WKWebView, n: Int, _ when: String,
+    @MainActor private func assertContentScriptsWork(_ view: WKWebView, n: Int, _ when: String,
                                           file: StaticString = #filePath, line: UInt = #line) async throws {
         // A content script at document_end may land a moment after the load ends.
         try await waitUntil("the content scripts to mark the page \(when)", timeout: 10, file: file, line: line) {
@@ -977,14 +977,14 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
                        "\(when): the registered content script must still reach its worker: \(state)", file: file, line: line)
     }
 
-    private func navigate(_ view: WKWebView, to target: String) async throws {
+    @MainActor private func navigate(_ view: WKWebView, to target: String) async throws {
         view.load(URLRequest(url: URL(string: target)!))
         try await waitUntil("the tab to load \(target)", timeout: 30, pollInterval: 0.25) {
             !view.isLoading && view.url?.absoluteString == target
         }
     }
 
-    private func reload(_ view: WKWebView) async throws {
+    @MainActor private func reload(_ view: WKWebView) async throws {
         let marker = "reload-\(UUID().uuidString)"
         _ = try await view.callAsyncJavaScript("window.__beforeReload = marker; return true;", arguments: ["marker": marker], contentWorld: .page)
         view.reload()
@@ -998,7 +998,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// The scripts that are on `view`'s content controller more than once
     /// (the same script object, or the same source), by the start of their
     /// source, with how often.
-    private func duplicatedScripts(_ view: WKWebView) -> [String: Int] {
+    @MainActor private func duplicatedScripts(_ view: WKWebView) -> [String: Int] {
         var counts: [String: Int] = [:]
         for script in view.configuration.userContentController.userScripts {
             counts[script.source, default: 0] += 1
@@ -1007,7 +1007,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
                           uniquingKeysWith: +)
     }
 
-    private func shimCount(_ view: WKWebView) -> Int {
+    @MainActor private func shimCount(_ view: WKWebView) -> Int {
         view.configuration.userContentController.userScripts
             .filter { $0.source.hasPrefix(ExternallyConnectable.scriptMarker) }.count
     }
@@ -1021,7 +1021,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// — running in that tab's later documents and still talking to their
     /// worker. If this fails, every extension's content scripts die in open
     /// tabs whenever any listing extension is toggled.
-    func testOtherExtensionsContentScriptsSurviveTheScriptReplacement() async throws {
+    @MainActor func testOtherExtensionsContentScriptsSurviveTheScriptReplacement() async throws {
         let (profile, space) = makeProfile("content-scripts")
         let contentScripts = try await makeContentScriptExtension()
         let loadedCS = try await load(contentScripts, in: profile)
@@ -1089,7 +1089,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// The Private profile follows the same rule: a context loaded there (the
     /// user allowed the extension in Private) is reachable from a listed page
     /// in a Private tab; without it the page gets nothing.
-    func testPrivateTabReachesAnExtensionLoadedInPrivateOnly() async throws {
+    @MainActor func testPrivateTabReachesAnExtensionLoadedInPrivateOnly() async throws {
         let space = TabStore.shared.addIncognitoSpace()
         incognitoSpaceIDs.append(space.id)
         let profile = try XCTUnwrap(space.profile)
@@ -1116,7 +1116,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// deliver to — unknown, not listing the page, not loaded — with
     /// `undefined` and no error. If this starts failing loudly by itself, the
     /// shim's own check may no longer be needed.
-    func testCanaryWebKitAnswersARefusedMessageWithUndefined() async throws {
+    @MainActor func testCanaryWebKitAnswersARefusedMessageWithUndefined() async throws {
         let (profile, space) = makeProfile("canary")
         let listsLocalhost = try await load(try await makeExtension(name: "B", connectable: ["http://localhost/*"]), in: profile)
         let view = try await openTab(url("127.0.0.1"), in: space)
@@ -1139,7 +1139,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// (Chrome reports "Receiving end does not exist"), and reports the port
     /// it could not connect as `port.error`, which the shim turns into
     /// `runtime.lastError` in `onDisconnect`.
-    func testCanaryListedExtensionWithoutAListener() async throws {
+    @MainActor func testCanaryListedExtensionWithoutAListener() async throws {
         let (profile, space) = makeProfile("no-listener")
         let ext = try await makeExtension(name: "Q", connectable: ["http://127.0.0.1/*"], listener: .none)
         _ = try await load(ext, in: profile)
@@ -1165,7 +1165,7 @@ final class ExtensionExternallyConnectableTests: XCTestCase {
     /// `chrome.runtime`, and the message is answered with nothing (no reply, no
     /// `lastError`). If this test fails because the reply arrives, WebKit
     /// dropped the requirement and the limit can come out of the docs.
-    func testCanaryWebKitNeedsHostAccessToThePage() async throws {
+    @MainActor func testCanaryWebKitNeedsHostAccessToThePage() async throws {
         let (profile, space) = makeProfile("no-access")
         let ext = try await makeExtension(name: "D", connectable: ["http://127.0.0.1/*"], hostPermissions: [])
         let loaded = try await load(ext, in: profile)

@@ -21,9 +21,11 @@ extension ExtensionPolyfillHandler {
                                 sender: PolyfillSender, senderWebView: WKWebView?,
                                 replyHandler: @escaping (Any?, String?) -> Void) {
         // WebKit does not know the permission (it is absent from
-        // `WKWebExtension.requestedPermissions`), so the manifest is the gate —
-        // here as in the polyfill, which defines no `chrome.sidePanel` without it.
-        guard hasPermission("sidePanel", extensionID: extensionID) else {
+        // `WKWebExtension.requestedPermissions`), so the manifest — and a
+        // denial in this profile's context — is the gate, as for the other
+        // polyfilled APIs; the polyfill defines no `chrome.sidePanel` without
+        // the manifest entry.
+        guard permissionRefusal("sidePanel", extensionID: extensionID) == nil else {
             replyHandler(nil, Self.sidePanelPermissionRefusal)
             return
         }

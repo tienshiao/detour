@@ -34,6 +34,11 @@ class DraggableTableView: NSTableView {
     /// it — the page, unless something the click opened already has it.
     var onReleaseKeyboardFocus: (() -> Void)?
 
+    /// Opt-Cmd-click on a row (TASK-193.5), with the table point: true when
+    /// the sidebar opened a Quick Detour copy of the row's tab, so the click
+    /// selects nothing.
+    var onQuickDetourClick: ((_ row: Int, _ point: NSPoint) -> Bool)?
+
     /// Ends a rename in one of the rows (committing it, as any loss of focus
     /// does) and gives the keyboard up.
     func releaseKeyboardFocus() {
@@ -93,7 +98,12 @@ class DraggableTableView: NSTableView {
         // The list used to end a rename by taking the focus the click gave it.
         endRename()
         let clickedRow = row(at: point)
-        if clickedRow >= 0 {
+        if clickedRow >= 0,
+           QuickDetour.isQuickDetourClick(event.modifierFlags,
+                                          enabled: QuickDetourSettings.shared.isOptionCommandClickEnabled),
+           onQuickDetourClick?(clickedRow, point) == true {
+            // The tab stays as it was: not selected, not toggled.
+        } else if clickedRow >= 0 {
             super.mouseDown(with: event)
         } else {
             window?.performDrag(with: event)

@@ -7,18 +7,17 @@ import WebKit
 /// sends over the bridge and in which order, and how a call settles — against
 /// a recording bridge. WebKit's wrappers, the tab id bridge and the panels
 /// themselves are `ExtensionSidePanelTests`' business.
-@MainActor
-final class ExtensionSidePanelPolyfillTests: XCTestCase {
+nonisolated final class ExtensionSidePanelPolyfillTests: XCTestCase {
 
     private var bridge: RecordingPolyfillBridge!
     private var webViews: [WKWebView] = []
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         bridge = RecordingPolyfillBridge()
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         for webView in webViews {
             webView.configuration.userContentController.removeScriptMessageHandler(
                 forName: ExtensionPolyfillHandler.handlerName, contentWorld: .page)
@@ -49,7 +48,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
     };
     """
 
-    private func makeWebView(permissions: [String] = ["sidePanel"], shim: String = "") async throws -> WKWebView {
+    @MainActor private func makeWebView(permissions: [String] = ["sidePanel"], shim: String = "") async throws -> WKWebView {
         let webView = try await makeRecordingPolyfillWebView(
             bridge: bridge, manifest: ["manifest_version": 3, "permissions": permissions],
             shim: shim, afterPolyfill: Self.fakes)
@@ -58,13 +57,13 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         return webView
     }
 
-    private func dict(_ body: String, in webView: WKWebView) async throws -> [String: Any] {
+    @MainActor private func dict(_ body: String, in webView: WKWebView) async throws -> [String: Any] {
         let value = try await evaluateJSON(body, in: webView)
         return try XCTUnwrap(value as? [String: Any], "expected an object, got \(value)")
     }
 
     /// How a promise-form call settled.
-    private func outcome(_ call: String, in webView: WKWebView) async throws -> (resolved: Any?, rejected: String?) {
+    @MainActor private func outcome(_ call: String, in webView: WKWebView) async throws -> (resolved: Any?, rejected: String?) {
         let result = try await dict("""
             try {
                 const value = await (\(call));
@@ -79,7 +78,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
 
     // MARK: What is defined
 
-    func testNothingIsDefinedWithoutThePermission() async throws {
+    @MainActor func testNothingIsDefinedWithoutThePermission() async throws {
         let webView = try await makeWebView(permissions: ["storage", "tabs"])
         let state = try await dict("""
             return { type: typeof chrome.sidePanel, browserType: typeof browser.sidePanel,
@@ -94,7 +93,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         XCTAssertEqual(state["closeWrapped"] as? Bool, false, "window.close is only wrapped for an extension that can have a panel")
     }
 
-    func testTheNamespaceIsDefinedWithThePermission() async throws {
+    @MainActor func testTheNamespaceIsDefinedWithThePermission() async throws {
         let webView = try await makeWebView()
         let state = try await dict("""
             return { keys: Object.keys(chrome.sidePanel).sort(),
@@ -119,7 +118,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         XCTAssertTrue(bridge.calls.isEmpty, "defining the namespace asks Detour nothing")
     }
 
-    func testAnExistingNamespaceIsLeftAlone() async throws {
+    @MainActor func testAnExistingNamespaceIsLeftAlone() async throws {
         let webView = try await makeWebView(shim: """
             globalThis.chrome.sidePanel = { open: function() { return 'theirs'; } };
             """)
@@ -132,7 +131,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         XCTAssertEqual(state["keys"] as? [String], ["open"])
     }
 
-    func testASecondRunOfThePolyfillKeepsTheNamespace() async throws {
+    @MainActor func testASecondRunOfThePolyfillKeepsTheNamespace() async throws {
         let webView = try await makeWebView()
         let state = try await dict("""
             const before = chrome.sidePanel;
@@ -148,7 +147,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
 
     // MARK: setOptions / getOptions
 
-    func testSetOptionsSendsTheTabsHandleAndOnlyTheFieldsGiven() async throws {
+    @MainActor func testSetOptionsSendsTheTabsHandleAndOnlyTheFieldsGiven() async throws {
         let webView = try await makeWebView()
         let first = try await outcome("chrome.sidePanel.setOptions({ tabId: 5, path: 'p.html?tabId=5', enabled: true })", in: webView)
         XCTAssertNil(first.rejected)
@@ -167,7 +166,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         XCTAssertEqual(Set(calls[2].params.keys), ["path"])
     }
 
-    func testGetOptionsNamesTheTabOnlyWhenItHasOptionsOfItsOwn() async throws {
+    @MainActor func testGetOptionsNamesTheTabOnlyWhenItHasOptionsOfItsOwn() async throws {
         let webView = try await makeWebView()
         bridge.replies["sidePanel.getOptions"] = { call in
             call.params["tabHandle"] as? Int == 1005
@@ -184,7 +183,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
 
     // MARK: open / close
 
-    func testOpenNeedsATabOrAWindow() async throws {
+    @MainActor func testOpenNeedsATabOrAWindow() async throws {
         let webView = try await makeWebView()
         let none = try await outcome("chrome.sidePanel.open({})", in: webView)
         XCTAssertEqual(none.rejected, "At least one of \"tabId\" and \"windowId\" must be provided")
@@ -195,7 +194,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         XCTAssertTrue(bridge.calls.isEmpty, "a call that cannot be made is not sent")
     }
 
-    func testOpenForATabSendsItsHandle() async throws {
+    @MainActor func testOpenForATabSendsItsHandle() async throws {
         let webView = try await makeWebView()
         let opened = try await outcome("chrome.sidePanel.open({ tabId: 5 })", in: webView)
         XCTAssertNil(opened.rejected)
@@ -206,14 +205,14 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         XCTAssertNil(call.params["windowTabHandle"])
     }
 
-    func testOpenForAnUnknownTabFailsWithChromesError() async throws {
+    @MainActor func testOpenForAnUnknownTabFailsWithChromesError() async throws {
         let webView = try await makeWebView()
         let opened = try await outcome("chrome.sidePanel.open({ tabId: 404 })", in: webView)
         XCTAssertEqual(opened.rejected, "No tab with id: 404.")
         XCTAssertTrue(bridge.calls.isEmpty)
     }
 
-    func testAWindowIsNamedByItsActiveTab() async throws {
+    @MainActor func testAWindowIsNamedByItsActiveTab() async throws {
         let webView = try await makeWebView()
         _ = try await outcome("chrome.sidePanel.open({ windowId: 7 })", in: webView)
         let call = try XCTUnwrap(bridge.calls(ofType: "sidePanel.open").first)
@@ -222,7 +221,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         XCTAssertNil(call.params["tabHandle"])
     }
 
-    func testAWindowWithNoTabIsSentAsAWindowDetourMustFind() async throws {
+    @MainActor func testAWindowWithNoTabIsSentAsAWindowDetourMustFind() async throws {
         let webView = try await makeWebView()
         _ = try await outcome("chrome.sidePanel.open({ windowId: 8 })", in: webView)
         let call = try XCTUnwrap(bridge.calls(ofType: "sidePanel.open").first)
@@ -230,7 +229,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         XCTAssertNil(call.params["windowTabHandle"])
     }
 
-    func testAnUnknownWindowAndATabOfAnotherWindowAreRefused() async throws {
+    @MainActor func testAnUnknownWindowAndATabOfAnotherWindowAreRefused() async throws {
         let webView = try await makeWebView()
         let unknown = try await outcome("chrome.sidePanel.open({ windowId: 9 })", in: webView)
         XCTAssertEqual(unknown.rejected, "No window with id: 9.")
@@ -245,7 +244,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         XCTAssertEqual(call.params["windowTabHandle"] as? Int, 1001)
     }
 
-    func testDetoursNoPanelErrorsGetWebKitsIds() async throws {
+    @MainActor func testDetoursNoPanelErrorsGetWebKitsIds() async throws {
         let webView = try await makeWebView()
         bridge.replies["sidePanel.open"] = { call in
             (nil, call.params["tabHandle"] != nil ? "No active side panel for the tab" : "No active side panel for the window")
@@ -256,7 +255,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         XCTAssertEqual(window.rejected, "No active side panel for windowId: 7")
     }
 
-    func testCloseNamesItsTargetLikeOpen() async throws {
+    @MainActor func testCloseNamesItsTargetLikeOpen() async throws {
         let webView = try await makeWebView()
         _ = try await outcome("chrome.sidePanel.close({ tabId: 5 })", in: webView)
         _ = try await outcome("chrome.sidePanel.close({ windowId: 7 })", in: webView)
@@ -270,7 +269,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
 
     // MARK: Order
 
-    func testCallsReachDetourInCallOrderThoughEachResolvesItsTabFirst() async throws {
+    @MainActor func testCallsReachDetourInCallOrderThoughEachResolvesItsTabFirst() async throws {
         let webView = try await makeWebView()
         // Tab 1 resolves slowly, and nothing is awaited between the calls: the
         // open must still not overtake the setOptions it follows.
@@ -285,7 +284,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         XCTAssertEqual(bridge.types, ["sidePanel.setOptions", "sidePanel.open", "sidePanel.getOptions", "sidePanel.close"])
     }
 
-    func testAFailedCallDoesNotStopTheOnesBehindIt() async throws {
+    @MainActor func testAFailedCallDoesNotStopTheOnesBehindIt() async throws {
         let webView = try await makeWebView()
         let settled = try await evaluateJSON("""
             const a = chrome.sidePanel.open({ tabId: 404 });
@@ -298,7 +297,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
 
     // MARK: Panel behaviour
 
-    func testPanelBehaviourRoundTrip() async throws {
+    @MainActor func testPanelBehaviourRoundTrip() async throws {
         let webView = try await makeWebView()
         bridge.replies["sidePanel.getPanelBehavior"] = { _ in (["openPanelOnActionClick": true], nil) }
         let set = try await outcome("chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })", in: webView)
@@ -312,7 +311,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
 
     // MARK: Callback form
 
-    func testCallbackFormsRunTheCallbackAndReturnNothing() async throws {
+    @MainActor func testCallbackFormsRunTheCallbackAndReturnNothing() async throws {
         let webView = try await makeWebView()
         bridge.replies["sidePanel.getOptions"] = { _ in (["enabled": true, "path": "panel.html", "tabSpecific": false], nil) }
         let result = try await dict("""
@@ -340,7 +339,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         XCTAssertEqual((result["behavior"] as? [String: Any])?["arg0"] as? NSDictionary, ["openPanelOnActionClick": false])
     }
 
-    func testAFailedCallbackCallSetsLastError() async throws {
+    @MainActor func testAFailedCallbackCallSetsLastError() async throws {
         let webView = try await makeWebView()
         bridge.replies["sidePanel.open"] = { _ in (nil, "No active side panel for the tab") }
         let result = try await dict("""
@@ -368,7 +367,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
     };
     """
 
-    func testGetCurrentAnswersUndefinedWhereWebKitAnswersNull() async throws {
+    @MainActor func testGetCurrentAnswersUndefinedWhereWebKitAnswersNull() async throws {
         let webView = try await makeWebView(shim: Self.tabsShim)
         let result = try await dict("""
             const kind = (value) => value === undefined ? 'undefined' : (value === null ? 'null' : 'tab');
@@ -395,7 +394,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
         XCTAssertEqual(result["tabCallback"] as? NSDictionary, ["id": 7])
     }
 
-    func testGetCurrentIsLeftAloneWithoutThePermission() async throws {
+    @MainActor func testGetCurrentIsLeftAloneWithoutThePermission() async throws {
         let webView = try await makeWebView(permissions: [], shim: Self.tabsShim)
         let result = try await dict("""
             return { wrapped: chrome.tabs.getCurrent._detourGetCurrentWrapper === true,
@@ -407,7 +406,7 @@ final class ExtensionSidePanelPolyfillTests: XCTestCase {
 
     // MARK: window.close
 
-    func testWindowCloseTellsDetourAndStillClosesTheWindow() async throws {
+    @MainActor func testWindowCloseTellsDetourAndStillClosesTheWindow() async throws {
         // WebKit's own close is replaced by a counter before the polyfill runs.
         let webView = try await makeWebView(shim: """
             globalThis.__nativeCloses = 0;

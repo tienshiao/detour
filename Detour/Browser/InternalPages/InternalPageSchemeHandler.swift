@@ -2,7 +2,7 @@ import Foundation
 import WebKit
 
 /// One resource of an internal page. `nil` from a page's content provider is a 404.
-struct InternalPageResource {
+nonisolated struct InternalPageResource: Sendable {
     let mimeType: String
     let data: Data
 
@@ -14,7 +14,7 @@ struct InternalPageResource {
 extension InternalPage {
     /// Produces the resource at `url` (already known to belong to this page).
     /// Completion may be called on any queue, once.
-    func resource(for url: URL, completion: @escaping (InternalPageResource?) -> Void) {
+    func resource(for url: URL, completion: @escaping @Sendable (InternalPageResource?) -> Void) {
         switch self {
         case .history: HistoryPageContent.resource(for: url, completion: completion)
         }
@@ -29,9 +29,9 @@ extension InternalPage {
 /// embedded in a web page reports the web page — and the navigation policy
 /// decides which main-frame loads get this far.
 final class InternalPageSchemeHandler: NSObject, WKURLSchemeHandler {
-    /// Calling a finished or stopped task raises an Objective-C exception, so
-    /// asynchronous providers answer through this set. Main thread only.
-    private var activeTasks = Set<ObjectIdentifier>()
+    /// Asynchronous providers answer through this table: a task WebKit
+    /// stopped meanwhile is not called.
+    private var activeTasks = SchemeTaskTable()
 
     /// No script source at all: the page's logic runs as a user script in
     /// `InternalPageBridge.contentWorld`, which page CSP does not govern, so
@@ -55,24 +55,23 @@ final class InternalPageSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
-        let taskID = ObjectIdentifier(urlSchemeTask as AnyObject)
-        activeTasks.insert(taskID)
+        let ticket = activeTasks.insert(urlSchemeTask)
 
         guard let page = Self.page(serving: urlSchemeTask.request), let url = urlSchemeTask.request.url else {
-            finish(urlSchemeTask, taskID: taskID, with: nil)
+            finish(ticket, with: nil)
             return
         }
         page.resource(for: url) { [weak self] resource in
-            DispatchQueue.main.async { self?.finish(urlSchemeTask, taskID: taskID, with: resource) }
+            DispatchQueue.main.async { self?.finish(ticket, with: resource) }
         }
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
-        activeTasks.remove(ObjectIdentifier(urlSchemeTask as AnyObject))
+        activeTasks.remove(urlSchemeTask)
     }
 
-    private func finish(_ task: any WKURLSchemeTask, taskID: ObjectIdentifier, with resource: InternalPageResource?) {
-        guard activeTasks.remove(taskID) != nil else { return }
+    private func finish(_ ticket: SchemeTaskTable.Ticket, with resource: InternalPageResource?) {
+        guard let task = activeTasks.take(ticket) else { return }
         guard let resource, let url = task.request.url else {
             task.didFailWithError(URLError(.fileDoesNotExist))
             return

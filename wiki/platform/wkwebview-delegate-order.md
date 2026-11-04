@@ -4,7 +4,7 @@ title: WKWebView delegate call order
 description: Which WKNavigationDelegate and WKUIDelegate methods WebKit calls, and in what order, for target=_blank links, window.open, custom-scheme links, failed and superseded loads, and custom-scheme internal pages — verified with a standalone spike.
 tags: [webkit, navigation, delegates, peek, internal-pages]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T06:19:15Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: notes-spike
@@ -145,8 +145,25 @@ Other facts from the same runs:
 
 `navigationAction.value(forKey: "_isUserInitiated")` was true for **every**
 call, including `window.open` from `evaluateJavaScript` and from a timer
-inside it. It cannot be used as a user-gesture check. The KVC key
-`_userInitiated` does not work at all.[^notes-spike]
+inside it. The KVC key `_userInitiated` does not work at all.[^notes-spike]
+That is because script the **app** runs with `evaluateJavaScript` carries a
+user gesture (which a timer started inside it inherits), not because the
+flag is meaningless: measured 2026-10-25, a page's **own** timer or load
+script reports `_isUserInitiated` false for an `a.click()` (still
+`.linkActivated`) and for a `location.href` change, while a real click and
+a click handler's own script report true. Link Routes use it to tell
+a user's click from a page's scripted one; the full table is on
+[link routing](../features/link-routing.md#signals-from-webkit).
+
+A **server redirect** of a link click is asked about again in
+`decidePolicyFor`, with the click's `.linkActivated` type and its gesture;
+`_isRedirect` (SPI) is true only on that second call. A client redirect
+(`location.replace` on load) arrives as `.other` without a gesture. A
+synthetic `MouseEvent` with `metaKey` reaches the policy with no modifier
+flags (measured 2026-10-25), and so do a click handler's scripted
+`a.click()` calls during a real Cmd-click: one posted Cmd-click whose
+handler clicked another link five times produced a single plain
+navigation in place, no Cmd+click (TASK-194 follow-up, 2026-10-27).
 
 ## Who asked for a navigation
 
@@ -165,8 +182,9 @@ navigation:
   one do not fully agree on when it is nil; treat it as "may be nil" and
   guard.
 - A server redirect keeps the navigation type of the navigation it
-  interrupts (recorded in the comments of `InternalPageNavigationPolicy`; the
-  sources do not say how it was checked).
+  interrupts (recorded in the comments of `InternalPageNavigationPolicy`;
+  measured for a link click on 2026-10-25: `.linkActivated` again, with
+  `_isRedirect` true).
 
 ## Failure callbacks
 
@@ -200,6 +218,7 @@ Verified 2026-09-19 while designing the `detour://` pages.[^notes-spike][^task-8
 
 | Rule in Detour | Depends on | Code |
 |---|---|---|
+| Link Routes act on link clicks, never on script navigations, a page's own `a.click()` or redirects | `.linkActivated`, `_isUserInitiated`, `_isRedirect` | `linkRoutingEligibility`, fed by `BrowserWindowController+LinkRouting.swift` |
 | In a pinned tab or favourite, every user-activated `_blank` link opens a Peek | nil `targetFrame` arrives in `decidePolicyFor` before any new web view exists | Peek branch of `decidePolicyFor` passes `opensNewWindow: navigationAction.targetFrame == nil` to `PeekAnchor.shouldPeek` |
 | A tab-style `window.open` from an anchored tab also peeks; a popup-style one (OAuth, payment) keeps its own tab | `window.open` skips `decidePolicyFor`; `_wantsPopup` | `createWebViewWith` → `PeekAnchor.shouldPeekScriptedWindow(to:wantsPopup:)`, `wantsPopup(_:)` falls back to explicit x/y/width/height when the SPI is missing |
 | A page's new window is a tab whose web view WebKit asked for | the page gets a window only when the delegate returns a web view made from the supplied configuration; WebKit then does the navigation | `createWebViewWith` → `TabStore.addTab(in:openedWith:parentID:)`, which swaps in a user content controller of the space's own |
@@ -269,6 +288,7 @@ delegate order and the `_wantsPopup` values were.[^task-85]
 - [External apps](../features/external-apps.md) — custom-scheme navigations and the confirmation sheet.
 - [Error pages](../features/error-pages.md) — what happens after a failure is classified.
 - [BrowserTab](../architecture/browser-tab.md) — the tab's own delegate versus the window's.
+- [Swift concurrency checking](./swift-concurrency-checking.md) — why a delegate method whose closure types drift from the SDK's is silently never called.
 - [BrowserWindowController](../architecture/browser-window-controller.md) — where both delegates live.
 - [WebKit source lookup](./webkit-source-lookup.md) — reading the WebKit functions named above.
 - [AppKit gotchas](./appkit-gotchas.md) — the companion page for AppKit behaviour.

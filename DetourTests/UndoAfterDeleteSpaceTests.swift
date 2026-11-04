@@ -15,10 +15,9 @@ import WebKit
 /// the undo repopulates and re-inserts that same object. The space's *contents*
 /// are still rebuilt as fresh objects of the same ids, so the closures that
 /// touch a tab, entry or folder resolve it by id at undo time.
-@MainActor
-final class UndoAfterDeleteSpaceTests: XCTestCase {
+nonisolated final class UndoAfterDeleteSpaceTests: XCTestCase {
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let db: AppDatabase
         let store: TabStore
         let profileID: UUID
@@ -32,7 +31,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
     ///
     /// The profile gets throwaway WebKit objects: an undone Close Tab rebuilds
     /// its tab live, so the test must not leave persistent storage behind.
-    private func makeFixture() throws -> Fixture {
+    @MainActor private func makeFixture() throws -> Fixture {
         let db = try AppDatabase(dbQueue: DatabaseQueue())
         let store = TabStore(appDB: db)
         // Group by hand, before anything registers an undo — see `act`.
@@ -57,7 +56,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
     /// test body never turns the run loop, so the fixture switches event
     /// grouping off and every mutation goes through here; otherwise a sequence's
     /// registrations pile into one group and a single undo runs them all.
-    private func act(_ store: TabStore, _ body: () -> Void) {
+    @MainActor private func act(_ store: TabStore, _ body: () -> Void) {
         store.undoManager.beginUndoGrouping()
         body()
         store.undoManager.endUndoGrouping()
@@ -67,7 +66,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
     private let exampleURL = URL(string: "https://example.com/")!
 
     /// Releases the web views an undone Close Tab rebuilds live.
-    private func teardownTabs(of space: Space?) {
+    @MainActor private func teardownTabs(of space: Space?) {
         guard let space else { return }
         for tab in space.tabs { tab.teardown() }
         for tab in space.pinnedTabs { tab.teardown() }
@@ -75,7 +74,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
 
     // MARK: - Undo Delete Space restores the same object
 
-    func testUndoDeleteSpaceRestoresTheSameSpaceObject() throws {
+    @MainActor func testUndoDeleteSpaceRestoresTheSameSpaceObject() throws {
         let f = try makeFixture()
         let space = try XCTUnwrap(f.store.space(withID: f.spaceID))
         let tab = sleepingTab(exampleURL, in: space)
@@ -113,7 +112,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
     // MARK: - Older undo actions act on the listed space
 
     /// AC #1: close a tab, delete the space, undo the delete, undo the close.
-    func testUndoCloseTabAfterUndoDeleteSpaceRestoresIntoTheListedSpace() throws {
+    @MainActor func testUndoCloseTabAfterUndoDeleteSpaceRestoresIntoTheListedSpace() throws {
         let f = try makeFixture()
         let space = try XCTUnwrap(f.store.space(withID: f.spaceID))
         let keep = sleepingTab(exampleURL, title: "Keep", in: space)
@@ -145,7 +144,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
 
     /// AC #3, a pinned action: the Pin Tab undo resolves the entry the rebuild
     /// replaced, and unpins it in the listed space.
-    func testUndoPinTabAfterUndoDeleteSpaceUnpinsInTheListedSpace() throws {
+    @MainActor func testUndoPinTabAfterUndoDeleteSpaceUnpinsInTheListedSpace() throws {
         let f = try makeFixture()
         let space = try XCTUnwrap(f.store.space(withID: f.spaceID))
         let tab = sleepingTab(exampleURL, in: space)
@@ -173,7 +172,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
 
     /// The Unpin Tab undo captured the backing tab; the rebuild replaces it with
     /// a fresh tab of the same id, which the undo now resolves.
-    func testUndoUnpinTabAfterUndoDeleteSpaceRepinsInTheListedSpace() throws {
+    @MainActor func testUndoUnpinTabAfterUndoDeleteSpaceRepinsInTheListedSpace() throws {
         let f = try makeFixture()
         let space = try XCTUnwrap(f.store.space(withID: f.spaceID))
         let tab = sleepingTab(exampleURL, in: space)
@@ -198,7 +197,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
 
     /// A folder action: the New Folder undo deletes the folder the rebuild
     /// replaced, in the listed space.
-    func testUndoNewFolderAfterUndoDeleteSpaceDeletesTheRebuiltFolder() throws {
+    @MainActor func testUndoNewFolderAfterUndoDeleteSpaceDeletesTheRebuiltFolder() throws {
         let f = try makeFixture()
         let space = try XCTUnwrap(f.store.space(withID: f.spaceID))
         var folder: PinnedFolder?
@@ -221,7 +220,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
 
     /// AC #3, Edit Space: its undo already resolved the space by id, and the
     /// restored space takes back the identity it had when it was deleted.
-    func testUndoEditSpaceAfterUndoDeleteSpaceEditsTheListedSpace() throws {
+    @MainActor func testUndoEditSpaceAfterUndoDeleteSpaceEditsTheListedSpace() throws {
         let f = try makeFixture()
 
         act(f.store) {
@@ -247,7 +246,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
 
     // MARK: - Ordinary undo is unchanged
 
-    func testUndoCloseTabWithoutADeleteStillRestoresTheTab() throws {
+    @MainActor func testUndoCloseTabWithoutADeleteStillRestoresTheTab() throws {
         let f = try makeFixture()
         let space = try XCTUnwrap(f.store.space(withID: f.spaceID))
         let tab = sleepingTab(exampleURL, in: space)
@@ -264,7 +263,7 @@ final class UndoAfterDeleteSpaceTests: XCTestCase {
 
     /// Delete, undo, redo, undo: the second delete re-snapshots and empties the
     /// same object, so the space comes back once, not doubled.
-    func testRedoDeleteSpaceThenUndoAgainRestoresTheSpaceOnce() throws {
+    @MainActor func testRedoDeleteSpaceThenUndoAgainRestoresTheSpaceOnce() throws {
         let f = try makeFixture()
         let space = try XCTUnwrap(f.store.space(withID: f.spaceID))
         let tab = sleepingTab(exampleURL, in: space)

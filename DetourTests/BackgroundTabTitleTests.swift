@@ -6,20 +6,19 @@ import WebKit
 /// commits, not only once the load ends (TASK-114). Hidden background web views
 /// can stay loading until first shown; the page here holds one image request
 /// open forever (`StallingSchemeHandler`), so the load never ends.
-@MainActor
-final class BackgroundTabTitleTests: XCTestCase {
+nonisolated final class BackgroundTabTitleTests: XCTestCase {
 
     private var tabs: [BrowserTab] = []
-    private let scheme = StallingSchemeHandler()
+    @MainActor private lazy var scheme = StallingSchemeHandler()
     private let pageURL = URL(string: "stall://title.test/page")!
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for tab in tabs { tab.teardown() }
         tabs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func makeTab(serving html: String) -> BrowserTab {
+    @MainActor private func makeTab(serving html: String) -> BrowserTab {
         scheme.pages[pageURL.path] = html
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(scheme, forURLScheme: "stall")
@@ -28,7 +27,7 @@ final class BackgroundTabTitleTests: XCTestCase {
         return tab
     }
 
-    func testAnUnclaimedTabShowsTheDocumentTitleWhileStillLoading() async throws {
+    @MainActor func testAnUnclaimedTabShowsTheDocumentTitleWhileStillLoading() async throws {
         let tab = makeTab(serving: "<html><head><title>Stalled Page</title></head><body><img src=\"/hang.png\"></body></html>")
         tab.load(pageURL)
         XCTAssertEqual(tab.title, "stall://title.test/page", "before the commit the tab shows where it is going")
@@ -38,7 +37,7 @@ final class BackgroundTabTitleTests: XCTestCase {
     }
 
     /// A title the page sets later, while still loading, follows too.
-    func testATitleChangedByScriptWhileLoadingIsShown() async throws {
+    @MainActor func testATitleChangedByScriptWhileLoadingIsShown() async throws {
         let tab = makeTab(serving: """
             <html><head><title>First</title></head><body>
             <script>setTimeout(() => { document.title = 'Second'; }, 200);</script>

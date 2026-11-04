@@ -2,14 +2,14 @@ import XCTest
 import GRDB
 @testable import Detour
 
-final class ExtensionDatabaseTests: XCTestCase {
+nonisolated final class ExtensionDatabaseTests: XCTestCase {
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         let dbQueue = try DatabaseQueue(configuration: Configuration()) // in-memory
         return try AppDatabase(dbQueue: dbQueue)
     }
 
-    private func sampleRecord(id: String = "ext-1", name: String = "Test Extension") -> ExtensionRecord {
+    @MainActor private func sampleRecord(id: String = "ext-1", name: String = "Test Extension") -> ExtensionRecord {
         ExtensionRecord(
             id: id,
             name: name,
@@ -23,7 +23,7 @@ final class ExtensionDatabaseTests: XCTestCase {
 
     // MARK: - Extension CRUD
 
-    func testSaveAndLoadExtension() throws {
+    @MainActor func testSaveAndLoadExtension() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleRecord())
 
@@ -34,7 +34,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertTrue(loaded.first?.isEnabled ?? false)
     }
 
-    func testDeleteExtension() throws {
+    @MainActor func testDeleteExtension() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleRecord())
         db.deleteExtension(id: "ext-1")
@@ -43,7 +43,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertTrue(loaded.isEmpty)
     }
 
-    func testDeleteExtensionCascadesStorage() throws {
+    @MainActor func testDeleteExtensionCascadesStorage() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleRecord())
         db.storageSet(extensionID: "ext-1", items: ["key": "value"])
@@ -54,7 +54,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertTrue(result.isEmpty)
     }
 
-    func testSetEnabled() throws {
+    @MainActor func testSetEnabled() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleRecord())
         db.setEnabled(id: "ext-1", enabled: false)
@@ -63,7 +63,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertFalse(loaded.first?.isEnabled ?? true)
     }
 
-    func testMultipleExtensions() throws {
+    @MainActor func testMultipleExtensions() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleRecord(id: "ext-1", name: "First"))
         db.saveExtension(sampleRecord(id: "ext-2", name: "Second"))
@@ -74,7 +74,7 @@ final class ExtensionDatabaseTests: XCTestCase {
 
     // MARK: - chrome.storage.local
 
-    func testStorageSetAndGet() throws {
+    @MainActor func testStorageSetAndGet() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleRecord())
         db.storageSet(extensionID: "ext-1", items: ["count": 42])
@@ -83,7 +83,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertEqual(result["count"] as? Int, 42)
     }
 
-    func testStorageGetMissingKey() throws {
+    @MainActor func testStorageGetMissingKey() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleRecord())
 
@@ -91,7 +91,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertTrue(result.isEmpty)
     }
 
-    func testStorageGetAll() throws {
+    @MainActor func testStorageGetAll() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleRecord())
         db.storageSet(extensionID: "ext-1", items: ["a": 1, "b": "hello"])
@@ -102,7 +102,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertEqual(result["b"] as? String, "hello")
     }
 
-    func testStorageOverwritesExistingKey() throws {
+    @MainActor func testStorageOverwritesExistingKey() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleRecord())
         db.storageSet(extensionID: "ext-1", items: ["key": "old"])
@@ -112,7 +112,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertEqual(result["key"] as? String, "new")
     }
 
-    func testStorageRemove() throws {
+    @MainActor func testStorageRemove() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleRecord())
         db.storageSet(extensionID: "ext-1", items: ["a": 1, "b": 2])
@@ -124,7 +124,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertEqual(result["b"] as? Int, 2)
     }
 
-    func testStorageClear() throws {
+    @MainActor func testStorageClear() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleRecord())
         db.storageSet(extensionID: "ext-1", items: ["a": 1, "b": 2, "c": 3])
@@ -134,7 +134,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertTrue(result.isEmpty)
     }
 
-    func testStorageIsolatedBetweenExtensions() throws {
+    @MainActor func testStorageIsolatedBetweenExtensions() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleRecord(id: "ext-1"))
         db.saveExtension(sampleRecord(id: "ext-2"))
@@ -147,7 +147,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertEqual(result2["key"] as? String, "from-ext-2")
     }
 
-    func testStorageComplexValues() throws {
+    @MainActor func testStorageComplexValues() throws {
         let db = try makeDatabase()
         db.saveExtension(sampleRecord())
         db.storageSet(extensionID: "ext-1", items: [
@@ -163,7 +163,7 @@ final class ExtensionDatabaseTests: XCTestCase {
 
     // MARK: - Per-Profile Extension State
 
-    func testProfileExtensionEnabledByDefault() throws {
+    @MainActor func testProfileExtensionEnabledByDefault() throws {
         let db = try makeDatabase()
         db.saveProfile(ProfileRecord(id: "profile-1", name: "Default", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true))
         db.saveExtension(sampleRecord())
@@ -172,7 +172,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertTrue(db.isExtensionEnabled(extensionID: "ext-1", profileID: "profile-1"))
     }
 
-    func testProfileExtensionDisabled() throws {
+    @MainActor func testProfileExtensionDisabled() throws {
         let db = try makeDatabase()
         db.saveProfile(ProfileRecord(id: "profile-1", name: "Default", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true))
         db.saveExtension(sampleRecord())
@@ -181,7 +181,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertFalse(db.isExtensionEnabled(extensionID: "ext-1", profileID: "profile-1"))
     }
 
-    func testGlobalDisableOverridesProfileEnabled() throws {
+    @MainActor func testGlobalDisableOverridesProfileEnabled() throws {
         let db = try makeDatabase()
         db.saveProfile(ProfileRecord(id: "profile-1", name: "Default", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true))
         db.saveExtension(sampleRecord())
@@ -192,7 +192,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertFalse(db.isExtensionEnabled(extensionID: "ext-1", profileID: "profile-1"))
     }
 
-    func testEnabledExtensionIDsForProfile() throws {
+    @MainActor func testEnabledExtensionIDsForProfile() throws {
         let db = try makeDatabase()
         db.saveProfile(ProfileRecord(id: "profile-1", name: "Default", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true))
         db.saveExtension(sampleRecord(id: "ext-1"))
@@ -204,7 +204,7 @@ final class ExtensionDatabaseTests: XCTestCase {
         XCTAssertFalse(ids.contains("ext-2"))
     }
 
-    func testDeleteExtensionCascadesProfileState() throws {
+    @MainActor func testDeleteExtensionCascadesProfileState() throws {
         let db = try makeDatabase()
         db.saveProfile(ProfileRecord(id: "profile-1", name: "Default", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true))
         db.saveExtension(sampleRecord())
@@ -226,7 +226,7 @@ final class ExtensionDatabaseTests: XCTestCase {
     /// apiPermission key. The fixtures go through `ExtensionPermissionRecord`, so a
     /// renamed key or renumbered status breaks this test instead of passing against
     /// the migration's own hard-coded literals.
-    func testMigrationV13ClearsOnlyPreEnforcementNativeMessagingDenials() throws {
+    @MainActor func testMigrationV13ClearsOnlyPreEnforcementNativeMessagingDenials() throws {
         let dbQueue = try DatabaseQueue(configuration: Configuration()) // in-memory
         try AppDatabase.migrator.migrate(dbQueue, upTo: "v12")
         // v13 changes no schema, so the v12 tables already hold every fixture.

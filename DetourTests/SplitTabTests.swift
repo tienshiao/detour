@@ -2,14 +2,14 @@ import XCTest
 import GRDB
 @testable import Detour
 
-final class SplitTabTests: XCTestCase {
+nonisolated final class SplitTabTests: XCTestCase {
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         let dbQueue = try DatabaseQueue()
         return try AppDatabase(dbQueue: dbQueue)
     }
 
-    private func makeStore() throws -> (TabStore, Space) {
+    @MainActor private func makeStore() throws -> (TabStore, Space) {
         let db = try makeDatabase()
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Test")
@@ -17,7 +17,7 @@ final class SplitTabTests: XCTestCase {
         return (store, space)
     }
 
-    private func makeSleepingTab(spaceID: UUID) -> BrowserTab {
+    @MainActor private func makeSleepingTab(spaceID: UUID) -> BrowserTab {
         BrowserTab(
             id: UUID(),
             title: "Tab",
@@ -30,7 +30,7 @@ final class SplitTabTests: XCTestCase {
 
     /// Tabs A, B, C, D where B+C form a split group. Returns the group ID.
     @discardableResult
-    private func makeSplitFixture(_ store: TabStore, _ space: Space) -> (tabs: [BrowserTab], groupID: UUID) {
+    @MainActor private func makeSplitFixture(_ store: TabStore, _ space: Space) -> (tabs: [BrowserTab], groupID: UUID) {
         let tabs = (0..<4).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
         let groupID = UUID()
@@ -43,7 +43,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - tabListItems
 
-    func testTabListItemsGroupsAdjacentPair() throws {
+    @MainActor func testTabListItemsGroupsAdjacentPair() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makeSplitFixture(store, space)
 
@@ -55,7 +55,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(items[2], .single(tabs[3]))
     }
 
-    func testTabListItemsTreatsSingletonGroupAsSingle() throws {
+    @MainActor func testTabListItemsTreatsSingletonGroupAsSingle() throws {
         let (_, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         tab.splitGroupID = UUID()
@@ -64,7 +64,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(tabListItems(from: space.tabs), [.single(tab)])
     }
 
-    func testTabListItemsTreatsNonAdjacentGroupMembersAsSingles() throws {
+    @MainActor func testTabListItemsTreatsNonAdjacentGroupMembersAsSingles() throws {
         let (_, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -76,7 +76,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(items, [.single(tabs[0]), .single(tabs[1]), .single(tabs[2])])
     }
 
-    func testItemIndexConversions() throws {
+    @MainActor func testItemIndexConversions() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makeSplitFixture(store, space)
         let items = tabListItems(from: space.tabs)
@@ -102,7 +102,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - sanitizeSplitGroups
 
-    func testSanitizeClearsSingletonAndNonAdjacentGroups() throws {
+    @MainActor func testSanitizeClearsSingletonAndNonAdjacentGroups() throws {
         let (_, space) = try makeStore()
         let tabs = (0..<5).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -120,7 +120,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertNil(tabs[3].splitGroupID)
     }
 
-    func testSanitizeKeepsValidPair() throws {
+    @MainActor func testSanitizeKeepsValidPair() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makeSplitFixture(store, space)
 
@@ -130,7 +130,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(tabs[2].splitGroupID, groupID)
     }
 
-    func testSanitizeClearsOversizedGroup() throws {
+    @MainActor func testSanitizeClearsOversizedGroup() throws {
         let (_, space) = try makeStore()
         let tabs = (0..<4).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -151,7 +151,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - Insertion snapping
 
-    func testSnappedToSplitGroupBoundary() {
+    @MainActor func testSnappedToSplitGroupBoundary() {
         let g = UUID()
         let groups: [UUID?] = [nil, g, g, nil]
         XCTAssertEqual(snappedToSplitGroupBoundary(0, groupIDs: groups), 0)
@@ -162,7 +162,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(snappedToSplitGroupBoundary(9, groupIDs: groups), 4)  // clamped
     }
 
-    func testChildTabInsertionNeverLandsInsideGroup() throws {
+    @MainActor func testChildTabInsertionNeverLandsInsideGroup() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makeSplitFixture(store, space)
 
@@ -176,14 +176,14 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - resolveTabMove
 
-    func testResolveTabMoveSingleTab() {
+    @MainActor func testResolveTabMoveSingleTab() {
         let groups: [UUID?] = [nil, nil, nil]
         let move = resolveTabMove(sourceIndex: 0, destinationIndex: 2, groupIDs: groups)
         XCTAssertEqual(move?.blockRange, 0..<1)
         XCTAssertEqual(move?.insertAt, 2)
     }
 
-    func testResolveTabMoveMemberMovesWholeBlock() {
+    @MainActor func testResolveTabMoveMemberMovesWholeBlock() {
         let g = UUID()
         let groups: [UUID?] = [nil, g, g, nil]
         let move = resolveTabMove(sourceIndex: 2, destinationIndex: 0, groupIDs: groups)
@@ -191,7 +191,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(move?.insertAt, 0)
     }
 
-    func testResolveTabMoveDestinationSnapsPastOtherGroup() {
+    @MainActor func testResolveTabMoveDestinationSnapsPastOtherGroup() {
         let g = UUID()
         let groups: [UUID?] = [nil, g, g, nil]
         // Moving tab 0 to land "between" the pair (post-removal index 1) snaps to 2.
@@ -199,14 +199,14 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(move?.insertAt, 2)
     }
 
-    func testResolveTabMoveNoOpReturnsNil() {
+    @MainActor func testResolveTabMoveNoOpReturnsNil() {
         let g = UUID()
         let groups: [UUID?] = [g, g, nil]
         XCTAssertNil(resolveTabMove(sourceIndex: 1, destinationIndex: 0, groupIDs: groups))
         XCTAssertNil(resolveTabMove(sourceIndex: 5, destinationIndex: 0, groupIDs: groups))
     }
 
-    func testMoveTabMovesSplitBlockAsUnit() throws {
+    @MainActor func testMoveTabMovesSplitBlockAsUnit() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makeSplitFixture(store, space)
 
@@ -223,7 +223,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - Gap-based moves (drop handling)
 
-    func testGapMoveSplitRowToEndGap() throws {
+    @MainActor func testGapMoveSplitRowToEndGap() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makeSplitFixture(store, space)  // [A, S1, S2, D] with S1+S2 split
 
@@ -232,7 +232,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(space.tabs.map(\.id), [tabs[0].id, tabs[3].id, tabs[1].id, tabs[2].id])
     }
 
-    func testGapMoveSplitRowInteriorGapDoesNotOvershoot() throws {
+    @MainActor func testGapMoveSplitRowInteriorGapDoesNotOvershoot() throws {
         let (store, space) = try makeStore()
         let tabs = (0..<5).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -246,7 +246,7 @@ final class SplitTabTests: XCTestCase {
                        "block must land exactly at the drop gap, not one slot past it")
     }
 
-    func testGapMoveIntoOwnGapsIsNoOp() throws {
+    @MainActor func testGapMoveIntoOwnGapsIsNoOp() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makeSplitFixture(store, space)
 
@@ -258,7 +258,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(space.tabs.map(\.id), tabs.map(\.id))
     }
 
-    func testGapMoveSingleTabMatchesOldSemantics() throws {
+    @MainActor func testGapMoveSingleTabMatchesOldSemantics() throws {
         let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -267,7 +267,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(space.tabs.map(\.id), [tabs[1].id, tabs[0].id, tabs[2].id])
     }
 
-    func testMoveTabNonFirstMemberEqualIndicesStillMoves() throws {
+    @MainActor func testMoveTabNonFirstMemberEqualIndicesStillMoves() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makeSplitFixture(store, space)  // [A, S1, S2, D]
 
@@ -280,7 +280,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - closeSplitGroup
 
-    func testCloseSplitGroupClosesBothWithSingleUndo() throws {
+    @MainActor func testCloseSplitGroupClosesBothWithSingleUndo() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makeSplitFixture(store, space)
         store.setSplitFraction(groupID: groupID, fraction: 0.3, in: space)
@@ -304,7 +304,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - Delete Space undo
 
-    func testDeleteSpaceUndoPreservesSplit() throws {
+    @MainActor func testDeleteSpaceUndoPreservesSplit() throws {
         let (store, space) = try makeStore()
         let profileID = space.profileID
         let space2 = store.addSpace(name: "Two", emoji: "2️⃣", colorHex: "FF0000", profileID: profileID)
@@ -327,7 +327,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(members[0].splitFraction, 0.7)
     }
 
-    func testDeleteSpaceUndoPreservesPinnedSplit() throws {
+    @MainActor func testDeleteSpaceUndoPreservesPinnedSplit() throws {
         let (store, space) = try makeStore()
         let profileID = space.profileID
         let space2 = store.addSpace(name: "Two", emoji: "2️⃣", colorHex: "FF0000", profileID: profileID)
@@ -357,7 +357,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - addTabInSplit undo
 
-    func testAddTabInSplitUndoDoesNotArchive() throws {
+    @MainActor func testAddTabInSplitUndoDoesNotArchive() throws {
         let (store, space) = try makeStore()
         let anchor = makeSleepingTab(spaceID: space.id)
         space.tabs.append(anchor)
@@ -376,7 +376,7 @@ final class SplitTabTests: XCTestCase {
 
     /// The Option-click fallback (background tab instead of split) relies on
     /// addTabInSplit returning nil for anchors that can't join a group.
-    func testAddTabInSplitRejectsGroupedAnchor() throws {
+    @MainActor func testAddTabInSplitRejectsGroupedAnchor() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makeSplitFixture(store, space)
 
@@ -386,7 +386,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(space.tabs.count, 4)
     }
 
-    func testAddTabInSplitRejectsPinnedAnchor() throws {
+    @MainActor func testAddTabInSplitRejectsPinnedAnchor() throws {
         let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
@@ -398,7 +398,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertTrue(space.tabs.isEmpty)
     }
 
-    func testAddTabInSplitFocusTargetIsRightPane() throws {
+    @MainActor func testAddTabInSplitFocusTargetIsRightPane() throws {
         let (store, space) = try makeStore()
         let anchor = makeSleepingTab(spaceID: space.id)
         space.tabs.append(anchor)
@@ -413,7 +413,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - splitGroup drag kind
 
-    func testSplitGroupDragReordersAndPins() {
+    @MainActor func testSplitGroupDragReordersAndPins() {
         let folder = PinnedFolder(id: UUID(), name: "F", parentFolderID: nil, isCollapsed: false, sortOrder: 0)
         let items: [PinnedItem] = [.folder(folder, depth: 0)]
 
@@ -457,7 +457,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - createSplit
 
-    func testCreateSplitRightEdgePlacesDraggedAfterTarget() throws {
+    @MainActor func testCreateSplitRightEdgePlacesDraggedAfterTarget() throws {
         let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -471,7 +471,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(tabListItems(from: space.tabs).count, 2)
     }
 
-    func testCreateSplitLeftEdgePlacesDraggedBeforeTarget() throws {
+    @MainActor func testCreateSplitLeftEdgePlacesDraggedBeforeTarget() throws {
         let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -482,7 +482,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(tabs[2].splitGroupID, tabs[0].splitGroupID)
     }
 
-    func testCreateSplitRejectsGroupedParticipants() throws {
+    @MainActor func testCreateSplitRejectsGroupedParticipants() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makeSplitFixture(store, space)
 
@@ -500,7 +500,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertNil(tabs[0].splitGroupID)
     }
 
-    func testCreateSplitUndoRestoresOriginalOrderBothDirections() throws {
+    @MainActor func testCreateSplitUndoRestoresOriginalOrderBothDirections() throws {
         let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -524,7 +524,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - separateSplit
 
-    func testSeparateSplitClearsGroupAndUndoRejoins() throws {
+    @MainActor func testSeparateSplitClearsGroupAndUndoRejoins() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makeSplitFixture(store, space)
 
@@ -545,7 +545,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - removeTabFromSplit
 
-    func testRemoveTabFromSplitMovesOutAndDissolves() throws {
+    @MainActor func testRemoveTabFromSplitMovesOutAndDissolves() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makeSplitFixture(store, space)
 
@@ -557,7 +557,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertNil(tabs[1].splitFraction)
     }
 
-    func testRemoveTabFromSplitPreRemovalGapAfterSource() throws {
+    @MainActor func testRemoveTabFromSplitPreRemovalGapAfterSource() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makeSplitFixture(store, space)
 
@@ -569,7 +569,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertNil(tabs[2].splitGroupID)
     }
 
-    func testRemoveTabFromSplitGapJustAfterGroupKeepsOrder() throws {
+    @MainActor func testRemoveTabFromSplitGapJustAfterGroupKeepsOrder() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makeSplitFixture(store, space)
 
@@ -581,7 +581,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertNil(tabs[2].splitGroupID)
     }
 
-    func testRemoveTabFromSplitUndoRestoresSplit() throws {
+    @MainActor func testRemoveTabFromSplitUndoRestoresSplit() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makeSplitFixture(store, space)
 
@@ -595,7 +595,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - closeTab
 
-    func testCloseMemberDissolvesGroup() throws {
+    @MainActor func testCloseMemberDissolvesGroup() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makeSplitFixture(store, space)
 
@@ -606,7 +606,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(space.tabs.count, 3)
     }
 
-    func testCloseMemberUndoRejoinsSplit() throws {
+    @MainActor func testCloseMemberUndoRejoinsSplit() throws {
         let (store, space) = try makeStore()
         makeSplitFixture(store, space)
         let leftID = space.tabs[1].id
@@ -625,7 +625,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - pinTab
 
-    func testPinningMemberDissolvesGroup() throws {
+    @MainActor func testPinningMemberDissolvesGroup() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makeSplitFixture(store, space)
 
@@ -638,7 +638,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - setSplitFraction
 
-    func testSetSplitFractionClampsAndAppliesToBothMembers() throws {
+    @MainActor func testSetSplitFractionClampsAndAppliesToBothMembers() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makeSplitFixture(store, space)
 
@@ -653,17 +653,17 @@ final class SplitTabTests: XCTestCase {
     // MARK: - Pinned splits (§12)
 
     /// Pins the fixture's split and returns its (still valid) group ID.
-    private func makePinnedSplitFixture(_ store: TabStore, _ space: Space) -> (tabs: [BrowserTab], groupID: UUID) {
+    @MainActor private func makePinnedSplitFixture(_ store: TabStore, _ space: Space) -> (tabs: [BrowserTab], groupID: UUID) {
         let (tabs, groupID) = makeSplitFixture(store, space)
         store.pinSplitGroup(groupID: groupID, in: space)
         return (tabs, groupID)
     }
 
-    private func pinnedEntry(for tab: BrowserTab, in space: Space) -> PinnedEntry? {
+    @MainActor private func pinnedEntry(for tab: BrowserTab, in space: Space) -> PinnedEntry? {
         space.pinnedEntries.first { $0.tab?.id == tab.id }
     }
 
-    func testPinSplitGroupPreservesGroupOnEntries() throws {
+    @MainActor func testPinSplitGroupPreservesGroupOnEntries() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makeSplitFixture(store, space)
         store.setSplitFraction(groupID: groupID, fraction: 0.3, in: space)
@@ -690,7 +690,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(store.splitFraction(containing: tabs[2].id, in: space), 0.3)
     }
 
-    func testPinSplitGroupUndoRestoresNormalSplit() throws {
+    @MainActor func testPinSplitGroupUndoRestoresNormalSplit() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makeSplitFixture(store, space)
         store.undoManager.removeAllActions()
@@ -704,7 +704,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(tabs[2].splitGroupID, groupID)
     }
 
-    func testUnpinSplitGroupRestoresSplitAtGap() throws {
+    @MainActor func testUnpinSplitGroupRestoresSplitAtGap() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makePinnedSplitFixture(store, space)  // tabs now [A, D]
 
@@ -717,7 +717,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(tabs[1].splitFraction, 0.5)
     }
 
-    func testUnpinSplitGroupMaterializesDormantMember() throws {
+    @MainActor func testUnpinSplitGroupMaterializesDormantMember() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makePinnedSplitFixture(store, space)
         let leftEntry = try XCTUnwrap(pinnedEntry(for: tabs[1], in: space))
@@ -735,7 +735,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(space.tabs[1].splitGroupID, groupID)
     }
 
-    func testUnpinSplitGroupUndoRepins() throws {
+    @MainActor func testUnpinSplitGroupUndoRepins() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makePinnedSplitFixture(store, space)
         store.undoManager.removeAllActions()
@@ -748,7 +748,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(members.compactMap { $0.tab?.id }, [tabs[1].id, tabs[2].id])
     }
 
-    func testUnpinSplitGroupUndoSurvivesSortOrderCollision() throws {
+    @MainActor func testUnpinSplitGroupUndoSurvivesSortOrderCollision() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makePinnedSplitFixture(store, space)  // entry orders (0, 1)
         store.undoManager.removeAllActions()
@@ -774,7 +774,7 @@ final class SplitTabTests: XCTestCase {
                       "restored pair must render as one split row")
     }
 
-    func testDeletePinnedFolderKeepsSplitPairAdjacent() throws {
+    @MainActor func testDeletePinnedFolderKeepsSplitPairAdjacent() throws {
         let (store, space) = try makeStore()
         let (_, groupID) = makePinnedSplitFixture(store, space)  // pair at orders (0, 1)
         // Folder with one child whose per-level sortOrder (0) collides with the
@@ -796,7 +796,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertNil(child.folderID, "child reparents to the deleted folder's level")
     }
 
-    func testUnpinSingleMemberDissolvesPinnedSplitAndUndoRejoins() throws {
+    @MainActor func testUnpinSingleMemberDissolvesPinnedSplitAndUndoRejoins() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makePinnedSplitFixture(store, space)
         let rightEntry = try XCTUnwrap(pinnedEntry(for: tabs[2], in: space))
@@ -815,7 +815,7 @@ final class SplitTabTests: XCTestCase {
                        "undo re-pins the member and rejoins the pinned split")
     }
 
-    func testDeletePinnedSplitMemberDissolvesAndUndoRejoins() throws {
+    @MainActor func testDeletePinnedSplitMemberDissolvesAndUndoRejoins() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makePinnedSplitFixture(store, space)
         let leftEntry = try XCTUnwrap(pinnedEntry(for: tabs[1], in: space))
@@ -832,7 +832,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(store.pinnedSplitEntries(groupID: groupID, in: space).count, 2)
     }
 
-    func testDetachPinnedSplitMemberDissolves() throws {
+    @MainActor func testDetachPinnedSplitMemberDissolves() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makePinnedSplitFixture(store, space)
         let leftEntry = try XCTUnwrap(pinnedEntry(for: tabs[1], in: space))
@@ -845,7 +845,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertNil(rightEntry.splitFraction)
     }
 
-    func testMovePinnedSplitMovesPairAsBlock() throws {
+    @MainActor func testMovePinnedSplitMovesPairAsBlock() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makePinnedSplitFixture(store, space)
         let folder = store.addPinnedFolder(name: "F", in: space)
@@ -860,7 +860,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(members[1].sortOrder, members[0].sortOrder + 1)
     }
 
-    func testMovePinnedAnchorSnapsOutOfGroupInterior() throws {
+    @MainActor func testMovePinnedAnchorSnapsOutOfGroupInterior() throws {
         let (store, space) = try makeStore()
         let (tabs, _) = makePinnedSplitFixture(store, space)
         let rightEntry = try XCTUnwrap(pinnedEntry(for: tabs[2], in: space))
@@ -878,7 +878,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(ordered.map { $0.tab?.id }, [lone.id, tabs[1].id, tabs[2].id])
     }
 
-    func testSeparatePinnedSplitAndUndo() throws {
+    @MainActor func testSeparatePinnedSplitAndUndo() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makePinnedSplitFixture(store, space)
         let leftEntry = try XCTUnwrap(pinnedEntry(for: tabs[1], in: space))
@@ -897,7 +897,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(leftEntry.splitGroupID, rightEntry.splitGroupID)
     }
 
-    func testRemovePinnedEntryFromSplitBreaksOutAndUndoRestores() throws {
+    @MainActor func testRemovePinnedEntryFromSplitBreaksOutAndUndoRestores() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makePinnedSplitFixture(store, space)
         let leftEntry = try XCTUnwrap(pinnedEntry(for: tabs[1], in: space))
@@ -919,7 +919,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(members.compactMap { $0.tab?.id }, [tabs[1].id, tabs[2].id])
     }
 
-    func testSetSplitFractionRoutesToPinnedEntries() throws {
+    @MainActor func testSetSplitFractionRoutesToPinnedEntries() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makePinnedSplitFixture(store, space)
 
@@ -930,7 +930,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(store.splitFraction(containing: tabs[1].id, in: space), 0.7)
     }
 
-    func testSplitGroupContainingOmitsDormantPinnedMember() throws {
+    @MainActor func testSplitGroupContainingOmitsDormantPinnedMember() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makePinnedSplitFixture(store, space)
         let leftEntry = try XCTUnwrap(pinnedEntry(for: tabs[1], in: space))
@@ -943,7 +943,7 @@ final class SplitTabTests: XCTestCase {
                        "a dormant partner is absent until selection wakes it")
     }
 
-    func testFlattenPinnedTreeGroupsAdjacentSplitEntries() throws {
+    @MainActor func testFlattenPinnedTreeGroupsAdjacentSplitEntries() throws {
         let (store, space) = try makeStore()
         let (_, groupID) = makePinnedSplitFixture(store, space)
         // A trailing lone entry after the split pair.
@@ -966,7 +966,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(itemIDAtDropIndex(0, in: items), entries[0].id)
     }
 
-    func testFlattenPinnedTreeRendersSingletonGroupAsEntry() throws {
+    @MainActor func testFlattenPinnedTreeRendersSingletonGroupAsEntry() throws {
         let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
@@ -981,7 +981,7 @@ final class SplitTabTests: XCTestCase {
         }
     }
 
-    func testCollapsedFolderExposesSelectedSplitMemberAsSplitItem() throws {
+    @MainActor func testCollapsedFolderExposesSelectedSplitMemberAsSplitItem() throws {
         let (store, space) = try makeStore()
         let (tabs, groupID) = makePinnedSplitFixture(store, space)
         let folder = store.addPinnedFolder(name: "F", in: space)
@@ -1006,7 +1006,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(depth, 1)
     }
 
-    func testCollapsedFolderExposureFallsBackToEntryWithoutValidPartner() throws {
+    @MainActor func testCollapsedFolderExposureFallsBackToEntryWithoutValidPartner() throws {
         let (store, space) = try makeStore()
         let folder = store.addPinnedFolder(name: "F", in: space)
         let tab = makeSleepingTab(spaceID: space.id)
@@ -1027,7 +1027,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertEqual(depth, 1)
     }
 
-    func testSanitizePinnedSplitGroups() throws {
+    @MainActor func testSanitizePinnedSplitGroups() throws {
         let (store, space) = try makeStore()
 
         func makeEntry(sortOrder: Int, folderID: UUID? = nil) -> PinnedEntry {
@@ -1074,7 +1074,7 @@ final class SplitTabTests: XCTestCase {
         XCTAssertNil(o3.splitGroupID)
     }
 
-    func testPinnedSplitPersistsAcrossSaveLoad() throws {
+    @MainActor func testPinnedSplitPersistsAcrossSaveLoad() throws {
         let dbQueue = try DatabaseQueue()
         let db = try AppDatabase(dbQueue: dbQueue)
         let store = TabStore(appDB: db)
@@ -1098,7 +1098,7 @@ final class SplitTabTests: XCTestCase {
 
     // MARK: - Sidebar diff with split items
 
-    func testDiffTreatsSplitMergeAsTargetRowContinuation() throws {
+    @MainActor func testDiffTreatsSplitMergeAsTargetRowContinuation() throws {
         let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)

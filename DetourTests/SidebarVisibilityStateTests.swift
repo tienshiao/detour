@@ -5,12 +5,12 @@ import AppKit
 /// TASK-39: the sidebar mode follows the user-visible collapsed state for every
 /// non-hover change (toggle, divider drag, autosave restore); hover never
 /// changes it.
-final class SidebarVisibilityStateTests: XCTestCase {
+nonisolated final class SidebarVisibilityStateTests: XCTestCase {
 
     /// Simulates the window: applies `setCollapsed` like the controller does
     /// (including the synchronous `isCollapsed` KVO that `toggleSidebar` fires
     /// inside the call) and records safe-area writes.
-    private struct Harness {
+    @MainActor private struct Harness {
         var state = SidebarVisibilityState()
         var isCollapsed = false
         var safeAreaAdjusts: Bool?
@@ -87,7 +87,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
 
     // MARK: - Toggle
 
-    func testToggleFromPinnedCollapsesAndBackExpands() {
+    @MainActor func testToggleFromPinnedCollapsesAndBackExpands() {
         var h = Harness()
         h.toggle()
         XCTAssertTrue(h.isCollapsed)
@@ -102,7 +102,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
 
     // MARK: - AC1: divider drag collapse, then one toggle
 
-    func testDragCollapseAdoptsAutoHideMode() {
+    @MainActor func testDragCollapseAdoptsAutoHideMode() {
         var h = Harness()
         h.externalCollapse(true)
         XCTAssertTrue(h.state.autoHides)
@@ -110,7 +110,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertEqual(h.safeAreaAdjusts, true, "safe area matches a toggle-collapsed sidebar")
     }
 
-    func testSingleToggleAfterDragCollapseShowsSidebar() {
+    @MainActor func testSingleToggleAfterDragCollapseShowsSidebar() {
         var h = Harness()
         h.externalCollapse(true)
         h.toggle()
@@ -120,7 +120,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertEqual(h.safeAreaAdjusts, false)
     }
 
-    func testDragExpandAdoptsPinnedMode() {
+    @MainActor func testDragExpandAdoptsPinnedMode() {
         var h = Harness()
         h.toggle()
         h.externalCollapse(false)
@@ -130,7 +130,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.isCollapsed, "one press hides it again")
     }
 
-    func testDragCollapseAndBackOutWithinOneDrag() {
+    @MainActor func testDragCollapseAndBackOutWithinOneDrag() {
         var h = Harness()
         h.externalCollapse(true)
         h.externalCollapse(false)
@@ -140,7 +140,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
 
     // MARK: - AC2: hover after a drag collapse
 
-    func testHoverRevealAndAutoHideAfterDragCollapse() {
+    @MainActor func testHoverRevealAndAutoHideAfterDragCollapse() {
         var h = Harness()
         h.externalCollapse(true)
         h.hoverReveal()
@@ -153,7 +153,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.state.autoHides)
     }
 
-    func testHoverRevealIgnoredWhenPinned() {
+    @MainActor func testHoverRevealIgnoredWhenPinned() {
         var h = Harness()
         h.hoverReveal()
         XCTAssertFalse(h.state.openedByHover)
@@ -162,7 +162,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
 
     // MARK: - AC3: hover never changes the mode
 
-    func testHoverDoesNotChangeModeOrSafeArea() {
+    @MainActor func testHoverDoesNotChangeModeOrSafeArea() {
         var h = Harness()
         h.toggle()
         h.log.removeAll()
@@ -173,7 +173,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertFalse(h.log.contains { if case .setSafeAreaAdjusts = $0 { return true } else { return false } })
     }
 
-    func testDelayedHoverKVOIsStillAttributedToHover() {
+    @MainActor func testDelayedHoverKVOIsStillAttributedToHover() {
         // An animated toggleSidebar whose KVO arrives after the call returns.
         var s = SidebarVisibilityState()
         _ = s.reduce(.toggle(isCollapsed: false))
@@ -188,7 +188,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertFalse(s.openedByHover)
     }
 
-    func testDragAndToggleCollapsedStatesAreIdentical() {
+    @MainActor func testDragAndToggleCollapsedStatesAreIdentical() {
         var dragged = Harness()
         dragged.externalCollapse(true)
         var toggled = Harness()
@@ -198,7 +198,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertEqual(dragged.isCollapsed, toggled.isCollapsed)
     }
 
-    func testDragCollapseWhileHoverOpenEndsHoverKeepsAutoHide() {
+    @MainActor func testDragCollapseWhileHoverOpenEndsHoverKeepsAutoHide() {
         var h = Harness()
         h.toggle()
         h.hoverReveal()
@@ -210,7 +210,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.isCollapsed)
     }
 
-    func testToggleWhileHoverOpenPinsSidebar() {
+    @MainActor func testToggleWhileHoverOpenPinsSidebar() {
         var h = Harness()
         h.toggle()
         h.hoverReveal()
@@ -226,7 +226,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
 
     // MARK: - TASK-127: an open popover holds a hover-revealed sidebar
 
-    private func hoverRevealedHarness() -> Harness {
+    @MainActor private func hoverRevealedHarness() -> Harness {
         var h = Harness()
         h.toggle()        // auto-hide mode, collapsed
         h.hoverReveal()
@@ -236,7 +236,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         return h
     }
 
-    func testPopoverHoldsHoverRevealedSidebarOpen() {
+    @MainActor func testPopoverHoldsHoverRevealedSidebarOpen() {
         var h = hoverRevealedHarness()
         h.send(.holdBegan)
         // The pointer moves from the sidebar into the popover.
@@ -250,7 +250,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.state.autoHides)
     }
 
-    func testHoldCancelsAHideAlreadyPending() {
+    @MainActor func testHoldCancelsAHideAlreadyPending() {
         var h = hoverRevealedHarness()
         // The pointer left before the popover finished appearing.
         h.pointerExited()
@@ -261,7 +261,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertFalse(h.isCollapsed)
     }
 
-    func testSidebarHidesAfterPopoverClosesWithPointerOutside() {
+    @MainActor func testSidebarHidesAfterPopoverClosesWithPointerOutside() {
         var h = hoverRevealedHarness()
         h.send(.holdBegan)
         h.pointerExited()
@@ -274,7 +274,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.state.autoHides, "hover never changes the mode")
     }
 
-    func testSidebarStaysAfterPopoverClosesWithPointerInside() {
+    @MainActor func testSidebarStaysAfterPopoverClosesWithPointerInside() {
         var h = hoverRevealedHarness()
         h.send(.holdBegan)
         h.send(.holdEnded(pointerInSidebar: true))
@@ -286,7 +286,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.isCollapsed)
     }
 
-    func testHoldDoesNothingToAPinnedSidebar() {
+    @MainActor func testHoldDoesNothingToAPinnedSidebar() {
         var h = Harness()
         h.send(.holdBegan)
         h.send(.holdEnded(pointerInSidebar: false))
@@ -295,7 +295,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertFalse(h.state.autoHides)
     }
 
-    func testToggleWhileHeldPinsTheSidebar() {
+    @MainActor func testToggleWhileHeldPinsTheSidebar() {
         var h = hoverRevealedHarness()
         h.send(.holdBegan)
         h.toggle()
@@ -305,7 +305,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertFalse(h.autoHideScheduled, "pinned sidebars never auto-hide")
     }
 
-    func testPopoverOpenedWhileCollapsedDoesNotBlockLaterHover() {
+    @MainActor func testPopoverOpenedWhileCollapsedDoesNotBlockLaterHover() {
         var h = Harness()
         h.toggle()
         h.send(.holdBegan)
@@ -320,7 +320,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
 
     // MARK: - TASK-169: the hover hide does not depend on one exit event
 
-    func testExitDuringRevealGraceHidesOnceTheGraceEnds() {
+    @MainActor func testExitDuringRevealGraceHidesOnceTheGraceEnds() {
         var h = Harness()
         h.toggle()
         h.hoverReveal()
@@ -336,7 +336,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.state.autoHides, "hover never changes the mode")
     }
 
-    func testGraceEndingWithThePointerInsideStartsNoDelay() {
+    @MainActor func testGraceEndingWithThePointerInsideStartsNoDelay() {
         var h = Harness()
         h.toggle()
         h.hoverReveal()
@@ -346,7 +346,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.state.openedByHover)
     }
 
-    func testSampleDuringRevealGraceStartsNoDelay() {
+    @MainActor func testSampleDuringRevealGraceStartsNoDelay() {
         var h = Harness()
         h.toggle()
         h.hoverReveal()
@@ -360,7 +360,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
     /// A tab picked in the revealed sidebar, then the pointer back over the
     /// page with no exit event (a button held across the boundary, a drag
     /// session, the view under the pointer changing): the sample finds it.
-    func testMissedExitIsCaughtByThePointerSample() {
+    @MainActor func testMissedExitIsCaughtByThePointerSample() {
         var h = hoverRevealedHarness()
         h.pointerMovedUnreported(inSidebar: false)
         XCTAssertFalse(h.autoHideScheduled, "nothing has told the reducer yet")
@@ -372,7 +372,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.state.autoHides)
     }
 
-    func testRepeatedReportsDoNotRestartTheHideDelay() {
+    @MainActor func testRepeatedReportsDoNotRestartTheHideDelay() {
         var h = hoverRevealedHarness()
         h.pointerExited()
         XCTAssertEqual(h.scheduledHides, 1)
@@ -385,7 +385,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.isCollapsed)
     }
 
-    func testSampleWithThePointerInsideDoesNothing() {
+    @MainActor func testSampleWithThePointerInsideDoesNothing() {
         var h = hoverRevealedHarness()
         h.log.removeAll()
         h.pointerSampled()
@@ -395,7 +395,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.state.openedByHover)
     }
 
-    func testEnterCancelsThePendingHide() {
+    @MainActor func testEnterCancelsThePendingHide() {
         var h = hoverRevealedHarness()
         h.pointerExited()
         h.pointerEntered()
@@ -409,7 +409,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.isCollapsed)
     }
 
-    func testSampleCancelsThePendingHideWhenTheEnterWasMissed() {
+    @MainActor func testSampleCancelsThePendingHideWhenTheEnterWasMissed() {
         var h = hoverRevealedHarness()
         h.pointerExited()
         h.pointerMovedUnreported(inSidebar: true)
@@ -420,7 +420,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
 
     /// The sidebar stays while the pointer is in it, even when the enter
     /// event that should have cancelled the delay never came.
-    func testHideDelayElapsingWithThePointerBackInsideKeepsTheSidebar() {
+    @MainActor func testHideDelayElapsingWithThePointerBackInsideKeepsTheSidebar() {
         var h = hoverRevealedHarness()
         h.pointerExited()
         h.pointerMovedUnreported(inSidebar: true)
@@ -435,7 +435,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.isCollapsed)
     }
 
-    func testSampleAfterAHoldEndsStartsTheDelay() {
+    @MainActor func testSampleAfterAHoldEndsStartsTheDelay() {
         var h = hoverRevealedHarness()
         h.send(.holdBegan)
         h.pointerMovedUnreported(inSidebar: false)
@@ -451,7 +451,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.isCollapsed)
     }
 
-    func testHoldEndingDuringRevealGraceWaitsForTheGraceToEnd() {
+    @MainActor func testHoldEndingDuringRevealGraceWaitsForTheGraceToEnd() {
         var h = Harness()
         h.toggle()
         h.hoverReveal()
@@ -463,7 +463,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.autoHideScheduled)
     }
 
-    func testPointerReportsDoNothingToAPinnedOrCollapsedSidebar() {
+    @MainActor func testPointerReportsDoNothingToAPinnedOrCollapsedSidebar() {
         var h = Harness()
         h.pointerSampled()
         h.pointerExited()
@@ -481,7 +481,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.state.autoHides)
     }
 
-    func testToggleDuringRevealGracePinsAndTheGraceEndIsIgnored() {
+    @MainActor func testToggleDuringRevealGracePinsAndTheGraceEndIsIgnored() {
         var h = Harness()
         h.toggle()
         h.hoverReveal()
@@ -495,7 +495,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertFalse(h.state.autoHides)
     }
 
-    func testTogglePinsWhileAHideIsPending() {
+    @MainActor func testTogglePinsWhileAHideIsPending() {
         var h = hoverRevealedHarness()
         h.pointerExited()
         XCTAssertTrue(h.autoHideScheduled)
@@ -507,7 +507,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertFalse(h.autoHideScheduled)
     }
 
-    func testEachRevealStartsAFreshSession() {
+    @MainActor func testEachRevealStartsAFreshSession() {
         var collapsedInAutoHide = SidebarVisibilityState()
         _ = collapsedInAutoHide.reduce(.toggle(isCollapsed: false))
 
@@ -526,7 +526,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertTrue(h.isCollapsed)
     }
 
-    func testPointerIsWatchedOnlyWhileHoverRevealed() {
+    @MainActor func testPointerIsWatchedOnlyWhileHoverRevealed() {
         var h = Harness()
         XCTAssertFalse(h.state.watchesPointer, "pinned")
         h.toggle()
@@ -548,7 +548,7 @@ final class SidebarVisibilityStateTests: XCTestCase {
 
     // MARK: - AC4: autosave restore
 
-    func testRestoredCollapsedAtLaunchStartsInAutoHideMode() {
+    @MainActor func testRestoredCollapsedAtLaunchStartsInAutoHideMode() {
         var h = Harness()
         h.isCollapsed = true
         // The setup-time sync, or the restore's own KVO: either way the first
@@ -564,20 +564,20 @@ final class SidebarVisibilityStateTests: XCTestCase {
         XCTAssertEqual(h.toggleSidebarCalls, 3)
     }
 
-    func testRestoredExpandedAtLaunchIsANoOp() {
+    @MainActor func testRestoredExpandedAtLaunchIsANoOp() {
         var s = SidebarVisibilityState()
         XCTAssertEqual(s.reduce(.collapsedChanged(false)), [])
         XCTAssertEqual(s, SidebarVisibilityState())
     }
 
-    func testLateAutosaveRestoreViaKVOAdoptsMode() {
+    @MainActor func testLateAutosaveRestoreViaKVOAdoptsMode() {
         var h = Harness()
         h.send(.collapsedChanged(false))
         h.externalCollapse(true)
         XCTAssertTrue(h.state.autoHides)
     }
 
-    func testRedundantKVOIsIgnored() {
+    @MainActor func testRedundantKVOIsIgnored() {
         var s = SidebarVisibilityState()
         XCTAssertEqual(s.reduce(.collapsedChanged(false)), [])
         XCTAssertFalse(s.autoHides)
@@ -585,26 +585,25 @@ final class SidebarVisibilityStateTests: XCTestCase {
 }
 
 /// Drives the real `BrowserWindowController` split view (TASK-39 AC1/AC4).
-@MainActor
-final class BrowserWindowSidebarModeTests: XCTestCase {
+nonisolated final class BrowserWindowSidebarModeTests: XCTestCase {
 
     /// The split view autosave key this process actually writes: the name is
     /// scoped to the data directory since TASK-41, so hard-coding the unscoped
     /// "BrowserSplitView" would guard a key the host never touches.
-    private static let autosaveKey =
+    @MainActor private static let autosaveKey =
         "NSSplitView Subview Frames \(BrowserWindowController.splitViewAutosaveName)"
     private var savedAutosave: Any?
     private var controller: BrowserWindowController?
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         // The test host shares the app's defaults domain — and in the default
         // data directory the scoped key is the production one — so never let a
         // collapse here leak into the app's split view autosave.
         savedAutosave = UserDefaults.standard.object(forKey: Self.autosaveKey)
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         controller?.window?.close()
         controller = nil
         // Only put the value back if something here changed it, so a write by
@@ -613,10 +612,10 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
         if current != savedAutosave as? NSObject {
             UserDefaults.standard.set(savedAutosave, forKey: Self.autosaveKey)
         }
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func makeController() throws -> (BrowserWindowController, NSSplitView) {
+    @MainActor private func makeController() throws -> (BrowserWindowController, NSSplitView) {
         let wc = BrowserWindowController(incognito: true)
         controller = wc
         let splitView = wc.sidebarSplitView
@@ -626,7 +625,7 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
         return (wc, splitView)
     }
 
-    func testDividerCollapseThenSingleToggleExpands() throws {
+    @MainActor func testDividerCollapseThenSingleToggleExpands() throws {
         let (wc, splitView) = try makeController()
         if wc.sidebarItem.isCollapsed {
             // Restored collapsed from the host's autosave: starts in auto-hide.
@@ -654,7 +653,7 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
     /// autosave restores a collapsed sidebar when the view loads — after the
     /// controller registered its `isCollapsed` observer — so the restore reaches
     /// the reducer as an external `collapsedChanged`. Uses its own autosave name.
-    func testAutosaveRestoreArrivesAsExternalCollapse() throws {
+    @MainActor func testAutosaveRestoreArrivesAsExternalCollapse() throws {
         let name = "DetourTestsTask39SidebarRestore"
         let key = "NSSplitView Subview Frames \(name)"
 
@@ -731,25 +730,28 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
             _ = spin(timeout: 0.5) { false }
             UserDefaults.standard.removeObject(forKey: key)
         }
-        var state = SidebarVisibilityState()
+        // A reference: the KVO handler is a Sendable closure, so it cannot mutate a
+        // captured var. AppKit changes the item on the main thread.
+        let box = VisibilityStateBox()
         let observation = item.observe(\.isCollapsed, options: [.new]) { _, change in
-            _ = state.reduce(.collapsedChanged(change.newValue ?? false))
+            let collapsed = change.newValue ?? false
+            MainActor.assumeIsolated { _ = box.state.reduce(.collapsedChanged(collapsed)) }
         }
         defer { observation.invalidate() }
         window.contentView?.addSubview(svc.view)
         svc.view.frame = window.contentView!.bounds
-        _ = state.reduce(.collapsedChanged(item.isCollapsed))
+        _ = box.state.reduce(.collapsedChanged(item.isCollapsed))
         svc.view.layoutSubtreeIfNeeded()
         _ = spin(timeout: 5) { item.isCollapsed }
 
         XCTAssertTrue(item.isCollapsed, "autosave restored the collapsed sidebar")
-        XCTAssertTrue(state.autoHides, "the restored collapse starts in auto-hide mode")
-        var toggled = state
+        XCTAssertTrue(box.state.autoHides, "the restored collapse starts in auto-hide mode")
+        var toggled = box.state
         XCTAssertEqual(toggled.reduce(.toggle(isCollapsed: true)).last, .setCollapsed(false),
                        "one Toggle press expands it")
     }
 
-    func testExternalIsCollapsedSetAdoptsModeAndExpandBack() throws {
+    @MainActor func testExternalIsCollapsedSetAdoptsModeAndExpandBack() throws {
         let (wc, _) = try makeController()
         if wc.sidebarItem.isCollapsed { wc.toggleSidebarMode(nil) }
         wc.sidebarItem.isCollapsed = true
@@ -763,7 +765,7 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
 
     /// Spins the main run loop in the default mode — the only mode the
     /// sidebar's timers run in — until `condition` holds or `timeout` passes.
-    private func spin(timeout: TimeInterval, until condition: () -> Bool = { false }) -> Bool {
+    @MainActor private func spin(timeout: TimeInterval, until condition: () -> Bool = { false }) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() && Date() < deadline {
             _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
@@ -785,7 +787,7 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
     /// A window in auto-hide mode whose pointer position is whatever the
     /// returned box says. Enter and exit events cannot be synthesized, and the
     /// real pointer belongs to whoever is at the machine.
-    private func makeAutoHidingController() throws -> (BrowserWindowController, PointerBox) {
+    @MainActor private func makeAutoHidingController() throws -> (BrowserWindowController, PointerBox) {
         let (wc, _) = try makeController()
         if !wc.sidebarVisibility.autoHides { wc.toggleSidebarMode(nil) }
         XCTAssertTrue(wc.sidebarItem.isCollapsed)
@@ -802,13 +804,13 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
         return (wc, pointer)
     }
 
-    private final class PointerBox {
+    @MainActor private final class PointerBox {
         var inSidebar = false
     }
 
     /// The edge hover with the pointer in the sidebar, checked a moment
     /// later: the reveal held.
-    private func hoverReveal(_ wc: BrowserWindowController, file: StaticString = #filePath, line: UInt = #line) {
+    @MainActor private func hoverReveal(_ wc: BrowserWindowController, file: StaticString = #filePath, line: UInt = #line) {
         wc.sidebarHoverZoneEntered(.edge)
         _ = spin(timeout: 0.2)
         XCTAssertFalse(wc.sidebarItem.isCollapsed, "the edge hover reveals the sidebar", file: file, line: line)
@@ -820,7 +822,7 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
     /// than this did not come from the hover rule.
     private static let earliestHoverHide: TimeInterval = 2 * hoverDelay - 0.02
 
-    func testHoverRevealedSidebarHidesWithoutAnyExitEvent() throws {
+    @MainActor func testHoverRevealedSidebarHidesWithoutAnyExitEvent() throws {
         let (wc, pointer) = try makeAutoHidingController()
         pointer.inSidebar = false
         let revealed = Date()
@@ -836,7 +838,7 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
         XCTAssertFalse(wc.sidebarVisibility.watchesPointer)
     }
 
-    func testExitDuringTheRevealGracePeriodStillHides() throws {
+    @MainActor func testExitDuringTheRevealGracePeriodStillHides() throws {
         let (wc, pointer) = try makeAutoHidingController()
         pointer.inSidebar = true
         let revealed = Date()
@@ -850,7 +852,7 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
         XCTAssertTrue(wc.sidebarVisibility.autoHides)
     }
 
-    func testHoverRevealedSidebarStaysWhileThePointerIsInIt() throws {
+    @MainActor func testHoverRevealedSidebarStaysWhileThePointerIsInIt() throws {
         let (wc, pointer) = try makeAutoHidingController()
         pointer.inSidebar = true
         hoverReveal(wc)
@@ -866,7 +868,7 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
         XCTAssertTrue(spin(timeout: 10) { wc.sidebarItem.isCollapsed }, "hides once the pointer is elsewhere")
     }
 
-    func testOpenPopoverHoldsHoverRevealedSidebarUntilItCloses() throws {
+    @MainActor func testOpenPopoverHoldsHoverRevealedSidebarUntilItCloses() throws {
         let (wc, pointer) = try makeAutoHidingController()
         pointer.inSidebar = true
         hoverReveal(wc)
@@ -898,7 +900,7 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
         XCTAssertTrue(wc.sidebarVisibility.autoHides)
     }
 
-    func testToggleSidebarPinsAHoverRevealedSidebar() throws {
+    @MainActor func testToggleSidebarPinsAHoverRevealedSidebar() throws {
         let (wc, pointer) = try makeAutoHidingController()
         pointer.inSidebar = true
         hoverReveal(wc)
@@ -911,4 +913,9 @@ final class BrowserWindowSidebarModeTests: XCTestCase {
         XCTAssertFalse(spin(timeout: Self.longerThanAHide) { wc.sidebarItem.isCollapsed }, "pinned sidebars stay")
         XCTAssertFalse(wc.sidebarVisibility.watchesPointer)
     }
+}
+
+/// A test-local reference to a visibility state a KVO handler updates.
+private final class VisibilityStateBox {
+    var state = SidebarVisibilityState()
 }

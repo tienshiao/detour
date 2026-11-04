@@ -1,0 +1,191 @@
+TASK-198 runtime harness: an IPv6-literal page (http://[::1]:<port>/) loaded
+programmatically and through the command palette's real input path, with
+its favicon, dev-mode row and faux address bar. Temporary code, never
+committed to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task198-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # $SITE: index.html (no icon link), favicon.ico (16x16 red),
+    # declared.html (<link rel="icon" href="/green.png">), green.png.
+    python3 -m http.server 8898 --bind ::1 --directory "$SITE" > server.log 2>&1 &
+    DETOUR_DATA_DIR=DetourVerify198 DETOUR_VERIFY_DIR="$OUT" DETOUR_VERIFY_PORT=8898 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # a watcher reads new lines of $OUT/verify.log every 0.2 s and runs
+    # `screencapture -x -o -l <windowNumber> $OUT/<name>.png` for each
+    # "SHOOT <name> <windowNumber>" line, and notes if the pid exits (a crash).
+    # Wait for "done" (about 20 s), then kill that pid and the server.
+    git apply -R docs/harness/task198-harness.patch && xcodegen generate
+    rm -r -- ~/Library/Application\ Support/DetourVerify198
+
+Steps: (1) TabStore.addTab(in:url:) with http://[::1]:8898/; (2) Cmd+T
+(`newTab`), "[::1]:8898" typed key by key into the field editor
+(`firstResponder.keyDown`, so interpretKeyEvents → insertText), Return
+(keyCode 36 → insertNewline → PaletteSelection.returnAction →
+didSubmitInput → AddressInputClassifier.directURL); (3) Cmd+L
+(`focusAddressBar`), "http://[::1]:8898/declared.html" typed over the
+selected prefill, Return. A Combine sink logs every favicon change of tab 1.
+
+Results (2026-10-24, fresh profile, after the fix; both captures read):
+- The app stayed alive through all three loads (before the fix the first
+  load trapped in BrowserTab.load: URL(string: "http://::1/favicon.ico")!).
+- Classifier: "[::1]:8898" -> http://[::1]:8898, "http://[::1]:8898/" as
+  written; both are URLs, not searches.
+- Step 1: url http://[::1]:8898/, faviconURL http://[::1]:8898/favicon.ico,
+  16x16 icon; server log "GET /favicon.ico 200" from ::1 (served only on
+  [::1]:8898, so brackets and port were right). Row: hazard border, host
+  line "[::1]:8898"; faux address bar "[::1]" (read "::1" before the
+  displayHost fix, seen in an earlier capture).
+- Step 2: the palette listed the field text plus open-tab rows; Return
+  opened a new tab at http://[::1]:8898/, same favicon (FaviconLoader cache,
+  no second request).
+- Step 3: in place, http://[::1]:8898/declared.html, faviconURL
+  http://[::1]:8898/green.png (server: "GET /green.png 200"); same site key
+  ([::1]:8898), so no second /favicon.ico guess. Declared icon reached the
+  tab while WKSecurityOrigin.host is "[::1]" (bridge check now brackets the
+  page host).
+- On a fresh profile's first launch the favicon download's main-queue
+  completion landed 0.1-5 s after the server answered (busy launch); one
+  early run read nil at +2 s and had it by step 2. Not IPv6-specific.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..1dd6ac4 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask198HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task198Harness.swift b/Detour/App/Task198Harness.swift
+new file mode 100644
+index 0000000..082f10f
+--- /dev/null
++++ b/Detour/App/Task198Harness.swift
+@@ -0,0 +1,122 @@
++// TEMP TASK-198 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++import Combine
++
++extension AppDelegate {
++    func runTask198HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        let store = TabStore.shared
++        guard let window = wc.window else { return log("no window") }
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func allSubviews(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap(allSubviews) }
++        func key(_ code: UInt16, _ chars: String) {
++            guard let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
++                                           timestamp: ProcessInfo.processInfo.systemUptime,
++                                           windowNumber: window.windowNumber, context: nil,
++                                           characters: chars, charactersIgnoringModifiers: chars,
++                                           isARepeat: false, keyCode: code) else { return }
++            // The field editor's own keyDown: interpretKeyEvents → insertText /
++            // insertNewline, the palette's real input path.
++            window.firstResponder?.keyDown(with: e)
++        }
++        @MainActor func typeText(_ text: String) async {
++            for ch in text { key(0, String(ch)); await sleep(0.05) }
++        }
++        @MainActor func waitLoaded(_ tab: BrowserTab) async {
++            for _ in 0..<60 {
++                await sleep(0.25)
++                if !tab.isLoading, tab.url != nil, tab.webView != nil { break }
++            }
++            await sleep(1.5)
++        }
++        func paletteRows() -> [String] {
++            guard let palette = wc.commandPaletteView,
++                  let table = allSubviews(palette).compactMap({ $0 as? NSTableView }).first else { return [] }
++            return (0..<table.numberOfRows).map { row in
++                let texts = table.view(atColumn: 0, row: row, makeIfNecessary: false)
++                    .map { allSubviews($0).compactMap { ($0 as? NSTextField)?.stringValue }.filter { !$0.isEmpty } } ?? []
++                return "row \(row): \(texts.joined(separator: " | "))"
++            }
++        }
++        func describe(_ label: String, _ tab: BrowserTab) {
++            let profileID = tab.owningProfile?.id
++            log("\(label): alive=true url=\(tab.url?.absoluteString ?? "nil") title=\(tab.title) isLoading=\(tab.isLoading) faviconURL=\(tab.faviconURL?.absoluteString ?? "nil") favicon=\(tab.favicon.map { "\(Int($0.size.width))x\(Int($0.size.height))" } ?? "nil") devMode=\(DevMode.isActive(for: tab)) marking=\(DevMode.rowMarking(for: tab.url, profileID: profileID)) selected=\(wc.selectedTab === tab)")
++            log("  faux address bar: \"\(wc.tabSidebar.fauxAddressBar.displayText)\" tab.displayHost=\"\(tab.displayHost)\"")
++            let cells = allSubviews(window.contentView!).compactMap { $0 as? TabCellView }
++            for cell in cells where !cell.hostLineLabel.stringValue.isEmpty {
++                let texts = allSubviews(cell).compactMap { ($0 as? NSTextField) }.filter { !$0.stringValue.isEmpty && !$0.isHidden }.map(\.stringValue)
++                log("  row host line: \"\(cell.hostLineLabel.stringValue)\" hidden=\(cell.hostLineLabel.isHidden) texts=\(texts)")
++            }
++        }
++        func shot(_ name: String) {
++            log("SHOOT \(name) \(window.windowNumber)")
++        }
++
++        Task { @MainActor in
++            await sleep(2.0)
++            NSApp.activate(ignoringOtherApps: true)
++            window.makeKeyAndOrderFront(nil)
++            guard let space = wc.activeSpace else { return log("no active space") }
++            log("start: window \(window.windowNumber) space=\(space.id.uuidString.prefix(8))")
++            log("classifier: [::1]:\(port) -> \(AddressInputClassifier.directURL(from: "[::1]:\(port)")?.absoluteString ?? "nil (search)")")
++            log("classifier: http://[::1]:\(port)/ -> \(AddressInputClassifier.directURL(from: "http://[::1]:\(port)/")?.absoluteString ?? "nil (search)")")
++
++            // STEP1: programmatic load.
++            let url1 = URL(string: "http://[::1]:\(port)/")!
++            let tab1 = store.addTab(in: space, url: url1)
++            var watch = Set<AnyCancellable>()
++            tab1.$favicon.sink { image in log("  tab1 favicon -> \(image.map { "\(Int($0.size.width))x\(Int($0.size.height))" } ?? "nil") faviconURL=\(tab1.faviconURL?.absoluteString ?? "nil") url=\(tab1.url?.absoluteString ?? "nil") webView.url=\(tab1.webView?.url?.absoluteString ?? "nil")") }.store(in: &watch)
++            wc.selectTab(id: tab1.id)
++            await waitLoaded(tab1)
++            for _ in 0..<40 where tab1.favicon == nil { await sleep(0.25) }
++            describe("STEP1 programmatic", tab1)
++            shot("step1-programmatic")
++            await sleep(1.5)
++
++            // STEP2: Cmd+T palette, typed "[::1]:port", Return.
++            wc.newTab(nil)
++            await sleep(0.8)
++            log("STEP2 palette open=\(wc.commandPaletteView != nil) firstResponder=\(String(describing: type(of: window.firstResponder as Any)))")
++            await typeText("[::1]:\(port)")
++            await sleep(0.8)
++            log("STEP2 field=\"\((window.firstResponder as? NSTextView)?.string ?? "?")\" rows=\(paletteRows())")
++            key(36, "\r")
++            await sleep(0.5)
++            guard let tab2 = wc.selectedTab, tab2 !== tab1 else { return log("STEP2 no new tab selected") }
++            await waitLoaded(tab2)
++            describe("STEP2 palette new tab", tab2)
++
++            // STEP3: Cmd+L in place, typed "http://[::1]:port/declared.html" (a
++            // declared <link rel=icon>: green.png via FaviconLinkBridge).
++            wc.focusAddressBar(nil)
++            await sleep(0.8)
++            log("STEP3 palette open=\(wc.commandPaletteView != nil) navigatesInPlace=\(wc.commandPaletteNavigatesInPlace) field=\"\((window.firstResponder as? NSTextView)?.string ?? "?")\"")
++            await typeText("http://[::1]:\(port)/declared.html")
++            await sleep(0.8)
++            log("STEP3 field=\"\((window.firstResponder as? NSTextView)?.string ?? "?")\" rows=\(paletteRows())")
++            key(36, "\r")
++            await waitLoaded(tab2)
++            describe("STEP3 palette in place", tab2)
++            shot("step3-declared")
++            await sleep(1.5)
++            log("tabs in space: \(space.tabs.map { $0.url?.absoluteString ?? "nil" })")
++            describe("END tab1", tab1)
++            watch.removeAll()
++            log("done")
++        }
++    }
++}
++#endif

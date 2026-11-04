@@ -11,7 +11,7 @@ sources:
     title: Host an extension's per-tab side panel beside the tab's content
   - id: claude-md
     resource: ../../CLAUDE.md
-    title: CLAUDE.md (build commands, TDD policy, commit checklist)
+    title: CLAUDE.md (build commands, testing policy, commit checklist)
   - id: project-yml
     resource: ../../project.yml
     title: project.yml (targets, schemes, test scheme environment)
@@ -39,10 +39,16 @@ sources:
   - id: notes-crash
     resource: "Agent session notes, 2026-09-13 (not in the repository)"
     title: Session notes on test host crashes
+  - id: task-235
+    resource: backlog:TASK-235
+    title: Tests - SettingsPaneColumnsTests depends on the shared DetourTests data directory being empty of link routes
+  - id: notes-locked-run
+    resource: "Agent session notes, 2026-11-02 (not in the repository)"
+    title: Session notes on two full test runs that failed while the screen was locked
 ---
 
 The commands are in [CLAUDE.md](../../CLAUDE.md), and so is the policy: what
-needs a test first, and what must pass before a commit. This page is the
+needs tests, and what must pass before a commit. This page is the
 part CLAUDE.md does not cover: which build directory to use, how to keep two
 builds or two test runs from corrupting each other, how to pass environment
 variables to the test host, and how to stop a test from eating the machine.
@@ -120,6 +126,18 @@ production directory. If the line reads `⚠️ DETOUR_DATA_DIR not set`, stop:
 the run is writing into the real profile. What the data directory does and
 does not isolate is on [persistence](../architecture/persistence.md) and
 [profile data removal](../architecture/profile-data-removal.md).
+
+The directory is not emptied between runs (only the extension table is
+wiped), so the shared singletons (`TabStore.shared`, `LinkRouteStore.shared`,
+`AppDatabase.shared`) start each run with whatever earlier runs left. A suite
+that seeds a shared store in `setUp` and removes the rows in `tearDown`
+(`ExternalLinkRoutingTests` adds 9 link routes, `InPageLinkRoutingTests` 3)
+leaks them when the host crashes or the run is killed. A test whose result
+depends on a store's contents builds its object over a store of its own, an
+`AppDatabase(dbQueue: DatabaseQueue())` in memory: the Links settings pane
+takes one through `LinksSettingsViewController(linkRoutes:)`. Nine leaked
+routes made the Links pane 1287 pt tall and failed
+`SettingsPaneColumnsTests` until that seam existed.[^task-235]
 
 ## 5. Environment variables for the test host
 
@@ -257,6 +275,23 @@ suite. Two that have happened:
 - **Shell differences.** An agent's tool shell may be zsh while the
   interactive shell is something else. Quote globs (`--include='*.swift'`)
   and put multi-line recipes in a script file run with `bash`.
+- **A locked screen fails the web-view suites.** With the screen locked
+  and the display asleep, the test host's WebKit GPU process stops taking
+  new web processes a few minutes in (its log shows no
+  `GPUProcess::createGPUConnectionToWebProcess` until the display wakes).
+  Every web view created after that point never finishes its load, so
+  suites that load pages time out at 10 s per test, while suites without
+  web views, and suites that ran before the stall, pass. On wake the host
+  logs `Too many messages (129) in the queue to remote PID … (most common:
+  GPUProcess_SetScreenProperties)`, and the failures stop. Two full runs
+  failed this way, with about 175 failures in `ExtensionWindowsCreatePrivateTests`,
+  `FaviconLinkBridgeTests` and `HistoryDeletionIntegrationTests`, and
+  looked like a regression. That kind of failure is not one: compare its
+  window with `pmset -g log | grep "Display is turned"` and with the
+  `loginwindow` `enqueueLockScreenRequest` lines in `log show` before you
+  bisect. Keep the display awake for a long run with `caffeinate -d -i -w
+  <xcodebuild pid>`.[^notes-locked-run] See also the locked-screen note in
+  [Runtime verification](./runtime-verification.md).
 - **WebKit storage.** The test host shares
   `~/Library/WebKit/com.detourbrowser.mac/` with the installed app (the
   directory is keyed by bundle id); isolation there comes from
@@ -271,6 +306,7 @@ suite. Two that have happened:
 - [Parallel agent workflow](./parallel-agent-workflow.md) — several agents building on one machine.
 - [Testing extensions](../extensions/testing-extensions.md) — which extension suite proves what.
 - [WebKit test host traps](../platform/webkit-test-host-traps.md) — WebKit behaviour that crashes or pollutes the host.
+- [Swift concurrency checking](../platform/swift-concurrency-checking.md) — the target's concurrency settings, and why they belong in project.yml, not on the command line.
 - [App shell](../architecture/app-shell.md) — what the app skips when it is the test host.
 
 [^task-132-8]: Host an extension's per-tab side panel beside the tab's content
@@ -280,3 +316,5 @@ suite. Two that have happened:
 [^notes-stale]: Session notes on stale DerivedData builds
 [^notes-harness]: Session notes on the runtime debug harness
 [^notes-crash]: Session notes on test host crashes
+[^task-235]: TASK-235
+[^notes-locked-run]: Session notes on two full test runs that failed while the screen was locked

@@ -9,8 +9,8 @@ import Network
 ///
 /// The body is one 16 KB buffer sent again and again, never held whole. The
 /// listener and its connections run on the main queue, so every property is
-/// read and written there.
-final class SlowDownloadServer: @unchecked Sendable {
+/// read and written there (the class is main-actor isolated).
+final class SlowDownloadServer {
     /// The length `/file` declares. No test runs long enough to reach it.
     static let declaredLength = 512 * 1024 * 1024
     private static let chunk = Data(repeating: 0x41, count: 16 * 1024)
@@ -31,10 +31,13 @@ final class SlowDownloadServer: @unchecked Sendable {
     }
 
     func start(timeout: TimeInterval = 5) async throws {
+        // The listener runs its handlers on the main queue (`start(queue: .main)`).
         listener.stateUpdateHandler = { [weak self] state in
-            if case .ready = state { self?.isReady = true }
+            MainActor.assumeIsolated { if case .ready = state { self?.isReady = true } }
         }
-        listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
+        listener.newConnectionHandler = { [weak self] connection in
+            MainActor.assumeIsolated { self?.accept(connection) }
+        }
         listener.start(queue: .main)
         let deadline = Date().addingTimeInterval(timeout)
         while !isReady {
@@ -57,24 +60,27 @@ final class SlowDownloadServer: @unchecked Sendable {
     private func accept(_ connection: NWConnection) {
         connections.append(connection)
         connection.start(queue: .main)
+        // The connection runs its callbacks on the main queue (`start(queue: .main)`).
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, _, _ in
-            guard let self, let data, let request = String(data: data, encoding: .utf8) else { return }
-            let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
-            if path.hasPrefix("/file") {
-                let head = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
-                    + "Content-Disposition: attachment; filename=\"slow.bin\"\r\n"
-                    + "Content-Length: \(Self.declaredLength)\r\nConnection: close\r\n\r\n"
-                connection.send(content: Data(head.utf8), completion: .contentProcessed { [weak self] _ in
-                    self?.sendNextChunk(on: connection)
-                })
-                self.watchForClose(of: connection)
-            } else {
-                let body = "<html><head><title>Fixture</title></head><body>fixture</body></html>"
-                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
-                    + "Content-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
-                connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
-                    connection.cancel()
-                })
+            MainActor.assumeIsolated {
+                guard let self, let data, let request = String(data: data, encoding: .utf8) else { return }
+                let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+                if path.hasPrefix("/file") {
+                    let head = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
+                        + "Content-Disposition: attachment; filename=\"slow.bin\"\r\n"
+                        + "Content-Length: \(Self.declaredLength)\r\nConnection: close\r\n\r\n"
+                    connection.send(content: Data(head.utf8), completion: .contentProcessed { [weak self] _ in
+                        MainActor.assumeIsolated { self?.sendNextChunk(on: connection) }
+                    })
+                    self.watchForClose(of: connection)
+                } else {
+                    let body = "<html><head><title>Fixture</title></head><body>fixture</body></html>"
+                    let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+                        + "Content-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+                    connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
+                        connection.cancel()
+                    })
+                }
             }
         }
     }
@@ -83,11 +89,14 @@ final class SlowDownloadServer: @unchecked Sendable {
     /// reports is the end of the connection.
     private func watchForClose(of connection: NWConnection) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { [weak self] _, _, isComplete, error in
-            guard let self else { return }
-            if isComplete || error != nil {
-                self.peerClosed = true
-            } else {
-                self.watchForClose(of: connection)
+            let closed = isComplete || error != nil
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if closed {
+                    self.peerClosed = true
+                } else {
+                    self.watchForClose(of: connection)
+                }
             }
         }
     }
@@ -95,14 +104,17 @@ final class SlowDownloadServer: @unchecked Sendable {
     private func sendNextChunk(on connection: NWConnection) {
         guard !isStopped, !peerClosed, bytesSent < Self.declaredLength else { return }
         connection.send(content: Self.chunk, completion: .contentProcessed { [weak self] error in
-            guard let self else { return }
-            if error != nil {
-                self.peerClosed = true
-                return
-            }
-            self.bytesSent += Self.chunk.count
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.chunkInterval) { [weak self] in
-                self?.sendNextChunk(on: connection)
+            let failed = error != nil
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if failed {
+                    self.peerClosed = true
+                    return
+                }
+                self.bytesSent += Self.chunk.count
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.chunkInterval) { [weak self] in
+                    self?.sendNextChunk(on: connection)
+                }
             }
         })
     }
@@ -115,8 +127,7 @@ private func fileSize(_ url: URL) -> Int {
 /// A real `WKDownload` from a non-persistent data store against a server that
 /// controls the pace (TASK-156): what WebKit does with it once the web view is
 /// gone, and what closing a Private window does to it.
-@MainActor
-final class PrivateDownloadTransferTests: XCTestCase {
+nonisolated final class PrivateDownloadTransferTests: XCTestCase {
 
     private var server: SlowDownloadServer!
     private var directory: URL!
@@ -124,9 +135,9 @@ final class PrivateDownloadTransferTests: XCTestCase {
     private var controller: BrowserWindowController?
     /// Downloads a test started through `DownloadManager.shared`.
     private var startedItems: [DownloadItem] = []
-    private var defaultFaviconFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
 
-    override func setUp() async throws {
+    @MainActor override func setUp() async throws {
         try await super.setUp()
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PrivateDownloadTransferTests-\(UUID().uuidString)", isDirectory: true)
@@ -141,7 +152,7 @@ final class PrivateDownloadTransferTests: XCTestCase {
         try await server.start()
     }
 
-    override func tearDown() async throws {
+    @MainActor override func tearDown() async throws {
         // Only reached with a download still running when a test failed half way.
         for item in startedItems where item.state == .downloading {
             DownloadManager.shared.cancelDownload(item)
@@ -163,7 +174,7 @@ final class PrivateDownloadTransferTests: XCTestCase {
 
     /// Turns the attachment into a download and keeps the `WKDownload`, as
     /// `DownloadItem` does.
-    private final class RawDownloadDelegate: NSObject, WKNavigationDelegate, WKDownloadDelegate {
+    @MainActor private final class RawDownloadDelegate: NSObject, WKNavigationDelegate, WKDownloadDelegate {
         let destination: URL
         private(set) var download: WKDownload?
         private(set) var ended: String?
@@ -194,7 +205,7 @@ final class PrivateDownloadTransferTests: XCTestCase {
 
     /// Starts the download in a web view on a fresh non-persistent store and
     /// returns once both are released: the caller holds neither.
-    private func startRawDownloadAndReleaseItsWebView(delegate: RawDownloadDelegate) async throws {
+    @MainActor private func startRawDownloadAndReleaseItsWebView(delegate: RawDownloadDelegate) async throws {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200), configuration: configuration)
@@ -212,7 +223,7 @@ final class PrivateDownloadTransferTests: XCTestCase {
     /// transferring and writing for as long as something retains it, on a
     /// non-persistent store too. Cancelling it is what stops the transfer, and
     /// the partial file stays on disk.
-    func testWebKitKeepsADownloadRunningAfterItsWebViewIsGoneAndCancelLeavesThePartialFile() async throws {
+    @MainActor func testWebKitKeepsADownloadRunningAfterItsWebViewIsGoneAndCancelLeavesThePartialFile() async throws {
         let destination = directory.appendingPathComponent("raw.bin")
         let delegate = RawDownloadDelegate(destination: destination)
         try await startRawDownloadAndReleaseItsWebView(delegate: delegate)
@@ -237,7 +248,7 @@ final class PrivateDownloadTransferTests: XCTestCase {
 
     // MARK: - What closing a Private window does
 
-    private func makePrivateWindow() throws -> (BrowserWindowController, Space) {
+    @MainActor private func makePrivateWindow() throws -> (BrowserWindowController, Space) {
         let wc = BrowserWindowController(incognito: true)
         controller = wc
         // Never let this window's split view touch the autosaved sidebar
@@ -248,7 +259,7 @@ final class PrivateDownloadTransferTests: XCTestCase {
 
     /// Opens `/file` in a selected tab of a Private window and returns the
     /// download once it is writing.
-    private func startDownload(in wc: BrowserWindowController, space: Space) async throws -> (DownloadItem, URL) {
+    @MainActor private func startDownload(in wc: BrowserWindowController, space: Space) async throws -> (DownloadItem, URL) {
         let manager = DownloadManager.shared
         let scope = wc.downloadScope
         let tab = TabStore.shared.addTab(in: space, url: server.url("/file"))
@@ -272,7 +283,7 @@ final class PrivateDownloadTransferTests: XCTestCase {
     /// A Private window that goes away without the question (an extension's
     /// `windows.remove`, anything that calls `close()`): its running download
     /// is cancelled, the transfer stops and the partial file is removed.
-    func testClosingAPrivateWindowCancelsItsRunningDownloadAndRemovesThePartialFile() async throws {
+    @MainActor func testClosingAPrivateWindowCancelsItsRunningDownloadAndRemovesThePartialFile() async throws {
         let (wc, space) = try makePrivateWindow()
         let (item, file) = try await startDownload(in: wc, space: space)
         let manager = DownloadManager.shared

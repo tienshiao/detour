@@ -134,7 +134,7 @@ enum ExtensionTabLifecycle {
     /// Any window that lists `tab` right now, resolved through the same
     /// controllers and the same enumeration as `window(for:)`. Replaced by tests.
     static var windowListing: (BrowserTab) -> (any WKWebExtensionWindow)? = { tab in
-        extensionBrowserWindows().first { wc in wc.extensionTabs.contains { $0 === tab } }
+        extensionListedWindows().first { wc in wc.extensionTabs.contains { $0 === tab } }
     }
 
     /// Reports `tab` as open and remembers which profile was told, so the close

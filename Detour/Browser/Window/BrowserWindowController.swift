@@ -11,6 +11,8 @@ class BrowserWindowController: NSWindowController {
     /// The split view hosting the sidebar and content split items — what tests reach for.
     var sidebarSplitView: NSSplitView { splitViewController.splitView }
     let tabSidebar = TabSidebarViewController()
+    /// The sidebar's tab hover card (TASK-190).
+    let hoverCard = TabHoverCardController()
     let contentContainerView = NSView()
     /// The content split item's view: `contentContainerView` and, while an
     /// extension side panel shows, the panel beside it (TASK-132.8).
@@ -51,7 +53,12 @@ class BrowserWindowController: NSWindowController {
     /// cannot hold the sidebar open.
     private let sidebarHoldingPopovers = NSHashTable<NSPopover>.weakObjects()
 
-    var selectedTabID: UUID?
+    var selectedTabID: UUID? {
+        // What this window shows decides what its now-playing bar may show.
+        didSet { if selectedTabID != oldValue { scheduleNowPlayingUpdate() } }
+    }
+    /// The now-playing bar's per-window state (TASK-192).
+    let nowPlaying = NowPlayingWindowState()
     private var activeTabSubscriptions = Set<AnyCancellable>()
     private var snapshotImageView: NSImageView?
     /// Whether this window currently displays the selected tab's live web view.
@@ -109,6 +116,10 @@ class BrowserWindowController: NSWindowController {
     private var splitRevealOverlayMemberIDs: [UUID] = []
 
     private let findBar = FindBarView()
+    private var findBarTopConstraint: NSLayoutConstraint?
+    /// The hosted panes' `$url` sinks that keep each pane's dev toolbar
+    /// current (TASK-186.2); rebuilt on every claim, dropped with the content.
+    var devToolbarSubscriptions = Set<AnyCancellable>()
     private let dragHandle = WindowDragView()
     private let linkStatusBar = LinkStatusBar()
     private let emptyStateLabel: NSTextField = {
@@ -122,9 +133,7 @@ class BrowserWindowController: NSWindowController {
     }()
     let toastManager = ToastManager()
     private var webViewTopConstraint: NSLayoutConstraint?
-    private var findMatchCount = 0
-    private var findMatchIndex = 0
-    private var lastFindQuery = ""
+    private lazy var findSession = FindInPageSession(bar: findBar)
 
     private(set) var commandPaletteView: CommandPaletteView?
     var commandPaletteNavigatesInPlace = false
@@ -146,13 +155,41 @@ class BrowserWindowController: NSWindowController {
     /// Asks whether to close this Private window although downloads of its
     /// own are still running; true goes ahead and cancels them (TASK-156). A
     /// variable so a test answers instead of a modal alert.
-    var confirmClosingWithPrivateDownloads: (PrivateDownloadClosePolicy.Prompt) -> Bool =
+    var confirmClosingWithPrivateDownloads: @MainActor (PrivateDownloadClosePolicy.Prompt) -> Bool =
         BrowserWindowController.runPrivateDownloadCloseAlert
 
     enum ContextMenuLinkAction {
-        case none, openInNewTab, openInNewWindow
+        case none, openInNewTab, openInNewWindow, openInSplitView
     }
     var contextMenuLinkAction: ContextMenuLinkAction = .none
+
+    /// Set while this window inserts tabs it is about to select (a split opened
+    /// from a link or a Peek): the collapsed sidebar's "Opened new tab in
+    /// background" toast is wrong for them, and would fire once per pane.
+    var suppressesBackgroundTabToast = false
+
+    /// Where Copy URL writes; a test substitutes a private pasteboard so it
+    /// never clobbers the user's clipboard.
+    var urlPasteboard: NSPasteboard = .general
+
+    /// Where the dev toolbar's captures go (TASK-186.3): the clipboard, and
+    /// the folder an Option-click saves to (Downloads, as for downloads). A
+    /// test or harness substitutes its own so the user's are left alone.
+    var capturePasteboard: NSPasteboard = .general
+    var captureSaveDirectory: () -> URL = { DownloadManager.shared.downloadsDirectory }
+
+    /// What the dev toolbar's Web Inspector buttons drive (TASK-186.4); a
+    /// test substitutes a recorder.
+    var webInspectorToggler: WebInspectorToggling = WebInspectorToggler.shared
+
+    /// Runs `body` with the background-tab toast off; see
+    /// `suppressesBackgroundTabToast`.
+    func withoutBackgroundTabToast<T>(_ body: () -> T) -> T {
+        let previous = suppressesBackgroundTabToast
+        suppressesBackgroundTabToast = true
+        defer { suppressesBackgroundTabToast = previous }
+        return body()
+    }
 
     var peekOverlayView: PeekOverlayView?
     /// Funnels this window's activation announcements to the extension
@@ -205,17 +242,37 @@ class BrowserWindowController: NSWindowController {
     /// changed (TASK-51). Every path that can change it funnels through here;
     /// the tracker drops the repeats.
     func announceExtensionActiveTabIfChanged() {
+        guard !holdsExtensionActivation else { return }
         extensionActiveTabTracker.announce(extensionActiveTab, in: activeSpace?.profile)
         // The same paths change which tab a side panel shows with: a peek
         // going up or down, a split pane taking focus (TASK-132.8).
         settleSidePanels()
     }
 
+    /// Set only inside `holdingExtensionActivation`.
+    private var holdsExtensionActivation = false
+
+    /// Runs `body` with this window's activation announcements held, then
+    /// makes the one `body` led to. Quick Detour's Open in (TASK-193.3) selects
+    /// the page it hands over and announces its move inside, so the contexts
+    /// hear `tabs.onDetached` / `onAttached` before `tabs.onActivated`, as
+    /// for a tab dragged between windows — and the move is announced while
+    /// the window has the tab selected, which WebKit needs to list it at all
+    /// (a window with nothing selected reports no tabs, so the attach would
+    /// carry no position).
+    func holdingExtensionActivation(_ body: () -> Void) {
+        let wasHeld = holdsExtensionActivation
+        holdsExtensionActivation = true
+        body()
+        holdsExtensionActivation = wasHeld
+        announceExtensionActiveTabIfChanged()
+    }
+
     /// Autosave names of the window frame and of the sidebar split view. Scoped
     /// to the data directory so only a default-data-directory run touches the
     /// keys the production app restores from (TASK-41).
-    static let frameAutosaveName = UserDefaultsScope.autosaveName("BrowserWindow")
-    static let splitViewAutosaveName = UserDefaultsScope.autosaveName("BrowserSplitView")
+    nonisolated static let frameAutosaveName = UserDefaultsScope.autosaveName("BrowserWindow")
+    nonisolated static let splitViewAutosaveName = UserDefaultsScope.autosaveName("BrowserSplitView")
 
     convenience init(incognito: Bool) {
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -294,6 +351,8 @@ class BrowserWindowController: NSWindowController {
             name: .webViewOwnershipChanged,
             object: nil
         )
+        NotificationCenter.default.addObserver(self, selector: #selector(nowPlayingDidChange(_:)),
+                                               name: BrowserTab.nowPlayingDidChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(popoverDidShow(_:)),
                                                name: NSPopover.didShowNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(popoverDidClose(_:)),
@@ -352,6 +411,22 @@ class BrowserWindowController: NSWindowController {
             selector: #selector(handleExtensionPinStateDidChange),
             name: ExtensionManager.extensionPinStateDidChangeNotification,
             object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSiteSettingsDidChange(_:)),
+            name: SiteSettingsStore.didChangeNotification,
+            object: SiteSettingsStore.shared
+        )
+
+        // An undo of Add Space or a redo of Delete Space that routes refused
+        // (TASK-191.1): the frontmost browser window explains why.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSpaceDeletionBlocked(_:)),
+            name: TabStore.spaceDeletionBlockedNotification,
+            object: store
         )
 
         // A window coming back from occluded (app switch, another window covering
@@ -464,7 +539,9 @@ class BrowserWindowController: NSWindowController {
         removeSplitRevealOverlay()
     }
 
-    deinit {
+    /// Isolated: it tears down main-actor state; the object is released on
+    /// the main thread in practice, and the teardown hops there otherwise.
+    isolated deinit {
         store.removeObserver(self)
         DownloadManager.shared.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
@@ -490,6 +567,7 @@ class BrowserWindowController: NSWindowController {
         tabSidebar.activeSpaceID = id
         if !isIncognito {
             store.lastActiveSpaceID = id
+            store.noteSpaceUsed(id)
         }
 
         tabSidebar.resetState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders, tabs: space.tabs)
@@ -509,6 +587,14 @@ class BrowserWindowController: NSWindowController {
             }
         } else {
             deselectAllTabs()
+        }
+
+        // A palette still open here (selecting a tab dismisses it; a space
+        // with none to select does not, e.g. Next Space into an empty one)
+        // must stop offering the old space's profile (TASK-209).
+        if let palette = commandPaletteView {
+            scopeCommandPalette(palette)
+            palette.reloadSuggestions()
         }
 
         // Update pinned extension icons for the new profile
@@ -621,6 +707,8 @@ class BrowserWindowController: NSWindowController {
 
     private func setupSplitView() {
         tabSidebar.delegate = self
+        hoverCard.host = self
+        tabSidebar.hoverCard = hoverCard
         tabSidebar.fauxAddressBar.onCopyURL = { [weak self] in
             self?.copyCurrentURL(nil)
         }
@@ -657,14 +745,16 @@ class BrowserWindowController: NSWindowController {
             emptyStateLabel.centerYAnchor.constraint(equalTo: contentContainerView.centerYAnchor),
         ])
         toastManager.parentView = contentContainerView
+        toastManager.topInset = { [weak self] size in self?.toastTopInset(toastSize: size) ?? ToastManager.defaultTopInset }
         contentItem = NSSplitViewItem(viewController: contentVC)
         splitViewController.addSplitViewItem(contentItem)
 
         splitViewController.splitView.autosaveName = BrowserWindowController.splitViewAutosaveName
 
         sidebarCollapseObservation = sidebarItem.observe(\.isCollapsed, options: [.new]) { [weak self] _, change in
-            guard let self, let collapsed = change.newValue else { return }
-            self.sidebarCollapsedStateChanged(collapsed, animated: true)
+            guard let collapsed = change.newValue else { return }
+            // AppKit collapses split view items on the main thread.
+            MainActor.assumeIsolated { self?.sidebarCollapsedStateChanged(collapsed, animated: true) }
         }
 
         // Loading the split view applies the autosave, which can restore a
@@ -688,6 +778,7 @@ class BrowserWindowController: NSWindowController {
     /// are hidden while the sidebar is collapsed. The `isCollapsed` observer and
     /// the setup-time sync both go through here, so the two never disagree.
     private func sidebarCollapsedStateChanged(_ collapsed: Bool, animated: Bool) {
+        if collapsed { hoverCard.dismiss() }
         handleSidebarEvent(.collapsedChanged(collapsed))
         setTrafficLightsHidden(collapsed, animated: animated)
     }
@@ -779,8 +870,8 @@ class BrowserWindowController: NSWindowController {
                 sidebarAutoHideTimer = nil
             case .startHoverGrace:
                 sidebarHoverGraceTimer?.invalidate()
-                sidebarHoverGraceTimer = Timer.scheduledTimer(withTimeInterval: sidebarHoverDelay,
-                                                              repeats: false) { [weak self] _ in
+                sidebarHoverGraceTimer = Timer.scheduledMainTimer(withTimeInterval: sidebarHoverDelay,
+                                                                  repeats: false) { [weak self] _ in
                     guard let self else { return }
                     self.sidebarHoverGraceTimer = nil
                     // With a button down the sidebar is kept for now; the
@@ -799,8 +890,8 @@ class BrowserWindowController: NSWindowController {
     /// from where the pointer is when the delay elapses.
     private func scheduleSidebarAutoHide() {
         sidebarAutoHideTimer?.invalidate()
-        sidebarAutoHideTimer = Timer.scheduledTimer(withTimeInterval: sidebarHoverDelay,
-                                                    repeats: false) { [weak self] _ in
+        sidebarAutoHideTimer = Timer.scheduledMainTimer(withTimeInterval: sidebarHoverDelay,
+                                                        repeats: false) { [weak self] _ in
             guard let self else { return }
             self.sidebarAutoHideTimer = nil
             self.refreshSidebarPopoverHold()
@@ -824,8 +915,8 @@ class BrowserWindowController: NSWindowController {
             return
         }
         guard sidebarPointerSampleTimer == nil else { return }
-        let timer = Timer.scheduledTimer(withTimeInterval: sidebarPointerSampleInterval,
-                                         repeats: true) { [weak self] timer in
+        let timer = Timer.scheduledMainTimer(withTimeInterval: sidebarPointerSampleInterval,
+                                             repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
             self.sampleSidebarPointer()
         }
@@ -960,10 +1051,54 @@ class BrowserWindowController: NSWindowController {
         findBar.isHidden = true
         contentContainerView.addSubview(findBar)
 
+        let top = findBar.topAnchor.constraint(equalTo: contentContainerView.topAnchor, constant: Self.findBarTopInset)
+        findBarTopConstraint = top
         NSLayoutConstraint.activate([
-            findBar.topAnchor.constraint(equalTo: contentContainerView.topAnchor, constant: 12),
+            top,
             findBar.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor, constant: 12),
         ])
+    }
+
+    private static let findBarTopInset: CGFloat = 12
+
+    /// Moves the find bar down by the dev toolbar's height while a hosted
+    /// pane's toolbar (TASK-186.2) lies under the find bar's spot, at the
+    /// content area's top left, so the bar never covers the toolbar's controls.
+    /// Geometric rather than "the focused pane": the find bar sits over the
+    /// left pane of a split whichever pane is focused, and a side-docked
+    /// inspector can move a toolbar out from under it.
+    /// Skipped while the find bar is hidden; `showFindBar` places it.
+    func updateFindBarPlacement() {
+        guard !findBar.isHidden else { return }
+        let bounds = contentContainerView.bounds
+        let size = findBar.fittingSize
+        let spot = NSRect(x: 12, y: bounds.maxY - Self.findBarTopInset - size.height,
+                          width: size.width, height: size.height)
+        let constant = Self.findBarTopInset + (devToolbarCovers(spot) ? DevToolbarLayout.height : 0)
+        if findBarTopConstraint?.constant != constant { findBarTopConstraint?.constant = constant }
+    }
+
+    /// The toast sits at the content area's top right, which is on a dev
+    /// toolbar's capture and inspector buttons when the pane there shows one:
+    /// it goes below the toolbar then, so it never covers the button that
+    /// just showed it (TASK-186.3). The spot is the toast's own size, so a
+    /// long toast over a narrow right pane also clears the left pane's bar.
+    func toastTopInset(toastSize: NSSize = NSSize(width: 28, height: 20)) -> CGFloat {
+        let bounds = contentContainerView.bounds
+        let spot = NSRect(x: bounds.maxX - ToastManager.trailingInset - toastSize.width,
+                          y: bounds.maxY - ToastManager.defaultTopInset - toastSize.height,
+                          width: toastSize.width, height: toastSize.height)
+        return ToastManager.defaultTopInset + (devToolbarCovers(spot) ? DevToolbarLayout.height : 0)
+    }
+
+    /// Whether a hosted pane's dev toolbar lies under `spot` (in the content
+    /// area's coordinates): the find bar and the toast then go below it.
+    private func devToolbarCovers(_ spot: NSRect) -> Bool {
+        hostedPaneTabs.contains { tab in
+            guard let container = tab.webViewContainer, container.isShowingDevToolbar,
+                  let toolbar = container.devToolbar else { return false }
+            return toolbar.convert(toolbar.bounds, to: contentContainerView).intersects(spot)
+        }
     }
 
     private var linkStatusBarConstraints: [NSLayoutConstraint] = []
@@ -998,6 +1133,7 @@ class BrowserWindowController: NSWindowController {
     @objc func showFindBar(_ sender: Any?) {
         findBar.alphaValue = 0
         findBar.isHidden = false
+        updateFindBarPlacement()
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.2
             findBar.animator().alphaValue = 1
@@ -1020,88 +1156,39 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func dismissFindBar(_ sender: Any?) {
-        findBar.searchField.stringValue = ""
-        findBar.updateResultLabel("")
-        lastFindQuery = ""
-        findMatchCount = 0
-        findMatchIndex = 0
+        findSession.reset()
         window?.makeFirstResponder(selectedTab?.webView)
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.15
             findBar.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             self?.findBar.isHidden = true
         })
     }
 
     func performFind(_ text: String, backwards: Bool) {
         guard let webView = selectedTab?.webView else { return }
-
-        let isNewQuery = text != lastFindQuery
-        if isNewQuery {
-            lastFindQuery = text
-            findMatchIndex = 0
-            countMatches(for: text, in: webView)
-        }
-
-        let config = WKFindConfiguration()
-        config.backwards = backwards
-        config.wraps = true
-        webView.find(text, configuration: config) { [weak self] result in
-            guard let self else { return }
-            if result.matchFound {
-                if !isNewQuery {
-                    if backwards {
-                        self.findMatchIndex -= 1
-                        if self.findMatchIndex < 1 { self.findMatchIndex = self.findMatchCount }
-                    } else {
-                        self.findMatchIndex += 1
-                        if self.findMatchIndex > self.findMatchCount { self.findMatchIndex = 1 }
-                    }
-                }
-                self.updateFindLabel()
-            } else {
-                self.findMatchCount = 0
-                self.findMatchIndex = 0
-                self.findBar.updateResultLabel("Not found")
-            }
-        }
-    }
-
-    private func countMatches(for text: String, in webView: WKWebView) {
-        let escaped = text
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "\\n")
-        let js = """
-        (function() {
-            var t = '\(escaped)'.toLowerCase();
-            var body = document.body.innerText.toLowerCase();
-            var count = 0, pos = 0;
-            while ((pos = body.indexOf(t, pos)) !== -1) { count++; pos += t.length; }
-            return count;
-        })()
-        """
-        webView.evaluateJavaScript(js) { [weak self] result, _ in
-            guard let self, self.lastFindQuery == text else { return }
-            self.findMatchCount = (result as? Int) ?? 0
-            if self.findMatchCount > 0 {
-                self.findMatchIndex = 1
-            }
-            self.updateFindLabel()
-        }
-    }
-
-    private func updateFindLabel() {
-        if findMatchCount > 0 {
-            findBar.updateResultLabel("\(findMatchIndex) of \(findMatchCount)")
-        } else {
-            findBar.updateResultLabel("Not found")
-        }
+        findSession.perform(text, backwards: backwards, in: webView)
     }
 
 
     // MARK: - Tab Selection & WebView Ownership
+
+    /// Whether leaving `tab` (the outgoing tab or its Peek) puts its playing
+    /// video into picture in picture: not when the tab is closing, nor on a
+    /// site whose picture in picture switch is off (TASK-188).
+    private func entersPictureInPictureOnLeaving(_ tab: BrowserTab) -> Bool {
+        let host = tab.url?.host ?? ""
+        // `selectedTab` resolves in the active space, so the outgoing tab (and
+        // its Peek) is always under the active space's profile. On a space
+        // switch it does not resolve at all and nothing enters PiP.
+        let siteOverride = activeSpace?.profile.flatMap {
+            SiteSettingsStore.shared.override(.pictureInPicture, forSite: host, profileID: $0.id)
+        }
+        return AutomaticPictureInPicture.shouldEnter(isPlayingAudio: tab.isPlayingAudio, isMuted: tab.isMuted,
+                                                     leavesClosingTab: selectionLeavesClosingTab,
+                                                     siteOverride: siteOverride)
+    }
 
     func selectTab(id: UUID) {
         guard let tab = activeSpace?.displayableTab(id: id) else { return }
@@ -1113,14 +1200,14 @@ class BrowserWindowController: NSWindowController {
 
         if let previousTab = selectedTab {
             // Enter PiP for peek before hidePeekUI() removes it from the hierarchy.
-            if !selectionLeavesClosingTab, let peekTab = previousTab.peekTab, peekTab.isPlayingAudio {
+            if let peekTab = previousTab.peekTab, entersPictureInPictureOnLeaving(peekTab) {
                 peekTab.enterPictureInPicture()
                 pipContentView = peekTab.webView
             }
             // Before the Peek leaves the screen: it is pictured with its host.
             stampDeselected(previousTab)
             hidePeekUI()
-            if !selectionLeavesClosingTab, previousTab.isPlayingAudio {
+            if entersPictureInPictureOnLeaving(previousTab) {
                 previousTab.enterPictureInPicture()
                 // Keep the container in the hierarchy so WebKit can capture the
                 // video's on-screen frame for the PiP animation origin.
@@ -1190,6 +1277,9 @@ class BrowserWindowController: NSWindowController {
 
         tab.exitPictureInPicture()
         tab.peekTab?.exitPictureInPicture()
+        // On screen again: a page the now-playing bar paused gets its media back.
+        // (`selectedTabID`'s didSet schedules this window's bar update.)
+        for member in members { member.nowPlayingTabWasSelected() }
 
         // Restore peek overlay if the incoming tab has one
         restorePeekOverlayIfNeeded()
@@ -1326,6 +1416,7 @@ class BrowserWindowController: NSWindowController {
         AutomationParking.reconcile(preferring: self)
         // The web view's owner shows its tab's side panel (TASK-132.8).
         settleSidePanels()
+        refreshDevToolbars()
     }
 
     private func wireOwnedWebView(_ webView: WKWebView) {
@@ -1721,7 +1812,7 @@ class BrowserWindowController: NSWindowController {
             ctx.allowsImplicitAnimation = true
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             animations()
-        }, completionHandler: { [weak self, weak overlay] in
+        }, onMain: { [weak self, weak overlay] in
             guard let self, let overlay else { return }
             self.fadeOutSplitRevealOverlay(overlay)
         })
@@ -1780,7 +1871,7 @@ class BrowserWindowController: NSWindowController {
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.12
             overlay.animator().alphaValue = 0
-        }, completionHandler: { [weak self, weak overlay] in
+        }, onMain: { [weak self, weak overlay] in
             guard let overlay else { return }
             overlay.removeFromSuperview()
             if let self, self.splitRevealOverlay === overlay {
@@ -1894,6 +1985,8 @@ class BrowserWindowController: NSWindowController {
     /// split formed around the selected tab (context menu) — so the hosted view
     /// (single container vs split view) matches the selected tab's group state.
     func refreshSplitHostingIfNeeded() {
+        // A split made or broken around the selection changes which panes are visible.
+        scheduleNowPlayingUpdate()
         guard let tab = selectedTab, ownsWebView else { return }
         let members = splitMembers(of: tab)
         let hostingSplit = hostedSplitView?.superview === contentContainerView
@@ -1964,6 +2057,12 @@ class BrowserWindowController: NSWindowController {
            let split = members[0].webViewContainer?.superview as? NSSplitView {
             return snapshotWithinSuperview(of: split)
         }
+        // A dev-mode page is pictured with its toolbar, as the handoff
+        // snapshot (of the container) shows it; the bare web view would be
+        // shorter than the content area and sit offset in the stand-in.
+        if let container = tab.webViewContainer, container.isShowingDevToolbar {
+            return snapshotImage(of: container)
+        }
         return tab.webView.flatMap { snapshotImage(of: $0) }
     }
 
@@ -2015,6 +2114,8 @@ class BrowserWindowController: NSWindowController {
         snapshotImageView = nil
         webViewTopConstraint = nil
         linkStatusBar.hide()
+        devToolbarSubscriptions.removeAll()
+        updateFindBarPlacement()
 
         // Clean up the PiP content view after WebKit has captured the animation origin.
         if let pipping = pipContentView {
@@ -2290,9 +2391,15 @@ class BrowserWindowController: NSWindowController {
     }
 
     @objc func copyCurrentURL(_ sender: Any?) {
-        guard let urlString = displayTab?.url?.absoluteString else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(urlString, forType: .string)
+        copyURL(displayTab?.url)
+    }
+
+    /// Copy URL for the address bar's link button, the menu, and a dev
+    /// toolbar's link button (which copies its own pane's URL).
+    func copyURL(_ url: URL?) {
+        guard let urlString = url?.absoluteString else { return }
+        urlPasteboard.clearContents()
+        urlPasteboard.setString(urlString, forType: .string)
         toastManager.show(message: "URL copied")
     }
 
@@ -2387,7 +2494,8 @@ class BrowserWindowController: NSWindowController {
         guard !isIncognito else { return }
         let count = store.archiveEntries().count
         guard count > 0 else { return }
-        confirmClearArchive(spaceIDs: store.nonIncognitoSpaces.map(\.id), count: count)
+        // Closed Quick Detours too (TASK-193.5), filed under their profiles' scopes.
+        confirmClearArchive(spaceIDs: store.nonIncognitoSpaces.map(\.id) + store.quickDetourArchiveScopeIDs, count: count)
     }
 
     /// Restores a closed-tab record from the Archived Tabs page into its own
@@ -2396,6 +2504,17 @@ class BrowserWindowController: NSWindowController {
     /// page; otherwise it is dismissed here. A record that cannot come back (a
     /// disabled extension's page) beeps.
     func restoreArchivedTab(recordID: Int64) {
+        // A closed Quick Detour reopens as a Quick Detour window on its profile
+        // (TASK-193.5); the sidebar leaves the archive page behind it.
+        if store.isQuickDetourArchiveRecord(id: recordID) {
+            guard QuickDetourWindowController.restore(recordID: recordID, sourceSpace: activeSpace, store: store) != nil
+            else {
+                NSSound.beep()
+                return
+            }
+            tabSidebar.dismissArchivePage(animated: true)
+            return
+        }
         guard let tab = store.restoreClosedTab(recordID: recordID) else {
             NSSound.beep()
             return
@@ -2454,14 +2573,22 @@ class BrowserWindowController: NSWindowController {
         showCommandPalette(initialText: displayTab?.url?.absoluteString)
     }
 
+    /// Points the palette at the window's active space: the tab it navigates
+    /// from, and the profile whose open tabs and history it offers (TASK-209).
+    private func scopeCommandPalette(_ palette: CommandPaletteView) {
+        palette.activeSpaceID = activeSpaceID
+        palette.currentTabID = selectedTab?.id
+        palette.profile = activeSpace?.profile
+        // The window's profile's history, every space of it (TASK-209).
+        palette.historySpaceIDs = PaletteTabScope.historySpaceIDs(profile: activeSpace?.profile, in: store)
+    }
+
     func showCommandPalette(initialText: String? = nil, anchorFrame: NSRect? = nil) {
         guard commandPaletteView == nil else { return }
         let palette = CommandPaletteView()
         palette.delegate = self
         palette.tabStore = store
-        palette.activeSpaceID = activeSpaceID
-        palette.currentTabID = selectedTab?.id
-        palette.profile = activeSpace?.profile
+        scopeCommandPalette(palette)
         commandPaletteView = palette
 
         // Two scrims: the liquid glass sidebar is partially transparent, so we need
@@ -2964,13 +3091,16 @@ class BrowserWindowController: NSWindowController {
     private func presentPeekWebView(_ peekWebView: WKWebView, for peek: BrowserTab,
                                     clickPoint: CGPoint?, animate: Bool) {
         assertExtensionRegistered(peek, "the presented peek \(peek.id)")
-        let overlay = PeekOverlayView(clickPoint: clickPoint)
+        let overlay = PeekOverlayView(clickPoint: clickPoint, showsSplitButton: peekCanOpenInSplitView)
         overlay.translatesAutoresizingMaskIntoConstraints = false
         overlay.onClose = { [weak self] in
             self?.closePeekOverlay()
         }
         overlay.onExpand = { [weak self] in
             self?.expandPeekToNewTab()
+        }
+        overlay.onSplit = { [weak self] in
+            self?.openPeekInSplitView()
         }
 
         contentContainerView.addSubview(overlay)
@@ -3055,7 +3185,7 @@ class BrowserWindowController: NSWindowController {
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             context.allowsImplicitAnimation = true
             peekTab?.webView?.alphaValue = 0
-        }, completionHandler: {
+        }, onMain: {
             peekTab?.teardown()
         })
         // Safety net: tear down even if animation completion doesn't fire
@@ -3119,7 +3249,7 @@ class BrowserWindowController: NSWindowController {
             self?.peekWebViewBottomConstraint?.animator().constant = 0
             self?.peekWebViewLeadingConstraint?.animator().constant = 0
             self?.peekWebViewTrailingConstraint?.animator().constant = 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self else { return }
             webView.layer?.masksToBounds = false
             // Finalize: select the tab (sets up delegates, ownership, subscriptions)
@@ -3127,6 +3257,96 @@ class BrowserWindowController: NSWindowController {
         })
 
         // Fade out peek chrome AFTER starting the constraint animation
+        overlay.animateClose {
+            overlay.removeFromSuperview()
+        }
+    }
+
+    /// Whether the Peek's host can take the Peek into a split: not when the
+    /// host is already a pane of one, normal or pinned (TASK-185).
+    var peekCanOpenInSplitView: Bool {
+        guard let host = selectedTab, let space = activeSpace else { return false }
+        return store.splitOpening(from: host.id, in: space) != nil
+    }
+
+    /// Open in Split View (TASK-185): the Peek's page becomes the right pane of
+    /// a split, handing over the Peek's own web view so its history survives.
+    /// An ungrouped normal host becomes the left pane; a favourite or pinned
+    /// host stays where it is, and the split opens in the normal section with a
+    /// copy of the host on the left. The right pane ends selected and focused.
+    func openPeekInSplitView() {
+        guard let overlay = peekOverlayView,
+              let host = selectedTab,
+              let oldPeekTab = host.peekTab,
+              let webView = oldPeekTab.webView,
+              let space = activeSpace else {
+            closePeekOverlay()
+            return
+        }
+        // Decided before anything is handed over. The host can have joined a
+        // split since the button was shown (a sidebar drop while the Peek is up).
+        guard let opening = store.splitOpening(from: host.id, in: space) else {
+            overlay.showsSplitButton = false
+            return
+        }
+
+        // The hand-off sequence of `expandPeekToNewTab`: the Peek is closed for
+        // the extension contexts before its web view joins a tab (TASK-50/52).
+        peekTabSubscriptions.removeAll()
+        ExtensionTabLifecycle.didClose(oldPeekTab)
+        host.clearPeekState()
+        reloadSelectedTabSidebarCell()
+        store.scheduleSave()
+
+        displayTabSubscriptions.removeAll()
+
+        // Selected once the glide below ends, so not a background tab.
+        let pane: BrowserTab = withoutBackgroundTabToast {
+            switch opening {
+            case .besideTab:
+                store.addTabInSplit(with: host.id, webView: webView, in: space)
+                    ?? store.addTab(in: space, webView: webView, parentID: host.id)
+            case .inNormalSection:
+                store.addSplitInNormalSection(copying: host.id, rightPane: .webView(webView), in: space)
+                    ?? store.addTab(in: space, webView: webView, parentID: host.id)
+            }
+        }
+
+        peekOverlayView = nil
+
+        // Glide the page from the Peek panel to where the right pane will be.
+        let bounds = contentContainerView.bounds
+        let target = splitPaneRects(in: bounds, inset: hostedSplitIsFullBleed ? 0 : UIConstants.splitPaneInset,
+                                    gap: UIConstants.splitPaneGap, fraction: 0.5).right
+        if let layer = webView.layer {
+            let radiusAnim = CABasicAnimation(keyPath: "cornerRadius")
+            radiusAnim.fromValue = layer.cornerRadius
+            radiusAnim.toValue = hostedSplitCornerRadius
+            radiusAnim.duration = 0.35
+            radiusAnim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer.add(radiusAnim, forKey: "cornerRadius")
+            layer.cornerRadius = hostedSplitCornerRadius
+        }
+        NSAnimationContext.runAnimationGroup({ [weak self] context in
+            context.duration = 0.35
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self?.peekWebViewTopConstraint?.animator().constant = bounds.maxY - target.maxY
+            self?.peekWebViewBottomConstraint?.animator().constant = bounds.minY - target.minY
+            self?.peekWebViewLeadingConstraint?.animator().constant = target.minX - bounds.minX
+            self?.peekWebViewTrailingConstraint?.animator().constant = target.maxX - bounds.maxX
+        }, onMain: { [weak self] in
+            guard let self else { return }
+            // The pane's container gives it its corners from here on.
+            webView.layer?.cornerRadius = 0
+            webView.layer?.masksToBounds = false
+            // A tab the user picked during the glide keeps the selection.
+            guard self.selectedTabID == host.id else { return }
+            self.selectTab(id: pane.id)
+            if pane.id == self.selectedTabID, let paneWebView = pane.webView, paneWebView.window === self.window {
+                self.window?.makeFirstResponder(paneWebView)
+            }
+        })
+
         overlay.animateClose {
             overlay.removeFromSuperview()
         }
@@ -3323,6 +3543,9 @@ extension BrowserWindowController: NSWindowDelegate {
         // Update extension manager's active space for chrome.tabs.query({currentWindow: true})
         if let spaceID = activeSpaceID {
             ExtensionManager.shared.lastActiveSpaceID = spaceID
+            // Open in's "most recently used space" (TASK-193.3); Private
+            // spaces are not recorded.
+            store.noteSpaceUsed(spaceID)
         }
 
         if let tab = selectedTab {
@@ -3335,6 +3558,10 @@ extension BrowserWindowController: NSWindowDelegate {
             // After the peek is back, so a presented peek is what gets focus.
             focusWebContentIfUnheld()
         }
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        hoverCard.dismiss()
     }
 
     // The hosted split's chrome differs between windowed (inset rounded
@@ -3387,6 +3614,7 @@ extension BrowserWindowController: NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        hoverCard.dismiss()
         selectedTab?.savePeekStateForPersistence()
         recentTabSwitcher?.invalidate()
         stopSidebarHoverTimers()
@@ -3490,6 +3718,18 @@ extension BrowserWindowController: CommandPaletteDelegate {
         // it (TASK-86).
         let internalPage = InternalPage(url: url)
 
+        // Link Routes (TASK-191.4): a URL (not a search) submitted in
+        // new-tab mode that a route sends to another space, or a Private
+        // window, opens there as a link from another app would. Navigating in
+        // place (Cmd+L, the address bar) never routes: the user picked the tab
+        // (with no tab selected, it opens a new one below, and routes as one).
+        if typedURLIsRoutable(url, isSearch: !typed, navigatesInPlace: navigateInPlace && selectedTab != nil),
+           let appDelegate = NSApp.delegate as? AppDelegate,
+           let decision = routedTypedDecision(for: url) {
+            appDelegate.openLink(url, routedTo: decision, typed: typed)
+            return
+        }
+
         if navigateInPlace, let tab = selectedTab {
             ensureOwnsWebView()
             if let internalPage {
@@ -3574,3 +3814,31 @@ extension BrowserWindowController: DownloadManagerObserver {
     }
 }
 
+
+// MARK: - Hover card host (TASK-190)
+
+extension BrowserWindowController: TabHoverCardHost {
+    var hoverCardParentWindow: NSWindow? { window }
+
+    var hoverCardSidebarRectInWindow: NSRect? {
+        guard !sidebarItem.isCollapsed else { return nil }
+        let view = tabSidebar.view
+        let visible = view.visibleRect
+        guard !visible.isEmpty else { return nil }
+        return view.convert(visible, to: nil)
+    }
+
+    func hoverCardIsOnScreen(_ tab: BrowserTab) -> Bool {
+        guard let selected = selectedTab else { return false }
+        if selected === tab { return true }
+        // A Peek is on screen only while presented, over the selected tab.
+        if selected.peekTab === tab { return peekOverlayView != nil }
+        guard let space = activeSpace,
+              let group = store.splitGroup(containing: selected.id, in: space) else { return false }
+        return group.members.contains { $0 === tab }
+    }
+
+    func hoverCardThumbnailKey(for tab: BrowserTab) -> UUID? {
+        store.thumbnailKey(for: tab)
+    }
+}

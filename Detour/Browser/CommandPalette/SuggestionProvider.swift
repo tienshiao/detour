@@ -1,19 +1,21 @@
 import AppKit
 
-final class SuggestionProvider {
+/// Nonisolated: `localSuggestions` runs on the command palette's query queue
+/// (it reads SQLite), and its only state is the `Sendable` history database.
+/// The network and favicon entry points stay on the main actor.
+nonisolated final class SuggestionProvider: Sendable {
     static let maxSuggestions = 12
     static let maxSearchSuggestions = 4
 
     private let db: HistoryDatabase
-    private let searchService = SearchSuggestionsService.shared
 
     init(db: HistoryDatabase = .shared) {
         self.db = db
     }
 
-    func defaultSuggestions(spaceID: String, tabs: [TabInfo]) -> [SuggestionItem] {
+    func defaultSuggestions(historySpaceIDs: [String], tabs: [TabInfo]) -> [SuggestionItem] {
         let tabsByURL = Dictionary(tabs.map { ($0.url, $0) }, uniquingKeysWith: { first, _ in first })
-        let history = db.recentHistory(spaceID: spaceID, limit: 12)
+        let history = db.recentHistory(spaceIDs: historySpaceIDs, limit: 12)
         return history.map { entry -> SuggestionItem in
             if let tab = tabsByURL[entry.url] {
                 return .openTab(tabID: tab.tabID, spaceID: tab.spaceID, url: tab.url, title: tab.title, favicon: tab.favicon)
@@ -34,12 +36,12 @@ final class SuggestionProvider {
     /// every keystroke. Ordering: top hit (the URL the query autocompletes to,
     /// shown as a rich tab/history row), the verbatim typed input, other
     /// visited hosts matching a host prefix, matching open tabs, then history.
-    func localSuggestions(for query: String, spaceID: String, tabs: [TabInfo],
+    func localSuggestions(for query: String, historySpaceIDs: [String], tabs: [TabInfo],
                           allowAutocomplete: Bool, currentTabID: UUID? = nil) -> LocalSuggestions {
         let q = query.lowercased()
         let hostQuery = Self.isHostQuery(q)
         let hosts = hostQuery
-            ? db.bestHostCompletions(prefix: q, spaceID: spaceID, limit: Self.maxOtherHosts + 1)
+            ? db.bestHostCompletions(prefix: q, spaceIDs: historySpaceIDs, limit: Self.maxOtherHosts + 1)
             : []
 
         // Top hit: open tabs first (the rule the palette's instant pass also
@@ -57,7 +59,7 @@ final class SuggestionProvider {
                     topHit = TopHit(item: Self.hostItem(known), inlineCompletion: hit.inlineCompletion,
                                     tabID: nil, url: known.url)
                 }
-            } else if topHit == nil, let match = db.bestURLCompletion(prefix: query, spaceID: spaceID) {
+            } else if topHit == nil, let match = db.bestURLCompletion(prefix: query, spaceIDs: historySpaceIDs) {
                 let display = Self.displayURL(match.url)
                 if display.lowercased().hasPrefix(q) {
                     topHit = TopHit(item: .historyResult(url: match.url, title: Self.displayTitle(match),
@@ -85,7 +87,7 @@ final class SuggestionProvider {
         var excludedURLs = matchingTabURLs
         if let topHit { excludedURLs.insert(topHit.url) }
         excludedURLs.formUnion(otherHosts.map(\.url))
-        let historyItems: [SuggestionItem] = db.searchHistory(query: query, spaceID: spaceID, limit: 8)
+        let historyItems: [SuggestionItem] = db.searchHistory(query: query, spaceIDs: historySpaceIDs, limit: 8)
             .filter { !excludedURLs.contains($0.url) }
             .map { .historyResult(url: $0.url, title: Self.displayTitle($0), faviconURL: $0.faviconURL) }
 
@@ -171,9 +173,10 @@ final class SuggestionProvider {
 
     /// Network search suggestions for the query. Deduplicate against the query
     /// itself, since the .searchInput row covers it.
+    @MainActor
     func searchSuggestions(for query: String, engine: SearchEngine) async -> [String] {
         let q = query.lowercased()
-        return await searchService.fetchSuggestions(for: query, engine: engine)
+        return await SearchSuggestionsService.shared.fetchSuggestions(for: query, engine: engine)
             .filter { $0.lowercased() != q }
     }
 
@@ -214,6 +217,7 @@ final class SuggestionProvider {
         return s
     }
 
+    @MainActor
     func loadFavicon(for urlString: String, completion: @escaping (NSImage?) -> Void) {
         guard let url = URL(string: urlString) else {
             completion(nil)

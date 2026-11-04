@@ -1,0 +1,238 @@
+TASK-213 runtime harness: the site settings popover's layout (host header,
+Content Blocking, the picture in picture / dev mode section, Extensions) in a
+Quick Detour and in the main window, plus a long host with 7 blocked and no
+site. Temporary code, never committed to Detour/. Gated on DETOUR_VERIFY_DIR;
+DETOUR_VERIFY_APPEARANCE light or dark; DETOUR_VERIFY_FIXTURE a loopback
+server (python3 -I -m http.server 8936 over a dir with index.html, title
+"Lookup Page"); DETOUR_VERIFY_EXT an unpacked MV3 extension with an action
+popup ("Verify Probe"), installed and pinned in Default. Data dir
+DetourVerify2130. Posted clicks (NSApp.postEvent) open the two real
+popovers after 12 s of HID idle; the other two are the builder's popover
+with made-up inputs on the address bar's button. Each step logs every
+label, switch and divider top to bottom with its frame and any overlap.
+run.sh is TASK-210's (SHOOT lines served with screencapture -l, only the
+launched PID killed).
+
+    git apply docs/harness/task213-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    run.sh light; run.sh dark
+    git apply -R docs/harness/task213-harness.patch && xcodegen generate
+
+Results (2026-10-26, light and dark): Quick Detour 280x234, two dividers,
+one switch (Block content on this site); main window 280x315, three
+dividers, the blocking switch then picture in picture and dev mode in their
+own section; long host truncated in the middle, the badge reads 7 and the
+count line "7 resources blocked on this page"; no site: "No site loaded" in
+secondary, picture in picture and dev mode disabled. No overlaps, nothing
+outside the popover.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 915860d..27a916c 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        runTask213HarnessIfRequested(wc)
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task213Harness.swift b/Detour/App/Task213Harness.swift
+new file mode 100644
+index 0000000..6163d09
+--- /dev/null
++++ b/Detour/App/Task213Harness.swift
+@@ -0,0 +1,192 @@
++// TEMP TASK-213 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask213HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let base = env["DETOUR_VERIFY_FIXTURE"] ?? "http://127.0.0.1:8936/"
++        let ap = env["DETOUR_VERIFY_APPEARANCE"] ?? "light"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(ap).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        NSApp.appearance = NSAppearance(named: ap == "dark" ? .darkAqua : .aqua)
++        let store = TabStore.shared
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func humanIdle() -> Double {
++            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
++        }
++        func awaitIdle(_ seconds: Double = 12) async {
++            var waited = 0.0
++            while humanIdle() < seconds {
++                if waited == 0 { log("waiting for the machine to be idle (idle \(Int(humanIdle())) s)") }
++                await sleep(2); waited += 2
++            }
++            if waited > 0 { log("idle again after \(Int(waited)) s") }
++        }
++        func ensureFront(_ window: NSWindow?) async {
++            await awaitIdle()
++            for _ in 0..<6 {
++                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
++                if let window, NSApp.keyWindow !== window { window.makeKeyAndOrderFront(nil) }
++                if NSApp.isActive && (window == nil || NSApp.keyWindow === window) { return }
++                await sleep(0.5)
++            }
++            log("WARN not frontmost: active=\(NSApp.isActive) key=\(String(describing: NSApp.keyWindow?.title))")
++        }
++        func shoot(_ name: String, _ window: NSWindow?) async {
++            guard let window else { return log("no window for \(name)") }
++            await sleep(0.8)
++            log("SHOOT \(ap)-\(name) \(window.windowNumber)")
++            await sleep(1.5)
++        }
++        var eventNumber = 9000
++        func click(_ view: NSView) {
++            guard let w = view.window else { return log("click: no window") }
++            if humanIdle() < 1 { return log("ABORT human input before a click: not posted") }
++            let p = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
++            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
++                eventNumber += 1
++                if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
++                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
++                                              context: nil, eventNumber: eventNumber, clickCount: 1,
++                                              pressure: type == .leftMouseDown ? 1 : 0) {
++                    NSApp.postEvent(e, atStart: false)
++                }
++            }
++        }
++        func waitFor(_ what: String, timeout: Double = 15, _ cond: () -> Bool) async -> Bool {
++            let deadline = Date().addingTimeInterval(timeout)
++            while Date() < deadline {
++                if cond() { return true }
++                await sleep(0.25)
++            }
++            log("TIMEOUT waiting for \(what)")
++            return false
++        }
++        func popoverSettings() -> (NSWindow, SettingsPopoverViewController)? {
++            for w in NSApp.windows where w.isVisible {
++                if let vc = w.contentViewController as? SettingsPopoverViewController { return (w, vc) }
++            }
++            return nil
++        }
++        func switches(_ v: NSView) -> [NSSwitch] {
++            ((v as? NSSwitch).map { [$0] } ?? []) + v.subviews.flatMap(switches)
++        }
++        func boxes(_ v: NSView) -> [NSBox] {
++            ((v as? NSBox).map { [$0] } ?? []) + v.subviews.flatMap(boxes)
++        }
++        func labels(_ v: NSView) -> [NSTextField] {
++            ((v as? NSTextField).map { [$0] } ?? []) + v.subviews.flatMap(labels)
++        }
++        /// Every switch, label and divider top to bottom, with its frame in the
++        /// popover, and whether any two overlap or leave the popover.
++        func describe(_ vc: SettingsPopoverViewController) -> String {
++            let root = vc.view
++            var items: [(String, NSRect)] = []
++            for l in labels(root) where !l.isHidden && !l.stringValue.isEmpty && l.font?.pointSize ?? 0 > 8 {
++                items.append(("'\(l.stringValue)'", l.convert(l.bounds, to: root)))
++            }
++            for s in switches(root) {
++                items.append(("switch[\(s.accessibilityLabel() ?? "")=\(s.state == .on ? "on" : "off")\(s.isEnabled ? "" : ",disabled")]", s.convert(s.bounds, to: root)))
++            }
++            for b in boxes(root) { items.append(("divider", b.convert(b.bounds, to: root))) }
++            items.sort { $0.1.maxY > $1.1.maxY }   // top first (unflipped)
++            let rows = items.map { "\($0.0)@y\(Int(root.bounds.maxY - $0.1.maxY))-\(Int(root.bounds.maxY - $0.1.minY)) x\(Int($0.1.minX))-\(Int($0.1.maxX))" }
++            var problems: [String] = []
++            for (i, a) in items.enumerated() {
++                if !root.bounds.contains(a.1.insetBy(dx: 0.5, dy: 0.5)) { problems.append("\(a.0) outside") }
++                for b in items[(i + 1)...] where a.1.intersects(b.1) && a.0 != "divider" && b.0 != "divider" {
++                    if a.1.intersection(b.1).width > 1, a.1.intersection(b.1).height > 1 { problems.append("\(a.0)×\(b.0)") }
++                }
++            }
++            return "size=\(Int(root.bounds.width))x\(Int(root.bounds.height)) dividers=\(boxes(root).count) switches=\(switches(root).map { $0.accessibilityLabel() ?? "" }) overlaps=\(problems)\n    " + rows.joined(separator: "\n    ")
++        }
++
++        Task { @MainActor in
++            await sleep(2.5)
++            log("start \(ap)")
++            let home = wc.activeSpace ?? store.nonIncognitoSpaces.first!
++            let defaultProfile = home.profile!
++            if let extDir = env["DETOUR_VERIFY_EXT"],
++               !ExtensionManager.shared.extensions.contains(where: { $0.manifest.name == "Verify Probe" }) {
++                do {
++                    let ext = try ExtensionManager.shared.install(from: URL(fileURLWithPath: extDir))
++                    ExtensionManager.shared.toggleExtensionPinned(ext.id, profileID: defaultProfile.id)
++                    log("installed \(ext.id), pinned in Default")
++                } catch { log("install failed: \(error)") }
++            }
++            await sleep(1.5)
++
++            // 1. The Quick Detour's popover, from a click on its bar button.
++            let q = QuickDetourWindowController.open(profile: defaultProfile, sourceSpace: home,
++                                                     url: URL(string: base + "index.html")!)
++            guard let qw = q.window else { return log("no Quick Detour window") }
++            _ = await waitFor("the page") { q.tab?.title == "Lookup Page" && q.tab?.isLoading == false }
++            await ensureFront(qw)
++            click(q.titleBar.pageSettingsButton)
++            _ = await waitFor("the Quick Detour popover", timeout: 5) { popoverSettings() != nil }
++            if let (pw, vc) = popoverSettings() {
++                log("1 quick detour popover: \(describe(vc))")
++                await shoot("01-quick-detour", pw)
++                pw.close()
++            } else { log("1 no popover") }
++            q.window?.performClose(nil)
++            await sleep(1.0)
++
++            // 2. The main window's popover, from its address bar.
++            await ensureFront(wc.window)
++            let mainTab = store.addTab(in: home, url: URL(string: base + "index.html")!)
++            wc.selectTab(id: mainTab.id)
++            _ = await waitFor("the main page") { mainTab.title == "Lookup Page" && mainTab.isLoading == false }
++            let fauxButton = wc.tabSidebar.fauxAddressBar.settingsButton
++            click(fauxButton)
++            _ = await waitFor("the main popover", timeout: 5) { popoverSettings() != nil }
++            if let (pw, vc) = popoverSettings() {
++                log("2 main popover: \(describe(vc))")
++                await shoot("02-main", pw)
++                pw.close()
++            } else { log("2 no main popover") }
++            await sleep(0.6)
++
++            // 3. A blocked count and a long host, for the badge and truncation
++            // (the builder with made-up inputs, on the same button).
++            let made = SettingsPopoverViewController.forPage(
++                url: URL(string: "https://a-very-long-subdomain.of-a-rather-long-site-name.example.co.uk/"),
++                blockedCount: 7, profileID: defaultProfile.id, pages: { [] }, openExtension: { _ in })
++            let popover = NSPopover()
++            popover.behavior = .applicationDefined
++            popover.contentViewController = made
++            popover.show(relativeTo: fauxButton.bounds, of: fauxButton, preferredEdge: .maxY)
++            await sleep(0.6)
++            log("3 long host, 7 blocked: \(describe(made))")
++            if let pw = made.view.window { await shoot("03-long-host-blocked", pw) }
++            popover.close()
++            await sleep(0.4)
++
++            // 4. No site: an empty new tab's popover.
++            let blank = SettingsPopoverViewController.forPage(
++                url: nil, blockedCount: 0, profileID: defaultProfile.id, pages: { [] }, openExtension: { _ in })
++            let popover2 = NSPopover()
++            popover2.behavior = .applicationDefined
++            popover2.contentViewController = blank
++            popover2.show(relativeTo: fauxButton.bounds, of: fauxButton, preferredEdge: .maxY)
++            await sleep(0.6)
++            log("4 no site: \(describe(blank))")
++            if let pw = blank.view.window { await shoot("04-no-site", pw) }
++            popover2.close()
++            await sleep(0.4)
++            log("done")
++        }
++    }
++}
++#endif

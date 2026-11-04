@@ -1,0 +1,362 @@
+TASK-186.4 runtime harness: the dev toolbar's Web Inspector buttons (Console,
+Network, Select Element) on a single tab, in a split (the unfocused pane's
+buttons) and in a pane too narrow to dock. Temporary code, never committed to
+Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task186-4-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # $SITE/app.html (console.log, console.warn, fetch('data.json')), api.html,
+    # data.json; each page prints innerWidth x innerHeight:
+    python3 -m http.server 8864 --bind 127.0.0.1 --directory "$SITE" &
+    DETOUR_DATA_DIR=DetourVerify1864 DETOUR_VERIFY_DIR="$OUT" DETOUR_VERIFY_PORT=8864 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # a watcher captures `screencapture -x -o -l <windowNumber>` for each
+    # "SHOOT <name> <windowNumber>" line of $OUT/verify.log; the harness waits
+    # for each PNG. Wait for "done" (about 120 s), then kill that pid and the
+    # server.
+    git apply -R docs/harness/task186-4-harness.patch && xcodegen generate
+    rm -r -- ~/Library/Application\ Support/DetourVerify1864
+
+Buttons are pressed with performClick on the group's own buttons, so the
+press goes through the window's wiring and the shared WebInspectorToggler;
+its onSettled hook logs each decision. After each step the log records
+_WKInspector isVisible, where the frontend web view (inspectorWebView) is
+(docked in the pane's container, or a window) and the frontend's own
+WI.tabBrowser.selectedTabContentView.type.
+
+WebKit stores inspector preferences in the SHARED com.detourbrowser.mac
+defaults. Before: only __WebInspectorPageGroupLevel1__.WebKit2InspectorStartsAttached = 1.
+The run added ...WebKit2InspectorAttachmentSide (step 8 docks right, then
+bottom again); it was deleted afterwards. StartsAttached was unchanged.
+
+Results (2026-10-24, macOS 26.7 25G229, WebKit 21624.5.1.11.3; three runs,
+the last one below; every capture read and matching the log; window
+1600x900, pane container 1372x900):
+- Capabilities 7 (console, network, picker); toolbar stack: copy, separator,
+  Console, Network, Select Element.
+- 1 Console from closed: show(console); docked bottom in the tab's container
+  (inspector 1372x500, page 1372x370 under the 30 pt toolbar), tab "console".
+- 2 Console again: close; no frontend web view.
+- 3 Network from closed: show(network) after the frontend loaded (~0.1 s
+  after the press on a warm process, under 0.4 s cold); tab "network".
+- 4 Console while on Network: switchTo(console), tab "console". 4b Network
+  while on Console: switchTo(network).
+- 5 Network again while on Network: close.
+- 5b The user picks Elements inside the inspector (WI.showElementsTab());
+  Console then switches (not closes), a second press closes.
+- 5c Network then Console in the same turn on a closed inspector: the second
+  press retargets the opening one; it opens on "console".
+- 8 Docked right through InspectorFrontendHost.requestSetDockSide('right'),
+  closed with the button, reopened with Network: docked right again
+  (inspector 750x834, page 622x870), i.e. the saved side is kept.
+- 6 Picker: on a closed inspector the button turns accent and
+  isElementSelectionActive is true while the frontend is connected but in no
+  window; pressing again turns it off and WebKit closes the hidden frontend.
+  With the inspector open, our button and the inspector's own crosshair are
+  both blue. NOT verified: picking an element. Posted NSEvents (app inactive)
+  and mouseMoved/mouseDown/mouseUp sent straight to the WKWebView (app active,
+  window key) neither highlight nor pick; WebKit's overlay seems to need real
+  HID input. A person's click is needed to check that the pick opens Elements
+  and the button returns to grey.
+- 7 Split (app | api, 672 pt panes, app focused): the api pane's Console
+  focused that pane and docked its inspector in the api container (672x500,
+  page 672x350, toolbar 672x30); the app pane had no inspector. Network:
+  switchTo(network); Network again: close.
+- 7d Window narrowed to 1100: api pane 422 pt (< WebKit's 500 pt minimum):
+  Console opened the inspector in its own _WKInspectorWindow
+  ("Web Inspector — localhost — api.html") on Console; Console again closed it.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 6edb5ad..70cce7a 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask1864HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task1864Harness.swift b/Detour/App/Task1864Harness.swift
+new file mode 100644
+index 0000000..6d44d79
+--- /dev/null
++++ b/Detour/App/Task1864Harness.swift
+@@ -0,0 +1,274 @@
++// TEMP TASK-186.4 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    @MainActor func runTask1864HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"],
++              let port = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PORT"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var steps: [(TimeInterval, () -> Void)] = []
++        var requestedShots: [String] = []
++        func at(_ dt: TimeInterval, _ block: @escaping () -> Void) { steps.append((dt, block)) }
++        func runStep(_ index: Int) {
++            guard index < steps.count else { return }
++            let missing = requestedShots.filter { !FileManager.default.fileExists(atPath: "\(outDir)/\($0).png") }
++            let delay = missing.isEmpty ? steps[index].0 : 0.2
++            let timer = Timer(timeInterval: delay, repeats: false) { _ in
++                if missing.isEmpty { steps[index].1(); runStep(index + 1) } else { runStep(index) }
++            }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        guard let window = wc.window, let space = wc.activeSpace else { return log("no window/space") }
++        let store = TabStore.shared
++        let appURL = URL(string: "http://localhost:\(port)/app.html")!
++        let apiURL = URL(string: "http://localhost:\(port)/api.html")!
++        var tabs: [String: BrowserTab] = [:]
++
++        WebInspectorToggler.shared.onSettled = { webView, tab, action in
++            let owner = tabs.first { $0.value.webView === webView }?.key ?? "?"
++            log("  settled: pane=\(owner) requested=\(tab.rawValue) action=\(action.map { "\($0)" } ?? "TIMEOUT")")
++        }
++
++        func r(_ rect: NSRect) -> String {
++            String(format: "(%.0f,%.0f %.0fx%.0f)", rect.minX, rect.minY, rect.width, rect.height)
++        }
++        func shoot(_ name: String, _ w: NSWindow?) {
++            requestedShots.append(name)
++            log("SHOOT \(name) \(w?.windowNumber ?? -1)")
++        }
++        func group(_ key: String) -> DevToolbarInspectorGroup? {
++            tabs[key]?.webViewContainer?.devToolbar?.inspectorGroup
++        }
++        /// The inspector of a pane: visible, docked or not, where, and the
++        /// frontend's own selected tab.
++        func state(_ label: String, _ key: String) {
++            guard let tab = tabs[key], let webView = tab.webView, let control = WebInspectorControl(webView: webView) else {
++                return log("\(label) [\(key)]: no inspector")
++            }
++            let frontend = control.frontendWebView
++            let place: String
++            if let frontend {
++                if frontend.superview === tab.webViewContainer {
++                    place = "docked in its own container \(r(frontend.frame)), page \(r(webView.frame)), toolbar \(tab.webViewContainer?.devToolbar.map { r($0.frame) } ?? "none")"
++                } else if frontend.window != nil {
++                    place = "in window '\(frontend.window?.title ?? "")' \(type(of: frontend.window!)) (own window: \(frontend.window !== window))"
++                } else { place = "frontend not in a window" }
++            } else { place = "no frontend web view" }
++            let picker = control.isElementSelectionActive
++            let tint = group(key)?.elementPickerButton?.contentTintColor == .controlAccentColor ? "accent" : "secondary"
++            let base = "\(label) [\(key)]: visible=\(control.isVisible) attached=\(control.isAttached) \(place) picker=\(picker) pickerButton=\(tint) focused=\(wc.selectedTab.flatMap { t in tabs.first { $0.value === t }?.key } ?? "?")"
++            guard frontend != nil else { return log(base + " tab=-") }
++            control.evaluateInFrontend(WebInspectorControl.selectedTabScript) { result in
++                log(base + " tab=\(result.map { "\"\($0)\"" } ?? "err")")
++            }
++        }
++        func press(_ key: String, _ button: KeyPath<DevToolbarInspectorGroup, HoverButton?>, _ name: String) {
++            guard let b = group(key)?[keyPath: button] else { return log("press \(name) [\(key)]: no button") }
++            log("press \(name) [\(key)]")
++            b.performClick(nil)
++        }
++        var eventNumber = 100
++        func post(_ type: NSEvent.EventType, at point: NSPoint) {
++            eventNumber += 1
++            guard let e = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
++                                             timestamp: ProcessInfo.processInfo.systemUptime,
++                                             windowNumber: window.windowNumber, context: nil,
++                                             eventNumber: eventNumber, clickCount: 1,
++                                             pressure: type == .leftMouseDown ? 1 : 0) else { return }
++            NSApp.postEvent(e, atStart: false)
++        }
++
++        // MARK: Seed
++        at(0) {
++            NSApp.activate(ignoringOtherApps: true)
++            NSApp.appearance = NSAppearance(named: .aqua)
++            window.setFrame(NSRect(x: 60, y: 80, width: 1600, height: 900), display: true)
++            tabs["app"] = store.addTab(in: space, url: appURL)
++            for tab in space.tabs where !tabs.values.contains(where: { $0 === tab }) {
++                store.closeTab(id: tab.id, in: space, undoable: false)
++            }
++            store.undoManager.removeAllActions()
++            wc.selectTab(id: tabs["app"]!.id)
++            log("seeded: \(space.tabs.map { $0.url?.absoluteString ?? "nil" }) capabilities=\(WebInspectorControl.capabilities.rawValue)")
++        }
++        at(3.0) {
++            let g = group("app")
++            log("0 buttons: \(g?.buttons.map { $0.accessibilityLabel() ?? "?" } ?? []) stack=\(tabs["app"]?.webViewContainer?.devToolbar?.trailingStack.arrangedSubviews.map { "\(type(of: $0))" } ?? [])")
++            state("0 initial", "app")
++            shoot("0-closed", window)
++        }
++        // MARK: 1 — Console from closed: opens on Console
++        at(1.0) { press("app", \.consoleButton, "Console") }
++        at(4.0) { state("1 console from closed", "app"); shoot("1-console-open", window) }
++        // MARK: 2 — Console again: closes
++        at(1.0) { press("app", \.consoleButton, "Console") }
++        at(2.0) { state("2 console again", "app"); shoot("2-console-closed", window) }
++        // MARK: 3 — Network from closed: opens on Network
++        at(1.0) { press("app", \.networkButton, "Network") }
++        at(4.0) { state("3 network from closed", "app"); shoot("3-network-open", window) }
++        // MARK: 4 — Console while on Network: switches
++        at(1.0) { press("app", \.consoleButton, "Console") }
++        at(2.0) { state("4 console while on network", "app"); shoot("4-switched-console", window) }
++        // 4b — Network while on Console: switches back
++        at(1.0) { press("app", \.networkButton, "Network") }
++        at(2.0) { state("4b network while on console", "app") }
++        // MARK: 5 — Network again while on Network: closes
++        at(1.0) { press("app", \.networkButton, "Network") }
++        at(2.0) { state("5 network again", "app"); shoot("5-network-closed", window) }
++        // MARK: 5b — the user switches to Elements inside the inspector; Console then switches, not closes
++        at(1.0) { press("app", \.consoleButton, "Console") }
++        at(4.0) {
++            guard let wv = tabs["app"]?.webView, let c = WebInspectorControl(webView: wv) else { return }
++            c.evaluateInFrontend("WI.showElementsTab(); 'ok'") { log("5b user picks Elements in the inspector: \(String(describing: $0))") }
++        }
++        at(1.0) { state("5b on elements", "app") }
++        at(0.5) { press("app", \.consoleButton, "Console") }
++        at(2.0) { state("5b console while on elements", "app") }
++        at(0.5) { press("app", \.consoleButton, "Console") }
++        at(2.0) { state("5b console again", "app") }
++        // MARK: 5c — two quick presses on a closed inspector: the second retargets the opening one
++        at(1.0) {
++            press("app", \.networkButton, "Network")
++            press("app", \.consoleButton, "Console (50 ms later, same turn)")
++        }
++        at(4.0) { state("5c network then console while opening", "app") }
++        at(0.5) { press("app", \.consoleButton, "Console") }
++        at(2.0) { state("5c closed", "app") }
++        // MARK: 8 — the saved dock side is kept: dock right, close, reopen
++        at(1.0) { press("app", \.consoleButton, "Console") }
++        at(4.0) {
++            guard let wv = tabs["app"]?.webView, let c = WebInspectorControl(webView: wv) else { return }
++            c.evaluateInFrontend("InspectorFrontendHost.requestSetDockSide('right'); 'ok'") { log("8 dock right: \(String(describing: $0))") }
++        }
++        at(2.0) { state("8 docked right", "app") }
++        at(0.5) { press("app", \.consoleButton, "Console") }
++        at(2.0) { state("8 closed", "app") }
++        at(0.5) { press("app", \.networkButton, "Network") }
++        at(4.0) { state("8 network reopened (saved side)", "app"); shoot("8-reopened-right", window) }
++        at(0.5) {
++            guard let wv = tabs["app"]?.webView, let c = WebInspectorControl(webView: wv) else { return }
++            c.evaluateInFrontend("InspectorFrontendHost.requestSetDockSide('bottom'); 'ok'") { log("8 dock bottom again: \(String(describing: $0))") }
++        }
++        at(2.0) { press("app", \.networkButton, "Network") }
++        at(2.0) { state("8 closed again", "app") }
++        // MARK: 6 — the element picker
++        at(1.0) { press("app", \.elementPickerButton, "Select Element") }
++        at(1.5) { state("6a picker on (inspector closed)", "app"); shoot("6a-picker-on", window) }
++        at(0.5) { press("app", \.elementPickerButton, "Select Element") }
++        at(1.5) { state("6b picker off again", "app") }
++        at(0.5) { press("app", \.elementPickerButton, "Select Element") }
++        at(1.5) {
++            state("6c picker on", "app")
++            // Pick the <h1>: hover it, then click it.
++            guard let wv = tabs["app"]?.webView else { return }
++            window.makeFirstResponder(wv)
++            let p = wv.convert(NSPoint(x: 80, y: 30), to: nil)
++            log("6c posting mouse moves and a click at \(p) (window coords)")
++            post(.mouseMoved, at: NSPoint(x: p.x - 20, y: p.y))
++            post(.mouseMoved, at: p)
++        }
++        at(0.6) {
++            guard let wv = tabs["app"]?.webView else { return }
++            let p = wv.convert(NSPoint(x: 80, y: 30), to: nil)
++            post(.leftMouseDown, at: p)
++            post(.leftMouseUp, at: p)
++        }
++        at(4.0) { state("6c after the posted pick", "app"); shoot("6c-picked", window) }
++        // 6d — posted mouse moves reach no tracking area in an inactive app:
++        // deliver the hover and the click to the web view directly.
++        // (with the inspector open this time, and the window made key)
++        at(0.5) {
++            guard let wv = tabs["app"]?.webView, let c = WebInspectorControl(webView: wv) else { return }
++            if c.isElementSelectionActive { press("app", \.elementPickerButton, "Select Element (off first)") }
++        }
++        at(1.5) { press("app", \.consoleButton, "Console (for 6d)") }
++        at(4.0) {
++            NSApp.activate(ignoringOtherApps: true)
++            window.makeKeyAndOrderFront(nil)
++            press("app", \.elementPickerButton, "Select Element (6d, inspector open)")
++            log("6d app active=\(NSApp.isActive) window key=\(window.isKeyWindow)")
++        }
++        at(1.5) {
++            guard let wv = tabs["app"]?.webView else { return }
++            let p = wv.convert(NSPoint(x: 80, y: 30), to: nil)
++            for (i, x) in [p.x - 30, p.x - 10, p.x].enumerated() {
++                if let e = NSEvent.mouseEvent(with: .mouseMoved, location: NSPoint(x: x, y: p.y), modifierFlags: [],
++                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                              context: nil, eventNumber: 900 + i, clickCount: 0, pressure: 0) {
++                    wv.mouseMoved(with: e)
++                }
++            }
++            log("6d delivered mouseMoved x3 to the web view at \(p)")
++        }
++        at(1.0) { shoot("6d-hover", window) }
++        at(0.5) {
++            guard let wv = tabs["app"]?.webView else { return }
++            let p = wv.convert(NSPoint(x: 80, y: 30), to: nil)
++            for (i, type) in [NSEvent.EventType.leftMouseDown, .leftMouseUp].enumerated() {
++                if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
++                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                              context: nil, eventNumber: 910 + i, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
++                    if type == .leftMouseDown { wv.mouseDown(with: e) } else { wv.mouseUp(with: e) }
++                }
++            }
++            log("6d delivered a click to the web view")
++        }
++        at(4.0) { state("6d after the direct pick", "app"); shoot("6d-picked", window) }
++        at(1.0) {
++            guard let wv = tabs["app"]?.webView, let c = WebInspectorControl(webView: wv) else { return }
++            if c.isElementSelectionActive { press("app", \.elementPickerButton, "Select Element (cleanup: off)") }
++        }
++        at(1.5) {
++            if let wv = tabs["app"]?.webView, let c = WebInspectorControl(webView: wv), c.isVisible { c.close() }
++        }
++        at(2.0) { state("6 cleaned up", "app") }
++        // MARK: 7 — a split: the unfocused pane's buttons act on that pane
++        at(1.0) {
++            let api = store.addTab(in: space, url: apiURL)
++            tabs["api"] = api
++            store.createSplit(draggedTabID: api.id, targetTabID: tabs["app"]!.id, edge: .right, in: space)
++            wc.selectTab(id: tabs["app"]!.id)
++        }
++        at(3.0) {
++            log("7 split: app pane \(tabs["app"]?.webViewContainer.map { r($0.frame) } ?? "nil") api pane \(tabs["api"]?.webViewContainer.map { r($0.frame) } ?? "nil") focused=app? \(wc.selectedTabID == tabs["app"]?.id)")
++            shoot("7-split", window)
++        }
++        at(0.5) { press("api", \.consoleButton, "Console (unfocused right pane)") }
++        at(4.0) {
++            state("7a right console", "api"); state("7a left untouched", "app")
++            shoot("7a-split-right-console", window)
++        }
++        at(1.0) { press("api", \.networkButton, "Network (right pane)") }
++        at(2.0) { state("7b right network switch", "api"); shoot("7b-split-right-network", window) }
++        at(1.0) { press("api", \.networkButton, "Network (right pane)") }
++        at(2.0) { state("7c right closed", "api"); state("7c left", "app"); shoot("7c-split-closed", window) }
++        // 7d — a narrow pane (< 500 pt) cannot dock: WebKit opens a window
++        at(1.0) { window.setFrame(NSRect(x: 60, y: 80, width: 1100, height: 900), display: true) }
++        at(1.5) {
++            log("7d narrow: api pane \(tabs["api"]?.webViewContainer.map { r($0.frame) } ?? "nil")")
++            press("api", \.consoleButton, "Console (narrow right pane)")
++        }
++        at(4.0) {
++            state("7d narrow right console", "api")
++            let frontendWindow = tabs["api"]?.webView.flatMap { WebInspectorControl(webView: $0)?.frontendWebView?.window }
++            if let fw = frontendWindow, fw !== window { shoot("7d-narrow-own-window", fw) }
++            shoot("7d-narrow-main", window)
++        }
++        at(1.0) { press("api", \.consoleButton, "Console (narrow right pane)") }
++        at(2.0) { state("7d closed", "api") }
++        at(1.0) { log("done") }
++        steps[0].0 = 3.0
++        runStep(0)
++    }
++}
++#endif

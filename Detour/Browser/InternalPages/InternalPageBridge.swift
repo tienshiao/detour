@@ -34,7 +34,7 @@ final class InternalPageBridge: NSObject, WKScriptMessageHandlerWithReply {
         }
     }
 
-    private static let userScriptSources = InternalPage.allCases.map(userScriptSource(for:))
+    private static let userScriptSources = InternalPage.allCases.map { userScriptSource(for: $0) }
 
     /// The page's script, inert everywhere but on its own page. `location` is
     /// read through this world's own bindings, which page script cannot patch.
@@ -63,7 +63,7 @@ final class InternalPageBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     func userContentController(_ userContentController: WKUserContentController,
                                didReceive message: WKScriptMessage,
-                               replyHandler: @escaping (Any?, String?) -> Void) {
+                               replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let frame = message.frameInfo
         guard message.world == Self.contentWorld,
               let webView = message.webView,
@@ -91,9 +91,11 @@ final class InternalPageBridge: NSObject, WKScriptMessageHandlerWithReply {
 
 extension TabStore {
     /// The tab whose web view this is, wherever it lives: a space's tabs, its
-    /// pinned entries, the profile's favourites, or a peek over any of them.
+    /// pinned entries, the profile's favourites, a peek over any of them, or
+    /// a Quick Detour window's page (TASK-193.1), which is in no space.
     func tab(hosting webView: WKWebView) -> BrowserTab? {
         spaces.lazy.compactMap { self.tab(hosting: webView, in: $0) }.first
+            ?? quickDetourTabs.first { $0.webView === webView }
     }
 
     /// The one definition of "a space's tabs" for web view lookups: the

@@ -4,12 +4,21 @@ title: AppKit gotchas
 description: A collection of AppKit behaviours that cost debugging time in Detour — first responder and key-view loop, split and stack view layout, hit testing, table views under a drag session, popovers — each with where it bit and what to do instead.
 tags: [appkit, platform, focus, layout, drag-and-drop, hit-testing]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:45:28Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T02:30:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-132-8
     resource: backlog:TASK-132.8
     title: Host an extension's per-tab side panel beside the tab's content
+  - id: task-189
+    resource: backlog:TASK-189
+    title: "Settings: fix the window's spacing and clipping"
+  - id: task-186-3
+    resource: backlog:TASK-186.3
+    title: "Dev mode: capture buttons in the dev toolbar"
+  - id: task-186-2
+    resource: backlog:TASK-186.2
+    title: "Dev mode: an under-construction toolbar above the page with the URL"
   - id: window
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
     title: BrowserWindowController.swift
@@ -76,6 +85,9 @@ sources:
   - id: task-169
     resource: backlog:TASK-169
     title: A hover-revealed sidebar sometimes stays open instead of hiding again
+  - id: task-220
+    resource: backlog:TASK-220
+    title: A popup whose content is wider than its first size stays at 126x126 and is cut off
   - id: notes-keyloop
     resource: "Agent session notes, 2026-10-02 (not in the repository)"
     title: Key-view loop probe findings
@@ -122,7 +134,13 @@ Related.
 | `NSSplitView` overwrites its panes' autoresizing masks while tiling. | A web view container returned to single hosting kept a fixed size instead of following window resizes | `resetSplitPaneChrome` restores `[.width, .height]` |
 | Auto Layout constraints on a `WKWebView`'s container break the docked Web Inspector. | Web view hosting | Web view containers are frame-based: `container.frame = contentContainerView.bounds`, and split panes sit in an `NSSplitView`, which frames its children directly. A throwaway spike on 2026-07-11 confirmed the inspector docks inside a pane and survives divider moves.[^design] See [split tabs hosting](../tabs/split-tabs-hosting.md) |
 | `NSStackView.edgeInsets` on the **cross axis** are hugging-priority constraints only. In a height-constrained column the bottom inset silently collapses while the top survives.[^task-113] | Update banner in the Extensions settings pane: the button sat on the border | Add your own required constraints for insets that must hold; pin the content's bottom to the container. Measure in the running app rather than judging by eye |
+| An `NSBox` with `boxType = .separator` has no intrinsic width. In a horizontal `NSStackView` given only a height, it can be stretched to take the stack's slack and turns into a horizontal line; with one separator in the dev toolbar it happened to stay narrow, with two (TASK-186.3) one stretched to 473 pt and pulled the link button to the URL.[^task-186-3] | Dev toolbar trailing groups | Constrain both dimensions (`addTrailingGroup` gives each separator width 1, height 14); the frame is then about 5 pt wide around a 1 pt alignment rect |
 | `NSBox`'s content view is sized by autoresizing, so the box does not grow to an Auto Layout content's fitting height.[^task-113] | Same banner | A plain layer-backed container (`TintedBannerView`) |
+| A window's content view whose constraints cap its height (content pinned top and bottom with required `==`, nothing that stretches, inside a scroll view's document that must be at least the visible height) gives the window a maximum size: AppKit resizes the window to it the moment the view becomes `contentViewController`'s view, with no animation.[^task-189] | Settings: shrinking onto the Content Blocking pane snapped instead of animating | Pin the last item with `<=` plus a low-priority `==`, or let something in the column stretch |
+| Setting `contentMaxSize` below the window's current content height (or `contentMinSize` above it) resizes the window at once.[^task-189] | Settings window, setting a pane's bounds before animating to its height | Widen the bounds to cover the current height, animate, then set the final bounds in the completion |
+| `fittingSize` does not run the two-pass layout a wrapping `NSTextField` needs, so a wrapping label without `preferredMaxLayoutWidth` measures as one line. A constant wrap width is wrong as soon as the label's real width differs, for example a column 17 pt narrower under "always show scroll bars", and the last line is cut.[^task-189] | Settings panes' natural heights | Give the label a definite width and take the wrap width from it in `setFrameSize` (invalidate the intrinsic size and re-measure the container when it changes), starting from an estimate so the first measurement is right (`SettingsWrappingLabel`) |
+| `NSGridView` has one `rowSpacing`, and a hidden row still has to be skipped by whatever spacing you add. Help text that should sit closer to its control than the row gap cannot get it from `rowSpacing`.[^task-189] | Settings: Profiles' help rows 4 pt below their control, rows 10 apart | `rowSpacing = 0` and each row's `topPadding` set from a rule that knows which rows are visible (0 for the first visible row); a hidden row then contributes nothing |
+| A required width on the window's content view locks the window's width; without it, a label's compression resistance (750) beats the window's size (500) and a long string widens the window.[^task-189] | Settings: a long extension name widened the window to 1104 | Lock the width, and give long labels `.byTruncatingTail` and low compression resistance so they give way first |
 | A button's frame is larger than its height constraint: the constraint applies to the alignment rect. A 24 pt button measured 31 pt tall.[^task-126][^notes-hittest] | The Downloads button's hover circle was derived from the frame | State sizes that must be exact (`HoverButton.fixedHoverSize`); do not derive them from `bounds` |
 | Traffic lights sit inside the sidebar area only if the window has a toolbar. | Window setup | An empty unified `NSToolbar` (`setupToolbar`) |
 | During a fullscreen transition the title-bar container is reparented into an auxiliary window before `styleMask` reports `.fullScreen`. Converting a standard window button's frame then gives a plausible but wrong rect. | Title-bar control alignment in the sidebar | Check `zoomButton.window === window` before converting (`alignTitleBarControls`) |
@@ -137,6 +155,7 @@ Related.
 | …but a drag destination should not do that. A nil-returning `hitTest` could exclude a view from AppKit's (undocumented) drag-destination discovery. | `SplitDropZoneView` | No `hitTest` override there; the view exists only while a drag session is live, so there are no clicks to pass through |
 | A view with `mouseDownCanMoveWindow == true` moves the window from any point no subview claims. A control narrower than its drawn hover shape leaves a rim that drags the window. | Bottom-bar buttons | Make the frame cover what is drawn (28 pt wide for a 27 pt circle) |
 | A table view that is a drag source delays window ordering on **every** mouse-down so a row can be dragged out of a background window. A mouse-down that instead moves the window then drags a background window around underneath the others. | Sidebar list, empty area below the rows | `shouldDelayWindowOrdering(for:)` returns `false` when the point is not on a row (`DraggableTableView`) |
+| `WindowDragView` forwards a click that did not drag by calling `mouseDown` and then a synthesized `mouseUp` on the view under it. An `NSButton` under the strip cannot take that: its `mouseDown` tracks the real event queue for a mouse-up the strip already consumed.[^task-186-2] | Dev mode's toolbar sits inside the content area's top 38 pt | Adopt `WindowDragPassThrough`: the strip's `hitTest` returns nil over such a view, so its controls get the events directly ([dev mode](../features/dev-mode.md#the-dev-toolbar)) |
 | `WindowDragView.mouseDown` runs a nested `trackEvents` loop. Entered from inside a Swift `Task` (events delivered with `window.sendEvent`), AppKit throws from `nextEventMatchingMask` and the app aborts.[^notes-inprocess] | In-process UI automation | Deliver synthetic events with `NSApp.postEvent(_:atStart:)`; see [in-process UI automation](../playbooks/in-process-ui-automation.md) |
 | Tracking areas do not reliably send `mouseExited` when scrolling moves a view from under the pointer, and send nothing while a drag session is active.[^commit-b9ef265] | Hover backgrounds stuck on rows after scrolls and drags; a hover-revealed sidebar that stayed open (TASK-169) | Do not let state hang on one exit event: re-derive it from `mouseLocationOutsideOfEventStream` (`recheckHover()` after scrolls, batch updates and drag end; the sidebar's pointer sample, see [visibility and auto-hide](../sidebar/visibility-and-auto-hide.md)) |
 | `mouseMoved` events posted with `NSApp.postEvent` do not produce `mouseEntered` or `mouseExited`, even for an `.activeAlways` tracking area.[^task-169] | Trying to drive hover from a harness | Call the code the tracking area would call; say that the pointer never moved |
@@ -165,6 +184,8 @@ Related.
 | `NSPopover` does not expose its positioning view. Its window is a child of the presenting window, but only from `didShow`; at `willShow` it is not yet.[^task-127] | Deciding which popovers belong to the window | Observe `NSPopover.didShowNotification` and test `popover.contentViewController?.view.window?.parent === window` |
 | A `.semitransient` popover whose anchor collapses under it can stay shown and post no `didClose` (seen in a standalone probe, not reproduced in the app).[^task-127] Ordering its parent window out, or minimizing it, also leaves it `isShown` with no `didClose`; it returns with the window. A shown popover with no remaining reference stays alive and shown. Removing the anchor's view from the hierarchy closes it, with `didClose`.[^task-169] | A hold keyed on `didClose` could stick | Keep popovers weakly and ask `isShown` when the answer matters (`refreshSidebarPopoverHold`) |
 | For an animated popover `didShow` was posted about 0.5 s after `show(relativeTo:of:preferredEdge:)` returned; `isShown` and the child-window relation were true as soon as it returned.[^task-169] | The sidebar's popover hold starts late | Known gap, unfixed |
+| In the test host a popover's close animation never finishes: after `close()` the window is ordered out but `isShown` stays true and `popoverDidClose` never comes.[^task-220] | Testing the extension popup's close cleanup | Call the delegate method from the test ([popup sizing](../extensions/popup-and-options-ui.md)) |
+| A popover's window is 26 points larger than its content in each direction.[^task-220] | A 126 × 126 window in a window list was a 100 × 100 extension popup | Subtract 26 before comparing with content sizes |
 
 # Appearance and capture
 
@@ -216,9 +237,13 @@ from a probe or a measurement.
 [^task-130]: Keyboard focus stays behind on a tab list whose page has slid off screen
 [^task-131]: A focused tab list loses keyboard focus when the space list changes
 [^task-169]: A hover-revealed sidebar sometimes stays open instead of hiding again
+[^task-220]: A popup whose content is wider than its first size stays at 126x126 and is cut off
 [^design]: Split tabs design (sections 5 and 11)
 [^commit-b9ef265]: Sidebar: ID-based drag payloads, pure drop resolver, drag fixes
 [^notes-keyloop]: Key-view loop probe findings
 [^notes-hittest]: Hit-test and resize-region probe findings
 [^notes-harness]: Runtime debug harness notes (zero-width split pane root cause)
 [^notes-inprocess]: In-process UI verification notes
+[^task-186-2]: Dev mode: an under-construction toolbar above the page with the URL
+[^task-186-3]: Dev mode: capture buttons in the dev toolbar
+[^task-189]: Settings: fix the window's spacing and clipping

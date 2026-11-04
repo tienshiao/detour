@@ -2,14 +2,14 @@ import XCTest
 import GRDB
 @testable import Detour
 
-final class TabStoreTests: XCTestCase {
+nonisolated final class TabStoreTests: XCTestCase {
 
-    private func makeDatabase() throws -> AppDatabase {
+    @MainActor private func makeDatabase() throws -> AppDatabase {
         let dbQueue = try DatabaseQueue()
         return try AppDatabase(dbQueue: dbQueue)
     }
 
-    private func makeStore() throws -> (TabStore, Space) {
+    @MainActor private func makeStore() throws -> (TabStore, Space) {
         let db = try makeDatabase()
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Test")
@@ -17,7 +17,7 @@ final class TabStoreTests: XCTestCase {
         return (store, space)
     }
 
-    private func makeSleepingTab(spaceID: UUID) -> BrowserTab {
+    @MainActor private func makeSleepingTab(spaceID: UUID) -> BrowserTab {
         BrowserTab(
             id: UUID(),
             title: "Tab",
@@ -30,7 +30,7 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Pin / Unpin
 
-    func testPinTabMovesToPinnedEntries() throws {
+    @MainActor func testPinTabMovesToPinnedEntries() throws {
         let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
@@ -44,7 +44,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertTrue(space.pinnedEntries[0].isLive)
     }
 
-    func testUnpinTabMovesBackToTabs() throws {
+    @MainActor func testUnpinTabMovesBackToTabs() throws {
         let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
@@ -57,7 +57,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(space.tabs.count, 1)
     }
 
-    func testPinTabAtSpecificIndex() throws {
+    @MainActor func testPinTabAtSpecificIndex() throws {
         let (store, space) = try makeStore()
         let tab1 = makeSleepingTab(spaceID: space.id)
         let tab2 = makeSleepingTab(spaceID: space.id)
@@ -75,7 +75,7 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Move Tab
 
-    func testMoveTabReorders() throws {
+    @MainActor func testMoveTabReorders() throws {
         let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -85,7 +85,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(space.tabs.map(\.id), [tabs[1].id, tabs[2].id, tabs[0].id])
     }
 
-    func testMoveTabSameIndexIsNoOp() throws {
+    @MainActor func testMoveTabSameIndexIsNoOp() throws {
         let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -96,7 +96,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(space.tabs.map(\.id), originalOrder)
     }
 
-    func testMoveTabOutOfBoundsIsNoOp() throws {
+    @MainActor func testMoveTabOutOfBoundsIsNoOp() throws {
         let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
@@ -109,7 +109,7 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Move Pinned Tab
 
-    func testMovePinnedTabReorders() throws {
+    @MainActor func testMovePinnedTabReorders() throws {
         let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -127,7 +127,7 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Move Pinned Folder
 
-    func testMovePinnedFolderToFirstPosition() throws {
+    @MainActor func testMovePinnedFolderToFirstPosition() throws {
         let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
@@ -152,7 +152,7 @@ final class TabStoreTests: XCTestCase {
         }
     }
 
-    func testMovePinnedFolderToFirstPositionPersistsAfterSave() throws {
+    @MainActor func testMovePinnedFolderToFirstPositionPersistsAfterSave() throws {
         let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
@@ -180,7 +180,7 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Sort Order Persistence
 
-    func testMovePinnedTabBeforeFolderSetsCorrectSortOrder() throws {
+    @MainActor func testMovePinnedTabBeforeFolderSetsCorrectSortOrder() throws {
         let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
@@ -214,7 +214,7 @@ final class TabStoreTests: XCTestCase {
         }
     }
 
-    func testAddFolderSortOrderAccountsForEntries() throws {
+    @MainActor func testAddFolderSortOrderAccountsForEntries() throws {
         let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
@@ -228,7 +228,7 @@ final class TabStoreTests: XCTestCase {
                              "Newly created folder must have sort order after existing pinned entries")
     }
 
-    func testPinTabSortOrderAccountsForFolders() throws {
+    @MainActor func testPinTabSortOrderAccountsForFolders() throws {
         let (store, space) = try makeStore()
         let folder = PinnedFolder(name: "Folder", sortOrder: 5)
         space.pinnedFolders.append(folder)
@@ -245,14 +245,14 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Profile added (TASK-27)
 
-    private final class ProfileAddRecorder: TabStoreObserver {
+    @MainActor private final class ProfileAddRecorder: TabStoreObserver {
         var added: [UUID] = []
         func tabStoreDidAddProfile(_ profile: Profile) { added.append(profile.id) }
     }
 
     /// Every path that creates a profile mid-session tells observers, once; that is
     /// what ExtensionManager loads a new profile's extensions from.
-    func testCreatingAProfileNotifiesObserversOnce() throws {
+    @MainActor func testCreatingAProfileNotifiesObserversOnce() throws {
         let store = TabStore(appDB: try makeDatabase())
         let recorder = ProfileAddRecorder()
         store.addObserver(recorder)
@@ -267,7 +267,7 @@ final class TabStoreTests: XCTestCase {
     }
 
     /// The first-launch default profile is announced too.
-    func testDefaultProfileCreationNotifiesObservers() throws {
+    @MainActor func testDefaultProfileCreationNotifiesObservers() throws {
         let store = TabStore(appDB: try makeDatabase())
         let recorder = ProfileAddRecorder()
         store.addObserver(recorder)
@@ -280,7 +280,7 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Incognito Profile
 
-    func testIncognitoProfileIsIncognitoAfterRestore() throws {
+    @MainActor func testIncognitoProfileIsIncognitoAfterRestore() throws {
         // Create a store, trigger incognito profile creation, and save
         let db = try makeDatabase()
         let store1 = TabStore(appDB: db)
@@ -299,7 +299,7 @@ final class TabStoreTests: XCTestCase {
                       "Incognito profile must have isIncognito=true after DB round-trip")
     }
 
-    func testIncognitoProfileDataStoreIsNonPersistent() throws {
+    @MainActor func testIncognitoProfileDataStoreIsNonPersistent() throws {
         let db = try makeDatabase()
         let store1 = TabStore(appDB: db)
         let regularProfile = store1.addProfile(name: "Default")
@@ -317,7 +317,7 @@ final class TabStoreTests: XCTestCase {
                        "Incognito profile dataStore must be non-persistent after DB round-trip")
     }
 
-    func testIncognitoSpaceDoesNotRecordHistory() throws {
+    @MainActor func testIncognitoSpaceDoesNotRecordHistory() throws {
         let appDB = try makeDatabase()
         let historyDB = try HistoryDatabase(dbQueue: DatabaseQueue())
         let store = TabStore(appDB: appDB, historyDB: historyDB)
@@ -336,12 +336,12 @@ final class TabStoreTests: XCTestCase {
         store.recordHistoryVisit(tab: tab, spaceID: space.id)
 
         // Verify nothing was recorded
-        let results = historyDB.searchHistory(query: "secret", spaceID: space.id.uuidString)
+        let results = historyDB.searchHistory(query: "secret", spaceIDs: [space.id.uuidString])
         XCTAssertTrue(results.isEmpty,
                       "History must not be recorded for incognito spaces")
     }
 
-    func testIncognitoSpaceDoesNotRecordHistoryAfterRestore() throws {
+    @MainActor func testIncognitoSpaceDoesNotRecordHistoryAfterRestore() throws {
         let appDB = try makeDatabase()
         let historyDB = try HistoryDatabase(dbQueue: DatabaseQueue())
 
@@ -364,12 +364,12 @@ final class TabStoreTests: XCTestCase {
 
         store2.recordHistoryVisit(tab: tab, spaceID: space.id)
 
-        let results = historyDB.searchHistory(query: "private", spaceID: space.id.uuidString)
+        let results = historyDB.searchHistory(query: "private", spaceIDs: [space.id.uuidString])
         XCTAssertTrue(results.isEmpty,
                       "History must not be recorded for incognito spaces after DB round-trip")
     }
 
-    func testTypedNavigationBypassesHistoryDedup() throws {
+    @MainActor func testTypedNavigationBypassesHistoryDedup() throws {
         let appDB = try makeDatabase()
         let historyDB = try HistoryDatabase(dbQueue: DatabaseQueue())
         let store = TabStore(appDB: appDB, historyDB: historyDB)
@@ -397,7 +397,7 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Observer Tests
 
-    func testPinTabNotifiesObserver() throws {
+    @MainActor func testPinTabNotifiesObserver() throws {
         let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
@@ -411,7 +411,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(observer.pinCalls[0].toIndex, 0)
     }
 
-    func testUnpinTabNotifiesObserver() throws {
+    @MainActor func testUnpinTabNotifiesObserver() throws {
         let (store, space) = try makeStore()
         let tab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(tab)
@@ -427,7 +427,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(observer.unpinCalls[0].toIndex, 0)
     }
 
-    func testMoveTabNotifiesObserver() throws {
+    @MainActor func testMoveTabNotifiesObserver() throws {
         let (store, space) = try makeStore()
         let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: space.id) }
         space.tabs.append(contentsOf: tabs)
@@ -441,7 +441,7 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Profile Swap
 
-    private func makeStoreWithTwoProfiles() throws -> (TabStore, Space, old: Profile, new: Profile) {
+    @MainActor private func makeStoreWithTwoProfiles() throws -> (TabStore, Space, old: Profile, new: Profile) {
         let db = try makeDatabase()
         let store = TabStore(appDB: db)
         let oldProfile = store.addProfile(name: "Old")
@@ -450,12 +450,12 @@ final class TabStoreTests: XCTestCase {
         return (store, space, oldProfile, newProfile)
     }
 
-    private func swapProfile(_ store: TabStore, _ space: Space, to profile: Profile) {
+    @MainActor private func swapProfile(_ store: TabStore, _ space: Space, to profile: Profile) {
         store.updateSpace(id: space.id, name: space.name, emoji: space.emoji,
                           colorHex: space.colorHex, profileID: profile.id)
     }
 
-    func testProfileSwapForceSleepsAudioPlayingTab() throws {
+    @MainActor func testProfileSwapForceSleepsAudioPlayingTab() throws {
         let (store, space, _, newProfile) = try makeStoreWithTwoProfiles()
         let tab = store.addTab(in: space, url: URL(string: "https://example.com"))
         XCTAssertNotNil(tab.webView)
@@ -467,7 +467,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertNil(tab.webView, "the old profile's webView must be released")
     }
 
-    func testProfileSwapDeactivatesFavoriteBackedTab() throws {
+    @MainActor func testProfileSwapDeactivatesFavoriteBackedTab() throws {
         let (store, space, oldProfile, newProfile) = try makeStoreWithTwoProfiles()
         store.addFavoriteFromEntry(url: URL(string: "https://example.com")!, title: "Fav",
                                    faviconURL: nil, favicon: nil, profileID: oldProfile.id, at: 0)
@@ -480,7 +480,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertNil(fav.tab, "favorite backing tab bound to the swapped space must return to a dormant tile")
     }
 
-    func testProfileSwapMovesSelectionOffFavoriteBackedTab() throws {
+    @MainActor func testProfileSwapMovesSelectionOffFavoriteBackedTab() throws {
         let (store, space, oldProfile, newProfile) = try makeStoreWithTwoProfiles()
         let normalTab = makeSleepingTab(spaceID: space.id)
         space.tabs.append(normalTab)
@@ -496,10 +496,11 @@ final class TabStoreTests: XCTestCase {
                        "selection must move to a surviving tab before the favorite's tab is torn down")
     }
 
-    func testProfileSwapPostsSpaceTabsNeedRehostNotification() throws {
+    @MainActor func testProfileSwapPostsSpaceTabsNeedRehostNotification() throws {
         let (store, space, _, newProfile) = try makeStoreWithTwoProfiles()
+        let spaceID = space.id
         let exp = expectation(forNotification: .spaceTabsNeedRehost, object: nil) { note in
-            note.userInfo?["spaceID"] as? UUID == space.id
+            note.userInfo?["spaceID"] as? UUID == spaceID
         }
 
         swapProfile(store, space, to: newProfile)
@@ -507,7 +508,7 @@ final class TabStoreTests: XCTestCase {
         wait(for: [exp], timeout: 1)
     }
 
-    func testProfileSwapLeavesOtherSpacesFavoriteTabsAlone() throws {
+    @MainActor func testProfileSwapLeavesOtherSpacesFavoriteTabsAlone() throws {
         let (store, space, oldProfile, newProfile) = try makeStoreWithTwoProfiles()
         let otherSpace = store.addSpace(name: "Other", emoji: "🅾️", colorHex: "FF0000",
                                         profileID: oldProfile.id)
@@ -528,7 +529,7 @@ final class TabStoreTests: XCTestCase {
     /// A store whose undo manager groups manually, so `canUndo` reads what one
     /// close registered: a test body never turns the run loop that closes an
     /// event group. Every closing call goes through `inUndoGroup`.
-    private func makeArchiveFixture() throws -> (AppDatabase, TabStore, Space) {
+    @MainActor private func makeArchiveFixture() throws -> (AppDatabase, TabStore, Space) {
         let db = try makeDatabase()
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Archive")
@@ -540,13 +541,13 @@ final class TabStoreTests: XCTestCase {
         return (db, store, space)
     }
 
-    private func inUndoGroup(_ store: TabStore, _ body: () -> Void) {
+    @MainActor private func inUndoGroup(_ store: TabStore, _ body: () -> Void) {
         store.undoManager.beginUndoGrouping()
         body()
         store.undoManager.endUndoGrouping()
     }
 
-    func testManualArchiveRecordsArchivedAtAndRegistersUndo() throws {
+    @MainActor func testManualArchiveRecordsArchivedAtAndRegistersUndo() throws {
         let (db, store, space) = try makeArchiveFixture()
         let tab = makeSleepingTab(spaceID: space.id)
         let other = makeSleepingTab(spaceID: space.id)
@@ -563,7 +564,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(store.undoManager.undoActionName, "Archive Tab", "and is undone under its own name")
     }
 
-    func testRedoOfUndoneArchiveKeepsArchivedAt() throws {
+    @MainActor func testRedoOfUndoneArchiveKeepsArchivedAt() throws {
         let (db, store, space) = try makeArchiveFixture()
         let tab = makeSleepingTab(spaceID: space.id)
         let other = makeSleepingTab(spaceID: space.id)
@@ -584,7 +585,7 @@ final class TabStoreTests: XCTestCase {
                        "a redone archive is still an archive, not a plain close")
     }
 
-    func testTimerArchiveRecordsArchivedAtWithoutUndo() throws {
+    @MainActor func testTimerArchiveRecordsArchivedAtWithoutUndo() throws {
         let (db, store, space) = try makeArchiveFixture()
         let threshold = try XCTUnwrap(space.profile).archiveThreshold
         XCTAssertNotEqual(threshold, .never, "precondition: the profile archives")
@@ -607,7 +608,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertFalse(store.undoManager.canUndo, "the archive sweep must not register an undo")
     }
 
-    func testPlainCloseRecordsNoArchivedAtAndRegistersUndo() throws {
+    @MainActor func testPlainCloseRecordsNoArchivedAtAndRegistersUndo() throws {
         let (db, store, space) = try makeArchiveFixture()
         let tab = makeSleepingTab(spaceID: space.id)
         let other = makeSleepingTab(spaceID: space.id)
@@ -621,7 +622,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(store.undoManager.undoActionName, "Close Tab")
     }
 
-    func testIncognitoArchiveWritesNoClosedTabRecord() throws {
+    @MainActor func testIncognitoArchiveWritesNoClosedTabRecord() throws {
         let (db, store, _) = try makeArchiveFixture()
         let space = store.addIncognitoSpace()
         let tab = makeSleepingTab(spaceID: space.id)
@@ -636,7 +637,7 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Reopen skips archived records (TASK-116)
 
-    func testReopenSkipsArchivedRecordsButListingKeepsThem() throws {
+    @MainActor func testReopenSkipsArchivedRecordsButListingKeepsThem() throws {
         let (_, store, space) = try makeArchiveFixture()
         let tabs = ["https://a.example/", "https://b.example/", "https://c.example/", "https://keep.example/"]
             .map { makeTab($0, spaceID: space.id) }
@@ -657,7 +658,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertEqual(listed.first?.archivedAt, archivedAt.timeIntervalSince1970)
     }
 
-    func testCanReopenClosedTabIgnoresArchivedRecords() throws {
+    @MainActor func testCanReopenClosedTabIgnoresArchivedRecords() throws {
         let (_, store, space) = try makeArchiveFixture()
         let tabs = ["https://a.example/", "https://b.example/", "https://keep.example/"]
             .map { makeTab($0, spaceID: space.id) }
@@ -670,7 +671,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertTrue(store.canReopenClosedTab(in: space))
     }
 
-    func testTimerArchiveAfterACloseDoesNotChangeWhatReopens() throws {
+    @MainActor func testTimerArchiveAfterACloseDoesNotChangeWhatReopens() throws {
         let (_, store, space) = try makeArchiveFixture()
         let threshold = try XCTUnwrap(space.profile).archiveThreshold
         XCTAssertNotEqual(threshold, .never, "precondition: the profile archives")
@@ -692,7 +693,7 @@ final class TabStoreTests: XCTestCase {
                        "Cmd+Shift+T brings back the closed tab, not the one the sweep took later")
     }
 
-    func testClosedAtIsSetOnCloseManualArchiveAndTimerArchive() throws {
+    @MainActor func testClosedAtIsSetOnCloseManualArchiveAndTimerArchive() throws {
         let (db, store, space) = try makeArchiveFixture()
         let threshold = try XCTUnwrap(space.profile).archiveThreshold
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -729,12 +730,12 @@ final class TabStoreTests: XCTestCase {
 
     // MARK: - Closed-tab records live in the database only (TASK-117)
 
-    private func makeTab(_ url: String, spaceID: UUID) -> BrowserTab {
+    @MainActor private func makeTab(_ url: String, spaceID: UUID) -> BrowserTab {
         BrowserTab(id: UUID(), title: url, url: URL(string: url), faviconURL: nil,
                    cachedInteractionState: nil, spaceID: spaceID)
     }
 
-    func testDeleteSpaceUndoKeepsReopenOrder() throws {
+    @MainActor func testDeleteSpaceUndoKeepsReopenOrder() throws {
         let (db, store, space) = try makeArchiveFixture()
         let profileID = try XCTUnwrap(space.profile).id
         var otherSpace: Space?
@@ -770,7 +771,7 @@ final class TabStoreTests: XCTestCase {
         XCTAssertNil(store.reopenClosedTab(in: restored))
     }
 
-    func testReopenReadsOnlyTheChosenRecordsFullRow() throws {
+    @MainActor func testReopenReadsOnlyTheChosenRecordsFullRow() throws {
         let (_, store, space) = try makeArchiveFixture()
         let tabs = ["https://a.example/", "https://b.example/", "https://c.example/", "https://keep.example/"]
             .map { makeTab($0, spaceID: space.id) }
@@ -789,7 +790,7 @@ final class TabStoreTests: XCTestCase {
                        "validation and the reopen scan each read blob-free summaries once")
     }
 
-    func testLaunchLoadsNoClosedTabRecordsAndReadsThemFromTheDatabase() throws {
+    @MainActor func testLaunchLoadsNoClosedTabRecordsAndReadsThemFromTheDatabase() throws {
         let (db, store, space) = try makeArchiveFixture()
         let tabs = ["https://a.example/", "https://b.example/", "https://keep.example/"]
             .map { makeTab($0, spaceID: space.id) }
@@ -819,7 +820,7 @@ final class TabStoreTests: XCTestCase {
     /// any read error. Such a launch must still hold every stored profile, or the
     /// next save sweeps them out of the database and (before this fix) armed the
     /// removal of their on-disk cookies, logins and extension storage.
-    func testSessionLessLaunchKeepsStoredProfilesAndRemovesNoData() throws {
+    @MainActor func testSessionLessLaunchKeepsStoredProfilesAndRemovesNoData() throws {
         let db = try makeDatabase()
         let profileIDs = [UUID().uuidString, UUID().uuidString]
         for (index, id) in profileIDs.enumerated() {

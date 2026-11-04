@@ -32,7 +32,7 @@ final class RecordingPolyfillBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     func userContentController(_ userContentController: WKUserContentController,
                                didReceive message: WKScriptMessage,
-                               replyHandler: @escaping (Any?, String?) -> Void) {
+                               replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else {
             replyHandler(nil, "bad message")
             return
@@ -314,7 +314,10 @@ final class SidePanelTestWorld {
     }
 
     struct WorkerSilent: Error, CustomStringConvertible {
-        let envelope: [String: Any]
+        /// The envelope the worker left, as text: an error is `Sendable`,
+        /// and the envelope's values are not.
+        let envelope: String
+        init(envelope: [String: Any]) { self.envelope = "\(envelope)" }
         var description: String { "the worker did not answer: \(envelope)" }
     }
 
@@ -467,8 +470,9 @@ final class SidePanelTestWorld {
         let page = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: configuration)
         pages.append(page)
         try await loadAndWait(page, URLRequest(url: context.baseURL.appendingPathComponent("test.html")))
-        context.loadBackgroundContent { error in
-            if let error { print("loadBackgroundContent failed: \(error)") }
+        // Started, not awaited: the test waits for the worker itself.
+        Task {
+            do { try await context.loadBackgroundContent() } catch { print("loadBackgroundContent failed: \(error)") }
         }
         let loaded = Loaded(ext: ext, profile: profile, context: context, page: page)
         try await waitUntil("the worker to answer", timeout: 30) {

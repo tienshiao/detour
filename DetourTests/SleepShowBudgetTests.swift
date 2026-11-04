@@ -16,33 +16,32 @@ import GRDB
 /// The rule only ever *shortens* a threshold: a selected tab
 /// (`lastDeselectedAt == nil`), an audible tab and a tab used within the grace
 /// are never slept by it.
-@MainActor
-final class SleepShowBudgetTests: XCTestCase {
+nonisolated final class SleepShowBudgetTests: XCTestCase {
 
     /// Nothing listens on port 1, so nothing here reaches the network.
     private let pageURL = URL(string: "http://127.0.0.1:1/page")!
 
     private var createdTabs: [BrowserTab] = []
-    private var defaultFaviconFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         defaultFaviconFetch = FaviconLoader.shared.fetch
         FaviconLoader.shared.resetForTesting()
         FaviconLoader.shared.fetch = { _, completion in completion(nil) }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
         FaviconLoader.shared.fetch = defaultFaviconFetch
         FaviconLoader.shared.resetForTesting()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
-    private func makeStore() throws -> (TabStore, Profile, Space) {
+    @MainActor private func makeStore() throws -> (TabStore, Profile, Space) {
         let store = TabStore(appDB: try AppDatabase(dbQueue: try DatabaseQueue()))
         let profile = store.addProfile(name: "Budget")
         let space = store.addSpace(name: "Budget", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
@@ -51,7 +50,7 @@ final class SleepShowBudgetTests: XCTestCase {
 
     /// A live (web-view-carrying) tab in the space's tab list.
     @discardableResult
-    private func makeNormalTab(_ store: TabStore, in space: Space) -> BrowserTab {
+    @MainActor private func makeNormalTab(_ store: TabStore, in space: Space) -> BrowserTab {
         let tab = store.addTab(in: space)
         tab.url = pageURL
         createdTabs.append(tab)
@@ -59,7 +58,7 @@ final class SleepShowBudgetTests: XCTestCase {
     }
 
     /// A live tab that belongs to no list yet — what a favourite is backed by.
-    private func makeLooseTab(in space: Space) -> BrowserTab {
+    @MainActor private func makeLooseTab(in space: Space) -> BrowserTab {
         let tab = BrowserTab(configuration: space.makeWebViewConfiguration())
         tab.spaceID = space.id
         tab.url = pageURL
@@ -67,32 +66,32 @@ final class SleepShowBudgetTests: XCTestCase {
         return tab
     }
 
-    private func makePinnedEntry(_ store: TabStore, in space: Space) -> PinnedEntry {
+    @MainActor private func makePinnedEntry(_ store: TabStore, in space: Space) -> PinnedEntry {
         let tab = makeNormalTab(store, in: space)
         store.pinTab(id: tab.id, in: space)
         return space.pinnedEntries.first { $0.tab === tab }!
     }
 
-    private func makeFavorite(_ store: TabStore, _ profile: Profile, in space: Space) -> Favorite {
+    @MainActor private func makeFavorite(_ store: TabStore, _ profile: Profile, in space: Space) -> Favorite {
         let tab = makeLooseTab(in: space)
         store.addFavorite(from: tab, profileID: profile.id)
         return profile.favorites.first { $0.tab === tab }!
     }
 
     /// Spends the tab's whole show budget.
-    private func spendBudget(_ tab: BrowserTab) {
+    @MainActor private func spendBudget(_ tab: BrowserTab) {
         for _ in 0..<TabStore.sleepShowBudget { tab.noteShown() }
     }
 
     /// Out of sight for longer than the budget grace, but well inside the
     /// profile's one-hour idle threshold — so only the budget rule can fire.
-    private func deselectedBeyondGrace(_ tab: BrowserTab, now: Date) {
+    @MainActor private func deselectedBeyondGrace(_ tab: BrowserTab, now: Date) {
         tab.lastDeselectedAt = now.addingTimeInterval(-TabStore.sleepShowBudgetGrace - 60)
     }
 
     // MARK: - The budget rule reaches every section
 
-    func testBudgetAndGraceSleepNormalPinnedAndFavoriteTabs() throws {
+    @MainActor func testBudgetAndGraceSleepNormalPinnedAndFavoriteTabs() throws {
         let (store, profile, space) = try makeStore()
         let now = Date()
 
@@ -123,7 +122,7 @@ final class SleepShowBudgetTests: XCTestCase {
         XCTAssertNil(favoriteTab.webView)
     }
 
-    func testBudgetWithinGraceDoesNotSleep() throws {
+    @MainActor func testBudgetWithinGraceDoesNotSleep() throws {
         let (store, profile, space) = try makeStore()
         let now = Date()
 
@@ -146,7 +145,7 @@ final class SleepShowBudgetTests: XCTestCase {
         }
     }
 
-    func testOneShowShortOfTheBudgetDoesNotSleep() throws {
+    @MainActor func testOneShowShortOfTheBudgetDoesNotSleep() throws {
         let (store, _, space) = try makeStore()
         let now = Date()
 
@@ -161,7 +160,7 @@ final class SleepShowBudgetTests: XCTestCase {
 
     // MARK: - The idle rule is unchanged
 
-    func testIdleRuleUnaffectedBelowTheThreshold() throws {
+    @MainActor func testIdleRuleUnaffectedBelowTheThreshold() throws {
         let (store, profile, space) = try makeStore()
         let now = Date()
 
@@ -178,7 +177,7 @@ final class SleepShowBudgetTests: XCTestCase {
         for tab in tabs { XCTAssertFalse(tab.isSleeping) }
     }
 
-    func testIdleRuleStillSleepsNormalTabsOnlyPastTheThreshold() throws {
+    @MainActor func testIdleRuleStillSleepsNormalTabsOnlyPastTheThreshold() throws {
         let (store, profile, space) = try makeStore()
         let now = Date()
 
@@ -199,7 +198,7 @@ final class SleepShowBudgetTests: XCTestCase {
 
     // MARK: - Blockers
 
-    func testSelectedTabIsNeverSleptByTheBudget() throws {
+    @MainActor func testSelectedTabIsNeverSleptByTheBudget() throws {
         let (store, profile, space) = try makeStore()
         let now = Date()
 
@@ -218,7 +217,7 @@ final class SleepShowBudgetTests: XCTestCase {
         for tab in tabs { XCTAssertFalse(tab.isSleeping, "a tab on screen is never slept") }
     }
 
-    func testAudibleTabIsNeverSleptByTheBudget() throws {
+    @MainActor func testAudibleTabIsNeverSleptByTheBudget() throws {
         let (store, profile, space) = try makeStore()
         let now = Date()
 
@@ -237,11 +236,29 @@ final class SleepShowBudgetTests: XCTestCase {
         for tab in tabs { XCTAssertFalse(tab.isSleeping, "audible tabs keep their web view") }
     }
 
+    /// Page mute (TASK-192) keeps `_isPlayingAudio` true; a muted tab is not
+    /// audible, so it sleeps as it did under the old script mute.
+    @MainActor func testMutedPlayingTabIsSleptByTheBudget() throws {
+        let (store, _, space) = try makeStore()
+        let now = Date()
+
+        let tab = makeNormalTab(store, in: space)
+        spendBudget(tab)
+        deselectedBeyondGrace(tab, now: now)
+        tab.isPlayingAudio = true
+        tab.isMuted = true
+        XCTAssertFalse(tab.isAudible)
+
+        store.sleepStaleTabs(now: now)
+
+        XCTAssertTrue(tab.isSleeping, "a muted tab's silent playback must not pin its web view")
+    }
+
     /// Two windows on one space share a single `lastDeselectedAt`, so the one
     /// that deselects a tab stamps it while the other may still be hosting it.
     /// A parented container means "hosted somewhere" — sleeping would blank that
     /// window's content area.
-    func testTabHostedInSomeWindowIsNotSlept() throws {
+    @MainActor func testTabHostedInSomeWindowIsNotSlept() throws {
         let (store, _, space) = try makeStore()
         let now = Date()
 
@@ -262,7 +279,7 @@ final class SleepShowBudgetTests: XCTestCase {
 
     /// The same hazard under the idle rule: the stamp alone cannot tell a tab
     /// another window still hosts from one nobody shows.
-    func testIdleRuleDoesNotSleepATabHostedInSomeWindow() throws {
+    @MainActor func testIdleRuleDoesNotSleepATabHostedInSomeWindow() throws {
         let (store, _, space) = try makeStore()
         let now = Date()
 
@@ -282,7 +299,7 @@ final class SleepShowBudgetTests: XCTestCase {
 
     // MARK: - Splits
 
-    func testSplitWithAFreshPartnerDoesNotSleep() throws {
+    @MainActor func testSplitWithAFreshPartnerDoesNotSleep() throws {
         let (store, _, space) = try makeStore()
         let now = Date()
 
@@ -302,7 +319,7 @@ final class SleepShowBudgetTests: XCTestCase {
         XCTAssertFalse(right.isSleeping)
     }
 
-    func testSplitSleepsWhenBothPanesAreEligible() throws {
+    @MainActor func testSplitSleepsWhenBothPanesAreEligible() throws {
         let (store, _, space) = try makeStore()
         let now = Date()
 
@@ -323,7 +340,7 @@ final class SleepShowBudgetTests: XCTestCase {
 
     /// A pinned split's group lives on the entries, not on the backing tabs
     /// (split-tabs-design.md §12), so the partner rule has to resolve it there.
-    func testPinnedSplitWithAFreshPartnerDoesNotSleep() throws {
+    @MainActor func testPinnedSplitWithAFreshPartnerDoesNotSleep() throws {
         let (store, _, space) = try makeStore()
         let now = Date()
 
@@ -359,7 +376,7 @@ final class SleepShowBudgetTests: XCTestCase {
 
     // MARK: - The counter itself
 
-    func testNoteShownIncrementsAndWakeResets() throws {
+    @MainActor func testNoteShownIncrementsAndWakeResets() throws {
         let (store, _, space) = try makeStore()
         let tab = makeNormalTab(store, in: space)
 
@@ -378,14 +395,14 @@ final class SleepShowBudgetTests: XCTestCase {
 
     // MARK: - Environment overrides
 
-    func testEnvironmentOverridesParse() {
+    @MainActor func testEnvironmentOverridesParse() {
         XCTAssertEqual(TabStore.sleepShowBudgetSetting(environment: ["DETOUR_SLEEP_SHOW_BUDGET": "7"]), 7)
         XCTAssertEqual(
             TabStore.sleepShowBudgetGraceSetting(environment: ["DETOUR_SLEEP_SHOW_BUDGET_GRACE_SECONDS": "30"]),
             30)
     }
 
-    func testUnsetOrUnusableEnvironmentFallsBackToTheDefaults() {
+    @MainActor func testUnsetOrUnusableEnvironmentFallsBackToTheDefaults() {
         XCTAssertEqual(TabStore.sleepShowBudgetSetting(environment: [:]), TabStore.defaultSleepShowBudget)
         XCTAssertEqual(TabStore.sleepShowBudgetGraceSetting(environment: [:]),
                        TabStore.defaultSleepShowBudgetGrace)

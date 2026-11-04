@@ -14,8 +14,10 @@ import GRDB
 /// is a shell script that `exec`s `sleep <unique seconds>`, so whether a process
 /// was spawned is read off the process table by that unique argument, and every
 /// such process is killed in tearDown.
-@MainActor
-final class NativeMessagingEnforcementTests: XCTestCase {
+///
+/// The host lifecycle legs at the end (TASK-232, TASK-233) use the same
+/// production path with hosts that answer and then exit or stay alive.
+nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
 
     private static let hostName = "com.detour.task25_enforcement_test"
 
@@ -26,7 +28,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// The shared fake-host fixture, if this test installed one (at most one per test).
     private var fakeHost: FakeNativeMessagingHost?
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         webViews.removeAll()
         for profile in createdProfiles {
             profile.unloadAllExtensions()
@@ -35,7 +37,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
         createdProfiles.removeAll()
         for id in registeredExtensionIDs {
             ExtensionManager.shared.extensions.removeAll { $0.id == id }
-            try? AppDatabase.shared.dbQueue.write { db in
+            try? await AppDatabase.shared.dbQueue.write { db in
                 _ = try ExtensionPermissionRecord.filter(Column("extensionID") == id).deleteAll(db)
             }
             AppDatabase.shared.deleteExtension(id: id)
@@ -49,12 +51,12 @@ final class NativeMessagingEnforcementTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
-    private func makeTempDir(_ label: String) throws -> URL {
+    @MainActor private func makeTempDir(_ label: String) throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-test-\(label)-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -64,8 +66,9 @@ final class NativeMessagingEnforcementTests: XCTestCase {
 
     /// Install the silent fake host for `extensionIDs` (one manifest may list several
     /// origins) and point the host search at it. Torn down in this suite's tearDown.
-    private func installFakeHost(allowing extensionIDs: [String]) throws {
-        let host = try FakeNativeMessagingHost(name: Self.hostName, allowing: extensionIDs)
+    @MainActor private func installFakeHost(allowing extensionIDs: [String],
+                                            behavior: FakeNativeMessagingHost.Behavior = .silent) throws {
+        let host = try FakeNativeMessagingHost(name: Self.hostName, allowing: extensionIDs, behavior: behavior)
         fakeHost = host
     }
 
@@ -74,7 +77,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// `permissions` is a parameter so a test can make the manifest itself the
     /// thing under test — an extension that never declared nativeMessaging is
     /// the `.denied` half of the gate.
-    private func makeExtension(permissions: [String] = ["nativeMessaging"]) async throws -> WebExtension {
+    @MainActor private func makeExtension(permissions: [String] = ["nativeMessaging"]) async throws -> WebExtension {
         let id = "nm-enforce-\(UUID().uuidString.prefix(8).lowercased())"
         let dir = try makeTempDir(id)
         let manifestJSON = """
@@ -102,13 +105,13 @@ final class NativeMessagingEnforcementTests: XCTestCase {
         return ext
     }
 
-    private struct Loaded {
+    @MainActor private struct Loaded {
         let profile: Profile
         let context: WKWebExtensionContext
         let webView: WKWebView
     }
 
-    private func load(_ ext: WebExtension, profileName: String) async throws -> Loaded {
+    @MainActor private func load(_ ext: WebExtension, profileName: String) async throws -> Loaded {
         let profile = TabStore.shared.addProfile(name: profileName)
         createdProfiles.append(profile)
         _ = profile.extensionController
@@ -121,16 +124,16 @@ final class NativeMessagingEnforcementTests: XCTestCase {
         return Loaded(profile: profile, context: context, webView: webView)
     }
 
-    private func saveNativeMessagingDecision(_ ext: WebExtension, _ status: ExtensionPermissionStatus) {
+    @MainActor private func saveNativeMessagingDecision(_ ext: WebExtension, _ status: ExtensionPermissionStatus) {
         AppDatabase.shared.savePermission(ExtensionPermissionRecord(
             extensionID: ext.id, key: "nativeMessaging", type: .apiPermission, status: status))
     }
 
     /// Fake host processes currently alive for this test.
-    private func fakeHostProcessCount() -> Int { fakeHost?.processCount() ?? 0 }
+    @MainActor private func fakeHostProcessCount() -> Int { fakeHost?.processCount() ?? 0 }
 
     /// Evaluate `body` (an async function body returning a JSON-able value) in the page.
-    private func evalJSON(_ body: String, in webView: WKWebView,
+    @MainActor private func evalJSON(_ body: String, in webView: WKWebView,
                           arguments: [String: Any] = [:]) async throws -> [String: Any] {
         let raw = try await webView.callAsyncJavaScript(
             "return JSON.stringify(await (async () => { \(body) })());",
@@ -140,7 +143,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     }
 
     /// `runtime.sendNativeMessage` from the page, settled or timed out.
-    private func sendNativeMessage(_ host: String, _ message: [String: Any], in webView: WKWebView,
+    @MainActor private func sendNativeMessage(_ host: String, _ message: [String: Any], in webView: WKWebView,
                                    timeoutMS: Int = 3000) async throws -> [String: Any] {
         try await evalJSON("""
             return await new Promise((resolve) => {
@@ -154,7 +157,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
 
     /// Open a `runtime.connectNative` port from the page and record how it ends
     /// on `window.__ports[name]`.
-    private func connectNative(_ host: String, as name: String, in webView: WKWebView) async throws {
+    @MainActor private func connectNative(_ host: String, as name: String, in webView: WKWebView) async throws {
         _ = try await evalJSON("""
             window.__ports = window.__ports || {};
             const record = { disconnected: false, lastError: null, portError: null, port: null };
@@ -171,7 +174,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
             """, in: webView, arguments: ["host": host, "name": name])
     }
 
-    private func portState(_ name: String, in webView: WKWebView) async throws -> [String: Any] {
+    @MainActor private func portState(_ name: String, in webView: WKWebView) async throws -> [String: Any] {
         try await evalJSON("""
             const record = (window.__ports || {})[name];
             return record ? { disconnected: record.disconnected, lastError: record.lastError, portError: record.portError } : { missing: true };
@@ -182,7 +185,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
 
     /// A saved denial refuses `sendNativeMessage` with Chrome's forbidden error and
     /// spawns nothing.
-    func testDeniedNativeMessagingRejectsSendNativeMessageWithoutSpawning() async throws {
+    @MainActor func testDeniedNativeMessagingRejectsSendNativeMessageWithoutSpawning() async throws {
         let ext = try await makeExtension()
         try installFakeHost(allowing: [ext.id])
         saveNativeMessagingDecision(ext, .denied)
@@ -199,7 +202,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
 
     /// A saved denial refuses `connectNative`: the port disconnects with the
     /// forbidden error and no process is spawned or registered.
-    func testDeniedNativeMessagingRefusesConnectNativeWithoutSpawning() async throws {
+    @MainActor func testDeniedNativeMessagingRefusesConnectNativeWithoutSpawning() async throws {
         let ext = try await makeExtension()
         try installFakeHost(allowing: [ext.id])
         saveNativeMessagingDecision(ext, .denied)
@@ -228,7 +231,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// Denying from Settings then tears the live connection down at once: the
     /// process is killed, the port disconnects with the forbidden error, and a
     /// reconnect is refused — all on the same loaded context.
-    func testAbsentDecisionAllowsConnectNativeAndDenialDisconnectsIt() async throws {
+    @MainActor func testAbsentDecisionAllowsConnectNativeAndDenialDisconnectsIt() async throws {
         let ext = try await makeExtension()
         try installFakeHost(allowing: [ext.id])
         let loaded = try await load(ext, profileName: "NM Absent Connect Profile")
@@ -270,7 +273,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// A saved grant spawns the one-shot host; a denial arriving while it waits
     /// for a reply kills it and rejects the pending promise instead of leaving it
     /// hanging.
-    func testGrantedDecisionAllowsSendNativeMessageAndDenialRejectsThePendingReply() async throws {
+    @MainActor func testGrantedDecisionAllowsSendNativeMessageAndDenialRejectsThePendingReply() async throws {
         let ext = try await makeExtension()
         try installFakeHost(allowing: [ext.id])
         saveNativeMessagingDecision(ext, .granted)
@@ -304,7 +307,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     }
 
     /// Re-granting from Settings lifts the block on the same loaded context.
-    func testRegrantingLiftsTheBlockWithoutReload() async throws {
+    @MainActor func testRegrantingLiftsTheBlockWithoutReload() async throws {
         let ext = try await makeExtension()
         try installFakeHost(allowing: [ext.id])
         saveNativeMessagingDecision(ext, .denied)
@@ -323,7 +326,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     }
 
     /// Denying one extension leaves another extension's live host alone.
-    func testDenialOnlyDisconnectsThatExtensionsHosts() async throws {
+    @MainActor func testDenialOnlyDisconnectsThatExtensionsHosts() async throws {
         let denied = try await makeExtension()
         let other = try await makeExtension()
         // One host manifest may list both origins.
@@ -354,7 +357,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// Until TASK-90 the second half was accepted in silence (`completionHandler(nil)`):
     /// a port with no handlers, no host process and no log line, which is the
     /// state the production reconnect-loop investigation had to rule out by hand.
-    func testConnectNativeIsAcceptedForAListedContextAndRefusedOnceItIsNot() async throws {
+    @MainActor func testConnectNativeIsAcceptedForAListedContextAndRefusedOnceItIsNot() async throws {
         let ext = try await makeExtension()
         try installFakeHost(allowing: [ext.id])
         let loaded = try await load(ext, profileName: "NM Listed Context Profile")
@@ -391,7 +394,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// The other half of the gate's refusal: an extension that never declared
     /// nativeMessaging is refused by the manifest check, with the reason that
     /// names the manifest rather than the context.
-    func testConnectNativeWithoutTheDeclaredPermissionIsRefusedWithoutSpawning() async throws {
+    @MainActor func testConnectNativeWithoutTheDeclaredPermissionIsRefusedWithoutSpawning() async throws {
         let ext = try await makeExtension(permissions: [])
         try installFakeHost(allowing: [ext.id])
         let loaded = try await load(ext, profileName: "NM Undeclared Profile")
@@ -417,7 +420,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
 
     /// Detour's polyfill host still answers an envelope from an extension whose
     /// nativeMessaging is denied — it is the bridge, not the capability.
-    func testDeniedNativeMessagingKeepsPolyfillHostWorking() async throws {
+    @MainActor func testDeniedNativeMessagingKeepsPolyfillHostWorking() async throws {
         let ext = try await makeExtension()
         saveNativeMessagingDecision(ext, .denied)
         let loaded = try await load(ext, profileName: "NM Denied Polyfill Profile")
@@ -433,7 +436,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     }
 
     /// The keep-alive port and the WebSocket relay port are still accepted.
-    func testDeniedNativeMessagingKeepsBuiltInPortsWorking() async throws {
+    @MainActor func testDeniedNativeMessagingKeepsBuiltInPortsWorking() async throws {
         let ext = try await makeExtension()
         saveNativeMessagingDecision(ext, .denied)
         let loaded = try await load(ext, profileName: "NM Denied Ports Profile")
@@ -464,7 +467,7 @@ final class NativeMessagingEnforcementTests: XCTestCase {
     /// installed must outlive both a reinstall of the same version and an update
     /// that re-declares the permission, while a permission the update newly
     /// declares is still recorded as granted.
-    func testSavedDenialSurvivesReinstallAndUpdate() async throws {
+    @MainActor func testSavedDenialSurvivesReinstallAndUpdate() async throws {
         let source = try makeTempDir("task63-source")
         // A manifest key pins the id, so every install is the same extension.
         let key = Data("detour-task63-\(UUID().uuidString)".utf8).base64EncodedString()
@@ -532,5 +535,295 @@ final class NativeMessagingEnforcementTests: XCTestCase {
         XCTAssertEqual(db.permissionStatus(extensionID: first.id, key: "nativeMessaging", type: .apiPermission),
                        .denied, "an update must not resurrect the denial either")
         XCTAssertEqual(db.permissionStatus(extensionID: first.id, key: hostPattern, type: .matchPattern), .denied)
+    }
+
+    // MARK: - A reply written before the host exits arrives first (TASK-232)
+
+    /// A one-shot host that writes a large reply and exits at once: the
+    /// promise resolves with the reply, never with "Native host has exited."
+    /// Before the fix the exit could be handled while the read loop was still
+    /// parsing the reply.
+    @MainActor func testSendNativeMessageResolvesWithAReplyTheHostWroteBeforeExiting() async throws {
+        let ext = try await makeExtension()
+        let reply = try JSONSerialization.data(withJSONObject: ["pong": 1, "blob": String(repeating: "x", count: 256 * 1024)])
+        try installFakeHost(allowing: [ext.id], behavior: .answersThenExits(NativeMessagingHost.encodeMessage(reply), status: 0))
+        let loaded = try await load(ext, profileName: "NM Reply Then Exit Profile")
+
+        for iteration in 1...15 {
+            let result = try await evalJSON("""
+                const reply = await chrome.runtime.sendNativeMessage(host, { ping: iteration })
+                    .catch((error) => ({ error: String(error && error.message ? error.message : error) }));
+                return { pong: reply.pong ?? null, error: reply.error ?? null };
+                """, in: loaded.webView, arguments: ["host": Self.hostName, "iteration": iteration])
+            XCTAssertEqual(result["pong"] as? Int, 1, "iteration \(iteration): \(result)")
+        }
+        XCTAssertEqual(ExtensionManager.shared.pendingOneShotNativeMessageCountForTesting(extensionID: ext.id), 0)
+    }
+
+    /// The same host on a `connectNative` port: the page gets the reply, then
+    /// the disconnect.
+    @MainActor func testAConnectNativePortGetsAReplyTheHostWroteBeforeExitingBeforeTheDisconnect() async throws {
+        let ext = try await makeExtension()
+        let reply = try JSONSerialization.data(withJSONObject: ["pong": 1, "blob": String(repeating: "x", count: 256 * 1024)])
+        try installFakeHost(allowing: [ext.id], behavior: .answersThenExits(NativeMessagingHost.encodeMessage(reply), status: 0))
+        let loaded = try await load(ext, profileName: "NM Port Reply Then Exit Profile")
+        let controller = loaded.profile.extensionController
+
+        for iteration in 1...8 {
+            let result = try await evalJSON("""
+                return await new Promise((resolve) => {
+                    const events = [];
+                    const timer = setTimeout(() => resolve({ events, timedOut: true }), 5000);
+                    const port = chrome.runtime.connectNative(host);
+                    port.onMessage.addListener((message) => events.push('message:' + message.pong));
+                    port.onDisconnect.addListener(() => {
+                        events.push('disconnect');
+                        // Anything still on its way after the disconnect would land in this window.
+                        setTimeout(() => { clearTimeout(timer); resolve({ events }); }, 200);
+                    });
+                    port.postMessage({ ping: 1 });
+                });
+                """, in: loaded.webView, arguments: ["host": Self.hostName])
+            XCTAssertEqual(result["events"] as? [String], ["message:1", "disconnect"], "iteration \(iteration): \(result)")
+        }
+        try await waitUntil("the exited hosts to be released") {
+            ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id) == 0
+        }
+    }
+
+    // MARK: - A one-shot host that stays alive ends with its request (TASK-233)
+
+    /// A one-shot host that answers and then stays alive and silent: once the
+    /// reply settles the promise, the request lets go of the host and its
+    /// process is terminated. Before TASK-233 the read loop, blocked on the
+    /// silent pipe, kept the host object alive, so nothing ended the process.
+    @MainActor func testAOneShotHostThatStaysAliveIsTerminatedOnceItHasAnswered() async throws {
+        let ext = try await makeExtension()
+        let reply = try JSONSerialization.data(withJSONObject: ["pong": 1])
+        try installFakeHost(allowing: [ext.id], behavior: .answersThenStaysAlive(NativeMessagingHost.encodeMessage(reply)))
+        let loaded = try await load(ext, profileName: "NM Answer Then Stay Profile")
+
+        let result = try await sendNativeMessage(Self.hostName, ["ping": 1], in: loaded.webView)
+        XCTAssertEqual(result["outcome"] as? String, "reply", "\(result)")
+        XCTAssertEqual((result["reply"] as? [String: Any])?["pong"] as? Int, 1, "\(result)")
+        XCTAssertEqual(ExtensionManager.shared.pendingOneShotNativeMessageCountForTesting(extensionID: ext.id), 0)
+        try await waitUntil("the answered host's process to be terminated", timeout: 5) {
+            self.fakeHostProcessCount() == 0
+        }
+    }
+
+    /// The same host on a `connectNative` port is not let go: the port owns
+    /// it, so after the reply the process keeps running and the port stays
+    /// open (the keep-alive depends on it). The page's `disconnect()` ends it.
+    @MainActor func testAConnectNativePortKeepsAHostThatStaysAliveUntilThePageDisconnects() async throws {
+        let ext = try await makeExtension()
+        let reply = try JSONSerialization.data(withJSONObject: ["pong": 1])
+        try installFakeHost(allowing: [ext.id], behavior: .answersThenStaysAlive(NativeMessagingHost.encodeMessage(reply)))
+        let loaded = try await load(ext, profileName: "NM Port Answer Then Stay Profile")
+        let controller = loaded.profile.extensionController
+
+        let result = try await evalJSON("""
+            return await new Promise((resolve) => {
+                const timer = setTimeout(() => resolve({ timedOut: true }), 5000);
+                const port = chrome.runtime.connectNative(host);
+                window.__stayPort = { port, disconnected: false };
+                port.onDisconnect.addListener(() => { window.__stayPort.disconnected = true; });
+                port.onMessage.addListener((message) => { clearTimeout(timer); resolve({ pong: message.pong }); });
+                port.postMessage({ ping: 1 });
+            });
+            """, in: loaded.webView, arguments: ["host": Self.hostName])
+        XCTAssertEqual(result["pong"] as? Int, 1, "\(result)")
+
+        // Long enough for a host the port did not own to have been released
+        // and terminated (the one-shot leg above takes well under this).
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        XCTAssertEqual(fakeHostProcessCount(), 1, "the port's host must keep running while the port is open")
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 1)
+        let open = try await evalJSON("return { disconnected: window.__stayPort.disconnected };",
+                                      in: loaded.webView, arguments: [:])
+        XCTAssertEqual(open["disconnected"] as? Bool, false)
+
+        _ = try await evalJSON("window.__stayPort.port.disconnect(); return { ok: true };",
+                               in: loaded.webView, arguments: [:])
+        try await waitUntil("the disconnected port's host process to be terminated", timeout: 5) {
+            self.fakeHostProcessCount() == 0
+        }
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 0)
+    }
+
+    /// A measurement of WebKit, pinned (TASK-256): a page that calls
+    /// `disconnect()` on its own `connectNative` port gets that port's
+    /// `onDisconnect`, where Chrome fires it only at the other end. It runs
+    /// inside the `disconnect()` call, in the web process, before anything
+    /// reaches Detour (its port handlers run in the UI process, over IPC), so
+    /// it is WebKit's `WebExtensionAPIPort::disconnect()`, fixed upstream in
+    /// 325256@main (Oct 30 2026). When a WebKit with that fix ships, this test
+    /// is expected to fail; flip it to `during == 0`, with the runtime-port pin
+    /// and the TASK-263 `ignored` count in ExtensionPolyfillProfileWiringTests.
+    /// The keep-alive's port
+    /// watch does not depend on the self-fired event (TASK-263; see the wiki's
+    /// native-port-keep-alive page).
+    @MainActor func testWebKitFiresAPagesOwnOnDisconnectInsideConnectNativeDisconnect() async throws {
+        let ext = try await makeExtension()
+        let reply = try JSONSerialization.data(withJSONObject: ["pong": 1])
+        try installFakeHost(allowing: [ext.id], behavior: .answersThenStaysAlive(NativeMessagingHost.encodeMessage(reply)))
+        let loaded = try await load(ext, profileName: "NM Own Disconnect Profile")
+
+        let result = try await evalJSON("""
+            const port = chrome.runtime.connectNative(host);
+            const answered = await new Promise((resolve) => {
+                const timer = setTimeout(() => resolve(false), 5000);
+                port.onMessage.addListener(() => { clearTimeout(timer); resolve(true); });
+                port.postMessage({ ping: 1 });
+            });
+            const seen = { answered, during: 0, after: 0 };
+            let inside = true;
+            port.onDisconnect.addListener(() => { if (inside) seen.during += 1; else seen.after += 1; });
+            port.disconnect();
+            inside = false;
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            return seen;
+            """, in: loaded.webView, arguments: ["host": Self.hostName])
+        XCTAssertEqual(result["answered"] as? Bool, true, "\(result)")
+        XCTAssertEqual(result["during"] as? Int, 1,
+                       "WebKit runs the caller's own onDisconnect inside disconnect(): \(result)")
+        XCTAssertEqual(result["after"] as? Int, 0, "and nothing fires it again later: \(result)")
+        try await waitUntil("the disconnected port's host process to be terminated", timeout: 5) {
+            self.fakeHostProcessCount() == 0
+        }
+    }
+
+    // MARK: - Messages that are not objects (TASK-242)
+
+    /// Values that are not JSON objects, as JSON text for the page to parse.
+    private static let nonObjectMessages = [#""hello""#, "42", #"[1,"two",null]"#, "null"]
+
+    /// What a port test posts: no null, which WebKit refuses itself.
+    private static let portMessages = [#""hello""#, "42", #"[1,"two",null]"#, "true"]
+
+    /// A one-shot `sendNativeMessage` whose message is a string, a number, an
+    /// array or null is refused with an error before any host is started, from
+    /// the promise and the callback forms alike: Chrome's signature declares
+    /// the message an object and rejects anything else before sending. Before
+    /// the fix the host was started, never written to, and the request never
+    /// settled. The silent host carries the fixture's token, so a host started
+    /// by mistake would be counted.
+    @MainActor func testASendNativeMessageThatIsNotAnObjectIsRefusedBeforeAnyHostStarts() async throws {
+        let ext = try await makeExtension()
+        try installFakeHost(allowing: [ext.id], behavior: .silent)
+        let loaded = try await load(ext, profileName: "NM Non-Object Send Profile")
+
+        for messageJSON in Self.nonObjectMessages {
+            for form in ["promise", "callback"] {
+                let result = try await evalJSON("""
+                    const message = JSON.parse(messageJSON);
+                    return await new Promise((resolve) => {
+                        const timer = setTimeout(() => resolve({ outcome: 'pending' }), 3000);
+                        const settle = (value) => { clearTimeout(timer); resolve(value); };
+                        try {
+                            if (form === 'promise') {
+                                chrome.runtime.sendNativeMessage(host, message).then(
+                                    (reply) => settle({ outcome: 'reply', reply: reply ?? null }),
+                                    (error) => settle({ outcome: 'error', error: String(error && error.message ? error.message : error) }));
+                            } else {
+                                chrome.runtime.sendNativeMessage(host, message, (reply) => {
+                                    const error = chrome.runtime.lastError;
+                                    settle(error ? { outcome: 'error', error: String(error.message) }
+                                                 : { outcome: 'reply', reply: reply ?? null });
+                                });
+                            }
+                        } catch (error) {
+                            settle({ outcome: 'thrown', error: String(error && error.message ? error.message : error) });
+                        }
+                    });
+                    """, in: loaded.webView,
+                    arguments: ["host": Self.hostName, "messageJSON": messageJSON, "form": form])
+
+                let label = "\(messageJSON) (\(form))"
+                // WebKit's bindings refuse a null in the callback form themselves,
+                // with a synchronous throw, before Detour is asked; every other
+                // value reaches the delegate and is refused there.
+                let expected = messageJSON == "null" && form == "callback" ? "thrown" : "error"
+                XCTAssertEqual(result["outcome"] as? String, expected, "\(label): \(result)")
+                XCTAssertTrue((result["error"] as? String ?? "").contains("an object is expected"),
+                              "\(label): expected the non-object refusal, got \(result)")
+                XCTAssertEqual(fakeHostProcessCount(), 0, "\(label): no host may be started for a refused message")
+                XCTAssertEqual(ExtensionManager.shared.pendingOneShotNativeMessageCountForTesting(extensionID: ext.id), 0,
+                               "\(label): a refused request must not be left pending")
+            }
+        }
+    }
+
+    /// A `connectNative` port carries any JSON value, as Chrome's
+    /// `Port.postMessage` (`any`) does: a string, a number, an array and a
+    /// boolean reach an echoing host and come back on `onMessage` unchanged,
+    /// in order. Before the fix they were dropped without a word. A null never
+    /// reaches Detour: WebKit's bindings throw for it ("an object is
+    /// expected"), and the port stays usable. The host is counted while the
+    /// port is open and is gone once the page disconnects.
+    @MainActor func testAConnectNativePortCarriesValuesThatAreNotObjects() async throws {
+        let ext = try await makeExtension()
+        try installFakeHost(allowing: [ext.id], behavior: .echoesCounted)
+        let loaded = try await load(ext, profileName: "NM Non-Object Port Profile")
+        let controller = loaded.profile.extensionController
+
+        let result = try await evalJSON("""
+            const messages = messageJSONs.map((json) => JSON.parse(json));
+            return await new Promise((resolve) => {
+                const received = [];
+                const timer = setTimeout(() => resolve({ received, timedOut: true }), 5000);
+                const port = chrome.runtime.connectNative(host);
+                window.__valuePort = port;
+                port.onDisconnect.addListener(() => {
+                    clearTimeout(timer);
+                    resolve({ received, disconnected: chrome.runtime.lastError ? chrome.runtime.lastError.message : true });
+                });
+                port.onMessage.addListener((message) => {
+                    received.push(JSON.stringify(message));
+                    if (received.length === messages.length) { clearTimeout(timer); resolve({ received }); }
+                });
+                let nullError = null;
+                try { port.postMessage(null); } catch (error) { nullError = String(error && error.message ? error.message : error); }
+                window.__valuePortNullError = nullError;
+                for (const message of messages) port.postMessage(message);
+            });
+            """, in: loaded.webView, arguments: ["host": Self.hostName, "messageJSONs": Self.portMessages])
+
+        XCTAssertEqual(result["received"] as? [String], Self.portMessages, "\(result)")
+        let nullError = try await evalJSON("return { error: window.__valuePortNullError };", in: loaded.webView, arguments: [:])
+        XCTAssertTrue((nullError["error"] as? String ?? "").contains("an object is expected"), "\(nullError)")
+        XCTAssertNil(result["timedOut"], "\(result)")
+        XCTAssertNil(result["disconnected"], "\(result)")
+        XCTAssertEqual(fakeHostProcessCount(), 1, "the port's echo host runs while the port is open")
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 1)
+
+        _ = try await evalJSON("window.__valuePort.disconnect(); return { ok: true };",
+                               in: loaded.webView, arguments: [:])
+        try await waitUntil("the disconnected port's echo host to exit", timeout: 5) {
+            self.fakeHostProcessCount() == 0
+        }
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 0)
+    }
+
+    /// A host may answer with any JSON value, as Chrome's response is `any`: a
+    /// one-shot request whose host replies with a string or an array settles
+    /// with that value. Before the fix the read loop dropped it and the
+    /// request settled with "Native host has exited." instead.
+    @MainActor func testASendNativeMessageSettlesWithAReplyThatIsNotAnObject() async throws {
+        for (replyJSON, label) in [(#""pong""#, "string"), (#"[1,"two",null]"#, "array")] {
+            let ext = try await makeExtension()
+            try installFakeHost(allowing: [ext.id], behavior: .answersThenExits(
+                NativeMessagingHost.encodeMessage(Data(replyJSON.utf8)), status: 0))
+            let loaded = try await load(ext, profileName: "NM Non-Object Reply Profile \(label)")
+
+            let result = try await sendNativeMessage(Self.hostName, ["ping": 1], in: loaded.webView)
+            XCTAssertEqual(result["outcome"] as? String, "reply", "\(label): \(result)")
+            let reply = try XCTUnwrap(result["reply"], "\(label): \(result)")
+            let encoded = try JSONSerialization.data(withJSONObject: reply, options: .fragmentsAllowed)
+            XCTAssertEqual(String(decoding: encoded, as: UTF8.self), replyJSON, label)
+            XCTAssertEqual(ExtensionManager.shared.pendingOneShotNativeMessageCountForTesting(extensionID: ext.id), 0)
+            fakeHost?.tearDown()
+            fakeHost = nil
+        }
     }
 }

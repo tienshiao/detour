@@ -7,6 +7,14 @@ enum UIConstants {
     }
     static let defaultCornerRadius: CGFloat = 6
 
+    // Sidebar row geometry. A tab row's highlight (the selection, hover and
+    // dev-mode border) is the cell widened by `sidebarRowHighlightOutset`; the
+    // source-list table insets the cell 16 pt, so the highlight sits
+    // `sidebarRowHighlightInset` in from the tab list's edges. Anything that
+    // must line up with the rows — the now-playing bar (TASK-192) — reads these.
+    static let sidebarRowHighlightOutset: CGFloat = 6
+    static let sidebarRowHighlightInset: CGFloat = 10
+
     // Split drop-target highlight, shared by the sidebar's half-row overlay and
     // the content area's edge-zone preview so the two affordances can't drift.
     static let splitDropAccentFillColor = NSColor.controlAccentColor.withAlphaComponent(0.18)

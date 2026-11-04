@@ -17,8 +17,25 @@ class TabRowView: NSTableRowView {
     /// The inset rect the source list uses for its selection highlight
     var selectionRect: NSRect {
         // Source list selection is inset ~10pt horizontally, ~1pt vertically, with 6pt corner radius
-        return bounds.insetBy(dx: 10, dy: 1)
+        return bounds.insetBy(dx: UIConstants.sidebarRowHighlightInset, dy: 1)
     }
+
+    /// The table keeps every row view's `isSelected` in step with its
+    /// selection, without reloading rows, so the row's cell follows it here
+    /// (the dev-mode border shows only on the selected row, TASK-197).
+    override var isSelected: Bool {
+        didSet {
+            guard isSelected != oldValue else { return }
+            for case let cell as TabCellView in subviews { cell.isRowSelected = isSelected }
+        }
+    }
+}
+
+/// Told when a tab row's hover changes: the sidebar's hover card (TASK-190)
+/// follows `TabCellView`'s own hover state, including which split half and
+/// whether the pointer is over the Peek badge (TASK-229).
+protocol TabCellHoverDelegate: AnyObject {
+    func tabCell(_ cell: TabCellView, hoverChanged hovering: Bool, splitSide: Int?, overPeekBadge: Bool)
 }
 
 class TabCellView: NSTableCellView, NSTextFieldDelegate {
@@ -34,10 +51,14 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private let sleepBadge = NSImageView()
     private let closeButton: HoverButton
     private let speakerButton: NSButton
+    /// The Peek badge at the row's trailing end: a single tab's, or a split
+    /// row's right pane's.
     private let peekFaviconImageView = NSImageView()
+    /// A split row's left pane's Peek badge, before the divider (TASK-229).
+    /// Exposed (internal) for `TabCellPeekBadgeHoverTests`.
+    let leftPanePeekFaviconImageView = NSImageView()
     // Right-pane segment of a collapsed split row: favicon + title after a
-    // divider centered in the cell, so both panes get equal width. Distinct
-    // from the peek slot so split rendering never touches peek state.
+    // divider centered in the cell, so both panes get equal width.
     // Each half has its own close button: `splitCloseButton` (left pane, before
     // the divider) fires `onCloseLeft`; the shared trailing `closeButton` fires
     // `onClose`, which a split row wires to the right pane.
@@ -47,12 +68,32 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     let splitTitleLabel = NSTextField(labelWithString: "")
     private let splitCloseButton: HoverButton
     let splitDivider = NSView()
+    /// Dev mode's second line under the title: the page's host (and port when
+    /// not the default). Exposed (internal) for `DevModeTests`.
+    let hostLineLabel = NSTextField(labelWithString: "")
+    /// Dev mode's hazard borders, made on first use: the whole row, or a split
+    /// row's left half; and a split row's right half.
+    private var devModeBorder: HazardBorderView?
+    private var devModeSplitBorder: HazardBorderView?
+    private var devModeMarking: DevModeRowMarking = .none
+    /// Whether the row is the window's selected row: only that row shows the
+    /// dev-mode border (TASK-197). Set by the enclosing `TabRowView`, whose
+    /// `isSelected` the table keeps in step with its selection.
+    var isRowSelected = false {
+        didSet {
+            guard isRowSelected != oldValue else { return }
+            applyDevModeBorders()
+        }
+    }
     private var trackingArea: NSTrackingArea?
     private var titleLeadingConstraint: NSLayoutConstraint!
+    private var titleCenterYConstraint: NSLayoutConstraint!
     private var faviconLeadingConstraint: NSLayoutConstraint!
     private var closeButtonWidthConstraint: NSLayoutConstraint!
     private var closeButtonTrailingConstraint: NSLayoutConstraint!
     private var peekFaviconWidthConstraint: NSLayoutConstraint!
+    private var leftPanePeekWidthConstraint: NSLayoutConstraint!
+    private var splitCloseButtonTrailingConstraint: NSLayoutConstraint!
     private var splitFaviconWidthConstraint: NSLayoutConstraint!
     private var splitCloseButtonWidthConstraint: NSLayoutConstraint!
     // The left title ends at the close button for a single tab, at the left
@@ -64,6 +105,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     var onCloseLeft: (() -> Void)?
     var onToggleMute: (() -> Void)?
     var onRename: ((String) -> Void)?
+    weak var hoverDelegate: TabCellHoverDelegate?
     private var isEditing = false
     private var originalEditingValue: String?
     var indentLevel: Int = 0 {
@@ -74,10 +116,14 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private var audioPlaying = false
     private var isHovered = false
     private var hasPeek = false
+    private var hasLeftPanePeek = false
     private var hasSplit = false
     /// Which half of a split row the mouse is over (0 = left, 1 = right).
     /// Hover chrome (highlight + close button) applies to that half only.
     private var hoveredSplitSide: Int?
+    /// Whether the mouse is over the Peek badge: the hover card is then the
+    /// Peek's, not the row's (TASK-229).
+    private var hoveredPeekBadge = false
 
     // Option A: Ring spinner layer
     private var ringLayer: CAShapeLayer?
@@ -122,6 +168,12 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        hostLineLabel.font = .systemFont(ofSize: Self.hostLineFontSize)
+        hostLineLabel.textColor = .secondaryLabelColor
+        hostLineLabel.lineBreakMode = .byTruncatingTail
+        hostLineLabel.translatesAutoresizingMaskIntoConstraints = false
+        hostLineLabel.isHidden = true
+
         closeButton.bezelStyle = .inline
         closeButton.isBordered = false
         closeButton.imagePosition = .imageOnly
@@ -151,15 +203,12 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         sleepBadge.contentTintColor = .tertiaryLabelColor
         sleepBadge.isHidden = true
 
-        peekFaviconImageView.wantsLayer = true
-        peekFaviconImageView.imageScaling = .scaleProportionallyUpOrDown
-        peekFaviconImageView.translatesAutoresizingMaskIntoConstraints = false
-        peekFaviconImageView.isHidden = true
-
-        splitFaviconImageView.wantsLayer = true
-        splitFaviconImageView.imageScaling = .scaleProportionallyUpOrDown
-        splitFaviconImageView.translatesAutoresizingMaskIntoConstraints = false
-        splitFaviconImageView.isHidden = true
+        for imageView in [peekFaviconImageView, leftPanePeekFaviconImageView, splitFaviconImageView] {
+            imageView.wantsLayer = true
+            imageView.imageScaling = .scaleProportionallyUpOrDown
+            imageView.translatesAutoresizingMaskIntoConstraints = false
+            imageView.isHidden = true
+        }
 
         splitTitleLabel.wantsLayer = true
         splitTitleLabel.lineBreakMode = .byTruncatingTail
@@ -175,12 +224,14 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         addSubview(sleepBadge)
         addSubview(speakerButton)
         addSubview(titleLabel)
+        addSubview(hostLineLabel)
         addSubview(closeButton)
         addSubview(splitCloseButton)
         addSubview(splitDivider)
         addSubview(splitFaviconImageView)
         addSubview(splitTitleLabel)
         addSubview(peekFaviconImageView)
+        addSubview(leftPanePeekFaviconImageView)
 
         titleLeadingConstraint = titleLabel.leadingAnchor.constraint(equalTo: faviconImageView.trailingAnchor, constant: 8)
         faviconLeadingConstraint = faviconImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4)
@@ -190,8 +241,13 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         splitFaviconWidthConstraint = splitFaviconImageView.widthAnchor.constraint(equalToConstant: 0)
         splitCloseButtonWidthConstraint = splitCloseButton.widthAnchor.constraint(equalToConstant: 0)
         peekFaviconWidthConstraint = peekFaviconImageView.widthAnchor.constraint(equalToConstant: 0)
+        // Left pane of a split: title → splitCloseButton → its Peek badge → divider.
+        leftPanePeekWidthConstraint = leftPanePeekFaviconImageView.widthAnchor.constraint(equalToConstant: 0)
+        splitCloseButtonTrailingConstraint = splitCloseButton.trailingAnchor.constraint(
+            equalTo: leftPanePeekFaviconImageView.leadingAnchor, constant: 0)
         titleSingleTrailingConstraint = titleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4)
         titleSplitTrailingConstraint = titleLabel.trailingAnchor.constraint(equalTo: splitCloseButton.leadingAnchor, constant: -4)
+        titleCenterYConstraint = titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
 
         NSLayoutConstraint.activate([
             faviconLeadingConstraint,
@@ -210,8 +266,14 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             speakerButton.heightAnchor.constraint(equalToConstant: 16),
 
             titleLeadingConstraint,
-            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleCenterYConstraint,
             titleSingleTrailingConstraint,
+
+            // Dev mode's host line hangs under the title and follows its
+            // leading edge (which the speaker button moves) and trailing edge.
+            hostLineLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            hostLineLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            hostLineLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: Self.hostLineSpacing),
 
             closeButtonTrailingConstraint,
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -223,7 +285,12 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             // The 14pt divider-side insets mirror the row's outer insets — the
             // half-highlight stops 4pt short of the divider, leaving content
             // ~10pt from the highlight edge on every side.
-            splitCloseButton.trailingAnchor.constraint(equalTo: splitDivider.leadingAnchor, constant: -14),
+            splitCloseButtonTrailingConstraint,
+            leftPanePeekFaviconImageView.trailingAnchor.constraint(equalTo: splitDivider.leadingAnchor,
+                                                                   constant: -Self.splitDividerGap),
+            leftPanePeekFaviconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            leftPanePeekWidthConstraint,
+            leftPanePeekFaviconImageView.heightAnchor.constraint(equalToConstant: Self.peekBadgeSize),
             splitCloseButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             splitCloseButtonWidthConstraint,
             splitCloseButton.heightAnchor.constraint(equalToConstant: 16),
@@ -233,7 +300,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             splitDivider.widthAnchor.constraint(equalToConstant: 1),
             splitDivider.heightAnchor.constraint(equalToConstant: 14),
 
-            splitFaviconImageView.leadingAnchor.constraint(equalTo: splitDivider.trailingAnchor, constant: 14),
+            splitFaviconImageView.leadingAnchor.constraint(equalTo: splitDivider.trailingAnchor, constant: Self.splitDividerGap),
             splitFaviconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
             splitFaviconWidthConstraint,
             splitFaviconImageView.heightAnchor.constraint(equalToConstant: 16),
@@ -242,24 +309,38 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             splitTitleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             splitTitleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4),
 
-            peekFaviconImageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            peekFaviconImageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.peekBadgeTrailingInset),
             peekFaviconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
             peekFaviconWidthConstraint,
-            peekFaviconImageView.heightAnchor.constraint(equalToConstant: 16),
+            peekFaviconImageView.heightAnchor.constraint(equalToConstant: Self.peekBadgeSize),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
+    /// A cell joining a row takes the row's selection (the table may select
+    /// the row view before or after adding the cell); out of a row it is
+    /// unselected.
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        isRowSelected = (superview as? NSTableRowView)?.isSelected ?? false
+    }
+
     override func prepareForReuse() {
         super.prepareForReuse()
+        // The row this cell stood for is gone: its hover ends with it.
+        if isHovered { hoverDelegate?.tabCell(self, hoverChanged: false, splitSide: nil, overPeekBadge: false) }
         isHovered = false
         hoveredSplitSide = nil
+        hoveredPeekBadge = false
         hasPeek = false
         hasSplit = false
         closeButton.isHidden = true
         peekFaviconImageView.isHidden = true
         peekFaviconImageView.image = nil
+        hasLeftPanePeek = false
+        leftPanePeekFaviconImageView.isHidden = true
+        leftPanePeekFaviconImageView.image = nil
         splitFaviconImageView.isHidden = true
         splitFaviconImageView.image = nil
         splitTitleLabel.isHidden = true
@@ -271,6 +352,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         indentLevel = 0
         onRename = nil
         onCloseLeft = nil
+        updateDevMode(.none)
         if isEditing { endEditing(commit: false) }
         resetSplitRevealState()
         updateLayoutState()
@@ -279,8 +361,14 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     /// Full row for a single tab; the hovered half (up to the centered divider,
     /// with a small gap around it) for a split row.
     private var hoverBackgroundFrame: NSRect {
-        let rowRect = bounds.insetBy(dx: -6, dy: 1)
-        guard hasSplit, let side = hoveredSplitSide else { return rowRect }
+        rowHighlightRect(splitSide: hasSplit ? hoveredSplitSide : nil)
+    }
+
+    /// The rect the hover background and the dev-mode border share: the whole
+    /// row, or one half of a split row (0 = left, 1 = right).
+    private func rowHighlightRect(splitSide side: Int?) -> NSRect {
+        let rowRect = bounds.insetBy(dx: -UIConstants.sidebarRowHighlightOutset, dy: 1)
+        guard let side else { return rowRect }
         let mid = bounds.midX
         if side == 0 {
             return NSRect(x: rowRect.minX, y: rowRect.minY,
@@ -294,6 +382,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         super.layout()
         guard bounds.width > 12, bounds.height > 2 else { return }
         hoverBackground.frame = hoverBackgroundFrame
+        layoutDevModeBorders()
         // Progress bar spans the full row area regardless of hover
         let rowRect = bounds.insetBy(dx: -6, dy: 1)
         let progressWidth = rowRect.width * max(currentProgress, 0)
@@ -331,12 +420,22 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     /// highlight and close button to the half under `point`; a single row
     /// keeps the full-row treatment.
     private func updateHover(to hovering: Bool, at point: NSPoint?) {
+        let wasHovered = isHovered
+        let oldSide = hoveredSplitSide
+        let wasOverPeekBadge = hoveredPeekBadge
+        defer {
+            if isHovered != wasHovered || hoveredSplitSide != oldSide || hoveredPeekBadge != wasOverPeekBadge {
+                hoverDelegate?.tabCell(self, hoverChanged: isHovered, splitSide: hoveredSplitSide,
+                                       overPeekBadge: hoveredPeekBadge)
+            }
+        }
         isHovered = hovering
         if hovering, hasSplit, let point {
             hoveredSplitSide = splitSide(at: point)
         } else {
             hoveredSplitSide = nil
         }
+        hoveredPeekBadge = hovering && point.map(isOverPeekBadge(at:)) == true
         closeButton.isHidden = !(hovering && (!hasSplit || hoveredSplitSide == 1))
         splitCloseButton.isHidden = !(hovering && hasSplit && hoveredSplitSide == 0)
         if hovering {
@@ -354,14 +453,28 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        guard isHovered, hasSplit else { return }
+        guard isHovered else { return }
         let point = convert(event.locationInWindow, from: nil)
-        guard splitSide(at: point) != hoveredSplitSide else { return }
+        guard hoverRegionChanged(at: point) else { return }
         updateHover(to: true, at: point)
+    }
+
+    /// Whether `point`, in a hovered row, is in a different split half or on
+    /// the other side of the Peek badge's edge than the hover state says.
+    /// A row that stopped being a split while hovered still has a half on
+    /// record, which counts as a change too.
+    private func hoverRegionChanged(at point: NSPoint) -> Bool {
+        (hasSplit ? splitSide(at: point) : nil) != hoveredSplitSide || isOverPeekBadge(at: point) != hoveredPeekBadge
     }
 
     override func mouseExited(with event: NSEvent) {
         updateHover(to: false, at: nil)
+    }
+
+    /// A row removed from the table (or a page going away) sends no exit.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil, isHovered { updateHover(to: false, at: nil) }
     }
 
     /// Re-evaluate hover state using the current mouse position.
@@ -372,8 +485,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         let mouseInWindow = window.mouseLocationOutsideOfEventStream
         let mouseInSelf = convert(mouseInWindow, from: nil)
         let shouldHover = bounds.contains(mouseInSelf)
-        guard shouldHover != isHovered
-            || (hasSplit && shouldHover && splitSide(at: mouseInSelf) != hoveredSplitSide) else { return }
+        guard shouldHover != isHovered || (shouldHover && hoverRegionChanged(at: mouseInSelf)) else { return }
         updateHover(to: shouldHover, at: shouldHover ? mouseInSelf : nil)
     }
 
@@ -404,7 +516,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
 
             self.titleLeadingConstraint.animator().constant = targetConstant
             self.speakerButton.animator().alphaValue = self.audioPlaying ? 1 : 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self else { return }
             if !self.audioPlaying {
                 self.speakerButton.isHidden = true
@@ -415,10 +527,15 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private func updateLayoutState() {
         titleLeadingConstraint.constant = audioPlaying ? 24 : 8
         closeButtonWidthConstraint.constant = (isHovered && (!hasSplit || hoveredSplitSide == 1)) ? 16 : 0
-        closeButtonTrailingConstraint.constant = hasPeek ? -4 : 0
+        closeButtonTrailingConstraint.constant = hasPeek ? -Self.peekBadgeLeadingGap : 0
         splitFaviconWidthConstraint.constant = (hasSplit || isCollapsingSplitSegment) ? 16 : 0
         splitCloseButtonWidthConstraint.constant = (isHovered && hasSplit && hoveredSplitSide == 0) ? 16 : 0
-        peekFaviconWidthConstraint.constant = hasPeek ? 16 : 0
+        peekFaviconWidthConstraint.constant = hasPeek ? Self.peekBadgeSize : 0
+        // The left pane's badge exists only while the row is a split.
+        let showsLeftPanePeek = hasSplit && hasLeftPanePeek
+        leftPanePeekWidthConstraint.constant = showsLeftPanePeek ? Self.peekBadgeSize : 0
+        splitCloseButtonTrailingConstraint.constant = showsLeftPanePeek ? -Self.peekBadgeLeadingGap : 0
+        leftPanePeekFaviconImageView.isHidden = !showsLeftPanePeek
         // Deactivate before activating so both trailing rules never coexist.
         if hasSplit {
             titleSingleTrailingConstraint.isActive = false
@@ -437,11 +554,56 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         faviconImageView.image = image ?? NSImage(systemSymbolName: "globe", accessibilityDescription: "Website")
     }
 
+    private static let peekBadgeSize: CGFloat = 16
+    private static let peekBadgeTrailingInset: CGFloat = 4
+    /// The gap between the close button and the Peek badge.
+    private static let peekBadgeLeadingGap: CGFloat = 4
+
+    /// Where the pointer counts as over the Peek badge (TASK-229): the badge,
+    /// the inset to the row's trailing edge and half the gap to the close
+    /// button, the row's full height. From the layout's constants, not the
+    /// badge's frame, which lags a badge that has just appeared.
+    static func peekBadgeHoverRect(in bounds: NSRect) -> NSRect {
+        let width = peekBadgeTrailingInset + peekBadgeSize + peekBadgeLeadingGap / 2
+        return NSRect(x: bounds.maxX - width, y: bounds.minY, width: width, height: bounds.height)
+    }
+
+    /// The gap between the divider and each pane's nearest element: the
+    /// right pane's favicon, the left pane's Peek badge (or close button).
+    private static let splitDividerGap: CGFloat = 14
+
+    /// Where the pointer counts as over a split's left-pane Peek badge: the
+    /// badge, half the gap to its close button, and the gap to the divider,
+    /// stopping at the row's middle (the halves' boundary); full height.
+    static func leftPanePeekBadgeHoverRect(in bounds: NSRect) -> NSRect {
+        let width = peekBadgeLeadingGap / 2 + peekBadgeSize + splitDividerGap
+        return NSRect(x: bounds.midX - width, y: bounds.minY, width: width, height: bounds.height)
+    }
+
+    private func isOverPeekBadge(at point: NSPoint) -> Bool {
+        (hasPeek && Self.peekBadgeHoverRect(in: bounds).contains(point))
+            || (hasSplit && hasLeftPanePeek && Self.leftPanePeekBadgeHoverRect(in: bounds).contains(point))
+    }
+
+    /// A split row's left pane's Peek badge; nil for none. Shown only while
+    /// the row is a split.
+    func updateLeftPanePeekFavicon(_ image: NSImage?) {
+        let hadPeek = hasLeftPanePeek
+        hasLeftPanePeek = image != nil
+        leftPanePeekFaviconImageView.image = image
+        updateLayoutState()
+        if hasLeftPanePeek != hadPeek, isHovered { recheckHover() }
+    }
+
     func updatePeekFavicon(_ image: NSImage?) {
+        let hadPeek = hasPeek
         hasPeek = image != nil
         peekFaviconImageView.image = image
         peekFaviconImageView.isHidden = !hasPeek
         updateLayoutState()
+        // A badge appearing under the pointer, or going from under it, moves
+        // the hover card between the row and the Peek.
+        if hasPeek != hadPeek, isHovered { recheckHover() }
     }
 
     /// Configures the right-pane segment of a split row (favicon + title after
@@ -467,6 +629,12 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         if isCollapsingSplitSegment, favicon == nil, title == nil { return }
         let wasSplit = hasSplit
         hasSplit = favicon != nil || title != nil
+        // The left pane's Peek badge belongs to the split: a row that stops
+        // being one drops it, so a later split never inherits a stale badge.
+        if !hasSplit {
+            hasLeftPanePeek = false
+            leftPanePeekFaviconImageView.image = nil
+        }
         let canAnimate = animatedReveal && window != nil && bounds.width > 0
         let animateCollapse = canAnimate && wasSplit && !hasSplit
         // A collapse must keep the outgoing favicon/title visible while it
@@ -520,7 +688,8 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         // Land the whole split layout without animation first, so the right
         // segment's views get real frames to animate from (a reused cell can
         // carry stale zero frames, which would fly in from the corner).
-        for view in [splitFaviconImageView, splitTitleLabel, splitDivider] {
+        // The left pane's Peek badge arrives with the split, so it fades in too.
+        for view in [splitFaviconImageView, splitTitleLabel, splitDivider, leftPanePeekFaviconImageView] {
             view.alphaValue = 0
         }
         updateLayoutState()
@@ -544,6 +713,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             splitFaviconImageView.animator().alphaValue = 1
             splitTitleLabel.animator().alphaValue = 1
             splitDivider.animator().alphaValue = 1
+            leftPanePeekFaviconImageView.animator().alphaValue = 1
         }
     }
 
@@ -594,7 +764,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             splitFaviconImageView.animator().alphaValue = 0
             splitTitleLabel.animator().alphaValue = 0
             splitDivider.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             // The generation check kills completions from superseded collapses
             // (a newer collapse re-armed the flag, so the flag alone lies).
             guard let self, self.isCollapsingSplitSegment,
@@ -614,7 +784,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     /// stale trailing overshoot. Clearing `isCollapsingSplitSegment` also makes
     /// any pending collapse completion a no-op via its flag guard.
     private func resetSplitRevealState() {
-        for view in [splitFaviconImageView, splitTitleLabel, splitDivider] {
+        for view in [splitFaviconImageView, splitTitleLabel, splitDivider, leftPanePeekFaviconImageView] {
             view.layer?.removeAnimation(forKey: Self.splitRevealAnimationKey)
             view.alphaValue = 1
         }
@@ -638,6 +808,77 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         super.viewDidChangeEffectiveAppearance()
         effectiveAppearance.performAsCurrentDrawingAppearance {
             updateSplitDividerColor()
+        }
+    }
+
+    // MARK: - Dev mode (TASK-186.1)
+
+    private static let hostLineFontSize: CGFloat = 10
+    /// Labels carry internal leading, so the two lines sit tight with a small
+    /// negative gap.
+    private static let hostLineSpacing: CGFloat = -2
+
+    /// Marks the row as a dev-mode page: the host under the title for a single
+    /// tab and, while the row is selected (`isRowSelected`), a hazard border
+    /// around the row; for a split row, a border around each local pane's
+    /// half while selected, never a host line. `.none` clears it. The two
+    /// lines fit the row's existing height — the title moves up by half the
+    /// host line's height — so the list's row layout is unchanged.
+    func updateDevMode(_ marking: DevModeRowMarking) {
+        guard marking != devModeMarking else { return }
+        devModeMarking = marking
+        // Selection never changes the host line (`DevModeRowDisplay`), so
+        // it is set here only, and a selection change touches the borders alone.
+        if let hostLabel = marking.display(isSelected: isRowSelected).hostLabel {
+            hostLineLabel.stringValue = hostLabel
+            hostLineLabel.isHidden = false
+            titleCenterYConstraint.constant = -ceil(hostLineLabel.intrinsicContentSize.height + Self.hostLineSpacing) / 2
+        } else {
+            hostLineLabel.stringValue = ""
+            hostLineLabel.isHidden = true
+            titleCenterYConstraint.constant = 0
+        }
+        applyDevModeBorders()
+    }
+
+    /// Shows the borders the marking and selection call for, making each on
+    /// first use; hiding is just `isHidden`, so a selection change is cheap.
+    private func applyDevModeBorders() {
+        let display = devModeMarking.display(isSelected: isRowSelected)
+        let showsMain = display.showsMainBorder
+        let showsRight = display.showsRightBorder
+        if showsMain, devModeBorder == nil { devModeBorder = makeDevModeBorder() }
+        if showsRight, devModeSplitBorder == nil { devModeSplitBorder = makeDevModeBorder() }
+        devModeBorder?.isHidden = !showsMain
+        devModeSplitBorder?.isHidden = !showsRight
+        layoutDevModeBorders()
+    }
+
+    private func makeDevModeBorder() -> HazardBorderView {
+        let border = HazardBorderView()
+        border.isHidden = true
+        // Over the progress bar and hover background, under the row's content.
+        addSubview(border, positioned: .above, relativeTo: progressView)
+        return border
+    }
+
+    private func layoutDevModeBorders() {
+        switch devModeMarking {
+        case .none:
+            break
+        case .tab:
+            devModeBorder?.frame = rowHighlightRect(splitSide: nil)
+        case .split:
+            devModeBorder?.frame = rowHighlightRect(splitSide: 0)
+            devModeSplitBorder?.frame = rowHighlightRect(splitSide: 1)
+        }
+    }
+
+    /// Frames of the hazard borders showing, for `DevModeTests`.
+    var devModeBorderFrames: [NSRect] {
+        [devModeBorder, devModeSplitBorder].compactMap { border in
+            guard let border, !border.isHidden else { return nil }
+            return border.frame
         }
     }
 
@@ -744,7 +985,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.3
             progressView.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self else { return }
             self.progressView.frame.size.width = 0
         })
@@ -832,7 +1073,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             ctx.duration = 0.4
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             hoverBackground.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        }, onMain: { [weak self] in
             guard let self else { return }
             if !self.isHovered {
                 self.hoverBackground.isHidden = true

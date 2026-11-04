@@ -1,0 +1,402 @@
+TASK-209 runtime harness: the command palette's rows per profile. Temporary
+code, never committed to Detour/. Gated on DETOUR_VERIFY_DIR;
+DETOUR_VERIFY_APPEARANCE light or dark; DETOUR_VERIFY_FIXTURE a loopback
+server (python3 -I -m http.server 8939 --bind 127.0.0.1 over a dir with
+shared.html titled "Shared board" and acme-board.html titled "Acme board").
+Data dir DetourVerify2090. Fixture: the Default profile (Home, Errands, its
+Quick Detour scope) and a "Work 209" profile (Acme), overlapping URLs and
+titles seeded through HistoryDatabase.recordVisit (mail.example: "Family
+mail" in Home, "Acme mail - Inbox (3)" in Acme, recorded last so the shared
+title is Work's; docs.example/plan: "Holiday plan" in Errands, "Acme launch
+plan" in Acme; news.example and a Quick Detour recipes.example only in
+Default; wiki.acme.example only in Work), and open tabs at the same URL in
+Errands and Acme. A window per profile; each palette entry point (Cmd+T,
+Cmd+L, the faux address bar, the Quick Detour launcher on each profile, a
+Private window) is opened, a query typed, and every row of the palette's
+table logged with a LEAK flag for a row carrying the other profile's marker.
+Step 07b (code review): a palette left open while the window switches to an
+empty space of the other profile. run.sh is TASK-213's (SHOOT lines served
+with screencapture -l, only the launched PID killed). When Detour cannot be
+made frontmost (a locked screen), palettes are opened by direct calls
+(newTab, focusAddressBar, openCommandPaletteInPlace) and text is typed
+through the field editor's insertText, one character at a time.
+
+    git apply docs/harness/task209-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    run.sh light; run.sh dark
+    git apply -R docs/harness/task209-harness.patch && xcodegen generate
+
+Results (2026-10-27, light and dark, screen locked: direct calls and the
+field editor, no pixels captured): 0 leaks in 18 palettes per run. Default
+window: "mail" completes to mail.example labelled "Family mail" (the shared
+title is Work's), "plan" finds "Holiday plan" from the Errands space (another
+space of the profile, new), "lentil" finds the Quick Detour visit (new),
+"acme" finds nothing from history, "board" offers one Switch to Tab ("Shared
+board" in Errands) and not Work's two. Work window: only Acme rows; "family"
+and "lentil" find nothing; the faux bar's palette the same. Launcher: Work
+"plan" gives "Acme launch plan", Default "lentil" the recipe; filler rows
+from each profile only. Private window: no history row and no tab (search
+suggestions only). 07b: after the switch the open palette lists Work's tabs
+and history, before it Default's.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 64c96ee..0192897 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -124,6 +124,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        runTask209HarnessIfRequested(wc)
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task209Harness.swift b/Detour/App/Task209Harness.swift
+new file mode 100644
+index 0000000..098fd82
+--- /dev/null
++++ b/Detour/App/Task209Harness.swift
+@@ -0,0 +1,343 @@
++// TEMP TASK-209 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask209HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"] else { return }
++        let base = env["DETOUR_VERIFY_FIXTURE"] ?? "http://127.0.0.1:8939/"
++        let ap = env["DETOUR_VERIFY_APPEARANCE"] ?? "light"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(ap).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        NSApp.appearance = NSAppearance(named: ap == "dark" ? .darkAqua : .aqua)
++        let store = TabStore.shared
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func humanIdle() -> Double {
++            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
++        }
++        @MainActor func awaitIdle(_ seconds: Double = 12) async {
++            var waited = 0.0
++            while humanIdle() < seconds {
++                if waited == 0 { log("waiting for the machine to be idle (idle \(Int(humanIdle())) s)") }
++                await sleep(2); waited += 2
++            }
++            if waited > 0 { log("idle again after \(Int(waited)) s") }
++        }
++        @MainActor func ensureFront(_ window: NSWindow?) async {
++            await awaitIdle()
++            for _ in 0..<6 {
++                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
++                if let window, NSApp.keyWindow !== window { window.makeKeyAndOrderFront(nil) }
++                if NSApp.isActive && (window == nil || NSApp.keyWindow === window) { return }
++                await sleep(0.5)
++            }
++            log("WARN not frontmost: active=\(NSApp.isActive) key=\(String(describing: NSApp.keyWindow?.title))")
++        }
++        @MainActor func shoot(_ name: String, _ window: NSWindow?) async {
++            guard let window else { return log("no window for \(name)") }
++            await sleep(0.8)
++            log("SHOOT \(ap)-\(name) \(window.windowNumber)")
++            await sleep(1.5)
++        }
++        var eventNumber = 9000
++        func click(_ view: NSView) {
++            guard let w = view.window else { return log("click: no window") }
++            if humanIdle() < 1 { return log("ABORT human input before a click: not posted") }
++            let p = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
++            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
++                eventNumber += 1
++                if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
++                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
++                                              context: nil, eventNumber: eventNumber, clickCount: 1,
++                                              pressure: type == .leftMouseDown ? 1 : 0) {
++                    NSApp.postEvent(e, atStart: false)
++                }
++            }
++        }
++        let keyCodes: [Character: UInt16] = [
++            "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12,
++            "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38,
++            "k": 40, "n": 45, "m": 46, " ": 49,
++        ]
++        func key(_ chars: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], in window: NSWindow) {
++            if humanIdle() < 1 { return log("ABORT human input before a key: not posted") }
++            for type in [NSEvent.EventType.keyDown, .keyUp] {
++                if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: modifiers,
++                                            timestamp: ProcessInfo.processInfo.systemUptime,
++                                            windowNumber: window.windowNumber, context: nil,
++                                            characters: chars, charactersIgnoringModifiers: chars,
++                                            isARepeat: false, keyCode: code) {
++                    NSApp.postEvent(e, atStart: false)
++                }
++            }
++        }
++        /// Posted keys when Detour is frontmost and the window key; otherwise
++        /// (a locked screen, another app in front) the field editor's own
++        /// insertText, one character at a time, as the key bindings would.
++        @MainActor func type(_ text: String, in window: NSWindow) async {
++            let posted = NSApp.isActive && window.isKeyWindow
++            if !posted { log("  (typing through the field editor: active=\(NSApp.isActive) key=\(window.isKeyWindow))") }
++            for ch in text {
++                if posted {
++                    key(String(ch), code: keyCodes[ch] ?? 0, in: window)
++                } else if let editor = window.firstResponder as? NSTextView {
++                    editor.insertText(String(ch), replacementRange: editor.selectedRange())
++                } else {
++                    log("  no field editor in \(window)")
++                }
++                await sleep(0.09)
++            }
++        }
++        func usePosted(_ window: NSWindow) -> Bool { NSApp.isActive && window.isKeyWindow }
++        @MainActor func waitFor(_ what: String, timeout: Double = 15, _ cond: () -> Bool) async -> Bool {
++            let deadline = Date().addingTimeInterval(timeout)
++            while Date() < deadline {
++                if cond() { return true }
++                await sleep(0.25)
++            }
++            log("TIMEOUT waiting for \(what)")
++            return false
++        }
++        func tables(_ v: NSView) -> [NSTableView] {
++            ((v as? NSTableView).map { [$0] } ?? []) + v.subviews.flatMap(tables)
++        }
++        func labels(_ v: NSView) -> [NSTextField] {
++            ((v as? NSTextField).map { [$0] } ?? []) + v.subviews.flatMap(labels)
++        }
++        func fields(_ v: NSView) -> [NSTextField] {
++            labels(v).filter { $0.isEditable }
++        }
++
++        // What each seeded title and URL belongs to, to flag a row from the
++        // other profile.
++        let workMarkers = ["Acme", "acme"]
++        let defaultMarkers = ["Family mail", "Holiday plan", "Morning news", "Lentil", "news.example", "recipes.example"]
++
++        var spaceNames: [String: String] = [:]
++        func scopeNames(_ ids: [String]) -> String {
++            ids.map { spaceNames[$0] ?? $0 }.sorted().joined(separator: ", ")
++        }
++
++        /// Every row the palette's table shows, top to bottom: its visible
++        /// texts (title, URL or "Switch to Tab"), and a LEAK flag for a row
++        /// that carries the other profile's marker.
++        func describeRows(_ palette: CommandPaletteView, profileIsWork: Bool?) -> String {
++            guard let table = tables(palette).first else { return "no table" }
++            var lines: [String] = []
++            var leaks = 0
++            for row in 0..<table.numberOfRows {
++                guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) else { continue }
++                let texts = labels(cell).filter { !$0.isHidden && !$0.stringValue.isEmpty }.map(\.stringValue)
++                let joined = texts.joined(separator: " | ")
++                var flag = ""
++                if let profileIsWork {
++                    let foreign = profileIsWork ? defaultMarkers : workMarkers
++                    if foreign.contains(where: { joined.contains($0) }) && !joined.hasPrefix(foreignQueryEcho) {
++                        flag = "  <-- LEAK"; leaks += 1
++                    }
++                }
++                lines.append("    row \(row): \(joined)\(flag)")
++            }
++            let field = fields(palette).first?.stringValue ?? "?"
++            let editor = (palette.window?.firstResponder as? NSTextView)?.string ?? field
++            return "field='\(editor)' rows=\(table.numberOfRows) leaks=\(leaks)\n" + lines.joined(separator: "\n")
++        }
++        var foreignQueryEcho = "\u{0}"
++
++        func describePalette(_ palette: CommandPaletteView) -> String {
++            let tabs = palette.gatherTabInfos().map { "\($0.title)@\(spaceNames[$0.spaceID.uuidString] ?? "?")" }
++            return "profile=\(palette.profile?.name ?? "nil") history=[\(scopeNames(palette.historySpaceIDs))] tabs=\(tabs)"
++        }
++
++        /// Opens the palette by `open`, types `query`, logs the rows.
++        @MainActor func query(_ name: String, _ query: String, window: NSWindow, profileIsWork: Bool?,
++                   palette: () -> CommandPaletteView?, open: () -> Void, direct: () -> Void,
++                   dismiss: () -> Void, shootIt: Bool) async {
++            await ensureFront(window)
++            if usePosted(window) { open() } else { log("  (\(name): opened by a direct call)"); direct() }
++            guard await waitFor("palette \(name)", timeout: 5, { palette() != nil }), let p = palette() else { return }
++            await sleep(0.6)
++            if query.isEmpty {
++                log("\(name) [empty field] \(describePalette(p))\n  \(describeRows(p, profileIsWork: profileIsWork))")
++            } else {
++                // Cmd+L and the faux bar prefill the URL, selected: typing replaces it.
++                foreignQueryEcho = query
++                await type(query, in: p.window ?? window)
++                await sleep(1.4)
++                log("\(name) typed '\(query)' \(describePalette(p))\n  \(describeRows(p, profileIsWork: profileIsWork))")
++            }
++            if shootIt { await shoot(name, p.window ?? window) }
++            if usePosted(p.window ?? window) { key("\u{1b}", code: 53, in: p.window ?? window) } else { dismiss() }
++            _ = await waitFor("palette \(name) to close", timeout: 3) { palette() == nil }
++            await sleep(0.3)
++        }
++
++        Task { @MainActor in
++            await sleep(2.5)
++            log("start \(ap)")
++            // The default profile and its first space, whatever space the
++            // session restored into the first window (a second appearance run
++            // restores the work window's).
++            guard let defaultProfile = store.profiles.first(where: { !$0.isIncognito && $0.name != "Work 209" }),
++                  let home = store.spaces.first(where: { $0.profileID == defaultProfile.id && $0.name != "Errands" })
++            else { return log("no home space") }
++            wc.setActiveSpace(id: home.id, selectTab: false)
++            spaceNames[home.id.uuidString] = "\(defaultProfile.name)/\(home.name)"
++
++            // --- Fixture: two profiles, overlapping URLs and titles ---
++            let work = store.profiles.first { $0.name == "Work 209" } ?? store.addProfile(name: "Work 209")
++            let errands = store.spaces.first { $0.name == "Errands" && $0.profileID == defaultProfile.id }
++                ?? store.addSpace(name: "Errands", emoji: "🧺", colorHex: "34C759", profileID: defaultProfile.id)
++            let acme = store.spaces.first { $0.name == "Acme" && $0.profileID == work.id }
++                ?? store.addSpace(name: "Acme", emoji: "🏢", colorHex: "FF9500", profileID: work.id)
++            for profile in [defaultProfile, work] { profile.searchSuggestionsEnabled = false }
++            spaceNames[errands.id.uuidString] = "\(defaultProfile.name)/Errands"
++            spaceNames[acme.id.uuidString] = "Work 209/Acme"
++            spaceNames[QuickDetour.historySpaceIDString(forProfileID: defaultProfile.id)] = "\(defaultProfile.name)/QuickDetour"
++            spaceNames[QuickDetour.historySpaceIDString(forProfileID: work.id)] = "Work 209/QuickDetour"
++
++            let db = HistoryDatabase.shared
++            if db.recentHistory(spaceIDs: [acme.id.uuidString]).isEmpty {
++                let qd = QuickDetour.historySpaceIDString(forProfileID: defaultProfile.id)
++                // Order matters: the work visit to the shared mail URL is last,
++                // so the shared historyURL.title is the work one.
++                let visits: [(String, String, String)] = [
++                    (home.id.uuidString, "https://news.example/", "Morning news"),
++                    (qd, "https://recipes.example/lentil-soup", "Lentil soup recipe"),
++                    (errands.id.uuidString, "https://docs.example/plan", "Holiday plan"),
++                    (home.id.uuidString, "https://mail.example/", "Family mail"),
++                    (acme.id.uuidString, "https://wiki.acme.example/", "Acme wiki"),
++                    (acme.id.uuidString, "https://docs.example/plan", "Acme launch plan"),
++                    (acme.id.uuidString, "https://mail.example/", "Acme mail - Inbox (3)"),
++                ]
++                for (space, url, title) in visits {
++                    db.recordVisit(url: url, title: title, faviconURL: nil, spaceID: space, typed: true)
++                }
++                log("seeded \(visits.count) visits")
++            }
++            // Open tabs at the same URL in both profiles, one in a space the
++            // window is not showing.
++            if errands.tabs.isEmpty { _ = store.addTab(in: errands, url: URL(string: base + "shared.html")!) }
++            if acme.tabs.isEmpty {
++                _ = store.addTab(in: acme, url: URL(string: base + "shared.html")!)
++                _ = store.addTab(in: acme, url: URL(string: base + "acme-board.html")!)
++            }
++            for tab in errands.tabs + acme.tabs where tab.webView == nil { tab.wake() }
++            _ = await waitFor("the fixture tabs' titles") {
++                (errands.tabs + acme.tabs).allSatisfy { $0.title.contains("board") }
++            }
++            log("tabs: \((errands.tabs + acme.tabs).map { "\($0.title)@\($0.url?.absoluteString ?? "")" })")
++            await sleep(1.0)
++
++            // A second normal window on the work profile's space.
++            let workWC = BrowserWindowController(incognito: false)
++            workWC.setActiveSpace(id: acme.id, selectTab: false)
++            workWC.showWindow(nil)
++            registerWindowController(workWC)
++            if let frame = wc.window?.frame {
++                workWC.window?.setFrame(frame.offsetBy(dx: 60, dy: -60), display: true)
++            }
++            await sleep(1.0)
++
++            guard let homeWindow = wc.window, let workWindow = workWC.window else { return log("no windows") }
++            let homePalette = { wc.commandPaletteView }
++            let workPalette = { workWC.commandPaletteView }
++
++            // --- Default profile's window ---
++            let homeDismiss = { wc.dismissCommandPalette() }
++            let workDismiss = { workWC.dismissCommandPalette() }
++            await query("01-default-cmdT-empty", "", window: homeWindow, profileIsWork: false, palette: homePalette,
++                        open: { key("t", code: 17, modifiers: .command, in: homeWindow) },
++                        direct: { wc.newTab(nil) }, dismiss: homeDismiss, shootIt: true)
++            for (i, q) in ["mail", "plan", "acme", "lentil", "board"].enumerated() {
++                await query("0\(2 + i)-default-cmdT-\(q)", q, window: homeWindow, profileIsWork: false,
++                            palette: homePalette, open: { key("t", code: 17, modifiers: .command, in: homeWindow) },
++                            direct: { wc.newTab(nil) }, dismiss: homeDismiss,
++                            shootIt: q == "mail" || q == "plan")
++            }
++            await query("07-default-cmdL-plan", "plan", window: homeWindow, profileIsWork: false, palette: homePalette,
++                        open: { key("l", code: 37, modifiers: .command, in: homeWindow) },
++                        direct: { wc.focusAddressBar(nil) }, dismiss: homeDismiss, shootIt: false)
++
++            // 07b (code review): the palette stays open while the window
++            // switches to an empty space of the work profile; it must follow.
++            let emptyWork = store.spaces.first { $0.name == "Empty" && $0.profileID == work.id }
++                ?? store.addSpace(name: "Empty", emoji: "🫙", colorHex: "8E8E93", profileID: work.id)
++            spaceNames[emptyWork.id.uuidString] = "Work 209/Empty"
++            wc.newTab(nil)
++            if await waitFor("palette 07b", timeout: 5, { wc.commandPaletteView != nil }), let p = wc.commandPaletteView {
++                await sleep(0.6)
++                log("07b before the switch: \(describePalette(p))\n  \(describeRows(p, profileIsWork: false))")
++                wc.setActiveSpace(id: emptyWork.id)
++                await sleep(1.0)
++                if let p2 = wc.commandPaletteView {
++                    log("07b after switching to Work 209/Empty (palette \(p2 === p ? "still open" : "replaced")): \(describePalette(p2))\n  \(describeRows(p2, profileIsWork: true))")
++                } else { log("07b palette closed by the switch") }
++                wc.dismissCommandPalette()
++            }
++            wc.setActiveSpace(id: home.id, selectTab: false)
++            await sleep(0.5)
++
++            // --- Work profile's window ---
++            await query("08-work-cmdT-empty", "", window: workWindow, profileIsWork: true, palette: workPalette,
++                        open: { key("t", code: 17, modifiers: .command, in: workWindow) },
++                        direct: { workWC.newTab(nil) }, dismiss: workDismiss, shootIt: true)
++            for (i, q) in ["mail", "plan", "family", "lentil", "board"].enumerated() {
++                await query("\(String(format: "%02d", 9 + i))-work-cmdT-\(q)", q, window: workWindow, profileIsWork: true,
++                            palette: workPalette, open: { key("t", code: 17, modifiers: .command, in: workWindow) },
++                            direct: { workWC.newTab(nil) }, dismiss: workDismiss,
++                            shootIt: q == "mail" || q == "plan")
++            }
++            await query("14-work-fauxbar-acme", "acme", window: workWindow, profileIsWork: true, palette: workPalette,
++                        open: { click(workWC.tabSidebar.fauxAddressBar) },
++                        direct: { workWC.openCommandPaletteInPlace(anchorFrame: workWC.tabSidebar.fauxAddressBar
++                            .convert(workWC.tabSidebar.fauxAddressBar.bounds, to: nil)) },
++                        dismiss: workDismiss, shootIt: true)
++
++            // --- Quick Detour launcher, both profiles ---
++            let launcher = QuickDetourLauncher.shared
++            for (name, profile, q, isWork) in [("15-launcher-work-plan", work, "plan", true),
++                                                ("16-launcher-default-lentil", defaultProfile, "lentil", false)] {
++                await awaitIdle()
++                launcher.show(profile: profile, sourceSpace: isWork ? home : acme)
++                guard await waitFor("launcher", timeout: 5, { launcher.palette != nil }), let p = launcher.palette,
++                      let panel = launcher.panel else { continue }
++                await sleep(0.6)
++                foreignQueryEcho = q
++                await type(q, in: panel)
++                await sleep(1.4)
++                log("\(name) typed '\(q)' \(describePalette(p))\n  \(describeRows(p, profileIsWork: isWork))")
++                await shoot(name, panel)
++                launcher.close()
++                await sleep(0.5)
++            }
++
++            // --- Private window ---
++            let privateWC = BrowserWindowController(incognito: true)
++            privateWC.showWindow(nil)
++            registerWindowController(privateWC)
++            await sleep(1.0)
++            if let pw = privateWC.window {
++                await query("17-private-cmdT-mail", "mail", window: pw, profileIsWork: nil,
++                            palette: { privateWC.commandPaletteView },
++                            open: { key("t", code: 17, modifiers: .command, in: pw) },
++                            direct: { privateWC.newTab(nil) }, dismiss: { privateWC.dismissCommandPalette() },
++                            shootIt: true)
++            }
++            privateWC.window?.close()
++            workWC.window?.close()
++            log("done")
++        }
++    }
++}
++#endif

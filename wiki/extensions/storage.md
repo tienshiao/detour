@@ -1,7 +1,7 @@
 ---
 type: Component
 title: Extension storage
-description: Where an extension's data lives in Detour — WebKit's chrome.storage areas keyed by profile and extension id, the polyfilled storage.managed, and the origin-keyed storage (IndexedDB, localStorage, service worker registration) that is lost at every launch because each context load gets a new base URL.
+description: Where an extension's data lives in Detour — WebKit's chrome.storage areas keyed by profile and extension id, the polyfilled storage.managed, and the origin-keyed storage (IndexedDB, localStorage) that WebKit moves to each context load's new base URL, so it survives relaunches.
 tags: [extensions, storage, webkit, persistence]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:40Z }
@@ -21,6 +21,12 @@ sources:
   - id: task-99
     resource: backlog:TASK-99
     title: Give each context a stable base URL so extension storage survives a relaunch
+  - id: webkit-context
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
+    title: WebKit WebExtensionContextCocoa.mm (LastSeenBaseURL, moveLocalStorageIfNeeded, removeStaleExtensionWebsiteData)
+  - id: itp-tests
+    resource: ../../DetourTests/ExtensionOriginTrackingPreventionTests.swift
+    title: ExtensionOriginTrackingPreventionTests (testIndexedDBAndLocalStorageSurviveAnUnloadAndLoad)
   - id: task-32
     resource: backlog:TASK-32
     title: Deleting a profile must remove its website data store and extension controller data on disk
@@ -39,8 +45,9 @@ An extension has two kinds of storage and they behave differently in Detour.
 `chrome.storage` is WebKit's and is keyed by the extension's id, so it
 persists. Everything keyed by *origin* — IndexedDB, `localStorage`, Cache
 Storage, the service worker registration — is keyed by a base URL that changes
-on every context load, so it does not. Knowing which one an extension uses
-explains most "it forgot everything" reports.
+on every context load. WebKit moves IndexedDB and `localStorage` to the new
+origin at each load, so those persist too; Cache Storage and the service
+worker registration do not.
 
 # Role
 
@@ -49,7 +56,8 @@ explains most "it forgot everything" reports.
 | `chrome.storage.local`, `sync` | WebKit | Controller (profile) and the context's `uniqueIdentifier` | Yes: neither key changes |
 | `chrome.storage.session` | WebKit, in memory | — | No, by design |
 | `chrome.storage.managed` | Detour's polyfill | — | Always empty |
-| IndexedDB, `localStorage`, Cache Storage, service worker registration | WebKit, in the profile's website data store | The context's `webkit-extension://<UUID>` origin | **No** |
+| IndexedDB, `localStorage` | WebKit, in the profile's website data store | The context's `webkit-extension://<UUID>` origin, renamed to the new one at every load | Yes |
+| Cache Storage, service worker registration | WebKit, in the profile's website data store | The context's origin | **No**: left on the old origin |
 
 Storage is per [profile](../architecture/profiles-and-spaces.md): each
 profile has its own controller and its own data store, so the same extension
@@ -120,39 +128,46 @@ the real context, and that `storage.local` stays native.
 
 # Gotchas
 
-## Origin-keyed storage is abandoned at every launch
+## Origin-keyed storage moves to each new origin
 
 `loadExtensionContext` never sets `context.baseURL`, so WebKit mints a fresh
 `webkit-extension://<UUID>/` for every context load: each launch, each
-enable, each update, each background recovery. Storage keyed by that origin
-starts empty every time. 1Password logs "The item cache has not been
-initialized yet" at every start and rebuilds its item cache per profile per
-launch. On disk the previous launch's origin sits orphaned next to the
-current one (seen 2026-09-20: 13–14 MB each) until something purges it.[^task-99]
+enable, each update, each background recovery. WebKit compensates in
+`WebExtensionContext::load`: it keeps the previous load's origin as
+`LastSeenBaseURL` in the context's `State.plist`, writes the new one, and
+before starting the background calls `moveLocalStorageIfNeeded`, which renames
+the old origin's IndexedDB and `localStorage` to the new one
+(`-[WKWebsiteDataStore _renameOrigin:to:forDataOfTypes:]` on the context's
+web view data store).[^webkit-context] Cache Storage and the service worker
+registration are not moved.
 
-The same fresh origin is what
+`testIndexedDBAndLocalStorageSurviveAnUnloadAndLoad` writes both in one load
+and reads them back in the next, under a different origin.[^itp-tests] In
+production (2026-10-28) each 1Password profile store held exactly one
+extension origin, created the minute the app last launched and carrying
+24–26 MB of IndexedDB, with `LastSeenBaseURL` naming it; 1Password keeps
+nothing in Cache Storage.[^task-99]
+
+The rename happens on the store the context's web views use. Before TASK-90
+the pages were on the default store, and on 2026-09-20 each profile store was
+found holding the previous launch's origin next to the current one, which is
+why TASK-99 was filed believing the data was lost at every launch. Those
+orphans are gone: WebKit's `removeStaleExtensionWebsiteData` removes every
+`webkit-extension://` origin no loaded context owns, once per controller (the
+`StaleExtensionOriginsCleared` file in the controller's storage directory
+marks it done).[^webkit-context]
+
+A stable base URL (setting `context.baseURL` per profile and extension) was
+proposed in TASK-99 and closed as unnecessary on 2026-10-28 (the user's
+decision): the rename already keeps the data, and a stable origin would
+have to be threaded through the code that relies on a new one: page
+retargeting, background-load recovery escaping a stale worker registration,
+the offscreen teardown, and sender verification by base URL.[^task-99]
+
+The fresh origin is still what
 [tracking prevention](./data-store-and-itp.md) treats as a site with no user
 interaction, and why open [extension pages](./extension-pages.md) need
 rehoming.
-
-## A stable base URL is proposed, not implemented
-
-`WKWebExtensionContext.baseURL` can be set before load and must be unique per
-context in a controller. Deriving it from (profile, extension) would make
-origin-keyed storage persistent. It has not been done because much of the code
-assumes a new origin per load, and several questions are open:[^task-99]
-
-- Can a context with the same base URL be loaded right after the old one is
-  unloaded in the same controller (the reload and recovery paths)?
-- Does a stale service worker registration from the previous launch start
-  cleanly against the new context? Background recovery today relies on a new
-  origin to *escape* a stale registration.
-- The Private profile should keep a fresh origin per launch.
-- Uninstall would have to clear the stable origin's data, and origins orphaned
-  by earlier launches need a one-time cleanup.
-- Callers that assume the origin changes: `retargetExtensionPages`,
-  `recoverFromBackgroundLoadFailure`, the offscreen teardown on unload, and
-  sender verification by base URL.
 
 ## The `extensionStorage` table is dead
 
@@ -166,6 +181,7 @@ them; only database tests do.
 - `ExtensionPolyfillTests` — the `managed` stub, `lastError`, native left alone, absent without `chrome.storage`.
 - [ExtensionPolyfillIntegrationTests](../../DetourTests/ExtensionPolyfillIntegrationTests.swift) — the real context.
 - `ProfileDataRemovalTests` — extension controller storage on profile deletion.
+- `ExtensionOriginTrackingPreventionTests.testIndexedDBAndLocalStorageSurviveAnUnloadAndLoad` — IndexedDB and `localStorage` carried to the next load's origin.
 
 # Related
 
@@ -176,6 +192,8 @@ them; only database tests do.
 
 [^task-80]: Polyfill chrome.storage.managed
 [^task-99]: Give each context a stable base URL so extension storage survives a relaunch
+[^webkit-context]: WebKit WebExtensionContextCocoa.mm (LastSeenBaseURL, moveLocalStorageIfNeeded, removeStaleExtensionWebsiteData)
+[^itp-tests]: ExtensionOriginTrackingPreventionTests (testIndexedDBAndLocalStorageSurviveAnUnloadAndLoad)
 [^task-32]: Deleting a profile must remove its website data store and extension controller data on disk
 [^task-20]: Un-skip the WKExtensionIntegrationTests runtime messaging tests
 [^task-22]: Verify runtime.onInstalled is delivered in the app, or emit it ourselves

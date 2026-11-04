@@ -1,12 +1,15 @@
 ---
 type: Reference
 title: Session database
-description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v17, and the GRDB record types.
+description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v20, and the GRDB record types.
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:36:35Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T00:52:01Z }
 sources:
+  - id: task-231-2
+    resource: backlog:TASK-231.2
+    title: History and session database access is compiler-checked across threads
   - id: database
     resource: ../../Detour/Storage/Database.swift
     title: Database.swift
@@ -37,6 +40,9 @@ sources:
   - id: task-154
     resource: backlog:TASK-154
     title: A session save that fails is handled, not only logged
+  - id: task-191-1
+    resource: backlog:TASK-191.1
+    title: "TASK-191.1: route model, matching rule and storage"
 ---
 
 `browser.db` is the session database: `AppDatabase.shared`, a struct around a
@@ -57,7 +63,7 @@ GRDB `DatabaseQueue`, opened at
 | `favorite` | `id` | Favorites bar tiles, per **profile**. | `tabID` → `tab`, set null. |
 | `closedTab` | `id` autoincrement | Closed and archived tab records. | No FK on `spaceID`; `deleteSpace` removes the rows itself. Index `closedTab_on_spaceID_id`. No row cap. |
 | `download` | `id` | Download records. | |
-| `contentBlockerWhitelist` | (`profileID`, `host`) | Per-site content blocker exceptions. | Cascades from `profile`. |
+| `siteSetting` | (`profileID`, `site`, `setting`) | Per-site overrides ([site settings](./site-settings.md)); content blocking's site list since v18. | Cascades from `profile`. Never written for the Private profile (v19 deleted the rows it had). |
 | `externalAppPermission` | (`profileID`, `origin`, `scheme`) | "Always allow" for external URL schemes. | Never written for the Private profile. |
 | `extension` | `id` | Installed extensions: manifest, path, enabled, source, update URL. | |
 | `extensionStorage` | (`extensionID`, `key`) | Dead: left from the pre-WKWebExtension runtime. Only tests call its accessors; `chrome.storage` is WebKit's. | Cascades from `extension`. |
@@ -67,6 +73,8 @@ GRDB `DatabaseQueue`, opened at
 | `pendingProfileDataRemoval` | `profileID` | Deleted profiles whose on-disk WebKit data is not removed yet. | No FK: the profile row is already gone. |
 | `webKitStorageIdentifier` | `identifier` | WebKit storage identifiers an isolated data directory created. | The default data directory records nothing. |
 | `appState` | `key` | Key-value app state. | Keys in use: `lastActiveSpaceID`, `extensionUpdateLastCheckAt`. |
+| `linkRoute` | `id` | The link routes: URL condition, source app, target kind and space id, order ([Link Routes](../features/link-routing.md)). | App-wide. **No FK** on `targetSpaceID`: the session save deletes and re-inserts every space row. `TabStore.deleteSpace` refuses a space a route targets instead. |
+| `linkRouteDefault` | `id` (always 1) | The Default target for links no route matches. | `CHECK (id = 1)`; no row means Most Recent Space. |
 
 Related pages: [closed tabs and archive](../tabs/closed-tabs-and-archive.md),
 [pinned tabs and folders](../tabs/pinned-tabs-and-folders.md),
@@ -103,7 +111,7 @@ Related pages: [closed tabs and archive](../tabs/closed-tabs-and-archive.md),
 
 Profile deletion does **not** rely on cascades. `deleteProfileRows` is the
 one function that deletes a profile row, and it deletes `profileExtension`,
-`extensionInstalledEvent`, `favorite`, `contentBlockerWhitelist` and
+`extensionInstalledEvent`, `favorite`, `siteSetting` and
 `externalAppPermission` rows explicitly, because cascades only run while
 foreign keys are enforced and `extensionInstalledEvent` has no foreign key at
 all (TASK-31, TASK-33). Rows keyed by extension alone are shared by all
@@ -134,6 +142,9 @@ migration.
 | v15 | Index `closedTab(spaceID, id)` (TASK-117). |
 | v16 | `closedTab.closedAt`, back-filled from `archivedAt` (TASK-116). |
 | v17 | `extension.source`, `updateURL`, `sourcePath`, `pendingPermissionApprovalJSON`; existing installs classified by reading their on-disk manifest (TASK-113). |
+| v18 | `siteSetting`; the `contentBlockerWhitelist` rows copied into it as `contentBlocking = false` (lowercased, rows of missing profiles dropped), then that table dropped (TASK-187). |
+| v19 | The Private profile's `contentBlocking` rows in `siteSetting` deleted: a Private window's switch is kept in memory only (TASK-195). |
+| v20 | `linkRoute` and `linkRouteDefault` (TASK-191.1). Tested against a database migrated to v19. |
 
 Patterns worth copying from the existing migrations:
 
@@ -148,6 +159,9 @@ Patterns worth copying from the existing migrations:
   would have deleted every extension-page pin and favorite.
 - **Seed ledgers.** v9 seeds the installed-event ledger so upgrading does not
   deliver `install` to every extension at the next launch.
+- **No foreign key to `space` from a table that must outlive a save.** The
+  session save rebuilds the space rows, so v20's `linkRoute.targetSpaceID`
+  has none; the invariant lives in `TabStore.deleteSpace` (TASK-191.1).
 - **Fail safe when classifying.** v17 treats a keyed manifest as unpacked: the
   wrong call the other way would replace a developer's folder with the store
   build. See [CRX verification gate](../decisions/crx-verification-gate.md).
@@ -162,7 +176,7 @@ it ran wipes the debug database rather than failing.
 
 | Record | File |
 |---|---|
-| `ProfileRecord`, `SpaceRecord`, `TabRecord`, `PinnedTabRecord`, `PinnedFolderRecord`, `FavoriteRecord`, `DownloadRecord`, `ContentBlockerWhitelistRecord`, `ExternalAppPermissionRecord` | [Detour/Storage/Models](../../Detour/Storage/Models) |
+| `ProfileRecord`, `SpaceRecord`, `TabRecord`, `PinnedTabRecord`, `PinnedFolderRecord`, `FavoriteRecord`, `DownloadRecord`, `SiteSettingRecord`, `ExternalAppPermissionRecord`, `LinkRouteRecord`, `LinkRouteDefaultRecord` | [Detour/Storage/Models](../../Detour/Storage/Models) |
 | `ClosedTabRecord`, `ClosedTabSummary` | `ClosedTabRecord.swift` in the same directory. The summary is the same table without the `interactionState` blob. |
 | `ExtensionRecord`, `ExtensionStorageRecord`, `ProfileExtensionRecord`, `ExtensionPermissionRecord`, `ExtensionInstalledEventRecord` | [Detour/Extensions/Storage/Models](../../Detour/Extensions/Storage/Models) |
 
@@ -193,6 +207,12 @@ Records are plain `Codable` structs. The live model (`Profile`, `Space`,
   at launch (TASK-117).
 - `AppDatabase(dbQueue:)` builds an instance over an in-memory queue for
   tests and runs the same migrator.
+- `AppDatabase` is a `nonisolated struct … : Sendable` (TASK-231.2): all its
+  state is behind the `DatabaseQueue`, which serialises access, so it may be
+  used from any thread. The DEBUG read counters are a `Mutex`. The GRDB
+  record types are nonisolated through their GRDB conformances, so rows are
+  built and decoded on GRDB's queue; the one mapping that reads a live tab,
+  `TabRecord.init(tab:…)`, is `@MainActor`.
 
 # Related
 

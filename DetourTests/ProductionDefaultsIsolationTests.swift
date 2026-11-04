@@ -4,12 +4,11 @@ import XCTest
 /// Opening and closing a real browser window in the test host must leave the
 /// production app's autosave and Sparkle keys alone (TASK-41). The test host is
 /// Detour.app, so `UserDefaults.standard` here *is* the production domain.
-@MainActor
-final class ProductionDefaultsIsolationTests: XCTestCase {
+nonisolated final class ProductionDefaultsIsolationTests: XCTestCase {
 
     private var controller: BrowserWindowController?
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         controller?.window?.close()
         controller = nil
         // The test writes the data-directory-scoped frame and divider; drop them
@@ -23,10 +22,10 @@ final class ProductionDefaultsIsolationTests: XCTestCase {
                 UserDefaults.standard.removeObject(forKey: key)
             }
         }
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    func testWindowAutosaveDoesNotTouchTheProductionKeys() throws {
+    @MainActor func testWindowAutosaveDoesNotTouchTheProductionKeys() throws {
         try XCTSkipIf(
             WebKitStorageScope.currentIsDefaultDataDirectory,
             "in the default data directory the run legitimately owns these keys")
@@ -79,7 +78,7 @@ final class ProductionDefaultsIsolationTests: XCTestCase {
     /// production defaults, so anything that window wrote at launch is already
     /// in the baseline and invisible to the net. What keeps it off the
     /// production keys is the autosave names themselves, so pin those.
-    func testLaunchWindowUsesTheScopedAutosaveNames() throws {
+    @MainActor func testLaunchWindowUsesTheScopedAutosaveNames() throws {
         let controllers = NSApp.windows
             .compactMap { $0.windowController as? BrowserWindowController }
             .filter { !$0.isIncognito }

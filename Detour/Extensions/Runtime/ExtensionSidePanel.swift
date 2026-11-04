@@ -707,7 +707,8 @@ final class ExtensionSidePanelController {
            owner.canParkAutomationTabs, !tab.isAutomationParked {
             return owner
         }
-        return tab.extensionWindow()
+        // A Quick Detour window has no side panels (TASK-193.1).
+        return tab.extensionWindow() as? BrowserWindowController
     }
 
     /// A window for a panel that has to act without one of its own: the key

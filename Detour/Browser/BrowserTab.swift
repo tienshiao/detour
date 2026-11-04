@@ -29,11 +29,125 @@ final class WebViewContainerView: NSView {
         applyContentClipping(subview)
     }
 
+    /// The tab's own web view. The docked Web Inspector is a WKWebView too,
+    /// and a sibling, so the container is told which subview is the page.
+    weak var hostedWebView: NSView? {
+        didSet {
+            guard hostedWebView !== oldValue else { return }
+            NotificationCenter.default.removeObserver(self, name: NSView.frameDidChangeNotification, object: nil)
+            guard let hostedWebView else { return }
+            hostedWebView.postsFrameChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(webViewFrameDidChange),
+                                                   name: NSView.frameDidChangeNotification, object: hostedWebView)
+            applyDevToolbarLayout()
+            subviews.forEach(applyContentClipping)
+        }
+    }
+
+    /// Dev mode's toolbar above the web view (TASK-186.2), made the first
+    /// time the page needs it, then hidden and shown.
+    private(set) var devToolbar: DevToolbarView?
+
+    var isShowingDevToolbar: Bool {
+        guard let devToolbar else { return false }
+        return !devToolbar.isHidden
+    }
+
+    /// Runs after the toolbar is shown, hidden or moved, so the window can
+    /// keep its find bar clear of it.
+    var onDevToolbarLayoutChange: (() -> Void)?
+
+    /// Shows the dev toolbar, reading `url`, above the web view, or hides it
+    /// and gives the web view its space back. Only the web view's top edge
+    /// moves (`DevToolbarLayout`), so a docked Web Inspector keeps its place.
+    func updateDevToolbar(shown: Bool, url: URL?) {
+        if shown {
+            let toolbar = devToolbar ?? makeDevToolbar()
+            toolbar.url = url
+            guard toolbar.isHidden else { return }
+            toolbar.isHidden = false
+        } else {
+            guard let devToolbar, !devToolbar.isHidden else { return }
+            devToolbar.isHidden = true
+        }
+        applyDevToolbarLayout()
+        subviews.forEach(applyContentClipping)
+        onDevToolbarLayoutChange?()
+    }
+
+    private func makeDevToolbar() -> DevToolbarView {
+        let toolbar = DevToolbarView()
+        toolbar.isHidden = true
+        // No autoresizing: the frame-change sink and `resizeSubviews` frame
+        // it from the web view, and an autoresize after the sink has already
+        // placed it would shift it a second time mid-resize.
+        toolbar.translatesAutoresizingMaskIntoConstraints = true
+        toolbar.autoresizingMask = []
+        addSubview(toolbar)
+        devToolbar = toolbar
+        return toolbar
+    }
+
+    /// Frames the web view and the toolbar for the current state. Hidden, the
+    /// web view's top goes back to the container's top; a container that
+    /// never showed the toolbar is left alone.
+    func applyDevToolbarLayout() {
+        guard let devToolbar, let webView = hostedWebView else { return }
+        let frames = DevToolbarLayout.frames(containerBounds: bounds, webViewFrame: webView.frame,
+                                             showsToolbar: !devToolbar.isHidden)
+        if webView.frame != frames.webView { webView.frame = frames.webView }
+        if let toolbarFrame = frames.toolbar, devToolbar.frame != toolbarFrame { devToolbar.frame = toolbarFrame }
+    }
+
+    /// Autoresizing keeps the web view's margins, which holds the toolbar's
+    /// gap through a resize, except from a zero-sized container (a container
+    /// is made at zero size and framed when hosted). Re-applying the layout
+    /// covers that.
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        super.resizeSubviews(withOldSize: oldSize)
+        if isShowingDevToolbar { applyDevToolbarLayout() }
+    }
+
+    /// WebKit re-frames the web view when the inspector docks, undocks or is
+    /// resized. It keeps the web view's top, so only the toolbar follows: to
+    /// the web view's x and width when the inspector is docked on a side.
+    @objc private func webViewFrameDidChange() {
+        guard let devToolbar, !devToolbar.isHidden, let webView = hostedWebView else { return }
+        let frame = DevToolbarLayout.toolbarFrame(containerBounds: bounds, webViewFrame: webView.frame)
+        guard devToolbar.frame != frame else { return }
+        devToolbar.frame = frame
+        onDevToolbarLayoutChange?()
+    }
+
     private func applyContentClipping(_ view: NSView) {
         view.wantsLayer = true
-        view.layer?.cornerRadius = contentCornerRadius
-        view.layer?.cornerCurve = .continuous
-        view.layer?.masksToBounds = contentCornerRadius > 0
+        guard let layer = view.layer else { return }
+        layer.cornerRadius = contentCornerRadius
+        layer.cornerCurve = .continuous
+        layer.masksToBounds = contentCornerRadius > 0
+        layer.maskedCorners = maskedCorners(for: view)
+    }
+
+    /// While the toolbar shows, it rounds the pane's top corners and the web
+    /// view its bottom ones, so the two read as one card with no notch
+    /// between them. The mask is in the layer's own coordinates, which AppKit
+    /// flips for a view flipped relative to the container (`WKWebView` is):
+    /// there `MaxY` is the bottom. Decided from `isFlipped`, not the layer's
+    /// `contentsAreFlipped()`, which depends on where the layer tree is at the
+    /// moment: a re-hosted split pane read unflipped and rounded the page's
+    /// top corners.
+    private func maskedCorners(for view: NSView) -> CACornerMask {
+        guard isShowingDevToolbar else { return DevToolbarLayout.allCorners }
+        let top: Bool
+        if view === devToolbar {
+            top = true
+        } else if view === hostedWebView {
+            top = false
+        } else {
+            return DevToolbarLayout.allCorners
+        }
+        let flipped = view.isFlipped != isFlipped
+        return top == flipped ? DevToolbarLayout.bottomCorners : DevToolbarLayout.topCorners
     }
 }
 
@@ -51,6 +165,7 @@ class BrowserTab: NSObject {
                 ExtensionPageHostRegistry.register(webView)
                 FaviconLinkBridge.register(webView, for: self)
                 ExternallyConnectablePages.track(webView)
+                MediaSessionBridge.register(webView, for: self)
             }
         }
     }
@@ -70,6 +185,9 @@ class BrowserTab: NSObject {
                 webView.frame = container.bounds
                 container.addSubview(webView)
             }
+            container.hostedWebView = webView
+            // Lays the toolbar out again over a re-wrapped web view.
+            container.applyDevToolbarLayout()
             return
         }
         let container = WebViewContainerView()
@@ -79,6 +197,7 @@ class BrowserTab: NSObject {
         webView.autoresizingMask = [.width, .height]
         webView.frame = container.bounds
         container.addSubview(webView)
+        container.hostedWebView = webView
         webViewContainer = container
     }
 
@@ -92,8 +211,42 @@ class BrowserTab: NSObject {
     @Published var url: URL?
     @Published var isLoading: Bool = false
     @Published var isSleeping: Bool = false
-    @Published var isPlayingAudio: Bool = false
-    @Published var isMuted: Bool = false
+    @Published var isPlayingAudio: Bool = false {
+        didSet { if isPlayingAudio != oldValue { updatePlaybackSession() } }
+    }
+    @Published var isMuted: Bool = false {
+        didSet { if isMuted != oldValue { postNowPlayingChange() } }
+    }
+    /// Playing sound the user can hear. Page mute (`PageMediaControl`) keeps
+    /// `_isPlayingAudio` true, where the old script mute turned it off, so the
+    /// gates that spare a tab for its sound — stale-tab sleep, automatic
+    /// picture in picture, the GPU recycler — read this rather than
+    /// `isPlayingAudio`.
+    var isAudible: Bool { isPlayingAudio && !isMuted }
+
+    // MARK: Now playing (TASK-192) — written only by BrowserTab+NowPlaying.swift
+    // and `releaseWebView`.
+
+    /// The current run of audible playback, for the now-playing bar.
+    var playbackSession: MediaPlaybackSession?
+    /// The main frame's Media Session, as `MediaSessionBridge` last reported it.
+    var mediaSession: MediaSessionReport?
+    /// Frames (by their script's token) with a video in picture in picture.
+    var pictureInPictureFrames: Set<String> = []
+    /// `enterPictureInPicture()` asked a video to enter PiP and no frame has
+    /// reported it yet; cleared by the report, by the script finding no video,
+    /// or after `pictureInPictureEntryTimeout`.
+    var isAwaitingPictureInPicture = false
+    var pictureInPictureEntryWorkItem: DispatchWorkItem?
+    /// The bar paused this tab: it stays on the bar while quiet, so the user
+    /// can resume it there.
+    var isPausedFromBar = false
+    /// The bar's pause suspended the page's media (`setAllMediaPlaybackSuspended`)
+    /// rather than calling the page's Media Session handler. A suspended page
+    /// cannot start media itself, so selecting the tab lifts it.
+    var isMediaSuspendedFromBar = false
+    /// The `startedAt` of the run the user dismissed from the bar.
+    var nowPlayingDismissedSessionStart: Date?
     @Published var canGoBack: Bool = false
     @Published var canGoForward: Bool = false
     @Published var blockedCount: Int = 0
@@ -147,6 +300,14 @@ class BrowserTab: NSObject {
     /// another of the profile's (TASK-58).
     var spaceID: UUID?
     var parentID: UUID?
+    /// What a routed link changed to show this tab (TASK-205), until it shows
+    /// a page: if its first navigation becomes a download the tab closes and
+    /// the windows are put back (`DownloadOpenedTab`).
+    var routedOpen: RoutedOpenRecord?
+    /// The tab was restored or put to sleep: it stands for a page the user
+    /// kept, even when a wake without a saved session leaves its web view's
+    /// back-forward list empty, so a download never closes it (TASK-205).
+    private(set) var standsForSavedPage = false
     /// The profile whose `WKWebExtensionContext`s were told this tab is open
     /// (`ExtensionTabLifecycle.didOpen`); nil means the tab is not registered
     /// with any context. Weak: a removed profile must not be kept alive by a
@@ -158,7 +319,30 @@ class BrowserTab: NSObject {
     /// whitelist, TASK-69): its space's, or — for a peek or favourite tab that
     /// lives in no space's list — the one its extension registration named.
     var owningProfile: Profile? {
-        spaceID.flatMap { TabStore.shared.space(withID: $0)?.profile } ?? extensionRegisteredProfile
+        spaceID.flatMap { TabStore.shared.space(withID: $0)?.profile } ?? quickDetourProfile ?? extensionRegisteredProfile
+    }
+    /// The profile of the Quick Detour window this tab is the page of
+    /// (TASK-193.1), set by `TabStore.openQuickDetourTab`; nil for every other
+    /// tab. A Quick Detour tab has no `spaceID`, so this is what names its
+    /// profile for the user agent, a rebuilt web view, and the history scope.
+    /// Weak: `TabStore.profiles` owns profiles, and deleting one closes its
+    /// Quick Detours first.
+    weak var quickDetourProfile: Profile?
+    /// The quarantine this tab is the page of (TASK-194): its own throwaway
+    /// website data store, which its web view uses instead of any profile's.
+    /// Set with `quickDetourProfile` (the Private profile) by
+    /// `TabStore.openQuickDetourTab(quarantine:)`; nil for every other tab.
+    /// Held strongly: the session's store lives as long as a page uses it.
+    var quarantine: QuarantineSession?
+    /// Whether this tab is a quarantine's page.
+    var isQuarantined: Bool { quarantine != nil }
+    /// The history scope this tab's visits are filed under (`historyVisit.spaceID`):
+    /// its space, or a Quick Detour's per-profile scope
+    /// (`QuickDetour.historySpaceID(forProfileID:)`). Nil for a tab that records
+    /// nothing because it belongs to no scope — a Peek, a favourite's backing tab
+    /// before it has a space.
+    var historySpaceID: UUID? {
+        spaceID ?? quickDetourProfile.map { QuickDetour.historySpaceID(forProfileID: $0.id) }
     }
     /// Combine sinks installed by `ExtensionTabLifecycle.didOpen` that forward
     /// url/title/loading changes to the registered profile's contexts; cleared by
@@ -299,6 +483,12 @@ class BrowserTab: NSObject {
         peekTab?.favicon ?? peekFavicon
     }
 
+    /// The page this tab's Peek shows: its live or parked tab's URL, else the
+    /// URL saved for it (a parked Peek that never loaded, or a restored one).
+    var peekPageURL: URL? {
+        peekTab?.url ?? peekURL
+    }
+
     /// Whether selecting this tab brings a Peek back over it: a live one is
     /// presented again, a parked or session-restored one is rebuilt from
     /// `peekURL` (`restorePeekOverlayIfNeeded`).
@@ -345,11 +535,16 @@ class BrowserTab: NSObject {
     var switcherPreviewRequest = 0
 
     private var faviconCancellables = Set<AnyCancellable>()
+    /// The URL the tab is on or trying to reach: what `load(_:)` asked for, the
+    /// web view's URL as the observer records it, or the URL a provisional
+    /// failure names (TASK-170: a page-started navigation's target, a
+    /// redirect's). The target of the error page and of Reload.
     private var lastAttemptedURL: URL?
     /// Set from `wake()` until the fresh web view reports its first real URL.
     /// While it is set the URL observer ignores the web view's nil URL so `url`
     /// survives the wake; it is deliberately *not* `lastAttemptedURL`, which
-    /// means "a navigation this tab asked for" and drives the error page (TASK-45).
+    /// drives the error page: a failure then would have counted as one the user
+    /// asked for (TASK-45).
     private var awaitingFirstURL = false
     /// Set from `wake()` when the fresh web view is handed the tab's cached
     /// session state, until a navigation commits, a user `load()` replaces the
@@ -361,6 +556,15 @@ class BrowserTab: NSObject {
     /// its URL synchronously, and the URL observer then also records it as
     /// `lastAttemptedURL`.
     private(set) var restoringSession = false
+    /// The page `title` is the real title of — reported by its document, or
+    /// persisted with it — or nil while the title is a placeholder. While the
+    /// tab only shows that same page again it keeps the title rather than fall
+    /// back to the URL: a web content process that dies (a crash, a memory
+    /// kill) takes the web view's title with it, and a woken or reloaded page
+    /// commits before its document has one. The placeholder used to replace
+    /// the title then, and a tab put to sleep kept it across every relaunch
+    /// after (TASK-227).
+    private var titledURL: URL?
     /// The internal page this tab may navigate to, set only by
     /// `loadInternalPage(_:)` and by `wake()` for a tab that was already showing
     /// one. `InternalPageNavigationPolicy` refuses every other navigation to the
@@ -376,7 +580,9 @@ class BrowserTab: NSObject {
     private var processTerminationCount = 0
     private var lastProcessTerminationAt: Date?
     private var navigationPending = false
-    private var previousHost: String?
+    /// The `faviconSiteKey` of the page the favicon belongs to: a navigation
+    /// to another key clears the icon and guesses the new site's `/favicon.ico`.
+    private var previousFaviconSite: String?
     private var faviconGeneration: Int = 0
     /// The generation whose page-declared icon (a `<link rel=icon>`) has
     /// landed. The optimistic `/favicon.ico` guess must not overwrite it when
@@ -395,6 +601,7 @@ class BrowserTab: NSObject {
         }
         InternalPageBridge.install(on: configuration)
         FaviconLinkBridge.install(on: configuration)
+        MediaSessionBridge.install(on: configuration)
         let webView = BrowserWebView(frame: .zero, configuration: configuration)
         webView.isInspectable = true
         return webView
@@ -408,6 +615,7 @@ class BrowserTab: NSObject {
             ExtensionPageHostRegistry.register(webView)
             FaviconLinkBridge.register(webView, for: self)
             ExternallyConnectablePages.track(webView)
+            MediaSessionBridge.register(webView, for: self)
         }
         webView?.navigationDelegate = self
         applyUserAgent()
@@ -423,11 +631,15 @@ class BrowserTab: NSObject {
         ExtensionPageHostRegistry.register(webView)
         FaviconLinkBridge.register(webView, for: self)
         ExternallyConnectablePages.track(webView)
+        MediaSessionBridge.register(webView, for: self)
         webView.navigationDelegate = self
         self.webView?.isInspectable = true
         // Seed published properties from the existing webView state
         self.url = webView.url
-        if let t = webView.title, !t.isEmpty { self.title = t }
+        if let t = webView.title, !t.isEmpty {
+            self.title = t
+            self.titledURL = webView.url
+        }
         self.isLoading = webView.isLoading
         self.canGoBack = webView.canGoBack
         self.canGoForward = webView.canGoForward
@@ -443,10 +655,13 @@ class BrowserTab: NSObject {
         self.id = id
         self.webView = nil
         self.isSleeping = true
+        self.standsForSavedPage = true
         self.cachedInteractionState = cachedInteractionState
         self.spaceID = spaceID
         super.init()
         self.title = title
+        // An empty persisted title is no title: the URL placeholder may replace it.
+        self.titledURL = title.isEmpty ? nil : url
         self.url = url
         if let page = url.flatMap(InternalPage.init(url:)) {
             // A restored internal page has no favicon URL to download, and its
@@ -454,7 +669,7 @@ class BrowserTab: NSObject {
             applyInternalPageIcon(page)
         } else if let faviconURL {
             self.faviconURL = faviconURL
-            self.previousHost = url?.host
+            self.previousFaviconSite = faviconSiteKey(for: url)
             downloadFavicon(from: faviconURL, generation: self.faviconGeneration)
         }
         NotificationCenter.default.addObserver(self, selector: #selector(userAgentDidChange(_:)), name: .init("UserAgentDidChange"), object: nil)
@@ -462,10 +677,21 @@ class BrowserTab: NSObject {
 
     convenience init(id: UUID, title: String, archivedInteractionState: Data?, fallbackURL: URL?, faviconURL: URL? = nil, configuration: WKWebViewConfiguration = WKWebViewConfiguration()) {
         self.init(id: id, configuration: configuration)
+        restoreArchivedPage(title: title, interactionState: archivedInteractionState, fallbackURL: fallbackURL,
+                            faviconURL: faviconURL)
+    }
+
+    /// Brings a closed page back into this tab's new web view: its title and
+    /// favicon until the page reports its own, and its back/forward list, else
+    /// its address. A reopened closed tab, and a Quick Detour restored from
+    /// the archive (TASK-193.5), whose tab knows its profile only once built.
+    func restoreArchivedPage(title: String, interactionState archivedInteractionState: Data?, fallbackURL: URL?,
+                             faviconURL: URL?) {
         self.title = title
+        titledURL = title.isEmpty ? nil : fallbackURL
         if let faviconURL {
             self.faviconURL = faviconURL
-            self.previousHost = fallbackURL?.host
+            self.previousFaviconSite = faviconSiteKey(for: fallbackURL)
             downloadFavicon(from: faviconURL, generation: self.faviconGeneration)
         }
         self.url = fallbackURL
@@ -496,7 +722,14 @@ class BrowserTab: NSObject {
     /// and a tab that never calls `load` (a window a page opened) is given it
     /// by the store once placed.
     func applyUserAgent() {
-        if let spaceID, let profile = TabStore.shared.space(withID: spaceID)?.profile {
+        // A quarantine's page is one of many Safari users (TASK-194), whatever
+        // the Private profile's setting says.
+        if isQuarantined {
+            webView?.customUserAgent = Quarantine.userAgent
+            return
+        }
+        // Its space's profile, or a Quick Detour's (TASK-193.1), which has no space.
+        if let profile = spaceID.flatMap({ TabStore.shared.space(withID: $0)?.profile }) ?? quickDetourProfile {
             webView?.customUserAgent = profile.resolvedUserAgent()
         } else {
             // Fallback for tabs not yet assigned to a space
@@ -516,14 +749,16 @@ class BrowserTab: NSObject {
 
     @objc private func userAgentDidChange(_ notification: Notification) {
         if let profileID = notification.userInfo?["profileID"] as? UUID {
-            guard let spaceID, let space = TabStore.shared.space(withID: spaceID),
-                  space.profileID == profileID else { return }
+            let profileIDOfTab = spaceID.flatMap { TabStore.shared.space(withID: $0)?.profileID }
+                ?? quickDetourProfile?.id
+            guard profileIDOfTab == profileID else { return }
         }
         applyUserAgent()
     }
 
     func enterPictureInPicture() {
         guard let webView else { return }
+        pictureInPictureEntryWillStart()
         let js = """
         (function search(doc) {
             for (const video of doc.querySelectorAll('video')) {
@@ -539,7 +774,9 @@ class BrowserTab: NSObject {
             return false;
         })(document)
         """
-        webView.evaluateJavaScript(js)
+        webView.evaluateJavaScript(js) { [weak self] result, _ in
+            self?.pictureInPictureEntryDidFinish(requested: (result as? Bool) == true)
+        }
     }
 
     func exitPictureInPicture() {
@@ -561,10 +798,18 @@ class BrowserTab: NSObject {
         webView.evaluateJavaScript(js)
     }
 
+    /// Mutes or unmutes the tab. The whole page, every frame and Web Audio
+    /// included, through `PageMediaControl` (TASK-192); a WebKit without that
+    /// SPI falls back to setting `muted` on the media elements script can
+    /// reach, which misses cross-origin iframes and Web Audio.
     func toggleMute() {
+        setMuted(!isMuted)
+    }
+
+    func setMuted(_ muted: Bool) {
         guard let webView else { return }
-        isMuted.toggle()
-        let muted = isMuted
+        isMuted = muted
+        if PageMediaControl(webView: webView).setPageAudioMuted(muted) { return }
         let js = """
         (function search(doc) {
             doc.querySelectorAll('video, audio').forEach(el => el.muted = \(muted));
@@ -576,10 +821,17 @@ class BrowserTab: NSObject {
         webView.evaluateJavaScript(js)
     }
 
-    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+    /// Nonisolated, as NSObject's is: KVO calls it on the thread that changed
+    /// the property. The value is read here and the change applied on main.
+    nonisolated override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
         if keyPath == "_isPlayingAudio" {
+            let source = object as? WKWebView
+            let playing = change?[.newKey] as? Bool ?? false
             DispatchQueue.main.async { [weak self] in
-                self?.isPlayingAudio = change?[.newKey] as? Bool ?? false
+                // A change queued before `releaseWebView` removed the observer
+                // must not mark a sleeping (or re-woken) tab audible.
+                guard let self, let source, self.webView === source else { return }
+                self.isPlayingAudio = playing
             }
         } else {
             super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
@@ -655,26 +907,24 @@ class BrowserTab: NSObject {
             .store(in: &faviconCancellables)
 
         webView.addObserver(self, forKeyPath: "_isPlayingAudio", options: [.new], context: nil)
+        // Page mute lives on the web view: a woken tab's new one starts unmuted.
+        if isMuted { PageMediaControl(webView: webView).setPageAudioMuted(true) }
 
         webView.publisher(for: \.url)
-            .compactMap { url -> (String, String)? in
-                guard let host = url?.host, let scheme = url?.scheme else { return nil }
-                return (host, scheme)
+            .compactMap { url -> (siteKey: String, url: URL)? in
+                guard let url, url.scheme != nil, let siteKey = faviconSiteKey(for: url) else { return nil }
+                return (siteKey, url)
             }
-            .removeDuplicates { $0.0 == $1.0 }
-            .sink { [weak self] host, scheme in
+            .removeDuplicates { $0.siteKey == $1.siteKey }
+            .sink { [weak self] siteKey, url in
                 guard let self, !self.navigationPending else { return }
-                guard scheme != ErrorPage.scheme else { return }
-                guard self.previousHost != host else { return }
-                if self.previousHost != nil {
+                guard url.scheme != ErrorPage.scheme else { return }
+                guard self.previousFaviconSite != siteKey else { return }
+                if self.previousFaviconSite != nil {
                     self.favicon = nil
                     self.faviconURL = nil
                 }
-                self.faviconGeneration += 1
-                let generation = self.faviconGeneration
-                self.previousHost = host
-                let optimisticURL = URL(string: "\(scheme)://\(host)/favicon.ico")!
-                self.downloadFavicon(from: optimisticURL, generation: generation, optimistic: true)
+                self.guessFavicon(for: url, siteKey: siteKey)
             }
             .store(in: &faviconCancellables)
 
@@ -727,6 +977,18 @@ class BrowserTab: NSObject {
         }
     }
 
+    /// Starts a new favicon generation for `siteKey` and guesses the page's
+    /// `/favicon.ico`. The guess is built from the URL's components, never
+    /// `url.host`: that loses an IPv6 literal's brackets, and a string rebuilt
+    /// from it does not parse (TASK-198).
+    private func guessFavicon(for url: URL, siteKey: String) {
+        faviconGeneration += 1
+        previousFaviconSite = siteKey
+        if let optimisticURL = faviconFallbackURL(for: url) {
+            downloadFavicon(from: optimisticURL, generation: faviconGeneration, optimistic: true)
+        }
+    }
+
     /// A `<link rel=icon>` the page's document reported through
     /// `FaviconLinkBridge` — while it is still loading, which for a hidden
     /// background tab can be until it is first shown (TASK-112). Ignored unless
@@ -735,8 +997,7 @@ class BrowserTab: NSObject {
     /// Downloads under the current generation, so a navigation that changes
     /// host after this drops the result like any other stale download.
     func pageDidReportFaviconLink(_ url: URL, originHost: String) {
-        guard let pageURL = webView?.url, let host = pageURL.host,
-              host.caseInsensitiveCompare(originHost) == .orderedSame,
+        guard let pageURL = webView?.url, securityOriginHost(originHost, isHostOf: pageURL),
               pageURL.scheme != ErrorPage.scheme, !InternalPage.isInternal(pageURL),
               url != faviconURL else { return }
         downloadFavicon(from: url, generation: faviconGeneration)
@@ -749,14 +1010,18 @@ class BrowserTab: NSObject {
     /// back/forward from a page the user had navigated on to).
     private func applyInternalPageIcon(_ page: InternalPage) {
         // Every `replaceState` of the page's `?q=` reports a new URL.
-        guard previousHost != page.url.host || favicon == nil else { return }
+        let siteKey = faviconSiteKey(for: page.url)
+        guard previousFaviconSite != siteKey || favicon == nil else { return }
         faviconGeneration += 1
         faviconURL = nil
-        previousHost = page.url.host
+        previousFaviconSite = siteKey
         favicon = NSImage(systemSymbolName: page.symbolName, accessibilityDescription: page.title)
     }
 
     private func downloadFavicon(from url: URL, generation: Int, optimistic: Bool = false) {
+        // Fetched with the app's own URL session, outside the page's store:
+        // a quarantine's page fetches none (TASK-194).
+        guard !isQuarantined else { return }
         FaviconLoader.shared.load(from: url) { [weak self] image in
             guard let self, self.faviconGeneration == generation, let image else { return }
             if optimistic {
@@ -806,6 +1071,9 @@ class BrowserTab: NSObject {
         // the flag true on a tab with no web view (sticky sidebar indicator, and
         // `sleepStaleTabs` would never auto-sleep the tab again).
         isPlayingAudio = false
+        // Sleeping or closing takes the tab off the now-playing bar at once,
+        // without the grace a pause gets.
+        resetNowPlayingState()
         // Scoped to the web view being released: a stale flag would make the
         // *next* web view's cancellation look like a wake (TASK-45).
         awaitingFirstURL = false
@@ -866,8 +1134,9 @@ class BrowserTab: NSObject {
     /// driving it needs its web view (TASK-132.3). `force` still releases it;
     /// `releaseWebView` then asks for it to be woken and parked again.
     func sleep(force: Bool = false) {
-        guard let webView, !isSleeping, force || (!isPlayingAudio && !isAutomationAttached) else { return }
-        if force {
+        guard let webView, !isSleeping, force || (!isAudible && !isAutomationAttached) else { return }
+        // A muted tab still plays: stop it as a forced sleep does.
+        if force || isPlayingAudio {
             webView.pauseAllMediaPlayback(completionHandler: nil)
         }
 
@@ -880,6 +1149,7 @@ class BrowserTab: NSObject {
         releaseWebView()
 
         isSleeping = true
+        standsForSavedPage = true
         isLoading = false
         estimatedProgress = 0
         canGoBack = false
@@ -945,6 +1215,8 @@ class BrowserTab: NSObject {
 
         self.url = url
         lastAttemptedURL = url
+        // The kept title names the page at its new address too.
+        if titledURL != nil { titledURL = url }
         // Title and favicon are deliberately kept, unlike `load`: this is the
         // *same page* coming back from a new internal origin, not a navigation to
         // somewhere else, so replacing them would flash a raw
@@ -953,7 +1225,7 @@ class BrowserTab: NSObject {
         // `setupObservers` from clearing them when the page loads — which matters,
         // because an extension page's icon lives at an extension URL and could
         // not be fetched again.
-        previousHost = url.host
+        previousFaviconSite = faviconSiteKey(for: url)
     }
 
     /// - Parameter supersededByLoad: the caller loads another URL right away,
@@ -1045,7 +1317,15 @@ class BrowserTab: NSObject {
            let extensionConfig = profile.extensionContext(for: extensionID)?.webViewConfiguration {
             return extensionConfig
         }
-        return space?.makeWebViewConfiguration() ?? WKWebViewConfiguration()
+        if let space { return space.makeWebViewConfiguration() }
+        // A Quick Detour's page belongs to a profile and no space (TASK-193.1);
+        // a quarantine's keeps its own store (TASK-194).
+        if let quickDetourProfile {
+            let configuration = Space.makeWebViewConfiguration(for: quickDetourProfile)
+            if let quarantine { configuration.websiteDataStore = quarantine.dataStore }
+            return configuration
+        }
+        return WKWebViewConfiguration()
     }
 
     /// Records a web content process termination and returns how many have hit
@@ -1122,7 +1402,8 @@ class BrowserTab: NSObject {
     /// of the favourite, pinned entry or closed tab it backs — keeping an
     /// internal page's `?q=` state. Never for a URL that came from anywhere
     /// else (a page, an extension, another app, an error page's query string):
-    /// for an internal URL this arms the tab.
+    /// for an internal URL this arms the tab. (`lastAttemptedURL` can name a
+    /// failed URL a page chose, TASK-170, but never an internal one.)
     func loadRecordedURL(_ url: URL) {
         load(url, arming: InternalPage(url: url))
     }
@@ -1130,6 +1411,10 @@ class BrowserTab: NSObject {
     private func load(_ url: URL, typed: Bool = false, arming page: InternalPage?) {
         guard page != nil || !InternalPage.isInternal(url) else { return }
         nextVisitIsTyped = typed
+        // A later load is not the routed link's (TASK-205): `openLink` records
+        // it after its own load, and a load the user starts in a tab whose
+        // routed navigation was stopped must not put windows back.
+        routedOpen = nil
         if isSleeping { wake(supersededByLoad: true) }
         armedInternalPage = page
         // The user (or a caller acting for them) asked for this page: it
@@ -1141,21 +1426,14 @@ class BrowserTab: NSObject {
         resetBlockedCount()
         navigationPending = true
         applySpoofedUserAgent(for: url)
-        if url.host != previousHost {
+        let siteKey = faviconSiteKey(for: url)
+        if siteKey != previousFaviconSite {
             favicon = nil
             faviconURL = nil
         }
-        // Optimistic favicon fetch for programmatic navigations
-        if let host = url.host, let scheme = url.scheme, scheme != ErrorPage.scheme, page == nil {
-            if host != previousHost {
-                faviconGeneration += 1
-                let generation = faviconGeneration
-                previousHost = host
-                let optimisticURL = URL(string: "\(scheme)://\(host)/favicon.ico")!
-                downloadFavicon(from: optimisticURL, generation: generation, optimistic: true)
-            } else {
-                previousHost = host
-            }
+        // Optimistic favicon fetch for programmatic navigations.
+        if let siteKey, url.scheme != ErrorPage.scheme, page == nil, siteKey != previousFaviconSite {
+            guessFavicon(for: url, siteKey: siteKey)
         }
         updateTitle()
         issue(.url(url))
@@ -1340,6 +1618,7 @@ class BrowserTab: NSObject {
         // (`window.open('')`, `tabs.create({url: 'about:blank'})`) is the one
         // exception: its commit is the restore succeeding.
         if restoringSession, webView?.url == Self.blankURL, url != Self.blankURL { return }
+        routedOpen = nil
         navigationPending = false
         restoringSession = false
         resetBlockedCount()
@@ -1377,12 +1656,22 @@ class BrowserTab: NSObject {
         // (TASK-45). `reload()` goes through `load(_:)`, so retrying it still
         // shows the error page on failure.
         guard !restoringSession else { return }
-        // A window a page opened has no URL of its own to blame: this tab
-        // never called `load`, and WebKit keeps a script-opened window at
-        // about:blank until its first load commits, so the URL observer never
-        // saw where it was going (TASK-167). The error names what failed.
-        if lastAttemptedURL == nil || lastAttemptedURL == Self.blankURL,
-           let failingURL = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL {
+        // The error page names, the tab shows and Reload retries the URL that
+        // failed, which only the error knows for certain (TASK-170):
+        // - a navigation the page started reached the tab only through the URL
+        //   observer, and WebKit sets the web view's URL back to the committed
+        //   page before it reports the failure, so `lastAttemptedURL` is that
+        //   page by now;
+        // - a load that redirected failed at the redirect's target, which the
+        //   error names, as Chrome and Safari do (the user's decision);
+        // - a window a page opened never had a URL of its own (TASK-167).
+        // Never an internal URL: Reload hands `lastAttemptedURL` to
+        // `loadRecordedURL`, which arms it, and a failing internal URL the tab
+        // did not load itself is one a page chose. An armed load that fails
+        // already set `lastAttemptedURL` to it.
+        if let failingURL = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL,
+           failingURL != Self.blankURL, failingURL.scheme != ErrorPage.scheme,
+           !InternalPage.isInternal(failingURL) {
             lastAttemptedURL = failingURL
         }
         guard let lastAttemptedURL else { return }
@@ -1394,7 +1683,7 @@ class BrowserTab: NSObject {
         favicon = nil
         faviconURL = nil
         faviconGeneration += 1
-        previousHost = nil
+        previousFaviconSite = nil
         webView?.load(URLRequest(url: ErrorPage.url(for: failedURL, error: error)))
     }
 
@@ -1406,9 +1695,15 @@ class BrowserTab: NSObject {
         if let page = ((navigationPending ? lastAttemptedURL : webView?.url) ?? url)
             .flatMap(InternalPage.init(url:)) {
             title = page.title
+            titledURL = nil
         } else if navigationPending, let lastAttemptedURL {
+            // Loading the page the title already names (a reload, a closed tab
+            // reopened) keeps it; anywhere else, say where the tab is going.
+            guard lastAttemptedURL != titledURL else { return }
             title = strippedScheme(lastAttemptedURL)
+            titledURL = nil
         } else if let webTitle = webView?.title, !webTitle.isEmpty {
+            titledURL = titleDocumentURL ?? url
             title = webTitle
         } else if restoringSession {
             // The persisted title outranks the raw URL of a session still being
@@ -1417,9 +1712,15 @@ class BrowserTab: NSObject {
             // `url` is the fallback for a woken web view that has nothing to
             // report — an extension page waiting for its context — now that
             // `wake()` no longer seeds `lastAttemptedURL` (TASK-45).
+            // A page whose process died has no URL of its own any more: it is
+            // the tab's committed `url`. `lastAttemptedURL` still names the
+            // address a load redirected from, which is not a different page.
+            guard displayURL != titledURL, webView?.url != nil || url != titledURL else { return }
             title = strippedScheme(displayURL)
+            titledURL = nil
         } else if !isSleeping {
             title = "New Tab"
+            titledURL = nil
         }
     }
 
@@ -1427,9 +1728,24 @@ class BrowserTab: NSObject {
         // `detour://history/` has a host, but "history" is not what the faux
         // address bar should read: an internal page goes by its name (TASK-86).
         if let page = url.flatMap(InternalPage.init(url:)) { return page.title }
-        guard let host = url?.host else { return "" }
+        // An IPv6 literal reads as it is typed, `[::1]`, not `::1` (TASK-198).
+        guard let host = url?.authorityHost else { return "" }
         return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
+
+    /// The URL of the document the web view's title belongs to. Not
+    /// `webView.url`: while a navigation the page started (a link, Back) is
+    /// still provisional, that is already the destination and the title still
+    /// the old document's. WebKit changes `_committedURL` (WKWebViewPrivate)
+    /// and the title in one transaction, at commit and at a same-document
+    /// navigation such as a `replaceState` (TASK-227).
+    private var titleDocumentURL: URL? {
+        guard let webView else { return nil }
+        guard webView.responds(to: Self.committedURLSelector) else { return webView.url }
+        return webView.value(forKey: "_committedURL") as? URL
+    }
+
+    private static let committedURLSelector = NSSelectorFromString("_committedURL")
 
     private func strippedScheme(_ url: URL) -> String {
         var str = url.absoluteString
@@ -1467,6 +1783,9 @@ extension BrowserTab: WKNavigationDelegate {
                  preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
         if navigationAction.targetFrame?.isMainFrame == true { didReceiveMainFrameNavigationPolicyRequest() }
         guard authorizesNavigation(navigationAction, in: webView) else { return (.cancel, preferences) }
+        // The window's rule (TASK-205): an `<a download>` downloads rather
+        // than navigating, through `navigationAction:didBecome:` below.
+        if navigationAction.shouldPerformDownload { return (.download, preferences) }
         if navigationAction.targetFrame?.isMainFrame == true, let profile = owningProfile {
             ContentBlockerManager.shared.configure(preferences,
                                                    forNavigationTo: navigationAction.request.url,
@@ -1478,6 +1797,7 @@ extension BrowserTab: WKNavigationDelegate {
     /// Mirrors `BrowserWindowController`'s `didCommit`: an error page is not a
     /// page the tab is showing.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        nowPlayingDocumentDidCommit()
         if webView.url?.scheme == ErrorPage.scheme { return }
         didCommitNavigation()
     }
@@ -1493,6 +1813,49 @@ extension BrowserTab: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         didStartProvisionalNavigation()
+    }
+
+    /// The window's rule (TASK-205): without it WebKit's default shows what it
+    /// can and drops the rest, so a background tab opened on a download link
+    /// (Cmd+click) never downloaded and was left empty.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
+        switch BrowserWindowController.responseHandling(for: navigationResponse) {
+        case .extensionPackage:
+            let url = navigationResponse.response.url
+            let scope = downloadScope
+            DispatchQueue.main.async {
+                BrowserWindowController.downloadAndOfferCRX(from: url, scope: scope) {}
+            }
+            DownloadOpenedTab.navigationBecameDownload(in: self)
+            return .cancel
+        case .download:
+            return .download
+        case .show:
+            return .allow
+        }
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        startDownload(download, from: navigationResponse.response.url)
+    }
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        startDownload(download, from: navigationAction.request.url)
+    }
+
+    /// A download started in a web view no window has claimed: listed in the
+    /// windows of the tab's space (a Private space's own list), as a window
+    /// would list it, with no animation since no window shows the tab.
+    private func startDownload(_ download: WKDownload, from sourceURL: URL?) {
+        download.delegate = DownloadManager.shared
+        _ = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
+        DownloadOpenedTab.navigationBecameDownload(in: self)
+    }
+
+    /// The download list of the windows that show this tab's space.
+    private var downloadScope: DownloadScope {
+        guard let space = spaceID.flatMap({ TabStore.shared.space(withID: $0) }), space.isIncognito else { return .normal }
+        return .incognito(spaceID: space.id)
     }
 
     /// `WKNavigationDelegatePrivate`: WebKit's responsiveness timer, started by

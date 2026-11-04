@@ -5,8 +5,7 @@ import WebKit
 /// What a freshly woken web view's first (nil) URL is allowed to do to the tab
 /// behind it (TASK-28) — and what a *failed* first navigation is not allowed to
 /// do to a session restored from the previous launch (TASK-45).
-@MainActor
-final class BrowserTabWakeTests: XCTestCase {
+nonisolated final class BrowserTabWakeTests: XCTestCase {
 
     /// Nothing listens on port 1, so a navigation here fails at once without
     /// leaving the machine: the tests never depend on the network being up.
@@ -16,10 +15,10 @@ final class BrowserTabWakeTests: XCTestCase {
 
     private var tabs: [BrowserTab] = []
 
-    private var defaultFaviconFetch: ((URL, @escaping (NSImage?) -> Void) -> Void)!
+    private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         // `load(_:)` fetches a favicon optimistically; keep that off the network
         // and out of the shared loader's caches.
         defaultFaviconFetch = FaviconLoader.shared.fetch
@@ -27,22 +26,22 @@ final class BrowserTabWakeTests: XCTestCase {
         FaviconLoader.shared.fetch = { _, completion in completion(nil) }
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         tabs.forEach { $0.teardown() }
         tabs.removeAll()
         FaviconLoader.shared.fetch = defaultFaviconFetch
         FaviconLoader.shared.resetForTesting()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func track(_ tab: BrowserTab) -> BrowserTab {
+    @MainActor private func track(_ tab: BrowserTab) -> BrowserTab {
         tabs.append(tab)
         return tab
     }
 
     /// An interaction state whose current back/forward item is `restoredURL`,
     /// archived the way `BrowserTab.sleep()` archives it.
-    private func archivedInteractionState() async throws -> Data {
+    @MainActor private func archivedInteractionState() async throws -> Data {
         let source = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
         try await loadHTMLStringAndWait(
             source, html: "<html><head><title>Restored</title></head><body>restored</body></html>",
@@ -59,7 +58,7 @@ final class BrowserTabWakeTests: XCTestCase {
     /// safety net then kicks the tab's URL. That kick is the "restore navigation"
     /// that fails offline in practice, and its URL is reported synchronously, so
     /// the URL observer has already recorded it by the time the failure lands.
-    private func wakeRestoredTab() async throws -> BrowserTab {
+    @MainActor private func wakeRestoredTab() async throws -> BrowserTab {
         let tab = track(BrowserTab(
             id: UUID(), title: "Persisted title", url: restoredURL, faviconURL: nil,
             cachedInteractionState: try await archivedInteractionState(), spaceID: UUID()))
@@ -77,7 +76,7 @@ final class BrowserTabWakeTests: XCTestCase {
     /// TASK-45: a tab restored asleep whose restore navigation fails (offline
     /// relaunch, DNS failure, captive portal) keeps the restored session — no
     /// error page is loaded over it, and its persisted title and favicon stay.
-    func testFailedWakeOfARestoredTabKeepsItsSession() async throws {
+    @MainActor func testFailedWakeOfARestoredTabKeepsItsSession() async throws {
         let tab = try await wakeRestoredTab()
         let webView = try XCTUnwrap(tab.webView)
         XCTAssertEqual(tab.title, "Persisted title", "the kick does not retitle the tab with its raw URL")
@@ -101,7 +100,7 @@ final class BrowserTabWakeTests: XCTestCase {
     /// `tabs.create({url: 'about:blank'})`) commits about:blank because the
     /// restore succeeded, not because it failed — so the commit ends the
     /// restore, and a later failed navigation still earns its error page.
-    func testAWakeRestoredOntoAboutBlankEndsTheRestoreAtCommit() async throws {
+    @MainActor func testAWakeRestoredOntoAboutBlankEndsTheRestoreAtCommit() async throws {
         let source = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
         try await loadAndWait(source, URLRequest(url: blankURL))
         let state = try XCTUnwrap(source.interactionState, "the source web view should have session state")
@@ -119,7 +118,7 @@ final class BrowserTabWakeTests: XCTestCase {
 
     /// TASK-45: the user asking to reload such a tab still retries the page,
     /// and *that* failure earns the error page — the user asked for it.
-    func testReloadingATabWhoseWakeFailedRetriesItsURL() async throws {
+    @MainActor func testReloadingATabWhoseWakeFailedRetriesItsURL() async throws {
         let tab = try await wakeRestoredTab()
         tab.didFailProvisionalNavigation(error: URLError(.notConnectedToInternet))
         // Let the kick's real (connection-refused) failure unwind, as it has by
@@ -135,7 +134,7 @@ final class BrowserTabWakeTests: XCTestCase {
 
     /// TASK-45: once the restored session commits, the tab is an ordinary page
     /// again — a later navigation that fails shows the error page as usual.
-    func testCommittedRestoreEndsTheProtection() async throws {
+    @MainActor func testCommittedRestoreEndsTheProtection() async throws {
         let tab = try await wakeRestoredTab()
         tab.didCommitNavigation()
 
@@ -146,7 +145,7 @@ final class BrowserTabWakeTests: XCTestCase {
     /// TASK-45: a slept tab is restored from its cached session on the next
     /// wake, so the same protection covers the in-session sleep/wake cycle —
     /// even though `lastAttemptedURL` from its previous life is still set.
-    func testFailedWakeAfterSleepKeepsItsSession() async throws {
+    @MainActor func testFailedWakeAfterSleepKeepsItsSession() async throws {
         let tab = track(BrowserTab(id: UUID()))
         tab.load(restoredURL)  // leaves `lastAttemptedURL` = restoredURL behind
         try await loadHTMLStringAndWait(
@@ -171,7 +170,7 @@ final class BrowserTabWakeTests: XCTestCase {
 
     /// TASK-28: a tab created sleeping keeps its URL across the wake — the new
     /// web view's initial nil URL must not clear it before `wake()` loads it.
-    func testWakingATabCreatedSleepingKeepsItsURL() throws {
+    @MainActor func testWakingATabCreatedSleepingKeepsItsURL() throws {
         let url = URL(string: "http://127.0.0.1:1/sleeping")!
         let tab = track(BrowserTab(
             id: UUID(), title: "Sleeping", url: url, faviconURL: nil,
@@ -187,7 +186,7 @@ final class BrowserTabWakeTests: XCTestCase {
 
     /// TASK-45: the error page is still what a *user-initiated* load gets when
     /// it fails — only the wake path changed.
-    func testFailedUserLoadStillShowsTheErrorPage() throws {
+    @MainActor func testFailedUserLoadStillShowsTheErrorPage() throws {
         let tab = track(BrowserTab(id: UUID()))
         let target = URL(string: "http://127.0.0.1:1/typed")!
 

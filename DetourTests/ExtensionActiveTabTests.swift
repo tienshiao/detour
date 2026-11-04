@@ -12,12 +12,11 @@ import GRDB
 /// (`extensionActiveTab(selected:peekPresented:)`) and the announcement funnel
 /// (`ExtensionActiveTabTracker`), driven through the `ExtensionTabLifecycle`
 /// seam with a recording notifier so no extension has to be installed.
-@MainActor
-final class ExtensionActiveTabTests: XCTestCase {
+nonisolated final class ExtensionActiveTabTests: XCTestCase {
 
     // MARK: - Recording notifier
 
-    private struct Activation: Equatable, CustomStringConvertible {
+    @MainActor private struct Activation: Equatable, CustomStringConvertible {
         let tabID: UUID
         let previousTabID: UUID?
 
@@ -26,7 +25,7 @@ final class ExtensionActiveTabTests: XCTestCase {
         }
     }
 
-    private final class RecordingNotifier: ExtensionTabLifecycleNotifying {
+    @MainActor private final class RecordingNotifier: ExtensionTabLifecycleNotifying {
         var activations: [Activation] = []
         var opened: [UUID] = []
         var closed: [UUID] = []
@@ -52,29 +51,29 @@ final class ExtensionActiveTabTests: XCTestCase {
     private var createdTabs: [BrowserTab] = []
     private var controller: BrowserWindowController?
 
-    override func setUp() {
-        super.setUp()
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
         notifier = RecordingNotifier()
         previousNotifier = ExtensionTabLifecycle.notifier
         ExtensionTabLifecycle.notifier = notifier
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         controller?.window?.close()
         controller = nil
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
         ExtensionTabLifecycle.notifier = previousNotifier
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// The notifier is a process-wide seam: only assert on the tabs a test made.
-    private func activations(among tabs: [BrowserTab]) -> [Activation] {
+    @MainActor private func activations(among tabs: [BrowserTab]) -> [Activation] {
         let ids = Set(tabs.map(\.id))
         return notifier.activations.filter { ids.contains($0.tabID) }
     }
 
-    private func makeLiveTab() -> BrowserTab {
+    @MainActor private func makeLiveTab() -> BrowserTab {
         let tab = BrowserTab(configuration: WKWebViewConfiguration())
         createdTabs.append(tab)
         return tab
@@ -82,19 +81,19 @@ final class ExtensionActiveTabTests: XCTestCase {
 
     /// A live tab already reported open to `profile`'s contexts — the tracker
     /// only names a *registered* previous tab in a handover.
-    private func makeOpenTab(in profile: Profile) -> BrowserTab {
+    @MainActor private func makeOpenTab(in profile: Profile) -> BrowserTab {
         let tab = makeLiveTab()
         ExtensionTabLifecycle.didOpen(tab, in: profile)
         return tab
     }
 
-    private func makeParkedTab() -> BrowserTab {
+    @MainActor private func makeParkedTab() -> BrowserTab {
         BrowserTab(id: UUID(), title: "Parked", url: URL(string: "https://example.com/parked"),
                    faviconURL: nil, cachedInteractionState: nil, spaceID: UUID())
     }
 
     /// A private store with one profile, so activations have somewhere to go.
-    private func makeProfile() throws -> Profile {
+    @MainActor private func makeProfile() throws -> Profile {
         let db = try AppDatabase(dbQueue: try DatabaseQueue())
         let store = TabStore(appDB: db)
         return store.addProfile(name: "ActiveTab")
@@ -102,13 +101,13 @@ final class ExtensionActiveTabTests: XCTestCase {
 
     // MARK: - The pure rule
 
-    func testActiveTabIsTheSelectedTabWithNoPeek() {
+    @MainActor func testActiveTabIsTheSelectedTabWithNoPeek() {
         let host = makeLiveTab()
 
         XCTAssertTrue(extensionActiveTab(selected: host, peekPresented: false) === host)
     }
 
-    func testActiveTabIsThePresentedPeek() {
+    @MainActor func testActiveTabIsThePresentedPeek() {
         let host = makeLiveTab()
         host.peekTab = makeLiveTab()
 
@@ -116,14 +115,14 @@ final class ExtensionActiveTabTests: XCTestCase {
                       "the presented peek is the page the user is looking at")
     }
 
-    func testAPeekThatIsNotPresentedIsNotActive() {
+    @MainActor func testAPeekThatIsNotPresentedIsNotActive() {
         let host = makeLiveTab()
         host.peekTab = makeLiveTab()
 
         XCTAssertTrue(extensionActiveTab(selected: host, peekPresented: false) === host)
     }
 
-    func testAParkedPeekIsNotActiveEvenWhilePresented() {
+    @MainActor func testAParkedPeekIsNotActiveEvenWhilePresented() {
         let host = makeLiveTab()
         host.peekTab = makeParkedTab()
 
@@ -131,13 +130,13 @@ final class ExtensionActiveTabTests: XCTestCase {
                       "a peek with no web view was never reported open, so it cannot be active")
     }
 
-    func testNoSelectionHasNoActiveTab() {
+    @MainActor func testNoSelectionHasNoActiveTab() {
         XCTAssertNil(extensionActiveTab(selected: nil, peekPresented: true))
     }
 
     // MARK: - The announcement funnel
 
-    func testFirstAnnouncementHasNoPreviousTab() throws {
+    @MainActor func testFirstAnnouncementHasNoPreviousTab() throws {
         let profile = try makeProfile()
         let host = makeLiveTab()
         let tracker = ExtensionActiveTabTracker()
@@ -147,7 +146,7 @@ final class ExtensionActiveTabTests: XCTestCase {
         XCTAssertEqual(activations(among: [host]), [Activation(tabID: host.id, previousTabID: nil)])
     }
 
-    func testPresentingAPeekHandsOverFromTheHost() throws {
+    @MainActor func testPresentingAPeekHandsOverFromTheHost() throws {
         let profile = try makeProfile()
         let host = makeOpenTab(in: profile)
         let peek = makeOpenTab(in: profile)
@@ -162,7 +161,7 @@ final class ExtensionActiveTabTests: XCTestCase {
                         Activation(tabID: peek.id, previousTabID: host.id)])
     }
 
-    func testClosingThePeekHandsBackToTheHost() throws {
+    @MainActor func testClosingThePeekHandsBackToTheHost() throws {
         let profile = try makeProfile()
         let host = makeOpenTab(in: profile)
         let peek = makeOpenTab(in: profile)
@@ -179,7 +178,7 @@ final class ExtensionActiveTabTests: XCTestCase {
                         Activation(tabID: host.id, previousTabID: peek.id)])
     }
 
-    func testAnnouncingTheSameTabTwiceReportsItOnce() throws {
+    @MainActor func testAnnouncingTheSameTabTwiceReportsItOnce() throws {
         let profile = try makeProfile()
         let host = makeLiveTab()
         let tracker = ExtensionActiveTabTracker()
@@ -191,7 +190,7 @@ final class ExtensionActiveTabTests: XCTestCase {
                        "overlapping paths (select, pane focus, peek restore) must not double-announce")
     }
 
-    func testDeselectingClearsThePreviousTabWithoutAnnouncing() throws {
+    @MainActor func testDeselectingClearsThePreviousTabWithoutAnnouncing() throws {
         let profile = try makeProfile()
         let host = makeOpenTab(in: profile)
         let other = makeOpenTab(in: profile)
@@ -210,7 +209,7 @@ final class ExtensionActiveTabTests: XCTestCase {
     /// WebKit runs `getOrCreateTab` on `previousActiveTab`, so a tab the target
     /// contexts do not know would be resurrected there as a phantom tab — which
     /// is exactly what a space switch across profiles would hand them.
-    func testAPreviousTabFromAnotherProfileIsNotReported() throws {
+    @MainActor func testAPreviousTabFromAnotherProfileIsNotReported() throws {
         let profileA = try makeProfile()
         let profileB = try makeProfile()
         let x = makeOpenTab(in: profileA)
@@ -228,7 +227,7 @@ final class ExtensionActiveTabTests: XCTestCase {
 
     /// `expandPeekToNewTab` reports the peek closed before the handover
     /// `selectTab` fires.
-    func testAClosedPreviousTabIsNotReported() throws {
+    @MainActor func testAClosedPreviousTabIsNotReported() throws {
         let profile = try makeProfile()
         let x = makeOpenTab(in: profile)
         let tracker = ExtensionActiveTabTracker()
@@ -244,7 +243,7 @@ final class ExtensionActiveTabTests: XCTestCase {
                        "a closed tab must not be resurrected as the previous active tab")
     }
 
-    func testAWindowlessProfileAnnouncesNothing() {
+    @MainActor func testAWindowlessProfileAnnouncesNothing() {
         let host = makeLiveTab()
         let tracker = ExtensionActiveTabTracker()
 
@@ -257,7 +256,7 @@ final class ExtensionActiveTabTests: XCTestCase {
 
     /// Drives the real controller: selecting a tab, presenting a Peek on it and
     /// closing the Peek must hand activation over and back (AC1/AC2).
-    func testPresentingAndClosingAPeekMovesTheWindowsActiveTab() throws {
+    @MainActor func testPresentingAndClosingAPeekMovesTheWindowsActiveTab() throws {
         let wc = BrowserWindowController(incognito: true)
         controller = wc
         let space = try XCTUnwrap(wc.activeSpace)
@@ -287,7 +286,7 @@ final class ExtensionActiveTabTests: XCTestCase {
 
     /// A tab switch onto a tab that has a peek must announce the peek once —
     /// not the host first and then the peek (TASK-51 F2).
-    func testSwitchingOntoATabWithAPeekAnnouncesOnlyThePeek() throws {
+    @MainActor func testSwitchingOntoATabWithAPeekAnnouncesOnlyThePeek() throws {
         let wc = BrowserWindowController(incognito: true)
         controller = wc
         let space = try XCTUnwrap(wc.activeSpace)

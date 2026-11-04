@@ -1,9 +1,9 @@
 import XCTest
 @testable import Detour
 
-final class PinnedTreeFlattenerTests: XCTestCase {
+nonisolated final class PinnedTreeFlattenerTests: XCTestCase {
 
-    private func makeEntry(id: UUID = UUID(), title: String = "Entry", folderID: UUID? = nil, sortOrder: Int = 0) -> PinnedEntry {
+    @MainActor private func makeEntry(id: UUID = UUID(), title: String = "Entry", folderID: UUID? = nil, sortOrder: Int = 0) -> PinnedEntry {
         PinnedEntry(
             id: id,
             pinnedURL: URL(string: "https://example.com")!,
@@ -13,13 +13,13 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         )
     }
 
-    private func makeFolder(id: UUID = UUID(), name: String = "Folder", parentID: UUID? = nil, isCollapsed: Bool = false, sortOrder: Int = 0) -> PinnedFolder {
+    @MainActor private func makeFolder(id: UUID = UUID(), name: String = "Folder", parentID: UUID? = nil, isCollapsed: Bool = false, sortOrder: Int = 0) -> PinnedFolder {
         PinnedFolder(id: id, name: name, parentFolderID: parentID, isCollapsed: isCollapsed, sortOrder: sortOrder)
     }
 
     // MARK: - Basic Cases
 
-    func testFlatListNoFolders() {
+    @MainActor func testFlatListNoFolders() {
         let e1 = makeEntry(title: "A", sortOrder: 0)
         let e2 = makeEntry(title: "B", sortOrder: 1)
 
@@ -37,7 +37,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         } else { XCTFail("Expected entry") }
     }
 
-    func testFolderWithChildrenExpanded() {
+    @MainActor func testFolderWithChildrenExpanded() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", sortOrder: 0)
         let e1 = makeEntry(title: "A", folderID: folderID, sortOrder: 1)
@@ -68,7 +68,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         } else { XCTFail("Expected entry") }
     }
 
-    func testCollapsedFolderHidesChildren() {
+    @MainActor func testCollapsedFolderHidesChildren() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", isCollapsed: true, sortOrder: 0)
         let e1 = makeEntry(title: "A", folderID: folderID, sortOrder: 1)
@@ -86,7 +86,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         } else { XCTFail("Expected entry") }
     }
 
-    func testCollapsedFolderExposesSelectedTab() {
+    @MainActor func testCollapsedFolderExposesSelectedTab() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", isCollapsed: true, sortOrder: 0)
         let e1 = makeEntry(title: "A", folderID: folderID, sortOrder: 1)
@@ -108,7 +108,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         } else { XCTFail("Expected exposed entry") }
     }
 
-    func testNestedFolders() {
+    @MainActor func testNestedFolders() {
         let outerID = UUID()
         let innerID = UUID()
         let outer = makeFolder(id: outerID, name: "Outer", sortOrder: 0)
@@ -123,7 +123,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         if case .entry(_, let depth) = result[2] { XCTAssertEqual(depth, 2) } else { XCTFail() }
     }
 
-    func testEmptyFolder() {
+    @MainActor func testEmptyFolder() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Empty", sortOrder: 0)
 
@@ -135,7 +135,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         } else { XCTFail("Expected folder") }
     }
 
-    func testSortOrderRespected() {
+    @MainActor func testSortOrderRespected() {
         let f1 = makeFolder(name: "Second", sortOrder: 1)
         let f2 = makeFolder(name: "First", sortOrder: 0)
         let e1 = makeEntry(title: "Third", sortOrder: 2)
@@ -148,7 +148,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         if case .entry(let e, _) = result[2] { XCTAssertEqual(e.pinnedTitle, "Third") } else { XCTFail() }
     }
 
-    func testCollapsedNestedFolderExposesSelectedTab() {
+    @MainActor func testCollapsedNestedFolderExposesSelectedTab() {
         let outerID = UUID()
         let innerID = UUID()
         let outer = makeFolder(id: outerID, name: "Outer", isCollapsed: true, sortOrder: 0)
@@ -166,7 +166,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
 
     // MARK: - folderIDForDropIndex
 
-    func testDropAboveTabInsideFolderReturnsFolderID() {
+    @MainActor func testDropAboveTabInsideFolderReturnsFolderID() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", sortOrder: 0)
         let e1 = makeEntry(title: "A", folderID: folderID, sortOrder: 1)
@@ -178,7 +178,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         XCTAssertEqual(folderIDForDropIndex(1, in: items), folderID)
     }
 
-    func testDropAboveTopLevelTabReturnsNil() {
+    @MainActor func testDropAboveTopLevelTabReturnsNil() {
         let e1 = makeEntry(title: "A", sortOrder: 0)
 
         let items = flattenPinnedTree(entries: [e1], folders: [], collapsedFolderIDs: [], selectedTabID: nil)
@@ -186,7 +186,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         XCTAssertNil(folderIDForDropIndex(0, in: items))
     }
 
-    func testDropAboveTopLevelFolderReturnsNil() {
+    @MainActor func testDropAboveTopLevelFolderReturnsNil() {
         let folder = makeFolder(name: "Work", sortOrder: 0)
 
         let items = flattenPinnedTree(entries: [], folders: [folder], collapsedFolderIDs: [], selectedTabID: nil)
@@ -194,7 +194,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         XCTAssertNil(folderIDForDropIndex(0, in: items))
     }
 
-    func testDropAboveNestedFolderReturnsParentFolderID() {
+    @MainActor func testDropAboveNestedFolderReturnsParentFolderID() {
         let outerID = UUID()
         let innerID = UUID()
         let outer = makeFolder(id: outerID, name: "Outer", sortOrder: 0)
@@ -207,7 +207,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         XCTAssertEqual(folderIDForDropIndex(1, in: items), outerID)
     }
 
-    func testDropPastEndReturnsNil() {
+    @MainActor func testDropPastEndReturnsNil() {
         let folder = makeFolder(name: "Work", sortOrder: 0)
         let e1 = makeEntry(title: "A", folderID: folder.id, sortOrder: 1)
 
@@ -218,7 +218,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
 
     // MARK: - itemIDAtDropIndex
 
-    func testItemIDAtDropIndexInsideFolder() {
+    @MainActor func testItemIDAtDropIndexInsideFolder() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", sortOrder: 0)
         let e1 = makeEntry(title: "A", folderID: folderID, sortOrder: 1)
@@ -233,7 +233,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         XCTAssertEqual(itemIDAtDropIndex(2, in: items), e2.id)
     }
 
-    func testItemIDAtDropIndexAboveFolderReturnsFolderID() {
+    @MainActor func testItemIDAtDropIndexAboveFolderReturnsFolderID() {
         let folder = makeFolder(name: "Work", sortOrder: 0)
         let e1 = makeEntry(title: "A", folderID: folder.id, sortOrder: 1)
 
@@ -244,7 +244,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         XCTAssertEqual(itemIDAtDropIndex(0, in: items), folder.id)
     }
 
-    func testItemIDAtDropIndexPastEndReturnsNil() {
+    @MainActor func testItemIDAtDropIndexPastEndReturnsNil() {
         let e1 = makeEntry(title: "A", sortOrder: 0)
 
         let items = flattenPinnedTree(entries: [e1], folders: [], collapsedFolderIDs: [], selectedTabID: nil)
@@ -252,7 +252,7 @@ final class PinnedTreeFlattenerTests: XCTestCase {
         XCTAssertNil(itemIDAtDropIndex(items.count, in: items))
     }
 
-    func testDropBetweenFolderChildrenReturnsFolderID() {
+    @MainActor func testDropBetweenFolderChildrenReturnsFolderID() {
         let folderID = UUID()
         let folder = makeFolder(id: folderID, name: "Work", sortOrder: 0)
         let e1 = makeEntry(title: "A", folderID: folderID, sortOrder: 1)

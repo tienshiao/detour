@@ -4,7 +4,7 @@ title: Downloads
 description: "How a navigation becomes a download, what DownloadManager tracks and persists, how a Private window's downloads are kept apart and cancelled when it closes, the sidebar popover and badge, the fly-to-button animation, and the CRX path that reuses the list."
 tags: [downloads, webkit, navigation, persistence, incognito]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:48:28Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
 sources:
   - id: manager
     resource: ../../Detour/Browser/Downloads/DownloadManager.swift
@@ -42,6 +42,9 @@ sources:
   - id: close-policy
     resource: ../../Detour/Browser/Downloads/PrivateDownloadClosePolicy.swift
     title: PrivateDownloadClosePolicy.swift
+  - id: task-205
+    resource: backlog:TASK-205
+    title: Routed and new-tab clicks that turn into downloads leave an empty tab
   - id: task-156
     resource: backlog:TASK-156
     title: A Private window's download still running when the window closes is cancelled, after asking
@@ -80,10 +83,40 @@ All of it is in `BrowserWindowController`'s navigation delegate:
 | same | `Content-Disposition` starts with `attachment` | `.download` |
 | same | MIME type `application/x-chrome-extension`, or the URL's last path component ends in `.crx` | `.cancel`, then the CRX path below |
 
+The response rows are `BrowserWindowController.responseHandling(for:)`,
+shared since TASK-205 with `BrowserTab`'s own navigation delegate, the one a
+tab's web view has until a window claims it (a background tab). Before, that
+delegate had no response policy, WebKit's default showed what it could and
+dropped the rest, and a Cmd+click on a download link **downloaded nothing**:
+the background tab stayed with its URL as its title (measured 2026-10-28 with
+a loopback attachment).[^task-205]
+
 WebKit then calls `navigationAction(_:didBecome:)` or
 `navigationResponse(_:didBecome:)`. Both set the `WKDownload`'s delegate to
 `DownloadManager.shared`, call `handleNewDownload(_:sourceURL:scope:)` with
-the window's `downloadScope` and trigger the animation.
+the window's `downloadScope` and trigger the animation. In a tab no window
+has claimed the scope is its space's (a Private space's own list) and there
+is no animation.
+
+## A tab opened for a download closes
+
+A tab whose **first** navigation becomes a download is left empty: nothing
+committed, the URL as its title. That is a Cmd+click or `target=_blank` tab,
+a routed link's tab, a typed URL's new tab. Since TASK-205 it closes once the
+download has started (`DownloadOpenedTab`, the rule
+`DownloadOpenedTabPolicy.closesTab`):
+
+- only a **normal** tab, never a pinned entry's or favourite's backing tab
+  (a Quick Detour's or a Peek's is in no space's list either);
+- only a tab with **nothing in its back-forward list**: a tab showing a page
+  stays on it, and a restored tab has its session there;
+- a turn of the main queue later, with no closed-tab record or undo (there
+  is no page to reopen). The selection follows the usual close rule, so the
+  opener is selected again. The download goes on: `DownloadManager` holds the
+  `WKDownload`, and WebKit does not stop it with its web view.
+
+A routed link also puts back what it changed; see
+[Link Routes](./link-routing.md#links-from-other-apps).
 
 The order inside the action policy matters. An **Option-click** on a link is
 handled earlier (it opens the link in a split pane), and that branch must stay
@@ -151,7 +184,18 @@ Every `DownloadItem` carries a `DownloadScope`, fixed when it is created:
 `.normal`, or `.incognito(spaceID:)` for the Private window whose incognito
 space has that id. The window supplies it
 (`BrowserWindowController.downloadScope`) at the three places an item is
-created. Three small functions on the scope hold the rules (TASK-148):
+created. A Private [Quick Detour](./quick-detour.md) has no space: its
+downloads carry its tab's id instead, the store's
+`liveIncognitoDownloadScopeIDs` keeps them listed while the window is open,
+and closing it drops them (`tabStoreDidCloseQuickDetour`); so does switching
+it to another profile with its pill (`tabStoreDidReplaceQuickDetour`, after
+asking about any still running, TASK-193.4). A normal Quick
+Detour's are `.normal` (TASK-193.1). The Quick Detour window has no
+downloads button: it says "Downloading …" in a toast. A
+[quarantine](./quarantine.md)'s download (TASK-194) is asked about first, on
+a sheet naming the file and the site, once WebKit asks where to save it
+(`QuarantineDownloadGate`); only a yes creates the item, Private-scoped to
+the quarantine's tab, and a no cancels it before anything is written. Three small functions on the scope hold the rules (TASK-148):
 
 | Rule | Function | Result |
 |---|---|---|
@@ -312,3 +356,4 @@ the interception in `handleCRXDownload` does not.
 - [External apps](./external-apps.md) - the sibling branch of the same policy function, for non-web schemes.
 
 [^task-156]: A Private window's download still running when the window closes is cancelled, after asking
+[^task-205]: Routed and new-tab clicks that turn into downloads leave an empty tab

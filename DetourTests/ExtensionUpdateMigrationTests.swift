@@ -4,17 +4,17 @@ import GRDB
 
 /// TASK-113 AC #1: installs that predate source tracking are classified from
 /// their on-disk manifest and id shape.
-final class ExtensionUpdateMigrationTests: XCTestCase {
+nonisolated final class ExtensionUpdateMigrationTests: XCTestCase {
 
     private var tempDirs: [URL] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func folder(manifest: String?) throws -> URL {
+    @MainActor private func folder(manifest: String?) throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-migration-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -25,7 +25,7 @@ final class ExtensionUpdateMigrationTests: XCTestCase {
         return dir
     }
 
-    func testV17ClassifiesExistingInstalls() throws {
+    @MainActor func testV17ClassifiesExistingInstalls() throws {
         let storeID = "aeblfdkhhhdcdjpifhhbdiojplfjncoa"
         let selfHostedID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         let goneID = "cccccccccccccccccccccccccccccccc"
@@ -87,7 +87,7 @@ final class ExtensionUpdateMigrationTests: XCTestCase {
         }
     }
 
-    func testNewColumnsRoundTripThroughTheRecord() throws {
+    @MainActor func testNewColumnsRoundTripThroughTheRecord() throws {
         let dbQueue = try DatabaseQueue(configuration: Configuration())
         let db = try AppDatabase(dbQueue: dbQueue)
         let pending = try JSONEncoder().encode(ExtensionUpdatePolicy.PendingApproval(
@@ -112,7 +112,7 @@ final class ExtensionUpdateMigrationTests: XCTestCase {
 
     /// `fromWebStore` is the install gate's verdict (served by a store host and
     /// signed by the store, TASK-157), not the download URL.
-    func testClassifyCRXFromADownload() {
+    @MainActor func testClassifyCRXFromADownload() {
         let store = ExtensionSource.classifyCRX(fromWebStore: true, manifestUpdateURL: nil)
         XCTAssertEqual(store.source, .webStore)
         XCTAssertEqual(store.updateURL, ExtensionSource.webStoreUpdateURL)
@@ -142,7 +142,7 @@ final class ExtensionUpdateMigrationTests: XCTestCase {
     }
 
     /// The same rule gates the `update_url` a newer manifest brings (`applyUpdate`).
-    func testPollableUpdateURLAcceptsOnlyHTTPS() {
+    @MainActor func testPollableUpdateURLAcceptsOnlyHTTPS() {
         XCTAssertEqual(ExtensionSource.pollableUpdateURL("https://example.test/updates.xml"),
                        URL(string: "https://example.test/updates.xml"))
         XCTAssertEqual(ExtensionSource.pollableUpdateURL("HTTPS://example.test/updates.xml"),

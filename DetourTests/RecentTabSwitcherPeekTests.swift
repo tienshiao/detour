@@ -6,21 +6,20 @@ import Carbon.HIToolbox
 /// TASK-173: a tab that comes back with a Peek over it says so in the
 /// Control+Tab switcher. Its entry names the tab whose Peek will show, and
 /// the Peek is pictured when the tab is left, like the page under it.
-@MainActor
-final class RecentTabSwitcherPeekTests: XCTestCase {
+nonisolated final class RecentTabSwitcherPeekTests: XCTestCase {
 
     private var controller: BrowserWindowController?
     private var createdTabs: [BrowserTab] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         controller?.window?.close()
         controller = nil
         for tab in createdTabs { tab.teardown() }
         createdTabs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
-    private func makeController() throws -> (BrowserWindowController, Space) {
+    @MainActor private func makeController() throws -> (BrowserWindowController, Space) {
         let wc = BrowserWindowController(incognito: true)
         controller = wc
         // Never let this window's split view touch the autosaved sidebar
@@ -30,25 +29,25 @@ final class RecentTabSwitcherPeekTests: XCTestCase {
         return (wc, try XCTUnwrap(wc.activeSpace))
     }
 
-    private func addTab(to wc: BrowserWindowController, in space: Space, host: String) -> BrowserTab {
+    @MainActor private func addTab(to wc: BrowserWindowController, in space: Space, host: String) -> BrowserTab {
         let tab = wc.store.addTab(in: space, url: URL(string: "https://\(host).example.com/"))
         createdTabs.append(tab)
         return tab
     }
 
-    private func presentPeek(on host: BrowserTab, in wc: BrowserWindowController) throws -> BrowserTab {
+    @MainActor private func presentPeek(on host: BrowserTab, in wc: BrowserWindowController) throws -> BrowserTab {
         wc.selectTab(id: host.id)
         wc.showPeekOverlay(url: URL(string: "https://peeked.example.org/")!)
         return try XCTUnwrap(host.peekTab)
     }
 
-    private func entry(holding tab: BrowserTab, in wc: BrowserWindowController) throws -> RecentTabSwitcher.Entry {
+    @MainActor private func entry(holding tab: BrowserTab, in wc: BrowserWindowController) throws -> RecentTabSwitcher.Entry {
         try XCTUnwrap(wc.recentTabSwitcherEntries().first { $0.tabs.contains { $0 === tab } })
     }
 
     // MARK: - Which entries carry a Peek
 
-    func testATabLeftWithAPeekCarriesItInItsEntry() throws {
+    @MainActor func testATabLeftWithAPeekCarriesItInItsEntry() throws {
         let (wc, space) = try makeController()
         let host = addTab(to: wc, in: space, host: "host")
         let other = addTab(to: wc, in: space, host: "other")
@@ -59,7 +58,7 @@ final class RecentTabSwitcherPeekTests: XCTestCase {
         XCTAssertNil(try entry(holding: other, in: wc).peekHost)
     }
 
-    func testTheCurrentTabsEntryCarriesItsPresentedPeek() throws {
+    @MainActor func testTheCurrentTabsEntryCarriesItsPresentedPeek() throws {
         let (wc, space) = try makeController()
         let host = addTab(to: wc, in: space, host: "host")
         _ = try presentPeek(on: host, in: wc)
@@ -69,7 +68,7 @@ final class RecentTabSwitcherPeekTests: XCTestCase {
         XCTAssertTrue(current.peekHost === host)
     }
 
-    func testClosingThePeekRemovesItFromTheEntry() throws {
+    @MainActor func testClosingThePeekRemovesItFromTheEntry() throws {
         let (wc, space) = try makeController()
         let host = addTab(to: wc, in: space, host: "host")
         let other = addTab(to: wc, in: space, host: "other")
@@ -82,7 +81,7 @@ final class RecentTabSwitcherPeekTests: XCTestCase {
     }
 
     /// A parked Peek is rebuilt when its host is selected, so it still shows.
-    func testAParkedPeekIsStillCarried() throws {
+    @MainActor func testAParkedPeekIsStillCarried() throws {
         let (wc, space) = try makeController()
         let host = addTab(to: wc, in: space, host: "host")
         let other = addTab(to: wc, in: space, host: "other")
@@ -96,7 +95,7 @@ final class RecentTabSwitcherPeekTests: XCTestCase {
 
     /// Only the focused pane's Peek is presented, so a split's entry carries
     /// the Peek of the pane that gets focus when the entry is chosen.
-    func testASplitsEntryCarriesThePeekOfThePaneThatGetsFocus() throws {
+    @MainActor func testASplitsEntryCarriesThePeekOfThePaneThatGetsFocus() throws {
         let (wc, space) = try makeController()
         let left = addTab(to: wc, in: space, host: "left")
         let right = addTab(to: wc, in: space, host: "right")
@@ -122,7 +121,7 @@ final class RecentTabSwitcherPeekTests: XCTestCase {
 
     /// `switcherPreviewRequest` counts captures; the picture itself arrives
     /// from the web process later.
-    func testLeavingATabPicturesItsPeek() throws {
+    @MainActor func testLeavingATabPicturesItsPeek() throws {
         let (wc, space) = try makeController()
         let host = addTab(to: wc, in: space, host: "host")
         let other = addTab(to: wc, in: space, host: "other")
@@ -133,7 +132,7 @@ final class RecentTabSwitcherPeekTests: XCTestCase {
         XCTAssertEqual(peek.switcherPreviewRequest, 1)
     }
 
-    func testOpeningTheSwitcherPicturesThePresentedPeek() throws {
+    @MainActor func testOpeningTheSwitcherPicturesThePresentedPeek() throws {
         let (wc, space) = try makeController()
         let host = addTab(to: wc, in: space, host: "host")
         let peek = try presentPeek(on: host, in: wc)

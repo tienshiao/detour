@@ -1,3 +1,4 @@
+import Synchronization
 import XCTest
 import CryptoKit
 @testable import Detour
@@ -5,11 +6,10 @@ import CryptoKit
 /// TASK-113: the whole update path against canned update2 responses — a real
 /// extension installed through `ExtensionManager.install`, a real CRX3 built and
 /// signed in the test, and the replace-in-place that follows.
-@MainActor
-final class ExtensionUpdaterTests: XCTestCase {
+nonisolated final class ExtensionUpdaterTests: XCTestCase {
 
     /// Serves canned bytes per URL and records what was asked for.
-    private final class FakeFetcher: ExtensionUpdateFetching, @unchecked Sendable {
+    @MainActor private final class FakeFetcher: ExtensionUpdateFetching {
         var responses: [URL: Data] = [:]
         private(set) var requests: [URL] = []
         struct NotFound: Error {}
@@ -21,7 +21,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         }
     }
 
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let pair: CRX3TestBuilder.RSAKeyPair
         let id: String
         let updateURL = URL(string: "https://updates.test/service/update2/crx")!
@@ -39,7 +39,7 @@ final class ExtensionUpdaterTests: XCTestCase {
     private var createdProfiles: [Profile] = []
     private var createdSpaceIDs: [UUID] = []
 
-    override func tearDown() {
+    @MainActor override func tearDown() async throws {
         for spaceID in createdSpaceIDs {
             guard let space = TabStore.shared.space(withID: spaceID) else { continue }
             for tab in space.tabs + space.pinnedTabs { tab.teardown() }
@@ -58,12 +58,12 @@ final class ExtensionUpdaterTests: XCTestCase {
         createdProfiles.removeAll()
         for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
         tempDirs.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures
 
-    private func manifestJSON(version: String, permissions: [String] = ["storage"],
+    @MainActor private func manifestJSON(version: String, permissions: [String] = ["storage"],
                               hostPermissions: [String] = [], updateURL: String? = nil) -> String {
         var fields = [
             "\"manifest_version\": 3",
@@ -79,7 +79,7 @@ final class ExtensionUpdaterTests: XCTestCase {
 
     /// Install version 1.0 as a Web Store extension whose id is derived from a
     /// fresh RSA key, the way a real CRX install records it.
-    private func installVersionOne(permissions: [String] = ["storage"]) async throws -> Fixture {
+    @MainActor private func installVersionOne(permissions: [String] = ["storage"]) async throws -> Fixture {
         let pair = try CRX3TestBuilder.RSAKeyPair.generate()
         let source = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-updater-src-\(UUID().uuidString.prefix(8))")
@@ -104,7 +104,7 @@ final class ExtensionUpdaterTests: XCTestCase {
     /// A CRX for the fixture. `storeSigned` false leaves out the store's proof:
     /// what a self-hosted CRX, or a file made with the developer's key alone,
     /// looks like.
-    private func crx(_ fixture: Fixture, version: String, permissions: [String] = ["storage"],
+    @MainActor private func crx(_ fixture: Fixture, version: String, permissions: [String] = ["storage"],
                      hostPermissions: [String] = [], signer: CRX3TestBuilder.Signer? = nil,
                      storeSigned: Bool = true) throws -> Data {
         let zip = try CRX3TestBuilder.zip(files: [
@@ -117,7 +117,7 @@ final class ExtensionUpdaterTests: XCTestCase {
                                          declaredKey: fixture.pair.publicKeySPKI)
     }
 
-    private func updateXML(_ fixture: Fixture, version: String, crx: Data, announceHash: Bool = true) -> Data {
+    @MainActor private func updateXML(_ fixture: Fixture, version: String, crx: Data, announceHash: Bool = true) -> Data {
         let hash = announceHash ? " hash_sha256=\"\(SHA256.hash(data: crx).map { String(format: "%02x", $0) }.joined())\"" : ""
         return Data("""
         <?xml version="1.0" encoding="UTF-8"?>
@@ -129,19 +129,19 @@ final class ExtensionUpdaterTests: XCTestCase {
         """.utf8)
     }
 
-    private func makeUpdater(_ fetcher: FakeFetcher, now: @escaping () -> Date = Date.init) -> ExtensionUpdater {
+    @MainActor private func makeUpdater(_ fetcher: FakeFetcher, now: @escaping () -> Date = Date.init) -> ExtensionUpdater {
         ExtensionUpdater(fetcher: fetcher, now: now,
                          storeFormat: .publisherProof(keyHash: CRX3TestBuilder.keyHash(storeKey)))
     }
 
-    private func requestURL(_ fixture: Fixture, version: String, updater: ExtensionUpdater) throws -> URL {
+    @MainActor private func requestURL(_ fixture: Fixture, version: String, updater: ExtensionUpdater) throws -> URL {
         try XCTUnwrap(UpdateManifest.requestURL(updateURL: fixture.updateURL, extensionID: fixture.id,
                                                 version: version, prodVersion: updater.prodVersion))
     }
 
     // MARK: - AC #2 / #5: a newer version installs in place and keeps everything
 
-    func testANewerVersionIsInstalledInPlaceKeepingRowsPermissionsAndTheLedger() async throws {
+    @MainActor func testANewerVersionIsInstalledInPlaceKeepingRowsPermissionsAndTheLedger() async throws {
         let fixture = try await installVersionOne()
         let db = AppDatabase.shared
         // A real profile: the per-profile row has a foreign key to it. Adding it
@@ -193,7 +193,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertEqual(fetcher.requests.count, 2, "one check, one download")
     }
 
-    func testNoUpdateLeavesTheInstallAlone() async throws {
+    @MainActor func testNoUpdateLeavesTheInstallAlone() async throws {
         let fixture = try await installVersionOne()
         let fetcher = FakeFetcher()
         let updater = makeUpdater(fetcher)
@@ -208,7 +208,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertEqual(fetcher.requests.count, 1, "nothing is downloaded")
     }
 
-    func testAServerSideUpdateCheckErrorIsReportedAsAFailureNotAsUpToDate() async throws {
+    @MainActor func testAServerSideUpdateCheckErrorIsReportedAsAFailureNotAsUpToDate() async throws {
         let fixture = try await installVersionOne()
         let fetcher = FakeFetcher()
         let updater = makeUpdater(fetcher)
@@ -225,7 +225,7 @@ final class ExtensionUpdaterTests: XCTestCase {
 
     // MARK: - AC #3: rejected candidates
 
-    func testAnAnnouncedVersionThatIsNotNewerIsNotDownloaded() async throws {
+    @MainActor func testAnAnnouncedVersionThatIsNotNewerIsNotDownloaded() async throws {
         let fixture = try await installVersionOne()
         let fetcher = FakeFetcher()
         let updater = makeUpdater(fetcher)
@@ -237,7 +237,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertEqual(fetcher.requests, [try requestURL(fixture, version: "1.0", updater: updater)])
     }
 
-    func testACRXSignedByAnotherKeyIsRejected() async throws {
+    @MainActor func testACRXSignedByAnotherKeyIsRejected() async throws {
         let fixture = try await installVersionOne()
         let fetcher = FakeFetcher()
         let updater = makeUpdater(fetcher)
@@ -273,7 +273,7 @@ final class ExtensionUpdaterTests: XCTestCase {
     /// the store signed. This one is everything else an update has to be —
     /// newer, the announced hash, correctly signed with the installed
     /// extension's own key — and is still refused.
-    func testAStoreInstallRefusesAnUpdateTheStoreDidNotSign() async throws {
+    @MainActor func testAStoreInstallRefusesAnUpdateTheStoreDidNotSign() async throws {
         let fixture = try await installVersionOne()
         let fetcher = FakeFetcher()
         let updater = makeUpdater(fetcher)
@@ -316,7 +316,7 @@ final class ExtensionUpdaterTests: XCTestCase {
 
     /// The store's proof is asked of store installs only: a CRX installed from
     /// anywhere else keeps updating on its developer's proof alone.
-    func testANonStoreInstallUpdatesOnTheDevelopersProofAlone() async throws {
+    @MainActor func testANonStoreInstallUpdatesOnTheDevelopersProofAlone() async throws {
         let fixture = try await installVersionOne()
         let ext = try XCTUnwrap(ExtensionManager.shared.extension(withID: fixture.id))
         ext.source = .crx
@@ -330,7 +330,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertEqual(outcome, .updated(version: "2.0"))
     }
 
-    func testADownloadThatDoesNotMatchTheAnnouncedHashIsRejected() async throws {
+    @MainActor func testADownloadThatDoesNotMatchTheAnnouncedHashIsRejected() async throws {
         let fixture = try await installVersionOne()
         let fetcher = FakeFetcher()
         let updater = makeUpdater(fetcher)
@@ -346,7 +346,7 @@ final class ExtensionUpdaterTests: XCTestCase {
 
     // MARK: - AC #4: added permissions hold the update disabled
 
-    func testAnUpdateThatAddsPermissionsInstallsDisabledUntilApproved() async throws {
+    @MainActor func testAnUpdateThatAddsPermissionsInstallsDisabledUntilApproved() async throws {
         let fixture = try await installVersionOne()
         let fetcher = FakeFetcher()
         let updater = makeUpdater(fetcher)
@@ -379,7 +379,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertNil(approvedRow.pendingPermissionApprovalJSON)
     }
 
-    func testAnUpdateThatAddsOnlyWarningFreePermissionsStaysEnabled() async throws {
+    @MainActor func testAnUpdateThatAddsOnlyWarningFreePermissionsStaysEnabled() async throws {
         let fixture = try await installVersionOne()
         let fetcher = FakeFetcher()
         let updater = makeUpdater(fetcher)
@@ -393,7 +393,7 @@ final class ExtensionUpdaterTests: XCTestCase {
 
     // MARK: - Sources that never update, throttling, scheduling
 
-    func testUnpackedAndURLLessInstallsAreNotChecked() async throws {
+    @MainActor func testUnpackedAndURLLessInstallsAreNotChecked() async throws {
         let fixture = try await installVersionOne()
         let ext = try XCTUnwrap(ExtensionManager.shared.extension(withID: fixture.id))
         let fetcher = FakeFetcher()
@@ -409,7 +409,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertEqual(outcome5, .failed("extension not-installed is not installed"))
     }
 
-    func testRequestUpdateCheckIsThrottledPerExtension() async throws {
+    @MainActor func testRequestUpdateCheckIsThrottledPerExtension() async throws {
         let fixture = try await installVersionOne()
         let fetcher = FakeFetcher()
         var clock = Date(timeIntervalSince1970: 1_000_000)
@@ -433,7 +433,7 @@ final class ExtensionUpdaterTests: XCTestCase {
                        "the throttle is only for the extension's own API; Settings and the schedule are not held back")
     }
 
-    func testCheckAllRecordsTheTimeAndPostsTheOutcomes() async throws {
+    @MainActor func testCheckAllRecordsTheTimeAndPostsTheOutcomes() async throws {
         let fixture = try await installVersionOne()
         let fetcher = FakeFetcher()
         let clock = Date(timeIntervalSince1970: 2_000_000)
@@ -442,17 +442,17 @@ final class ExtensionUpdaterTests: XCTestCase {
         <gupdate><app appid="\(fixture.id)" status="ok"><updatecheck status="noupdate"/></app></gupdate>
         """.utf8)
 
-        var posted: [String: ExtensionUpdateOutcome]?
+        let posted = Mutex<[String: ExtensionUpdateOutcome]?>(nil)
         let observer = NotificationCenter.default.addObserver(forName: ExtensionUpdater.didFinishCheckNotification,
                                                               object: updater, queue: nil) { note in
-            posted = note.userInfo?["outcomes"] as? [String: ExtensionUpdateOutcome]
+            posted.withLock { $0 = note.userInfo?["outcomes"] as? [String: ExtensionUpdateOutcome] }
         }
         defer { NotificationCenter.default.removeObserver(observer) }
 
         XCTAssertTrue(updater.isCheckDue || updater.lastCheckAt != nil)
         let outcomes = await updater.checkAllForUpdates()
         XCTAssertEqual(outcomes[fixture.id], .upToDate)
-        XCTAssertEqual(posted?[fixture.id], .upToDate)
+        XCTAssertEqual(posted.withLock { $0 }?[fixture.id], .upToDate)
         XCTAssertEqual(updater.lastCheckAt?.timeIntervalSince1970 ?? 0, clock.timeIntervalSince1970, accuracy: 0.001)
         XCTAssertFalse(updater.isCheckDue, "just checked")
         let later = makeUpdater(fetcher) { clock.addingTimeInterval(updater.checkInterval + 1) }
@@ -461,7 +461,7 @@ final class ExtensionUpdaterTests: XCTestCase {
 
     // MARK: - AC #6: unpacked reload
 
-    func testReloadUnpackedReinstallsFromTheSourceFolderKeepingTheID() async throws {
+    @MainActor func testReloadUnpackedReinstallsFromTheSourceFolderKeepingTheID() async throws {
         let source = FileManager.default.temporaryDirectory
             .appendingPathComponent("detour-reload-src-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
@@ -513,7 +513,7 @@ final class ExtensionUpdaterTests: XCTestCase {
 
     /// The fixture, a profile that loads it, and one of its options pages open in
     /// a space of that profile — an extension the user is in the middle of using.
-    private func busyFixture() async throws -> (fixture: Fixture, profile: Profile, space: Space, tab: BrowserTab) {
+    @MainActor private func busyFixture() async throws -> (fixture: Fixture, profile: Profile, space: Space, tab: BrowserTab) {
         let fixture = try await installVersionOne()
         let profile = TabStore.shared.addProfile(name: "Busy Updater Test")
         createdProfiles.append(profile)
@@ -527,7 +527,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         return (fixture, profile, space, tab)
     }
 
-    func testActivityCountsOpenPagesPopupsHostsAndBackgroundTraffic() async throws {
+    @MainActor func testActivityCountsOpenPagesPopupsHostsAndBackgroundTraffic() async throws {
         let (fixture, profile, space, tab) = try await busyFixture()
         var activity = ExtensionManager.shared.activity(for: fixture.id)
         XCTAssertEqual(activity.openPages, 1)
@@ -549,7 +549,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertFalse(ExtensionUpdateDeferral.shouldDefer(ExtensionManager.shared.activity(for: fixture.id)))
     }
 
-    func testABusyExtensionsUpdateIsStagedThenInstalledWhenIdle() async throws {
+    @MainActor func testABusyExtensionsUpdateIsStagedThenInstalledWhenIdle() async throws {
         let (fixture, profile, space, tab) = try await busyFixture()
         let fetcher = FakeFetcher()
         let updater = makeUpdater(fetcher)
@@ -601,7 +601,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         try await waitUntil("the update to load") { updated.wkExtension != nil }
     }
 
-    func testRuntimeReloadAppliesAStagedUpdateNow() async throws {
+    @MainActor func testRuntimeReloadAppliesAStagedUpdateNow() async throws {
         let (fixture, _, _, _) = try await busyFixture()
         let fetcher = FakeFetcher()
         let updater = makeUpdater(fetcher)
@@ -621,7 +621,7 @@ final class ExtensionUpdaterTests: XCTestCase {
     /// `runtime.reload()` cannot be intercepted, so the reload an extension makes
     /// in answer to `onUpdateAvailable` is recognised by the background start
     /// that follows the delivery; that start installs the staged copy.
-    func testABackgroundStartSoonAfterTheEventIsTheReloadThatInstallsTheUpdate() async throws {
+    @MainActor func testABackgroundStartSoonAfterTheEventIsTheReloadThatInstallsTheUpdate() async throws {
         let (fixture, profile, _, _) = try await busyFixture()
         defer { ExtensionManager.shared.forgetUpdateAvailableState(extensionID: fixture.id) }
         let fetcher = FakeFetcher()
@@ -661,7 +661,7 @@ final class ExtensionUpdaterTests: XCTestCase {
                                                                           now: t0.addingTimeInterval(3)), "nothing left")
     }
 
-    func testABackgroundStartLongAfterTheEventIsNotAReload() async throws {
+    @MainActor func testABackgroundStartLongAfterTheEventIsNotAReload() async throws {
         let (fixture, profile, _, _) = try await busyFixture()
         defer { ExtensionManager.shared.forgetUpdateAvailableState(extensionID: fixture.id) }
         let crx = try crx(fixture, version: "2.0")
@@ -681,7 +681,7 @@ final class ExtensionUpdaterTests: XCTestCase {
     /// copy is already staged; the claim runs on a later task of the same start.
     /// That answer is not the delivery a reload followed: the incarnation that
     /// asked for it does not install the copy, only a later incarnation does.
-    func testAStartWhoseOwnListenerWasAnsweredIsNotAReload() async throws {
+    @MainActor func testAStartWhoseOwnListenerWasAnsweredIsNotAReload() async throws {
         let (fixture, profile, _, _) = try await busyFixture()
         defer { ExtensionManager.shared.forgetUpdateAvailableState(extensionID: fixture.id) }
         let crx = try crx(fixture, version: "2.0")
@@ -706,7 +706,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertNil(ExtensionManager.shared.stagedUpdate(for: fixture.id))
     }
 
-    func testAStagedUpdateInstallsAtTheNextLaunch() async throws {
+    @MainActor func testAStagedUpdateInstallsAtTheNextLaunch() async throws {
         let fixture = try await installVersionOne()
         let db = AppDatabase.shared
         db.savePermission(ExtensionPermissionRecord(extensionID: fixture.id, key: "storage", type: .apiPermission, status: .denied))
@@ -740,7 +740,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.directory.path))
     }
 
-    func testAStaleStagedCopyIsDiscardedWhenTheExtensionMovedOn() async throws {
+    @MainActor func testAStaleStagedCopyIsDiscardedWhenTheExtensionMovedOn() async throws {
         let (fixture, _, _, _) = try await busyFixture()
         let crx = try crx(fixture, version: "1.0")
         let unpacked = try CRXUnpacker.unpack(data: crx)
@@ -750,7 +750,7 @@ final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertNil(ExtensionManager.shared.stagedUpdate(for: fixture.id), "and gone")
     }
 
-    func testReloadRefusesACRXInstall() async throws {
+    @MainActor func testReloadRefusesACRXInstall() async throws {
         let fixture = try await installVersionOne()
         XCTAssertThrowsError(try ExtensionManager.shared.reloadUnpacked(id: fixture.id)) {
             guard case ExtensionManager.UpdateError.notUnpacked? = $0 as? ExtensionManager.UpdateError else {
