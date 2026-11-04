@@ -1848,18 +1848,31 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
     }
 
     /// A worker reply carrying the error envelope rejects with its text
-    /// verbatim; any other reply, including one with a non-string envelope
-    /// value, is passed through.
+    /// verbatim; one carrying the success envelope resolves with its value,
+    /// even a value that itself holds the error key or the success key
+    /// (TASK-262). A reply in neither shape rejects rather than passing a
+    /// bare value through.
     @MainActor func testPolyfillReplyEnvelopeRejectsWithItsTextVerbatim() async throws {
         let value = try await evalJSON("""
             const unwrap = __detourPolyfillErrorText.unwrapPolyfillReply;
             const key = '\(ExtensionPolyfillHandler.errorEnvelopeKey)';
+            const ok = '\(ExtensionPolyfillHandler.successEnvelopeKey)';
+            const val = '\(ExtensionPolyfillHandler.successEnvelopeValueKey)';
             const run = (reply) => {
-                try { return { passed: JSON.stringify(unwrap(reply)) }; }
+                try {
+                    const result = unwrap(reply);
+                    return { passed: result === undefined ? 'undefined' : JSON.stringify(result) };
+                }
                 catch (e) { return { threw: e.message, isError: e instanceof Error }; }
             };
             return JSON.stringify([
                 run({ [key]: 'history permission not declared' }),
+                run({ [ok]: true, [val]: { [key]: 'not a failure' } }),
+                run({ [ok]: true, [val]: { [ok]: true, [val]: 7 } }),
+                run({ [ok]: true, [val]: { results: [] } }),
+                run({ [ok]: true }),
+                run({ [ok]: true, [val]: null }),
+                run({ [ok]: 'yes', [key]: 'refused' }),
                 run({ [key]: 42 }),
                 run({ results: [] }),
                 run(null),
@@ -1867,18 +1880,26 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
             ]);
         """)
         let outcomes = try XCTUnwrap(value as? [[String: Any]])
-        XCTAssertEqual(outcomes.count, 5)
+        XCTAssertEqual(outcomes.count, 11)
         XCTAssertEqual(outcomes[0]["threw"] as? String, "history permission not declared")
         XCTAssertEqual(outcomes[0]["isError"] as? Bool, true)
-        XCTAssertNotNil(outcomes[1]["passed"], "a non-string value is not an envelope: \(outcomes[1])")
-        XCTAssertEqual(outcomes[2]["passed"] as? String, "{\"results\":[]}")
-        XCTAssertEqual(outcomes[3]["passed"] as? String, "null")
-        XCTAssertEqual(outcomes[4]["passed"] as? String, "\"text\"")
+        XCTAssertEqual(outcomes[1]["passed"] as? String, "{\"__detourPolyfillError\":\"not a failure\"}",
+                       "a success value holding the error key is a success: \(outcomes[1])")
+        XCTAssertEqual(outcomes[2]["passed"] as? String, "{\"__detourPolyfillOk\":true,\"value\":7}",
+                       "a success value shaped like the envelope is unwrapped once: \(outcomes[2])")
+        XCTAssertEqual(outcomes[3]["passed"] as? String, "{\"results\":[]}")
+        XCTAssertEqual(outcomes[4]["passed"] as? String, "undefined", "a nil result")
+        XCTAssertEqual(outcomes[5]["passed"] as? String, "null")
+        XCTAssertEqual(outcomes[6]["threw"] as? String, "refused", "only `true` marks a success: \(outcomes[6])")
+        for index in 7..<11 {
+            XCTAssertEqual(outcomes[index]["threw"] as? String, "Malformed polyfill reply", "\(index): \(outcomes[index])")
+        }
     }
 
     /// The native half: a failed request that asks for the envelope gets a
     /// successful reply carrying the text; one that does not gets the error.
-    /// The relay still always fails, envelope or not.
+    /// The relay still always fails, envelope or not. A success that asks
+    /// for the envelope is wrapped in the success envelope (TASK-262).
     @MainActor func testWorkerRequestFailureIsEnvelopedOnlyWhenAskedFor() async throws {
         func send(_ body: [String: Any]) async -> (result: Any?, error: String?) {
             let reply = await withCheckedContinuation { (continuation: CheckedContinuation<BridgeReply, Never>) in
@@ -1900,6 +1921,20 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         let plainReply = await send(request)
         XCTAssertNil(plainReply.result)
         XCTAssertEqual(plainReply.error, "history permission not declared")
+
+        // A success asking for envelopes is wrapped (TASK-262); one that does
+        // not is the bare result.
+        let success: [String: Any] = ["type": "idle.queryState", "extensionID": "", "params": ["detectionIntervalInSeconds": 60]]
+        var envelopedSuccess = success
+        envelopedSuccess["errorEnvelope"] = true
+        let wrapped = await send(envelopedSuccess)
+        XCTAssertNil(wrapped.error)
+        let envelope = try XCTUnwrap(wrapped.result as? [String: Any], "\(String(describing: wrapped.result))")
+        XCTAssertEqual(envelope[ExtensionPolyfillHandler.successEnvelopeKey] as? Bool, true)
+        let bare = await send(success)
+        XCTAssertNil(bare.error)
+        XCTAssertEqual(envelope[ExtensionPolyfillHandler.successEnvelopeValueKey] as? String, bare.result as? String)
+        XCTAssertNotNil(bare.result as? String)
 
         let relayReply = await send(["type": ExtensionPolyfillHandler.lastErrorRelayType, "extensionID": "",
                                      "errorEnvelope": true, "params": ["message": "relayed"]])
@@ -2359,7 +2394,7 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
             globalThis.__nativeMessageCalls = [];
             globalThis.browser.runtime.sendNativeMessage = function(appId, msg) {
                 globalThis.__nativeMessageCalls.push({ appId: appId, type: msg.type });
-                return Promise.resolve('active');
+                return Promise.resolve({ '\(ExtensionPolyfillHandler.successEnvelopeKey)': true, '\(ExtensionPolyfillHandler.successEnvelopeValueKey)': 'active' });
             };
             """ + "\n" + ExtensionAPIPolyfill.polyfillJS,
             injectionTime: .atDocumentStart,
@@ -2372,10 +2407,11 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
                                         baseURL: URL(string: "https://test.example.com")!)
 
         // Call a polyfill API — should fall back to sendNativeMessage since no handler is registered
-        _ = try await wv.callAsyncJavaScript(
+        let state = try await wv.callAsyncJavaScript(
             "return await chrome.idle.queryState(60)",
             arguments: [:], contentWorld: .page
         )
+        XCTAssertEqual(state as? String, "active", "the success envelope is unwrapped")
 
         // Verify sendNativeMessage was called with the right appId
         let calls = try await wv.callAsyncJavaScript(

@@ -397,11 +397,16 @@ struct ExtensionAPIPolyfill {
         // appended. That is lossy, so the worker asks for the error in the
         // reply instead (`errorEnvelope`): the handler answers a failure with
         // `{ __detourPolyfillError: text }` and it is rejected here verbatim.
+        // A success on that path is wrapped as `{ __detourPolyfillOk: true,
+        // value: result }`, so a result that carries the error key itself is
+        // never read as a failure (TASK-262); a reply in neither shape rejects.
         // An error WebKit still delivers as one (a refusal before the handler,
         // WebKit's own limits) loses exactly that prefix and the full stop
         // WebKit appended; any other text is left alone.
         const nativeMessageErrorPrefix = 'Invalid call to runtime.sendNativeMessage(). ';
         const polyfillErrorKey = '\(ExtensionPolyfillHandler.errorEnvelopeKey)';
+        const polyfillOkKey = '\(ExtensionPolyfillHandler.successEnvelopeKey)';
+        const polyfillValueKey = '\(ExtensionPolyfillHandler.successEnvelopeValueKey)';
 
         const stripNativeMessagePrefix = function(message) {
             if (typeof message !== 'string' || message.indexOf(nativeMessageErrorPrefix) !== 0) return message;
@@ -411,14 +416,21 @@ struct ExtensionAPIPolyfill {
         };
 
         const unwrapPolyfillReply = function(response) {
-            let text;
+            const hasOwn = Object.prototype.hasOwnProperty;
+            let ok = false, value, text;
             try {
-                if (response && typeof response === 'object' && Object.prototype.hasOwnProperty.call(response, polyfillErrorKey)) {
-                    text = response[polyfillErrorKey];
+                if (response && typeof response === 'object') {
+                    if (hasOwn.call(response, polyfillOkKey) && response[polyfillOkKey] === true) {
+                        ok = true;
+                        value = response[polyfillValueKey];
+                    } else if (hasOwn.call(response, polyfillErrorKey)) {
+                        text = response[polyfillErrorKey];
+                    }
                 }
             } catch (e) {}
+            if (ok) return value;
             if (typeof text === 'string') throw new Error(text || 'Unknown error');
-            return response;
+            throw new Error('Malformed polyfill reply');
         };
 
         const unwrapNativeMessageError = function(error) {

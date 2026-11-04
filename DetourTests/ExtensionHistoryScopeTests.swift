@@ -127,6 +127,13 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
                 outcome.arg0 = args.length ? args[0] : null;
                 const lastError = chrome.runtime.lastError;
                 outcome.lastErrorInCallback = lastError ? String(lastError.message) : null;
+                // Through the other name too (TASK-262): browser.runtime may
+                // hand back a different object from chrome.runtime.
+                const browserLastError = (typeof browser !== 'undefined' && browser.runtime)
+                    ? browser.runtime.lastError : undefined;
+                outcome.browserLastErrorInCallback = browserLastError ? String(browserLastError.message) : null;
+                outcome.sameRuntime = typeof browser !== 'undefined' && browser.runtime === chrome.runtime;
+                outcome.sameLastError = browserLastError === lastError;
                 setTimeout(() => { outcome.unhandled = unhandled.slice(); sendResponse(outcome); }, 150);
             });
             outcome.returnedType = typeof returned;
@@ -992,11 +999,16 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
                 "page callback": pageCallbackOutcome["lastErrorInCallback"] as? String,
                 "worker promise": workerPromiseOutcome["message"] as? String,
                 "worker callback": workerCallbackOutcome["lastErrorInCallback"] as? String,
+                "worker callback, browser.runtime": workerCallbackOutcome["browserLastErrorInCallback"] as? String,
             ]
             for (leg, text) in texts {
                 XCTAssertEqual(text, expected, "\(leg) \(js): \(texts)")
                 XCTAssertFalse(text?.contains("Invalid call to") ?? false, "\(leg) \(js): \(texts)")
             }
+            // The measurement behind the relay patching one lastError (TASK-262):
+            // in a worker both names are one runtime with one lastError.
+            XCTAssertEqual(workerCallbackOutcome["sameRuntime"] as? Bool, true, "worker callback \(js): \(workerCallbackOutcome)")
+            XCTAssertEqual(workerCallbackOutcome["sameLastError"] as? Bool, true, "worker callback \(js): \(workerCallbackOutcome)")
             XCTAssertEqual(pagePromiseOutcome["settled"] as? String, "rejected", "page promise \(js)")
             XCTAssertEqual(workerPromiseOutcome["settled"] as? String, "rejected", "worker promise \(js)")
             for (leg, outcome) in [("page callback", pageCallbackOutcome), ("worker callback", workerCallbackOutcome)] {

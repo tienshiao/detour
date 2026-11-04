@@ -31,6 +31,9 @@ sources:
   - id: task-255
     resource: backlog:TASK-255
     title: "Extensions: native polyfill errors read differently from the worker and from a page"
+  - id: task-262
+    resource: backlog:TASK-262
+    title: "Extensions: polyfill error envelope edge cases (browser.runtime.lastError identity, envelope key collision)"
   - id: task-3
     resource: backlog:TASK-3
     title: Polyfill stubs for privacy, onAuthRequired, management.setEnabled, getUserSettings
@@ -712,6 +715,14 @@ verbatim:[^task-255]
   and `__detourPolyfillRequest` rejects with that text. Stripping the prefix
   alone would not do: the capital letter and the trimmed dots cannot be undone.
   The relay ignores the flag, since it must fail for WebKit to set `lastError`.
+- **A success on the envelope path is wrapped too**, as
+  `{ __detourPolyfillOk: true, value: <result> }` (`successEnvelopeKey`,
+  `replySuccess`; `value` is left out for a nil result, which reads as
+  `undefined`). Otherwise a handler result that is a map with the error key
+  (notification ids are the extension's own keys in `notifications.getAll`)
+  would be read as a failure. The polyfill rejects a reply in neither shape
+  with `Malformed polyfill reply`, so a test stub of the worker's
+  `sendNativeMessage` must answer with the success envelope.[^task-262]
   The delegate's own refusals before the handler (`Unrecognized extension
   context`, `No polyfill handler for profile`) use the same
   `ExtensionPolyfillHandler.replyFailure`.
@@ -723,7 +734,10 @@ verbatim:[^task-255]
   (`makeErrorValue` in `WebExtensionAPIRuntime.cpp`) whose `message` is an own,
   configurable property. Inside the relay's callback the polyfill reads it and
   redefines `message` as the original text, then runs the extension's
-  callback. Reading `lastError` marks it checked for WebKit, so **in
+  callback. In a worker `browser.runtime` is the same object as
+  `chrome.runtime`, and both hand back the same `lastError` object, so
+  `browser.runtime.lastError.message` reads the original text as well
+  (measured in the test host, TASK-262). Reading `lastError` marks it checked for WebKit, so **in
   `native-relay` mode nothing reports an unchecked `lastError` any more**.
   Reporting it from the polyfill, keyed on reads of `message`, was tried and
   rejected: no read of WebKit's native getter can be observed, so a callback
@@ -800,6 +814,7 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-3]: Polyfill stubs for privacy, onAuthRequired, management.setEnabled, getUserSettings
 [^task-138]: chrome.history.search returns history from every profile
 [^task-255]: Extensions: native polyfill errors read differently from the worker and from a page
+[^task-262]: Extensions: polyfill error envelope edge cases (browser.runtime.lastError identity, envelope key collision)
 [^task-152]: favicon.lookup answers from every profile's history, without a permission check
 [^task-153]: chrome.history.search with empty text scans every visit of the profile
 [^chrome-history-api]: Chromium, history_api.cc (HistorySearchFunction)

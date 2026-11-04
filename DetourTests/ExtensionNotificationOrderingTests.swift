@@ -640,6 +640,33 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         }
     }
 
+    /// A handler result shaped like the worker's reply envelopes reaches the
+    /// extension intact (TASK-262): notification ids are the extension's own
+    /// keys in `getAll`'s map, so ids equal to the error and success envelope
+    /// keys come back as listed ids from the page and the worker, never as a
+    /// failure or an unwrapped value.
+    @MainActor func testGetAllWithIDsShapedLikeTheReplyEnvelopePassesThroughIntact() async throws {
+        let ext = try await makeExtension()
+        let (profile, center) = try makeProfile("Notification Envelope Keys")
+        center.holdsAdds = false
+        let page = try await loadPage(ext, in: profile)
+        let ids = [ExtensionPolyfillHandler.errorEnvelopeKey, ExtensionPolyfillHandler.successEnvelopeKey,
+                   ExtensionPolyfillHandler.successEnvelopeValueKey]
+        for id in ids {
+            let created = try await call("create", id, title: "Envelope \(id)", via: .worker, in: page) as? String
+            XCTAssertEqual(created, id)
+        }
+
+        for transport in [Transport.page, .worker] {
+            let answer = try await call("getAll", via: transport, in: page)
+            let all = try XCTUnwrap(answer as? [String: Any], "\(transport): getAll answers a map")
+            XCTAssertEqual(Set(all.keys), Set(ids), "\(transport): \(all)")
+            for id in ids {
+                XCTAssertEqual(all[id] as? Bool, true, "\(transport) \(id): \(all)")
+            }
+        }
+    }
+
     @MainActor func testUpdateWhileCreateInFlightTakesEffect() async throws {
         let ext = try await makeExtension()
         let (profile, center) = try makeProfile("Notification Ordering Update")

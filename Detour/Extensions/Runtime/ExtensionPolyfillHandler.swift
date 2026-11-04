@@ -33,6 +33,13 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// the text exactly as a page would see it (TASK-255).
     static let errorEnvelopeKey = "__detourPolyfillError"
 
+    /// On the same requests a success is wrapped too, as
+    /// `{ successEnvelopeKey: true, successEnvelopeValueKey: result }` (the
+    /// value key left out for a nil result), so a handler result that happens
+    /// to carry `errorEnvelopeKey` is never read as a failure (TASK-262).
+    static let successEnvelopeKey = "__detourPolyfillOk"
+    static let successEnvelopeValueKey = "value"
+
     /// Answers a failed native-message request from a worker: as the
     /// `errorEnvelopeKey` reply when the request asked for it, otherwise as
     /// an error (which WebKit rewrites).
@@ -44,6 +51,20 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             replyHandler(nil, NSError(domain: "DetourPolyfill", code: -1,
                                       userInfo: [NSLocalizedDescriptionKey: text]))
         }
+    }
+
+    /// Answers a successful native-message request from a worker: wrapped in
+    /// the success envelope when the request asked for envelopes, otherwise
+    /// as the bare result.
+    static func replySuccess(_ result: Any?, to body: [String: Any],
+                             replyHandler: (Any?, (any Error)?) -> Void) {
+        guard body["errorEnvelope"] as? Bool == true else {
+            replyHandler(result, nil)
+            return
+        }
+        var envelope: [String: Any] = [successEnvelopeKey: true]
+        if let result { envelope[successEnvelopeValueKey] = result }
+        replyHandler(envelope, nil)
     }
 
     /// Longest relayed lastError message, in characters.
@@ -685,7 +706,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 Self.replyFailure(errorString, to: body, replyHandler: replyHandler)
             } else {
                 log.debug("Polyfill success for \(type, privacy: .public)")
-                replyHandler(result, nil)
+                Self.replySuccess(result, to: body, replyHandler: replyHandler)
             }
         }
     }
