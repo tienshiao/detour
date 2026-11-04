@@ -51,6 +51,9 @@ sources:
   - id: task-260
     resource: backlog:TASK-260
     title: "Extensions: chrome.permissions.request, contains and remove do not work for history and management"
+  - id: task-261
+    resource: backlog:TASK-261
+    title: "Extensions: management.getSelf and getAll leave out permissions granted at runtime"
   - id: polyfill-handler
     resource: ../../Detour/Extensions/Runtime/ExtensionPolyfillHandler.swift
     title: ExtensionPolyfillHandler.swift (permissionIsActive)
@@ -390,6 +393,29 @@ first grant. Installing it later, on `permissions.onAdded` or after an async
 `chrome.history.onVisited.addListener` would throw before the answer
 arrived.[^task-250]
 
+### ExtensionInfo lists the active set
+
+`management.getSelf` / `getAll` build each `ExtensionInfo` from the asking
+profile's context for that extension, not from the manifest. Chromium's
+`CreateExtensionInfo` (`extensions/browser/api/management/management_api.cc`)
+lists `active_permissions().GetAPIsAsStrings()` and
+`active_permissions().explicit_hosts()`, so runtime grants appear and
+revocations go:
+
+- `permissions`: the manifest's `permissions` then `optional_permissions`,
+  each kept iff `permissionIsActive` (so a required one switched off goes
+  too). MV2 origin entries in those lists are left out; Chromium lists origins
+  only under `hostPermissions`.
+- `hostPermissions`: the context's unexpired granted match patterns that some
+  manifest host pattern covers (`askableMatchPatterns`), minus any an
+  unexpired denial covers (WebKit keeps a narrower grant under a denied
+  `<all_urls>`), sorted. The content-script patterns the restore grants for
+  `activeTab` are left out, both by the coverage check and, when a manifest
+  host pattern covers them, by name (`implicitContentScriptPatterns`), as
+  Chromium's `explicit_hosts()` leaves out scriptable hosts. With no context
+  in the profile, the required hosts as declared, which treats them as
+  `permissionIsActive` treats required API permissions.[^task-261]
+
 ## Origin patterns with a port
 
 Chrome's match patterns take a port (`http://127.0.0.1:8471/*`); WebKit's
@@ -452,3 +478,4 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 [^task-250]: Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions
 [^task-259]: Extensions: a required notifications, history or management permission switched off in Settings still works
 [^task-260]: Extensions: chrome.permissions.request, contains and remove do not work for history and management
+[^task-261]: Extensions: management.getSelf and getAll leave out permissions granted at runtime

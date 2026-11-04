@@ -99,6 +99,10 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
                 (e) => sendResponse({ error: String(e && e.message ? e.message : e) }));
             return true;
         }
+        if (message.type === 'managementInfo') {
+            managementInfo().then((outcome) => sendResponse(outcome));
+            return true;
+        }
         if (message.type === 'permissionsCall') {
             permissionsCall(message.method, message.details, message.form).then((outcome) => sendResponse(outcome));
             return true;
@@ -137,6 +141,13 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
     /// transport — are answered, for the permission gates (TASK-251). Run the
     /// same way from the page and the worker.
     private static let gateJS = """
+    async function managementInfo() {
+        const pick = (info) => ({ id: info.id, permissions: info.permissions, hostPermissions: info.hostPermissions });
+        const out = { self: pick(await chrome.management.getSelf()) };
+        try { out.all = (await chrome.management.getAll()).map(pick); }
+        catch (e) { out.allError = String(e && e.message ? e.message : e); }
+        return out;
+    }
     function permissionsCall(method, details, form) {
         const describe = (e) => String(e && e.message ? e.message : e);
         return new Promise((resolve) => {
@@ -184,12 +195,17 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
     /// in `ExtensionManager` the way an installed extension is (the handler's
     /// permission gate reads the manifest from there).
     @MainActor private func makeExtension(permissions: [String],
-                                          optionalPermissions: [String] = []) async throws -> WebExtension {
+                                          optionalPermissions: [String] = [],
+                                          hostPermissions: [String] = [],
+                                          optionalHostPermissions: [String] = []) async throws -> WebExtension {
         let id = "history-scope-\(UUID().uuidString.prefix(8))"
         let permissionsJSON = String(decoding: try JSONSerialization.data(withJSONObject: permissions),
                                      as: UTF8.self)
         let optionalJSON = String(decoding: try JSONSerialization.data(withJSONObject: optionalPermissions),
                                   as: UTF8.self)
+        let hostJSON = String(decoding: try JSONSerialization.data(withJSONObject: hostPermissions), as: UTF8.self)
+        let optionalHostJSON = String(decoding: try JSONSerialization.data(withJSONObject: optionalHostPermissions),
+                                      as: UTF8.self)
         let ext = try await makeTestExtension(
             id: id,
             manifestJSON: """
@@ -199,6 +215,8 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
                 "version": "1.0.0",
                 "permissions": \(permissionsJSON),
                 "optional_permissions": \(optionalJSON),
+                "host_permissions": \(hostJSON),
+                "optional_host_permissions": \(optionalHostJSON),
                 "background": { "service_worker": "background.js", "type": "module" }
             }
             """,
@@ -1561,5 +1579,170 @@ nonisolated final class ExtensionHistoryScopeTests: XCTestCase {
         XCTAssertEqual(outcomes.last, .approved)
         XCTAssertEqual(prompts().count, 1, "one prompt")
         XCTAssertEqual(savedStatus(ext, "history"), .granted)
+    }
+
+    // MARK: - 8. ExtensionInfo lists the active permissions (TASK-261)
+
+    /// `managementInfo` from `transport`: getSelf's and getAll's `id`,
+    /// `permissions` and `hostPermissions` (`allError` when getAll refuses).
+    @MainActor private func managementInfo(via transport: GateTransport, in page: WKWebView,
+                                           file: StaticString = #filePath, line: UInt = #line) async throws -> [String: Any] {
+        switch transport {
+        case .page:
+            return try await evalObject(Self.gateJS + "\nreturn JSON.stringify(await managementInfo());", in: page)
+        case .worker:
+            let answer = try await askWorker(from: page, message: ["type": "managementInfo"])
+            XCTAssertNil(answer["lastError"] as? String, "the page could not reach the worker", file: file, line: line)
+            return try XCTUnwrap(answer["reply"] as? [String: Any], "the worker must answer: \(answer)",
+                                 file: file, line: line)
+        }
+    }
+
+    /// getSelf's lists, from the page and the worker, equal `permissions` and `hosts`.
+    @MainActor private func assertSelfInfo(_ permissions: [String], _ hosts: [String], in page: WKWebView,
+                                           _ label: String, file: StaticString = #filePath, line: UInt = #line) async throws {
+        for transport in [GateTransport.page, .worker] {
+            let outcome = try await managementInfo(via: transport, in: page, file: file, line: line)
+            let info = try XCTUnwrap(outcome["self"] as? [String: Any], "\(label), \(transport): \(outcome)",
+                                     file: file, line: line)
+            XCTAssertEqual(info["permissions"] as? [String], permissions, "\(label), \(transport)", file: file, line: line)
+            XCTAssertEqual(info["hostPermissions"] as? [String], hosts, "\(label), \(transport)", file: file, line: line)
+        }
+    }
+
+    /// Saved decisions for host `patterns`, as install records the required
+    /// ones (`recordDeclaredPermissions`).
+    @MainActor private func saveHostGrants(_ patterns: [String], of ext: WebExtension) {
+        installTestExtension(ext, in: AppDatabase.shared)
+        AppDatabase.shared.savePermissions(patterns.map {
+            ExtensionPermissionRecord(extensionID: ext.id, key: $0, type: .matchPattern, status: .granted)
+        })
+    }
+
+    /// POSITIVE then NEGATIVE, from the page and the worker: getSelf lists
+    /// the active API permissions and granted hosts, as Chromium's
+    /// `CreateExtensionInfo` lists `active_permissions()`. An optional
+    /// permission and an optional origin appear once granted and go once
+    /// revoked; a required permission switched off in Settings goes too.
+    @MainActor func testGetSelfListsTheActivePermissions() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["storage", "management"],
+                                          optionalPermissions: ["history", "notifications"],
+                                          hostPermissions: ["https://required.example/*"],
+                                          optionalHostPermissions: ["https://optional.example/*"])
+        saveHostGrants(["https://required.example/*"], of: ext)
+        let a = try makeProfile("Management Info Self", database: db)
+        let page = try await loadPage(ext, in: a.profile)
+
+        try await assertSelfInfo(["storage", "management"], ["https://required.example/*"], in: page, "before")
+
+        let manager = ExtensionManager.shared
+        manager.setPermissionDecision(extensionID: ext.id, key: "history", type: .apiPermission, granted: true)
+        manager.setPermissionDecision(extensionID: ext.id, key: "notifications", type: .apiPermission, granted: true)
+        manager.setPermissionDecision(extensionID: ext.id, key: "https://optional.example/*",
+                                      type: .matchPattern, granted: true)
+        try await assertSelfInfo(["storage", "management", "history", "notifications"],
+                                 ["https://optional.example/*", "https://required.example/*"], in: page, "granted")
+
+        manager.setPermissionDecision(extensionID: ext.id, key: "history", type: .apiPermission, granted: false)
+        manager.setPermissionDecision(extensionID: ext.id, key: "notifications", type: .apiPermission, granted: false)
+        manager.setPermissionDecision(extensionID: ext.id, key: "https://optional.example/*",
+                                      type: .matchPattern, granted: false)
+        manager.setPermissionDecision(extensionID: ext.id, key: "management", type: .apiPermission, granted: false)
+        try await assertSelfInfo(["storage"], ["https://required.example/*"], in: page, "revoked")
+    }
+
+    /// POSITIVE: a grant through `permissions.request` (the prompt answered
+    /// Allow) shows in getSelf, and `permissions.remove` takes it out again.
+    @MainActor func testGetSelfFollowsPermissionsRequestAndRemove() async throws {
+        let db = try makeDatabase()
+        let ext = try await makeExtension(permissions: ["storage"], optionalPermissions: ["history"])
+        let a = try makeProfile("Management Info Request", database: db)
+        installTestExtension(ext, in: AppDatabase.shared)
+        let page = try await loadPage(ext, in: a.profile)
+        _ = recordPrompts { _ in true }
+
+        try await assertSelfInfo(["storage"], [], in: page, "before")
+        assertAnswer(try await permissionsCall("request", ["history"], via: .worker, in: page), true, "request")
+        try await assertSelfInfo(["storage", "history"], [], in: page, "requested")
+        assertAnswer(try await permissionsCall("remove", ["history"], via: .page, in: page), true, "remove")
+        try await assertSelfInfo(["storage"], [], in: page, "removed")
+    }
+
+    /// getAll's entry for another extension lists that extension's active
+    /// set in the caller's profile: its optional grant appears, and its
+    /// optional origin, once granted.
+    @MainActor func testGetAllListsAnotherExtensionsActivePermissions() async throws {
+        let db = try makeDatabase()
+        let caller = try await makeExtension(permissions: ["management"])
+        let other = try await makeExtension(permissions: ["storage"], optionalPermissions: ["history"],
+                                            optionalHostPermissions: ["https://other.example/*"])
+        installTestExtension(caller, in: AppDatabase.shared)
+        installTestExtension(other, in: AppDatabase.shared)
+        let a = try makeProfile("Management Info All", database: db)
+        let page = try await loadPage(caller, in: a.profile)
+        _ = try loadTestContext(other, in: a.profile)
+
+        func otherEntry(_ label: String) async throws -> [String: Any] {
+            let outcome = try await managementInfo(via: .worker, in: page)
+            let all = try XCTUnwrap(outcome["all"] as? [[String: Any]], "\(label): \(outcome)")
+            return try XCTUnwrap(all.first { $0["id"] as? String == other.id }, "\(label): \(all)")
+        }
+        var entry = try await otherEntry("before")
+        XCTAssertEqual(entry["permissions"] as? [String], ["storage"], "before")
+        XCTAssertEqual(entry["hostPermissions"] as? [String], [], "before")
+
+        let manager = ExtensionManager.shared
+        manager.setPermissionDecision(extensionID: other.id, key: "history", type: .apiPermission, granted: true)
+        manager.setPermissionDecision(extensionID: other.id, key: "https://other.example/*",
+                                      type: .matchPattern, granted: true)
+        entry = try await otherEntry("granted")
+        XCTAssertEqual(entry["permissions"] as? [String], ["storage", "history"], "granted")
+        XCTAssertEqual(entry["hostPermissions"] as? [String], ["https://other.example/*"], "granted")
+    }
+
+    /// The host rule on its own: a grant also held as a denial and an
+    /// expired grant are left out, and so is a grant no manifest host pattern
+    /// covers (the content-script patterns granted for `activeTab`), as
+    /// Chromium's `explicit_hosts()` leaves out scriptable hosts.
+    @MainActor func testActiveHostPermissionsRule() throws {
+        let pattern = { (s: String) in try WKWebExtension.MatchPattern(string: s) }
+        let now = Date()
+        let later = now.addingTimeInterval(60), earlier = now.addingTimeInterval(-60)
+        let granted: [WKWebExtension.MatchPattern: Date] = [
+            try pattern("https://a.example/*"): later,
+            try pattern("https://b.example/*"): later,
+            try pattern("https://content.example/*"): later,
+            try pattern("https://expired.example/*"): earlier,
+        ]
+        let denied = [try pattern("https://b.example/*"): later]
+        let askable: Set = [try pattern("https://*.example/*")]
+        XCTAssertEqual(ExtensionPolyfillHandler.activeHostPermissions(
+            granted: granted, denied: denied, askable: askable, now: now),
+            ["https://a.example/*", "https://content.example/*"],
+            "denied and expired grants are left out")
+        XCTAssertEqual(ExtensionPolyfillHandler.activeHostPermissions(
+            granted: granted, denied: denied, askable: [try pattern("https://a.example/*")], now: now),
+            ["https://a.example/*"], "a content-script-only grant is left out")
+        XCTAssertEqual(ExtensionPolyfillHandler.activeHostPermissions(
+            granted: granted, denied: denied, askable: askable, implicit: ["https://content.example/*"], now: now),
+            ["https://a.example/*"], "an activeTab content-script grant a manifest pattern covers is left out")
+        XCTAssertEqual(ExtensionPolyfillHandler.activeHostPermissions(
+            granted: granted, denied: [try pattern("<all_urls>"): later], askable: [try pattern("<all_urls>")],
+            now: now),
+            [], "a broader denial covers the narrower grants WebKit keeps under it")
+    }
+
+    /// The activeTab content-script patterns not also declared as hosts, and
+    /// Manifest V2 origins kept out of `permissions`.
+    @MainActor func testImplicitContentScriptPatternsAndV2Origins() throws {
+        let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: Data("""
+            {"manifest_version": 2, "name": "N", "version": "1",
+             "permissions": ["activeTab", "storage", "<all_urls>", "https://declared.example/*"],
+             "content_scripts": [{"matches": ["https://*/*", "https://declared.example/*"], "js": ["c.js"]}]}
+            """.utf8))
+        XCTAssertEqual(ExtensionPolyfillHandler.implicitContentScriptPatterns(manifest), ["https://*/*"])
+        XCTAssertEqual(ExtensionPolyfillHandler.activeAPIPermissions(manifest: manifest, context: nil),
+                       ["activeTab", "storage"], "origins belong in hostPermissions")
     }
 }

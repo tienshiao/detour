@@ -1390,10 +1390,77 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         if let desc = ExtensionManager.shared.displayDescription(for: ext.id) {
             info["description"] = desc
         }
-        if let permissions = ext.manifest.permissions {
-            info["permissions"] = permissions
-        }
+        let context = profile?.extensionContext(for: ext.id)
+        info["permissions"] = Self.activeAPIPermissions(manifest: ext.manifest, context: context)
+        info["hostPermissions"] = context.map {
+            Self.activeHostPermissions(granted: $0.grantedPermissionMatchPatterns,
+                                       denied: $0.deniedPermissionMatchPatterns,
+                                       askable: ext.askableMatchPatterns,
+                                       implicit: Self.implicitContentScriptPatterns(ext.manifest))
+        } ?? Self.declaredRequiredHosts(ext.manifest)
         return info
+    }
+
+    /// `ExtensionInfo.permissions` (TASK-261): the API permissions active in
+    /// `context`, as Chromium's `CreateExtensionInfo` lists
+    /// `active_permissions().GetAPIsAsStrings()` — required ones not switched
+    /// off, optional ones while granted. Manifest order, required first.
+    static func activeAPIPermissions(manifest: ExtensionManifest, context: WKWebExtensionContext?,
+                                     now: Date = Date()) -> [String] {
+        var seen = Set<String>()
+        return ((manifest.permissions ?? []) + (manifest.optionalPermissions ?? [])).filter {
+            !isHostPermissionString($0) && seen.insert($0).inserted
+                && permissionIsActive($0, manifest: manifest, context: context, now: now)
+        }
+    }
+
+    /// With no context in the asking profile there is no grant or denial to
+    /// read, so, as `permissionIsActive` treats required API permissions, the
+    /// required hosts: `host_permissions`, or MV2's origins in `permissions`.
+    private static func declaredRequiredHosts(_ manifest: ExtensionManifest) -> [String] {
+        (manifest.hostPermissions ?? []) + (manifest.permissions ?? []).filter(isHostPermissionString)
+    }
+
+    /// A Manifest V2 `permissions` / `optional_permissions` entry that is an
+    /// origin rather than an API name. Chromium lists those under
+    /// `hostPermissions`, never `permissions`.
+    private static func isHostPermissionString(_ entry: String) -> Bool {
+        entry == "<all_urls>" || entry.contains("://")
+    }
+
+    /// The content-script match patterns `Profile.loadExtensionContext` grants
+    /// for `activeTab` that the manifest does not also list as a host
+    /// permission. A manifest host pattern can cover them (`<all_urls>` over a
+    /// `https://*/*` content script), so the `askable` filter alone keeps them.
+    static func implicitContentScriptPatterns(_ manifest: ExtensionManifest) -> Set<String> {
+        guard manifest.permissions?.contains("activeTab") == true else { return [] }
+        let declared = Set((manifest.hostPermissions ?? []) + (manifest.optionalHostPermissions ?? [])
+            + ((manifest.permissions ?? []) + (manifest.optionalPermissions ?? [])).filter(isHostPermissionString))
+        return Set((manifest.contentScripts ?? []).flatMap(\.matches)).subtracting(declared)
+    }
+
+    /// `ExtensionInfo.hostPermissions` (TASK-261): Chromium lists
+    /// `active_permissions().explicit_hosts()`, the granted `host_permissions`
+    /// and `optional_host_permissions` origins, not the content-script hosts.
+    /// So: the unexpired granted patterns some manifest host pattern covers
+    /// (`askable` — this leaves out the content-script patterns
+    /// `Profile.loadExtensionContext` grants for `activeTab`), minus those
+    /// an unexpired denial covers (WebKit keeps a narrower grant under a
+    /// denied `<all_urls>`) and those in `implicit` (the `activeTab`
+    /// content-script grants a manifest host pattern covers). Sorted, each
+    /// string once.
+    static func activeHostPermissions(granted: [WKWebExtension.MatchPattern: Date],
+                                      denied: [WKWebExtension.MatchPattern: Date],
+                                      askable: Set<WKWebExtension.MatchPattern>,
+                                      implicit: Set<String> = [],
+                                      now: Date = Date()) -> [String] {
+        let liveDenials = denied.filter { $0.value > now }.keys
+        let active = granted.filter { pattern, expiry in
+            expiry > now && !implicit.contains(pattern.string)
+                && !liveDenials.contains { $0.string == pattern.string || $0.matches(pattern) }
+                && askable.contains { $0.matches(pattern) }
+        }
+        return Set(active.keys.map(\.string)).sorted()
     }
 
     /// Font families bundled with macOS. Used to filter getFontList results
