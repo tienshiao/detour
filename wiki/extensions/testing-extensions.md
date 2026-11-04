@@ -4,7 +4,7 @@ title: Testing extensions
 description: Which kind of extension test proves what — pure rules, the polyfill in a bare web view, a real WebKit extension context, the production Profile wiring, a runtime check with API Explorer, and the signed build — with the fixtures and the traps.
 tags: [extensions, testing, playbook, fixtures]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:15:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-04T02:43:07Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
@@ -205,6 +205,16 @@ API Explorer details that show up in logs and are easy to misread:
 - **Releasing a profile whose controller hosted a popup web view can crash
   the test host** seconds later, in another suite. Close the popup and keep
   torn-down profiles alive; see
+  [WebKit test host traps](../platform/webkit-test-host-traps.md).
+- **The network process takes only about 190 persistent stores in its
+  lifetime.** Every profile a test creates gets a persistent
+  `WKWebsiteDataStore`, and the one network process behind them all stops
+  working for new stores after about 190 (no sandbox extensions, EPERM on the
+  store's databases) even when nearly all of them are gone again. Symptom: a
+  profile's localStorage silently keeps nothing, so background-page tests in
+  `ExtensionPolyfillProfileWiringTests` time out waiting for an install they
+  were dispatched, in full runs only. `TestEnvironmentSetup` restarts the
+  network process between suites every 60 new stores; see
   [WebKit test host traps](../platform/webkit-test-host-traps.md).
 - **`DETOUR_DATA_DIR` isolates Detour's databases, not WebKit's storage
   directory**, which every run of the same bundle id shares.[^notes-testing]

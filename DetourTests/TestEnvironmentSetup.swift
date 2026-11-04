@@ -102,6 +102,14 @@ private final class TestObserver: NSObject, XCTestObservation {
     private let changesLock = NSLock()
     private var defaultsObservation: NSObjectProtocol?
 
+    /// The WebKit storage identifiers seen recorded so far, and how many of
+    /// them were new since the network process last started
+    /// (`restartNetworkProcessIfNeeded`).
+    private var seenStorageIdentifiers: Set<UUID> = []
+    private var storesCreatedSinceNetworkProcessStart = 0
+    /// Set once the SPI turned out to be missing, so the warning prints once.
+    private var networkProcessRestartUnavailable = false
+
     func testBundleWillStart(_ testBundle: Bundle) {
         snapshotProductionDefaults()
         guard !cleaned else { return }
@@ -134,7 +142,63 @@ private final class TestObserver: NSObject, XCTestObservation {
         clearPendingProfileDataRemovals()
         // The profiles TabStore.shared restored are live; leave their storage.
         removeRecordedWebKitStorage(phase: "start", excludingProfileIDs: Set(TabStore.shared.profiles.map(\.id)))
+        seenStorageIdentifiers = Set(AppDatabase.shared.recordedWebKitStorageIdentifiers())
         assertCleanState()
+    }
+
+    func testSuiteDidFinish(_ testSuite: XCTestSuite) {
+        // Only between test classes: a suite of suites (the bundle, "All
+        // tests") finishes right after its last class, when no test is left.
+        guard !testSuite.tests.contains(where: { $0 is XCTestSuite }) else { return }
+        restartNetworkProcessIfNeeded(after: testSuite.name)
+    }
+
+    // MARK: - Network process restarts
+
+    /// How many persistent website data stores the run may create before the
+    /// network process is restarted. One network process serves every store,
+    /// and it can only take about 190 persistent sessions over its lifetime,
+    /// however many of them are still alive: after that it can no longer issue
+    /// sandbox extensions ("Could not create a sandbox extension … errno = 12")
+    /// or open a new store's databases (EPERM), and every profile created
+    /// later runs without working localStorage — a background page's writes
+    /// read back empty. A full run creates more stores than that before
+    /// `ExtensionPolyfillProfileWiringTests` (measured Nov 3 2026: 196
+    /// sessions at the first failure, in runs with about 80 and about 10 of
+    /// those stores still alive; the count is of the sessions the network
+    /// process's ITP log names, so a lower bound). One suite can add a few
+    /// dozen stores before the next check, so the threshold is well under the
+    /// limit; a restart costs a process launch.
+    private static let storesPerNetworkProcess = 60
+
+    /// Between two suites, terminate the network process once enough new
+    /// persistent stores have been created since it started; WebKit launches a
+    /// fresh one when a store next needs it. A store counts once its WebKit
+    /// identifier is recorded (`WebKitStorageScope`), which happens before
+    /// WebKit creates it; the identifiers are remembered, so one removed
+    /// mid-run is still counted once.
+    private func restartNetworkProcessIfNeeded(after suiteName: String) {
+        guard !WebKitStorageScope.currentIsDefaultDataDirectory, !networkProcessRestartUnavailable else { return }
+        let recorded = Set(AppDatabase.shared.recordedWebKitStorageIdentifiers())
+        let new = recorded.subtracting(seenStorageIdentifiers)
+        seenStorageIdentifiers.formUnion(new)
+        storesCreatedSinceNetworkProcessStart += new.count
+        guard storesCreatedSinceNetworkProcessStart >= Self.storesPerNetworkProcess else { return }
+
+        let store = WKWebsiteDataStore.default()
+        guard store.responds(to: #selector(NetworkProcessTestingShim.terminateNetworkProcess)),
+              store.responds(to: #selector(NetworkProcessTestingShim.networkProcessIdentifier)) else {
+            print("⚠️  WKWebsiteDataStore lacks _terminateNetworkProcess or _networkProcessIdentifier; the network process keeps its \(storesCreatedSinceNetworkProcessStart) stores and is not restarted for the rest of the run")
+            networkProcessRestartUnavailable = true
+            return
+        }
+        // SPI (WKWebsiteDataStorePrivate.h), reached through an `@objc`
+        // protocol like the ITP hooks in ExtensionOriginTrackingPreventionTests.
+        let shim = unsafeBitCast(store, to: NetworkProcessTestingShim.self)
+        let pid = shim.networkProcessIdentifier()
+        shim.terminateNetworkProcess()
+        print("✓ Restarted the network process (pid \(pid)) after \(suiteName): \(storesCreatedSinceNetworkProcessStart) persistent stores created since it started")
+        storesCreatedSinceNetworkProcessStart = 0
     }
 
     func testBundleDidFinish(_ testBundle: Bundle) {
@@ -369,4 +433,16 @@ enum TestHostNotificationCenter {
         center.holdsAdds = false
         return center
     }()
+}
+
+/// The private `WKWebsiteDataStore` hook the network process restart uses
+/// (WKWebsiteDataStorePrivate.h, macOS 12+). It terminates the one network
+/// process every store shares.
+@objc private protocol NetworkProcessTestingShim {
+    @objc(_terminateNetworkProcess)
+    func terminateNetworkProcess()
+
+    /// 0 when the store has no network process.
+    @objc(_networkProcessIdentifier)
+    func networkProcessIdentifier() -> pid_t
 }

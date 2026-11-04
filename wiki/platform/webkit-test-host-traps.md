@@ -4,7 +4,7 @@ title: WebKit test host traps
 description: WebKit and macOS behaviours that crash the DetourTests host, make it eat memory, or let a test run write into the installed app's data — and the guard the project has for each.
 tags: [webkit, tests, storage, crashes, isolation]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-04T02:43:07Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-36
@@ -37,6 +37,9 @@ sources:
   - id: unclaimed-tests
     resource: ../../DetourTests/BrowserTabUnclaimedNavigationTests.swift
     title: BrowserTabUnclaimedNavigationTests.swift
+  - id: task-257
+    resource: backlog:TASK-257
+    title: management.uninstallSelf (its notes record the full-run investigation that found the network process limit)
 ---
 
 The `DetourTests` bundle runs inside the app itself: the test host is
@@ -71,6 +74,39 @@ inside `WebUserContentControllerProxy::addUserScript`. A test that removes
 and re-adds scripts to reorder them must build fresh `WKUserScript`s from the
 old ones' source, injection time and main-frame flag. `WKUserScript` does not
 expose its content world, so only page-world scripts can be rebuilt this way.
+
+## Network process exhaustion
+
+**One network process takes only about 190 persistent sessions over its
+lifetime.** Every `WKWebsiteDataStore(forIdentifier:)` a test profile uses
+becomes a session in the network process that all stores share. After about
+190 of them, counted from the process's launch rather than how many are still
+alive, it logs `Could not create a sandbox extension for '<private>', errno =
+12` and `open(…/WebsiteDataStore/<id>/ResourceLoadStatistics/observations.db)
+- Operation not permitted` for each new store.[^task-257] Pages in a store
+created after that run, but their localStorage keeps nothing: `setItem`
+throws no error and `localStorage.length` stays 0.
+
+- Found when the full run on Nov 3 2026 failed the same 8 background-page
+  tests in `ExtensionPolyfillProfileWiringTests` twice. The suite passed
+  alone and after any half of the suites before it, and failed after all of
+  them. The background page was dispatched `runtime.onInstalled` but its
+  localStorage record read back empty.[^task-257]
+- The first error came after 196 distinct sessions in two runs: one with
+  about 80 stores still alive (the suites keep their profiles, see the
+  process pool trap below) and fds at about 1,000, and one with those
+  profiles released and fds at about 90. Live stores and file descriptors
+  are not the limit. Terminating the network process just before the suite
+  made all 8 pass.[^task-257]
+- The run reached the limit gradually as suites were added, not through one
+  commit. Each new test that makes a profile moves it closer.
+
+**Guard.** `TestEnvironmentSetup`'s observer counts the WebKit storage
+identifiers `WebKitStorageScope` records, and between suites, once 60 new
+ones have appeared since the last start, it terminates the network process
+through the private `-[WKWebsiteDataStore _terminateNetworkProcess]`. WebKit
+starts a fresh one when a store next needs it. The app is not affected: it
+creates one store per profile.
 
 ## Runaway memory
 
@@ -207,4 +243,5 @@ in the scoped test key.[^task-41]
 [^task-36]: Stop the test host writing WebKit data into the production app's WebKit directory
 [^task-41]: Stop the test host writing the production app's UserDefaults and starting Sparkle
 [^task-122]: A background tab whose load fails never shows the error page
+[^task-257]: management.uninstallSelf (its notes record the full-run investigation that found the network process limit)
 [^notes-crash]: Test host crash on process pool release; runaway test host memory

@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03T20:26:00Z'
-updated_date: '2026-11-04T00:02:00Z'
+updated_date: '2026-11-04T03:18:00Z'
 labels:
   - extensions
 dependencies: []
@@ -58,6 +58,8 @@ Code review (--fix): fixed a race where two back-to-back dialog calls stacked tw
 
 Tests: ExtensionManagementSelfTests 10/10 (new), ExtensionPolyfillTests 196, ExtensionHistoryScopeTests 25, ExtensionPageRehostTests, ExtensionUpdaterTests, ExtensionPageFavoriteTests, NativeMessagingEnforcementTests, RuntimeInstalledEventTests: 321 tests, 0 failures (after the review fixes).
 /verify (isolated DETOUR_DATA_DIR, seeded probe without the management permission, before the review fixes): the worker saw members getPermissionWarningsByManifest,getSelf,uninstallSelf; warnings for tabs+storage+<all_urls> were ['Read your browsing activity','Store data locally','All websites']; '{bad' gave lastError 'Failed to parse manifest.' with 0 callback args; uninstallSelf({showConfirmDialog:true}) showed the alert 'Uninstall "T257 Probe"?' / '"T257 Probe" asked to uninstall itself. This will remove the extension and all its data from every profile.' / Cancel, Uninstall (screenshot taken). Not verified at runtime: clicking Cancel or Uninstall in the real alert (Detour was not frontmost and synthetic input would have gone to the user's app); both answers are covered through the test seam.
+
+Full-run follow-up (Nov 3 2026, after d16eacc): the full DetourTests run failed 8 background-page tests in ExtensionPolyfillProfileWiringTests deterministically (install timeouts, localStorage records reading back empty, no keep-alive heartbeat), while the suite passed alone. Cause: the one WebKit network process takes only about 190 persistent sessions over its lifetime (counted from launch, not live stores or fds); after that it logs 'Could not create a sandbox extension ... errno = 12' and EPERM on new stores' observations.db/pcm.db/AlternativeService.sqlite, and a new profile's localStorage silently keeps nothing. No single commit: the test profiles added since f597a56 (TASK-247's ExtensionNotificationEventTests and this task's ExtensionManagementSelfTests the largest, plus TASK-250/251/253/259/260/261) pushed the run past the limit before the wiring suite. Fix in the test host: TestEnvironmentSetup terminates the network process (-[WKWebsiteDataStore _terminateNetworkProcess]) between test classes once 60 new WebKit storage identifiers are recorded. Full run after the fix: 3570 tests, 18 skipped, 0 failures (load 11.5 at start, 34.8 at end). Recorded in wiki/platform/webkit-test-host-traps.md.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
