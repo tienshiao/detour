@@ -112,6 +112,9 @@ sources:
   - id: task-247
     resource: backlog:TASK-247
     title: "Extensions: notifications.onClicked and onClosed are never delivered to the extension"
+  - id: task-264
+    resource: backlog:TASK-264
+    title: "Extensions: a Private-profile extension stops receiving notifications.onClicked and onClosed once a Private session starts or ends"
   - id: chromium-notifications-clear
     resource: https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/extensions/api/notifications/
     title: "Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)"
@@ -577,11 +580,22 @@ them in order and parks again with `ack` = the last `seq`.
   context. A refusal for the permission (an optional `notifications` not yet
   granted) is retried at the next `create`/`update`/`clear`/`getAll` while a
   listener exists, so the grant does not leave the worker deaf until restart.
+- **A Private session boundary leaves the park standing.** The Private
+  profile's contexts stay loaded between sessions, so a session starting or
+  ending (`removeSession(profileID:)`) takes the notifications and the
+  events queued for them but keeps each owner's park, incarnation history
+  and "listens" flag. Only unloading the extension (`removeAll(for:)`) and
+  deleting the profile (`removeAll(profileID:)`) answer the park "unloaded"
+  and forget the channel. Before TASK-264 the boundary used `removeAll(profileID:)`
+  too: the live worker took "unloaded" as final, never parked again, and
+  every later click and close waited unheard in the backlog until WebKit
+  restarted it.[^task-264]
 - `onButtonClicked` still never fires: buttons are not shown.
 
 The manager-level behaviour is in `ExtensionNotificationEventManagerTests`, the
 real-worker behaviour (profile isolation, byUser, backlog before the park,
-`runtime.reload()` superseding) in `ExtensionNotificationEventDeliveryTests`.
+`runtime.reload()` superseding, a Private worker hearing events across session
+boundaries) in `ExtensionNotificationEventDeliveryTests`.
 
 ## chrome.notifications is scoped by profile
 
@@ -624,7 +638,7 @@ and pending), when:
 |---|---|---|
 | The extension is unloaded from a profile: disabled there, uninstalled, updated, or its context reloaded by background recovery | `Profile.unloadExtension` → handler `removeNotifications(ofExtension:)` | `removeAll(for: owner)` |
 | The profile is deleted | `TabStore.deleteProfile`, after `unloadAllExtensions` → handler `removeAllNotifications()` | `removeAll(profileID:)` |
-| The Private session ends: the last Private window's space is removed, or the last Private Quick Detour closes or switches profile | `TabStore.endPrivateSessionIfUnused()`, the one place that also calls `siteSettings.discardPrivateSession()` | `removeAll(profileID: incognitoProfileID)` on the Private profile's handler |
+| The Private session ends: the last Private window's space is removed, or the last Private Quick Detour closes or switches profile | `TabStore.endPrivateSessionIfUnused()`, the one place that also calls `siteSettings.discardPrivateSession()` | `removeSession(profileID: incognitoProfileID)` on the Private profile's handler (`removeSessionNotifications()`): the notifications and their queued events go, the workers' parks stand (TASK-264) |
 | A Private session starts (a Private window's space or a Private Quick Detour, when none was live): the Private profile's contexts stay loaded between sessions, so a worker can create one while no Private page is open | `TabStore.startPrivateSessionIfNeeded()`, from `addIncognitoSpace` and `openQuickDetourTab` | the same |
 | The app quits, which ends the Private session without closing its windows | `applicationWillTerminate` → `TabStore.removePrivateProfileNotifications()`; best effort, the request may not reach usernoted before exit | the same |
 
@@ -794,7 +808,7 @@ uncaught error rather than an unhandled rejection.
 | [ExtensionPolyfillIntegrationTests](../../DetourTests/ExtensionPolyfillIntegrationTests.swift) | A real `WKWebExtensionContext`: what WebKit's wrappers actually do, garbage-collection survival, real origins |
 | [ExtensionPolyfillProfileWiringTests](../../DetourTests/ExtensionPolyfillProfileWiringTests.swift) | The production wiring in `Profile.extensionController`, with no test-side setup: deleting the wiring fails it |
 | [ExtensionHistoryScopeTests](../../DetourTests/ExtensionHistoryScopeTests.swift) | `chrome.history.search` through the same production wiring, one extension in two profiles: isolation, the permission gate, bad arguments and the default range from an extension page and a worker, promise and callback form |
-| [ExtensionNotificationManagerTests](../../DetourTests/ExtensionNotificationManagerTests.swift) | The `notifications` call orderings above against `HeldNotificationCenter`: clear or update while the `add` is in flight, create–clear–create, an `add` answering out of order or failing, another extension's clear; the same extension in another profile (getAll, clear, update, click and close resolution, legacy identifiers); opaque identifiers; `removeAll` and its hooks (Private session end in a `TabStore` of its own, profile deletion) |
+| [ExtensionNotificationManagerTests](../../DetourTests/ExtensionNotificationManagerTests.swift) | The `notifications` call orderings above against `HeldNotificationCenter`: clear or update while the `add` is in flight, create–clear–create, an `add` answering out of order or failing, another extension's clear; the same extension in another profile (getAll, clear, update, click and close resolution, legacy identifiers); opaque identifiers; `removeAll` and its hooks (Private session end in a `TabStore` of its own, profile deletion); a Private session boundary leaving a parked wait standing |
 | [ExtensionNotificationOrderingTests](../../DetourTests/ExtensionNotificationOrderingTests.swift) | The same orderings from an extension page and its worker through the production wiring, with the profile's handler on a held center; one extension in two persistent profiles, and in a persistent profile plus the built-in Private profile, sharing one manager, from both transports and in both directions; the Private session ending in the shared store, and unloading the extension from one profile |
 | [ExtensionFaviconScopeTests](../../DetourTests/ExtensionFaviconScopeTests.swift) | `_favicon` through the same wiring: one extension in two profiles, another profile's WebKit host, a tab's handler, the `favicon` permission, the Private profile, what a worker's `fetch` gets, and the removed `favicon.lookup` message from a page and a worker |
 
@@ -829,6 +843,7 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-254]: Extensions: notifications.create(null, options) is treated as create(options) with empty options
 [^chrome-notifications-api]: chrome.notifications API reference
 [^task-247]: Extensions: notifications.onClicked and onClosed are never delivered to the extension
+[^task-264]: Extensions: a Private-profile extension stops receiving notifications.onClicked and onClosed once a Private session starts or ends
 [^chromium-notifications-clear]: Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)
 [^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared
 [^task-253]: Extensions: Detour never requests notification permission, so extension notifications may never be shown

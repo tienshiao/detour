@@ -153,12 +153,20 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             for: ExtensionNotificationManager.Owner(profileID: profileID, extensionID: extensionID))
     }
 
-    /// Takes away every extension's notifications in this profile: when the
-    /// profile is deleted, and when the Private session ends
-    /// (`TabStore.endPrivateSessionIfUnused`) or the app quits, so none carries
-    /// over into the next one.
+    /// Takes away every extension's notifications in this profile when the
+    /// profile is deleted, and stops its contexts' waits for their events.
     func removeAllNotifications() {
         existingNotificationManager?.removeAll(profileID: profileID)
+    }
+
+    /// Takes away every extension's notifications in this profile, and the
+    /// events queued for them, at a Private session boundary
+    /// (`TabStore.removePrivateProfileNotifications`: a session starting or
+    /// ending, or the app quitting), so none carries over into the next one.
+    /// The contexts stay loaded across it, so their waits for events stand
+    /// (TASK-264).
+    func removeSessionNotifications() {
+        existingNotificationManager?.removeSession(profileID: profileID)
     }
 
     /// Active offscreen document hosts, keyed by extensionID.

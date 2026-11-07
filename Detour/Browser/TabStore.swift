@@ -2587,11 +2587,6 @@ class TabStore {
         removePrivateProfileNotifications()
     }
 
-    /// Takes the Private profile's extension notifications away, delivered
-    /// or pending. For the end of the Private session, and at quit, which
-    /// ends it without closing its windows: usernoted keeps a delivered
-    /// notification (its title and message included) past the app, and the
-    /// next launch can no longer map its identifier back to clear it.
     /// Call just before something starts using the Private session (a Private
     /// window's space, a Private Quick Detour). When none was live, a new
     /// session starts: the Private profile's extension contexts stay loaded
@@ -2603,8 +2598,16 @@ class TabStore {
         removePrivateProfileNotifications()
     }
 
+    /// Takes the Private profile's extension notifications away, delivered
+    /// or pending, with the click and close events queued for them. For the
+    /// start and end of a Private session, and at quit, which ends it without
+    /// closing its windows: usernoted keeps a delivered notification (its
+    /// title and message included) past the app, and the next launch can no
+    /// longer map its identifier back to clear it. The extension contexts
+    /// stay loaded, so their workers keep waiting for events: a notification
+    /// created afterwards still reaches `onClicked`/`onClosed` (TASK-264).
     func removePrivateProfileNotifications() {
-        profile(withID: Self.incognitoProfileID)?.polyfillHandler?.removeAllNotifications()
+        profile(withID: Self.incognitoProfileID)?.polyfillHandler?.removeSessionNotifications()
     }
 
     // MARK: - Tab Mutations

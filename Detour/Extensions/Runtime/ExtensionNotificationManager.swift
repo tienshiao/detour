@@ -117,8 +117,9 @@ final class SystemExtensionNotificationCenter: ExtensionNotificationCenter {
 ///
 /// An owner's notifications go when its scope does: `removeAll(for:)` when the
 /// extension is unloaded from the profile (disable, uninstall, update or
-/// reload), `removeAll(profileID:)` when the profile is deleted or the
-/// Private session ends, so nothing carries over into the next one.
+/// reload), `removeAll(profileID:)` when the profile is deleted, and
+/// `removeSession(profileID:)` when a Private session starts or ends, so
+/// nothing carries over into the next one.
 ///
 /// A notification is recorded when `create` is called, before the center's
 /// `add` returns, so the calls an extension makes without awaiting apply in
@@ -543,10 +544,27 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     }
 
     /// `removeAll(for:)` for every extension's notifications in the profile.
-    /// For a deleted profile and for the end of the Private session.
+    /// For a deleted profile: its contexts are gone, so their parks are
+    /// answered and their channels forgotten.
     func removeAll(profileID: UUID) {
         removeAll { $0.owner.profileID == profileID }
         dropEventChannels { $0.profileID == profileID }
+    }
+
+    /// Takes away every extension's notifications in the profile, delivered
+    /// or still pending, and the events queued for them, as `removeAll(profileID:)`
+    /// does, but leaves its contexts listening. For a Private session starting
+    /// or ending (TASK-264): the Private profile's contexts stay loaded between
+    /// sessions, so its worker's park belongs to a context that is still
+    /// running. Answering it as `removeAll` does ("the extension was
+    /// unloaded") would be final for that context (the polyfill never parks
+    /// again after it), and every later click and close would wait in the
+    /// backlog unheard until WebKit restarted the worker.
+    func removeSession(profileID: UUID) {
+        removeAll { $0.owner.profileID == profileID }
+        for owner in eventChannels.keys where owner.profileID == profileID {
+            eventChannels[owner]?.backlog.removeAll()
+        }
     }
 
     private func removeAll(where matches: (Entry) -> Bool) {

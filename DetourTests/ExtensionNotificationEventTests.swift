@@ -205,6 +205,64 @@ nonisolated final class ExtensionNotificationEventManagerTests: XCTestCase {
         XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA2).backlog, [])
     }
 
+    /// A Private session starting or ending (`removeSession(profileID:)`)
+    /// takes the profile's notifications and the events queued for them, but
+    /// its contexts stay loaded, so a park stands, unanswered (TASK-264):
+    /// answering it "unloaded" would stop the worker parking for good. A
+    /// click and a dismissal afterwards reach that park; another profile's
+    /// channel is untouched; and removing the owner afterwards still settles
+    /// the park.
+    @MainActor func testASessionBoundaryKeepsTheParkAndDropsTheQueuedEvents() {
+        let ownerB = ExtensionNotificationManager.Owner(profileID: Self.profile1, extensionID: "notif-events-b")
+        let old = create("old")
+        let oldB = create("old-b", owner: ownerB)
+        let otherProfile = create("other", owner: Self.ownerA2)
+        let first = park()
+        click(old)
+        XCTAssertEqual(first.events, ["clicked:old"])
+        let parked = park(ack: first.lastSeq)
+        click(oldB)
+        click(otherProfile)
+        XCTAssertEqual(manager.eventChannelForTesting(ownerB).backlog.map(\.notificationID), ["old-b"],
+                       "precondition: an unheard event of the ending session")
+
+        manager.removeSession(profileID: Self.profile1)
+        XCTAssertFalse(parked.answered, "the park stands: the context is still running")
+        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA).parkedInstance, "i1")
+        XCTAssertTrue(manager.eventChannelForTesting(Self.ownerA).listens)
+        XCTAssertEqual(manager.eventChannelForTesting(ownerB).backlog, [], "the session's events go with it")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertEqual(manager.getAll(owner: ownerB), [:])
+        XCTAssertTrue(center.removals.contains(old) && center.removals.contains(oldB))
+        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA2).backlog.map(\.notificationID), ["other"],
+                       "another profile's channel is untouched")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA2), ["other": true])
+        click(old)
+        XCTAssertFalse(parked.answered, "a click on the ended session's notification is ignored")
+
+        let next = create("next")
+        click(next)
+        XCTAssertEqual(parked.events, ["clicked:next"], "the next session's click reaches the standing park")
+        let again = park(ack: parked.lastSeq)
+        manager.handleResponse(identifier: next, action: UNNotificationDismissActionIdentifier)
+        XCTAssertEqual(again.events, ["closed:next:true"])
+
+        let last = park(ack: again.lastSeq)
+        manager.removeSession(profileID: Self.profile1)
+        XCTAssertFalse(last.answered)
+        manager.removeAll(for: Self.ownerA)
+        XCTAssertEqual(last.error, "notifications: the extension was unloaded",
+                       "unloading the extension still ends the wait")
+
+        let afterProfile = park(ownerB, instance: "b1")
+        manager.removeSession(profileID: Self.profile1)
+        XCTAssertFalse(afterProfile.answered)
+        manager.removeAll(profileID: Self.profile1)
+        XCTAssertEqual(afterProfile.error, "notifications: the extension was unloaded",
+                       "removing the profile still ends the wait")
+        XCTAssertFalse(manager.eventChannelForTesting(ownerB).listens)
+    }
+
     /// Every notification carries the category whose `.customDismissAction`
     /// makes the center report a dismissal.
     @MainActor func testNotificationsCarryTheDismissCategory() async {
@@ -238,6 +296,13 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
     private var overriddenHandlers: [ExtensionPolyfillHandler] = []
     private var previousLastActiveSpaceID: UUID?
     private var manager: ExtensionNotificationManager!
+    /// Extensions loaded into the built-in Private profile, which tearDown
+    /// unloads but does not delete, and saved in the shared database for
+    /// their Private row.
+    private var privateLoadedExtensionIDs: [String] = []
+    /// Private windows' spaces a test opened in the shared store; tearDown
+    /// removes any still there, which ends the Private session.
+    private var incognitoSpaceIDs: [UUID] = []
 
     /// Profiles whose controller hosted a web view live for the rest of the
     /// process (see `ExtensionNotificationOrderingTests.retainedProfiles`).
@@ -252,11 +317,20 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
     }
 
     @MainActor override func tearDown() async throws {
+        for id in incognitoSpaceIDs { TabStore.shared.removeIncognitoSpace(id: id) }
+        incognitoSpaceIDs.removeAll()
         for webView in openWebViews {
             webView.stopLoading()
             webView.loadHTMLString("", baseURL: nil)
         }
         openWebViews.removeAll()
+        let privateProfile = TabStore.shared.profiles.first { $0.id == TabStore.incognitoProfileID }
+        for id in privateLoadedExtensionIDs {
+            _ = privateProfile?.unloadExtension(id: id)
+            // The row's deletion cascades to its `profileExtension` rows.
+            AppDatabase.shared.deleteExtension(id: id)
+        }
+        privateLoadedExtensionIDs.removeAll()
         for profile in createdProfiles {
             profile.unloadAllExtensions()
             TabStore.shared.forceRemoveProfile(id: profile.id)
@@ -354,6 +428,28 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
                                              profileID: profile.id)
         createdSpaceIDs.append(space.id)
         ExtensionManager.shared.lastActiveSpaceID = space.id
+        _ = profile.extensionController
+        let handler = try XCTUnwrap(profile.polyfillHandler)
+        handler.notificationManagerOverride = manager
+        overriddenHandlers.append(handler)
+        return profile
+    }
+
+    /// The built-in Private profile with `ext` allowed in it (installed, its
+    /// Private `profileExtension` row on), its handler on the test manager.
+    /// tearDown unloads the context and deletes the rows; the profile stays,
+    /// as it does in the app.
+    @MainActor private func privateProfile(allowing ext: WebExtension) throws -> Profile {
+        let profile = TabStore.shared.ensureIncognitoProfile()
+        installTestExtension(ext, in: AppDatabase.shared,
+                             manifestJSON: (try? testExtensionManifestData(ext)) ?? Data("{}".utf8))
+        privateLoadedExtensionIDs.append(ext.id)
+        // The row's foreign key wants the Private profile's own row first.
+        AppDatabase.shared.saveProfile(profile.toRecord())
+        AppDatabase.shared.setProfileExtensionEnabled(
+            extensionID: ext.id, profileID: TabStore.incognitoProfileID.uuidString, enabled: true)
+        XCTAssertTrue(AppDatabase.shared.isExtensionEnabled(extensionID: ext.id, profileID: profile.id.uuidString),
+                      "precondition: the extension is allowed in Private")
         _ = profile.extensionController
         let handler = try XCTUnwrap(profile.polyfillHandler)
         handler.notificationManagerOverride = manager
@@ -534,6 +630,50 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
             let events = reply["events"] as? [[String: Any]] ?? []
             return events.count == 1 && events.first?["instance"] as? String == newInstance
         }
+    }
+
+    /// A Private session starting or ending takes the Private profile's
+    /// notifications, but its contexts stay loaded across it, and so does the
+    /// worker's park (TASK-264): before, the boundary answered it "unloaded",
+    /// the polyfill stopped parking for good, and every later click and close
+    /// waited unheard. A click after the start reaches `onClicked`, a
+    /// dismissal after the end reaches `onClosed`, in the same incarnation.
+    @MainActor func testAPrivateWorkerHearsEventsAcrossSessionBoundaries() async throws {
+        let ext = try await makeExtension()
+        let profile = try privateProfile(allowing: ext)
+        let page = try await start(ext, in: profile).page
+        XCTAssertFalse(TabStore.shared.hasLivePrivateSession, "precondition: no Private session yet")
+        _ = try await ask(page, ["type": "create", "id": "between"])
+        let instance = try await waitForPark(ext, in: profile)
+
+        let window = TabStore.shared.addIncognitoSpace()
+        incognitoSpaceIDs.append(window.id)
+        let afterStart = try await ask(page, ["type": "getAll"])["result"] as? [String: Any]
+        XCTAssertEqual(afterStart?.keys.sorted(), [], "precondition: the session started clean")
+        XCTAssertEqual(manager.eventChannelForTesting(owner(ext, profile)).parkedInstance, instance,
+                       "the start leaves the park standing")
+        _ = try await ask(page, ["type": "create", "id": "in-session"])
+        manager.handleResponse(identifier: identifier("in-session", of: ext, in: profile),
+                               action: UNNotificationDefaultActionIdentifier)
+        try await waitUntil("the click after the start to reach onClicked", timeout: 20) {
+            try await self.events(page) == ["clicked:in-session"]
+        }
+        _ = try await waitForPark(ext, in: profile)
+
+        TabStore.shared.removeIncognitoSpace(id: window.id)
+        incognitoSpaceIDs.removeAll()
+        XCTAssertFalse(TabStore.shared.hasLivePrivateSession)
+        XCTAssertNotNil(manager.eventChannelForTesting(owner(ext, profile)).parkedInstance ?? nil,
+                        "the end leaves the park standing")
+        _ = try await ask(page, ["type": "create", "id": "after-end"])
+        manager.handleResponse(identifier: identifier("after-end", of: ext, in: profile),
+                               action: UNNotificationDismissActionIdentifier)
+        try await waitUntil("the dismissal after the end to reach onClosed", timeout: 20) {
+            try await self.events(page) == ["clicked:in-session", "closed:after-end:true"]
+        }
+        let reply = try await ask(page, ["type": "events"])
+        let instances = (reply["events"] as? [[String: Any]] ?? []).compactMap { $0["instance"] as? String }
+        XCTAssertEqual(Set(instances), [instance], "one incarnation heard both: no restart was needed")
     }
 
     /// An extension page may not park (only the background context gets the

@@ -1179,6 +1179,55 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         store.closeQuickDetourTab(quick, disposition: .discard)
     }
 
+    /// A Private session starting or ending takes the notifications but not
+    /// the Private worker's wait for their events: its context stays loaded,
+    /// so a click and a dismissal on a notification created after either
+    /// boundary reach that wait (TASK-264).
+    @MainActor func testAPrivateSessionBoundaryLeavesTheWorkersWaitStanding() async throws {
+        center.holdsAdds = false
+        manager.wakeBackground = { _ in }
+        let (store, _) = try privateSessionStore()
+        var replies: [(value: Any?, error: String?)] = []
+        func park(ack: Int?) {
+            manager.awaitEvent(owner: Self.privateOwner, instance: "worker", ack: ack) { value, error in
+                replies.append((value, error))
+            }
+        }
+        func lastEvent() -> [String: Any]? {
+            ((replies.last?.value as? [String: Any])?["events"] as? [[String: Any]])?.last
+        }
+
+        let between = startCreate("between", title: "Between", owner: Self.privateOwner)
+        await fulfillment(of: [between.done], timeout: 5)
+        park(ack: nil)
+        let window = store.addIncognitoSpace()
+        XCTAssertEqual(manager.getAll(owner: Self.privateOwner), [:], "precondition: the session started clean")
+        XCTAssertTrue(replies.isEmpty, "the start leaves the wait standing")
+
+        let inSession = startCreate("in-session", title: "In session", owner: Self.privateOwner)
+        await fulfillment(of: [inSession.done], timeout: 5)
+        manager.handleResponse(identifier: inSession.identifier, action: UNNotificationDefaultActionIdentifier)
+        XCTAssertEqual(replies.count, 1)
+        XCTAssertNil(replies.last?.error)
+        XCTAssertEqual(lastEvent()?["kind"] as? String, "clicked")
+        XCTAssertEqual(lastEvent()?["notificationId"] as? String, "in-session")
+        park(ack: lastEvent()?["seq"] as? Int)
+
+        store.removeIncognitoSpace(id: window.id)
+        XCTAssertFalse(store.hasLivePrivateSession)
+        XCTAssertEqual(manager.getAll(owner: Self.privateOwner), [:])
+        XCTAssertEqual(replies.count, 1, "the end leaves the wait standing")
+
+        let after = startCreate("after", title: "After", owner: Self.privateOwner)
+        await fulfillment(of: [after.done], timeout: 5)
+        manager.handleResponse(identifier: after.identifier, action: UNNotificationDismissActionIdentifier)
+        XCTAssertEqual(replies.count, 2)
+        XCTAssertNil(replies.last?.error)
+        XCTAssertEqual(lastEvent()?["kind"] as? String, "closed")
+        XCTAssertEqual(lastEvent()?["notificationId"] as? String, "after")
+        XCTAssertEqual(lastEvent()?["byUser"] as? Bool, true)
+    }
+
     /// Deleting a profile takes every extension's notifications in it.
     @MainActor func testDeletingAProfileTakesItsNotifications() async throws {
         center.holdsAdds = false

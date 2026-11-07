@@ -1,5 +1,8 @@
 # Wiki Update Log
 
+## 2026-11-06
+* **Update**: TASK-264 — [Polyfill layer](extensions/polyfill-layer.md) (notification events bullet "A Private session boundary leaves the park standing", scope table): a Private session starting or ending now calls `removeSession(profileID:)`, which takes the notifications and their queued events but keeps the live workers' parks; only an unload or a profile deletion answers the park "unloaded". Before, the boundary's "unloaded" answer was final for the still-loaded Private worker, which never parked again.
+
 ## 2026-11-04
 * **Update**: TASK-166 — [Build and test](playbooks/build-and-test.md) (new trap "Late web-view suites fail only in a full run"): the standing full-run-only failures of background-page onInstalled cases in `ExtensionPolyfillProfileWiringTests` were WebKit's network-process exhaustion, fixed by the test host's restart every 60 new stores (7c2bc2a); confirmed in two full runs of the merged epic branch.
 
