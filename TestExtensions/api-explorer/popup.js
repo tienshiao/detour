@@ -511,6 +511,24 @@ document.getElementById('btn-notif-race-popup').addEventListener('click', async 
   } catch (e) { showResult('res-notifications', e.message, true); }
 });
 
+// create('') generates a fresh id each time, as Chrome's does for an id "not
+// set or empty" (TASK-269): two calls are two notifications, none under ''.
+document.getElementById('btn-notif-empty-id').addEventListener('click', async () => {
+  try {
+    const options = {
+      type: 'basic', title: 'Empty id', message: 'Generated id',
+      iconUrl: chrome.runtime.getURL('icon.png')
+    };
+    const first = await chrome.notifications.create('', options);
+    const second = await chrome.notifications.create('', options);
+    const all = await chrome.notifications.getAll();
+    showResult('res-notifications', {
+      first, second, distinct: first !== second && first !== '' && second !== '',
+      listedUnderEmptyId: Object.prototype.hasOwnProperty.call(all, ''), notifications: all
+    });
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
 // --- Management ---
 
 document.getElementById('btn-mgmt-self').addEventListener('click', async () => {

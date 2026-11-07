@@ -154,6 +154,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         const options = { type: 'basic', title: title || '', message: 'isolation test' };
         if (op === 'create') { return { result: await chrome.notifications.create(id, options) }; }
         if (op === 'createNullID') { return { result: await chrome.notifications.create(null, options) }; }
+        if (op === 'createEmptyID') { return { result: await chrome.notifications.create('', options) }; }
         if (op === 'update') { return { result: await chrome.notifications.update(id, options) }; }
         if (op === 'clear') { return { result: await chrome.notifications.clear(id) }; }
         if (op === 'getAll') { return { result: await chrome.notifications.getAll() }; }
@@ -665,6 +666,37 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
                 XCTAssertEqual(all[id] as? Bool, true, "\(transport) \(id): \(all)")
             }
         }
+    }
+
+    /// create('', options) generates a fresh id each time, as Chrome's does
+    /// for an id "not set or empty" (TASK-269): two calls are two
+    /// notifications and getAll never lists an empty id, from the page and
+    /// the worker.
+    @MainActor func testCreateWithAnEmptyIDGeneratesOneFromBothTransports() async throws {
+        let ext = try await makeExtension()
+        let (profile, center) = try makeProfile("Notification Empty ID")
+        center.holdsAdds = false
+        let page = try await loadPage(ext, in: profile)
+
+        var all: [String: Any] = [:]
+        var generated: [String] = []
+        for transport in [Transport.page, .worker] {
+            for n in 1...2 {
+                let title = "Empty id \(transport) \(n)"
+                let id = try await call("createEmptyID", title: title, via: transport, in: page) as? String
+                let created = try XCTUnwrap(id, "\(transport): create answers an id")
+                XCTAssertFalse(created.isEmpty, "\(transport): a generated id, not the empty one")
+                XCTAssertFalse(generated.contains(created), "\(transport): a fresh id each time: \(generated)")
+                generated.append(created)
+                XCTAssertEqual(center.shown[identifier(created, of: ext, in: profile)], title, "\(transport)")
+            }
+            all = try await call("getAll", via: transport, in: page) as? [String: Any] ?? [:]
+            XCTAssertNil(all[""], "\(transport): no notification under the empty id: \(all)")
+            for id in generated {
+                XCTAssertNotNil(all[id], "\(transport): getAll lists \(id): \(all)")
+            }
+        }
+        XCTAssertEqual(Set(all.keys), Set(generated), "four creates, four notifications")
     }
 
     @MainActor func testUpdateWhileCreateInFlightTakesEffect() async throws {

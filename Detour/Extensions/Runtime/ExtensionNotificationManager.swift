@@ -442,8 +442,12 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// Each create also checks the shown entries against the center
     /// (`synchronizeWithCenter`, coalesced and throttled), so the entries of an extension
     /// that never clears cannot outgrow what is on screen (TASK-272).
+    ///
+    /// A nil or empty `notificationID` gets a generated id, as Chrome's does
+    /// for one "not set or empty" (TASK-269): an empty id is never kept.
     func create(owner: Owner, notificationID: String?, options: [String: Any], completion: @escaping (String) -> Void) {
-        show(owner: owner, notificationID: notificationID, options: options, isUpdate: false) { id, _ in completion(id) }
+        let given = notificationID?.isEmpty == false ? notificationID : nil
+        show(owner: owner, notificationID: given, options: options, isUpdate: false) { id, _ in completion(id) }
         synchronizeAfterCreate()
     }
 

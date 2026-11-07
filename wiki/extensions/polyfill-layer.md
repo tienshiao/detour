@@ -103,6 +103,9 @@ sources:
   - id: task-254
     resource: backlog:TASK-254
     title: "Extensions: notifications.create(null, options) is treated as create(options) with empty options"
+  - id: task-269
+    resource: backlog:TASK-269
+    title: "Extensions: notifications.create with an empty id keeps it instead of generating one"
   - id: chrome-notifications-api
     resource: https://developer.chrome.com/docs/extensions/reference/api/notifications
     title: chrome.notifications API reference
@@ -499,6 +502,10 @@ extension notification of any build:[^task-248]
 generated. Only a non-null object in the first slot means the id was left out
 (`typeof null` is `'object'`, which once made `create(null, options)` create
 an empty notification).[^task-254]
+An empty id is generated too, as Chrome's is for one "not set or empty":
+`ExtensionNotificationManager.create` replaces `""` with a fresh UUID, so
+`create('', …)` twice makes two notifications and `getAll` never lists `""`.
+Before, the empty id was kept and every such create replaced the last.[^task-269]
 
 ## chrome.notifications asks for authorization at the first create
 
@@ -922,6 +929,7 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-257]: Extensions: management.uninstallSelf and management.getPermissionWarningsByManifest are missing
 [^task-240]: Extensions: notifications.clear and notifications.update diverge from Chrome
 [^task-254]: Extensions: notifications.create(null, options) is treated as create(options) with empty options
+[^task-269]: Extensions: notifications.create with an empty id keeps it instead of generating one
 [^chrome-notifications-api]: chrome.notifications API reference
 [^task-247]: Extensions: notifications.onClicked and onClosed are never delivered to the extension
 [^task-264]: Extensions: a Private-profile extension stops receiving notifications.onClicked and onClosed once a Private session starts or ends

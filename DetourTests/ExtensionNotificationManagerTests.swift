@@ -364,6 +364,29 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         XCTAssertEqual(center.statusQueries, 1)
     }
 
+    /// Chrome generates an id when `notificationId` is "not set or empty"
+    /// (TASK-269): two creates with an empty id are two notifications, and
+    /// neither is listed under the empty id.
+    @MainActor func testCreateWithAnEmptyIDGeneratesAFreshIDEachTime() async throws {
+        center.holdsAdds = false
+        var answered: [String] = []
+        for title in ["First", "Second"] {
+            let done = expectation(description: "create \(title) answers")
+            manager.create(owner: Self.ownerA, notificationID: "", options: ["title": title, "message": "m"]) {
+                answered.append($0)
+                done.fulfill()
+            }
+            await fulfillment(of: [done], timeout: 5)
+        }
+        XCTAssertEqual(answered.count, 2)
+        XCTAssertFalse(answered.contains(""), "an empty id is never kept: \(answered)")
+        XCTAssertEqual(Set(answered).count, 2, "each create gets its own id: \(answered)")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), Dictionary(uniqueKeysWithValues: answered.map { ($0, true) }))
+        XCTAssertEqual(center.addedIdentifiers.count, 2, "the second create adds, not replaces")
+        XCTAssertEqual(Set(center.shown.values), ["First", "Second"])
+        XCTAssertNil(manager.identifier(for: Self.ownerA, notificationID: ""))
+    }
+
     /// Denied earlier: the create answers its id, as Chrome's does when the
     /// OS blocks notifications, but nothing is shown or listed, and clear and
     /// update find nothing.
