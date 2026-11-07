@@ -4,7 +4,7 @@ title: Site search
 description: "Keyword shortcuts in the command palette that search one site (TASK-287): typing a keyword then Tab or Space enters a mode with the site's name as a chip, Return opens the site's results URL; the app-wide list in the siteSearch table (migration v21, a starter set seeded once), its rules, and the Settings > Search pane that edits it."
 tags: [command-palette, search, settings]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-07T10:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-07T11:30:00Z }
 sources:
   - id: task-287
     resource: backlog:TASK-287
@@ -24,6 +24,12 @@ sources:
   - id: pane
     resource: ../../Detour/Browser/Settings/SearchSettingsViewController.swift
     title: SearchSettingsViewController.swift (the pane and SiteSearchForm)
+  - id: task-290
+    resource: backlog:TASK-290
+    title: "Command palette: the site-search chip takes the site's color, else the space's"
+  - id: site-color
+    resource: ../../Detour/Browser/SiteSearch/SiteColor.swift
+    title: SiteColor.swift (dominant color, text color)
   - id: tests
     resource: ../../DetourTests/SiteSearchTests.swift
     title: SiteSearchTests.swift
@@ -118,6 +124,46 @@ The chip (`SiteSearchChipView`) sits between the magnifying glass and the
 field; the field's leading constraint swaps between the icon and the chip.
 The placeholder becomes "Search *name*" and is put back on leaving.
 
+### The chip's color
+
+Arc colors a site by its icon; the chip does the same (TASK-290):[^task-290]
+
+1. **At once**, the color of the palette's space (`Space.color`), or the
+   accent color for a palette with no space (Quick Detour).
+2. **Then the site's**, when the profile has a favicon recorded for the site
+   (`SuggestionProvider.siteFaviconURL(forHost:)`: the history's favicon
+   for the entry's `displayHost`, then its `www.` form, read on the palette's
+   history queue) and the icon has a clear color. The icon is loaded through
+   `FaviconLoader` (usually cached: the palette's rows load the same icons)
+   and the chip cross-fades to it in 0.3 s, or switches without a fade
+   under Reduce Motion.
+
+A Private palette has no history scope and a site the profile never visited
+has no recorded icon: both keep the space's color and **fetch nothing**, so
+entering a site search never contacts a site the user has not been to.
+Each lookup carries a generation (`siteColorGeneration`) bumped when the mode
+ends or a new lookup starts; a palette re-scoped to another profile's space
+(`reloadSuggestions`) resets the chip to the new space's color and looks the
+site up again in the new scope, so one profile's visits never color another
+profile's chip.
+
+`SiteColor.dominant` (pure, `SiteColorTests`) draws the icon at 16×16,
+keeps the pixels at least half opaque, drops greys, black and white
+(saturation under 0.25 or brightness under 0.2), groups the rest into 12 hues
+weighted by saturation (each centred on its hue, so red spans 345°–15° rather
+than being split across the 0° seam, which once let a smaller blue win over a
+red logo), and needs the winning hue to cover 10% of the opaque
+pixels (a grey logo with a small colored detail has no color). The color is
+the average of that hue's pixels within 0.15 of its most saturated one:
+averaging them all let a red logo's anti-aliased edges against white pull
+the color to pink (measured: (1, 0.12, 0.13) for a red disc on white).
+
+The text is white unless white's contrast with the fill falls below 3:1
+(WCAG's minimum for large and bold text), then black. Picking whichever
+contrast is higher would put black on YouTube's red and the system blue,
+where Arc and macOS use white; the 3:1 rule gives white there and black on
+yellow, green and orange.
+
 ## Settings > Search
 
 `SearchSettingsViewController`, after Profiles in the toolbar. One bordered
@@ -176,3 +222,4 @@ store's notification, so a change from anywhere shows at once.
 
 [^task-287]: TASK-287, 2026-11-07.
 [^task-288]: TASK-288, filed 2026-11-07.
+[^task-290]: TASK-290, 2026-11-07: measured in the app with YouTube's real favicon (the space's blue, then red, white text) and a never-visited GitHub in dark mode (the space's blue throughout).

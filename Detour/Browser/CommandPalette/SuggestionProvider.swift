@@ -119,6 +119,19 @@ nonisolated final class SuggestionProvider: Sendable {
             .map { .historyResult(url: $0.url, title: Self.displayTitle($0), faviconURL: $0.faviconURL) }
     }
 
+    /// The favicon URL the profile has recorded for the site on `host`
+    /// (`SiteSearch.displayHost`: lowercased, no `www.`; TASK-290): its root,
+    /// or the page of the host visited most recently, without and with
+    /// `www.`. Nil with no scope (a Private window) or for a site the profile
+    /// never visited.
+    func siteFaviconURL(forHost host: String, historySpaceIDs: [String]) -> String? {
+        guard !historySpaceIDs.isEmpty, !host.isEmpty else { return nil }
+        for candidate in [host, "www." + host] {
+            if let url = db.faviconURL(for: "https://\(candidate)/", visitedInSpaces: historySpaceIDs) { return url }
+        }
+        return nil
+    }
+
     /// Visited hosts offered as rows after the verbatim one, besides the top hit.
     static let maxOtherHosts = 2
 

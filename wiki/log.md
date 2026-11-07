@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-11-07
+* **Update**: TASK-290 — [Site search](features/site-search.md) (new section "The chip's color"): the chip is the space's color at once, then the site's favicon color when the profile has a recorded icon with a clear dominant hue (never fetched for Private or unvisited sites), cross-faded unless Reduce Motion; the dominant-color rule (saturated core of the heaviest hue, so anti-aliased edges do not pull red to pink) and white text unless below 3:1 contrast.
 * **Creation**: TASK-287 — [Site search](features/site-search.md): keyword shortcuts and Arc-style host and name matching in the command palette (Tab on a keyword, on the site the field completes to, or on the start of a site's name; Space after a keyword), the mode's chip, rows and keys, the `siteSearch` table (v21, starter set seeded once in SQL; Google Maps on maps.google.com so google.com stays a completion), the percent-encoding that works in a path or a query, and Settings > Search with its validating sheet. Updated [Command palette](features/command-palette.md) (submit and keyboard tables), [Suggestion pipeline](features/suggestion-pipeline.md) (row types), [Settings window](features/settings.md) (eight panes, the Search pane), [Session database](architecture/session-database.md) (v21, `siteSearch`).
 
 ## 2026-11-06

@@ -55,6 +55,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// The site search the field is in, or nil for normal input. While set,
     /// the field holds only the query and the chip names the site.
     private(set) var activeSiteSearch: SiteSearch?
+    /// Bumped by every site-color lookup and by leaving site-search mode, so
+    /// a lookup that lands after the mode, the entry or the scope changed
+    /// (its profile's history is no longer the palette's) is dropped.
+    private var siteColorGeneration = 0
     /// The keyword whose site search the user just left with Backspace: the
     /// Space typed after it is a space, so `w` then Backspace then ` foo`
     /// searches the default engine for "w foo". Cleared once the field no
@@ -69,7 +73,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private var siteSearchOffer: (entry: SiteSearch, fieldText: String)?
     /// The placeholder to put back when site-search mode ends.
     private var placeholderOutsideSiteSearch: String?
-    private let siteSearchChip = SiteSearchChipView()
+    /// Internal so tests can read its fill (TASK-290).
+    let siteSearchChip = SiteSearchChipView()
     private var textFieldLeadingToIcon: NSLayoutConstraint!
     private var textFieldLeadingToChip: NSLayoutConstraint!
 
@@ -342,6 +347,12 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// another profile with the palette open, TASK-209). Leaves the field
     /// alone: no inline completion is applied.
     func reloadSuggestions() {
+        // The chip's color came from the old space and the old profile's
+        // history: start over from the new ones (TASK-290).
+        if let entry = activeSiteSearch {
+            siteSearchChip.setFill(spaceColor, animated: false)
+            loadSiteColor(for: entry)
+        }
         refreshLocalSuggestions(allowAutocomplete: false)
     }
 
@@ -810,6 +821,36 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         return (entry, completed ?? typed)
     }
 
+    /// The color of the space the palette belongs to; the accent color for a
+    /// palette with no space (Quick Detour).
+    private var spaceColor: NSColor {
+        activeSpaceID.flatMap { tabStore?.space(withID: $0) }?.color ?? .controlAccentColor
+    }
+
+    /// Looks up the favicon the profile has recorded for `entry`'s site (off
+    /// the main thread, like the history passes) and, when the icon has a
+    /// clear color, cross-fades the chip to it (TASK-290). A Private palette
+    /// has no history scope, and a site the profile never visited has no
+    /// recorded icon: both keep the space's color, and nothing is fetched.
+    private func loadSiteColor(for entry: SiteSearch) {
+        siteColorGeneration &+= 1
+        guard !historySpaceIDs.isEmpty, let host = entry.displayHost else { return }
+        let generation = siteColorGeneration
+        let provider = suggestionProvider
+        let historySpaceIDs = historySpaceIDs
+        historyQueryQueue.async { [weak self] in
+            let faviconURL = provider.siteFaviconURL(forHost: host, historySpaceIDs: historySpaceIDs)
+            DispatchQueue.main.async {
+                guard let self, let faviconURL, generation == self.siteColorGeneration else { return }
+                provider.loadFavicon(for: faviconURL) { [weak self] image in
+                    guard let self, generation == self.siteColorGeneration,
+                          let image, let color = SiteColor.dominant(in: image) else { return }
+                    self.siteSearchChip.setFill(color.nsColor, animated: true)
+                }
+            }
+        }
+    }
+
     /// Switches the field to searching `entry`: the chip names the site, the
     /// field is emptied for the query, and the list shows the site's rows.
     /// `text` is the field's text it was entered from, for Backspace.
@@ -824,7 +865,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         userTypedText = ""
         setTextFieldQuietly("")
         siteSearchChip.title = entry.name
+        siteSearchChip.setFill(spaceColor, animated: false)
         siteSearchChip.isHidden = false
+        loadSiteColor(for: entry)
         textFieldLeadingToIcon.isActive = false
         textFieldLeadingToChip.isActive = true
         placeholderOutsideSiteSearch = textField.placeholderString
@@ -837,6 +880,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private func endSiteSearchMode() {
         guard activeSiteSearch != nil else { return }
         activeSiteSearch = nil
+        siteColorGeneration &+= 1
         siteSearchChip.isHidden = true
         textFieldLeadingToChip.isActive = false
         textFieldLeadingToIcon.isActive = true
@@ -1226,8 +1270,49 @@ private class SuggestionCellView: NSTableCellView {
 // MARK: - SiteSearchChipView
 
 /// The site's name at the start of the field in site-search mode (TASK-287).
-private final class SiteSearchChipView: NSView {
+///
+/// Filled with the site's color (TASK-290): the space's at once, then the
+/// favicon's when one is found; the text is light or dark by contrast.
+final class SiteSearchChipView: NSView {
     private let label = NSTextField(labelWithString: "")
+    /// The fill; dynamic colors (the accent) resolve in `updateLayer`.
+    private(set) var fill: NSColor = .controlAccentColor
+    /// The text color the last `setFill` chose; readable for tests.
+    var textColor: NSColor { label.textColor ?? .labelColor }
+
+    /// Fills the chip with `color`. `animated` cross-fades to it, unless the
+    /// user asked for reduced motion.
+    func setFill(_ color: NSColor, animated: Bool) {
+        // Start from what is on screen, mid-fade included; a set without a
+        // fade must also end one still running (a previous site's).
+        let old = layer?.presentation()?.backgroundColor ?? layer?.backgroundColor
+        layer?.removeAnimation(forKey: "fill")
+        fill = color
+        let resolved = resolvedFill
+        updateTextColor(for: resolved)
+        if animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let old {
+            let fade = CABasicAnimation(keyPath: "backgroundColor")
+            fade.fromValue = old
+            fade.toValue = resolved
+            fade.duration = 0.3
+            fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer?.add(fade, forKey: "fill")
+        }
+        layer?.backgroundColor = resolved
+    }
+
+    private var resolvedFill: CGColor {
+        var cg: CGColor?
+        effectiveAppearance.performAsCurrentDrawingAppearance { cg = fill.cgColor }
+        return cg ?? fill.cgColor
+    }
+
+    /// White text unless it reads poorly on `resolved` (a dynamic fill such as
+    /// the accent is re-resolved, and re-judged, on an appearance change).
+    private func updateTextColor(for resolved: CGColor) {
+        let rgb = NSColor(cgColor: resolved).flatMap(SiteColor.RGB.init)
+        label.textColor = rgb.map(SiteColor.prefersDarkText) == true ? .black : .white
+    }
 
     var title: String {
         get { label.stringValue }
@@ -1242,7 +1327,7 @@ private final class SiteSearchChipView: NSView {
         wantsLayer = true
         layer?.cornerRadius = 6
         label.font = .systemFont(ofSize: 14, weight: .medium)
-        label.textColor = .labelColor
+        label.textColor = .white
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
@@ -1260,7 +1345,9 @@ private final class SiteSearchChipView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override func updateLayer() {
-        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.2).cgColor
+        let resolved = resolvedFill
+        layer?.backgroundColor = resolved
+        updateTextColor(for: resolved)
     }
 
     override var wantsUpdateLayer: Bool { true }

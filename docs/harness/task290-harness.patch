@@ -1,0 +1,88 @@
+TASK-290 runtime harness: the site-search chip's color. Temporary code, never
+committed to Detour/. Apply, build, run with DETOUR_VERIFY_DIR and an isolated
+DETOUR_DATA_DIR, capture the "SHOOT <windowNumber> <tag>" lines with
+`screencapture -x -o -l`, then `git apply -R` it and `xcodegen generate`.
+
+Seeds a visit to youtube.com with YouTube's real favicon URL, enters "yt " in
+a Cmd+T palette (the chip is the space's blue at once, then YouTube's red once
+the icon loads, white text), then in dark mode "gh " (GitHub never visited:
+the space's blue stays, nothing is fetched).
+
+Results (2026-11-07): yt → fill (0.00 0.48 1.00) then (1.00 0.00 0.00), text
+white; gh → (0.00 0.48 1.00) throughout.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 68ac340..bd34aa8 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -149,6 +149,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask290HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task290Harness.swift b/Detour/App/Task290Harness.swift
+new file mode 100644
+index 0000000..07e95ad
+--- /dev/null
++++ b/Detour/App/Task290Harness.swift
+@@ -0,0 +1,55 @@
++// TEMP TASK-290 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask290HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        func log(_ line: String) {
++            let data = Data((line + "\n").utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) { h.seekToEndOfFile(); h.write(data); try? h.close() }
++            else { try? data.write(to: logURL) }
++        }
++        var clock: TimeInterval = 3.0
++        func at(_ dt: TimeInterval, _ block: @escaping @MainActor @Sendable () -> Void) {
++            clock += dt
++            Timer.scheduledMainTimer(withTimeInterval: clock, repeats: false) { _ in block() }
++        }
++        guard let window = wc.window else { return log("no window") }
++        func key(_ chars: String) {
++            guard let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
++                                           timestamp: ProcessInfo.processInfo.systemUptime,
++                                           windowNumber: window.windowNumber, context: nil,
++                                           characters: chars, charactersIgnoringModifiers: chars,
++                                           isARepeat: false, keyCode: 0) else { return }
++            window.firstResponder?.keyDown(with: e)
++        }
++        func chip() -> String {
++            guard let p = wc.commandPaletteView else { return "no palette" }
++            let rgb = SiteColor.RGB(p.siteSearchChip.fill)
++            return String(format: "site=%@ fill=(%.2f %.2f %.2f) text=%@", p.activeSiteSearch?.name ?? "nil",
++                          rgb?.red ?? -1, rgb?.green ?? -1, rgb?.blue ?? -1,
++                          p.siteSearchChip.textColor == .white ? "white" : "dark")
++        }
++        at(0) {
++            guard let spaceID = wc.activeSpaceID else { return log("no space") }
++            HistoryDatabase.shared.recordVisit(url: "https://www.youtube.com/", title: "YouTube",
++                                               faviconURL: "https://www.youtube.com/favicon.ico",
++                                               spaceID: spaceID.uuidString, typed: true)
++            NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
++            log("space color \(wc.activeSpace?.colorHex ?? "?")")
++        }
++        at(1.0) { NSApp.sendAction(#selector(BrowserWindowController.newTab(_:)), to: wc, from: nil); key("y"); key("t"); key(" "); log("yt: \(chip())") }
++        at(2.5) { key("c"); key("a"); key("t"); key("s"); log("after icon: \(chip())"); log("SHOOT \(window.windowNumber) youtube") }
++        at(2.5) {
++            wc.dismissCommandPalette()
++            NSApp.appearance = NSAppearance(named: .darkAqua)
++            NSApp.sendAction(#selector(BrowserWindowController.newTab(_:)), to: wc, from: nil); key("g"); key("h"); key(" "); key("x")
++            log("gh: \(chip())")
++        }
++        at(2.0) { log("gh later: \(chip())"); log("SHOOT \(window.windowNumber) github-dark") }
++        at(2.5) { log("done") }
++    }
++}
++#endif
