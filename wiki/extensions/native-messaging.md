@@ -43,6 +43,9 @@ sources:
   - id: manifest-tests
     resource: ../../DetourTests/NativeHostManifestValidationTests.swift
     title: NativeHostManifestValidationTests.swift
+  - id: task-275
+    resource: backlog:TASK-275
+    title: "Native messaging: a failed connect leaves the host's pipes and stderr handler behind"
   - id: task-243
     resource: backlog:TASK-243
     title: "Native messaging: quitting Detour may leave live port hosts running"
@@ -142,6 +145,14 @@ desktop-app channel is the main user (see
    Detour's working directory.
 6. `path` must be an executable file. It is spawned with the origin as its
    one argument, as Chrome does, with pipes for stdin, stdout and stderr.
+   The process and pipes stay local to `connect()` until `run()` has
+   succeeded under the registry lock; when the spawn throws there (Detour
+   is [quitting](#quitting), or `run()` fails, e.g. on a `path` that is a
+   directory, which passes the executable check) every pipe end is closed
+   before the error goes out, and the stderr reader is only installed once
+   the host runs. Each failed connect used to keep 3 (failed `run()`) to 7
+   (quit refusal) descriptors open for as long as its host object
+   lived.[^task-275]
 
 What the extension sees for each refusal is Chrome's text for the
 launcher's result, as a rejected `sendNativeMessage` (promise and
@@ -537,6 +548,12 @@ evidence for. There is no level between notice and error to use:
   ignores `SIGPIPE` process-wide and the stdin descriptor has
   `F_SETNOSIGPIPE`, so the failure surfaces as EPIPE in the writer, which
   ends the connection (see [writing to the host](#writing-to-the-host)).
+- **A failed `Process.run()` closes half the pipes.** Measured on macOS
+  26: when the spawn fails (EACCES on a directory), Foundation has already
+  closed the child's ends (stdin's read end, stdout's and stderr's write
+  ends) through their `FileHandle`s; the parent's three stay open. Closing
+  all six handles afterwards is safe: a second `close()` on a handle is a
+  no-op and does not close a descriptor number reused in between.[^task-275]
 - **Host stderr at EOF.** Foundation keeps calling a `readabilityHandler`
   with empty data after EOF; the handler clears itself, or a host that closes
   stderr and stays alive spins a core.
@@ -620,6 +637,13 @@ evidence for. There is no level between notice and error to use:
   shows a too-large message and a full queue each disconnect the page's
   port and end the host; `ExtensionPolyfillProfileWiringTests` repeats both
   from a service worker.
+- A failed connect (TASK-275), in `NativeMessagingHostLifecycleTests`: 50
+  connects whose `run()` fails and 50 refused for quitting (a Debug-only
+  `setRefusingNewHostsForTesting` seam, reset in tearDown), with every host
+  kept alive, leave the test process's open descriptor count (`fcntl` over
+  `getdtablesize()`) within 10 of where it was; before the fix it grew by
+  149 and 350. A host refused once connects and echoes once the refusal is
+  lifted.
 - Framing helpers (`encodeMessage`, `decodeMessage`) are also covered in
   `ExtensionIDDerivationTests`. The log line *text* is not asserted anywhere.
 
@@ -652,3 +676,4 @@ evidence for. There is no level between notice and error to use:
 [^chromium-limits]: Chromium native_message_process_host.cc (kMaximumNativeMessageSize, the unbounded write queue, kHostInputOutputError) and extensions/renderer/api/messaging/messaging_util.cc (the 64 MiB kMaxMessageBytes)
 [^chromium-launcher]: Chromium native_process_launcher.cc and native_messaging_host_manifest.cc (manifest checks, their order and result codes)
 [^manifest-tests]: NativeHostManifestValidationTests.swift
+[^task-275]: Native messaging: a failed connect leaves the host's pipes and stderr handler behind

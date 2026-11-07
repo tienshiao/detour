@@ -30,6 +30,7 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
 
     @MainActor private func reset() {
         NativeMessagingHost.outgoingLimits = .standard
+        NativeMessagingHost.setRefusingNewHostsForTesting(false)
         otherHost?.disconnect()
         otherHost = nil
         otherFixture?.tearDown()
@@ -463,6 +464,87 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
         XCTAssertThrowsError(try host?.sendMessage(["n": 2])) { error in
             XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError, .notConnected)
         }
+    }
+
+    // MARK: - TASK-275: a failed connect leaves no pipes behind
+
+    /// The descriptors open in the test process right now.
+    nonisolated private static func openDescriptorCount() -> Int {
+        (0..<getdtablesize()).reduce(0) { count, fd in fcntl(fd, F_GETFD) != -1 ? count + 1 : count }
+    }
+
+    /// Makes `attempts` hosts for `hostName` whose `connect()` throws, keeps
+    /// them all alive (an owner that holds on to a host whose connect failed
+    /// must not hold its pipes), and checks the process's open descriptors
+    /// did not grow. Each failed connect used to keep three to six (the pipe
+    /// ends Foundation had not closed, and the stderr reader). The bound
+    /// leaves room for descriptors WebKit or the log open meanwhile.
+    @MainActor private func assertFailedConnectsLeaveNoDescriptors(
+        hostName: String, failingWith check: (any Error) -> Void,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let attempts = 50
+        var hosts: [NativeMessagingHost] = []
+        // A first attempt outside the count: whatever is opened once (the
+        // manifest read's caches, the log) is not a leak.
+        let warmUp = NativeMessagingHost(hostName: hostName, extensionID: Self.extensionID)
+        XCTAssertThrowsError(try warmUp.connect(), file: file, line: line)
+        let before = Self.openDescriptorCount()
+        for _ in 0..<attempts {
+            let host = NativeMessagingHost(hostName: hostName, extensionID: Self.extensionID)
+            XCTAssertThrowsError(try host.connect(), file: file, line: line) { check($0) }
+            XCTAssertFalse(host.isConnected, file: file, line: line)
+            hosts.append(host)
+        }
+        let grown = Self.openDescriptorCount() - before
+        XCTAssertLessThanOrEqual(grown, 10, "\(attempts) failed connects left \(grown) descriptors open",
+                                 file: file, line: line)
+        XCTAssertEqual(hosts.count, attempts)
+    }
+
+    /// A manifest whose path is a directory: it passes the executable check
+    /// (a directory's search bit), so `connect()` makes the pipes and gets to
+    /// `run()`, which fails with EACCES.
+    @MainActor func testAConnectWhoseSpawnFailsClosesItsPipes() throws {
+        let fixture = try FakeNativeMessagingHost(allowing: [Self.extensionID]) { manifest, scriptPath in
+            manifest["path"] = (scriptPath as NSString).deletingLastPathComponent
+        }
+        self.fixture = fixture
+        assertFailedConnectsLeaveNoDescriptors(hostName: fixture.name) { error in
+            XCTAssertNil(error as? NativeMessagingHost.NativeMessagingError, "run() itself failed: \(error)")
+        }
+    }
+
+    /// Quitting refuses a host after its pipes are made, under the lock
+    /// `run()` is called under.
+    @MainActor func testAConnectRefusedForQuittingClosesItsPipes() throws {
+        let fixture = try FakeNativeMessagingHost(allowing: [Self.extensionID])
+        self.fixture = fixture
+        NativeMessagingHost.setRefusingNewHostsForTesting(true)  // lifted by tearDown's reset()
+        assertFailedConnectsLeaveNoDescriptors(hostName: fixture.name) { error in
+            XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError, .quitting)
+        }
+        XCTAssertEqual(fixture.processCount(), 0, "no host starts while quitting")
+    }
+
+    /// The same host connects once the cause is gone: a failed connect
+    /// leaves it as a new one is.
+    @MainActor func testAHostWhoseConnectWasRefusedConnectsLater() async throws {
+        let fixture = try FakeNativeMessagingHost(allowing: [Self.extensionID], behavior: .echoes)
+        self.fixture = fixture
+        let host = NativeMessagingHost(hostName: fixture.name, extensionID: Self.extensionID)
+        host.onMessage = { [weak self] in self?.events.append("message:\(($0 as? [String: Any])?["n"] as? Int ?? -1)") }
+        self.host = host
+        NativeMessagingHost.setRefusingNewHostsForTesting(true)
+        XCTAssertThrowsError(try host.connect())
+        NativeMessagingHost.setRefusingNewHostsForTesting(false)
+        XCTAssertFalse(host.isConnected)
+        XCTAssertThrowsError(try host.sendMessage(["n": 0])) { error in
+            XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError, .notConnected)
+        }
+        try host.connect()
+        try host.sendMessage(["n": 1])
+        try await waitUntil("the echo") { self.events == ["message:1"] }
     }
 
     // MARK: - The join, without a process

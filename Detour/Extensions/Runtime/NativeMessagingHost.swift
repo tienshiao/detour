@@ -383,6 +383,52 @@ class NativeMessagingHost {
         proc.standardOutput = stdout
         proc.standardError = stderr
 
+        let connection = Connection(timing: endTiming)
+        let hostNameCopy = hostName
+        // The exit is not the disconnect: it is joined with the read loop's
+        // end of stream, so a reply still in the pipe is delivered first.
+        proc.terminationHandler = { [weak self] process in
+            log.notice("[1PW-DEBUG] NM EXIT [\(hostNameCopy, privacy: .public)] status=\(process.terminationStatus) reason=\(process.terminationReason.rawValue)")
+            Self.forget(process)
+            stderr.fileHandleForReading.readabilityHandler = nil
+            Self.record(.processExited(status: process.terminationStatus), on: connection,
+                        hostName: hostNameCopy, reportingTo: self)
+        }
+
+        // Run and tracked under the lock: an exit straight after `run()`
+        // waits in `forget` for the entry it removes, and a quit's sweep
+        // either sees this host running or has already refused it.
+        //
+        // Until it has started, the process and its pipes are only this
+        // call's: a throw here (quitting, or `run()` failing) closes every
+        // pipe end, so a failed connect leaves nothing behind (TASK-275).
+        // Closing through the handles is safe after a failed `run()`, which
+        // has closed the child's ends through them already: a second close
+        // is a no-op and never reaches a descriptor number reused since.
+        do {
+            try Self.spawned.withLock { registry in
+                guard !registry.isQuitting else { throw NativeMessagingError.quitting }
+                try proc.run()
+                registry.processes[ObjectIdentifier(proc)] = SpawnedProcess(process: proc)
+            }
+        } catch {
+            proc.terminationHandler = nil
+            for pipe in [stdin, stdout, stderr] {
+                try? pipe.fileHandleForReading.close()
+                try? pipe.fileHandleForWriting.close()
+            }
+            throw error
+        }
+        self.stdoutPipe = stdout
+        self.stderrPipe = stderr
+        self.process = proc
+        self.connection = connection
+        // Only once the host runs, so a failed connect never has a reader
+        // to stop; a host that has exited already gets it too, and it reads
+        // what is left and the end of stream. The termination handler's
+        // clear can come first: the end of stream clears it then, or, when
+        // a process the host started still holds stderr, the teardown does
+        // once the connection ends.
         let stderrHostName = hostName
         stderr.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
@@ -404,31 +450,6 @@ class NativeMessagingHost {
             log.debug("[1PW-DEBUG] NM STDERR [\(stderrHostName, privacy: .public)] (\(data.count) bytes): \(String(decoding: data, as: UTF8.self), privacy: .private)")
         }
 
-        self.stdoutPipe = stdout
-        self.stderrPipe = stderr
-        self.process = proc
-
-        let connection = Connection(timing: endTiming)
-        let hostNameCopy = hostName
-        // The exit is not the disconnect: it is joined with the read loop's
-        // end of stream, so a reply still in the pipe is delivered first.
-        proc.terminationHandler = { [weak self] process in
-            log.notice("[1PW-DEBUG] NM EXIT [\(hostNameCopy, privacy: .public)] status=\(process.terminationStatus) reason=\(process.terminationReason.rawValue)")
-            Self.forget(process)
-            stderr.fileHandleForReading.readabilityHandler = nil
-            Self.record(.processExited(status: process.terminationStatus), on: connection,
-                        hostName: hostNameCopy, reportingTo: self)
-        }
-
-        // Run and tracked under the lock: an exit straight after `run()`
-        // waits in `forget` for the entry it removes, and a quit's sweep
-        // either sees this host running or has already refused it.
-        try Self.spawned.withLock { registry in
-            guard !registry.isQuitting else { throw NativeMessagingError.quitting }
-            try proc.run()
-            registry.processes[ObjectIdentifier(proc)] = SpawnedProcess(process: proc)
-        }
-        self.connection = connection
         outgoing = Self.outgoingLimits
         // A failed write (the host closed its stdin or exited) is recorded
         // first, so the exit the teardown causes cannot report a reason of
@@ -625,6 +646,14 @@ class NativeMessagingHost {
         log.notice("NM QUIT: \(report.terminated.count) host(s) sent SIGTERM, \(report.killed.count) still running after \(timeout)s sent SIGKILL")
         return report
     }
+
+    #if DEBUG
+    /// For tests: sets or lifts a quit's refusal of new hosts without ending
+    /// any, so a test of the refusal can undo it (it is never lifted otherwise).
+    nonisolated static func setRefusingNewHostsForTesting(_ refusing: Bool) {
+        spawned.withLock { $0.isQuitting = refusing }
+    }
+    #endif
 
     /// How long quitting waits for the hosts to exit on SIGTERM, all of them
     /// together, before it kills the rest (TASK-243). Shorter than a
