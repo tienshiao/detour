@@ -97,6 +97,18 @@ document.getElementById('btn-create-tab').addEventListener('click', async () => 
   }
 });
 
+// Chrome's new-tab page opens Detour's blank tab in the background, reported
+// with its URL redacted to "" by WebKit (about: is no match-pattern scheme);
+// any other chrome: URL typed above is refused (TASK-132.5).
+document.getElementById('btn-create-newtab').addEventListener('click', async () => {
+  try {
+    const tab = await chrome.tabs.create({ url: 'chrome://newtab', active: false });
+    showResult('res-create-tab', `Created tab ${tab.id}, url ${JSON.stringify(tab.url)}`);
+  } catch (e) {
+    showResult('res-create-tab', e.message, true);
+  }
+});
+
 // --- Close Tab ---
 
 document.getElementById('btn-close-tab').addEventListener('click', async () => {

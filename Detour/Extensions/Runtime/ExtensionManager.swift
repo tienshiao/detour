@@ -422,6 +422,42 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// letter, so the message does not start with the scheme.
     static let javaScriptURLRefusal = "Cannot load a javascript: URL; use chrome.scripting.executeScript instead"
 
+    /// The tab Detour opens for Chrome's new-tab page: `about:blank`, the one
+    /// `tabs.create({})` without a URL opens too (TASK-132.5).
+    nonisolated static let blankTabURL = URL(string: "about:blank")!
+
+    /// What an extension's `tabs.create`, `windows.create` or `tabs.update`
+    /// loads for `url` (TASK-132.5): `url` itself unless it is a `chrome:`
+    /// URL, `blankTabURL` for Chrome's new-tab page, nil — refused before
+    /// anything opens or loads — for any other `chrome:` URL. Detour has none
+    /// of Chrome's pages, and the scheme is not one a web view loads, so it
+    /// went to the external-application path. Chrome's new-tab page — the
+    /// Claude extension opens every agent tab with
+    /// `tabs.create({url: 'chrome://newtab'})` — is the one with a
+    /// counterpart: Detour's blank tab. The extension then reads the tab's URL
+    /// as `""`, not `chrome://newtab/`: WebKit redacts the URL of a tab whose
+    /// scheme no match pattern can name (`about:` and `chrome:` alike),
+    /// whatever the extension's permissions. Its own checks treat `about:`,
+    /// `chrome://` and an empty URL alike as a page that is not a site.
+    ///
+    /// WebKit hands the URL over as written but resolved (`chrome://newtab`
+    /// stays without its slash, a non-special scheme's host keeps its case),
+    /// so the host compare ignores case and the path may be empty or `/`.
+    /// Chrome opens its new-tab page for a query or fragment on it too.
+    nonisolated static func loadableExtensionURL(_ url: URL) -> URL? {
+        guard url.scheme?.lowercased() == "chrome" else { return url }
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let isNewTab = components?.host?.lowercased() == "newtab"
+            && ["", "/"].contains(components?.path ?? "")
+        return isNewTab ? blankTabURL : nil
+    }
+
+    /// WebKit prefixes "Invalid call to <api>()." and capitalises the first
+    /// letter.
+    nonisolated static func chromeURLRefusal(_ url: URL) -> String {
+        "Cannot open \(url.absoluteString): the only chrome: URL Detour opens is chrome://newtab"
+    }
+
     static func nativeHostForbiddenError() -> NSError {
         extensionError(nativeHostForbiddenMessage)
     }
@@ -2557,7 +2593,13 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             completionHandler(nil, Self.extensionError("Cannot open a tab for an unknown profile"))
             return
         }
-        let url = configuration.url ?? URL(string: "about:blank")!
+        let requestedURL = configuration.url ?? Self.blankTabURL
+        // Chrome's new-tab page is Detour's blank tab; any other `chrome:`
+        // page is refused before a tab exists (TASK-132.5).
+        guard let url = Self.loadableExtensionURL(requestedURL) else {
+            completionHandler(nil, Self.extensionError(Self.chromeURLRefusal(requestedURL)))
+            return
+        }
         // Refused before a tab exists: `BrowserTab.load(_:)` would drop the
         // URL and leave a blank tab reported as a success (TASK-86).
         guard !InternalPage.isInternal(url) else {
@@ -2631,6 +2673,17 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             completionHandler(nil, Self.extensionError(Self.javaScriptURLRefusal))
             return
         }
+        // Chrome's new-tab page opens Detour's blank tab; any other `chrome:`
+        // page among the URLs refuses the whole call, before a window exists
+        // (TASK-132.5).
+        var tabURLs: [URL] = []
+        for requestedURL in configuration.tabURLs {
+            guard let url = Self.loadableExtensionURL(requestedURL) else {
+                completionHandler(nil, Self.extensionError(Self.chromeURLRefusal(requestedURL)))
+                return
+            }
+            tabURLs.append(url)
+        }
 
         // "Allowed in Private" is the one enabled-state rule for the built-in
         // Private profile, where a missing row means off (TASK-74). An
@@ -2668,7 +2721,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // Open new tabs for specified URLs
         var lastTab: BrowserTab?
         if let space = wc.activeSpace {
-            for url in configuration.tabURLs {
+            for url in tabURLs {
                 if url.scheme == "webkit-extension", let extConfig = extensionContext.webViewConfiguration {
                     lastTab = TabStore.shared.addExtensionTab(in: space, url: url, configuration: extConfig)
                 } else {
@@ -2680,7 +2733,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         wc.showWindow(nil)
         if let lastTab {
             wc.selectTab(id: lastTab.id)
-        } else if configuration.tabURLs.isEmpty && configuration.tabs.isEmpty {
+        } else if tabURLs.isEmpty && configuration.tabs.isEmpty {
             wc.newTab(nil)
         }
 

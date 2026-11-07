@@ -126,7 +126,14 @@ extension BrowserTab: WKWebExtensionTab {
         completionHandler(nil)
     }
 
-    func loadURL(_ url: URL, for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
+    func loadURL(_ requestedURL: URL, for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
+        // Chrome's new-tab page is Detour's blank page, as in `tabs.create`;
+        // any other `chrome:` page is refused rather than handed to the
+        // external-application path (TASK-132.5).
+        guard let url = ExtensionManager.loadableExtensionURL(requestedURL) else {
+            completionHandler(ExtensionManager.extensionError(ExtensionManager.chromeURLRefusal(requestedURL)))
+            return
+        }
         // tabs.update: the navigation policy would cancel this anyway; say so
         // rather than report success (TASK-86).
         guard !InternalPage.isInternal(url) else {

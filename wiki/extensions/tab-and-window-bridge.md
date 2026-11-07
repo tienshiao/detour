@@ -4,7 +4,7 @@ title: Tab and window bridge
 description: How Detour's tabs and windows are presented to WebKit's extension runtime — the WKWebExtensionTab and Window conformances, the rule for when a tab is reported open, closed, moved or active, and what a window lists.
 tags: [extensions, tabs, windows, webkit, lifecycle]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-28T05:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-07T23:30:00Z }
 sources:
   - id: lifecycle
     resource: ../../Detour/Extensions/Runtime/ExtensionTabLifecycle.swift
@@ -93,6 +93,12 @@ sources:
   - id: task-226
     resource: backlog:TASK-226
     title: tabs.create adds its tab to the profile's first space, not the one in use
+  - id: task-132-5
+    resource: backlog:TASK-132.5
+    title: "Extensions: tabs.create and windows.create with chrome://newtab open a blank new tab"
+  - id: webkit-context
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
+    title: WebKit WebExtensionContext.cpp (canNavigateToURL, permissionState) and WebExtensionTabCocoa.mm (redactIfNeeded), read 2026-11-07
   - id: webkit-windows-api
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIWindowsCocoa.mm
     title: WebKit WebExtensionContextAPIWindowsCocoa.mm (windowsCreate, read 2026-10-27)
@@ -287,6 +293,47 @@ which ran the script in its page, so an extension could script a page through
 message with "Invalid call to <api>()." and capitalises its first letter,
 which is why it does not start with the scheme.
 
+## chrome: URLs
+
+Detour has none of Chrome's pages, and `chrome:` is not a scheme a web view
+loads, so before TASK-132.5 a `chrome:` URL from `tabs.create` went down the
+external-application path and left a tab with nothing in it. WebKit does not
+refuse the scheme: `canNavigateToURL` turns away only `javascript:` and,
+without file access, `file:` URLs, and the URL reaches Detour as written,
+resolved against the extension's base URL (`chrome://newtab` keeps no
+slash).[^webkit-context]
+
+`ExtensionManager.loadableExtensionURL` is the one rule, applied in
+`openNewTabUsing`, `openNewWindowUsing` (every URL of the list) and
+`BrowserTab.loadURL` (`tabs.update`):
+
+| URL | Result |
+|---|---|
+| `chrome://newtab`, with or without its slash, in any case, with a query or fragment | Detour's blank tab, `about:blank` (`ExtensionManager.blankTabURL`), the same tab `tabs.create({})` opens |
+| any other `chrome:` URL | refused before anything opens or loads: "Cannot open <url>: the only chrome: URL Detour opens is chrome://newtab"; one in a `windows.create` list refuses the whole call |
+
+The Claude extension opens every agent tab with `tabs.create({url:
+'chrome://newtab', active: false})` and a fallback window with
+`windows.create({url: 'chrome://newtab/'})`. It then reads the tab's URL as
+`""` (and gets no title): WebKit's `WebExtensionTab::redactIfNeeded` blanks
+the URL and title of every tab the extension has no host permission for, and
+`permissionState` answers "unknown" for any scheme outside the match-pattern
+schemes, so an `about:` tab is redacted even with `tabs` and
+`<all_urls>`.[^webkit-context] Chrome would report `about:blank`. A
+`chrome://newtab/` reported through `url(for:)` would be redacted the same
+way, so no URL Detour could report reaches the extension as written. That
+was checked against its bundle (1.0.105): it writes `chrome://newtab/` only
+into tab lists it builds itself, and its own URL checks treat `about:`,
+`chrome://` and an empty URL alike as a page that is not a site (no hostname,
+"system", skipped by its domain tracking). **Rejected**: reporting
+`chrome://newtab/` through `url(for:)` while the tab is blank (redacted, and a
+second URL for the tab to keep in step with navigation) and leaving the tab
+with no URL (a path no other extension call takes).[^task-132-5]
+
+A `windows.create` window opens on a space that may already have tabs, and
+reports all of them, so `tabs[0]` is the new blank tab only when the space was
+empty; one window per space is the subject of TASK-132.23.
+
 ## Active tab
 
 `selectedTabID` is untouched by the Peek rule; it still names the focused pane
@@ -429,7 +476,10 @@ The planned changes to the window model are in the
   space (two spaces, the second used last, another profile in front), and is
   refused once the profile has no space, from both transports and forms.
   `ExtensionPolyfillProfileWiringTests` covers `search.query` choosing the
-  sending profile's most recently used space.
+  sending profile's most recently used space. `chrome://newtab` in both forms
+  opens a blank tab from `tabs.create` (then navigated by `tabs.update`) and a
+  window with one blank tab from `windows.create`; other `chrome:` URLs are
+  refused by all three APIs, from both transports and forms.
 - In tests a web view must be registered as a tab (`registerProbeTab` in `ExtensionTestSupport`) before content-script messaging works; that was the real cause of six tests once skipped as "sandbox limits".[^task-20]
 
 # Related
@@ -459,4 +509,6 @@ The planned changes to the window model are in the
 [^task-225]: windows.create opens a window for a javascript URL
 [^task-226]: tabs.create adds its tab to the profile's first space, not the one in use
 [^task-224]: A normal-profile extension not allowed in Private can still open a Private window with windows.create({incognito true})
+[^task-132-5]: Extensions: tabs.create and windows.create with chrome://newtab open a blank new tab
+[^webkit-context]: WebKit WebExtensionContext.cpp (canNavigateToURL, permissionState) and WebExtensionTabCocoa.mm (redactIfNeeded), read 2026-11-07
 [^webkit-windows-api]: WebKit WebExtensionContextAPIWindowsCocoa.mm (windowsCreate, read 2026-10-27)

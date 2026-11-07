@@ -12,7 +12,8 @@ import WebKit
 /// (TASK-223), never on the space of another profile's window in front.
 ///
 /// Also the `javascript:` URL refusals of `windows.create`, `tabs.create`
-/// and `tabs.update` (TASK-225).
+/// and `tabs.update` (TASK-225), and their `chrome:` URLs: Chrome's new-tab
+/// page opens Detour's blank tab, every other one is refused (TASK-132.5).
 ///
 /// Real contexts through the production wiring (`Profile.extensionController`
 /// with `ExtensionManager` as its delegate), asked from the service worker and
@@ -728,6 +729,148 @@ nonisolated final class ExtensionWindowsCreatePrivateTests: XCTestCase {
         let title = try await tab.webView?.evaluateJavaScript("document.title") as? String
         XCTAssertEqual(title, "Looked Up")
         XCTAssertEqual(tab.url, url)
+    }
+
+    // MARK: - chrome: URLs (TASK-132.5)
+
+    /// Chrome's new-tab page, with or without its slash, in any case, with a
+    /// query or fragment; nothing else of the scheme.
+    @MainActor func testTheChromeURLRule() throws {
+        for string in ["chrome://newtab", "chrome://newtab/", "CHROME://NEWTAB/", "chrome://NewTab",
+                       "chrome://newtab/?from=ext", "chrome://newtab#top"] {
+            let url = try XCTUnwrap(URL(string: string))
+            XCTAssertEqual(ExtensionManager.loadableExtensionURL(url), ExtensionManager.blankTabURL, string)
+        }
+        for string in ["chrome://settings", "chrome://extensions/", "chrome://newtab/x", "chrome://newtabs",
+                       "chrome:newtab", "chrome://", "Chrome://flags"] {
+            let url = try XCTUnwrap(URL(string: string))
+            XCTAssertNil(ExtensionManager.loadableExtensionURL(url), string)
+        }
+        for string in ["https://newtab/", "about:blank", "chrome-extension://abc/page.html",
+                       "https://example.com/chrome://newtab"] {
+            let url = try XCTUnwrap(URL(string: string))
+            XCTAssertEqual(ExtensionManager.loadableExtensionURL(url), url, string)
+        }
+    }
+
+    /// The Claude extension opens every agent tab with
+    /// `tabs.create({url: 'chrome://newtab', active: false})` and a fallback
+    /// window with `windows.create({url: 'chrome://newtab/'})`. Both forms
+    /// open Detour's blank tab (`about:blank`) with no error page, and the tab
+    /// can then be navigated with `tabs.update`. The extension reads the tab's
+    /// URL as `""`: WebKit redacts the URL of a tab whose scheme no match
+    /// pattern can name, `tabs` permission or not. Every other `chrome:` URL
+    /// is refused by `tabs.create`, `windows.create` (alone or among others)
+    /// and `tabs.update` before anything opens or loads. From both transports, in both forms; one
+    /// loaded profile for all of it (see `retainedProfiles`).
+    @MainActor func testChromeNewTabOpensABlankTabAndOtherChromeURLsAreRefused() async throws {
+        let ext = try await makeExtension()
+        let normal = makeProfile("Chrome URLs")
+        let page = try await loadPage(ext, in: normal)
+        let url = try await serve()
+        let blank = ExtensionManager.blankTabURL
+        // What WebKit reports for an `about:` tab (`WebExtensionTab::redactIfNeeded`).
+        let reportedBlankURL = ""
+
+        // windows.create: one window, one blank tab, reported in the window.
+        for newTab in ["chrome://newtab", "chrome://newtab/"] {
+            for (transport, form) in [(Transport.worker, Form.promise), (.page, .callback)] {
+                let space = browserWindow(showingANewSpaceOf: normal)
+                let created = try await create(["url": newTab, "focused": false], via: transport, form: form,
+                                               page: page)
+                assertOpenedANormalWindow(created, on: space, showing: blank)
+                let tabs = try XCTUnwrap(created.window?["tabs"] as? [[String: Any]],
+                                         "\(created.label): \(String(describing: created.window))")
+                XCTAssertEqual(tabs.count, 1, created.label)
+                XCTAssertNotNil(tabs.first?["id"] as? Int, created.label)
+                XCTAssertEqual(tabs.first?["url"] as? String, reportedBlankURL, created.label)
+                XCTAssertEqual(created.opened.first?.selectedTab?.id, space.tabs.first?.id, created.label)
+                closeBrowserWindows()
+            }
+        }
+
+        // tabs.create: a blank tab in the caller's space, no error page.
+        let space = browserWindow(showingANewSpaceOf: normal)
+        var createdIDs: [Int] = []
+        for newTab in ["chrome://newtab", "chrome://newtab/"] {
+            for transport in Transport.allCases {
+                for form in Form.allCases {
+                    let called = try await call("tabs.create", [["url": newTab, "active": false]],
+                                                via: transport, form: form, page: page)
+                    XCTAssertNil(called.error, called.label)
+                    let value = try XCTUnwrap(called.value as? [String: Any],
+                                              "\(called.label): \(String(describing: called.value))")
+                    createdIDs.append(try XCTUnwrap(value["id"] as? Int, called.label))
+                    XCTAssertEqual(value["url"] as? String, reportedBlankURL, called.label)
+                    XCTAssertEqual(space.tabs.count, createdIDs.count, called.label)
+                }
+            }
+        }
+        for tab in space.tabs {
+            XCTAssertEqual(tab.url, blank)
+            try await waitUntil("the blank tab to load") { !tab.isLoading && tab.webView?.url == blank }
+            XCTAssertNotEqual(tab.webView?.url?.scheme, ErrorPage.scheme)
+        }
+
+        // tabs.update navigates a blank tab, from both transports. The id is
+        // followed through `tabs.get`: new tabs are not appended in order.
+        func reportedURL(ofTab id: Int) async throws -> String? {
+            let got = try await call("tabs.get", [id], via: .worker, form: .promise, page: page)
+            return (got.value as? [String: Any])?["url"] as? String
+        }
+        func tabsShowing(_ shown: URL) -> [BrowserTab] {
+            space.tabs.filter { $0.url == shown && $0.webView?.url == shown && !$0.isLoading }
+        }
+        for (index, transport) in Transport.allCases.enumerated() {
+            let called = try await call("tabs.update", [createdIDs[index], ["url": url.absoluteString]],
+                                        via: transport, form: .promise, page: page)
+            XCTAssertNil(called.error, called.label)
+            try await waitUntil("\(called.label) to load the page") {
+                try await reportedURL(ofTab: createdIDs[index]) == url.absoluteString
+                    && tabsShowing(url).filter { $0.title == "Looked Up" }.count == index + 1
+            }
+        }
+
+        // Every other chrome: URL is refused, and nothing opens or loads.
+        let urlsBefore = space.tabs.map(\.url)
+        for chromeURL in ["chrome://settings", "chrome://extensions/", "chrome://newtab/x"] {
+            for transport in Transport.allCases {
+                for form in Form.allCases {
+                    let opened = try await call("tabs.create", [["url": chromeURL]],
+                                                via: transport, form: form, page: page)
+                    assertRefusedAChromeURL(opened)
+                    let created = try await create(["url": [url.absoluteString, chromeURL]],
+                                                   via: transport, form: form, page: page)
+                    XCTAssertTrue(created.error?.contains("chrome:") ?? false,
+                                  "\(created.label): \(String(describing: created.error))")
+                    XCTAssertNil(created.window, created.label)
+                    XCTAssertEqual(created.opened.count, 0, created.label)
+                    let updated = try await call("tabs.update", [createdIDs[0], ["url": chromeURL]],
+                                                 via: transport, form: form, page: page)
+                    assertRefusedAChromeURL(updated)
+                }
+            }
+        }
+        XCTAssertEqual(space.tabs.map(\.url), urlsBefore)
+        XCTAssertEqual(tabsShowing(url).count, 2)
+        let stillThere = try await reportedURL(ofTab: createdIDs[0])
+        XCTAssertEqual(stillThere, url.absoluteString)
+
+        // tabs.update to Chrome's new-tab page blanks the tab.
+        let called = try await call("tabs.update", [createdIDs[0], ["url": "chrome://newtab/"]],
+                                    via: .page, form: .callback, page: page)
+        XCTAssertNil(called.error, called.label)
+        try await waitUntil("the tab to go blank") {
+            try await reportedURL(ofTab: createdIDs[0]) == reportedBlankURL && tabsShowing(url).count == 1
+                && tabsShowing(blank).count == space.tabs.count - 1
+        }
+    }
+
+    @MainActor private func assertRefusedAChromeURL(_ called: Called, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(called.error?.contains("chrome:") ?? false,
+                      "\(called.label): \(String(describing: called.error)) \(String(describing: called.value))",
+                      file: file, line: line)
+        XCTAssertNil(called.value, called.label, file: file, line: line)
     }
 
     // MARK: - tabs.create's space (TASK-226)
