@@ -55,6 +55,15 @@ sources:
   - id: webkit-325256
     resource: https://github.com/WebKit/WebKit/commit/c78afbcefdb9
     title: "WebKit 325256@main: Port.disconnect() fires onDisconnect on the port that called it"
+  - id: task-274
+    resource: backlog:TASK-274
+    title: "Native messaging: a wrapper-script host that does not exec leaves its real host running after quit"
+  - id: chromium-launch-posix
+    resource: https://github.com/chromium/chromium/blob/2fbb17b57270034f6c85ab9819c3ec4069a54986/chrome/browser/extensions/api/messaging/launch_context_posix.cc
+    title: Chromium launch_context_posix.cc (LaunchNativeProcess sets no new_process_group)
+  - id: xnu-pids
+    resource: https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_fork.c
+    title: XNU kern_fork.c (pid allocation skips live pids, process groups and sessions) and kern_sig.c (killpg1 skips zombies)
   - id: chromium-kill
     resource: https://github.com/chromium/chromium/blob/1a95d4d76ab47c2ff9b914eaa98d3f35b7f1fce1/base/process/kill_mac.cc
     title: Chromium base/process/kill_mac.cc (EnsureProcessTerminated, kWaitBeforeKillSeconds = 2)
@@ -388,11 +397,71 @@ sends SIGKILL; it sends no SIGTERM. The Linux path (`kill_posix.cc`,
 `BackgroundReaper`) also waits 2 s and then kills.[^chromium-kill] Detour
 keeps its SIGTERM first, so a host that exits on it is unaffected.
 
+### The host's process tree
+
+Every signal goes to the host's process group, so a host's descendants end
+with it (TASK-274).[^task-274] Foundation's `Process` starts the host as the
+leader of a process group of its own: its pgid is its pid, a child it starts
+without `exec` shares it, and Detour's own group is a different one
+(measured with a standalone probe; `testAHostLeadsAProcessGroupOfItsOwn`
+fails if Foundation stops doing it). `Process.terminate()` signals that
+group too (Apple: "the receiver and all of its subtasks"), so the
+teardown's SIGTERM already reached a wrapper's child. What went to the pid
+alone was the TASK-241 SIGKILL, which also fired only while the host itself
+was running, and the quit sweep's SIGTERM and SIGKILL, and so the SIGTERM
+handler's. A host installed as a `#!/bin/sh` wrapper that runs `python3
+host.py` without `exec` dies on SIGTERM; its real host, reparented to
+launchd, stayed running if it ignored SIGTERM, and at quit whenever it did
+not watch its stdin.
+
+- **The group is recorded at spawn**, in the registry entry, only when
+  `getpgid(pid) == pid` and it is not Detour's group (a `killpg` of that
+  would end Detour). Otherwise only the pid is signalled, logged as
+  `NM GROUP`.
+- **`send`** `killpg`s the group, and `kill`s the host's pid as well when
+  the host is running but has moved out of the group. **`isAlive`** is the
+  host running, or `killpg(group, 0) == 0`: XNU's `killpg` skips zombies and
+  fails when only zombies are left.[^xnu-pids]
+- **A torn-down host that exits while its group still has a live member**
+  keeps its registry entry (`hostExited`) until its SIGKILL timer fires, so
+  the timer, and a quit before then, still kill a wrapper's
+  SIGTERM-ignoring child once the wrapper has died of the SIGTERM. The timer
+  goes into the entry before the SIGTERM is sent, so an exit caused by the
+  SIGTERM cannot get there first and cancel it. An entry with nothing left
+  in its group goes at the exit as before.
+- **The quit sweep** waits while a host or anything in its group is alive,
+  and SIGKILLs the groups still alive at the deadline.
+
+Why the group's id names nobody else: it is the host's pid, and XNU
+allocates pids one after the other, wrapping at `PID_MAX` (99,999) to 100,
+and skips any id that is in use as a pid, a process-group id or a session
+id (`kern_fork.c`). So the id cannot be handed to another process while the
+host is unreaped or any process in its group is alive. Once they have all
+gone, it comes back only after the counter has gone all the way round.
+Detour signals a group only while the host is unreaped, or within a
+teardown's grace (2 s) or the quit's wait (1 s) after the host's exit,
+never later. A process joining the group from outside would have to be in
+Detour's session and call `setpgid` with it, which nothing does.
+
+Limits, decided and not chased:
+
+- A descendant that leaves the group (`setsid`, `setpgid`, a host that
+  daemonises) is not reached.
+- Processes left behind by a host that exits on its own, such as a wrapper
+  that starts its real host in the background and exits, are not signalled:
+  nothing bounds how long ago the host went, so the group's id is no longer
+  safe to use.
+
+Chrome does none of this on macOS. `LaunchNativeProcess` sets no
+`new_process_group` (the host stays in Chrome's group), and
+`EnsureProcessTerminated` SIGKILLs the pid alone, so a wrapper's child
+outlives Chrome's teardown too.[^chromium-launch-posix]
+
 ### Quitting
 
-Exiting ends no host by itself. A host is a child of Detour but not in a
-process group that dies with it; the exit closes the host's stdin, which
-ends a host that reads it, and one that does not read it (a silent host
+Exiting ends no host by itself. A host is a child of Detour, in a process
+group of its own that nothing signals when Detour dies; the exit closes the
+host's stdin, which ends a host that reads it, and one that does not read it (a silent host
 holding the keep-alive) carries on, reparented to launchd. The exit also
 takes every pending SIGKILL timer with it. Measured before TASK-243 with two
 fake port hosts (`exec sleep`, one with `trap '' TERM`): after a normal quit
@@ -411,9 +480,10 @@ that, on the SIGTERM path, where the main thread keeps running, an extension
 reconnecting when its host exits on the sweep's SIGTERM would start a host
 that outlives Detour. The tests pass `refusingNewHosts: false`, since the
 flag cannot be cleared.
-`terminateAllSpawnedHosts(within:)` sends SIGTERM to each running one, waits
-for them all together, polling `isRunning`, then sends SIGKILL to the
-rest. It logs `NM QUIT: N host(s) sent SIGTERM, M … sent SIGKILL`. It blocks
+`terminateAllSpawnedHosts(within:)` sends SIGTERM to each running one's
+process group, waits for them all together, polling `isAlive` (the host or
+anything left in its group), then sends SIGKILL to the groups still
+alive ([the host's process tree](#the-hosts-process-tree)). It logs `NM QUIT: N host(s) sent SIGTERM, M … sent SIGKILL`. It blocks
 the calling thread, which may be the main thread: Foundation reaps the child
 on a queue of its own, so `isRunning` changes while the main thread waits
 (checked with a standalone probe). The owners hear nothing, since their
@@ -620,6 +690,28 @@ evidence for. There is no level between notice and error to use:
   to end through a one-shot `sendNativeMessage`, while a `connectNative`
   port's host that stays alive keeps running until the page disconnects
   (TASK-233).
+- Process trees (TASK-274), in `NativeMessagingHostLifecycleTests`, with
+  wrapper hosts (`wrapsSilentChild`: the script runs `/bin/sleep <token>`
+  and then `exit $?`, so the shell cannot run it in place;
+  `wrapsChildIgnoringSIGTERM`: the child is a shell that sets `trap ''
+  TERM` and `exec`s the sleep). Each test first checks the shape: the
+  child's ppid is the wrapper and its pgid the wrapper's pid. The host leads
+  its own group; `signallableGroup(host:hostGroup:detourGroup:)`, the pure
+  check behind the recorded group, refuses Detour's group, a group the host
+  does not lead, a failed `getpgid` and the ids 0 and 1; `disconnect()` ends a wrapper and its child with no SIGKILL
+  (this passed before the fix, through `Process.terminate()`); a
+  SIGTERM-ignoring child outlives its wrapper until the grace period is over
+  and is then killed through the group; the quit sweep ends a wrapper's
+  child, waits for and kills a SIGTERM-ignoring one, and kills one left
+  from a teardown inside the grace period; a `Process` of the test's own
+  (also a group leader) survives a wrapper host's teardown, SIGKILL
+  included, and then the quit sweep, and another host survives the
+  teardown. Before
+  the fix, all of these failed except the `disconnect()` one and the group
+  check. `wrapperIDs()` finds the wrapper shell by the script's path, which
+  is in the fixture's own directory, and the fixture's `tearDown()` kills by
+  that path as well as by the token, so a child left by a failed run is
+  killed too.
 - Writing (TASK-265), in `NativeMessagingHostLifecycleTests`: 4 MB to a
   `.silent` host (which never reads stdin) returns at once with the bytes
   still queued and the host alive, and `disconnect()` ends it; the quit
@@ -666,6 +758,9 @@ evidence for. There is no level between notice and error to use:
 [^lifecycle-tests]: NativeMessagingHostLifecycleTests.swift
 [^task-241]: Native messaging: a host that ignores SIGTERM is never killed
 [^task-243]: Native messaging: quitting Detour may leave live port hosts running
+[^task-274]: Native messaging: a wrapper-script host that does not exec leaves its real host running after quit
+[^chromium-launch-posix]: Chromium launch_context_posix.cc (LaunchNativeProcess sets no new_process_group)
+[^xnu-pids]: XNU kern_fork.c (pid allocation skips live pids, process groups and sessions) and kern_sig.c (killpg1 skips zombies)
 [^chromium-kill]: Chromium base/process/kill_mac.cc (EnsureProcessTerminated, kWaitBeforeKillSeconds = 2)
 [^chromium-runtime]: Chromium extensions/common/api/runtime.json and extensions/renderer/bindings/argument_spec.cc
 [^task-242]: A one-shot sendNativeMessage with a non-object message leaks the host and never settles

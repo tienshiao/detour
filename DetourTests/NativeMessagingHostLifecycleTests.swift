@@ -319,6 +319,179 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
         try await waitUntil("the SIGKILL timer to be released", timeout: 3) { released == nil }
     }
 
+    // MARK: - TASK-274: a wrapper host's children end with it
+
+    @MainActor private func psField(_ field: String, of pid: pid_t) -> String {
+        runTool("/bin/ps", ["-o", "\(field)=", "-p", "\(pid)"]).output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The wrapper host's pid and its child's, once the child is `sleep`
+    /// itself (so a SIGTERM-ignoring child has run its `trap`). Checks the
+    /// shape the tests rely on: the wrapper did not exec, and its child is
+    /// in the process group the wrapper leads.
+    @MainActor private func wrapperAndChild() async throws -> (wrapper: pid_t, child: pid_t) {
+        let fixture = try XCTUnwrap(fixture)
+        try await waitUntil("the wrapper host and its child to be running") {
+            guard fixture.wrapperIDs().count == 1, let child = fixture.processIDs().first,
+                  fixture.processCount() == 1 else { return false }
+            return psField("comm", of: child).hasSuffix("sleep")
+        }
+        let wrapper = try XCTUnwrap(fixture.wrapperIDs().first)
+        let child = try XCTUnwrap(fixture.processIDs().first)
+        XCTAssertNotEqual(child, wrapper, "the wrapper does not exec its child")
+        XCTAssertEqual(psField("ppid", of: child), "\(wrapper)")
+        XCTAssertEqual(getpgid(child), wrapper, "the child is in the wrapper's process group")
+        return (wrapper, child)
+    }
+
+    /// What the group signals rely on: Foundation's `Process` starts the host
+    /// as the leader of a process group of its own, not in Detour's.
+    @MainActor func testAHostLeadsAProcessGroupOfItsOwn() async throws {
+        try connect(.silent)
+        let pid = try await runningHostPID()
+        XCTAssertEqual(getpgid(pid), pid)
+        XCTAssertNotEqual(getpgid(pid), getpgrp())
+    }
+
+    /// The guard on the group id: only one the host leads, never Detour's
+    /// own (a `killpg` of it would end Detour), never 0, 1 or a failed
+    /// `getpgid`.
+    @MainActor func testOnlyAGroupTheHostLeadsAndThatIsNotDetoursIsSignalled() {
+        XCTAssertEqual(NativeMessagingHost.signallableGroup(host: 500, hostGroup: 500, detourGroup: 400), 500)
+        XCTAssertNil(NativeMessagingHost.signallableGroup(host: 500, hostGroup: 400, detourGroup: 400),
+                     "a host left in Detour's group")
+        XCTAssertNil(NativeMessagingHost.signallableGroup(host: 500, hostGroup: 500, detourGroup: 500),
+                     "the host's group is Detour's")
+        XCTAssertNil(NativeMessagingHost.signallableGroup(host: 500, hostGroup: 450, detourGroup: 400),
+                     "a group another process leads")
+        XCTAssertNil(NativeMessagingHost.signallableGroup(host: 500, hostGroup: -1, detourGroup: 400),
+                     "getpgid failed: the host is gone")
+        XCTAssertNil(NativeMessagingHost.signallableGroup(host: 1, hostGroup: 1, detourGroup: 400))
+        XCTAssertNil(NativeMessagingHost.signallableGroup(host: 0, hostGroup: 0, detourGroup: 400))
+    }
+
+    /// A wrapper script that runs its host without `exec`: the teardown's
+    /// SIGTERM reaches the child, which never sees its stdin close, as well
+    /// as the wrapper. This held before TASK-274 too, by way of
+    /// `Process.terminate()`, which signals the group; the quit's `kill` of
+    /// the pid alone did not (`testQuitEndsAWrapperHostsChild`).
+    @MainActor func testDisconnectEndsAWrapperHostsChild() async throws {
+        try connect(.wrapsSilentChild, termination: recordingKills(grace: 30))
+        let fixture = try XCTUnwrap(fixture)
+        _ = try await wrapperAndChild()
+        host?.disconnect()
+        try await waitUntil("the wrapper and its child to be gone", timeout: 5) {
+            fixture.processCount() == 0 && fixture.wrapperIDs().isEmpty
+        }
+        XCTAssertEqual(killed.all, [], "both exit on the SIGTERM")
+    }
+
+    /// The wrapper exits on SIGTERM at once; its child ignores it and is
+    /// killed when the grace period is over, though the host process the
+    /// timer was set for has gone by then.
+    @MainActor func testAWrapperHostsChildIgnoringSIGTERMIsKilledAfterTheGracePeriod() async throws {
+        // A grace well past the wrapper's exit, which a loaded machine can
+        // take seconds to show, so the checks before the SIGKILL hold.
+        try connect(.wrapsChildIgnoringSIGTERM, termination: recordingKills(grace: 4))
+        let fixture = try XCTUnwrap(fixture)
+        let (wrapper, child) = try await wrapperAndChild()
+        host?.disconnect()
+        try await waitUntil("the wrapper to exit on SIGTERM", timeout: 5) { fixture.wrapperIDs().isEmpty }
+        XCTAssertEqual(fixture.processIDs(), [child], "the child ignores SIGTERM")
+        XCTAssertEqual(killed.all, [])
+        try await waitUntil("the child to be killed", timeout: 8) {
+            !killed.all.isEmpty && fixture.processCount() == 0
+        }
+        XCTAssertEqual(killed.all, [wrapper], "the SIGKILL goes to the group the wrapper led")
+    }
+
+    /// The quit path ends a wrapper host's child too.
+    @MainActor func testQuitEndsAWrapperHostsChild() async throws {
+        try connect(.wrapsSilentChild)
+        let fixture = try XCTUnwrap(fixture)
+        let (wrapper, _) = try await wrapperAndChild()
+        let report = NativeMessagingHost.terminateAllSpawnedHosts(within: 2, refusingNewHosts: false)
+        XCTAssertTrue(report.terminated.contains(wrapper), "\(report)")
+        XCTAssertFalse(report.killed.contains(wrapper), "both exit on the SIGTERM: \(report)")
+        try await waitUntil("the wrapper and its child to be gone", timeout: 5) {
+            fixture.processCount() == 0 && fixture.wrapperIDs().isEmpty
+        }
+    }
+
+    /// The quit's wait lasts while the group has a live member, not only
+    /// while the wrapper does, and the SIGKILL at the deadline reaches the
+    /// child that ignored SIGTERM.
+    @MainActor func testQuitKillsAWrapperHostsChildIgnoringSIGTERM() async throws {
+        try connect(.wrapsChildIgnoringSIGTERM)
+        let fixture = try XCTUnwrap(fixture)
+        let (wrapper, _) = try await wrapperAndChild()
+        let start = Date()
+        let report = NativeMessagingHost.terminateAllSpawnedHosts(within: 0.5, refusingNewHosts: false)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertTrue(report.terminated.contains(wrapper), "\(report)")
+        XCTAssertTrue(report.killed.contains(wrapper), "the child was still running at the deadline: \(report)")
+        XCTAssertGreaterThanOrEqual(elapsed, 0.45, "it waits for the child, not only the wrapper")
+        try await waitUntil("the child to be gone", timeout: 5) {
+            fixture.processCount() == 0 && fixture.wrapperIDs().isEmpty
+        }
+    }
+
+    /// A wrapper torn down moments before the quit has exited, and its
+    /// SIGTERM-ignoring child is waiting out the grace period: the quit
+    /// kills the child rather than leave it to a timer that dies with the app.
+    @MainActor func testQuitKillsAWrapperHostsChildLeftWithinTheGracePeriod() async throws {
+        try connect(.wrapsChildIgnoringSIGTERM, termination: recordingKills(grace: 30))
+        let fixture = try XCTUnwrap(fixture)
+        let (wrapper, child) = try await wrapperAndChild()
+        host?.disconnect()
+        host = nil
+        try await waitUntil("the wrapper to exit on SIGTERM", timeout: 5) { fixture.wrapperIDs().isEmpty }
+        XCTAssertEqual(fixture.processIDs(), [child], "the child ignores SIGTERM")
+
+        let report = NativeMessagingHost.terminateAllSpawnedHosts(within: 0.3, refusingNewHosts: false)
+
+        XCTAssertTrue(report.killed.contains(wrapper), "\(report)")
+        try await waitUntil("the child to be gone", timeout: 5) { fixture.processCount() == 0 }
+        XCTAssertEqual(killed.all, [], "the 30 s timer has not fired")
+    }
+
+    /// The group signals stay inside the host's own tree: tearing down a
+    /// wrapper host, SIGKILL included, and then a quit leave alone a process
+    /// of the test's own (`Process` makes it a group leader, as it does a
+    /// host), and the teardown leaves another host's process alone too.
+    @MainActor func testHostSignalsReachNothingOutsideTheHostsTree() async throws {
+        let canary = Process()
+        canary.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        canary.arguments = ["\(Int.random(in: 900_000...999_999))"]
+        try canary.run()
+        // Our own child, unreaped while `isRunning`: its pid is still its own.
+        addTeardownBlock { if canary.isRunning { canary.terminate() } }
+
+        try connect(.wrapsChildIgnoringSIGTERM, termination: recordingKills(grace: 0.3))
+        let fixture = try XCTUnwrap(fixture)
+        let (wrapper, _) = try await wrapperAndChild()
+        let other = try FakeNativeMessagingHost(name: "com.detour.fake_host_test_other",
+                                                allowing: [Self.extensionID], behavior: .silent)
+        otherFixture = other
+        let otherHost = NativeMessagingHost(hostName: other.name, extensionID: Self.extensionID)
+        self.otherHost = otherHost
+        try otherHost.connect()
+        try await waitUntil("the other host process to be running") { other.processCount() == 1 }
+
+        host?.disconnect()
+        try await waitUntil("the wrapper host's tree to be killed", timeout: 5) {
+            !killed.all.isEmpty && fixture.processCount() == 0 && fixture.wrapperIDs().isEmpty
+        }
+        XCTAssertEqual(killed.all, [wrapper])
+        XCTAssertEqual(other.processCount(), 1, "another host is not in the torn-down host's tree")
+        XCTAssertTrue(canary.isRunning, "a process outside every host's tree")
+
+        NativeMessagingHost.terminateAllSpawnedHosts(within: 0.5, refusingNewHosts: false)
+        try await waitUntil("the other host process to be gone", timeout: 5) { other.processCount() == 0 }
+        XCTAssertTrue(canary.isRunning, "the quit ends hosts and their trees only")
+    }
+
     // MARK: - TASK-265: writes never block the main actor
 
     /// A JSON string body of exactly `bytes` bytes (the quotes included).

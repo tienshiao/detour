@@ -266,14 +266,15 @@ class NativeMessagingHost {
     }
 
     /// How the teardown ends a host process that is still running: SIGTERM
-    /// (and stdin closed), then SIGKILL if it is still running `grace`
-    /// seconds later (TASK-241). Chrome closes the host's pipes and kills it
-    /// after 2 s (`base::EnsureProcessTerminated`); the SIGTERM first is
-    /// Detour's, and is what 1Password's host exits on.
+    /// (and stdin closed), then SIGKILL if it, or a process it started, is
+    /// still running `grace` seconds later (TASK-241, TASK-274); both go to
+    /// the host's process group. Chrome closes the host's pipes and kills
+    /// the host's pid alone after 2 s (`base::EnsureProcessTerminated`); the
+    /// SIGTERM first is Detour's, and is what 1Password's host exits on.
     struct Termination: Sendable {
         var grace: TimeInterval
         /// For tests: called off the main actor just after a SIGKILL, with
-        /// the pid it went to.
+        /// the host's pid (its group's id).
         var onKill: (@Sendable (pid_t) -> Void)?
 
         init(grace: TimeInterval = 2, onKill: (@Sendable (pid_t) -> Void)? = nil) {
@@ -284,9 +285,73 @@ class NativeMessagingHost {
 
     /// A host process Detour started and has not seen exit, with the
     /// SIGKILL timer of a teardown that is waiting on it.
+    ///
+    /// Signals go to the host's process tree (TASK-274): Foundation's
+    /// `Process` starts the host as the leader of a process group of its
+    /// own, and what the host starts is in that group unless it leaves it,
+    /// so a wrapper script that runs its real host without `exec` has the
+    /// real host signalled too. The group's id is the host's pid. XNU never
+    /// hands out an id that a live process, process group or session has,
+    /// so the id cannot name anyone else's processes while the host is
+    /// unreaped or any member of its group is alive; once all are gone, it
+    /// can only come back after the pid counter has gone all the way round
+    /// (99,999 pids). Groups are only signalled while the host is unreaped
+    /// (`isRunning`) or within a teardown's grace period or the quit's wait
+    /// after it, never later.
     nonisolated private struct SpawnedProcess: Sendable {
         let process: Process
+        /// The process group the host leads; nil when it was not the leader
+        /// of a group of its own at spawn, and then only its pid is signalled.
+        let group: pid_t?
         var killTimer: (any DispatchSourceTimer)?
+        /// The host process has exited, torn down, while processes it
+        /// started were still running in its group: the entry stays until
+        /// the SIGKILL timer fires, so the timer, and a quit before then,
+        /// still reach them.
+        var hostExited = false
+
+        /// The group the just-started `process` leads, if it leads one of
+        /// its own: never Detour's group, which a `killpg` would end Detour
+        /// and its other children with.
+        static func ownGroup(of process: Process) -> pid_t? {
+            let pid = process.processIdentifier
+            return NativeMessagingHost.signallableGroup(host: pid, hostGroup: getpgid(pid), detourGroup: getpgrp())
+        }
+
+        /// The host, or a process it started that is still in its group, is
+        /// alive. `killpg` counts no zombie, and fails once only zombies are
+        /// left.
+        var isAlive: Bool {
+            if process.isRunning { return true }
+            guard let group else { return false }
+            return killpg(group, 0) == 0
+        }
+
+        /// Sends `signal` to the host's group, and to the host itself when
+        /// it is running and has left the group. Nil if anything got it,
+        /// else the errno of the last attempt (ESRCH when there was nothing
+        /// to send it to).
+        func send(_ signal: Int32) -> Int32? {
+            let pid = process.processIdentifier
+            var sent = false
+            var failure = ESRCH
+            if let group {
+                if killpg(group, signal) == 0 { sent = true } else { failure = errno }
+            }
+            if process.isRunning, group == nil || getpgid(pid) != group {
+                if Darwin.kill(pid, signal) == 0 { sent = true } else { failure = errno }
+            }
+            return sent ? nil : failure
+        }
+    }
+
+    /// The process group a host's signals may go to (`SpawnedProcess`): the
+    /// one the host leads, `hostGroup` (what `getpgid` reported for it, -1
+    /// on failure) being its own pid, and never `detourGroup`, which a
+    /// `killpg` would end Detour and its other children with. Nil otherwise,
+    /// and then only the host's pid is signalled.
+    nonisolated static func signallableGroup(host pid: pid_t, hostGroup: pid_t, detourGroup: pid_t) -> pid_t? {
+        hostGroup == pid && hostGroup > 1 && hostGroup != detourGroup ? hostGroup : nil
     }
 
     /// The host processes Detour started and has not seen exit, and whether
@@ -405,11 +470,14 @@ class NativeMessagingHost {
         // Closing through the handles is safe after a failed `run()`, which
         // has closed the child's ends through them already: a second close
         // is a no-op and never reaches a descriptor number reused since.
+        let leadsOwnGroup: Bool
         do {
-            try Self.spawned.withLock { registry in
+            leadsOwnGroup = try Self.spawned.withLock { registry in
                 guard !registry.isQuitting else { throw NativeMessagingError.quitting }
                 try proc.run()
-                registry.processes[ObjectIdentifier(proc)] = SpawnedProcess(process: proc)
+                let entry = SpawnedProcess(process: proc, group: SpawnedProcess.ownGroup(of: proc))
+                registry.processes[ObjectIdentifier(proc)] = entry
+                return entry.group != nil
             }
         } catch {
             proc.terminationHandler = nil
@@ -418,6 +486,11 @@ class NativeMessagingHost {
                 try? pipe.fileHandleForWriting.close()
             }
             throw error
+        }
+        if !leadsOwnGroup {
+            // Foundation's `Process` makes one; only a host that exited at
+            // once, and was reaped before the check, has none to read.
+            log.notice("[1PW-DEBUG] NM GROUP [\(self.hostName, privacy: .public)] the host does not lead a process group of its own: only its own pid will be signalled")
         }
         self.stdoutPipe = stdout
         self.stderrPipe = stderr
@@ -546,8 +619,7 @@ class NativeMessagingHost {
         // once the channel lets go of it.
         stdinWriter?.close()
         if let process, process.isRunning {
-            process.terminate()
-            Self.killIfStillRunning(process, after: termination, hostName: hostName)
+            Self.terminate(process, with: termination, hostName: hostName)
         }
         process = nil
         stdinWriter = nil
@@ -555,50 +627,87 @@ class NativeMessagingHost {
         stderrPipe = nil
     }
 
-    /// Sends SIGKILL to `process` if it is still running once the grace
-    /// period is over: a host that ignores or blocks SIGTERM would otherwise
-    /// outlive its port as a child of Detour. The wait holds the `Process`,
-    /// never the host, so it runs after a teardown from `deinit` and does not
-    /// keep the host alive. `isRunning` goes false when Foundation reaps the
-    /// child, and until the reap the pid cannot be reused (an exited child is
-    /// a zombie that keeps it), so a host that exited on SIGTERM is never sent
-    /// anything. Only a reap landing between the check and the `kill` (both
-    /// microseconds apart) and the pid being reused within it could misfire.
-    nonisolated private static func killIfStillRunning(
-        _ process: Process, after termination: Termination, hostName: String
+    /// Sends SIGTERM to the running `process`'s tree, and SIGKILL if the
+    /// host or a process it started in its group is still running once the
+    /// grace period is over: one that ignores or blocks SIGTERM would
+    /// otherwise outlive its port, a child of Detour or, once a wrapper
+    /// script has exited, of launchd. The wait holds the `Process`, never the
+    /// host, so it runs after a teardown from `deinit` and does not keep the
+    /// host alive. `isRunning` goes false when Foundation reaps the child,
+    /// and until the reap the pid cannot be reused (an exited child is a
+    /// zombie that keeps it), so a host that exited on SIGTERM, with nothing
+    /// it started left, is never sent anything. Only a reap landing between
+    /// the check and the signal (microseconds apart) and the id being reused
+    /// within it could misfire; `SpawnedProcess` has the group's reasoning.
+    nonisolated private static func terminate(
+        _ process: Process, with termination: Termination, hostName: String
     ) {
         let onKill = termination.onKill
+        let id = ObjectIdentifier(process)
         let timer = DispatchSource.makeTimerSource(queue: .global())
         timer.schedule(deadline: .now() + termination.grace)
         timer.setEventHandler {
-            guard process.isRunning else { return }
+            // Fires once, after which the entry has no timer, and an entry
+            // kept only for it (`hostExited`) goes.
+            let entry = spawned.withLock { registry -> SpawnedProcess? in
+                guard let entry = registry.processes[id] else { return nil }
+                if entry.hostExited {
+                    registry.processes[id] = nil
+                } else {
+                    registry.processes[id]?.killTimer = nil
+                }
+                return entry
+            }
+            // Lets go of this handler, and the `Process` it holds.
+            entry?.killTimer?.cancel()
+            guard let entry, entry.isAlive else { return }
             let pid = process.processIdentifier
-            log.notice("[1PW-DEBUG] NM KILL [\(hostName, privacy: .public)] still running \(termination.grace)s after SIGTERM; sending SIGKILL")
-            if Darwin.kill(pid, SIGKILL) != 0 {
-                let code = errno
+            log.notice("[1PW-DEBUG] NM KILL [\(hostName, privacy: .public)] the host or a process it started still running \(termination.grace)s after SIGTERM; sending SIGKILL")
+            // ESRCH: the last of them exited since `isAlive`.
+            if let code = entry.send(SIGKILL), code != ESRCH {
                 log.error("[1PW-DEBUG] NM KILL [\(hostName, privacy: .public)] failed: errno \(code)")
             }
             onKill?(pid)
         }
         // Kept with the process, so its exit cancels the timer and lets go of
         // the `Process` and its pipes at once rather than after the grace
-        // period. No entry means the termination handler has run (the host
-        // exited between the teardown's `isRunning` and here): it needs no
-        // timer, which is cancelled. Resumed either way: releasing a source
-        // that was never activated crashes libdispatch.
-        let tracked = spawned.withLock { registry in
-            guard registry.processes[ObjectIdentifier(process)] != nil else { return false }
-            registry.processes[ObjectIdentifier(process)]?.killTimer = timer
-            return true
+        // period (unless what it started is still running, `forget`). Kept
+        // before the SIGTERM goes, so an exit on it finds the timer there. No
+        // entry means the termination handler has run (the host exited by
+        // itself between the teardown's `isRunning` and here): it gets no
+        // signal and needs no timer, which is cancelled. Resumed either way:
+        // releasing a source that was never activated crashes libdispatch.
+        let entry = spawned.withLock { registry -> SpawnedProcess? in
+            registry.processes[id]?.killTimer = timer
+            return registry.processes[id]
         }
-        if !tracked { timer.cancel() }
+        if let entry {
+            // ESRCH: the host exited by itself since the entry was read.
+            if let code = entry.send(SIGTERM), code != ESRCH {
+                log.error("[1PW-DEBUG] NM TERM [\(hostName, privacy: .public)] failed: errno \(code)")
+            }
+        } else {
+            timer.cancel()
+        }
         timer.resume()
     }
 
     /// Stops tracking `process`, which has exited, and cancels the SIGKILL
-    /// timer waiting on it.
+    /// timer waiting on it, unless it was torn down and processes it
+    /// started are still running in its group: then the entry stays until
+    /// the timer fires (within the grace period), for the timer and the quit
+    /// to reach them.
     nonisolated private static func forget(_ process: Process) {
-        let entry = spawned.withLock { $0.processes.removeValue(forKey: ObjectIdentifier(process)) }
+        let id = ObjectIdentifier(process)
+        let entry = spawned.withLock { registry -> SpawnedProcess? in
+            guard let entry = registry.processes[id] else { return nil }
+            if entry.killTimer != nil, entry.isAlive {
+                registry.processes[id]?.hostExited = true
+                return nil
+            }
+            registry.processes[id] = nil
+            return entry
+        }
         entry?.killTimer?.cancel()
     }
 
@@ -610,15 +719,19 @@ class NativeMessagingHost {
     }
 
     /// Ends every host process Detour started that is still running, owned
-    /// or torn down: SIGTERM to each, a wait of at most `timeout` for them all
-    /// together, then SIGKILL to the rest (TASK-243). For quitting: the app
-    /// is about to exit, which ends no host by itself (a host is not in a
-    /// process group that dies with Detour, and one that does not read its
-    /// stdin never sees the pipe close), and takes every SIGKILL timer with
-    /// it. Blocks the calling thread, which may be the main thread: the
-    /// reaping that makes `isRunning` false happens on Foundation's own
-    /// queue. The owners hear nothing: their reports are main-actor tasks,
-    /// and the app exits first. The pid reasoning is `killIfStillRunning`'s.
+    /// or torn down, with the processes it started in its group (TASK-274):
+    /// SIGTERM to each tree, a wait of at most `timeout` for them all
+    /// together, then SIGKILL to the rest (TASK-243). A torn-down wrapper
+    /// script that has exited while its SIGTERM-ignoring child waits out the
+    /// grace period is among them. For quitting: the app is about to exit,
+    /// which ends no host by itself (a host's process group is its own, not
+    /// one that dies with Detour, and a host that does not read its stdin
+    /// never sees the pipe close), and takes every SIGKILL timer with it.
+    /// Blocks the calling thread, which may be the main thread: the reaping
+    /// that makes `isRunning` false happens on Foundation's own queue. The
+    /// owners hear nothing: their reports are main-actor tasks, and the app
+    /// exits first. The pid reasoning is `terminate(_:with:hostName:)`'s and
+    /// `SpawnedProcess`'s.
     /// `refusingNewHosts` (the quit paths; tests pass false) makes every
     /// later `connect()` throw, so no host starts after the sweep.
     @discardableResult
@@ -627,21 +740,19 @@ class NativeMessagingHost {
     ) -> QuitReport {
         let running = spawned.withLock { registry in
             if refusingNewHosts { registry.isQuitting = true }
-            return registry.processes.values.map(\.process)
-        }.filter(\.isRunning)
+            return Array(registry.processes.values)
+        }.filter(\.isAlive)
         var report = QuitReport()
         guard !running.isEmpty else { return report }
-        for process in running {
-            let pid = process.processIdentifier
-            if Darwin.kill(pid, SIGTERM) == 0 { report.terminated.append(pid) }
+        for entry in running where entry.send(SIGTERM) == nil {
+            report.terminated.append(entry.process.processIdentifier)
         }
         let deadline = Date().addingTimeInterval(timeout)
-        while running.contains(where: \.isRunning), Date() < deadline {
+        while running.contains(where: \.isAlive), Date() < deadline {
             usleep(5_000)
         }
-        for process in running where process.isRunning {
-            let pid = process.processIdentifier
-            if Darwin.kill(pid, SIGKILL) == 0 { report.killed.append(pid) }
+        for entry in running where entry.isAlive && entry.send(SIGKILL) == nil {
+            report.killed.append(entry.process.processIdentifier)
         }
         log.notice("NM QUIT: \(report.terminated.count) host(s) sent SIGTERM, \(report.killed.count) still running after \(timeout)s sent SIGKILL")
         return report
