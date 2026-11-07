@@ -29,6 +29,7 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
     private var fakeHost: FakeNativeMessagingHost?
 
     @MainActor override func tearDown() async throws {
+        NativeMessagingHost.outgoingLimits = .standard
         webViews.removeAll()
         for profile in createdProfiles {
             profile.unloadAllExtensions()
@@ -924,6 +925,76 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
             XCTAssertEqual(ExtensionManager.shared.pendingOneShotNativeMessageCountForTesting(extensionID: ext.id), 0)
             fakeHost?.tearDown()
             fakeHost = nil
+        }
+    }
+
+    // MARK: - TASK-265: a host that never reads
+
+    /// Posts `count` strings of `bytes` JSON bytes each on the page's port
+    /// `name`.
+    @MainActor private func post(_ count: Int, stringsOf bytes: Int, on name: String,
+                                 in webView: WKWebView) async throws {
+        _ = try await evalJSON("""
+            const port = window.__ports[name].port;
+            const blob = 'x'.repeat(bytes - 2);
+            for (let i = 0; i < count; i++) port.postMessage(blob);
+            return { ok: true };
+            """, in: webView, arguments: ["name": name, "count": count, "bytes": bytes])
+    }
+
+    /// A page posts 6 MB on a `connectNative` port whose host never reads
+    /// its stdin: the posts go through while the main thread stays free (the
+    /// page answers the next evaluation, the host is still running, the port
+    /// still open), and the host ends when the page disconnects. Before
+    /// TASK-265 the write past the pipe's buffer blocked the main thread.
+    @MainActor func testAConnectNativePortTakesSeveralMegabytesForAHostThatNeverReads() async throws {
+        let ext = try await makeExtension()
+        try installFakeHost(allowing: [ext.id], behavior: .silent)
+        let loaded = try await load(ext, profileName: "NM Non-Reading Host Profile")
+        let controller = loaded.profile.extensionController
+        try await connectNative(Self.hostName, as: "stuck", in: loaded.webView)
+        try await waitUntil("the host to start", timeout: 5) { self.fakeHostProcessCount() == 1 }
+        let pid = try XCTUnwrap(fakeHost?.processIDs().first)
+        let safety = killing(pid, after: 15)
+        defer { safety.cancel() }
+
+        let start = Date()
+        try await post(6, stringsOf: 1024 * 1024, on: "stuck", in: loaded.webView)
+        let state = try await portState("stuck", in: loaded.webView)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10, "loose: a loaded machine")
+        XCTAssertEqual(state["disconnected"] as? Bool, false, "\(state)")
+        XCTAssertEqual(fakeHostProcessCount(), 1, "the safety kill did not have to unblock a write")
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 1)
+
+        _ = try await evalJSON("window.__ports.stuck.port.disconnect(); return { ok: true };",
+                               in: loaded.webView, arguments: [:])
+        try await waitUntil("the host to end", timeout: 5) { self.fakeHostProcessCount() == 0 }
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 0)
+    }
+
+    /// A port message that cannot be sent ends the port rather than
+    /// vanishing: one over the size limit, and one that would take what
+    /// waits for a host that never reads past its bound. The page's
+    /// `onDisconnect` fires, the host process ends and the port no longer
+    /// counts as a live host. (WebKit does not hand the error to an
+    /// established port, so `port.error` is not checked.) The limits are
+    /// lowered so neither leg needs 64 MiB of JSON.
+    @MainActor func testAConnectNativePortIsDisconnectedWhenAMessageCannotBeSent() async throws {
+        NativeMessagingHost.outgoingLimits = .init(maxMessageSize: 300_000, maxPendingBytes: 500_000)
+        let ext = try await makeExtension()
+        try installFakeHost(allowing: [ext.id], behavior: .silent)
+        let loaded = try await load(ext, profileName: "NM Unsendable Message Profile")
+        let controller = loaded.profile.extensionController
+
+        for (name, count, bytes) in [("tooLarge", 1, 300_001), ("queueFull", 3, 200_000)] {
+            try await connectNative(Self.hostName, as: name, in: loaded.webView)
+            try await waitUntil("the \(name) host to start", timeout: 5) { self.fakeHostProcessCount() == 1 }
+            try await post(count, stringsOf: bytes, on: name, in: loaded.webView)
+            try await waitUntil("the \(name) port to be disconnected", timeout: 5) {
+                (try? await self.portState(name, in: loaded.webView))?["disconnected"] as? Bool == true
+            }
+            try await waitUntil("the \(name) host to end", timeout: 5) { self.fakeHostProcessCount() == 0 }
+            XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 0, name)
         }
     }
 }

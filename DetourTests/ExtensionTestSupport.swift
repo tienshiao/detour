@@ -249,6 +249,16 @@ func runTool(_ path: String, _ arguments: [String]) -> (status: Int32, output: S
     return (process.terminationStatus, String(decoding: data, as: UTF8.self))
 }
 
+/// SIGKILLs `pid` after `seconds` unless cancelled (TASK-265). A regression
+/// that blocks the main actor in a write to a host that never reads then
+/// fails (the kill unblocks the write, and the test finds the host gone and
+/// the time spent) instead of hanging the run.
+func killing(_ pid: pid_t, after seconds: TimeInterval) -> DispatchWorkItem {
+    let item = DispatchWorkItem { _ = Darwin.kill(pid, SIGKILL) }
+    DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: item)
+    return item
+}
+
 /// A stand-in native messaging host: a shell script that `exec`s
 /// `sleep <token>` and reads nothing, so a test gets a real host process that
 /// stays connected and silent (`Behavior` has variants that write fixed bytes
@@ -294,6 +304,9 @@ final class FakeNativeMessagingHost {
         /// As `.silent`, but SIGTERM is ignored (`trap '' TERM`, which the
         /// `exec`'d sleep inherits): only SIGKILL ends it (TASK-241).
         case silentIgnoringSIGTERM
+        /// Closes its stdin, then sleeps as `.silent` does: a write to it
+        /// fails with EPIPE while the process is still alive (TASK-265).
+        case closesStdin
     }
 
     /// The host name an extension passes to `connectNative` / `sendNativeMessage`.
@@ -346,6 +359,8 @@ final class FakeNativeMessagingHost {
             body = "/usr/bin/head -c 1 >/dev/null\n/bin/cat '\(outputFile.path)'\nexec sleep \(sleepToken)\n"
         case .silentIgnoringSIGTERM:
             body = "trap '' TERM\nexec sleep \(sleepToken)\n"
+        case .closesStdin:
+            body = "exec 0<&-\nexec sleep \(sleepToken)\n"
         }
         try ("#!/bin/sh\n" + body).write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)

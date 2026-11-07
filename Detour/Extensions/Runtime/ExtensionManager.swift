@@ -3287,9 +3287,36 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // (TASK-242). WebKit's bindings refuse a JS null before it gets here;
         // nil is sent as null all the same. A delivery WebKit reports as an
         // error carries no message, and nothing is written for it.
-        port.messageHandler = { message, error in
+        //
+        // The write happens off the main actor (TASK-265). A message that
+        // cannot be sent (over 64 MiB, not JSON, the host not reading with
+        // the bound of queued bytes reached, the host gone) ends the port
+        // rather than vanishing: later messages would otherwise reach the
+        // host with a hole before them. Chrome refuses an oversized message
+        // in `postMessage` itself and closes the port on a failed write; the
+        // error given here is Chrome's text, though WebKit does not hand an
+        // established port's error to the extension, only `onDisconnect`. A
+        // write that fails after it was queued ends the port through
+        // `onDisconnect` above.
+        port.messageHandler = { [weak port] message, error in
             guard error == nil else { return }
-            try? host.sendMessage(message ?? NSNull())
+            do {
+                try host.sendMessage(message ?? NSNull())
+            } catch {
+                // A host that is already going away (it exited, or a write
+                // to it failed) with its end still being joined: the join
+                // ends the port through `onDisconnect` once what the host
+                // wrote before going is delivered. Ending it here would
+                // drop that reply.
+                if (error as? NativeMessagingHost.NativeMessagingError) == .notConnected, host.isConnected {
+                    return
+                }
+                let detail = (error as? NativeMessagingHost.NativeMessagingError)?.logDetail ?? error.localizedDescription
+                log.error("Native port to '\(hostName, privacy: .public)' from \(extID, privacy: .public) in profile \(profileName, privacy: .public): message not sent (\(detail, privacy: .public)); disconnecting the port")
+                releaseHost()
+                host.disconnect()
+                port?.disconnect(throwing: error)
+            }
         }
         port.disconnectHandler = { _ in
             releaseHost()

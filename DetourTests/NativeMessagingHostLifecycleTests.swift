@@ -29,6 +29,7 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
     }
 
     @MainActor private func reset() {
+        NativeMessagingHost.outgoingLimits = .standard
         otherHost?.disconnect()
         otherHost = nil
         otherFixture?.tearDown()
@@ -315,6 +316,153 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
         host = nil
         try await waitUntil("the host process to exit", timeout: 5) { fixture.processCount() == 0 }
         try await waitUntil("the SIGKILL timer to be released", timeout: 3) { released == nil }
+    }
+
+    // MARK: - TASK-265: writes never block the main actor
+
+    /// A JSON string body of exactly `bytes` bytes (the quotes included).
+    @MainActor private func stringBody(bytes: Int) -> String {
+        String(repeating: "x", count: bytes - 2)
+    }
+
+    /// The browser-to-host limits are deliberate values: Chrome's 64 MiB for
+    /// a message, room for one such message framed waiting to be written,
+    /// and 1 MB from the host.
+    @MainActor func testTheMessageLimitsAreChromes() {
+        XCTAssertEqual(NativeMessagingHost.OutgoingLimits.standard.maxMessageSize, 64 * 1024 * 1024)
+        XCTAssertEqual(NativeMessagingHost.OutgoingLimits.standard.maxPendingBytes, 64 * 1024 * 1024 + 4)
+        XCTAssertEqual(NativeMessagingHost.maxIncomingMessageSize, 1024 * 1024)
+    }
+
+    /// A host that never reads its stdin (`exec sleep`), sent 4 MB, sixty
+    /// times the pipe's buffer: every `sendMessage` returns at once, the
+    /// bytes wait off the main actor, and `disconnect()` still ends the host.
+    /// Before TASK-265 the first write past the buffer blocked the main
+    /// thread for as long as the host lived.
+    @MainActor func testSendingSeveralMegabytesToAHostThatNeverReadsDoesNotBlock() async throws {
+        try connect(.silent)
+        let fixture = try XCTUnwrap(fixture)
+        let pid = try await runningHostPID()
+        let safety = killing(pid, after: 10)
+        defer { safety.cancel() }
+
+        let blob = stringBody(bytes: 512 * 1024)
+        let start = Date()
+        for n in 1...8 {
+            try host?.sendMessage(["n": n, "blob": blob])
+        }
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertLessThan(elapsed, 2, "queued, not written in place (loose: a loaded machine)")
+        XCTAssertEqual(fixture.processCount(), 1, "the safety kill did not have to unblock a write")
+        XCTAssertGreaterThan(host?.pendingWriteBytes ?? 0, 3 * 1024 * 1024,
+                             "the host reads nothing, so nearly all of it is still waiting")
+        XCTAssertTrue(host?.isConnected ?? false)
+
+        host?.disconnect()
+        try await waitUntil("the host process to exit", timeout: 5) { fixture.processCount() == 0 }
+        XCTAssertEqual(events, [])
+    }
+
+    /// The quit sweep with writes waiting on a host that never reads and
+    /// ignores SIGTERM: it returns once its bounded wait is over, having
+    /// killed the host, as without the writes.
+    @MainActor func testQuitEndsAHostThatNeverReadsWithWritesWaiting() async throws {
+        try connect(.silentIgnoringSIGTERM)
+        let fixture = try XCTUnwrap(fixture)
+        let pid = try await runningHostPID()
+        let safety = killing(pid, after: 10)
+        defer { safety.cancel() }
+        let blob = stringBody(bytes: 1024 * 1024)
+        for n in 1...4 {
+            try host?.sendMessage(["n": n, "blob": blob])
+        }
+        XCTAssertGreaterThan(host?.pendingWriteBytes ?? 0, 3 * 1024 * 1024)
+
+        let start = Date()
+        let report = NativeMessagingHost.terminateAllSpawnedHosts(within: 0.5, refusingNewHosts: false)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertTrue(report.killed.contains(pid), "\(report)")
+        XCTAssertLessThan(elapsed, 3, "the wait is bounded (loose: a loaded machine oversleeps)")
+        try await waitUntil("the host process to be gone", timeout: 5) { fixture.processCount() == 0 }
+        // The waiting writes fail once the host is gone, and that ends the
+        // connection like any write to a host that went away.
+        try await waitForDisconnect()
+        XCTAssertFalse(host?.isConnected ?? true)
+    }
+
+    /// Messages reach the host in the order they were sent: forty of them,
+    /// every other one 200 KB, through a host that echoes them back.
+    @MainActor func testMessagesReachTheHostInOrder() async throws {
+        try connect(.echoes)
+        let blob = stringBody(bytes: 200 * 1024)
+        for n in 1...40 {
+            let message: [String: Any] = n.isMultiple(of: 2) ? ["n": n, "blob": blob] : ["n": n]
+            try host?.sendMessage(message)
+        }
+        try await waitUntil("every echo", timeout: 10) { self.events.count >= 40 }
+        XCTAssertEqual(events, (1...40).map { "message:\($0)" })
+    }
+
+    /// A body over `maxMessageSize` is refused and nothing is written: the
+    /// connection stays usable, and the next message gets through.
+    @MainActor func testAMessageOverTheLimitIsRefusedAndNothingIsWritten() async throws {
+        NativeMessagingHost.outgoingLimits = .init(maxMessageSize: 1000, maxPendingBytes: 10_000)
+        try connect(.echoes)
+        XCTAssertNoThrow(try host?.sendMessage(stringBody(bytes: 1000)), "the limit itself is allowed")
+        XCTAssertThrowsError(try host?.sendMessage(stringBody(bytes: 1001))) { error in
+            XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError, .messageTooLarge(1001))
+        }
+        try host?.sendMessage(["n": 7])
+        try await waitUntil("both echoes") { self.events.count >= 2 }
+        XCTAssertEqual(events, ["message:-1", "message:7"], "the refused message never reached the host")
+        XCTAssertTrue(host?.isConnected ?? false)
+    }
+
+    /// What waits for a host that never reads is bounded: a message that
+    /// would take it past `maxPendingBytes` is refused. A frame counts until
+    /// it is completely written, so with a 200 KB frame stuck behind the
+    /// pipe's 64 KB buffer the third is the one refused.
+    @MainActor func testWhatWaitsForAHostThatNeverReadsIsBounded() async throws {
+        NativeMessagingHost.outgoingLimits = .init(maxMessageSize: 300_000, maxPendingBytes: 500_000)
+        try connect(.silent)
+        let fixture = try XCTUnwrap(fixture)
+        let pid = try await runningHostPID()
+        let safety = killing(pid, after: 10)
+        defer { safety.cancel() }
+        let body = stringBody(bytes: 200_000)
+        try host?.sendMessage(body)
+        try host?.sendMessage(body)
+        XCTAssertEqual(host?.pendingWriteBytes, 2 * 200_004)
+        XCTAssertThrowsError(try host?.sendMessage(body)) { error in
+            XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError, .sendQueueFull)
+        }
+        XCTAssertEqual(host?.pendingWriteBytes, 2 * 200_004, "nothing of the refused one is queued")
+        XCTAssertEqual(fixture.processCount(), 1)
+        host?.disconnect()
+        try await waitUntil("the host process to exit", timeout: 5) { fixture.processCount() == 0 }
+    }
+
+    /// A host that closed its stdin and is still running: the write fails
+    /// with EPIPE off the main actor, which ends the connection with that
+    /// reason and the process with it. SIGPIPE is set back to its default
+    /// (death) for the write, so the test host itself shows the write does
+    /// not raise it: the descriptor has F_SETNOSIGPIPE, beside `main.swift`
+    /// ignoring the signal process-wide.
+    @MainActor func testAWriteToAHostThatClosedItsStdinEndsTheConnectionWithoutSIGPIPE() async throws {
+        try connect(.closesStdin)
+        let fixture = try XCTUnwrap(fixture)
+        _ = try await runningHostPID()
+        let previous = signal(SIGPIPE, SIG_DFL)
+        defer { signal(SIGPIPE, previous) }
+        try host?.sendMessage(["n": 1])
+        try await waitForDisconnect()
+        XCTAssertEqual(events, ["disconnect:Native host write failed: \(String(cString: strerror(EPIPE)))"])
+        try await waitUntil("the host process to be terminated", timeout: 5) { fixture.processCount() == 0 }
+        XCTAssertThrowsError(try host?.sendMessage(["n": 2])) { error in
+            XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError, .notConnected)
+        }
     }
 
     // MARK: - The join, without a process

@@ -74,7 +74,7 @@ nonisolated struct NativeHostManifest: Equatable, Sendable {
 /// Manages a single native messaging host process, implementing Chrome's native messaging protocol.
 ///
 /// Protocol: 4-byte little-endian uint32 length prefix + UTF-8 JSON message body.
-/// Max message size: 1 MB (Chrome's limit).
+/// Max message size: 1 MB from the host, 64 MiB to it (Chrome's limits).
 class NativeMessagingHost {
 
     /// Search directories for native messaging host manifests (Chrome-compatible locations).
@@ -103,12 +103,37 @@ class NativeMessagingHost {
         return directories
     }
 
-    nonisolated static let maxMessageSize = 1_048_576 // 1 MB
+    /// The largest message a host may send: 1 MB, Chrome's
+    /// `kMaximumNativeMessageSize`, which protects the browser from a
+    /// misbehaving host. A longer prefix ends the connection.
+    nonisolated static let maxIncomingMessageSize = 1_048_576 // 1 MB
+
+    /// What Detour will send a host (TASK-265).
+    struct OutgoingLimits: Sendable, Equatable {
+        /// The largest JSON body `sendMessage` writes.
+        var maxMessageSize: Int
+        /// The most bytes of framed messages waiting to be written to one
+        /// host at a time: what a host that stops reading stdin can make
+        /// Detour hold. A message that would go over it is refused.
+        var maxPendingBytes: Int
+
+        /// Chrome's 64 MiB for a message to a host (the renderer's
+        /// `kMaxMessageBytes`, for every extension message), and room for one
+        /// such message, framed, waiting to be written. Chrome's write queue
+        /// has no bound.
+        static let standard = OutgoingLimits(maxMessageSize: 64 * 1024 * 1024,
+                                             maxPendingBytes: 64 * 1024 * 1024 + 4)
+    }
+
+    /// The limits each host takes when it connects. Tests lower them, so a
+    /// refused message does not need 64 MiB of JSON.
+    static var outgoingLimits = OutgoingLimits.standard
 
     private let hostName: String
     let extensionID: String
     private var process: Process?
-    private var stdinPipe: Pipe?
+    private var stdinWriter: StdinWriter?
+    private var outgoing = OutgoingLimits.standard
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
 
@@ -147,6 +172,96 @@ class NativeMessagingHost {
 
         func handle(_ event: NativeHostEnding.Event) -> NativeHostEnding.Action {
             ending.withLock { $0.handle(event) }
+        }
+    }
+
+    /// Writes framed messages to one host process's stdin without blocking
+    /// any thread (TASK-265). A blocking write on the main actor froze the
+    /// app, and kept a normal quit from running, as soon as a host stopped
+    /// reading and the pipe's buffer (64 KB) filled.
+    ///
+    /// A `DispatchIO` stream channel owns the descriptor: libdispatch makes it
+    /// non-blocking and writes as the pipe drains, and a stream channel's
+    /// writes go out in the order they were submitted, so the host gets the
+    /// messages in `sendMessage` order. `close()` stops the channel: a write
+    /// still waiting on a host that never reads is abandoned (Chrome too
+    /// drops its write queue when it closes a host's pipes), and the
+    /// descriptor is closed once the channel has let go of it. Nothing on the
+    /// quit and teardown paths waits on a write.
+    ///
+    /// `submit` and `close` are called on the main actor; the completions run
+    /// on a global queue, hence the mutex.
+    nonisolated private final class StdinWriter: Sendable {
+        enum Submission: Equatable {
+            case queued
+            /// The frame would take the bytes waiting past the bound.
+            case full
+            /// Closed, or a write has failed: nothing more is written.
+            case closed
+        }
+
+        private struct State {
+            /// Bytes of submitted frames not yet completely written.
+            var pendingBytes = 0
+            var isClosed = false
+            var hasFailed = false
+        }
+
+        private let channel: DispatchIO
+        private let state = Mutex(State())
+        private let maxPendingBytes: Int
+        /// Called once, on a global queue, with the errno of the first write
+        /// that failed other than by `close()`.
+        private let onFailure: @Sendable (Int32) -> Void
+
+        init(writingTo handle: FileHandle, maxPendingBytes: Int,
+             onFailure: @escaping @Sendable (Int32) -> Void) {
+            self.maxPendingBytes = maxPendingBytes
+            self.onFailure = onFailure
+            let descriptor = handle.fileDescriptor
+            // A write to a host that has gone fails with EPIPE rather than
+            // raising SIGPIPE, which `main.swift` also ignores process-wide.
+            _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
+            // The handle is held until the channel is done with the
+            // descriptor: closing it earlier (the handle's own deinit does)
+            // could hand the number to another file mid-write.
+            channel = DispatchIO(type: .stream, fileDescriptor: descriptor, queue: .global()) { _ in
+                try? handle.close()
+            }
+        }
+
+        var pendingBytes: Int { state.withLock { $0.pendingBytes } }
+
+        func submit(_ frame: Data) -> Submission {
+            let submission = state.withLock { state -> Submission in
+                guard !state.isClosed, !state.hasFailed else { return .closed }
+                guard state.pendingBytes + frame.count <= maxPendingBytes else { return .full }
+                state.pendingBytes += frame.count
+                return .queued
+            }
+            guard submission == .queued else { return submission }
+            let size = frame.count
+            let data = frame.withUnsafeBytes { DispatchData(bytes: $0) }
+            channel.write(offset: 0, data: data, queue: .global()) { [self] done, _, error in
+                guard done else { return }
+                let failed = state.withLock { state -> Bool in
+                    state.pendingBytes -= size
+                    // ECANCELED is `close()` stopping the channel.
+                    guard error != 0, !state.isClosed, !state.hasFailed else { return false }
+                    state.hasFailed = true
+                    return true
+                }
+                if failed { onFailure(error) }
+            }
+            return .queued
+        }
+
+        func close() {
+            let wasOpen = state.withLock { state -> Bool in
+                defer { state.isClosed = true }
+                return !state.isClosed
+            }
+            if wasOpen { channel.close(flags: .stop) }
         }
     }
 
@@ -289,7 +404,6 @@ class NativeMessagingHost {
             log.debug("[1PW-DEBUG] NM STDERR [\(stderrHostName, privacy: .public)] (\(data.count) bytes): \(String(decoding: data, as: UTF8.self), privacy: .private)")
         }
 
-        self.stdinPipe = stdin
         self.stdoutPipe = stdout
         self.stderrPipe = stderr
         self.process = proc
@@ -315,6 +429,21 @@ class NativeMessagingHost {
             registry.processes[ObjectIdentifier(proc)] = SpawnedProcess(process: proc)
         }
         self.connection = connection
+        outgoing = Self.outgoingLimits
+        // A failed write (the host closed its stdin or exited) is recorded
+        // first, so the exit the teardown causes cannot report a reason of
+        // its own; it is joined with the end of stream like an exit, since a
+        // reply the host wrote before going away may still be in the pipe.
+        // Then the teardown runs, as for a write that failed in place.
+        stdinWriter = StdinWriter(writingTo: stdin.fileHandleForWriting,
+                                  maxPendingBytes: outgoing.maxPendingBytes) { [weak self] code in
+            let reason = "Native host write failed: \(String(cString: strerror(code)))"
+            log.notice("[1PW-DEBUG] NM WRITE FAILED [\(hostNameCopy, privacy: .public)]: errno \(code)")
+            Self.record(.writeFailed(reason), on: connection, hostName: hostNameCopy, reportingTo: self)
+            Task { @MainActor [weak self] in
+                self?.writeFailed(on: connection)
+            }
+        }
         log.info("Connected to native host \(self.hostName, privacy: .public) at \(hostPath, privacy: .public) for extension \(self.extensionID, privacy: .public)")
 
         // Start reading stdout on a background queue
@@ -332,8 +461,17 @@ class NativeMessagingHost {
     /// and a native port writes it to the host as is (TASK-242). The one-shot
     /// `sendNativeMessage` refuses anything but an object before it gets here,
     /// as Chrome's signature check does.
+    ///
+    /// Returns once the message is queued: the write happens off the main
+    /// actor, in order (TASK-265). A write that fails later (the host has
+    /// gone) ends the connection through `onDisconnect`. Throws, and writes
+    /// nothing, for a message that is not JSON, one over
+    /// `OutgoingLimits.maxMessageSize`, one that would take the bytes still
+    /// waiting for the host past `maxPendingBytes`, and when the connection
+    /// is gone; the connection stays as it was, and what to do about it is
+    /// the caller's.
     func sendMessage(_ message: Any) throws {
-        guard let connection, connection.isOpen, let stdinPipe, process?.isRunning == true else {
+        guard let connection, connection.isOpen, let stdinWriter, process?.isRunning == true else {
             throw NativeMessagingError.notConnected
         }
 
@@ -341,32 +479,32 @@ class NativeMessagingHost {
             throw NativeMessagingError.invalidMessage
         }
 
-        guard data.count <= Self.maxMessageSize else {
-            log.warning("Message size \(data.count) exceeds 1MB limit for native host \(self.hostName, privacy: .public)")
+        guard data.count <= outgoing.maxMessageSize else {
+            log.warning("NM SEND REFUSED [\(self.hostName, privacy: .public)]: \(data.count) bytes is over the \(self.outgoing.maxMessageSize)-byte limit")
             throw NativeMessagingError.messageTooLarge(data.count)
         }
 
-        // Payload contents are deliberately never logged (see doc comment above).
-        log.notice("[1PW-DEBUG] → NM SEND [\(self.hostName, privacy: .public)] (\(data.count) bytes)")
-
-        do {
-            try stdinPipe.fileHandleForWriting.write(contentsOf: Self.encodeMessage(data))
-        } catch {
-            // Read end closed (native host exited): treat as a disconnect rather
-            // than crashing. SIGPIPE is ignored process-wide, so this surfaces as
-            // an EPIPE error here instead of terminating the app. The failure
-            // is recorded first, so the exit the teardown causes cannot report
-            // a reason of their own; it is joined with the end of stream like
-            // an exit, since a reply the host wrote before going away may
-            // still be in the pipe. Then the teardown runs eagerly, so the
-            // caller sees closed pipes as soon as it catches notConnected
-            // (`connectionEnded` repeats it, harmlessly).
-            log.notice("[1PW-DEBUG] NM WRITE FAILED [\(self.hostName, privacy: .public)]: \(error.localizedDescription, privacy: .public)")
-            Self.record(.writeFailed("Native host write failed: \(error.localizedDescription)"), on: connection,
-                        hostName: hostName, reportingTo: self)
-            teardownProcess()
+        switch stdinWriter.submit(Self.encodeMessage(data)) {
+        case .queued:
+            // Payload contents are deliberately never logged (see doc comment above).
+            log.notice("[1PW-DEBUG] → NM SEND [\(self.hostName, privacy: .public)] (\(data.count) bytes)")
+        case .full:
+            log.warning("NM SEND REFUSED [\(self.hostName, privacy: .public)]: \(data.count) bytes would take what waits for the host past \(self.outgoing.maxPendingBytes) bytes; the host is not reading")
+            throw NativeMessagingError.sendQueueFull
+        case .closed:
             throw NativeMessagingError.notConnected
         }
+    }
+
+    /// Bytes queued for the host that are not written yet (tests).
+    var pendingWriteBytes: Int { stdinWriter?.pendingBytes ?? 0 }
+
+    /// A write on `failed` has failed: the host is gone, or closed its
+    /// stdin. Tears the process down, unless that connection has ended
+    /// already; the report comes through the join.
+    private func writeFailed(on failed: Connection) {
+        guard failed === connection, failed.isOpen else { return }
+        teardownProcess()
     }
 
     /// Disconnect the native host (terminates the process). Deliberately does
@@ -383,13 +521,15 @@ class NativeMessagingHost {
     /// make a second call harmless.
     private func teardownProcess() {
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
-        stdinPipe?.fileHandleForWriting.closeFile()
+        // Abandons whatever is still waiting to be written, and closes stdin
+        // once the channel lets go of it.
+        stdinWriter?.close()
         if let process, process.isRunning {
             process.terminate()
             Self.killIfStillRunning(process, after: termination, hostName: hostName)
         }
         process = nil
-        stdinPipe = nil
+        stdinWriter = nil
         stdoutPipe = nil
         stderrPipe = nil
     }
@@ -645,7 +785,7 @@ class NativeMessagingHost {
                     return
                 }
 
-                guard length > 0, length <= Self.maxMessageSize else {
+                guard length > 0, length <= Self.maxIncomingMessageSize else {
                     Self.record(.failed("Invalid message length: \(length)"), on: connection,
                                 hostName: hostName, reportingTo: self)
                     return
@@ -719,7 +859,11 @@ class NativeMessagingHost {
         case originNotAllowed(String)
         case notConnected
         case invalidMessage
+        /// The JSON body is over `OutgoingLimits.maxMessageSize`.
         case messageTooLarge(Int)
+        /// The host is not reading: the message would take what waits to be
+        /// written past `OutgoingLimits.maxPendingBytes` (TASK-265).
+        case sendQueueFull
         /// Detour is quitting and has ended its hosts (TASK-243).
         case quitting
 
@@ -740,7 +884,11 @@ class NativeMessagingHost {
             case .originNotAllowed: return ExtensionManager.nativeHostForbiddenMessage
             case .notConnected: return "Not connected to native messaging host"
             case .invalidMessage: return "Failed to serialize message as JSON"
-            case .messageTooLarge(let size): return "Message size \(size) exceeds 1MB limit"
+            // Chrome's renderer refuses a message over 64 MiB with this.
+            case .messageTooLarge: return "Message exceeded maximum allowed size of 64MiB."
+            // Chrome's kHostInputOutputError, what it closes a native port
+            // with when a write to the host fails.
+            case .sendQueueFull: return "Error when communicating with the native messaging host."
             case .quitting: return "Detour is quitting"
             }
         }
@@ -755,6 +903,8 @@ class NativeMessagingHost {
             case .pathNotAbsolute(let name): return "the manifest for \(name) has a path that is not absolute"
             case .hostNotFound(let path): return "no executable at \(path)"
             case .originNotAllowed(let id): return "\(id) is not in the manifest's allowed_origins"
+            case .messageTooLarge(let size): return "a \(size)-byte message is over the limit"
+            case .sendQueueFull: return "the host is not reading its stdin and the messages waiting for it are at the limit"
             default: return errorDescription ?? "\(self)"
             }
         }
@@ -764,8 +914,8 @@ class NativeMessagingHost {
 
     /// Encode a message into Chrome's length-prefixed format: the body's
     /// byte count as a little-endian UInt32, then the body. `sendMessage`
-    /// caps the body at `maxMessageSize` before calling this, so the count
-    /// fits.
+    /// caps the body at `OutgoingLimits.maxMessageSize` (64 MiB) before
+    /// calling this, so the count fits.
     static func encodeMessage(_ data: Data) -> Data {
         var packet = Data(littleEndianBytesOf: UInt32(data.count))
         packet.append(data)

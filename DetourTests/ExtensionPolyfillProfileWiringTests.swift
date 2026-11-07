@@ -39,6 +39,7 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     }
 
     @MainActor override func tearDown() async throws {
+        NativeMessagingHost.outgoingLimits = .standard
         for profile in createdProfiles {
             profile.unloadAllExtensions()
             TabStore.shared.forceRemoveProfile(id: profile.id)
@@ -1628,6 +1629,95 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         try await waitUntil("the disconnected port's echo host to exit", timeout: 5) {
             echo.processCount() == 0
                 && ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id) == 0
+        }
+    }
+
+    // MARK: - TASK-265: a host that never reads, from a worker
+
+    /// The worker transport for what `NativeMessagingEnforcementTests` checks
+    /// from an extension page: the worker posts 6 MB on a `connectNative`
+    /// port to a host that never reads its stdin, and the main thread stays
+    /// free (the worker answers the next ping, the host is still running,
+    /// the port still open); then, with the limits lowered, a message over
+    /// the size limit and one past the bound of queued bytes each disconnect
+    /// the worker's port and end its host.
+    @MainActor func testAConnectNativePortToAHostThatNeverReadsFromAServiceWorker() async throws {
+        let id = measurementExtensionID("task265-worker")
+        let silent = try FakeNativeMessagingHost(allowing: [id], behavior: .silent)
+        fakeNativeHosts.append(silent)
+        let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+
+
+        const ports = {};
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (!message) return false;
+            if (message.type === 'ping') { sendResponse({ type: 'pong' }); return true; }
+            if (message.type === 'open') {
+                const record = { disconnected: false };
+                record.port = chrome.runtime.connectNative(message.host);
+                record.port.onDisconnect.addListener(() => { record.disconnected = true; });
+                ports[message.name] = record;
+                sendResponse({ ok: true });
+                return true;
+            }
+            if (message.type === 'post') {
+                const blob = 'x'.repeat(message.bytes - 2);
+                for (let i = 0; i < message.count; i++) ports[message.name].port.postMessage(blob);
+                sendResponse({ ok: true });
+                return true;
+            }
+            if (message.type === 'state') {
+                sendResponse({ disconnected: ports[message.name].disconnected });
+                return true;
+            }
+            if (message.type === 'close') {
+                ports[message.name].port.disconnect();
+                sendResponse({ ok: true });
+                return true;
+            }
+            return false;
+        });
+        """
+        let ext = try await makeWorkerExtension(id: id, permissions: ["nativeMessaging"], backgroundJS: backgroundJS)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+        let started = try await startMeasurement(ext, profileName: "TASK-265 Worker")
+        let controller = started.profile.extensionController
+        func ask(_ message: [String: Any], timeout: TimeInterval = 10) async throws -> [String: Any] {
+            let answer = try await askWorker(from: started.page, message: message, timeout: timeout)
+            return try XCTUnwrap(answer["reply"] as? [String: Any], "\(message["type"] ?? ""): \(answer)")
+        }
+        func liveHosts() -> Int {
+            ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id)
+        }
+        try await waitUntil("the background worker to wake", timeout: 20) {
+            let ping = try await askWorker(from: started.page, message: ["type": "ping"], timeout: 5)
+            return (ping["reply"] as? [String: Any])?["type"] as? String == "pong"
+        }
+
+        _ = try await ask(["type": "open", "name": "stuck", "host": silent.name])
+        try await waitUntil("the host to start", timeout: 5) { silent.processCount() == 1 }
+        let pid = try XCTUnwrap(silent.processIDs().first)
+        let safety = killing(pid, after: 20)
+        defer { safety.cancel() }
+        _ = try await ask(["type": "post", "name": "stuck", "count": 6, "bytes": 1024 * 1024], timeout: 15)
+        let ping = try await ask(["type": "ping"])
+        XCTAssertEqual(ping["type"] as? String, "pong")
+        let state = try await ask(["type": "state", "name": "stuck"])
+        XCTAssertEqual(state["disconnected"] as? Bool, false, "\(state)")
+        XCTAssertEqual(silent.processCount(), 1, "the safety kill did not have to unblock a write")
+        XCTAssertEqual(liveHosts(), 1)
+        _ = try await ask(["type": "close", "name": "stuck"])
+        try await waitUntil("the stuck port's host to end", timeout: 5) { silent.processCount() == 0 && liveHosts() == 0 }
+
+        NativeMessagingHost.outgoingLimits = .init(maxMessageSize: 300_000, maxPendingBytes: 500_000)
+        for (name, count, bytes) in [("tooLarge", 1, 300_001), ("queueFull", 3, 200_000)] {
+            _ = try await ask(["type": "open", "name": name, "host": silent.name])
+            try await waitUntil("the \(name) host to start", timeout: 5) { silent.processCount() == 1 }
+            _ = try await ask(["type": "post", "name": name, "count": count, "bytes": bytes])
+            try await waitUntil("the \(name) port to be disconnected", timeout: 5) {
+                try await ask(["type": "state", "name": name])["disconnected"] as? Bool == true
+            }
+            try await waitUntil("the \(name) host to end", timeout: 5) { silent.processCount() == 0 && liveHosts() == 0 }
         }
     }
 
