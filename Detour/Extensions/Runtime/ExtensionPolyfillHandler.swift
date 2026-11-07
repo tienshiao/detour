@@ -153,6 +153,20 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             for: ExtensionNotificationManager.Owner(profileID: profileID, extensionID: extensionID))
     }
 
+    /// Takes away the notifications `extensionID` created in this profile, and
+    /// answers its wait for their events with the permission refusal, when
+    /// `notifications` is not active for it here any more (TASK-270): the
+    /// Settings switch turned off, or `permissions.remove` of the optional
+    /// permission. `ExtensionManager` calls it for every profile after a
+    /// permission decision changes; while the permission is active it does
+    /// nothing.
+    func revokeNotificationsIfNotPermitted(ofExtension extensionID: String) {
+        guard let manager = existingNotificationManager,
+              let refusal = permissionRefusal("notifications", extensionID: extensionID) else { return }
+        manager.revoke(for: ExtensionNotificationManager.Owner(profileID: profileID, extensionID: extensionID),
+                       refusal: refusal)
+    }
+
     /// Takes away every extension's notifications in this profile when the
     /// profile is deleted, and stops its contexts' waits for their events.
     func removeAllNotifications() {

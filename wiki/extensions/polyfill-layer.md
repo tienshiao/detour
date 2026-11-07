@@ -115,6 +115,9 @@ sources:
   - id: task-264
     resource: backlog:TASK-264
     title: "Extensions: a Private-profile extension stops receiving notifications.onClicked and onClosed once a Private session starts or ends"
+  - id: task-270
+    resource: backlog:TASK-270
+    title: "Extensions: revoking the notifications permission leaves the extension's notifications and event wait in place"
   - id: chromium-notifications-clear
     resource: https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/extensions/api/notifications/
     title: "Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)"
@@ -590,12 +593,27 @@ them in order and parks again with `ack` = the last `seq`.
   too: the live worker took "unloaded" as final, never parked again, and
   every later click and close waited unheard in the backlog until WebKit
   restarted it.[^task-264]
+- **Losing the permission answers the park with the refusal.** When
+  `notifications` stops being active for an extension in a profile (the
+  Settings switch off, a prompt answered Deny, or the extension's own
+  `permissions.remove` of the optional permission), its notifications there
+  go, with their queued events, and the park is answered with the handler's
+  permission refusal ("denied by the user" or "is optional and has not been
+  granted"), which the polyfill retries after a later grant. "Unloaded" would
+  have stopped the worker for good. The incarnation history stays, so the
+  same worker's re-park is accepted. Before TASK-270 nothing happened: the
+  banners stayed, a click on one still fired `onClicked` through the park
+  admitted before the revocation, and the extension could not `clear` them
+  (refused for the permission). No `onClosed` fires for the notifications
+  taken away: the extension no longer holds the permission whose events those
+  are.[^task-270]
 - `onButtonClicked` still never fires: buttons are not shown.
 
 The manager-level behaviour is in `ExtensionNotificationEventManagerTests`, the
 real-worker behaviour (profile isolation, byUser, backlog before the park,
 `runtime.reload()` superseding, a Private worker hearing events across session
-boundaries) in `ExtensionNotificationEventDeliveryTests`.
+boundaries, the Settings switch and `permissions.remove` taking the
+notifications and the wait) in `ExtensionNotificationEventDeliveryTests`.
 
 ## chrome.notifications is scoped by profile
 
@@ -641,6 +659,7 @@ and pending), when:
 | The Private session ends: the last Private window's space is removed, or the last Private Quick Detour closes or switches profile | `TabStore.endPrivateSessionIfUnused()`, the one place that also calls `siteSettings.discardPrivateSession()` | `removeSession(profileID: incognitoProfileID)` on the Private profile's handler (`removeSessionNotifications()`): the notifications and their queued events go, the workers' parks stand (TASK-264) |
 | A Private session starts (a Private window's space or a Private Quick Detour, when none was live): the Private profile's contexts stay loaded between sessions, so a worker can create one while no Private page is open | `TabStore.startPrivateSessionIfNeeded()`, from `addIncognitoSpace` and `openQuickDetourTab` | the same |
 | The app quits, which ends the Private session without closing its windows | `applicationWillTerminate` → `TabStore.removePrivateProfileNotifications()`; best effort, the request may not reach usernoted before exit | the same |
+| `notifications` stops being active for the extension in the profile (`permissionIsActive`): a Settings switch or prompt answer, or the extension's `permissions.remove`. Decisions are per extension, so a removal in one profile clears the saved grant and every profile's context loses it | `ExtensionManager.applySavedDecisions` (from `setPermissionDecision` and `clearRemovedGrants`) and `contextDidLoseGrants` → `revokeNotificationsWhereNotPermitted` → each profile's handler `revokeNotificationsIfNotPermitted(ofExtension:)`, which does nothing while the permission is active | `revoke(for: owner, refusal:)`: the notifications and queued events go, the park is answered with the permission refusal, the channel stays (TASK-270) |
 
 A notification whose `add` is still in flight when its owner goes is taken
 away again when the `add` returns, as after a `clear`. The handler's removals
@@ -844,6 +863,7 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^chrome-notifications-api]: chrome.notifications API reference
 [^task-247]: Extensions: notifications.onClicked and onClosed are never delivered to the extension
 [^task-264]: Extensions: a Private-profile extension stops receiving notifications.onClicked and onClosed once a Private session starts or ends
+[^task-270]: Extensions: revoking the notifications permission leaves the extension's notifications and event wait in place
 [^chromium-notifications-clear]: Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)
 [^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared
 [^task-253]: Extensions: Detour never requests notification permission, so extension notifications may never be shown

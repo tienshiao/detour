@@ -314,7 +314,11 @@ permission not declared" (in neither list), "<name> permission denied by the
 user" (an unexpired denial: the switch off, a prompt answered Deny, or that
 saved denial restored), or "<name> permission is optional and has not been
 granted".[^task-260] The notifications event wait in the polyfill matches all
-three to decide whether to re-arm after a later grant.
+three to decide whether to re-arm after a later grant. When `notifications`
+stops being active in a profile, its notifications there go and the wait is
+answered with this refusal (`ExtensionManager.revokeNotificationsWhereNotPermitted`,
+after every saved-decision change and grant removal; see
+[Polyfill layer](./polyfill-layer.md#an-owners-notifications-go-with-its-scope)).
 
 The grant dictionary is read, not `hasPermission(_:)`. WebKit's
 `permissionState` answers `.unknown` for every name outside

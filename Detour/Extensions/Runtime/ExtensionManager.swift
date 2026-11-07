@@ -2116,6 +2116,11 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                                      keys: [(key: String, type: ExtensionPermissionType)],
                                      to contexts: [WKWebExtensionContext]) {
         guard !contexts.isEmpty, !keys.isEmpty else { return }
+        defer {
+            if keys.contains(where: { $0.type == .apiPermission && $0.key == "notifications" }) {
+                revokeNotificationsWhereNotPermitted(extensionID: extensionID)
+            }
+        }
 
         for entry in keys where entry.type == .apiPermission {
             let permission = WKWebExtension.Permission(rawValue: entry.key)
@@ -2211,6 +2216,15 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             as? Set<WKWebExtension.Permission> ?? []
         let patterns = info[WKWebExtensionContext.NotificationUserInfoKey.matchPatterns]
             as? Set<WKWebExtension.MatchPattern> ?? []
+        // Whether or not a saved row goes with it, a removed `notifications`
+        // grant takes the extension's notifications in that profile with it
+        // (TASK-270). `clearRemovedGrants` sweeps again after bringing the
+        // other profiles' contexts along; a second sweep finds nothing.
+        defer {
+            if permissions.contains(WKWebExtension.Permission(rawValue: "notifications")) {
+                revokeNotificationsWhereNotPermitted(extensionID: extensionID)
+            }
+        }
 
         let revoked = Self.savedGrantsRevoked(
             removedPermissions: permissions, removedPatterns: patterns,
@@ -2225,6 +2239,20 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         clearRemovedGrants(extensionID: extensionID, keys: revoked.compactMap { record in
             ExtensionPermissionType(rawValue: record.permissionType).map { (record.permissionKey, $0) }
         })
+    }
+
+    /// Take the extension's notifications away, and answer its wait for their
+    /// events with the permission refusal, in every profile where
+    /// `notifications` is no longer active for it (TASK-270): after a Settings
+    /// switch (`setPermissionDecision`) and after the extension's own
+    /// `permissions.remove` (`contextDidLoseGrants`, `clearRemovedGrants`). The rule
+    /// is read from each context's state, so a profile where it is still
+    /// active is untouched, and running it twice changes nothing.
+    @MainActor
+    private func revokeNotificationsWhereNotPermitted(extensionID: String) {
+        for profile in TabStore.shared.profiles {
+            profile.polyfillHandler?.revokeNotificationsIfNotPermitted(ofExtension: extensionID)
+        }
     }
 
     /// Delete the saved grants of `keys` the extension removed itself, then

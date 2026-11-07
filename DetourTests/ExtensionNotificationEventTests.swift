@@ -263,6 +263,51 @@ nonisolated final class ExtensionNotificationEventManagerTests: XCTestCase {
         XCTAssertFalse(manager.eventChannelForTesting(ownerB).listens)
     }
 
+    /// The `notifications` permission going away for an owner
+    /// (`revoke(for:refusal:)`, TASK-270) takes its notifications and queued
+    /// events, answers its park with the permission refusal (not "unloaded",
+    /// which the polyfill takes as final), and leaves the other owners alone.
+    /// A click on a revoked notification reaches nothing; the same incarnation
+    /// may park again, and a notification created after a new grant is heard.
+    @MainActor func testRevokingThePermissionAnswersTheParkWithTheRefusal() {
+        let refusal = "notifications permission denied by the user"
+        let ownerB = ExtensionNotificationManager.Owner(profileID: Self.profile1, extensionID: "notif-events-b")
+        let queued = create("queued")
+        let old = create("old")
+        let otherProfile = create("other", owner: Self.ownerA2)
+        let otherExtension = create("other-b", owner: ownerB)
+        click(queued)
+        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA).backlog.map(\.notificationID), ["queued"])
+        let first = park()
+        XCTAssertEqual(first.events, ["clicked:queued"])
+        let parked = park(ack: first.lastSeq)
+        click(queued)
+        let unheard = manager.eventChannelForTesting(Self.ownerA).backlog
+        XCTAssertTrue(parked.answered && unheard.count == 1, "precondition: an event not yet acknowledged")
+
+        manager.revoke(for: Self.ownerA, refusal: refusal)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertTrue(center.removals.contains(queued) && center.removals.contains(old))
+        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA).backlog, [], "its queued events go")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA2), ["other": true], "the same extension elsewhere is kept")
+        XCTAssertEqual(manager.getAll(owner: ownerB), ["other-b": true], "another extension is kept")
+        XCTAssertFalse(center.removals.contains(otherProfile) || center.removals.contains(otherExtension))
+
+        let standing = park(ack: parked.lastSeq)
+        XCTAssertFalse(standing.answered)
+        manager.revoke(for: Self.ownerA, refusal: refusal)
+        XCTAssertEqual(standing.error, refusal, "the park is refused for the permission")
+        XCTAssertNil(manager.eventChannelForTesting(Self.ownerA).parkedInstance ?? nil)
+        XCTAssertNil(manager.handleResponse(identifier: old, action: UNNotificationDefaultActionIdentifier),
+                     "a click on a revoked notification reaches nothing")
+
+        let rearmed = park(ack: parked.lastSeq)
+        XCTAssertFalse(rearmed.answered, "the same incarnation parks again after the refusal")
+        let next = create("next")
+        click(next)
+        XCTAssertEqual(rearmed.events, ["clicked:next"])
+    }
+
     /// Every notification carries the category whose `.customDismissAction`
     /// makes the center report a dismissal.
     @MainActor func testNotificationsCarryTheDismissCategory() async {
@@ -303,6 +348,10 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
     /// Private windows' spaces a test opened in the shared store; tearDown
     /// removes any still there, which ends the Private session.
     private var incognitoSpaceIDs: [UUID] = []
+    /// Extensions saved in the shared database for their permission rows,
+    /// deleted at tearDown (the rows cascade).
+    private var databaseExtensionIDs: [String] = []
+    private var center: HeldNotificationCenter!
 
     /// Profiles whose controller hosted a web view live for the rest of the
     /// process (see `ExtensionNotificationOrderingTests.retainedProfiles`).
@@ -311,7 +360,7 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
     @MainActor override func setUp() async throws {
         try await super.setUp()
         previousLastActiveSpaceID = ExtensionManager.shared.lastActiveSpaceID
-        let center = HeldNotificationCenter()
+        center = HeldNotificationCenter()
         center.holdsAdds = false
         manager = ExtensionNotificationManager(center: center)
     }
@@ -331,6 +380,8 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
             AppDatabase.shared.deleteExtension(id: id)
         }
         privateLoadedExtensionIDs.removeAll()
+        for id in databaseExtensionIDs { AppDatabase.shared.deleteExtension(id: id) }
+        databaseExtensionIDs.removeAll()
         for profile in createdProfiles {
             profile.unloadAllExtensions()
             TabStore.shared.forceRemoveProfile(id: profile.id)
@@ -348,6 +399,7 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
         for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
         tempDirs.removeAll()
         manager = nil
+        center = nil
         try await super.tearDown()
     }
 
@@ -397,8 +449,12 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
         """
     }
 
-    @MainActor private func makeExtension(listensAtStart: Bool = true) async throws -> WebExtension {
+    @MainActor private func makeExtension(listensAtStart: Bool = true, permissions: [String] = ["notifications"],
+                                          optionalPermissions: [String] = []) async throws -> WebExtension {
         let id = "notif-events-\(UUID().uuidString.prefix(8))"
+        let permissionsJSON = String(decoding: try JSONSerialization.data(withJSONObject: permissions), as: UTF8.self)
+        let optionalJSON = String(decoding: try JSONSerialization.data(withJSONObject: optionalPermissions),
+                                  as: UTF8.self)
         let ext = try await makeTestExtension(
             id: id,
             manifestJSON: """
@@ -406,7 +462,8 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
                 "manifest_version": 3,
                 "name": "Notification Event Test",
                 "version": "1.0.0",
-                "permissions": ["notifications"],
+                "permissions": \(permissionsJSON),
+                "optional_permissions": \(optionalJSON),
                 "background": { "service_worker": "background.js", "type": "module" }
             }
             """,
@@ -674,6 +731,161 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
         let reply = try await ask(page, ["type": "events"])
         let instances = (reply["events"] as? [[String: Any]] ?? []).compactMap { $0["instance"] as? String }
         XCTAssertEqual(Set(instances), [instance], "one incarnation heard both: no restart was needed")
+    }
+
+    // MARK: - The permission revoked (TASK-270)
+
+    /// Polls a notifications call from the worker until it has parked again:
+    /// each call re-arms a wait the handler refused for the permission, but
+    /// the refusal and the call reach the worker on different channels, so
+    /// the first call may arrive before the worker has taken the refusal in.
+    @MainActor private func waitForRearm(_ ext: WebExtension, in profile: Profile,
+                                         from page: WKWebView) async throws -> String {
+        try await waitUntil("\(profile.name)'s worker to park again", timeout: 30) {
+            if let parked = self.manager.eventChannelForTesting(self.owner(ext, profile)).parkedInstance,
+               parked != nil {
+                return true
+            }
+            _ = try await self.ask(page, ["type": "getAll"])
+            return false
+        }
+        return (manager.eventChannelForTesting(owner(ext, profile)).parkedInstance ?? nil) ?? ""
+    }
+
+    /// What a revocation leaves for `id`: no notification in the manager or
+    /// the center, no wait, nothing queued, and a click on it reaches nothing.
+    @MainActor private func assertRevoked(_ id: String, identifier: String, of ext: WebExtension, in profile: Profile,
+                                          file: StaticString = #filePath, line: UInt = #line) {
+        let owner = owner(ext, profile)
+        XCTAssertEqual(manager.getAll(owner: owner), [:], "\(profile.name)", file: file, line: line)
+        XCTAssertTrue(center.removals.contains(identifier), "\(profile.name): \(id) leaves the center",
+                      file: file, line: line)
+        let channel = manager.eventChannelForTesting(owner)
+        XCTAssertNil(channel.parkedInstance ?? nil, "\(profile.name): the wait is answered", file: file, line: line)
+        XCTAssertEqual(channel.backlog, [], file: file, line: line)
+        XCTAssertNil(manager.handleResponse(identifier: identifier, action: UNNotificationDefaultActionIdentifier),
+                     "\(profile.name): a click on \(id) reaches nothing", file: file, line: line)
+    }
+
+    /// The Settings switch turned off for a required `notifications`
+    /// (TASK-270, AC #1, #2): the extension's notification goes from the
+    /// center, the worker's wait is answered with the permission refusal,
+    /// and a click on the old notification fires nothing. Switched on again,
+    /// the same worker parks again at its next notifications call (the
+    /// refusal was the permission's, not final) and hears the next click.
+    @MainActor func testTheSettingsSwitchOffTakesTheNotificationsAndAnswersTheWait() async throws {
+        let ext = try await makeExtension()
+        installTestExtension(ext, in: AppDatabase.shared)
+        databaseExtensionIDs.append(ext.id)
+        // What install records for the manifest's permissions.
+        AppDatabase.shared.savePermission(ExtensionPermissionRecord(
+            extensionID: ext.id, key: "notifications", type: .apiPermission, status: .granted))
+        let profile = try makeProfile("Notification Revoke Switch")
+        let page = try await start(ext, in: profile).page
+        _ = try await ask(page, ["type": "create", "id": "before"])
+        let instance = try await waitForPark(ext, in: profile)
+        let before = identifier("before", of: ext, in: profile)
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "notifications", type: .apiPermission, granted: false)
+        assertRevoked("before", identifier: before, of: ext, in: profile)
+        // Give a wrongly delivered onClicked time to arrive.
+        let quiet = try await events(page)
+        XCTAssertEqual(quiet, [], "no event reaches the worker")
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "notifications", type: .apiPermission, granted: true)
+        let again = try await waitForRearm(ext, in: profile, from: page)
+        XCTAssertEqual(again, instance, "the same worker parks again: the refusal was not final")
+        _ = try await ask(page, ["type": "create", "id": "after"])
+        manager.handleResponse(identifier: identifier("after", of: ext, in: profile),
+                               action: UNNotificationDefaultActionIdentifier)
+        try await waitUntil("the click after the new grant to reach onClicked", timeout: 20) {
+            try await self.events(page) == ["clicked:after"]
+        }
+    }
+
+    /// The extension's own `permissions.remove` of an optional
+    /// `notifications` (TASK-270, AC #1, #2): the saved grant is cleared for
+    /// the extension, so its notifications and waits go in every profile that
+    /// held the grant, not only the one that removed it. Granted again, the
+    /// same workers park again and hear the next click.
+    @MainActor func testPermissionsRemoveTakesTheNotificationsInEveryProfile() async throws {
+        let ext = try await makeExtension(permissions: [], optionalPermissions: ["notifications"])
+        installTestExtension(ext, in: AppDatabase.shared)
+        databaseExtensionIDs.append(ext.id)
+        let one = try makeProfile("Notification Revoke Remove One")
+        let two = try makeProfile("Notification Revoke Remove Two")
+        let pageOne = try await start(ext, in: one).page
+        let pageTwo = try await start(ext, in: two).page
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "notifications", type: .apiPermission, granted: true)
+        _ = try await ask(pageOne, ["type": "create", "id": "one"])
+        _ = try await ask(pageTwo, ["type": "create", "id": "two"])
+        let instanceOne = try await waitForRearm(ext, in: one, from: pageOne)
+        let instanceTwo = try await waitForRearm(ext, in: two, from: pageTwo)
+        let identifierOne = identifier("one", of: ext, in: one)
+        let identifierTwo = identifier("two", of: ext, in: two)
+
+        let removed = try await pageOne.callAsyncJavaScript("""
+            const removed = await chrome.permissions.remove({ permissions: ['notifications'] });
+            const still = await chrome.permissions.contains({ permissions: ['notifications'] });
+            return JSON.stringify({ removed, still });
+            """, arguments: [:], contentWorld: .page) as? String
+        XCTAssertEqual(removed, #"{"removed":true,"still":false}"#)
+        // WebKit posts the removal to the main queue after the write.
+        try await waitUntil("both profiles' notifications to go") {
+            self.manager.getAll(owner: self.owner(ext, one)).isEmpty
+                && self.manager.getAll(owner: self.owner(ext, two)).isEmpty
+        }
+        assertRevoked("one", identifier: identifierOne, of: ext, in: one)
+        assertRevoked("two", identifier: identifierTwo, of: ext, in: two)
+        XCTAssertNil(AppDatabase.shared.permissionStatus(extensionID: ext.id, key: "notifications",
+                                                         type: .apiPermission))
+        let quietOne = try await events(pageOne)
+        let quietTwo = try await events(pageTwo)
+        XCTAssertEqual(quietOne + quietTwo, [], "no event reaches either worker")
+
+        ExtensionManager.shared.setPermissionDecision(
+            extensionID: ext.id, key: "notifications", type: .apiPermission, granted: true)
+        let againOne = try await waitForRearm(ext, in: one, from: pageOne)
+        let againTwo = try await waitForRearm(ext, in: two, from: pageTwo)
+        XCTAssertEqual([againOne, againTwo], [instanceOne, instanceTwo], "the same workers park again")
+        _ = try await ask(pageTwo, ["type": "create", "id": "after"])
+        manager.handleResponse(identifier: identifier("after", of: ext, in: two),
+                               action: UNNotificationDefaultActionIdentifier)
+        try await waitUntil("the click after the new grant to reach onClicked", timeout: 20) {
+            try await self.events(pageTwo) == ["clicked:after"]
+        }
+        let stillQuiet = try await events(pageOne)
+        XCTAssertEqual(stillQuiet, [])
+    }
+
+    /// `permissions.remove` of a grant the context holds with no saved row
+    /// behind it (TASK-270): no saved grant is cleared, so the revocation
+    /// comes from `contextDidLoseGrants` itself, not from the saved-decision
+    /// sweep.
+    @MainActor func testPermissionsRemoveWithoutASavedGrantStillTakesTheNotifications() async throws {
+        let ext = try await makeExtension(permissions: [], optionalPermissions: ["notifications"])
+        installTestExtension(ext, in: AppDatabase.shared)
+        databaseExtensionIDs.append(ext.id)
+        let profile = try makeProfile("Notification Revoke Unsaved")
+        let (context, page) = try await start(ext, in: profile)
+        context.setPermissionStatus(.grantedExplicitly, for: WKWebExtension.Permission(rawValue: "notifications"))
+        XCTAssertNil(AppDatabase.shared.permissionStatus(extensionID: ext.id, key: "notifications",
+                                                         type: .apiPermission), "precondition: no saved row")
+        _ = try await ask(page, ["type": "create", "id": "unsaved"])
+        _ = try await waitForRearm(ext, in: profile, from: page)
+        let unsaved = identifier("unsaved", of: ext, in: profile)
+
+        let removed = try await page.callAsyncJavaScript(
+            "return await chrome.permissions.remove({ permissions: ['notifications'] });",
+            arguments: [:], contentWorld: .page) as? Bool
+        XCTAssertEqual(removed, true)
+        try await waitUntil("the notification to go") {
+            self.manager.getAll(owner: self.owner(ext, profile)).isEmpty
+        }
+        assertRevoked("unsaved", identifier: unsaved, of: ext, in: profile)
     }
 
     /// An extension page may not park (only the background context gets the

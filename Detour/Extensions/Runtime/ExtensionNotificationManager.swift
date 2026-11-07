@@ -117,9 +117,10 @@ final class SystemExtensionNotificationCenter: ExtensionNotificationCenter {
 ///
 /// An owner's notifications go when its scope does: `removeAll(for:)` when the
 /// extension is unloaded from the profile (disable, uninstall, update or
-/// reload), `removeAll(profileID:)` when the profile is deleted, and
+/// reload), `removeAll(profileID:)` when the profile is deleted,
 /// `removeSession(profileID:)` when a Private session starts or ends, so
-/// nothing carries over into the next one.
+/// nothing carries over into the next one, and `revoke(for:refusal:)` when
+/// the extension loses the `notifications` permission in the profile.
 ///
 /// A notification is recorded when `create` is called, before the center's
 /// `add` returns, so the calls an extension makes without awaiting apply in
@@ -565,6 +566,28 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         for owner in eventChannels.keys where owner.profileID == profileID {
             eventChannels[owner]?.backlog.removeAll()
         }
+    }
+
+    /// Takes away every notification of `owner`'s, delivered or still
+    /// pending, and the events queued for them, when the `notifications`
+    /// permission stops being active for it (TASK-270): the Settings switch
+    /// turned off, or the extension's own `permissions.remove` of the
+    /// optional permission. A parked wait is answered with `refusal`, the
+    /// handler's permission refusal, so the polyfill takes it as "not
+    /// granted (yet)" and parks again at its next notifications call once a
+    /// grant serves one (TASK-250); "unloaded" would end its waiting for
+    /// good. The channel's incarnations stay, so the re-park is accepted and
+    /// an older worker is still refused. With nothing left to click or
+    /// close, no event reaches the extension until it creates a notification
+    /// again, which only a new grant lets it do.
+    func revoke(for owner: Owner, refusal: String) {
+        removeAll { $0.owner == owner }
+        guard var channel = eventChannels[owner] else { return }
+        let parked = channel.parked
+        channel.parked = nil
+        channel.backlog.removeAll()
+        eventChannels[owner] = channel
+        parked?.reply(nil, refusal)
     }
 
     private func removeAll(where matches: (Entry) -> Bool) {

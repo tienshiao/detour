@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-11-06
+* **Update**: TASK-270 — [Polyfill layer](extensions/polyfill-layer.md) (notification events bullet "Losing the permission answers the park with the refusal", scope table), [Permissions](extensions/permissions.md) (refusal texts): when `notifications` stops being active for an extension in a profile (Settings switch, prompt answered Deny, `permissions.remove`), `revoke(for:refusal:)` takes its notifications and queued events there and answers its park with the permission refusal, so the polyfill parks again after a later grant; a removal in one profile clears the saved grant, so every profile's are taken. No `onClosed` fires for them.
 * **Update**: TASK-264 — [Polyfill layer](extensions/polyfill-layer.md) (notification events bullet "A Private session boundary leaves the park standing", scope table): a Private session starting or ending now calls `removeSession(profileID:)`, which takes the notifications and their queued events but keeps the live workers' parks; only an unload or a profile deletion answers the park "unloaded". Before, the boundary's "unloaded" answer was final for the still-loaded Private worker, which never parked again.
 
 ## 2026-11-04
