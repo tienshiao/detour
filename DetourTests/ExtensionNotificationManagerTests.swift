@@ -819,11 +819,33 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         await fulfillment(of: [create.done], timeout: 5)
         XCTAssertEqual(create.answeredID(), "fails", "create answers with its id even when the center refuses")
         XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertNil(manager.identifier(for: Self.ownerA, notificationID: "fails"), "no entry is left behind")
+        XCTAssertTrue(center.shown.isEmpty)
     }
 
-    /// An update whose add the center refuses answers false: the failure drops
-    /// the notification, so the extension must not be told it was updated.
-    @MainActor func testFailedUpdateAnswersFalseAndDropsTheEntry() async throws {
+    /// Updates `id` with only a new message and answers the title the
+    /// resulting add shows: the title the entry kept, as the merge keeps it.
+    @MainActor private func titleKeptByTheNextUpdate(_ id: String, file: StaticString = #filePath, line: UInt = #line) async throws -> String? {
+        let done = expectation(description: "message-only update of \(id) answers")
+        var result: Bool?
+        let adds = center.addedRequests.count
+        manager.update(owner: Self.ownerA, notificationID: id, options: ["message": "later"]) {
+            result = $0
+            done.fulfill()
+        }
+        try await waitForHeldAdds(1, file: file, line: line)
+        center.releaseAll()
+        await fulfillment(of: [done], timeout: 5)
+        XCTAssertEqual(result, true, file: file, line: line)
+        XCTAssertEqual(center.addedRequests.count, adds + 1, file: file, line: line)
+        return center.addedRequests.last?.content.title
+    }
+
+    /// TASK-271: an update whose add the center refuses answers false and
+    /// leaves the notification the create showed in place, as Chrome does:
+    /// still on screen, still listed, still under its identifier, and with
+    /// the create's options for the next update to merge into.
+    @MainActor func testFailedUpdateAnswersFalseAndLeavesTheOriginal() async throws {
         let create = startCreate("upd-fails", title: "Before")
         try await waitForHeldAdds(1)
         center.release()
@@ -833,9 +855,183 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         try await waitForHeldAdds(1)
         center.release(failing: true)
         await fulfillment(of: [update.done], timeout: 5)
+        XCTAssertEqual(update.result(), false, "the update did not apply")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["upd-fails": true])
+        XCTAssertEqual(manager.identifier(for: Self.ownerA, notificationID: "upd-fails"), identifier("upd-fails"))
+        XCTAssertEqual(center.shown, [identifier("upd-fails"): "Before"])
+        XCTAssertTrue(center.removals.isEmpty, "the failure must not take the original away")
+
+        let kept = try await titleKeptByTheNextUpdate("upd-fails")
+        XCTAssertEqual(kept, "Before", "the next update merges into the original's options, not the failed update's")
+        XCTAssertEqual(clear("upd-fails"), true)
+        XCTAssertTrue(center.shown.isEmpty)
+    }
+
+    /// An update failing while the create's add is still in flight leaves
+    /// the create standing; the create's own add then settles it.
+    @MainActor func testFailedUpdateWhileTheCreateIsInFlightLeavesTheCreate() async throws {
+        let create = startCreate("both", title: "Before")
+        try await waitForHeldAdds(1)
+        let update = startUpdate("both", title: "After")
+        try await waitForHeldAdds(2)
+
+        center.release(at: 1, failing: true)
+        await fulfillment(of: [update.done], timeout: 5)
+        XCTAssertEqual(update.result(), false)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["both": true], "the create is still in flight")
+
+        center.release()
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["both": true])
+        XCTAssertEqual(center.shown, [identifier("both"): "Before"])
+        XCTAssertTrue(center.removals.isEmpty)
+    }
+
+    /// The update fails first and the create it fell back to then fails too:
+    /// nothing was shown, so nothing is left.
+    @MainActor func testFailedUpdateThenFailedCreateLeavesNoEntry() async throws {
+        let create = startCreate("neither", title: "Before")
+        try await waitForHeldAdds(1)
+        let update = startUpdate("neither", title: "After")
+        try await waitForHeldAdds(2)
+
+        center.release(at: 1, failing: true)
+        await fulfillment(of: [update.done], timeout: 5)
+        center.release(failing: true)
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertNil(manager.identifier(for: Self.ownerA, notificationID: "neither"))
+        XCTAssertTrue(center.shown.isEmpty)
+    }
+
+    /// The create fails first, while the update is in flight, and then the
+    /// update fails: the failed create is nothing to fall back to.
+    @MainActor func testFailedCreateThenFailedUpdateLeavesNoEntry() async throws {
+        let create = startCreate("none", title: "Before")
+        try await waitForHeldAdds(1)
+        let update = startUpdate("none", title: "After")
+        try await waitForHeldAdds(2)
+
+        center.release(at: 0, failing: true)
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["none": true], "the update is still in flight")
+        center.release(failing: true)
+        await fulfillment(of: [update.done], timeout: 5)
         XCTAssertEqual(update.result(), false)
         XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
         XCTAssertTrue(center.shown.isEmpty)
+    }
+
+    /// An update that supersedes the create before the create's add is made
+    /// skips that add, so when the update fails nothing was ever shown.
+    @MainActor func testFailedUpdateOfACreateThatNeverAddedLeavesNoEntry() async throws {
+        let create = startCreate("skipped", title: "Before")
+        let update = startUpdate("skipped", title: "After")
+        try await waitForHeldAdds(1)
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(center.heldTitles, ["After"], "only the update adds (TASK-253)")
+
+        center.release(failing: true)
+        await fulfillment(of: [update.done], timeout: 5)
+        XCTAssertEqual(update.result(), false)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertTrue(center.shown.isEmpty)
+    }
+
+    /// Of two updates in flight, the later failing falls back to the earlier,
+    /// which then shows.
+    @MainActor func testFailedSecondUpdateFallsBackToTheFirst() async throws {
+        let create = startCreate("chain", title: "Created")
+        try await waitForHeldAdds(1)
+        center.release()
+        await fulfillment(of: [create.done], timeout: 5)
+
+        let first = startUpdate("chain", title: "First")
+        try await waitForHeldAdds(1)
+        let second = startUpdate("chain", title: "Second")
+        try await waitForHeldAdds(2)
+        center.release(at: 1, failing: true)
+        await fulfillment(of: [second.done], timeout: 5)
+        XCTAssertEqual(second.result(), false)
+        center.release()
+        await fulfillment(of: [first.done], timeout: 5)
+        XCTAssertEqual(first.result(), true)
+
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["chain": true])
+        XCTAssertEqual(center.shown, [identifier("chain"): "First"])
+        let kept = try await titleKeptByTheNextUpdate("chain")
+        XCTAssertEqual(kept, "First")
+    }
+
+    /// Of two updates in flight, the earlier shows first and the later then
+    /// fails: the later falls back to the earlier, which replaced the create.
+    @MainActor func testFailedSecondUpdateAfterTheFirstShowedFallsBackToTheFirst() async throws {
+        let create = startCreate("order", title: "Created")
+        try await waitForHeldAdds(1)
+        center.release()
+        await fulfillment(of: [create.done], timeout: 5)
+
+        let first = startUpdate("order", title: "First")
+        try await waitForHeldAdds(1)
+        let second = startUpdate("order", title: "Second")
+        try await waitForHeldAdds(2)
+        center.release(at: 0)
+        await fulfillment(of: [first.done], timeout: 5)
+        XCTAssertEqual(first.result(), true)
+        center.release(failing: true)
+        await fulfillment(of: [second.done], timeout: 5)
+        XCTAssertEqual(second.result(), false)
+
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["order": true])
+        XCTAssertEqual(center.shown, [identifier("order"): "First"])
+        XCTAssertTrue(center.removals.isEmpty)
+        let kept = try await titleKeptByTheNextUpdate("order")
+        XCTAssertEqual(kept, "First")
+    }
+
+    /// Both updates in flight fail, the earlier first: the notification falls
+    /// back past both to what the create showed.
+    @MainActor func testTwoFailedUpdatesFallBackToTheCreate() async throws {
+        let create = startCreate("twice", title: "Created")
+        try await waitForHeldAdds(1)
+        center.release()
+        await fulfillment(of: [create.done], timeout: 5)
+
+        let first = startUpdate("twice", title: "First")
+        try await waitForHeldAdds(1)
+        let second = startUpdate("twice", title: "Second")
+        try await waitForHeldAdds(2)
+        center.release(at: 0, failing: true)
+        await fulfillment(of: [first.done], timeout: 5)
+        center.release(failing: true)
+        await fulfillment(of: [second.done], timeout: 5)
+        XCTAssertEqual(first.result(), false)
+        XCTAssertEqual(second.result(), false)
+
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["twice": true])
+        XCTAssertEqual(center.shown, [identifier("twice"): "Created"])
+        XCTAssertTrue(center.removals.isEmpty)
+        let kept = try await titleKeptByTheNextUpdate("twice")
+        XCTAssertEqual(kept, "Created")
+    }
+
+    /// A create for an id the owner already has replaces it outright, so its
+    /// failure leaves no entry behind, and takes the old notification away
+    /// with it rather than leaving one the extension no longer has.
+    @MainActor func testFailedCreateOverAShownNotificationLeavesNoEntry() async throws {
+        let first = startCreate("again", title: "First")
+        try await waitForHeldAdds(1)
+        center.release()
+        await fulfillment(of: [first.done], timeout: 5)
+
+        let second = startCreate("again", title: "Second")
+        try await waitForHeldAdds(1)
+        center.release(failing: true)
+        await fulfillment(of: [second.done], timeout: 5)
+        XCTAssertEqual(second.answeredID(), "again")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertTrue(center.shown.isEmpty)
+        XCTAssertEqual(clear("again"), false)
     }
 
     /// A failed add for a superseded create leaves the newer entry alone.

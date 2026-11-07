@@ -130,7 +130,9 @@ final class SystemExtensionNotificationCenter: ExtensionNotificationCenter {
 /// clear. An `update` issued meanwhile finds the entry and re-creates it under
 /// the same identifier. Each `create` carries a generation, so an `add` that a
 /// later `create` for the same id has superseded leaves the newer entry alone:
-/// the newer `add` replaces what it showed.
+/// the newer `add` replaces what it showed. An `update` whose `add` fails puts
+/// back the entry it replaced (TASK-271), as the notification that entry
+/// stands for is still shown; a failed `create` drops its entry.
 ///
 /// Before its `add`, each create or update waits for authorization
 /// (TASK-253): the first one asks the user, and every one arriving before
@@ -215,11 +217,26 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     private struct Entry {
         let owner: Owner
         let notificationID: String
-        /// Which `create` recorded the entry; see `addFinished`.
+        /// Which `create` or `update` recorded the entry (or, once a failed
+        /// update has put it back, the fallback's); see `addFinished`.
         let generation: Int
         /// The options the notification shows (`shownOptionKeys` only): the
         /// create's, with every later update's merged in (TASK-240). What the
         /// next `update` merges into.
+        let options: [String: Any]
+        /// For an update: the entries it replaced that still stand for
+        /// something shown, or being shown, under the identifier, newest
+        /// first (TASK-271). If this update's `add` fails, the first is put
+        /// back. Only the generations whose `add` has not failed or been
+        /// skipped are kept, and none older than one whose `add` succeeded;
+        /// see `addFinished`. Empty for a create, which replaces outright, and
+        /// once this entry's own `add` has succeeded.
+        var fallbacks: [Fallback] = []
+    }
+
+    /// An entry an update replaced, as `Entry.fallbacks` keeps it.
+    private struct Fallback {
+        let generation: Int
         let options: [String: Any]
     }
 
@@ -400,12 +417,14 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// allowed, or the create cleared or superseded while authorization was
     /// pending), with the notification id, whether or not it was shown.
     func create(owner: Owner, notificationID: String?, options: [String: Any], completion: @escaping (String) -> Void) {
-        show(owner: owner, notificationID: notificationID, options: options) { id, _ in completion(id) }
+        show(owner: owner, notificationID: notificationID, options: options, isUpdate: false) { id, _ in completion(id) }
     }
 
     /// `create`, also telling `completion` whether the notification was
     /// shown: false when notifications are not allowed or the `add` failed.
-    private func show(owner: Owner, notificationID: String?, options: [String: Any],
+    /// `isUpdate`: the entry being replaced is kept as a fallback, put back
+    /// if this `add` fails (TASK-271).
+    private func show(owner: Owner, notificationID: String?, options: [String: Any], isUpdate: Bool,
                       completion: @escaping (_ id: String, _ succeeded: Bool) -> Void) {
         let id = notificationID ?? UUID().uuidString
         // The profile stays out of the log: which profile a Private-profile
@@ -419,10 +438,16 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
 
         let request = UNNotificationRequest(identifier: identifier, content: Self.content(for: options), trigger: nil)
 
+        var fallbacks: [Fallback] = []
+        if isUpdate, let existingIdentifier, let replaced = entries[existingIdentifier] {
+            fallbacks = [Fallback(generation: replaced.generation, options: replaced.options)] + replaced.fallbacks
+        }
+
         lastGeneration += 1
         let generation = lastGeneration
         entries[identifier] = Entry(owner: owner, notificationID: id, generation: generation,
-                                    options: options.filter { Self.shownOptionKeys.contains($0.key) })
+                                    options: options.filter { Self.shownOptionKeys.contains($0.key) },
+                                    fallbacks: fallbacks)
         identifiers[key] = identifier
 
         // Awaited from a main-actor task: the completion-handler form of `add`
@@ -437,8 +462,11 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
             // Cleared or superseded while authorization was pending: nothing
             // has been shown for this generation, so there is nothing to add
             // or take away. A superseding create or update adds its own, and
-            // skipping this one keeps a stale add from landing after it.
+            // skipping this one keeps a stale add from landing after it. As
+            // nothing of this generation's will show, a failure of the
+            // superseding update must not put it back.
             guard self.isCurrent(identifier: identifier, generation: generation) else {
+                self.dropFallback(identifier: identifier, generation: generation)
                 completion(id, authorized)
                 return
             }
@@ -473,27 +501,62 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         if mayBeShown { center.removeNotifications(withIdentifiers: [identifier]) }
     }
 
+    /// Forgets `generation` as a fallback of `identifier`'s current entry:
+    /// its `add` failed or was skipped, so nothing of it is shown.
+    private func dropFallback(identifier: String, generation: Int) {
+        guard var entry = entries[identifier], !entry.fallbacks.isEmpty else { return }
+        entry.fallbacks.removeAll { $0.generation == generation }
+        entries[identifier] = entry
+    }
+
     /// Settles the entry an `add` was for, now that the center has answered.
     private func addFinished(identifier: String, generation: Int, failure: (any Error)?) {
-        let entry = entries[identifier]
-        // A later `create` for the same id owns the identifier now. Its `add`
-        // replaces whatever this one showed, and settles the entry itself.
-        if let entry, entry.generation != generation { return }
         if let failure {
-            log.error("Failed to create notification \(identifier, privacy: .private): \(failure.localizedDescription)")
-            removeEntry(identifier: identifier)
-            // Nothing new is shown, but a notification an earlier `create`
-            // showed under this id still is; the extension no longer has it.
-            center.removeNotifications(withIdentifiers: [identifier])
-            return
+            log.error("Failed to show notification \(identifier, privacy: .private): \(failure.localizedDescription)")
         }
-        if entry == nil {
+        guard var entry = entries[identifier] else {
             // Cleared (or removed with its owner) while the `add` was in
             // flight. That removal may have reached the center before the
             // notification did. A later `create` for the same id has a new
             // identifier, so this takes away only what this `add` showed.
             center.removeNotifications(withIdentifiers: [identifier])
+            return
         }
+        guard entry.generation == generation else {
+            // A later `create` or `update` for the same id owns the identifier
+            // now. Its `add` replaces whatever this one showed, and settles
+            // the entry itself; this one only keeps its fallbacks true: a
+            // failed generation shows nothing to fall back to, and a shown one
+            // replaced everything older.
+            if failure == nil {
+                guard !entry.fallbacks.isEmpty else { return }
+                entry.fallbacks.removeAll { $0.generation < generation }
+                entries[identifier] = entry
+            } else {
+                dropFallback(identifier: identifier, generation: generation)
+            }
+            return
+        }
+        guard failure != nil else {
+            if !entry.fallbacks.isEmpty {
+                entry.fallbacks = []
+                entries[identifier] = entry
+            }
+            return
+        }
+        if let restored = entry.fallbacks.first {
+            // A failed update (TASK-271): the center showed nothing new, and
+            // the notification the replaced entry stands for is still shown,
+            // or its own `add` settles it. Chrome leaves it in place too.
+            entries[identifier] = Entry(owner: entry.owner, notificationID: entry.notificationID,
+                                        generation: restored.generation, options: restored.options,
+                                        fallbacks: Array(entry.fallbacks.dropFirst()))
+            return
+        }
+        removeEntry(identifier: identifier)
+        // Nothing new is shown, but a notification an earlier `create`
+        // showed under this id still may be; the extension no longer has it.
+        center.removeNotifications(withIdentifiers: [identifier])
     }
 
     /// Update an existing notification of `owner`'s, including one whose
@@ -501,17 +564,18 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// notification's, as Chrome does: an update that sets only `message`
     /// keeps the title. Answers false when the owner has no such notification,
     /// when notifications are not allowed (which drops it), or when the
-    /// center refuses the updated one.
+    /// center refuses the updated one, which leaves the notification as it
+    /// was, listed and shown (TASK-271).
     func update(owner: Owner, notificationID: String, options: [String: Any], completion: @escaping (Bool) -> Void) {
         guard let identifier = identifier(for: owner, notificationID: notificationID),
               let entry = entries[identifier] else {
             completion(false)
             return
         }
-        // Re-create with the merged content. A failed `add` drops the
-        // notification (see `addFinished`), so the update did not apply.
+        // Re-create with the merged content. A failed `add` puts the entry
+        // this replaces back (see `addFinished`): the update did not apply.
         let merged = Self.merged(options, into: entry.options)
-        show(owner: owner, notificationID: notificationID, options: merged) { _, succeeded in
+        show(owner: owner, notificationID: notificationID, options: merged, isUpdate: true) { _, succeeded in
             completion(succeeded)
         }
     }

@@ -118,6 +118,9 @@ sources:
   - id: task-270
     resource: backlog:TASK-270
     title: "Extensions: revoking the notifications permission leaves the extension's notifications and event wait in place"
+  - id: task-271
+    resource: backlog:TASK-271
+    title: "Extensions: a notifications.update whose add fails also removes the notification it was updating"
   - id: chromium-notifications-clear
     resource: https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/extensions/api/notifications/
     title: "Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)"
@@ -432,9 +435,17 @@ for:[^task-234]
 | `create('x')`, `clear('x')`, `create('x')` | Each `create` carries a generation. The first `add` returning finds a newer generation and does nothing (the newer `add` replaces what it showed), so the second notification stands |
 
 `getAll` lists a notification whose `add` is still in flight. A failed `add`
-drops the entry only if no later `create` has replaced it, and also removes
-any notification shown under that id, so `getAll` and the screen agree. Before
-TASK-234 the entry was recorded only after `add` returned, so a clear issued
+of a `create` drops the entry only if no later `create` or `update` has
+replaced it, and also removes any notification shown under that id, so
+`getAll` and the screen agree. A failed `add` of an `update` answers
+`wasUpdated: false` and puts back the entry the update replaced, so the
+notification the create (or an earlier update) showed stays listed, shown and
+merged into by the next update, as in Chrome.[^task-271] Each update entry
+keeps the entries it replaced, newest first, as fallbacks; one whose `add`
+fails, or is skipped because it was superseded during the authorization wait,
+is dropped from them (nothing of it shows), and one whose `add` succeeds
+discards the older ones, so the list lasts only while adds are in flight.
+Before TASK-234 the entry was recorded only after `add` returned, so a clear issued
 meanwhile found nothing and the notification came back.
 
 Rejected: serializing the operations per notification id. It would also make
@@ -864,6 +875,7 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-247]: Extensions: notifications.onClicked and onClosed are never delivered to the extension
 [^task-264]: Extensions: a Private-profile extension stops receiving notifications.onClicked and onClosed once a Private session starts or ends
 [^task-270]: Extensions: revoking the notifications permission leaves the extension's notifications and event wait in place
+[^task-271]: Extensions: a notifications.update whose add fails also removes the notification it was updating
 [^chromium-notifications-clear]: Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)
 [^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared
 [^task-253]: Extensions: Detour never requests notification permission, so extension notifications may never be shown
