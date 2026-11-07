@@ -60,6 +60,9 @@ sources:
   - id: task-277
     resource: backlog:TASK-277
     title: "Tests: cover native host quit refusal and the SIGTERM path, keep the host sweep to the test's own hosts, and route the injected clock through the permission gates"
+  - id: task-276
+    resource: backlog:TASK-276
+    title: "Docs: fix the permission-scope and notification-ordering descriptions the review found wrong"
   - id: polyfill-handler
     resource: ../../Detour/Extensions/Runtime/ExtensionPolyfillHandler.swift
     title: ExtensionPolyfillHandler.swift (permissionIsActive)
@@ -214,7 +217,21 @@ rows the removal revoked (`savedGrantsRevoked`).[^task-258]
   Detour's writes would not cover them. Instead, at delivery a saved
   granted row whose key was removed is deleted only when the context neither
   grants it nor denies it, and no denied pattern covers it. Detour's own
-  writes always leave the key granted or denied.
+  writes always leave the key granted, denied or covered by a denial.
+- **That is an invariant every Detour write must keep.** The rule is right
+  only while each write Detour makes to a context's grants and denials ends
+  its main-actor turn with every key it touched granted, denied or covered by
+  a denial, never plainly removed, unless the saved row is gone or meant to
+  go. Today's writes do: the load restore only adds statuses, and a grant it
+  takes out is one a later denial erases or covers; `applySavedDecisions`
+  clears a host key and re-runs the restore before the notification is
+  delivered, and writes `.unknown` only for a key with no row; the TASK-270
+  notification revocation writes no permission. A future write that removed
+  a grant from one profile's context alone (say, a Private-only rule) would
+  be read as the extension's own removal and delete the saved grant, which
+  is the extension's, for every profile. The invariant is stated in the code
+  on `applySavedDecisions` and at the restore in
+  `Profile.loadExtensionContext`.[^task-276]
   `permissionStatus(for:)` of a pattern under a broader denied pattern does
   not read as denied, which is why the covering-denial check is separate.
 - Skipped: rows outside the restore's manifest gate (inert), required keys
@@ -512,3 +529,4 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 [^task-260]: Extensions: chrome.permissions.request, contains and remove do not work for history and management
 [^task-261]: Extensions: management.getSelf and getAll leave out permissions granted at runtime
 [^task-277]: Tests: cover native host quit refusal and the SIGTERM path, keep the host sweep to the test's own hosts, and route the injected clock through the permission gates
+[^task-276]: Docs: fix the permission-scope and notification-ordering descriptions the review found wrong

@@ -142,6 +142,9 @@ sources:
   - id: task-273
     resource: backlog:TASK-273
     title: "Extensions: an unanswered notification authorization prompt stalls notifications.create in every profile"
+  - id: task-276
+    resource: backlog:TASK-276
+    title: "Docs: fix the permission-scope and notification-ordering descriptions the review found wrong"
 ---
 
 `ExtensionAPIPolyfill` generates one JavaScript bundle (`polyfillJS`) that runs
@@ -457,7 +460,7 @@ for:[^task-234]
 |---|---|
 | `create('x')`, `clear('x')` | The clear drops the entry at once and removes the notification; when the `add` returns, the manager removes it once more, because the clear's removal can reach the center before the notification does. `getAll` does not list it |
 | `create('x')`, `update('x')` | The update finds the entry and re-creates it; `wasUpdated` is `true` and the update's content shows |
-| `create('x')`, `clear('x')`, `create('x')` | Each `create` carries a generation. The first `add` returning finds a newer generation and does nothing (the newer `add` replaces what it showed), so the second notification stands |
+| `create('x')`, `clear('x')`, `create('x')` | The clear drops the entry with its UNNotification identifier, so the second `create` gets a new identifier. When the first `add` returns it finds no entry under its own identifier and removes only that identifier's notification; the second `add` shows the second one, which stands. A first create still waiting for authorization finds its entry gone and never adds.[^task-276] Generations decide `create('x')`, `create('x')` with no clear between: the second keeps the identifier, so the first `add` finds a newer generation, leaves the entry alone and lets the newer `add` replace what it showed |
 
 `getAll` lists a notification whose `add` is still in flight. A failed `add`
 of a `create` drops the entry only if no later `create` or `update` has
@@ -984,3 +987,4 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared
 [^task-253]: Extensions: Detour never requests notification permission, so extension notifications may never be shown
 [^task-273]: Extensions: an unanswered notification authorization prompt stalls notifications.create in every profile
+[^task-276]: Docs: fix the permission-scope and notification-ordering descriptions the review found wrong

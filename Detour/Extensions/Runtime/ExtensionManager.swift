@@ -2150,6 +2150,19 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Shared by a Settings toggle (one key) and by an extension's own
     /// `permissions.remove` (TASK-258, every key it revoked), so both reach
     /// every profile the same way.
+    ///
+    /// The invariant `savedGrantsRevoked` relies on (TASK-276): WebKit posts
+    /// its grant-removal notification for these writes too, on the main queue
+    /// after the write, and the rule cannot tell them from the extension's own
+    /// `permissions.remove`. It deletes a saved grant whose key, at delivery,
+    /// the context neither grants nor denies and no denied pattern covers. So
+    /// every key written here must end this main-actor turn granted, denied or
+    /// covered by a denial, never plainly removed, unless its saved row is
+    /// gone or meant to go (the `.unknown` below is written only for a key
+    /// with no row). The host keys' clear-then-restore is fine: the restore
+    /// runs before the notification is delivered. A write that took a grant
+    /// out of one profile's context alone would delete the saved grant, and so
+    /// take it from every profile.
     @MainActor
     private func applySavedDecisions(extensionID: String,
                                      keys: [(key: String, type: ExtensionPermissionType)],
@@ -2319,7 +2332,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// of asking, `context` neither grants nor denies it: only a plain removal
     /// leaves that. A saved denial applied at load, or a Settings toggle, ends
     /// with the key denied or granted again; a grant a broader saved denial
-    /// subsumed counts as denied (a denied pattern covers it). The row is also
+    /// subsumed counts as denied (a denied pattern covers it). That holds only
+    /// while every write Detour makes to a context keeps to it; the invariant
+    /// is stated on `applySavedDecisions` and at the restore in
+    /// `Profile.loadExtensionContext` (TASK-276). The row is also
     /// skipped when:
     /// - it is outside what the manifest may ask for (the restore's gate). Such
     ///   a row is inert, and a removal is no decision about it;

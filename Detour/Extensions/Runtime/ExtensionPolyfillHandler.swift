@@ -123,9 +123,12 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     }
 
     /// Whether `extensionID` holds the `notifications` permission — declared,
-    /// or optional and granted in this profile (TASK-250) — as Chrome gates
-    /// the namespace (TASK-239). If not, answers the request with the refusal
-    /// and returns false.
+    /// or optional and granted (TASK-250) — as Chrome gates the namespace
+    /// (TASK-239). A decision is the extension's, not the profile's: Detour
+    /// applies it to every profile's context, the Private one included
+    /// (`ExtensionManager.setPermissionDecision`); this reads it from this
+    /// profile's context. If not, answers the request with the refusal and
+    /// returns false.
     private func notificationsPermitted(_ extensionID: String,
                                         orRefuse replyHandler: (Any?, String?) -> Void) -> Bool {
         if let refusal = permissionRefusal("notifications", extensionID: extensionID) {
@@ -157,11 +160,12 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
 
     /// Takes away the notifications `extensionID` created in this profile, and
     /// answers its wait for their events with the permission refusal, when
-    /// `notifications` is not active for it here any more (TASK-270): the
-    /// Settings switch turned off, or `permissions.remove` of the optional
-    /// permission. `ExtensionManager` calls it for every profile after a
-    /// permission decision changes; while the permission is active it does
-    /// nothing.
+    /// `notifications` is not active in this profile's context any more
+    /// (TASK-270): the Settings switch turned off, or `permissions.remove` of
+    /// the optional permission. Either decision is the extension's and reaches
+    /// every profile's context, so `ExtensionManager` calls this for every
+    /// profile after a permission decision changes; while the permission is
+    /// active it does nothing. It writes no permission.
     func revokeNotificationsIfNotPermitted(ofExtension extensionID: String) {
         guard let manager = existingNotificationManager,
               let refusal = permissionRefusal("notifications", extensionID: extensionID) else { return }
@@ -1377,6 +1381,16 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// The rule behind `permissionRefusal`, WebKit's own order for the APIs it
     /// implements (`WebExtensionContext::permissionState`): a denial in
     /// `context` refuses first, then a grant serves.
+    ///
+    /// `context` is one profile's, but what it holds is not a per-profile
+    /// decision: a saved grant or denial belongs to the extension, and Detour
+    /// applies it to the extension's context in every profile, the Private
+    /// one included (`ExtensionManager.setPermissionDecision`, the restore in
+    /// `Profile.loadExtensionContext`). The one gap: an answer to WebKit's own
+    /// `permissions.request` prompt is saved for the extension
+    /// (`ExtensionManager.handlePermissionPrompt`), but WebKit applies it to
+    /// the asking context alone, so the other profiles' contexts get it at
+    /// their next load.
     ///
     /// - A permission the manifest requires is active unless `context` holds
     ///   an unexpired denial of it: the Settings switch turned off
