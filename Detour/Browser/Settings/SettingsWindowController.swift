@@ -11,13 +11,14 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private static let linksID = NSToolbarItem.Identifier("links")
     private static let quickDetourID = NSToolbarItem.Identifier("quickdetour")
     private static let profilesID = NSToolbarItem.Identifier("profiles")
+    private static let searchID = NSToolbarItem.Identifier("search")
     private static let extensionsID = NSToolbarItem.Identifier("extensions")
     private static let contentBlockerID = NSToolbarItem.Identifier("contentblocker")
 
     private var panes: [NSToolbarItem.Identifier: SettingsPaneViewController] = [:]
     /// The toolbar's panes, in order.
     static let paneOrder: [NSToolbarItem.Identifier] = [
-        generalID, spacesID, linksID, quickDetourID, profilesID, extensionsID, contentBlockerID,
+        generalID, spacesID, linksID, quickDetourID, profilesID, searchID, extensionsID, contentBlockerID,
     ]
 
     /// Replaces the height of the screen's visible frame in the height rule,
@@ -63,6 +64,8 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
         let profilesVC = ProfilesSettingsViewController()
         panes[Self.profilesID] = profilesVC
+
+        panes[Self.searchID] = SearchSettingsViewController()
 
         let extensionsVC = ExtensionsSettingsViewController()
         panes[Self.extensionsID] = extensionsVC
@@ -134,6 +137,9 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         case Self.profilesID:
             item.label = "Profiles"
             item.image = NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: "Profiles")
+        case Self.searchID:
+            item.label = "Search"
+            item.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Search")
         case Self.extensionsID:
             item.label = "Extensions"
             item.image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: "Extensions")

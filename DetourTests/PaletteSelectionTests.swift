@@ -137,6 +137,7 @@ nonisolated final class PaletteReturnKeyTests: XCTestCase {
             case input(String)
             case search(String)
             case switchToTab(UUID)
+            case siteSearch(URL)
             case dismissed
         }
         private(set) var events: [Event] = []
@@ -146,6 +147,9 @@ nonisolated final class PaletteReturnKeyTests: XCTestCase {
         }
         func commandPalette(_ palette: CommandPaletteView, didSubmitSearch query: String) {
             events.append(.search(query))
+        }
+        func commandPalette(_ palette: CommandPaletteView, didSubmitSiteSearch url: URL) {
+            events.append(.siteSearch(url))
         }
         func commandPaletteDidDismiss(_ palette: CommandPaletteView) {
             events.append(.dismissed)

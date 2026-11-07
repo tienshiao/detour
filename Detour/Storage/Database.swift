@@ -780,6 +780,26 @@ nonisolated struct AppDatabase: Sendable {
         }
     }
 
+    // MARK: - Site searches (TASK-287)
+
+    func loadSiteSearches() -> [SiteSearchRecord] {
+        performRead("load site searches", default: []) { db in
+            try SiteSearchRecord.order(Column("sortOrder")).fetchAll(db)
+        }
+    }
+
+    func saveSiteSearch(_ record: SiteSearchRecord) {
+        performWrite("save site search") { db in
+            try record.save(db)
+        }
+    }
+
+    func deleteSiteSearch(id: String) {
+        performWrite("delete site search") { db in
+            _ = try SiteSearchRecord.deleteOne(db, key: id)
+        }
+    }
+
     // MARK: - External App Permissions (TASK-84)
 
     func saveExternalAppPermission(_ record: ExternalAppPermissionRecord) {
@@ -1383,6 +1403,26 @@ nonisolated struct AppDatabase: Sendable {
                 t.primaryKey("id", .integer).check { $0 == 1 }
                 t.column("targetKind", .text).notNull()
                 t.column("targetSpaceID", .text)
+            }
+        }
+
+        migrator.registerMigration("v21") { db in
+            // TASK-287: site searches, app-wide like Link Routes. The starter
+            // set is seeded here, once: an entry the user deletes stays
+            // deleted. Written as SQL so a later change to `SiteSearchRecord`
+            // cannot change what this migration did; `SiteSearch.starterSet`
+            // is frozen with it (a new starter entry needs a new migration).
+            try db.create(table: "siteSearch") { t in
+                t.primaryKey("id", .text)
+                t.column("name", .text).notNull()
+                t.column("keyword", .text).notNull()
+                t.column("urlTemplate", .text).notNull()
+                t.column("sortOrder", .integer).notNull()
+            }
+            for (order, entry) in SiteSearch.starterSet.enumerated() {
+                try db.execute(
+                    sql: "INSERT INTO siteSearch (id, name, keyword, urlTemplate, sortOrder) VALUES (?, ?, ?, ?, ?)",
+                    arguments: [UUID().uuidString, entry.name, entry.keyword, entry.urlTemplate, order])
             }
         }
 

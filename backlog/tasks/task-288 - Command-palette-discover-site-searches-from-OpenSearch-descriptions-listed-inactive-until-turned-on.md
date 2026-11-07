@@ -1,11 +1,12 @@
 ---
 id: TASK-288
 title: >-
-  Command palette: discover site searches from OpenSearch descriptions (listed
-  inactive until turned on)
+  Command palette: discover site searches from OpenSearch descriptions (active
+  at once, no keyword)
 status: To Do
 assignee: []
 created_date: '2026-11-07T09:43:00Z'
+updated_date: '2026-11-07T09:59:00Z'
 labels:
   - command-palette
   - search
@@ -28,9 +29,15 @@ Sites advertise their search through an OpenSearch description: a `<link rel="se
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Visiting a page in a normal profile whose head links an OpenSearch description adds an inactive site search for that site, named from the description, keyword = the page host, template converted from {searchTerms} to the site-search placeholder
+- [ ] #1 Visiting a page in a normal profile whose head links an OpenSearch description adds a site search for that site with no keyword, named from the description, template converted from {searchTerms} to the site-search placeholder; it works at once through host matching (Tab when the palette completes to that site)
 - [ ] #2 Nothing is discovered or fetched from a Private window, Quick Detour quarantine or a non-http(s) page; a description is fetched at most once per site per launch, with a size and time limit
-- [ ] #3 A description whose template is not http(s), has no {searchTerms}, or points to another host than the page is ignored; a site already in the list (same host or keyword) is not added again, and one the user removed is not re-added
-- [ ] #4 Inactive entries are listed apart in Settings > Search and can be turned on (becoming an ordinary site search) or removed; inactive entries never enter site-search mode
-- [ ] #5 Tests cover parsing (valid, malformed, missing template), the add/skip rules and the Private refusal; the command-palette wiki page describes discovery
+- [ ] #3 A description whose template is not http(s), has no {searchTerms}, or points to another host than the page is ignored; a site already in the list (same host) is not added again, and one the user removed is not re-added
+- [ ] #4 Discovered entries are marked as discovered in Settings > Search and can be edited (given a keyword) or removed
+- [ ] #5 Tests cover parsing (valid, malformed, missing template), the add/skip rules and the Private refusal; the site-search wiki page describes discovery
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Decision changed 2026-11-07 (user): TASK-287 gained Arc-style host and name matching, so a discovered site only takes Tab when the field completes to that same site. Discovered entries are therefore active at once with no keyword (Arc), not listed inactive (Chrome) as first decided.
+<!-- SECTION:NOTES:END -->

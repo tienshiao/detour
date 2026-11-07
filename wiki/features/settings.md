@@ -1,7 +1,7 @@
 ---
 type: Component
 title: Settings window
-description: "The Settings window and its seven panes (General, Spaces, Links, Quick Detour, Profiles, Extensions, Content Blocking): what each one edits, how changes reach TabStore, the shared metrics and pane container (one scrolling body, or since TASK-211 a list and detail column fixed to the pane and scrolling on their own), the height rule (natural height, capped to the screen, resizable in height only) and the layout traps met on the way."
+description: "The Settings window and its eight panes (General, Spaces, Links, Quick Detour, Profiles, Search, Extensions, Content Blocking): what each one edits, how changes reach TabStore, the shared metrics and pane container (one scrolling body, or since TASK-211 a list and detail column fixed to the pane and scrolling on their own), the height rule (natural height, capped to the screen, resizable in height only) and the layout traps met on the way."
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
@@ -78,7 +78,7 @@ sources:
 # Role
 
 `SettingsWindowController.shared` is one window with a preference-style
-toolbar and seven panes. It holds no settings of its own: each pane reads and
+toolbar and eight panes. It holds no settings of its own: each pane reads and
 writes model objects directly (`TabStore`, `Profile`, `ExtensionManager`,
 `ContentBlockerManager`, `ExternalAppPermissionStore`), and persistence
 happens in those owners. The only app-wide setting, the default browser, is
@@ -101,8 +101,8 @@ the current page. See
   root view also holds a required `width == 740`, so no content can widen
   the window (a long extension name used to stretch it to 1104). Full screen
   is off (`.fullScreenNone`), tabbing disallowed.[^task-189]
-- The seven view controllers (in toolbar order: General, Spaces, Links,
-  Quick Detour, Profiles, Extensions, Content Blocking;
+- The eight view controllers (in toolbar order: General, Spaces, Links,
+  Quick Detour, Profiles, Search, Extensions, Content Blocking;
   `SettingsWindowController.paneOrder`) are created once in `init` and kept in `panes`;
   switching swaps `window.contentViewController` at the current size, then
   `fitWindow` animates to the new pane's height with the top edge fixed (moved
@@ -376,6 +376,13 @@ dimmed, rather than hidden: it tells the user what turning the extension back
 on will restore. For the Private profile it is the same opt-in as "Allow in
 Private" on the Extensions pane; see
 [private profile extensions](../extensions/private-profile-extensions.md).
+
+## Search
+
+The site searches, one app-wide list (TASK-287): Name, Keyword and Address
+columns in one bordered list pane with a +, −, pencil bar; add and edit in an
+`NSAlert` sheet holding `SiteSearchForm`, whose Save is off while the store
+would refuse the entry. Details on [site search](./site-search.md).
 
 ## Extensions
 

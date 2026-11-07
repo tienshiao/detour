@@ -166,6 +166,8 @@ Two rules keep the rows themselves from jumping:
 | `.historyResult` row | `didSubmitInput` with the URL | navigates |
 | `.searchSuggestion` row | `didSubmitSearch` | always a search, never classified |
 | `.openTab` row | `didRequestSwitchToTab(tabID, in: spaceID)` | switches space if needed, selects the tab |
+| `.siteSearch` row, or Return in site-search mode | `didSubmitSiteSearch(url)` (required of every owner) | loads the site's results page as a search; see [site search](./site-search.md) |
+| `.siteSearchHint` row | none | enters site-search mode |
 
 `paletteLoadURL` records the visit as **typed** only when the input was
 classified as a direct URL; a search-engine URL is not typed. Typed visits
@@ -193,9 +195,10 @@ the pure functions of `PaletteSelection` (`initialRow`, `row(afterMoving:)`,
 |---|---|
 | Up / Down | moves the keyboard selection and puts the row's text in the field, fully selected. With no row selected, Down selects the first row and Up the last. Moving past either end clears the selection and restores what the user typed, or the pre-filled URL (selected again) while the field is unedited |
 | Return | activates the selected row; with none, submits the field's text; with none and a blank field, does nothing. The field has no target/action: Return never leaves this method |
-| Tab | accepts the inline completion (the suffix becomes typed text). Consumed even with no completion, so focus never leaves the open palette |
+| Tab | when the typed text is a [site search](./site-search.md) keyword, or the field is or completes to a site search's host, or (no completion) starts its name or host, enters that site search (before the completion). Otherwise accepts the inline completion (the suffix becomes typed text). Consumed even with no completion, so focus never leaves the open palette |
 | Backspace | with a completion still selected, removes only the completion and suppresses autocomplete for the next change; otherwise deletes as usual |
-| Escape | prefilled palette (Cmd+L, address bar click): dismiss at once. Otherwise staged: drop the completion, then clear the text, then dismiss |
+| Escape | prefilled palette (Cmd+L, address bar click): dismiss at once. Otherwise staged: leave site-search mode and clear the field, or drop the completion, then clear the text, then dismiss |
+| Space | a keyword followed by one space enters its site search (`controlTextDidChange`, since typing never reaches this method) |
 
 Which row is selected after a list rebuild depends on what the list is:
 
@@ -311,6 +314,8 @@ whatever was under it.
   case.[^task-78]
 
 # Related
+
+- [Site search](./site-search.md): keyword shortcuts and the mode they enter
 
 - [Suggestion pipeline](./suggestion-pipeline.md) - what the rows are and how they are ranked.
 - [Keyboard focus](../sidebar/keyboard-focus.md) - first responder rules for the window and sidebar.

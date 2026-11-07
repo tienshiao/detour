@@ -129,6 +129,10 @@ extension QuickDetourLauncher: CommandPaletteDelegate {
         submit(url, typed: false)
     }
 
+    func commandPalette(_ palette: CommandPaletteView, didSubmitSiteSearch url: URL) {
+        submit(url, typed: false)
+    }
+
     /// Escape on the empty field, or a click outside the palette.
     func commandPaletteDidDismiss(_ palette: CommandPaletteView) {
         close()

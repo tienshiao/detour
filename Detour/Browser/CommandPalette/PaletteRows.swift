@@ -74,11 +74,23 @@ enum PaletteRows {
         return .applyKeepingSelection
     }
 
+    /// `matches` with the row that offers a site search (TASK-287) right after
+    /// the verbatim row, or first when there is none. The top hit and the
+    /// verbatim row keep their places, so Return still does what it did
+    /// before the hint appeared: only Tab, Space or choosing the row enters
+    /// the site search.
+    static func insertingSiteSearchHint(_ hint: SuggestionItem, into matches: [SuggestionItem]) -> [SuggestionItem] {
+        var rows = matches
+        let verbatim = rows.firstIndex { if case .searchInput = $0 { return true } else { return false } }
+        rows.insert(hint, at: verbatim.map { $0 + 1 } ?? 0)
+        return rows
+    }
+
     private static func url(of item: SuggestionItem) -> String? {
         switch item {
-        case .historyResult(let url, _, _), .openTab(_, _, let url, _, _):
+        case .historyResult(let url, _, _), .openTab(_, _, let url, _, _), .siteSearch(_, _, let url):
             return url
-        case .searchInput, .searchSuggestion:
+        case .searchInput, .searchSuggestion, .siteSearchHint:
             return nil
         }
     }

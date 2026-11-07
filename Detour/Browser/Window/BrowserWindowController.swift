@@ -3640,6 +3640,10 @@ extension BrowserWindowController: CommandPaletteDelegate {
         paletteLoadURL(url, typed: false)
     }
 
+    func commandPalette(_ palette: CommandPaletteView, didSubmitSiteSearch url: URL) {
+        paletteLoadURL(url, typed: false)
+    }
+
     private func paletteLoadURL(_ url: URL, typed: Bool) {
         let navigateInPlace = commandPaletteNavigatesInPlace
         dismissCommandPalette()

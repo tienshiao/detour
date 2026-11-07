@@ -1139,6 +1139,10 @@ extension QuickDetourWindowController: CommandPaletteDelegate {
         submit(url, typed: false)
     }
 
+    func commandPalette(_ palette: CommandPaletteView, didSubmitSiteSearch url: URL) {
+        submit(url, typed: false)
+    }
+
     private func submit(_ url: URL, typed: Bool) {
         dismissPalette()
         load(url, typed: typed)

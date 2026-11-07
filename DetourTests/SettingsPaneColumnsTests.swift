@@ -329,15 +329,20 @@ nonisolated final class SettingsPaneColumnsTests: XCTestCase {
 
     @MainActor func testQuickDetourHasAPaneOfItsOwnAfterLinks() {
         XCTAssertEqual(SettingsWindowController.paneOrder.map(\.rawValue),
-                       ["general", "spaces", "links", "quickdetour", "profiles", "extensions", "contentblocker"])
+                       ["general", "spaces", "links", "quickdetour", "profiles", "search", "extensions",
+                        "contentblocker"],
+                       "Search (TASK-287) sits after Profiles, where each profile's default engine is")
     }
 
     @MainActor func testPanesWithAListScrollTheirColumnsAndTheOthersScrollAsOneBody() throws {
         let whole: [SettingsPaneViewController] = [GeneralSettingsViewController(), QuickDetourSettingsViewController(),
                                                    ContentBlockerSettingsViewController()]
         let links = LinksSettingsViewController(linkRoutes: try makeLinkRouteStore())
+        let search = SearchSettingsViewController(
+            siteSearches: SiteSearchStore(database: try AppDatabase(dbQueue: DatabaseQueue())))
         let columns: [SettingsPaneViewController] = [SpacesSettingsViewController(), links,
-                                                     ProfilesSettingsViewController(), ExtensionsSettingsViewController()]
+                                                     ProfilesSettingsViewController(), search,
+                                                     ExtensionsSettingsViewController()]
         for pane in whole {
             _ = pane.view
             XCTAssertNotNil(pane.scrollView, "\(type(of: pane)) scrolls as one body")
