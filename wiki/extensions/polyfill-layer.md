@@ -121,6 +121,12 @@ sources:
   - id: task-271
     resource: backlog:TASK-271
     title: "Extensions: a notifications.update whose add fails also removes the notification it was updating"
+  - id: task-272
+    resource: backlog:TASK-272
+    title: "Extensions: notification entries outlive the banner when macOS takes it away without a dismiss"
+  - id: chromium-mac-notification-service
+    resource: https://source.chromium.org/chromium/chromium/src/+/main:chrome/services/mac_notifications/mac_notification_service_un.mm
+    title: "Chromium: mac_notification_service_un.mm (shouldPreventNotificationDismissalAfterDefaultAction, SynchronizeNotifications), chrome/browser/notifications/mac/notification_utils.cc (by_user)"
   - id: chromium-notifications-clear
     resource: https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/extensions/api/notifications/
     title: "Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)"
@@ -542,8 +548,9 @@ them in order and parks again with `ack` = the last `seq`.
 
 | Event | Fires |
 |---|---|
-| Click on the banner (`UNNotificationDefaultActionIdentifier`) | `onClicked(id)`; the entry stays |
+| Click on the banner (`UNNotificationDefaultActionIdentifier`) | `onClicked(id)`, then `onClosed(id, true)`, in one answer; the entry goes (macOS takes a clicked banner away) |
 | User dismisses it (`UNNotificationDismissActionIdentifier`) | `onClosed(id, true)`; the entry goes, so `clear`/`update` answer false and `getAll` leaves it out |
+| The center stops listing it without a report (Clear All?, system pruning) | `onClosed(id, true)` at the next synchronization; the entry goes |
 | The extension's `clear` finds it | `onClosed(id, false)` |
 | Unload of the extension, end of the profile or Private session, not-allowed or failed add | nothing |
 
@@ -618,6 +625,50 @@ them in order and parks again with `ack` = the last `seq`.
   (refused for the permission). No `onClosed` fires for the notifications
   taken away: the extension no longer holds the permission whose events those
   are.[^task-270]
+- **The banner going ends the notification.** macOS removes a banner when
+  its default action is clicked; Chrome keeps its own only by setting the
+  private `shouldPreventNotificationDismissalAfterDefaultAction` on the
+  content,[^chromium-mac-notification-service] which Detour does not. Before
+  TASK-272 a click kept the entry, so an extension using `create(null, …)`
+  that never cleared grew the entries all session, `getAll` listed banners
+  no longer shown, and a later `update` brought the banner back. A click now
+  drops the entry, asks the center to remove the identifier too (should
+  macOS ever keep the banner, nothing could clear it otherwise), and fires
+  `onClicked` then `onClosed(byUser true)`: what
+  Chrome reports when a notification leaves Notification Center without a
+  dismissal (its `SynchronizeNotifications` turns every such one into a
+  close, and every macOS close reaches the extension with `by_user`
+  true).[^task-272] An update whose `add` is in flight when the click comes
+  finds no entry when it lands and takes the banner it re-showed away, as
+  after a clear during the `add`; it still answers `wasUpdated: true`.
+- **Synchronization catches the rest.** `synchronizeWithCenter()` lists the
+  center's delivered and pending identifiers and closes (`onClosed(byUser
+  true)`, entry dropped, identifier removed from the center in case the
+  listing missed it) every entry it does not list, like Chrome's
+  `SynchronizeNotifications`. Pending is listed before delivered: a request
+  only moves from pending to delivered, so one moving between the two calls
+  is still seen. It runs at every `create` (coalesced, and at most once per
+  5 s, so an extension that never clears cannot outgrow what is on screen
+  and one re-creating a progress notification does not list usernoted at
+  every call) and every 10 minutes (Chrome's `kSynchronizationInterval`)
+  while there are entries.
+  Only entries whose own `add` succeeded at least 5 s ago are checked: the
+  center may list a notification a moment after `add` answers, and an entry
+  with an `add` in flight (an update over a banner the center lost) shows
+  it again, as Chrome skips pending content. An entry cleared, clicked,
+  replaced or removed with its owner while the listing was in flight is
+  skipped, so a revoked owner gets no `onClosed`. The clock is injectable
+  (`now`).
+- **What "Clear All" reports was not measured.** Producing a real banner
+  from a Debug build needs notification authorization for
+  `com.detourbrowser.mac`, which on the development Mac was still
+  undetermined (no usernoted records for it); answering that prompt also
+  sets the installed app's permission, which is the user's decision, and
+  Clear All would have to be driven in the Notification Center the running
+  production Detour shares. The design holds either way: a reported
+  dismissal closes through `handleResponse`, an unreported one at the next
+  synchronization. Chrome polling at all suggests some removals go
+  unreported.
 - `onButtonClicked` still never fires: buttons are not shown.
 
 The manager-level behaviour is in `ExtensionNotificationEventManagerTests`, the
@@ -876,6 +927,8 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-264]: Extensions: a Private-profile extension stops receiving notifications.onClicked and onClosed once a Private session starts or ends
 [^task-270]: Extensions: revoking the notifications permission leaves the extension's notifications and event wait in place
 [^task-271]: Extensions: a notifications.update whose add fails also removes the notification it was updating
+[^task-272]: Extensions: notification entries outlive the banner when macOS takes it away without a dismiss
+[^chromium-mac-notification-service]: Chromium: mac_notification_service_un.mm (shouldPreventNotificationDismissalAfterDefaultAction, SynchronizeNotifications), chrome/browser/notifications/mac/notification_utils.cc (by_user)
 [^chromium-notifications-clear]: Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)
 [^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared
 [^task-253]: Extensions: Detour never requests notification permission, so extension notifications may never be shown

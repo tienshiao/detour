@@ -974,7 +974,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     }
 
     /// A click or close on a notification resolves to the profile that created
-    /// it, and a close drops only that profile's entry. (Delivery to
+    /// it, and drops only that profile's entry. (Delivery to
     /// `onClicked` / `onClosed` is `ExtensionNotificationEventTests`'.)
     @MainActor func testResponsesResolveOnlyToTheCreatingProfile() async throws {
         let ext = try await makeExtension()
@@ -1005,8 +1005,14 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             XCTAssertEqual(clicked, .init(owner: .init(profileID: TabStore.incognitoProfileID, extensionID: ext.id),
                                           notificationID: id, kind: .clicked), "\(transport)")
 
+            // macOS takes a clicked banner away, so the click drops the
+            // Private profile's entry too (TASK-272).
+            privateListed = try await listed(id, via: transport, in: privatePage)
+            XCTAssertEqual(privateListed, [], "\(transport): the click drops the Private profile's entry")
+
             // A notification a build before TASK-238 delivered carries no
             // profile and matches no entry.
+            _ = try await call("create", id, title: "Private again", via: transport, in: privatePage)
             XCTAssertNil(manager.handleResponse(identifier: "\(ext.id):\(id)",
                                                 action: UNNotificationDismissActionIdentifier))
             privateListed = try await listed(id, via: transport, in: privatePage)

@@ -121,6 +121,11 @@ final class SystemExtensionNotificationCenter: ExtensionNotificationCenter {
 /// `removeSession(profileID:)` when a Private session starts or ends, so
 /// nothing carries over into the next one, and `revoke(for:refusal:)` when
 /// the extension loses the `notifications` permission in the profile.
+/// A notification also goes when its banner does (TASK-272): the user
+/// dismisses it or clicks it (macOS takes a clicked banner away), or it
+/// leaves Notification Center without a report, which
+/// `synchronizeWithCenter` finds at the next `create` or periodic check.
+/// Each of these fires `onClosed` with `byUser` true.
 ///
 /// A notification is recorded when `create` is called, before the center's
 /// `add` returns, so the calls an extension makes without awaiting apply in
@@ -232,12 +237,19 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         /// see `addFinished`. Empty for a create, which replaces outright, and
         /// once this entry's own `add` has succeeded.
         var fallbacks: [Fallback] = []
+        /// When this generation's `add` succeeded, so the center has shown
+        /// it; nil while it is in flight (or waiting for authorization).
+        /// `synchronizeWithCenter` checks only shown entries (TASK-272).
+        var shownAt: ContinuousClock.Instant?
     }
 
     /// An entry an update replaced, as `Entry.fallbacks` keeps it.
     private struct Fallback {
         let generation: Int
         let options: [String: Any]
+        /// The replaced entry's `shownAt`, set here too if its `add`
+        /// succeeds after the update replaced it.
+        var shownAt: ContinuousClock.Instant?
     }
 
     /// UNNotification identifier → the notification an owner has and has not
@@ -247,6 +259,9 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     private var identifiers: [Key: String] = [:]
     private var lastGeneration = 0
     private let center: any ExtensionNotificationCenter
+    /// The clock `shownAt` and `synchronizeWithCenter`'s grace read. A seam:
+    /// a test moves time on instead of waiting.
+    var now: @MainActor () -> ContinuousClock.Instant = { ContinuousClock.now }
 
     /// Production uses `shared`, which is also the center's delegate. A test
     /// builds its own around a fake center.
@@ -307,14 +322,21 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// harmless. Not gated on authorization: listing never prompts, and a user
     /// who turned notifications off may still have banners from before.
     func removeLeftoverNotifications() async {
-        let delivered = await center.deliveredIdentifiers()
-        let pending = await center.pendingIdentifiers()
-        let leftovers = Set(delivered + pending).filter {
+        let leftovers = await listedIdentifiers().filter {
             Self.isExtensionNotificationIdentifier($0) && entries[$0] == nil
         }
         guard !leftovers.isEmpty else { return }
         log.info("Removing \(leftovers.count) extension notification(s) left by an earlier launch")
         center.removeNotifications(withIdentifiers: leftovers.sorted())
+    }
+
+    /// Every identifier the center lists, pending or delivered. Pending is
+    /// listed first: a request only ever moves from pending to delivered, so
+    /// one that moves between the two listings is in the second, never in
+    /// neither.
+    private func listedIdentifiers() async -> Set<String> {
+        let pending = await center.pendingIdentifiers()
+        return Set(pending).union(await center.deliveredIdentifiers())
     }
 
     private static func newIdentifier() -> String {
@@ -399,8 +421,8 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
 
     /// The option fields `content(for:)` reads: all an entry keeps for the
     /// next `update` to merge into. Not the rest (an `iconUrl` or `imageUrl`
-    /// is often a large data: URL), since an entry lives until the extension
-    /// clears it, and a banner the user dismisses does not end it.
+    /// is often a large data: URL), since an entry lives as long as its
+    /// banner, which may be all session.
     private static let shownOptionKeys: Set<String> = ["title", "message", "contextMessage"]
 
     /// `existing` with every field `given` sets replaced, as Chrome's update
@@ -416,8 +438,13 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// returned, or once it is known there will be none (notifications not
     /// allowed, or the create cleared or superseded while authorization was
     /// pending), with the notification id, whether or not it was shown.
+    ///
+    /// Each create also checks the shown entries against the center
+    /// (`synchronizeWithCenter`, coalesced and throttled), so the entries of an extension
+    /// that never clears cannot outgrow what is on screen (TASK-272).
     func create(owner: Owner, notificationID: String?, options: [String: Any], completion: @escaping (String) -> Void) {
         show(owner: owner, notificationID: notificationID, options: options, isUpdate: false) { id, _ in completion(id) }
+        synchronizeAfterCreate()
     }
 
     /// `create`, also telling `completion` whether the notification was
@@ -440,7 +467,8 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
 
         var fallbacks: [Fallback] = []
         if isUpdate, let existingIdentifier, let replaced = entries[existingIdentifier] {
-            fallbacks = [Fallback(generation: replaced.generation, options: replaced.options)] + replaced.fallbacks
+            fallbacks = [Fallback(generation: replaced.generation, options: replaced.options,
+                                  shownAt: replaced.shownAt)] + replaced.fallbacks
         }
 
         lastGeneration += 1
@@ -531,6 +559,11 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
             if failure == nil {
                 guard !entry.fallbacks.isEmpty else { return }
                 entry.fallbacks.removeAll { $0.generation < generation }
+                if let index = entry.fallbacks.firstIndex(where: { $0.generation == generation }) {
+                    entry.fallbacks[index].shownAt = now()
+                    // Shown, so checked once a failed update puts it back.
+                    scheduleSynchronization()
+                }
                 entries[identifier] = entry
             } else {
                 dropFallback(identifier: identifier, generation: generation)
@@ -538,10 +571,10 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
             return
         }
         guard failure != nil else {
-            if !entry.fallbacks.isEmpty {
-                entry.fallbacks = []
-                entries[identifier] = entry
-            }
+            entry.fallbacks = []
+            entry.shownAt = now()
+            entries[identifier] = entry
+            scheduleSynchronization()
             return
         }
         if let restored = entry.fallbacks.first {
@@ -550,7 +583,8 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
             // or its own `add` settles it. Chrome leaves it in place too.
             entries[identifier] = Entry(owner: entry.owner, notificationID: entry.notificationID,
                                         generation: restored.generation, options: restored.options,
-                                        fallbacks: Array(entry.fallbacks.dropFirst()))
+                                        fallbacks: Array(entry.fallbacks.dropFirst()),
+                                        shownAt: restored.shownAt)
             return
         }
         removeEntry(identifier: identifier)
@@ -595,7 +629,7 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         }
         removeEntry(identifier: identifier)
         center.removeNotifications(withIdentifiers: [identifier])
-        deliver(.closed, notificationID: notificationID, byUser: false, to: owner)
+        deliver([(.closed, byUser: false)], notificationID: notificationID, to: owner)
         completion(true)
     }
 
@@ -662,6 +696,109 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         center.removeNotifications(withIdentifiers: removed)
     }
 
+    // MARK: - Notifications macOS took away unreported (TASK-272)
+
+    /// How long after its `add` succeeded a notification must be missing
+    /// from the center's listing before it counts as gone: the center may
+    /// list a notification a moment after the `add` answers (the foreground
+    /// presentation asks the delegate first).
+    static let synchronizationGrace: Duration = .seconds(5)
+    /// How often the shown entries are checked against the center while
+    /// there are any: Chrome's `kSynchronizationInterval`.
+    static let synchronizationInterval: TimeInterval = 10 * 60
+
+    private var synchronizationTimer: Timer?
+    /// The synchronization `synchronizeInBackground` started, until it ends.
+    private var backgroundSynchronization: Task<Void, Never>?
+    /// When `synchronizeWithCenter` last listed the center: a create
+    /// synchronizes at most once per `synchronizationGrace`, so an extension
+    /// re-creating a notification many times a second does not list
+    /// usernoted at every call.
+    private var lastListing: ContinuousClock.Instant?
+
+    /// Drops every entry whose notification the center no longer lists,
+    /// delivered or pending, and fires `onClosed` with `byUser` true for it,
+    /// as Chrome's `SynchronizeNotifications` does for a notification that
+    /// left Notification Center without a reported dismissal ("Clear All",
+    /// the system pruning old ones). Only entries shown at least
+    /// `synchronizationGrace` ago are checked; an entry whose `add` is in
+    /// flight (a create, or an update over a shown one) is left alone, as
+    /// Chrome leaves one with pending content: that `add` shows it again.
+    /// An entry cleared, removed with its owner, clicked or replaced during
+    /// the listing is skipped, so it gets no second event.
+    func synchronizeWithCenter() async {
+        let threshold = now() - Self.synchronizationGrace
+        let candidates = entries.compactMap { identifier, entry -> (identifier: String, generation: Int)? in
+            guard let shownAt = entry.shownAt, shownAt <= threshold else { return nil }
+            return (identifier, entry.generation)
+        }
+        guard !candidates.isEmpty else { return }
+        lastListing = now()
+        let listed = await listedIdentifiers()
+        var gone: [(identifier: String, entry: Entry)] = []
+        for candidate in candidates where !listed.contains(candidate.identifier) {
+            guard let entry = entries[candidate.identifier], entry.generation == candidate.generation else { continue }
+            removeEntry(identifier: candidate.identifier)
+            gone.append((candidate.identifier, entry))
+        }
+        guard !gone.isEmpty else { return }
+        log.info("\(gone.count) extension notification(s) left Notification Center unreported; closing them")
+        // In case the listing missed one still shown: with its entry gone,
+        // nothing else could take it away, and a click on it is ignored.
+        center.removeNotifications(withIdentifiers: gone.map(\.identifier))
+        for (_, entry) in gone {
+            deliver([(.closed, byUser: true)], notificationID: entry.notificationID, to: entry.owner)
+        }
+    }
+
+    /// A create's synchronization: `synchronizeInBackground`, unless the
+    /// center was listed less than `synchronizationGrace` ago.
+    private func synchronizeAfterCreate() {
+        if let lastListing, now() - lastListing < Self.synchronizationGrace { return }
+        synchronizeInBackground()
+    }
+
+    /// `synchronizeWithCenter` from a task, unless one is already running.
+    private func synchronizeInBackground() {
+        guard backgroundSynchronization == nil else { return }
+        backgroundSynchronization = Task { [weak self] in
+            await self?.synchronizeWithCenter()
+            self?.backgroundSynchronization = nil
+        }
+    }
+
+    /// Starts the repeating check once a notification is shown; it stops at
+    /// the first tick that finds no entries.
+    private func scheduleSynchronization() {
+        guard synchronizationTimer == nil else { return }
+        synchronizationTimer = Timer.scheduledMainTimer(withTimeInterval: Self.synchronizationInterval,
+                                                        repeats: true) { [weak self] timer in
+            guard let self, !self.entries.isEmpty else {
+                timer.invalidate()
+                self?.synchronizationTimer = nil
+                return
+            }
+            self.synchronizeInBackground()
+        }
+    }
+
+    #if DEBUG
+    /// Whether the periodic check is scheduled.
+    var synchronizationScheduledForTesting: Bool { synchronizationTimer != nil }
+
+    /// Fires the periodic check as its timer would, then waits for the
+    /// synchronization it started, if any.
+    func fireSynchronizationTimerForTesting() async {
+        synchronizationTimer?.fire()
+        await backgroundSynchronization?.value
+    }
+
+    /// Waits for the synchronization a create or the timer started, if any.
+    func backgroundSynchronizationForTesting() async {
+        await backgroundSynchronization?.value
+    }
+    #endif
+
     /// The ids of `owner`'s notifications, including those whose `create` has
     /// not finished yet.
     func getAll(owner: Owner) -> [String: Bool] {
@@ -681,8 +818,9 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         let seq: Int
         let kind: Response.Kind
         let notificationID: String
-        /// For a close: whether the user dismissed it, rather than the
-        /// extension clearing it.
+        /// For a close: whether the user ended it (dismissed or clicked it,
+        /// or it left Notification Center), rather than the extension
+        /// clearing it.
         let byUser: Bool
 
         /// What the polyfill dispatches: `{seq, kind, notificationId, byUser?}`.
@@ -796,13 +934,16 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         if !events.isEmpty { reply(["events": events.map(\.reply)], nil) }
     }
 
-    /// Queues the event for `owner` and answers the park, if there is one;
-    /// once the owner listens, also wakes its background, in case that park
-    /// belongs to a worker WebKit has unloaded.
-    private func deliver(_ kind: Response.Kind, notificationID: String, byUser: Bool, to owner: Owner) {
-        lastEventSeq += 1
+    /// Queues the events, in order, for `owner` and answers the park, if
+    /// there is one, with all of them; once the owner listens, also wakes its
+    /// background, in case that park belongs to a worker WebKit has unloaded.
+    private func deliver(_ events: [(kind: Response.Kind, byUser: Bool)], notificationID: String, to owner: Owner) {
         var channel = eventChannels[owner] ?? EventChannel()
-        channel.backlog.append(Event(seq: lastEventSeq, kind: kind, notificationID: notificationID, byUser: byUser))
+        for event in events {
+            lastEventSeq += 1
+            channel.backlog.append(Event(seq: lastEventSeq, kind: event.kind, notificationID: notificationID,
+                                         byUser: event.byUser))
+        }
         if channel.backlog.count > Self.eventBacklogLimit {
             let dropped = channel.backlog.count - Self.eventBacklogLimit
             channel.backlog.removeFirst(dropped)
@@ -855,29 +996,39 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     }
 
     /// Resolves a click or close to the one owner and notification it is for,
-    /// by the exact identifier, drops the entry on a close, and delivers the
-    /// event to that owner (TASK-247): `onClicked`, or `onClosed` with
-    /// `byUser` true, as a dismissal is the user's (the category's
-    /// `.customDismissAction` is what makes the center report one). Nothing
-    /// else is touched: the same id in another profile or extension is a
-    /// different identifier. An identifier with no entry — another launch's,
-    /// an earlier build's, or one already cleared — resolves to nil and
-    /// changes nothing.
+    /// by the exact identifier, drops the entry, and delivers the events to
+    /// that owner (TASK-247): for a dismissal `onClosed` with `byUser` true,
+    /// as a dismissal is the user's (the category's `.customDismissAction` is
+    /// what makes the center report one); for a click `onClicked`, then
+    /// `onClosed` with `byUser` true (TASK-272). macOS takes a clicked banner
+    /// away (Chrome keeps its banner only by setting the private
+    /// `shouldPreventNotificationDismissalAfterDefaultAction`, which Detour
+    /// does not), and Chrome reports a notification that left Notification
+    /// Center unreported as closed by the user; so `getAll` stops listing it
+    /// and `clear` and `update` answer false, rather than an update bringing
+    /// the banner back. An `add` in flight for it (an update) finds no entry
+    /// and takes what it shows away again. Nothing else is touched: the same
+    /// id in another profile or extension is a different identifier. An
+    /// identifier with no entry — another launch's, an earlier build's, or
+    /// one already cleared or clicked — resolves to nil and changes nothing.
     @discardableResult
     func handleResponse(identifier: String, action: String) -> Response? {
         guard let entry = entries[identifier] else { return nil }
-        let kind: Response.Kind
+        let events: [(kind: Response.Kind, byUser: Bool)]
         if action == UNNotificationDefaultActionIdentifier {
-            kind = .clicked
+            events = [(.clicked, byUser: false), (.closed, byUser: true)]
             log.info("Notification clicked: \(entry.notificationID, privacy: .private) for extension \(entry.owner.extensionID, privacy: .public)")
+            // macOS takes a clicked banner away; in case it kept this one,
+            // take it away too, as nothing could once the entry is gone.
+            center.removeNotifications(withIdentifiers: [identifier])
         } else if action == UNNotificationDismissActionIdentifier {
-            kind = .closed
+            events = [(.closed, byUser: true)]
             log.info("Notification closed: \(entry.notificationID, privacy: .private) for extension \(entry.owner.extensionID, privacy: .public)")
-            removeEntry(identifier: identifier)
         } else {
             return nil
         }
-        deliver(kind, notificationID: entry.notificationID, byUser: kind == .closed, to: entry.owner)
-        return Response(owner: entry.owner, notificationID: entry.notificationID, kind: kind)
+        removeEntry(identifier: identifier)
+        deliver(events, notificationID: entry.notificationID, to: entry.owner)
+        return Response(owner: entry.owner, notificationID: entry.notificationID, kind: events[0].kind)
     }
 }

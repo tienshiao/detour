@@ -84,7 +84,7 @@ nonisolated final class ExtensionNotificationEventManagerTests: XCTestCase {
         let parkedA2 = park(Self.ownerA2)
 
         click(identifierA)
-        XCTAssertEqual(parkedA.events, ["clicked:x"])
+        XCTAssertEqual(parkedA.events, ["clicked:x", "closed:x:true"], "a click ends the notification too")
         XCTAssertFalse(parkedA2.answered, "another profile's park hears nothing")
 
         manager.handleResponse(identifier: identifierA2, action: UNNotificationDismissActionIdentifier)
@@ -127,17 +127,18 @@ nonisolated final class ExtensionNotificationEventManagerTests: XCTestCase {
     /// worker that died before dispatching them hands them to the next one.
     @MainActor func testEventsWaitUntilAcknowledged() {
         let identifier = create("x")
+        _ = create("y")
         click(identifier)
-        manager.clear(owner: Self.ownerA, notificationID: "x") { _ in }
+        manager.clear(owner: Self.ownerA, notificationID: "y") { _ in }
 
         let first = park()
-        XCTAssertEqual(first.events, ["clicked:x", "closed:x:false"], "the backlog, in order")
+        XCTAssertEqual(first.events, ["clicked:x", "closed:x:true", "closed:y:false"], "the backlog, in order")
         XCTAssertNil(manager.eventChannelForTesting(Self.ownerA).parkedInstance, "answered at once, not parked")
 
         // The answer went to a worker that was gone: the next incarnation's
         // first park, acknowledging nothing, receives the same events again.
         let again = park(instance: "i2")
-        XCTAssertEqual(again.events, ["clicked:x", "closed:x:false"])
+        XCTAssertEqual(again.events, ["clicked:x", "closed:x:true", "closed:y:false"])
 
         let acknowledged = park(instance: "i2", ack: again.lastSeq)
         XCTAssertFalse(acknowledged.answered, "everything acknowledged: parked")
@@ -147,9 +148,9 @@ nonisolated final class ExtensionNotificationEventManagerTests: XCTestCase {
 
     /// The backlog keeps the newest `eventBacklogLimit` events.
     @MainActor func testTheBacklogIsBounded() {
-        let identifier = create("x")
-        let total = ExtensionNotificationManager.eventBacklogLimit + 8
-        for _ in 0..<total { click(identifier) }
+        // Each click is two events: the click and the close.
+        let clicks = ExtensionNotificationManager.eventBacklogLimit / 2 + 4
+        for index in 0..<clicks { click(create("x\(index)")) }
         let backlog = manager.eventChannelForTesting(Self.ownerA).backlog
         XCTAssertEqual(backlog.count, ExtensionNotificationManager.eventBacklogLimit)
         let parked = park()
@@ -172,21 +173,20 @@ nonisolated final class ExtensionNotificationEventManagerTests: XCTestCase {
         XCTAssertFalse(new.answered, "and the newer one's park stands")
 
         click(identifier)
-        XCTAssertEqual(new.events, ["clicked:x"])
+        XCTAssertEqual(new.events, ["clicked:x", "closed:x:true"])
     }
 
     /// An event wakes the owner's background only once a context of it has
     /// listened: an extension with no listener is never started for one.
     @MainActor func testAnEventWakesTheBackgroundOnceItListens() {
-        let identifier = create("x")
-        click(identifier)
+        click(create("x"))
         XCTAssertEqual(wakes, [], "never listened: not woken")
 
         let parked = park()
-        XCTAssertEqual(parked.events, ["clicked:x"])
+        XCTAssertEqual(parked.events, ["clicked:x", "closed:x:true"])
         _ = park(ack: parked.lastSeq)
-        click(identifier)
-        XCTAssertEqual(wakes, [Self.ownerA], "listens: woken, in case its park is a gone worker's")
+        click(create("y"))
+        XCTAssertEqual(wakes, [Self.ownerA], "listens: woken once for the click and its close")
     }
 
     /// Unloading the extension from the profile (or the profile going) settles
@@ -199,7 +199,7 @@ nonisolated final class ExtensionNotificationEventManagerTests: XCTestCase {
         manager.removeAll(for: Self.ownerA)
         XCTAssertNotNil(parked.error, "the park is settled")
         XCTAssertFalse(manager.eventChannelForTesting(Self.ownerA).listens)
-        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA2).backlog.count, 1)
+        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA2).backlog.count, 2, "the click and its close")
 
         manager.removeAll(profileID: Self.profile2)
         XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA2).backlog, [])
@@ -217,14 +217,16 @@ nonisolated final class ExtensionNotificationEventManagerTests: XCTestCase {
         let old = create("old")
         let oldB = create("old-b", owner: ownerB)
         let otherProfile = create("other", owner: Self.ownerA2)
+        _ = create("other-kept", owner: Self.ownerA2)
+        let older = create("older")
         let first = park()
-        click(old)
-        XCTAssertEqual(first.events, ["clicked:old"])
+        click(older)
+        XCTAssertEqual(first.events, ["clicked:older", "closed:older:true"])
         let parked = park(ack: first.lastSeq)
         click(oldB)
         click(otherProfile)
-        XCTAssertEqual(manager.eventChannelForTesting(ownerB).backlog.map(\.notificationID), ["old-b"],
-                       "precondition: an unheard event of the ending session")
+        XCTAssertEqual(manager.eventChannelForTesting(ownerB).backlog.map(\.notificationID), ["old-b", "old-b"],
+                       "precondition: unheard events of the ending session")
 
         manager.removeSession(profileID: Self.profile1)
         XCTAssertFalse(parked.answered, "the park stands: the context is still running")
@@ -233,19 +235,21 @@ nonisolated final class ExtensionNotificationEventManagerTests: XCTestCase {
         XCTAssertEqual(manager.eventChannelForTesting(ownerB).backlog, [], "the session's events go with it")
         XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
         XCTAssertEqual(manager.getAll(owner: ownerB), [:])
-        XCTAssertTrue(center.removals.contains(old) && center.removals.contains(oldB))
-        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA2).backlog.map(\.notificationID), ["other"],
-                       "another profile's channel is untouched")
-        XCTAssertEqual(manager.getAll(owner: Self.ownerA2), ["other": true])
+        XCTAssertTrue(center.removals.contains(old))
+        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA2).backlog.map(\.notificationID),
+                       ["other", "other"], "another profile's channel is untouched")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA2), ["other-kept": true])
         click(old)
         XCTAssertFalse(parked.answered, "a click on the ended session's notification is ignored")
 
         let next = create("next")
+        let dismissed = create("dismissed")
         click(next)
-        XCTAssertEqual(parked.events, ["clicked:next"], "the next session's click reaches the standing park")
+        XCTAssertEqual(parked.events, ["clicked:next", "closed:next:true"],
+                       "the next session's click reaches the standing park")
         let again = park(ack: parked.lastSeq)
-        manager.handleResponse(identifier: next, action: UNNotificationDismissActionIdentifier)
-        XCTAssertEqual(again.events, ["closed:next:true"])
+        manager.handleResponse(identifier: dismissed, action: UNNotificationDismissActionIdentifier)
+        XCTAssertEqual(again.events, ["closed:dismissed:true"])
 
         let last = park(ack: again.lastSeq)
         manager.removeSession(profileID: Self.profile1)
@@ -272,22 +276,23 @@ nonisolated final class ExtensionNotificationEventManagerTests: XCTestCase {
     @MainActor func testRevokingThePermissionAnswersTheParkWithTheRefusal() {
         let refusal = "notifications permission denied by the user"
         let ownerB = ExtensionNotificationManager.Owner(profileID: Self.profile1, extensionID: "notif-events-b")
+        let heard = create("heard")
         let queued = create("queued")
         let old = create("old")
         let otherProfile = create("other", owner: Self.ownerA2)
         let otherExtension = create("other-b", owner: ownerB)
-        click(queued)
-        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA).backlog.map(\.notificationID), ["queued"])
+        click(heard)
+        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA).backlog.map(\.notificationID), ["heard", "heard"])
         let first = park()
-        XCTAssertEqual(first.events, ["clicked:queued"])
+        XCTAssertEqual(first.events, ["clicked:heard", "closed:heard:true"])
         let parked = park(ack: first.lastSeq)
         click(queued)
         let unheard = manager.eventChannelForTesting(Self.ownerA).backlog
-        XCTAssertTrue(parked.answered && unheard.count == 1, "precondition: an event not yet acknowledged")
+        XCTAssertTrue(parked.answered && unheard.count == 2, "precondition: events not yet acknowledged")
 
         manager.revoke(for: Self.ownerA, refusal: refusal)
         XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
-        XCTAssertTrue(center.removals.contains(queued) && center.removals.contains(old))
+        XCTAssertTrue(center.removals.contains(old))
         XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA).backlog, [], "its queued events go")
         XCTAssertEqual(manager.getAll(owner: Self.ownerA2), ["other": true], "the same extension elsewhere is kept")
         XCTAssertEqual(manager.getAll(owner: ownerB), ["other-b": true], "another extension is kept")
@@ -305,7 +310,228 @@ nonisolated final class ExtensionNotificationEventManagerTests: XCTestCase {
         XCTAssertFalse(rearmed.answered, "the same incarnation parks again after the refusal")
         let next = create("next")
         click(next)
-        XCTAssertEqual(rearmed.events, ["clicked:next"])
+        XCTAssertEqual(rearmed.events, ["clicked:next", "closed:next:true"])
+    }
+
+    // MARK: - The banner going ends the notification (TASK-272)
+
+    /// A test clock for `ExtensionNotificationManager.now`.
+    @MainActor private final class TestClock {
+        var now = ContinuousClock.now
+    }
+
+    @MainActor private func useTestClock() -> TestClock {
+        let clock = TestClock()
+        manager.now = { clock.now }
+        return clock
+    }
+
+    /// The manager adds from a task: wait until the center shows `count`.
+    @MainActor private func waitForShown(_ count: Int) async throws {
+        try await waitUntil("\(count) notification(s) shown", timeout: 5, pollInterval: 0.01) {
+            self.center.shown.count >= count
+        }
+    }
+
+    @MainActor private func update(_ id: String, title: String) async -> Bool {
+        await withCheckedContinuation { continuation in
+            manager.update(owner: Self.ownerA, notificationID: id, options: ["title": title]) {
+                continuation.resume(returning: $0)
+            }
+        }
+    }
+
+    /// macOS takes a clicked banner away, so a click ends the notification
+    /// (AC #1, #4): `onClicked` then `onClosed` with `byUser` true, both
+    /// carrying the id; `getAll` stops listing it, `update` answers false
+    /// without adding anything (it would bring the banner back), `clear`
+    /// answers false and fires nothing, and a second click on the same
+    /// identifier resolves to nothing. The owner's other notification stays.
+    @MainActor func testAClickEndsTheNotification() async throws {
+        let identifier = create("x")
+        _ = create("kept")
+        try await waitForShown(2)
+        let parked = park()
+
+        XCTAssertEqual(manager.handleResponse(identifier: identifier, action: UNNotificationDefaultActionIdentifier),
+                       .init(owner: Self.ownerA, notificationID: "x", kind: .clicked))
+        XCTAssertEqual(parked.events, ["clicked:x", "closed:x:true"], "one answer, the click first")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["kept": true])
+        XCTAssertEqual(center.removals, [identifier], "a banner macOS kept is taken away too")
+        XCTAssertNil(center.shown[identifier])
+        XCTAssertNil(manager.identifier(for: Self.ownerA, notificationID: "x"))
+
+        let updated = await update("x", title: "back")
+        XCTAssertFalse(updated)
+        XCTAssertEqual(center.addedIdentifiers.filter { $0 == identifier }.count, 1, "the update added nothing")
+        var cleared: Bool?
+        manager.clear(owner: Self.ownerA, notificationID: "x") { cleared = $0 }
+        XCTAssertEqual(cleared, false)
+        XCTAssertNil(manager.handleResponse(identifier: identifier, action: UNNotificationDefaultActionIdentifier),
+                     "a second click on the gone banner resolves to nothing")
+        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA).backlog.map(\.kind), [.clicked, .closed],
+                       "the refused clear and the second click fired nothing")
+    }
+
+    /// A click on a banner whose update is still being added (TASK-271's
+    /// fallback in place): the click ends the notification, so when the
+    /// update's `add` lands the manager takes the banner it re-showed away
+    /// again, as after a clear during the `add`, and nothing is listed.
+    @MainActor func testAClickDuringAnUpdatesAddTakesTheUpdatedBannerAway() async throws {
+        let identifier = create("x")
+        try await waitForShown(1)
+        center.holdsAdds = true
+        var updated: Bool?
+        manager.update(owner: Self.ownerA, notificationID: "x", options: ["title": "u"]) { updated = $0 }
+        try await waitUntil("the update's add to be held", timeout: 5, pollInterval: 0.01) { self.center.heldCount == 1 }
+
+        click(identifier)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        center.release()
+        try await waitUntil("the update to answer", timeout: 5, pollInterval: 0.01) { updated != nil }
+        XCTAssertNil(center.shown[identifier], "the re-shown banner is taken away")
+        XCTAssertEqual(center.removals.last, identifier)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:], "the update did not put the entry back")
+        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA).backlog.map(\.kind), [.clicked, .closed])
+    }
+
+    /// A notification that left Notification Center without a reported
+    /// dismissal (Clear All, the system pruning it) is closed at the next
+    /// synchronization, as Chrome's `SynchronizeNotifications` does: dropped,
+    /// with `onClosed` `byUser` true (AC #3). One still delivered or pending
+    /// stays; so does one shown less than the grace ago, which the center may
+    /// not list yet.
+    @MainActor func testSynchronizingClosesWhatTheCenterNoLongerLists() async throws {
+        let clock = useTestClock()
+        let gone = create("gone")
+        _ = create("stays")
+        let waiting = create("waiting")
+        try await waitForShown(3)
+        clock.now += ExtensionNotificationManager.synchronizationGrace
+        let fresh = create("fresh")
+        // The create's own synchronization finds everything still listed.
+        await manager.backgroundSynchronizationForTesting()
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA).count, 4)
+        try await waitUntil("fresh to be shown", timeout: 5, pollInterval: 0.01) { self.center.shown[fresh] != nil }
+        center.takeAway(gone)
+        center.takeAway(waiting)
+        center.leavePending(waiting)
+        center.takeAway(fresh)
+        let parked = park()
+
+        await manager.synchronizeWithCenter()
+        XCTAssertEqual(parked.events, ["closed:gone:true"])
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["stays": true, "waiting": true, "fresh": true],
+                       "listed (delivered or pending) or shown within the grace: kept")
+        XCTAssertNil(manager.handleResponse(identifier: gone, action: UNNotificationDismissActionIdentifier))
+        XCTAssertEqual(center.removals, [gone], "asked away too, in case the listing missed it")
+
+        clock.now += ExtensionNotificationManager.synchronizationGrace
+        let again = park(ack: parked.lastSeq)
+        await manager.synchronizeWithCenter()
+        XCTAssertEqual(again.events, ["closed:fresh:true"], "past the grace, the unlisted one goes too")
+    }
+
+    /// The synchronization leaves an entry whose `add` is in flight alone —
+    /// an update over a banner the center no longer lists shows it again —
+    /// and skips one cleared, clicked or removed with its owner while the
+    /// listing was in flight, so none gets a second event or a revoked
+    /// owner an `onClosed`.
+    @MainActor func testSynchronizingSkipsInFlightAndChangedEntries() async throws {
+        let clock = useTestClock()
+        let updating = create("updating")
+        let cleared = create("cleared")
+        let clicked = create("clicked")
+        let revoked = create("revoked", owner: Self.ownerA2)
+        try await waitForShown(4)
+        for identifier in [updating, cleared, clicked, revoked] { center.takeAway(identifier) }
+        clock.now += ExtensionNotificationManager.synchronizationGrace
+        center.holdsAdds = true
+        manager.update(owner: Self.ownerA, notificationID: "updating", options: ["title": "u"]) { _ in }
+        try await waitUntil("the update's add to be held", timeout: 5, pollInterval: 0.01) { self.center.heldCount == 1 }
+        center.whileListing = { [unowned self] in
+            self.manager.clear(owner: Self.ownerA, notificationID: "cleared") { _ in }
+            self.click(clicked)
+            self.manager.revoke(for: Self.ownerA2, refusal: "denied")
+        }
+        let parked = park()
+
+        await manager.synchronizeWithCenter()
+        center.whileListing = nil
+        XCTAssertEqual(parked.events, ["closed:cleared:false"], "the clear's event, answered during the listing")
+        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA).backlog.map(\.notificationID),
+                       ["cleared", "clicked", "clicked"], "the click's two events, nothing from the synchronization")
+        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA2).backlog, [])
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["updating": true], "the in-flight update stays")
+        center.release()
+        try await waitUntil("the update to show", timeout: 5, pollInterval: 0.01) { self.center.shown[updating] != nil }
+    }
+
+    /// The periodic check (Chrome's 10-minute `SynchronizeNotifications`) is
+    /// scheduled once a notification is shown, closes what the center lost
+    /// with no create needed (a Clear All the center does not report), and
+    /// stops at the first tick that finds no entries; the next shown
+    /// notification schedules it again.
+    @MainActor func testThePeriodicCheckRunsWhileThereAreEntries() async throws {
+        let clock = useTestClock()
+        XCTAssertFalse(manager.synchronizationScheduledForTesting)
+        let identifier = create("x")
+        try await waitForShown(1)
+        await manager.backgroundSynchronizationForTesting()
+        XCTAssertTrue(manager.synchronizationScheduledForTesting, "scheduled once shown")
+
+        center.takeAway(identifier)
+        clock.now += ExtensionNotificationManager.synchronizationGrace
+        let parked = park()
+        await manager.fireSynchronizationTimerForTesting()
+        XCTAssertEqual(parked.events, ["closed:x:true"])
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertTrue(manager.synchronizationScheduledForTesting, "that tick still found an entry")
+
+        await manager.fireSynchronizationTimerForTesting()
+        XCTAssertFalse(manager.synchronizationScheduledForTesting, "no entries: stopped")
+
+        _ = create("y")
+        try await waitForShown(1)
+        XCTAssertTrue(manager.synchronizationScheduledForTesting, "the next shown notification schedules it again")
+    }
+
+    /// A create synchronizes at most once per grace, so an extension that
+    /// re-creates a notification many times a second does not list the
+    /// center at every call.
+    @MainActor func testCreatesSynchronizeAtMostOncePerGrace() async throws {
+        let clock = useTestClock()
+        _ = create("old")
+        try await waitForShown(1)
+        clock.now += ExtensionNotificationManager.synchronizationGrace
+        for _ in 0..<5 {
+            _ = create("progress")
+            await manager.backgroundSynchronizationForTesting()
+        }
+        XCTAssertEqual(center.listings, 1, "one listing for five creates within the grace")
+        clock.now += ExtensionNotificationManager.synchronizationGrace
+        _ = create("progress")
+        await manager.backgroundSynchronizationForTesting()
+        XCTAssertEqual(center.listings, 2)
+    }
+
+    /// An extension that creates and never clears cannot grow the entries
+    /// past what the center shows (AC #3): each `create` synchronizes, so the
+    /// ones the center dropped go.
+    @MainActor func testEachCreateDropsWhatTheCenterNoLongerShows() async throws {
+        let clock = useTestClock()
+        let identifiers = (0..<5).map { create("n\($0)") }
+        try await waitForShown(5)
+        for identifier in identifiers.dropLast() { center.takeAway(identifier) }
+        clock.now += ExtensionNotificationManager.synchronizationGrace
+
+        _ = create("latest")
+        try await waitUntil("the create's synchronization to drop the gone ones", timeout: 5, pollInterval: 0.01) {
+            self.manager.getAll(owner: Self.ownerA).count == 2
+        }
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["n4": true, "latest": true])
+        XCTAssertEqual(manager.eventChannelForTesting(Self.ownerA).backlog.map(\.notificationID).sorted(),
+                       ["n0", "n1", "n2", "n3"])
     }
 
     /// Every notification carries the category whose `.customDismissAction`
@@ -584,7 +810,10 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
 
     /// A click fires `onClicked` in the creating profile's worker only (AC #1),
     /// though the same extension in another profile has a notification with
-    /// the same id and is listening too.
+    /// the same id and is listening too. macOS takes a clicked banner away,
+    /// so the click also ends the notification (TASK-272): `onClosed` with
+    /// `byUser` true follows, `getAll` no longer lists it, and `update` and
+    /// `clear` answer false; the other profile's is untouched.
     @MainActor func testAClickReachesOnlyTheCreatingProfilesWorker() async throws {
         let ext = try await makeExtension()
         let one = try makeProfile("Notification Events One")
@@ -596,10 +825,10 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
         _ = try await waitForPark(ext, in: one)
         _ = try await waitForPark(ext, in: two)
 
-        manager.handleResponse(identifier: identifier("same", of: ext, in: one),
-                               action: UNNotificationDefaultActionIdentifier)
+        let clicked = identifier("same", of: ext, in: one)
+        manager.handleResponse(identifier: clicked, action: UNNotificationDefaultActionIdentifier)
         try await waitUntil("profile one's worker to get the click", timeout: 20) {
-            try await self.events(pageOne) == ["clicked:same"]
+            try await self.events(pageOne) == ["clicked:same", "closed:same:true"]
         }
         // Profile one's worker has dispatched and parked again by now; the
         // other profile's was never answered.
@@ -607,6 +836,19 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
         let twoEvents = try await events(pageTwo)
         XCTAssertEqual(twoEvents, [], "the other profile's worker hears nothing")
         XCTAssertEqual(manager.eventChannelForTesting(owner(ext, two)).backlog, [])
+
+        let allOne = try await ask(pageOne, ["type": "getAll"])["result"] as? [String: Any]
+        XCTAssertEqual(allOne?.keys.sorted(), [], "a clicked notification is not listed")
+        let updated = try await ask(pageOne, ["type": "update", "id": "same"])["result"] as? Bool
+        XCTAssertEqual(updated, false, "an update does not bring the clicked banner back")
+        let cleared = try await ask(pageOne, ["type": "clear", "id": "same"])["result"] as? Bool
+        XCTAssertEqual(cleared, false)
+        XCTAssertEqual(center.addedIdentifiers.filter { $0 == clicked }.count, 1,
+                       "nothing re-added under the clicked identifier")
+        let allTwo = try await ask(pageTwo, ["type": "getAll"])["result"] as? [String: Any]
+        XCTAssertEqual(allTwo?.keys.sorted(), ["same"], "the other profile's notification stands")
+        let afterwards = try await events(pageOne)
+        XCTAssertEqual(afterwards, ["clicked:same", "closed:same:true"], "the refused clear fired nothing")
     }
 
     /// A dismissal fires `onClosed` with `byUser` true and drops the
@@ -649,12 +891,12 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
         manager.handleResponse(identifier: identifier("early", of: ext, in: profile),
                                action: UNNotificationDefaultActionIdentifier)
         let channel = manager.eventChannelForTesting(owner(ext, profile))
-        XCTAssertEqual(channel.backlog.map(\.notificationID), ["early"])
+        XCTAssertEqual(channel.backlog.map(\.notificationID), ["early", "early"], "the click and the close")
         XCTAssertNil(channel.parkedInstance, "nothing parked yet")
 
         _ = try await ask(page, ["type": "listen"])
         try await waitUntil("the backlog to reach onClicked", timeout: 20) {
-            try await self.events(page) == ["clicked:early"]
+            try await self.events(page) == ["clicked:early", "closed:early:true"]
         }
         _ = try await waitForPark(ext, in: profile)
         XCTAssertEqual(manager.eventChannelForTesting(owner(ext, profile)).backlog, [],
@@ -685,7 +927,7 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
         try await waitUntil("the new worker to get the click", timeout: 30) {
             let reply = try await self.ask(newPage, ["type": "events"])
             let events = reply["events"] as? [[String: Any]] ?? []
-            return events.count == 1 && events.first?["instance"] as? String == newInstance
+            return events.count == 2 && events.allSatisfy { $0["instance"] as? String == newInstance }
         }
     }
 
@@ -713,7 +955,7 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
         manager.handleResponse(identifier: identifier("in-session", of: ext, in: profile),
                                action: UNNotificationDefaultActionIdentifier)
         try await waitUntil("the click after the start to reach onClicked", timeout: 20) {
-            try await self.events(page) == ["clicked:in-session"]
+            try await self.events(page) == ["clicked:in-session", "closed:in-session:true"]
         }
         _ = try await waitForPark(ext, in: profile)
 
@@ -726,7 +968,7 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
         manager.handleResponse(identifier: identifier("after-end", of: ext, in: profile),
                                action: UNNotificationDismissActionIdentifier)
         try await waitUntil("the dismissal after the end to reach onClosed", timeout: 20) {
-            try await self.events(page) == ["clicked:in-session", "closed:after-end:true"]
+            try await self.events(page) == ["clicked:in-session", "closed:in-session:true", "closed:after-end:true"]
         }
         let reply = try await ask(page, ["type": "events"])
         let instances = (reply["events"] as? [[String: Any]] ?? []).compactMap { $0["instance"] as? String }
@@ -801,7 +1043,7 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
         manager.handleResponse(identifier: identifier("after", of: ext, in: profile),
                                action: UNNotificationDefaultActionIdentifier)
         try await waitUntil("the click after the new grant to reach onClicked", timeout: 20) {
-            try await self.events(page) == ["clicked:after"]
+            try await self.events(page) == ["clicked:after", "closed:after:true"]
         }
     }
 
@@ -855,7 +1097,7 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
         manager.handleResponse(identifier: identifier("after", of: ext, in: two),
                                action: UNNotificationDefaultActionIdentifier)
         try await waitUntil("the click after the new grant to reach onClicked", timeout: 20) {
-            try await self.events(pageTwo) == ["clicked:after"]
+            try await self.events(pageTwo) == ["clicked:after", "closed:after:true"]
         }
         let stillQuiet = try await events(pageOne)
         XCTAssertEqual(stillQuiet, [])
@@ -937,7 +1179,8 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
                        "the woken worker acknowledged the click")
         let reply = try await ask(try await openPage(context), ["type": "events"])
         let events = reply["events"] as? [[String: Any]] ?? []
-        XCTAssertEqual(events.map { $0["id"] as? String }, ["while-unloaded"])
+        XCTAssertEqual(events.map { $0["id"] as? String }, ["while-unloaded", "while-unloaded"],
+                       "the click and the close it ends the notification with")
         XCTAssertEqual(events.first?["instance"] as? String, newInstance,
                        "a new incarnation got it: the parked worker had been unloaded")
         _ = page

@@ -63,6 +63,13 @@ final class HeldNotificationCenter: ExtensionNotificationCenter {
     /// a test can act between the manager's listing and its filtering.
     var whileListing: (@MainActor () -> Void)?
 
+    /// Takes a notification off screen without the manager asking, as
+    /// Notification Center's Clear All or the system pruning it might
+    /// (TASK-272); not recorded in `removals`.
+    func takeAway(_ identifier: String) {
+        shown.removeValue(forKey: identifier)
+    }
+
     /// Puts a notification on screen as an earlier launch (or another app
     /// component) left it, without an `add`.
     func deliver(_ identifier: String, title: String = "left over") {
@@ -74,7 +81,11 @@ final class HeldNotificationCenter: ExtensionNotificationCenter {
         pending.insert(identifier)
     }
 
+    /// How many times `deliveredIdentifiers` was called (TASK-272).
+    private(set) var listings = 0
+
     func deliveredIdentifiers() async -> [String] {
+        listings += 1
         let identifiers = Array(shown.keys)
         whileListing?()
         return identifiers
@@ -1133,7 +1144,8 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
     }
 
     /// A click or close resolves to the one owner whose identifier it carries,
-    /// and a close drops only that owner's entry.
+    /// and drops only that owner's entry (a click too: macOS takes the
+    /// banner away, TASK-272).
     @MainActor func testResponsesResolveOnlyToTheCreatingProfile() async throws {
         center.holdsAdds = false
         let createdA = startCreate("x", title: "A's")
@@ -1143,13 +1155,13 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         XCTAssertEqual(manager.handleResponse(identifier: identifier("x", owner: Self.ownerA2),
                                               action: UNNotificationDefaultActionIdentifier),
                        .init(owner: Self.ownerA2, notificationID: "x", kind: .clicked))
-        XCTAssertEqual(manager.getAll(owner: Self.ownerA2), ["x": true], "a click keeps the notification")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA2), [:], "the click drops A2's entry")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["x": true], "and only A2's")
 
         XCTAssertEqual(manager.handleResponse(identifier: identifier("x"),
                                               action: UNNotificationDismissActionIdentifier),
                        .init(owner: Self.ownerA, notificationID: "x", kind: .closed))
         XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:], "the close drops A's entry")
-        XCTAssertEqual(manager.getAll(owner: Self.ownerA2), ["x": true], "and only A's")
     }
 
     /// Identifiers earlier builds delivered (`<extensionID>:<id>` before
@@ -1405,8 +1417,10 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         manager.handleResponse(identifier: inSession.identifier, action: UNNotificationDefaultActionIdentifier)
         XCTAssertEqual(replies.count, 1)
         XCTAssertNil(replies.last?.error)
-        XCTAssertEqual(lastEvent()?["kind"] as? String, "clicked")
-        XCTAssertEqual(lastEvent()?["notificationId"] as? String, "in-session")
+        let clickEvents = (replies.last?.value as? [String: Any])?["events"] as? [[String: Any]] ?? []
+        XCTAssertEqual(clickEvents.map { $0["kind"] as? String }, ["clicked", "closed"],
+                       "the click, then the close it ends the notification with (TASK-272)")
+        XCTAssertEqual(clickEvents.map { $0["notificationId"] as? String }, ["in-session", "in-session"])
         park(ack: lastEvent()?["seq"] as? Int)
 
         store.removeIncognitoSpace(id: window.id)
