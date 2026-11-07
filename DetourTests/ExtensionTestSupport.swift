@@ -324,7 +324,9 @@ final class FakeNativeMessagingHost {
     let sleepToken: String
 
     private let dir: URL
-    private var scriptPath: String { dir.appendingPathComponent("fake-host.sh").path }
+    /// The host script, the manifest's `path`: what a test's sweep of its
+    /// own hosts names (`terminateSpawnedHostsForTesting`).
+    var scriptPath: String { dir.appendingPathComponent("fake-host.sh").path }
     private let previousHostsDir: String?
 
     /// `editingManifest` changes the manifest before it is written, for a

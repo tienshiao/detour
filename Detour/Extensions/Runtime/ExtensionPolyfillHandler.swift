@@ -89,8 +89,10 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// rows of it a request may see is decided per request, from `profile`.
     var historyDatabase: HistoryDatabase = .shared
 
-    /// The clock `history.search` measures its default range from (TASK-153),
-    /// as a test seam for the same reason. Production never assigns it.
+    /// The clock `history.search` measures its default range from (TASK-153)
+    /// and the permission gates read grant and denial expiry against
+    /// (TASK-277), as a test seam for the same reason. Production never
+    /// assigns it.
     var now: () -> Date = Date.init
 
     /// The manager behind `notifications.*`, as a test seam for the same
@@ -900,8 +902,9 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                     return
                 }
                 let context = profile?.extensionContext(for: extensionID)
+                let now = self.now()
                 replyHandler(names.allSatisfy {
-                    Self.permissionIsActive($0, manifest: ext.manifest, context: context)
+                    Self.permissionIsActive($0, manifest: ext.manifest, context: context, now: now)
                 }, nil)
             }
 
@@ -919,7 +922,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 return
             }
             switch Self.permissionRequestPlan(names, manifest: ext.manifest,
-                                              context: profile?.extensionContext(for: extensionID)) {
+                                              context: profile?.extensionContext(for: extensionID), now: now()) {
             case .refuse(let message):
                 replyHandler(nil, message)
             case .answer(let granted):
@@ -1341,7 +1344,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             return Self.permissionNotDeclared(permission)
         }
         return Self.permissionRefusal(permission, manifest: ext.manifest,
-                                      context: profile?.extensionContext(for: extensionID))
+                                      context: profile?.extensionContext(for: extensionID), now: now())
     }
 
     /// The refusal of a call whose permission is not active
@@ -1434,12 +1437,14 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             info["description"] = desc
         }
         let context = profile?.extensionContext(for: ext.id)
-        info["permissions"] = Self.activeAPIPermissions(manifest: ext.manifest, context: context)
+        let now = self.now()
+        info["permissions"] = Self.activeAPIPermissions(manifest: ext.manifest, context: context, now: now)
         info["hostPermissions"] = context.map {
             Self.activeHostPermissions(granted: $0.grantedPermissionMatchPatterns,
                                        denied: $0.deniedPermissionMatchPatterns,
                                        askable: ext.askableMatchPatterns,
-                                       implicit: Self.implicitContentScriptPatterns(ext.manifest))
+                                       implicit: Self.implicitContentScriptPatterns(ext.manifest),
+                                       now: now)
         } ?? Self.declaredRequiredHosts(ext.manifest)
         return info
     }

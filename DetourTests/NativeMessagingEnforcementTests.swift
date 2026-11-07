@@ -30,6 +30,7 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
 
     @MainActor override func tearDown() async throws {
         NativeMessagingHost.outgoingLimits = .standard
+        NativeMessagingHost.setRefusingNewHostsForTesting(false)
         webViews.removeAll()
         for profile in createdProfiles {
             profile.unloadAllExtensions()
@@ -452,7 +453,15 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
         let ext = try await makeExtension()
         try installFakeHost(allowing: [ext.id], editingManifest: edit)
         let loaded = try await load(ext, profileName: "NM Manifest \(label) Profile")
+        try await assertEveryPathRefused(ext, loaded, expected: expected, file: file, line: line)
+    }
 
+    /// Every path an extension page has to the suite's host is refused with
+    /// `expected` (see `assertHostManifestRefused`), and no host starts.
+    @MainActor private func assertEveryPathRefused(
+        _ ext: WebExtension, _ loaded: Loaded, expected: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
         let promise = try await sendNativeMessage(Self.hostName, ["ping": 1], in: loaded.webView)
         XCTAssertEqual(promise["outcome"] as? String, "error", "\(promise)", file: file, line: line)
         XCTAssertTrue((promise["error"] as? String ?? "").contains(expected),
@@ -482,6 +491,21 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
     }
 
     private static let notFound = NativeMessagingHost.NativeMessagingError.notFoundMessage
+
+    // MARK: - Quitting (TASK-243, TASK-277)
+
+    /// Once a quit's sweep has refused new hosts, an extension's
+    /// `sendNativeMessage` (both forms) and `connectNative` get the refusal
+    /// and no host starts, though the manifest and the host are valid.
+    @MainActor func testWhileQuittingEveryPathIsRefusedWithoutSpawning() async throws {
+        let ext = try await makeExtension()
+        try installFakeHost(allowing: [ext.id])
+        let loaded = try await load(ext, profileName: "NM Quitting Profile")
+        // Unwrapped: an empty expectation would match every error.
+        let expected = try XCTUnwrap(NativeMessagingHost.NativeMessagingError.quitting.errorDescription)
+        NativeMessagingHost.setRefusingNewHostsForTesting(true)  // lifted by tearDown
+        try await assertEveryPathRefused(ext, loaded, expected: expected)
+    }
 
     /// A manifest with no `allowed_origins` used to admit every extension.
     @MainActor func testAHostManifestWithoutAllowedOriginsIsRefusedOnEveryPath() async throws {

@@ -300,6 +300,9 @@ class NativeMessagingHost {
     /// after it, never later.
     nonisolated private struct SpawnedProcess: Sendable {
         let process: Process
+        /// The manifest's `path`: what a test's sweep is limited to
+        /// (`terminateSpawnedHostsForTesting`).
+        let executable: String
         /// The process group the host leads; nil when it was not the leader
         /// of a group of its own at spawn, and then only its pid is signalled.
         let group: pid_t?
@@ -475,7 +478,8 @@ class NativeMessagingHost {
             leadsOwnGroup = try Self.spawned.withLock { registry in
                 guard !registry.isQuitting else { throw NativeMessagingError.quitting }
                 try proc.run()
-                let entry = SpawnedProcess(process: proc, group: SpawnedProcess.ownGroup(of: proc))
+                let entry = SpawnedProcess(process: proc, executable: hostPath,
+                                           group: SpawnedProcess.ownGroup(of: proc))
                 registry.processes[ObjectIdentifier(proc)] = entry
                 return entry.group != nil
             }
@@ -738,9 +742,31 @@ class NativeMessagingHost {
     nonisolated static func terminateAllSpawnedHosts(
         within timeout: TimeInterval, refusingNewHosts: Bool
     ) -> QuitReport {
+        sweep(within: timeout, refusingNewHosts: refusingNewHosts, executables: nil)
+    }
+
+    #if DEBUG
+    /// For tests: `terminateAllSpawnedHosts`, limited to the hosts started
+    /// from one of `executables` (a fixture's script), so a test ends only
+    /// the hosts it started, never one another suite left in the test host.
+    @discardableResult
+    nonisolated static func terminateSpawnedHostsForTesting(
+        running executables: Set<String>, within timeout: TimeInterval, refusingNewHosts: Bool = false
+    ) -> QuitReport {
+        sweep(within: timeout, refusingNewHosts: refusingNewHosts, executables: executables)
+    }
+    #endif
+
+    /// `terminateAllSpawnedHosts`, of the hosts started from `executables`
+    /// only, or of all of them when nil.
+    nonisolated private static func sweep(
+        within timeout: TimeInterval, refusingNewHosts: Bool, executables: Set<String>?
+    ) -> QuitReport {
         let running = spawned.withLock { registry in
             if refusingNewHosts { registry.isQuitting = true }
             return Array(registry.processes.values)
+        }.filter { entry in
+            executables.map { $0.contains(entry.executable) } ?? true
         }.filter(\.isAlive)
         var report = QuitReport()
         guard !running.isEmpty else { return report }
@@ -775,22 +801,33 @@ class NativeMessagingHost {
 
     /// The SIGTERM source, made and started once, by the first
     /// `installSIGTERMHandler` call.
-    nonisolated private static let sigtermSource: any DispatchSourceSignal = {
-        signal(SIGTERM, SIG_IGN)
-        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+    nonisolated private static let sigtermSource = makeHostEndingSignalSource(SIGTERM) {
+        terminateAllSpawnedHosts(within: quitGrace, refusingNewHosts: true)
+    }
+
+    /// Handles `signo` by running `endHosts`, then lets the signal take its
+    /// default course, as without a handler: for SIGTERM, death, with the
+    /// exit status unchanged (143 from a shell) and no quit path run. Ignored
+    /// first, so the dispatch source, not the default action, sees it. The
+    /// source is cancelled before the signal is sent again, since it sees the
+    /// re-sent one too, whatever its disposition. Separate from SIGTERM so a
+    /// test can drive the whole sequence in the test host with a signal whose
+    /// default action is to discard it (TASK-277).
+    nonisolated static func makeHostEndingSignalSource(
+        _ signo: Int32, endHosts: @escaping @Sendable () -> Void
+    ) -> any DispatchSourceSignal {
+        signal(signo, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: signo, queue: .global())
         source.setEventHandler {
-            log.notice("SIGTERM: ending native hosts before exiting")
-            terminateAllSpawnedHosts(within: quitGrace, refusingNewHosts: true)
-            // Then die of the SIGTERM, as without the handler: no quit
-            // path runs, the exit status is unchanged. Cancelled first: the
-            // source sees the re-sent signal too, whatever its disposition.
+            log.notice("Signal \(signo): ending native hosts before exiting")
+            endHosts()
             source.cancel()
-            signal(SIGTERM, SIG_DFL)
-            kill(getpid(), SIGTERM)
+            signal(signo, SIG_DFL)
+            kill(getpid(), signo)
         }
         source.resume()
         return source
-    }()
+    }
 
     /// Makes a SIGTERM to Detour end its native hosts first (TASK-243): by
     /// default the signal ends the app at once, leaving every host running,

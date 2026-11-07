@@ -43,6 +43,9 @@ sources:
   - id: manifest-tests
     resource: ../../DetourTests/NativeHostManifestValidationTests.swift
     title: NativeHostManifestValidationTests.swift
+  - id: task-277
+    resource: backlog:TASK-277
+    title: "Tests: cover native host quit refusal and the SIGTERM path, keep the host sweep to the test's own hosts, and route the injected clock through the permission gates"
   - id: task-275
     resource: backlog:TASK-275
     title: "Native messaging: a failed connect leaves the host's pipes and stderr handler behind"
@@ -478,8 +481,13 @@ comes straight after `run()`. A sweep from a quit path sets `isQuitting`,
 after which `connect()` throws (`NativeMessagingError.quitting`). Without
 that, on the SIGTERM path, where the main thread keeps running, an extension
 reconnecting when its host exits on the sweep's SIGTERM would start a host
-that outlives Detour. The tests pass `refusingNewHosts: false`, since the
-flag cannot be cleared.
+that outlives Detour. The flag is never cleared in the app; tests lift it
+with the Debug-only `setRefusingNewHostsForTesting`. Tests sweep through the
+Debug-only `terminateSpawnedHostsForTesting(running:within:refusingNewHosts:)`,
+the same sweep limited to the hosts started from the executables it names
+(each registry entry keeps its manifest `path`), so a test ends only its own
+fixtures' hosts and never one another suite left in the test
+host.[^task-277]
 `terminateAllSpawnedHosts(within:)` sends SIGTERM to each running one's
 process group, waits for them all together, polling `isAlive` (the host or
 anything left in its group), then sends SIGKILL to the groups still
@@ -500,7 +508,8 @@ reports are main-actor tasks and the app exits first.
   on a host that ignores SIGTERM.
 - **SIGTERM to Detour**: `installSIGTERMHandler()` (the first thing in
   `applicationDidFinishLaunching`) sets SIGTERM to `SIG_IGN` and handles it
-  with a `DispatchSource` on a global queue. That works even when the main
+  with a `DispatchSource` on a global queue (made by
+  `makeHostEndingSignalSource(_:endHosts:)`). That works even when the main
   thread is busy or hung. The handler ends the hosts in the same way, then
   cancels the source (it sees the re-sent signal too, whatever the
   disposition), restores `SIG_DFL` and sends SIGTERM to itself again. The app
@@ -736,6 +745,22 @@ evidence for. There is no level between notice and error to use:
   `getdtablesize()`) within 10 of where it was; before the fix it grew by
   149 and 350. A host refused once connects and echoes once the refusal is
   lifted.
+- Quitting (TASK-277): `NativeMessagingEnforcementTests` sets the quit
+  refusal and shows an extension page's `sendNativeMessage` (promise and
+  callback) and `connectNative` all get "Detour is quitting", with no
+  process started and no live or pending host. The SIGTERM handler's
+  sequence runs in the test host through `makeHostEndingSignalSource` with
+  SIGURG (default action: discard) and a sweep limited to the test's host:
+  the handler runs once, the host is ended and new connects refused before
+  the signal is sent again, a second signal source sees both deliveries (a
+  signal source sees every delivery, even of a signal whose disposition
+  discards it), and the disposition is `SIG_DFL` again. SIGTERM itself
+  cannot be sent there (it would end the test host), and spawning Detour
+  from a test is ruled out (an app launch must have an isolated data
+  directory), so that SIGTERM's default action then ends Detour with status
+  143 rests on the kernel and the runtime check with
+  `docs/harness/task274-harness.patch`. A test's sweep leaves a host it does
+  not name running.
 - Framing helpers (`encodeMessage`, `decodeMessage`) are also covered in
   `ExtensionIDDerivationTests`. The log line *text* is not asserted anywhere.
 
@@ -772,3 +797,4 @@ evidence for. There is no level between notice and error to use:
 [^chromium-launcher]: Chromium native_process_launcher.cc and native_messaging_host_manifest.cc (manifest checks, their order and result codes)
 [^manifest-tests]: NativeHostManifestValidationTests.swift
 [^task-275]: Native messaging: a failed connect leaves the host's pipes and stderr handler behind
+[^task-277]: Tests: cover native host quit refusal and the SIGTERM path, keep the host sweep to the test's own hosts, and route the injected clock through the permission gates

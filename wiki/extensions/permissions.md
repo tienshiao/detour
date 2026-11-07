@@ -57,6 +57,9 @@ sources:
   - id: task-268
     resource: backlog:TASK-268
     title: "Extensions: clearing a grant the extension removed writes the full page URL to the system log as public"
+  - id: task-277
+    resource: backlog:TASK-277
+    title: "Tests: cover native host quit refusal and the SIGTERM path, keep the host sweep to the test's own hosts, and route the injected clock through the permission gates"
   - id: polyfill-handler
     resource: ../../Detour/Extensions/Runtime/ExtensionPolyfillHandler.swift
     title: ExtensionPolyfillHandler.swift (permissionIsActive)
@@ -330,7 +333,12 @@ A refused call says which state it is in (`permissionRefusal`): "<name>
 permission not declared" (in neither list), "<name> permission denied by the
 user" (an unexpired denial: the switch off, a prompt answered Deny, or that
 saved denial restored), or "<name> permission is optional and has not been
-granted".[^task-260] The notifications event wait in the polyfill matches all
+granted".[^task-260] "Unexpired" is measured against the handler's `now`
+clock (a test seam, `Date.init` in the app) at every gate: `permissionRefusal`,
+`permissions.contains`, the `permissions.request` plan and `management`'s
+`permissions` / `hostPermissions`. A test that moves that clock past a grant
+or denial still held by WebKit, which reads the wall clock, sees it
+expired.[^task-277] The notifications event wait in the polyfill matches all
 three to decide whether to re-arm after a later grant. When `notifications`
 stops being active in a profile, its notifications there go and the wait is
 answered with this refusal (`ExtensionManager.revokeNotificationsWhereNotPermitted`,
@@ -503,3 +511,4 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 [^task-259]: Extensions: a required notifications, history or management permission switched off in Settings still works
 [^task-260]: Extensions: chrome.permissions.request, contains and remove do not work for history and management
 [^task-261]: Extensions: management.getSelf and getAll leave out permissions granted at runtime
+[^task-277]: Tests: cover native host quit refusal and the SIGTERM path, keep the host sweep to the test's own hosts, and route the injected clock through the permission gates
