@@ -46,7 +46,10 @@ extension TabRecord {
             peekFaviconURL: tab.peekFaviconURL?.absoluteString,
             splitGroupID: splitGroupID?.uuidString,
             splitFraction: splitFraction,
-            extensionID: profile?.extensionID(forPageURL: tab.url)
+            extensionID: profile?.extensionID(forPageURL: tab.url),
+            // Unlike the split fields, read off the tab: only a normal tab is
+            // ever a member, so a backing tab's is always nil.
+            tabGroupID: tab.tabGroupID?.uuidString
         )
     }
 }

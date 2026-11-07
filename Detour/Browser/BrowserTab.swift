@@ -357,6 +357,11 @@ class BrowserTab: NSObject {
     /// Width fraction of the split's left pane. Stored on every member; readers
     /// take the first member's value.
     var splitFraction: Double?
+    /// The tab group (TASK-132.10) this tab belongs to, in its space's
+    /// `tabGroups`; nil when ungrouped. Only normal tabs are members, and a
+    /// group's members are contiguous in `space.tabs` — TabStore enforces both
+    /// in every mutation, so set it only through TabStore.
+    var tabGroupID: UUID?
     /// Set by `load(_:typed:)` when the next load was deliberately submitted by
     /// the user (command palette URL/suggestion), so its history visit records as
     /// typed. Consumed via `consumeNextVisitIsTyped()`.

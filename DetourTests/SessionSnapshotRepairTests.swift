@@ -17,7 +17,8 @@ nonisolated final class SessionSnapshotRepairTests: XCTestCase {
     }
 
     @MainActor private func snapshot(_ pinnedItems: [AppDatabase.SessionSnapshot.PinnedItems]) -> AppDatabase.SessionSnapshot {
-        AppDatabase.SessionSnapshot(spaces: [], lastActiveSpaceID: nil, profiles: [], pinnedItems: pinnedItems, favorites: [])
+        AppDatabase.SessionSnapshot(spaces: [], lastActiveSpaceID: nil, profiles: [], pinnedItems: pinnedItems, favorites: [],
+                                    tabGroups: [])
     }
 
     @MainActor private func snapshot(folders: [PinnedFolderRecord], tabs: [PinnedTabRecord] = []) -> AppDatabase.SessionSnapshot {

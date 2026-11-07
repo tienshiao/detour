@@ -3,6 +3,7 @@
 * [Pinned tabs and folders](pinned-tabs-and-folders.md) - The pinned section's model (PinnedEntry with an optional backing tab, PinnedFolder, per-level sort order), what live, asleep and dormant mean, how closing and home work, and why a dormant tile can refuse to open.
 * [Sleeping and archiving](sleeping-and-archiving.md) - The two rules that put a tab to sleep, the rule that archives one, everything that keeps a tab awake, and how a wake that fails keeps the restored session instead of showing an error page.
 * [Split tabs](split-tabs.md) - The data model of a split (two adjacent tabs sharing a splitGroupID), the contiguity invariants TabStore keeps in every mutation, and where a pinned split's group lives.
+* [Tab groups](tab-groups.md) - The tab group model behind chrome.tabGroups (a TabGroup per space, membership on the tab), the four invariants TabStore keeps in every mutation, the one placement rule every insertion goes through, what each existing mutation does to a member, undo, observers and persistence. *(draft)*
 * [Tab insertion and close selection](tab-insertion-and-close-selection.md) - The two pure rules that decide where a new tab lands in a space's list and which tab is selected after one closes, plus what the window layers on top of them.
 * [Tab lifecycle](tab-lifecycle.md) - How a tab comes into being, navigates, closes and comes back, which object is its navigation delegate at each point, and when each step reaches the database.
 

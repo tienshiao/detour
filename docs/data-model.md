@@ -81,6 +81,7 @@ Every persisted live tab: the space's normal tabs **and** the backing tabs of li
 | `splitGroupID` | TEXT | | Split group shared with the adjacent partner tab (normal tabs only; see [split-tabs-design.md](split-tabs-design.md)) |
 | `splitFraction` | DOUBLE | | Left pane's width fraction |
 | `extensionID` | TEXT | | Extension that owns the URL when it is a `webkit-extension://` page (TASK-24); NULL otherwise |
+| `tabGroupID` | TEXT | | The normal tab's tab group (`tabGroup.id`); NULL when ungrouped and for every pinned or favorite backing tab. No foreign key: tab rows are written before group rows, and load clears an id that names no group (TASK-132.10) |
 
 #### `pinnedTab`
 
@@ -112,6 +113,19 @@ Folders for organizing pinned entries. Self-referential for nesting.
 | `name` | TEXT | NOT NULL | Folder display name |
 | `isCollapsed` | BOOLEAN | NOT NULL, default false | UI collapse state |
 | `sortOrder` | INTEGER | NOT NULL | Position among siblings |
+
+#### `tabGroup`
+
+A space's tab group (TASK-132.10, the `chrome.tabGroups` model). Members are the `tab` rows whose `tabGroupID` names it; where the group sits in the list is decided by its members' `sortOrder`.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | TEXT | PRIMARY KEY | UUID |
+| `spaceID` | TEXT | NOT NULL, FK -> space (CASCADE) | The group's space |
+| `title` | TEXT | NOT NULL | Group title; may be empty |
+| `color` | TEXT | NOT NULL | One of Chrome's nine `tabGroups.Color` names (`grey`, `blue`, `red`, `yellow`, `green`, `pink`, `purple`, `cyan`, `orange`); an unknown value loads as grey |
+| `isCollapsed` | BOOLEAN | NOT NULL, default false | Collapsed state (no UI yet, TASK-132.19) |
+| `sortOrder` | INTEGER | NOT NULL | Position in `Space.tabGroups` (creation order) |
 
 #### `favorite`
 
@@ -317,12 +331,17 @@ The migrations were consolidated at one point: `v1` creates today's core schema 
 | v16 | closedAt on closedTab, backfilled from archivedAt (TASK-116) |
 | v17 | `source`, `updateURL`, `sourcePath`, `pendingPermissionApprovalJSON` on `extension`; existing installs classified from their on-disk manifest (TASK-113) |
 | v18 | `siteSetting`; every `contentBlockerWhitelist` row copied as `contentBlocking = false` (host lowercased, rows of missing profiles dropped), then `contentBlockerWhitelist` dropped (TASK-187) |
+| v19 | Data-only: the Private profile's `contentBlocking` rows in `siteSetting` deleted (TASK-195) |
+| v20 | `linkRoute`, `linkRouteDefault` (TASK-191.1) |
+| v21 | `siteSearch`, seeded with the starter set (TASK-287) |
+| v22 | `isDiscovered` on `siteSearch`; `siteSearchRemovedHost` (TASK-288) |
+| v23 | `tabGroupID` on `tab`; `tabGroup` (TASK-132.10). Registered on the `epic-claude-extension` branch: renumber it after whatever `main` has added when the branch merges |
 
 ### Persistence Strategy
 
 `TabStore.saveNow()` builds one `AppDatabase.SessionSnapshot` (`makeSessionSnapshot()`) and writes it with `AppDatabase.saveSessionSnapshot`, in **one transaction** (TASK-149). The steps inside it, in the order the foreign keys dictate:
 
-1. **Session**: delete all `space` rows (cascading to `tab`, `pinnedTab`, `pinnedFolder`), re-insert every persistent space with its normal tabs, pinned backing tabs (`sortOrder = -1`) and favorite backing tabs (`sortOrder = -2`), then upsert `lastActiveSpaceID`.
+1. **Session**: delete all `space` rows (cascading to `tab`, `pinnedTab`, `pinnedFolder`, `tabGroup`), re-insert every persistent space with its normal tabs, pinned backing tabs (`sortOrder = -1`) and favorite backing tabs (`sortOrder = -2`), then upsert `lastActiveSpaceID`, then each space's tab groups. In the isolating fallback below, a space's tab groups are part of the space's unit.
 2. **Profiles**, after the session so profiles no longer referenced by any space can be deleted without FK violations.
 3. **Pinned items** per space: folders before entries, since entries reference folders.
 4. **Favorites** per profile.
@@ -346,6 +365,7 @@ Each table has a GRDB record struct:
 | `TabRecord` | `Storage/Models/TabRecord.swift` |
 | `PinnedTabRecord` | `Storage/Models/PinnedTabRecord.swift` |
 | `PinnedFolderRecord` | `Storage/Models/PinnedFolderRecord.swift` |
+| `TabGroupRecord` | `Storage/Models/TabGroupRecord.swift` |
 | `FavoriteRecord` | `Storage/Models/FavoriteRecord.swift` |
 | `ClosedTabRecord` | `Storage/Models/ClosedTabRecord.swift` |
 | `DownloadRecord` | `Storage/Models/DownloadRecord.swift` |
@@ -457,12 +477,17 @@ The database records are plain structs. The live in-memory model uses richer cla
 
 | Class | Purpose | Key State |
 |-------|---------|-----------|
-| `Space` (`Browser/TabStore.swift`) | Workspace container | `tabs: [BrowserTab]`, `pinnedEntries: [PinnedEntry]`, `pinnedFolders: [PinnedFolder]`, `selectedTabID`, `profile: Profile?` |
-| `BrowserTab` | Tab with optional WebView | `@Published` title, url, loading, favicon, audio; sleep/wake lifecycle; `splitGroupID`/`splitFraction`; Peek state |
+| `Space` (`Browser/TabStore.swift`) | Workspace container | `tabs: [BrowserTab]`, `pinnedEntries: [PinnedEntry]`, `pinnedFolders: [PinnedFolder]`, `tabGroups: [TabGroup]`, `selectedTabID`, `profile: Profile?` |
+| `BrowserTab` | Tab with optional WebView | `@Published` title, url, loading, favicon, audio; sleep/wake lifecycle; `splitGroupID`/`splitFraction`; `tabGroupID`; Peek state |
+| `TabGroup` (`Browser/TabGroup.swift`) | Tab group of a space | `title`, `color: TabGroupColor`, `isCollapsed`; members are the tabs whose `tabGroupID` names it |
 | `PinnedEntry` | Pinned item | `pinnedURL`, `pinnedTitle`, `folderID`, `sortOrder`, `splitGroupID`; `tab: BrowserTab?` (nil = dormant) |
 | `PinnedFolder` | Folder in the pin hierarchy | `parentFolderID`, `isCollapsed`, `sortOrder` |
 | `Favorite` | Favorites-bar tile (per profile) | `url`, `title`, `sortOrder`; `tab: BrowserTab?` (nil = dormant) |
 | `Profile` | Settings + website data | `favorites: [Favorite]`, `isIncognito`, `lazy var dataStore: WKWebsiteDataStore` (persistent per profile, or non-persistent) |
+
+### Tab groups
+
+A tab group (TASK-132.10) is a `TabGroup` in `Space.tabGroups` plus the `tabGroupID` on its member tabs, like a split's `splitGroupID`. `TabStore` keeps four invariants in every mutation: members are **contiguous** in `space.tabs`; a **split pair** is wholly inside or outside a group; only **normal tabs** are members (pinning, making a favorite or moving to another space takes a tab out); and a group with **no members** is removed in the same mutation. Where a tab or split entering the list lands, and which group it joins, is the pure `tabGroupPlacement(gap:slots:intent:)` in `TabGroup.swift`: between two members it joins their group, next to its own (or its opener's) group it keeps that one, otherwise it is ungrouped; a block that is a whole group carries it and snaps out of other groups. An undo of a close, a move or a pin puts the tab back into its group, recreating the group if the action removed it. The store API (`createTabGroup`, `addTabs(_:toTabGroup:)`, `ungroupTabs`, `updateTabGroup`, `moveTabGroup`) is in `TabStore+TabGroups.swift`; it throws `TabGroupError` and changes nothing for a pinned tab, a favorite, another space's tab or an unknown id. Load and Undo Delete Space restore the invariants with `sanitizeTabGroups(in:)`.
 
 Closed-tab records are not held in memory; `TabStore.closedTabRecords(in:)` queries the `closedTab` table (see above).
 

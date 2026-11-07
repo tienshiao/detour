@@ -20,4 +20,7 @@ struct TabRecord: Codable, FetchableRecord, PersistableRecord {
     var splitFraction: Double?
     /// Extension id of the extension page the record's URL names (TASK-24); nil otherwise.
     var extensionID: String? = nil
+    /// The normal tab's tab group (TASK-132.10); nil for an ungrouped tab and
+    /// for every pinned or favourite backing tab.
+    var tabGroupID: String? = nil
 }

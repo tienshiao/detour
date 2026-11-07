@@ -320,6 +320,12 @@ nonisolated struct AppDatabase: Sendable {
             let tabs: [PinnedTabRecord]
         }
 
+        /// One space's tab groups, in `Space.tabGroups` order.
+        struct TabGroups {
+            let spaceID: String
+            let records: [TabGroupRecord]
+        }
+
         /// One profile's favourites, in bar order.
         struct Favorites {
             let profileID: String
@@ -335,6 +341,10 @@ nonisolated struct AppDatabase: Sendable {
         var profiles: [ProfileRecord]
         var pinnedItems: [PinnedItems]
         var favorites: [Favorites]
+        /// Each space's tab groups (TASK-132.10), written with the space. No
+        /// default: a snapshot without them would delete every group row (the
+        /// space rows' delete cascades to them).
+        var tabGroups: [TabGroups]
     }
 
     /// Writes a whole save in ONE transaction (TASK-149), in the order the
@@ -358,6 +368,9 @@ nonisolated struct AppDatabase: Sendable {
     func saveSessionSnapshot(_ snapshot: SessionSnapshot) throws {
         try dbQueue.write { db in
             try Self.writeSession(spaces: snapshot.spaces, lastActiveSpaceID: snapshot.lastActiveSpaceID, in: db)
+            for groups in snapshot.tabGroups {
+                try Self.writeTabGroups(groups.records, spaceID: groups.spaceID, in: db)
+            }
             try Self.writeProfiles(snapshot.profiles, in: db)
             for pinned in snapshot.pinnedItems {
                 try Self.writePinnedFoldersAndTabs(folders: pinned.folders, tabs: pinned.tabs,
@@ -461,6 +474,8 @@ nonisolated struct AppDatabase: Sendable {
             try SpaceRecord.filter(!spaceIDs.contains(Column("id"))).deleteAll(db)
 
             let pinnedBySpace = Dictionary(snapshot.pinnedItems.map { ($0.spaceID, $0) }, uniquingKeysWith: { first, _ in first })
+            let tabGroupsBySpace = Dictionary(snapshot.tabGroups.map { ($0.spaceID, $0.records) },
+                                              uniquingKeysWith: { first, _ in first })
             var writtenSpaceIDs: [String] = []
             for (space, tabs) in snapshot.spaces {
                 let pinned = pinnedBySpace[space.id]
@@ -472,6 +487,11 @@ nonisolated struct AppDatabase: Sendable {
                     try space.insert(db)
                     for tab in tabs {
                         try tab.insert(db)
+                    }
+                    if let groups = tabGroupsBySpace[space.id] {
+                        try Self.deleteStaleRows(TabGroupRecord.self, ids: groups.map(\.id),
+                                                 ownerColumn: "spaceID", writtenOwners: writtenSpaceIDs, in: db)
+                        try Self.writeTabGroups(groups, spaceID: space.id, in: db)
                     }
                     guard let pinned else { return }
                     try Self.deleteStaleRows(PinnedFolderRecord.self, ids: pinned.folders.map(\.id),
@@ -880,6 +900,15 @@ nonisolated struct AppDatabase: Sendable {
         }
     }
 
+    /// Replaces `spaceID`'s tab group rows. Deleting the space row already
+    /// cascaded to them in a session save; the delete covers any other caller.
+    private static func writeTabGroups(_ records: [TabGroupRecord], spaceID: String, in db: GRDB.Database) throws {
+        try TabGroupRecord.filter(Column("spaceID") == spaceID).deleteAll(db)
+        for record in records {
+            try record.insert(db)
+        }
+    }
+
     private static func writePinnedFoldersAndTabs(folders: [PinnedFolderRecord], tabs: [PinnedTabRecord],
                                                   spaceID: String, in db: GRDB.Database) throws {
         // Delete tabs first (they reference folders), then folders
@@ -940,6 +969,15 @@ nonisolated struct AppDatabase: Sendable {
     func loadPinnedFolders(spaceID: String) -> [PinnedFolderRecord] {
         performRead("load pinned folders", default: []) { db in
             try PinnedFolderRecord
+                .filter(Column("spaceID") == spaceID)
+                .order(Column("sortOrder"))
+                .fetchAll(db)
+        }
+    }
+
+    func loadTabGroups(spaceID: String) -> [TabGroupRecord] {
+        performRead("load tab groups", default: []) { db in
+            try TabGroupRecord
                 .filter(Column("spaceID") == spaceID)
                 .order(Column("sortOrder"))
                 .fetchAll(db)
@@ -1453,6 +1491,27 @@ nonisolated struct AppDatabase: Sendable {
             }
             try db.create(table: "siteSearchRemovedHost") { t in
                 t.primaryKey("host", .text)
+            }
+        }
+
+        migrator.registerMigration("v23") { db in
+            // TASK-132.10: tab groups. A group belongs to one space and goes
+            // with it; its members are the tab rows naming it. tab.tabGroupID
+            // has no foreign key: the session save inserts tab rows before
+            // group rows, and load clears an id that names no group.
+            // (Registered on the epic-claude-extension branch: renumber it
+            // after whatever main has added when the branch merges.)
+            try db.alter(table: "tab") { t in
+                t.add(column: "tabGroupID", .text)
+            }
+            try db.create(table: "tabGroup") { t in
+                t.primaryKey("id", .text)
+                t.column("spaceID", .text).notNull()
+                    .references("space", onDelete: .cascade)
+                t.column("title", .text).notNull()
+                t.column("color", .text).notNull()
+                t.column("isCollapsed", .boolean).notNull().defaults(to: false)
+                t.column("sortOrder", .integer).notNull()
             }
         }
 
