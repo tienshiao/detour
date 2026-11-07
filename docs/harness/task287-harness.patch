@@ -1,0 +1,135 @@
+TASK-287 runtime harness: site search in the command palette and Settings >
+Search. Temporary code, never committed to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task287-harness.patch
+    xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    OUT=<dir>; DETOUR_VERIFY_DIR="$OUT" DETOUR_DATA_DIR=DetourVerify287 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # "SHOOT <windowNumber> <tag>" lines: `screencapture -x -o -l <windowNumber> <tag>.png`;
+    # wait for "done" (about 25 s), kill that pid, then:
+    git apply -R docs/harness/task287-harness.patch && xcodegen generate
+
+Seeds a typed visit to youtube.com, brings the window forward, then in a
+Cmd+T palette types "you" (completes to youtube.com, the Search YouTube row
+appears), Tab (YouTube mode), "cats", Return (logs the selected tab's URL);
+then "w " (keyword + Space: Wikipedia mode) and Backspace (back to "w");
+then opens Settings > Search and its add sheet for captures.
+
+Results (2026-11-07): every step as above; Return loaded
+https://www.youtube.com/results?search_query=cats; the starter set was seeded
+in the new data directory. The first window capture can fail with "could not
+create image from window" while the window is still coming forward.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 68ac340..4adbc06 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -149,6 +149,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask287HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task287Harness.swift b/Detour/App/Task287Harness.swift
+new file mode 100644
+index 0000000..5066873
+--- /dev/null
++++ b/Detour/App/Task287Harness.swift
+@@ -0,0 +1,92 @@
++// TEMP TASK-287 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask287HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var clock: TimeInterval = 3.0
++        func at(_ dt: TimeInterval, _ block: @escaping @MainActor @Sendable () -> Void) {
++            clock += dt
++            Timer.scheduledMainTimer(withTimeInterval: clock, repeats: false) { _ in block() }
++        }
++        guard let window = wc.window else { return log("no window") }
++
++        func key(_ code: UInt16, _ chars: String, in target: NSWindow? = nil) {
++            let w = target ?? window
++            guard let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
++                                           timestamp: ProcessInfo.processInfo.systemUptime,
++                                           windowNumber: w.windowNumber, context: nil,
++                                           characters: chars, charactersIgnoringModifiers: chars,
++                                           isARepeat: false, keyCode: code) else { return }
++            w.firstResponder?.keyDown(with: e)
++        }
++        func typeText(_ text: String) {
++            for ch in text { at(0.12) { key(0, String(ch)) } }
++        }
++        func state() -> String {
++            guard let p = wc.commandPaletteView else { return "no palette" }
++            let field = (window.firstResponder as? NSTextView)?.string ?? "?"
++            return "field=\"\(field)\" site=\(p.activeSiteSearch?.name ?? "nil") rows=\(p.suggestions.map { "\($0)".prefix(70) })"
++        }
++
++        at(0) {
++            guard let spaceID = wc.activeSpaceID else { return log("no active space") }
++            HistoryDatabase.shared.recordVisit(url: "https://www.youtube.com/", title: "YouTube",
++                                               faviconURL: nil, spaceID: spaceID.uuidString, typed: true)
++            log("seeded; store has \(SiteSearchStore.shared.entries.map { "\($0.name)/\($0.keyword)" })")
++        }
++        at(0.5) { NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil); log("front") }
++        at(1.0) { NSApp.sendAction(#selector(BrowserWindowController.newTab(_:)), to: wc, from: nil); log("Cmd+T") }
++        typeText("you")
++        at(1.2) { log("after you: \(state())"); log("SHOOT \(window.windowNumber) you") }
++        at(2.5) { key(48, "\t"); log("Tab: \(state())") }
++        typeText("cats")
++        at(1.2) { log("after cats: \(state())"); log("SHOOT \(window.windowNumber) mode") }
++        at(2.5) { key(36, "\r"); log("Return") }
++        at(1.5) { log("selected tab url: \(wc.selectedTab?.url?.absoluteString ?? "nil")") }
++
++        // Keyword + Space, then Backspace out.
++        at(0.5) { NSApp.sendAction(#selector(BrowserWindowController.newTab(_:)), to: wc, from: nil) }
++        typeText("w ")
++        at(0.5) { log("after 'w ': \(state())") }
++        at(0.3) { key(51, "\u{7F}"); log("Backspace: \(state())") }
++        at(0.3) { key(53, "\u{1B}"); key(53, "\u{1B}"); key(53, "\u{1B}") }
++
++        // Settings > Search, then the add sheet.
++        at(1.0) {
++            let settings = SettingsWindowController.shared
++            settings.showWindow(nil)
++            if let item = settings.window?.toolbar?.items.first(where: { $0.itemIdentifier.rawValue == "search" }) {
++                settings.perform(Selector(("selectPane:")), with: item)
++            }
++            log("settings shown")
++        }
++        at(1.5) { log("SHOOT \(SettingsWindowController.shared.window?.windowNumber ?? -1) settings") }
++        at(2.5) {
++            guard let pane = SettingsWindowController.shared.window?.contentViewController else { return log("no pane") }
++            NSApp.sendAction(Selector(("addClicked")), to: pane, from: nil)
++            log("add clicked")
++        }
++        at(1.0) {
++            guard let sheet = SettingsWindowController.shared.window?.attachedSheet else { return log("no sheet") }
++            log("SHOOT \(sheet.windowNumber) sheet")
++        }
++        at(2.5) {
++            if let sheet = SettingsWindowController.shared.window?.attachedSheet {
++                SettingsWindowController.shared.window?.endSheet(sheet, returnCode: .alertSecondButtonReturn)
++            }
++            log("done")
++        }
++    }
++}
++#endif

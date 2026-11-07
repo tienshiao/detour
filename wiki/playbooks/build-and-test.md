@@ -292,6 +292,15 @@ suite. Two that have happened:
   bisect. Keep the display awake for a long run with `caffeinate -d -i -w
   <xcodebuild pid>`.[^notes-locked-run] See also the locked-screen note in
   [Runtime verification](./runtime-verification.md).
+- **Late web-view suites fail only in a full run.** WebKit's network
+  process fails after about 190 persistent data-store sessions. Its log
+  says `errno = 12`, and localStorage silently keeps nothing. It showed
+  as standing failures of background-page onInstalled cases in
+  `ExtensionPolyfillProfileWiringTests` (TASK-166). A bisect finds no
+  single poisoning suite. The test host now restarts the network process
+  every 60 new stores. If the cluster comes back, look for `errno = 12`
+  in the log before you bisect. See
+  [WebKit test host traps](../platform/webkit-test-host-traps.md).
 - **WebKit storage.** The test host shares
   `~/Library/WebKit/com.detourbrowser.mac/` with the installed app (the
   directory is keyed by bundle id); isolation there comes from

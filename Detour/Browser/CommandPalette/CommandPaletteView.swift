@@ -3,6 +3,9 @@ import AppKit
 protocol CommandPaletteDelegate: AnyObject {
     func commandPalette(_ palette: CommandPaletteView, didSubmitInput input: String)
     func commandPalette(_ palette: CommandPaletteView, didSubmitSearch query: String)
+    /// Return in site-search mode (TASK-287): `url` is the site's results page
+    /// for the query. Required, so no palette owner can drop it silently.
+    func commandPalette(_ palette: CommandPaletteView, didSubmitSiteSearch url: URL)
     func commandPaletteDidDismiss(_ palette: CommandPaletteView)
     func commandPalette(_ palette: CommandPaletteView, didRequestSwitchToTab tabID: UUID, in spaceID: UUID)
 }
@@ -46,6 +49,35 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         set { glassContainer.tintColor = newValue }
     }
 
+    /// The site searches the palette offers (TASK-287); tests pass a store
+    /// over their own database.
+    var siteSearches: SiteSearchStore = .shared
+    /// The site search the field is in, or nil for normal input. While set,
+    /// the field holds only the query and the chip names the site.
+    private(set) var activeSiteSearch: SiteSearch?
+    /// Bumped by every site-color lookup and by leaving site-search mode, so
+    /// a lookup that lands after the mode, the entry or the scope changed
+    /// (its profile's history is no longer the palette's) is dropped.
+    private var siteColorGeneration = 0
+    /// The keyword whose site search the user just left with Backspace: the
+    /// Space typed after it is a space, so `w` then Backspace then ` foo`
+    /// searches the default engine for "w foo". Cleared once the field no
+    /// longer starts with it.
+    private var declinedSiteSearchKeyword: String?
+    /// The field's text when the site search was entered (its keyword, or the
+    /// host or name Tab took it from), which Backspace puts back.
+    private var siteSearchEnteredText = ""
+    /// What the keyword row offers (`siteSearchForTabKey` when the rows were
+    /// last built for the typed text), kept while the user arrows through
+    /// the list so the row and Tab stay as they were.
+    private var siteSearchOffer: (entry: SiteSearch, fieldText: String)?
+    /// The placeholder to put back when site-search mode ends.
+    private var placeholderOutsideSiteSearch: String?
+    /// Internal so tests can read its fill (TASK-290).
+    let siteSearchChip = SiteSearchChipView()
+    private var textFieldLeadingToIcon: NSLayoutConstraint!
+    private var textFieldLeadingToChip: NSLayoutConstraint!
+
     private let textField = CommandPaletteTextField()
     private let glassContainer = GlassContainerView(cornerRadius: 12)
     private var box: NSView { glassContainer.contentView }
@@ -56,7 +88,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
     /// Replaced in tests with a provider over an in-memory history database.
     var suggestionProvider = SuggestionProvider()
-    private var suggestions: [SuggestionItem] = []
+    /// The rows shown; readable so tests can check what a pass listed.
+    private(set) var suggestions: [SuggestionItem] = []
     /// The query the current suggestion list was built for; nil when showing
     /// defaults. Used to reject stale async search-suggestion responses.
     private var suggestionsQuery: String?
@@ -153,6 +186,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         textField.translatesAutoresizingMaskIntoConstraints = false
         box.addSubview(textField)
 
+        siteSearchChip.isHidden = true
+        siteSearchChip.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(siteSearchChip)
+
         // Separator
         separator.boxType = .separator
         separator.isHidden = true
@@ -192,6 +229,13 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         boxBottomToTextField = textField.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -12)
         boxBottomToScroll = scrollView.bottomAnchor.constraint(equalTo: box.bottomAnchor)
 
+        textFieldLeadingToIcon = textField.leadingAnchor.constraint(equalTo: searchIcon.trailingAnchor, constant: 8)
+        textFieldLeadingToChip = textField.leadingAnchor.constraint(equalTo: siteSearchChip.trailingAnchor, constant: 6)
+        NSLayoutConstraint.activate([
+            siteSearchChip.leadingAnchor.constraint(equalTo: searchIcon.trailingAnchor, constant: 8),
+            siteSearchChip.centerYAnchor.constraint(equalTo: textField.centerYAnchor),
+        ])
+
         centerXConstraint = glassContainer.centerXAnchor.constraint(equalTo: safeAreaLayoutGuide.centerXAnchor)
         let maxPaletteHeight: CGFloat = 12 + 24 + 8 + 1 + listHeight  // top pad + textfield + gap + separator + list
         centerYConstraint = NSLayoutConstraint(item: glassContainer, attribute: .top, relatedBy: .equal,
@@ -208,7 +252,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             searchIcon.heightAnchor.constraint(equalToConstant: 16),
 
             textField.topAnchor.constraint(equalTo: box.topAnchor, constant: 12),
-            textField.leadingAnchor.constraint(equalTo: searchIcon.trailingAnchor, constant: 8),
+            textFieldLeadingToIcon,
             textField.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -16),
 
             separator.topAnchor.constraint(equalTo: textField.bottomAnchor, constant: 8),
@@ -288,6 +332,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         centerXConstraint.isActive = true
         centerYConstraint.isActive = true
 
+        endSiteSearchMode()
+        declinedSiteSearchKeyword = nil
         userTypedText = ""
         inlineCompletionSuffix = nil
         uneditedPrefill = nil
@@ -301,6 +347,12 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// another profile with the palette open, TASK-209). Leaves the field
     /// alone: no inline completion is applied.
     func reloadSuggestions() {
+        // The chip's color came from the old space and the old profile's
+        // history: start over from the new ones (TASK-290).
+        if let entry = activeSiteSearch {
+            siteSearchChip.setFill(spaceColor, animated: false)
+            loadSiteColor(for: entry)
+        }
         refreshLocalSuggestions(allowAutocomplete: false)
     }
 
@@ -328,6 +380,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         localSuggestionGeneration &+= 1
         let items = suggestionProvider.defaultSuggestions(historySpaceIDs: historySpaceIDs, tabs: gatherTabInfos())
         suggestionsQuery = nil
+        siteSearchOffer = nil
         defaultRows = items
         matchRows = []
         searchSuggestionTexts = []
@@ -447,7 +500,18 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// default-list rows to fill the fixed-height list (TASK-184). A late pass
     /// (history, network) never changes the row the user has arrowed to.
     private func showQueryRows(isLatePass: Bool) {
-        let rows = PaletteRows.compose(matches: matchRows, searchSuggestions: searchSuggestionTexts,
+        var matches = matchRows
+        // Arrowing drops the inline completion the offer may rest on (`g`
+        // completed to github.com); the row must not come or go under the
+        // selection, so a late pass after the user moved keeps the offer.
+        if !(isLatePass && selectionMovedByUser) {
+            siteSearchOffer = activeSiteSearch == nil && suggestionsQuery != nil ? siteSearchForTabKey() : nil
+        }
+        if let offer = siteSearchOffer {
+            matches = PaletteRows.insertingSiteSearchHint(
+                .siteSearchHint(id: offer.entry.id, name: offer.entry.name, fieldText: offer.fieldText), into: matches)
+        }
+        let rows = PaletteRows.compose(matches: matches, searchSuggestions: searchSuggestionTexts,
                                        filler: defaultRows)
         guard isLatePass else { return updateSuggestions(rows) }
         switch PaletteRows.latePassOutcome(old: suggestions, new: rows,
@@ -467,6 +531,16 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         debounceWorkItem?.cancel()
         currentTask?.cancel()
         let raw = textField.stringValue
+        if let declined = declinedSiteSearchKeyword {
+            // Still declined only while the field is that keyword, alone or
+            // as the first word: `wiki` is another word, not the keyword.
+            let lowered = raw.lowercased(), keyword = declined.lowercased()
+            if lowered != keyword, !lowered.hasPrefix(keyword + " ") { declinedSiteSearchKeyword = nil }
+        }
+        if let entry = siteSearchEnteredBySpace(raw) {
+            enterSiteSearch(entry, from: String(raw.dropLast()))
+            return
+        }
         userTypedText = raw
         inlineCompletionSuffix = nil
         uneditedPrefill = nil
@@ -504,6 +578,25 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
         if commandSelector == #selector(NSResponder.moveDown(_:)) {
             moveSelection(by: 1)
+            return true
+        }
+        if commandSelector == #selector(NSResponder.insertNewline(_:)), activeSiteSearch != nil {
+            submitInSiteSearch()
+            return true
+        }
+        if commandSelector == #selector(NSResponder.deleteBackward(_:)), activeSiteSearch != nil,
+           textView.selectedRange() == NSRange(location: 0, length: 0) {
+            leaveSiteSearchByBackspace()
+            return true
+        }
+        if commandSelector == #selector(NSResponder.insertTab(_:)), activeSiteSearch == nil,
+           let offer = selectionMovedByUser ? siteSearchOffer : siteSearchForTabKey() {
+            // Before the inline completion is accepted: `w` completing to
+            // wikipedia.org with `w` a keyword, or `you` completing to
+            // youtube.com, enters the search, as in Chrome and Arc. The
+            // keyword row asks the same function, so its Tab badge and the
+            // Tab key agree.
+            enterSiteSearch(offer.entry, from: offer.fieldText)
             return true
         }
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
@@ -607,6 +700,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             return url
         case .searchSuggestion(let text):
             return text
+        case .siteSearch(_, let query, _):
+            return query
+        case .siteSearchHint(_, _, let fieldText):
+            return fieldText
         }
     }
 
@@ -622,6 +719,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// authoritative list back in — dropped on arrival if the query has since
     /// changed.
     private func refreshLocalSuggestions(allowAutocomplete: Bool) {
+        if let entry = activeSiteSearch {
+            refreshSiteSearchSuggestions(entry)
+            return
+        }
         let query = userTypedText.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else {
             loadDefaultSuggestions()
@@ -693,6 +794,168 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
     }
 
+    // MARK: - Site search (TASK-287)
+
+    /// The site search a just-typed Space enters: the field is a keyword
+    /// followed by one space, that space is what this edit added to the typed
+    /// text (not what deleting the rest of `r foo` left), and that keyword
+    /// was not just declined.
+    private func siteSearchEnteredBySpace(_ raw: String) -> SiteSearch? {
+        guard activeSiteSearch == nil, raw.hasSuffix(" ") else { return nil }
+        let word = String(raw.dropLast())
+        guard word == userTypedText else { return nil }
+        guard !word.isEmpty, !word.contains(where: \.isWhitespace),
+              declinedSiteSearchKeyword.map({ word.caseInsensitiveCompare($0) != .orderedSame }) ?? true
+        else { return nil }
+        return siteSearches.entry(forKeyword: word)
+    }
+
+    /// The site search Tab would enter now, and the field's text it comes
+    /// from: `siteSearchForTab` over the typed text (trimmed) and, while an
+    /// inline completion is pending, the completed field.
+    private func siteSearchForTabKey() -> (entry: SiteSearch, fieldText: String)? {
+        let typed = userTypedText.trimmingCharacters(in: .whitespaces)
+        let completed = inlineCompletionSuffix.map { typed + $0 }
+        guard let entry = siteSearchForTab(typed: typed, completedText: completed, entries: siteSearches.entries)
+        else { return nil }
+        return (entry, completed ?? typed)
+    }
+
+    /// The color of the space the palette belongs to; the accent color for a
+    /// palette with no space (Quick Detour).
+    private var spaceColor: NSColor {
+        activeSpaceID.flatMap { tabStore?.space(withID: $0) }?.color ?? .controlAccentColor
+    }
+
+    /// Looks up the favicon the profile has recorded for `entry`'s site (off
+    /// the main thread, like the history passes) and, when the icon has a
+    /// clear color, cross-fades the chip to it (TASK-290). A Private palette
+    /// has no history scope, and a site the profile never visited has no
+    /// recorded icon: both keep the space's color, and nothing is fetched.
+    private func loadSiteColor(for entry: SiteSearch) {
+        siteColorGeneration &+= 1
+        guard !historySpaceIDs.isEmpty, let host = entry.displayHost else { return }
+        let generation = siteColorGeneration
+        let provider = suggestionProvider
+        let historySpaceIDs = historySpaceIDs
+        historyQueryQueue.async { [weak self] in
+            let faviconURL = provider.siteFaviconURL(forHost: host, historySpaceIDs: historySpaceIDs)
+            DispatchQueue.main.async {
+                guard let self, let faviconURL, generation == self.siteColorGeneration else { return }
+                provider.loadFavicon(for: faviconURL) { [weak self] image in
+                    guard let self, generation == self.siteColorGeneration,
+                          let image, let color = SiteColor.dominant(in: image) else { return }
+                    self.siteSearchChip.setFill(color.nsColor, animated: true)
+                }
+            }
+        }
+    }
+
+    /// Switches the field to searching `entry`: the chip names the site, the
+    /// field is emptied for the query, and the list shows the site's rows.
+    /// `text` is the field's text it was entered from, for Backspace.
+    private func enterSiteSearch(_ entry: SiteSearch, from text: String) {
+        siteSearchEnteredText = text
+        debounceWorkItem?.cancel()
+        currentTask?.cancel()
+        activeSiteSearch = entry
+        declinedSiteSearchKeyword = nil
+        inlineCompletionSuffix = nil
+        uneditedPrefill = nil
+        userTypedText = ""
+        setTextFieldQuietly("")
+        siteSearchChip.title = entry.name
+        siteSearchChip.setFill(spaceColor, animated: false)
+        siteSearchChip.isHidden = false
+        loadSiteColor(for: entry)
+        textFieldLeadingToIcon.isActive = false
+        textFieldLeadingToChip.isActive = true
+        placeholderOutsideSiteSearch = textField.placeholderString
+        textField.placeholderString = "Search \(entry.name)"
+        textField.setAccessibilityLabel("Search \(entry.name)")
+        refreshLocalSuggestions(allowAutocomplete: false)
+    }
+
+    /// Puts the field back to normal input; the caller sets its text.
+    private func endSiteSearchMode() {
+        guard activeSiteSearch != nil else { return }
+        activeSiteSearch = nil
+        siteColorGeneration &+= 1
+        siteSearchChip.isHidden = true
+        textFieldLeadingToChip.isActive = false
+        textFieldLeadingToIcon.isActive = true
+        textField.placeholderString = placeholderOutsideSiteSearch
+        textField.setAccessibilityLabel(nil)
+    }
+
+    /// Backspace at the start of the query: back to normal input with the
+    /// text the search was entered from (the keyword, or the host or name
+    /// Tab took it from) and the query after it, as Chrome does, the caret
+    /// after that text.
+    private func leaveSiteSearchByBackspace() {
+        guard let entry = activeSiteSearch else { return }
+        let query = textField.stringValue
+        let entered = siteSearchEnteredText
+        endSiteSearchMode()
+        // Only a keyword can be re-entered by Space, so only a keyword is declined.
+        declinedSiteSearchKeyword = entry.matches(keyword: entered) ? entered : nil
+        let text = query.isEmpty ? entered : entered + " " + query
+        userTypedText = text
+        setTextFieldQuietly(text)
+        textField.currentEditor()?.selectedRange = NSRange(location: entered.utf16.count, length: 0)
+        refreshLocalSuggestions(allowAutocomplete: false)
+    }
+
+    /// Return in site-search mode: the selected row, else the site's results
+    /// for the field's query; nothing for an empty query.
+    private func submitInSiteSearch() {
+        if let index = selectedSuggestionIndex, index < suggestions.count {
+            activateSuggestion(at: index)
+            return
+        }
+        let query = userTypedText.trimmingCharacters(in: .whitespaces)
+        // The store's current entry: it may have been edited in Settings
+        // since the mode began.
+        let entry = activeSiteSearch.map { siteSearches.entry(withID: $0.id) ?? $0 }
+        guard !query.isEmpty, let url = entry?.url(for: query) else { return }
+        delegate?.commandPalette(self, didSubmitSiteSearch: url)
+    }
+
+    /// The rows for the query in site-search mode: the search row, then the
+    /// profile's history on the site (a background read, like the normal
+    /// history pass), then the default list as filler. No inline completion
+    /// and no network suggestions: those are the default engine's.
+    private func refreshSiteSearchSuggestions(_ entry: SiteSearch) {
+        let query = userTypedText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty, let url = entry.url(for: query) else {
+            loadDefaultSuggestions()
+            return
+        }
+        let siteRow = SuggestionItem.siteSearch(name: entry.name, query: query, url: url.absoluteString)
+        suggestionsQuery = query
+        matchRows = [siteRow]
+        searchSuggestionTexts = []
+        searchSuggestionsQuery = nil
+        showQueryRows(isLatePass: false)
+
+        localSuggestionGeneration &+= 1
+        guard let host = entry.displayHost, !historySpaceIDs.isEmpty else { return }
+        let generation = localSuggestionGeneration
+        let provider = suggestionProvider
+        let historySpaceIDs = historySpaceIDs
+        historyQueryQueue.async { [weak self] in
+            let history = provider.siteSearchHistory(for: query, host: host, historySpaceIDs: historySpaceIDs,
+                                                     excludingURL: url.absoluteString)
+            DispatchQueue.main.async {
+                guard let self, generation == self.localSuggestionGeneration,
+                      self.activeSiteSearch?.id == entry.id,
+                      self.userTypedText.trimmingCharacters(in: .whitespaces) == query else { return }
+                self.matchRows = [siteRow] + history
+                self.showQueryRows(isLatePass: true)
+            }
+        }
+    }
+
     private func activateSuggestion(at index: Int) {
         guard index < suggestions.count else { return }
         switch suggestions[index] {
@@ -709,6 +972,20 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             delegate?.commandPalette(self, didSubmitSearch: text)
         case .openTab(let tabID, let spaceID, _, _, _):
             delegate?.commandPalette(self, didRequestSwitchToTab: tabID, in: spaceID)
+        case .siteSearch(_, let query, let url):
+            // The store's current entry: it may have been edited in Settings
+            // since the row was built.
+            let current = activeSiteSearch.flatMap { siteSearches.entry(withID: $0.id) }?.url(for: query)
+            guard let url = current ?? URL(string: url) else { return }
+            delegate?.commandPalette(self, didSubmitSiteSearch: url)
+        case .siteSearchHint(let id, _, let fieldText):
+            guard let entry = siteSearches.entry(withID: id) else { return }
+            enterSiteSearch(entry, from: fieldText)
+            // A click on the row made the table first responder; the query
+            // is typed in the field.
+            if let window, window.firstResponder !== textField.currentEditor() {
+                window.makeFirstResponder(textField)
+            }
         }
     }
 
@@ -739,7 +1016,12 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
 
         // Multi-stage escape for user-typed input
-        if inlineCompletionSuffix != nil {
+        if activeSiteSearch != nil {
+            endSiteSearchMode()
+            setTextFieldQuietly("")
+            userTypedText = ""
+            loadDefaultSuggestions()
+        } else if inlineCompletionSuffix != nil {
             inlineCompletionSuffix = nil
             setTextFieldQuietly(userTypedText)
             textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.utf16.count, length: 0)
@@ -803,6 +1085,11 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             cell.configure(title: title, url: nil, icon: favicon, isSearch: false, switchToTab: true)
         case .searchSuggestion(let text):
             cell.configure(title: text, url: nil, icon: nil, isSearch: true)
+        case .siteSearch(let name, let query, _):
+            cell.configure(title: query, url: "Search \(name)", icon: nil, isSearch: true)
+        case .siteSearchHint(_, let name, _):
+            cell.configure(title: "Search \(name)", url: nil, icon: nil, isSearch: true,
+                           badge: ("Tab", "arrow.right.to.line"))
         }
     }
 
@@ -946,15 +1233,23 @@ private class SuggestionCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(title: String, url: String?, icon: NSImage?, isSearch: Bool, switchToTab: Bool = false, isGoTo: Bool = false) {
+    /// `badge` (text, SF Symbol name) is the trailing hint: "Switch to Tab"
+    /// for an open tab, "Tab" for a site search's keyword row (TASK-287).
+    func configure(title: String, url: String?, icon: NSImage?, isSearch: Bool, switchToTab: Bool = false,
+                   isGoTo: Bool = false, badge: (text: String, symbol: String)? = nil) {
         expectedFaviconURL = nil
         titleLabel.stringValue = title.isEmpty ? (url ?? "") : title
 
-        let showURL = !switchToTab && url != nil
+        let badge = badge ?? (switchToTab ? ("Switch to Tab", "arrow.right.arrow.left") : nil)
+        let showURL = badge == nil && url != nil
         urlLabel.stringValue = url ?? ""
         urlLabel.isHidden = !showURL
-        badgeIcon.isHidden = !switchToTab
-        badgeLabel.isHidden = !switchToTab
+        badgeIcon.isHidden = badge == nil
+        badgeLabel.isHidden = badge == nil
+        if let badge {
+            badgeLabel.stringValue = badge.text
+            badgeIcon.image = NSImage(systemSymbolName: badge.symbol, accessibilityDescription: nil)
+        }
 
         if isSearch {
             iconView.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
@@ -970,4 +1265,90 @@ private class SuggestionCellView: NSTableCellView {
             iconView.contentTintColor = .secondaryLabelColor
         }
     }
+}
+
+// MARK: - SiteSearchChipView
+
+/// The site's name at the start of the field in site-search mode (TASK-287).
+///
+/// Filled with the site's color (TASK-290): the space's at once, then the
+/// favicon's when one is found; the text is light or dark by contrast.
+final class SiteSearchChipView: NSView {
+    private let label = NSTextField(labelWithString: "")
+    /// The fill; dynamic colors (the accent) resolve in `updateLayer`.
+    private(set) var fill: NSColor = .controlAccentColor
+    /// The text color the last `setFill` chose; readable for tests.
+    var textColor: NSColor { label.textColor ?? .labelColor }
+
+    /// Fills the chip with `color`. `animated` cross-fades to it, unless the
+    /// user asked for reduced motion.
+    func setFill(_ color: NSColor, animated: Bool) {
+        // Start from what is on screen, mid-fade included; a set without a
+        // fade must also end one still running (a previous site's).
+        let old = layer?.presentation()?.backgroundColor ?? layer?.backgroundColor
+        layer?.removeAnimation(forKey: "fill")
+        fill = color
+        let resolved = resolvedFill
+        updateTextColor(for: resolved)
+        if animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let old {
+            let fade = CABasicAnimation(keyPath: "backgroundColor")
+            fade.fromValue = old
+            fade.toValue = resolved
+            fade.duration = 0.3
+            fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer?.add(fade, forKey: "fill")
+        }
+        layer?.backgroundColor = resolved
+    }
+
+    private var resolvedFill: CGColor {
+        var cg: CGColor?
+        effectiveAppearance.performAsCurrentDrawingAppearance { cg = fill.cgColor }
+        return cg ?? fill.cgColor
+    }
+
+    /// White text unless it reads poorly on `resolved` (a dynamic fill such as
+    /// the accent is re-resolved, and re-judged, on an appearance change).
+    private func updateTextColor(for resolved: CGColor) {
+        let rgb = NSColor(cgColor: resolved).flatMap(SiteColor.RGB.init)
+        label.textColor = rgb.map(SiteColor.prefersDarkText) == true ? .black : .white
+    }
+
+    var title: String {
+        get { label.stringValue }
+        set {
+            label.stringValue = newValue
+            setAccessibilityLabel(newValue)
+        }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.textColor = .white
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
+            widthAnchor.constraint(lessThanOrEqualToConstant: 180),
+        ])
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateLayer() {
+        let resolved = resolvedFill
+        layer?.backgroundColor = resolved
+        updateTextColor(for: resolved)
+    }
+
+    override var wantsUpdateLayer: Bool { true }
 }

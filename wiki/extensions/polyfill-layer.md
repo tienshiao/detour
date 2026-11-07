@@ -97,6 +97,9 @@ sources:
   - id: task-257
     resource: backlog:TASK-257
     title: "Extensions: management.uninstallSelf and management.getPermissionWarningsByManifest are missing"
+  - id: task-267
+    resource: backlog:TASK-267
+    title: "Extensions: management.uninstallSelf with showConfirmDialog can show its app-modal alert again and again with no user action"
   - id: chromium-management-api
     resource: https://source.chromium.org/chromium/chromium/src/+/main:extensions/browser/api/management/management_api.cc
     title: "Chromium: management_api.cc (Uninstall, GetPermissionWarningsByManifest) and management_api_constants.h"
@@ -109,6 +112,9 @@ sources:
   - id: task-254
     resource: backlog:TASK-254
     title: "Extensions: notifications.create(null, options) is treated as create(options) with empty options"
+  - id: task-269
+    resource: backlog:TASK-269
+    title: "Extensions: notifications.create with an empty id keeps it instead of generating one"
   - id: chrome-notifications-api
     resource: https://developer.chrome.com/docs/extensions/reference/api/notifications
     title: chrome.notifications API reference
@@ -118,12 +124,33 @@ sources:
   - id: task-247
     resource: backlog:TASK-247
     title: "Extensions: notifications.onClicked and onClosed are never delivered to the extension"
+  - id: task-264
+    resource: backlog:TASK-264
+    title: "Extensions: a Private-profile extension stops receiving notifications.onClicked and onClosed once a Private session starts or ends"
+  - id: task-270
+    resource: backlog:TASK-270
+    title: "Extensions: revoking the notifications permission leaves the extension's notifications and event wait in place"
+  - id: task-271
+    resource: backlog:TASK-271
+    title: "Extensions: a notifications.update whose add fails also removes the notification it was updating"
+  - id: task-272
+    resource: backlog:TASK-272
+    title: "Extensions: notification entries outlive the banner when macOS takes it away without a dismiss"
+  - id: chromium-mac-notification-service
+    resource: https://source.chromium.org/chromium/chromium/src/+/main:chrome/services/mac_notifications/mac_notification_service_un.mm
+    title: "Chromium: mac_notification_service_un.mm (shouldPreventNotificationDismissalAfterDefaultAction, SynchronizeNotifications), chrome/browser/notifications/mac/notification_utils.cc (by_user)"
   - id: chromium-notifications-clear
     resource: https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/extensions/api/notifications/
     title: "Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)"
   - id: task-248
     resource: backlog:TASK-248
     title: "Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared"
+  - id: task-273
+    resource: backlog:TASK-273
+    title: "Extensions: an unanswered notification authorization prompt stalls notifications.create in every profile"
+  - id: task-276
+    resource: backlog:TASK-276
+    title: "Docs: fix the permission-scope and notification-ordering descriptions the review found wrong"
 ---
 
 `ExtensionAPIPolyfill` generates one JavaScript bundle (`polyfillJS`) that runs
@@ -323,7 +350,17 @@ Settings' Uninstall button takes. It acts only on the verified caller.
 | Order | The reply (`undefined`) goes first, and the uninstall runs on the next main-actor turn. The uninstall unloads the caller's worker and closes its pages, so the reply may still never arrive. Chrome uninstalls first and then answers |
 | Arguments | `options` absent, null or an object; `showConfirmDialog` absent, null or a boolean. Anything else is refused (`management.uninstallSelf: options must be an object`) |
 | A second dialog | Refused at once, with the cancel text, while the extension's alert is up. The claim is taken before the alert's task runs, because WebKit can hand two messages over in one batch. A call without a dialog is not affected |
-| Not carried over | Chrome refuses a dialog without a user gesture (`kGestureNeededForUninstallError`). The polyfill has no gesture signal, so Detour shows the dialog anyway. As a result a worker that calls again after every Cancel can keep the app-modal alert up (`permissions.request` prompts have the same exposure) |
+| After a Cancel | For 10 minutes from the Cancel (`ExtensionManager.uninstallSelfCancelCooldown`), the extension's requests for the dialog are refused at once with the cancel text and no alert. Per extension; a call without a dialog is not affected; the clock is `ExtensionManager.now`, a test seam; a time before the Cancel (clock set back) does not refuse; `uninstall(id:)` forgets the Cancel[^task-267] |
+| Not carried over | Chrome refuses a dialog without a user gesture (`kGestureNeededForUninstallError`). The polyfill has no gesture signal, so Detour shows the dialog anyway, and the cooldown above stands in for the gesture check |
+
+Without the cooldown a worker that called again after every Cancel kept the
+app-modal alert up, naming itself with its manifest's name at a moment it
+chose. Chrome's gesture check still lets a user retry at once; a block for the
+whole session would refuse a deliberate retry until relaunch. Ten minutes caps
+a looping worker at one alert per period, which leaves time to remove or turn
+off the extension in Settings. `permissions.request` prompts for `history` and
+`management` cannot loop this way: a denial is saved, and later requests are
+refused without asking.[^task-267]
 
 `getPermissionWarningsByManifest(manifestStr)` returns the lines Detour's
 install prompt shows for the manifest: its required permissions, each through
@@ -456,12 +493,20 @@ for:[^task-234]
 |---|---|
 | `create('x')`, `clear('x')` | The clear drops the entry at once and removes the notification; when the `add` returns, the manager removes it once more, because the clear's removal can reach the center before the notification does. `getAll` does not list it |
 | `create('x')`, `update('x')` | The update finds the entry and re-creates it; `wasUpdated` is `true` and the update's content shows |
-| `create('x')`, `clear('x')`, `create('x')` | Each `create` carries a generation. The first `add` returning finds a newer generation and does nothing (the newer `add` replaces what it showed), so the second notification stands |
+| `create('x')`, `clear('x')`, `create('x')` | The clear drops the entry with its UNNotification identifier, so the second `create` gets a new identifier. When the first `add` returns it finds no entry under its own identifier and removes only that identifier's notification; the second `add` shows the second one, which stands. A first create still waiting for authorization finds its entry gone and never adds.[^task-276] Generations decide `create('x')`, `create('x')` with no clear between: the second keeps the identifier, so the first `add` finds a newer generation, leaves the entry alone and lets the newer `add` replace what it showed |
 
 `getAll` lists a notification whose `add` is still in flight. A failed `add`
-drops the entry only if no later `create` has replaced it, and also removes
-any notification shown under that id, so `getAll` and the screen agree. Before
-TASK-234 the entry was recorded only after `add` returned, so a clear issued
+of a `create` drops the entry only if no later `create` or `update` has
+replaced it, and also removes any notification shown under that id, so
+`getAll` and the screen agree. A failed `add` of an `update` answers
+`wasUpdated: false` and puts back the entry the update replaced, so the
+notification the create (or an earlier update) showed stays listed, shown and
+merged into by the next update, as in Chrome.[^task-271] Each update entry
+keeps the entries it replaced, newest first, as fallbacks; one whose `add`
+fails, or is skipped because it was superseded during the authorization wait,
+is dropped from them (nothing of it shows), and one whose `add` succeeds
+discards the older ones, so the list lasts only while adds are in flight.
+Before TASK-234 the entry was recorded only after `add` returned, so a clear issued
 meanwhile found nothing and the notification came back.
 
 Rejected: serializing the operations per notification id. It would also make
@@ -509,6 +554,10 @@ extension notification of any build:[^task-248]
 generated. Only a non-null object in the first slot means the id was left out
 (`typeof null` is `'object'`, which once made `create(null, options)` create
 an empty notification).[^task-254]
+An empty id is generated too, as Chrome's is for one "not set or empty":
+`ExtensionNotificationManager.create` replaces `""` with a fresh UUID, so
+`create('', …)` twice makes two notifications and `getAll` never lists `""`.
+Before, the empty id was kept and every such create replaced the last.[^task-269]
 
 ## chrome.notifications asks for authorization at the first create
 
@@ -539,12 +588,38 @@ nothing appeared.[^task-253]
 - The prompt is a banner ("“Detour” Notifications", Allow / Don't Allow). The
   unified log shows it as a NotificationCenter record with
   `app:"com.apple.notificationcenter.askpermissions" req:"com.detourbrowser.mac"`.
-  Until the user answers, every create and update waits, with no timeout;
-  a prompt the user ignores into Notification Center keeps them waiting. On
-  the development Mac the bundle id was still not determined in the TASK-253
+  On the development Mac the bundle id was still not determined in the TASK-253
   run, which is why earlier runs saw `add` succeed with nothing on screen.
   A Debug build shares `com.detourbrowser.mac` with the installed app, so
   answering a Debug build's prompt sets the installed app's permission too.
+- The wait for the answer is bounded (TASK-273). Once the prompt has been up
+  for `authorizationAnswerTimeout` (5 s), every create and update waiting on
+  it is answered, a create with its id and an update with true,
+  and one joining that check later is answered at once. Each stays recorded
+  (listed, clearable, updatable) and is shown when the user allows
+  notifications, or dropped as above if they decline. Before, a prompt the
+  user ignored into Notification Center left every `await create(...)` in
+  every profile hanging.[^task-273]
+  - Why answer rather than refuse: Chrome's `create` answers once the
+    notification is handed to its display service and never waits on the OS
+    permission, so answering is the closest match. The 5 s still lets a user
+    who answers the prompt at once give the real answer, and it is well inside
+    WebKit's 30 s unload timer for a worker whose reply is pending.
+  - The timeout is scheduled only when the status is not determined, right
+    before the prompt, through the `scheduleAuthorizationTimeout` seam, so
+    tests fire it by hand. A check that only reads the status (every create
+    once allowed) schedules none. A timeout that fires after its check
+    finished does nothing (checks are numbered).
+- While the prompt is up, at most `authorizationWaitLimit` (32) of one
+  owner's creates and updates wait on it; another owner's are counted
+  separately, and a burst joining a status-only check is never limited.
+  Shows cleared or superseded while waiting still count, as each still holds
+  a waiting task. One more is
+  settled as a failed `add` would be: a create answers its id but is neither
+  listed nor added, and an update answers false and puts back the entry it
+  replaced (the TASK-271 fallback). Without the limit an extension creating in
+  a loop, which the early answers make fast, would pile up waiting tasks and
+  update fallbacks until the user answered.[^task-273]
 
 ## chrome.notifications events reach the background through a parked request
 
@@ -558,8 +633,9 @@ them in order and parks again with `ack` = the last `seq`.
 
 | Event | Fires |
 |---|---|
-| Click on the banner (`UNNotificationDefaultActionIdentifier`) | `onClicked(id)`; the entry stays |
+| Click on the banner (`UNNotificationDefaultActionIdentifier`) | `onClicked(id)`, then `onClosed(id, true)`, in one answer; the entry goes (macOS takes a clicked banner away) |
 | User dismisses it (`UNNotificationDismissActionIdentifier`) | `onClosed(id, true)`; the entry goes, so `clear`/`update` answer false and `getAll` leaves it out |
+| The center stops listing it without a report (Clear All?, system pruning) | `onClosed(id, true)` at the next synchronization; the entry goes |
 | The extension's `clear` finds it | `onClosed(id, false)` |
 | Unload of the extension, end of the profile or Private session, not-allowed or failed add | nothing |
 
@@ -610,11 +686,81 @@ them in order and parks again with `ack` = the last `seq`.
   context. A refusal for the permission (an optional `notifications` not yet
   granted) is retried at the next `create`/`update`/`clear`/`getAll` while a
   listener exists, so the grant does not leave the worker deaf until restart.
+- **A Private session boundary leaves the park standing.** The Private
+  profile's contexts stay loaded between sessions, so a session starting or
+  ending (`removeSession(profileID:)`) takes the notifications and the
+  events queued for them but keeps each owner's park, incarnation history
+  and "listens" flag. Only unloading the extension (`removeAll(for:)`) and
+  deleting the profile (`removeAll(profileID:)`) answer the park "unloaded"
+  and forget the channel. Before TASK-264 the boundary used `removeAll(profileID:)`
+  too: the live worker took "unloaded" as final, never parked again, and
+  every later click and close waited unheard in the backlog until WebKit
+  restarted it.[^task-264]
+- **Losing the permission answers the park with the refusal.** When
+  `notifications` stops being active for an extension in a profile (the
+  Settings switch off, a prompt answered Deny, or the extension's own
+  `permissions.remove` of the optional permission), its notifications there
+  go, with their queued events, and the park is answered with the handler's
+  permission refusal ("denied by the user" or "is optional and has not been
+  granted"), which the polyfill retries after a later grant. "Unloaded" would
+  have stopped the worker for good. The incarnation history stays, so the
+  same worker's re-park is accepted. Before TASK-270 nothing happened: the
+  banners stayed, a click on one still fired `onClicked` through the park
+  admitted before the revocation, and the extension could not `clear` them
+  (refused for the permission). No `onClosed` fires for the notifications
+  taken away: the extension no longer holds the permission whose events those
+  are.[^task-270]
+- **The banner going ends the notification.** macOS removes a banner when
+  its default action is clicked; Chrome keeps its own only by setting the
+  private `shouldPreventNotificationDismissalAfterDefaultAction` on the
+  content,[^chromium-mac-notification-service] which Detour does not. Before
+  TASK-272 a click kept the entry, so an extension using `create(null, …)`
+  that never cleared grew the entries all session, `getAll` listed banners
+  no longer shown, and a later `update` brought the banner back. A click now
+  drops the entry, asks the center to remove the identifier too (should
+  macOS ever keep the banner, nothing could clear it otherwise), and fires
+  `onClicked` then `onClosed(byUser true)`: what
+  Chrome reports when a notification leaves Notification Center without a
+  dismissal (its `SynchronizeNotifications` turns every such one into a
+  close, and every macOS close reaches the extension with `by_user`
+  true).[^task-272] An update whose `add` is in flight when the click comes
+  finds no entry when it lands and takes the banner it re-showed away, as
+  after a clear during the `add`; it still answers `wasUpdated: true`.
+- **Synchronization catches the rest.** `synchronizeWithCenter()` lists the
+  center's delivered and pending identifiers and closes (`onClosed(byUser
+  true)`, entry dropped, identifier removed from the center in case the
+  listing missed it) every entry it does not list, like Chrome's
+  `SynchronizeNotifications`. Pending is listed before delivered: a request
+  only moves from pending to delivered, so one moving between the two calls
+  is still seen. It runs at every `create` (coalesced, and at most once per
+  5 s, so an extension that never clears cannot outgrow what is on screen
+  and one re-creating a progress notification does not list usernoted at
+  every call) and every 10 minutes (Chrome's `kSynchronizationInterval`)
+  while there are entries.
+  Only entries whose own `add` succeeded at least 5 s ago are checked: the
+  center may list a notification a moment after `add` answers, and an entry
+  with an `add` in flight (an update over a banner the center lost) shows
+  it again, as Chrome skips pending content. An entry cleared, clicked,
+  replaced or removed with its owner while the listing was in flight is
+  skipped, so a revoked owner gets no `onClosed`. The clock is injectable
+  (`now`).
+- **What "Clear All" reports was not measured.** Producing a real banner
+  from a Debug build needs notification authorization for
+  `com.detourbrowser.mac`, which on the development Mac was still
+  undetermined (no usernoted records for it); answering that prompt also
+  sets the installed app's permission, which is the user's decision, and
+  Clear All would have to be driven in the Notification Center the running
+  production Detour shares. The design holds either way: a reported
+  dismissal closes through `handleResponse`, an unreported one at the next
+  synchronization. Chrome polling at all suggests some removals go
+  unreported.
 - `onButtonClicked` still never fires: buttons are not shown.
 
 The manager-level behaviour is in `ExtensionNotificationEventManagerTests`, the
 real-worker behaviour (profile isolation, byUser, backlog before the park,
-`runtime.reload()` superseding) in `ExtensionNotificationEventDeliveryTests`.
+`runtime.reload()` superseding, a Private worker hearing events across session
+boundaries, the Settings switch and `permissions.remove` taking the
+notifications and the wait) in `ExtensionNotificationEventDeliveryTests`.
 
 ## chrome.notifications is scoped by profile
 
@@ -657,9 +803,10 @@ and pending), when:
 |---|---|---|
 | The extension is unloaded from a profile: disabled there, uninstalled, updated, or its context reloaded by background recovery | `Profile.unloadExtension` → handler `removeNotifications(ofExtension:)` | `removeAll(for: owner)` |
 | The profile is deleted | `TabStore.deleteProfile`, after `unloadAllExtensions` → handler `removeAllNotifications()` | `removeAll(profileID:)` |
-| The Private session ends: the last Private window's space is removed, or the last Private Quick Detour closes or switches profile | `TabStore.endPrivateSessionIfUnused()`, the one place that also calls `siteSettings.discardPrivateSession()` | `removeAll(profileID: incognitoProfileID)` on the Private profile's handler |
+| The Private session ends: the last Private window's space is removed, or the last Private Quick Detour closes or switches profile | `TabStore.endPrivateSessionIfUnused()`, the one place that also calls `siteSettings.discardPrivateSession()` | `removeSession(profileID: incognitoProfileID)` on the Private profile's handler (`removeSessionNotifications()`): the notifications and their queued events go, the workers' parks stand (TASK-264) |
 | A Private session starts (a Private window's space or a Private Quick Detour, when none was live): the Private profile's contexts stay loaded between sessions, so a worker can create one while no Private page is open | `TabStore.startPrivateSessionIfNeeded()`, from `addIncognitoSpace` and `openQuickDetourTab` | the same |
 | The app quits, which ends the Private session without closing its windows | `applicationWillTerminate` → `TabStore.removePrivateProfileNotifications()`; best effort, the request may not reach usernoted before exit | the same |
+| `notifications` stops being active for the extension in the profile (`permissionIsActive`): a Settings switch or prompt answer, or the extension's `permissions.remove`. Decisions are per extension, so a removal in one profile clears the saved grant and every profile's context loses it | `ExtensionManager.applySavedDecisions` (from `setPermissionDecision` and `clearRemovedGrants`) and `contextDidLoseGrants` → `revokeNotificationsWhereNotPermitted` → each profile's handler `revokeNotificationsIfNotPermitted(ofExtension:)`, which does nothing while the permission is active | `revoke(for: owner, refusal:)`: the notifications and queued events go, the park is answered with the permission refusal, the channel stays (TASK-270) |
 
 A notification whose `add` is still in flight when its owner goes is taken
 away again when the `add` returns, as after a `clear`. The handler's removals
@@ -827,7 +974,7 @@ uncaught error rather than an unhandled rejection.
 | [ExtensionPolyfillIntegrationTests](../../DetourTests/ExtensionPolyfillIntegrationTests.swift) | A real `WKWebExtensionContext`: what WebKit's wrappers actually do, garbage-collection survival, real origins |
 | [ExtensionPolyfillProfileWiringTests](../../DetourTests/ExtensionPolyfillProfileWiringTests.swift) | The production wiring in `Profile.extensionController`, with no test-side setup: deleting the wiring fails it |
 | [ExtensionHistoryScopeTests](../../DetourTests/ExtensionHistoryScopeTests.swift) | `chrome.history.search` through the same production wiring, one extension in two profiles: isolation, the permission gate, bad arguments and the default range from an extension page and a worker, promise and callback form |
-| [ExtensionNotificationManagerTests](../../DetourTests/ExtensionNotificationManagerTests.swift) | The `notifications` call orderings above against `HeldNotificationCenter`: clear or update while the `add` is in flight, create–clear–create, an `add` answering out of order or failing, another extension's clear; the same extension in another profile (getAll, clear, update, click and close resolution, legacy identifiers); opaque identifiers; `removeAll` and its hooks (Private session end in a `TabStore` of its own, profile deletion) |
+| [ExtensionNotificationManagerTests](../../DetourTests/ExtensionNotificationManagerTests.swift) | The `notifications` call orderings above against `HeldNotificationCenter`: clear or update while the `add` is in flight, create–clear–create, an `add` answering out of order or failing, another extension's clear; the same extension in another profile (getAll, clear, update, click and close resolution, legacy identifiers); opaque identifiers; `removeAll` and its hooks (Private session end in a `TabStore` of its own, profile deletion); a Private session boundary leaving a parked wait standing |
 | [ExtensionNotificationOrderingTests](../../DetourTests/ExtensionNotificationOrderingTests.swift) | The same orderings from an extension page and its worker through the production wiring, with the profile's handler on a held center; one extension in two persistent profiles, and in a persistent profile plus the built-in Private profile, sharing one manager, from both transports and in both directions; the Private session ending in the shared store, and unloading the extension from one profile |
 | [ExtensionFaviconScopeTests](../../DetourTests/ExtensionFaviconScopeTests.swift) | `_favicon` through the same wiring: one extension in two profiles, another profile's WebKit host, a tab's handler, the `favicon` permission, the Private profile, what a worker's `fetch` gets, and the removed `favicon.lookup` message from a page and a worker |
 
@@ -858,10 +1005,19 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-251]: Extensions: the history and management namespaces exist for extensions without the permission
 [^task-250]: Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions
 [^task-257]: Extensions: management.uninstallSelf and management.getPermissionWarningsByManifest are missing
+[^task-267]: Extensions: management.uninstallSelf with showConfirmDialog can show its app-modal alert again and again with no user action
 [^task-240]: Extensions: notifications.clear and notifications.update diverge from Chrome
 [^task-254]: Extensions: notifications.create(null, options) is treated as create(options) with empty options
+[^task-269]: Extensions: notifications.create with an empty id keeps it instead of generating one
 [^chrome-notifications-api]: chrome.notifications API reference
 [^task-247]: Extensions: notifications.onClicked and onClosed are never delivered to the extension
+[^task-264]: Extensions: a Private-profile extension stops receiving notifications.onClicked and onClosed once a Private session starts or ends
+[^task-270]: Extensions: revoking the notifications permission leaves the extension's notifications and event wait in place
+[^task-271]: Extensions: a notifications.update whose add fails also removes the notification it was updating
+[^task-272]: Extensions: notification entries outlive the banner when macOS takes it away without a dismiss
+[^chromium-mac-notification-service]: Chromium: mac_notification_service_un.mm (shouldPreventNotificationDismissalAfterDefaultAction, SynchronizeNotifications), chrome/browser/notifications/mac/notification_utils.cc (by_user)
 [^chromium-notifications-clear]: Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)
 [^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared
 [^task-253]: Extensions: Detour never requests notification permission, so extension notifications may never be shown
+[^task-273]: Extensions: an unanswered notification authorization prompt stalls notifications.create in every profile
+[^task-276]: Docs: fix the permission-scope and notification-ordering descriptions the review found wrong

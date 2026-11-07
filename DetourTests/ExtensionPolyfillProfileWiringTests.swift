@@ -39,6 +39,7 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
     }
 
     @MainActor override func tearDown() async throws {
+        NativeMessagingHost.outgoingLimits = .standard
         for profile in createdProfiles {
             profile.unloadAllExtensions()
             TabStore.shared.forceRemoveProfile(id: profile.id)
@@ -1629,6 +1630,194 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
             echo.processCount() == 0
                 && ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id) == 0
         }
+    }
+
+    // MARK: - TASK-265: a host that never reads, from a worker
+
+    /// The worker transport for what `NativeMessagingEnforcementTests` checks
+    /// from an extension page: the worker posts 6 MB on a `connectNative`
+    /// port to a host that never reads its stdin, and the main thread stays
+    /// free (the worker answers the next ping, the host is still running,
+    /// the port still open); then, with the limits lowered, a message over
+    /// the size limit and one past the bound of queued bytes each disconnect
+    /// the worker's port and end its host.
+    @MainActor func testAConnectNativePortToAHostThatNeverReadsFromAServiceWorker() async throws {
+        let id = measurementExtensionID("task265-worker")
+        let silent = try FakeNativeMessagingHost(allowing: [id], behavior: .silent)
+        fakeNativeHosts.append(silent)
+        let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+
+
+        const ports = {};
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (!message) return false;
+            if (message.type === 'ping') { sendResponse({ type: 'pong' }); return true; }
+            if (message.type === 'open') {
+                const record = { disconnected: false };
+                record.port = chrome.runtime.connectNative(message.host);
+                record.port.onDisconnect.addListener(() => { record.disconnected = true; });
+                ports[message.name] = record;
+                sendResponse({ ok: true });
+                return true;
+            }
+            if (message.type === 'post') {
+                const blob = 'x'.repeat(message.bytes - 2);
+                for (let i = 0; i < message.count; i++) ports[message.name].port.postMessage(blob);
+                sendResponse({ ok: true });
+                return true;
+            }
+            if (message.type === 'state') {
+                sendResponse({ disconnected: ports[message.name].disconnected });
+                return true;
+            }
+            if (message.type === 'close') {
+                ports[message.name].port.disconnect();
+                sendResponse({ ok: true });
+                return true;
+            }
+            return false;
+        });
+        """
+        let ext = try await makeWorkerExtension(id: id, permissions: ["nativeMessaging"], backgroundJS: backgroundJS)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+        let started = try await startMeasurement(ext, profileName: "TASK-265 Worker")
+        let controller = started.profile.extensionController
+        func ask(_ message: [String: Any], timeout: TimeInterval = 10) async throws -> [String: Any] {
+            let answer = try await askWorker(from: started.page, message: message, timeout: timeout)
+            return try XCTUnwrap(answer["reply"] as? [String: Any], "\(message["type"] ?? ""): \(answer)")
+        }
+        func liveHosts() -> Int {
+            ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id)
+        }
+        try await waitUntil("the background worker to wake", timeout: 20) {
+            let ping = try await askWorker(from: started.page, message: ["type": "ping"], timeout: 5)
+            return (ping["reply"] as? [String: Any])?["type"] as? String == "pong"
+        }
+
+        _ = try await ask(["type": "open", "name": "stuck", "host": silent.name])
+        try await waitUntil("the host to start", timeout: 5) { silent.processCount() == 1 }
+        let pid = try XCTUnwrap(silent.processIDs().first)
+        let safety = killing(pid, after: 20)
+        defer { safety.cancel() }
+        _ = try await ask(["type": "post", "name": "stuck", "count": 6, "bytes": 1024 * 1024], timeout: 15)
+        let ping = try await ask(["type": "ping"])
+        XCTAssertEqual(ping["type"] as? String, "pong")
+        let state = try await ask(["type": "state", "name": "stuck"])
+        XCTAssertEqual(state["disconnected"] as? Bool, false, "\(state)")
+        XCTAssertEqual(silent.processCount(), 1, "the safety kill did not have to unblock a write")
+        XCTAssertEqual(liveHosts(), 1)
+        _ = try await ask(["type": "close", "name": "stuck"])
+        try await waitUntil("the stuck port's host to end", timeout: 5) { silent.processCount() == 0 && liveHosts() == 0 }
+
+        NativeMessagingHost.outgoingLimits = .init(maxMessageSize: 300_000, maxPendingBytes: 500_000)
+        for (name, count, bytes) in [("tooLarge", 1, 300_001), ("queueFull", 3, 200_000)] {
+            _ = try await ask(["type": "open", "name": name, "host": silent.name])
+            try await waitUntil("the \(name) host to start", timeout: 5) { silent.processCount() == 1 }
+            _ = try await ask(["type": "post", "name": name, "count": count, "bytes": bytes])
+            try await waitUntil("the \(name) port to be disconnected", timeout: 5) {
+                try await ask(["type": "state", "name": name])["disconnected"] as? Bool == true
+            }
+            try await waitUntil("the \(name) host to end", timeout: 5) { silent.processCount() == 0 && liveHosts() == 0 }
+        }
+    }
+
+    /// The worker transport for the host manifests `NativeMessagingEnforcementTests`
+    /// refuses from an extension page (TASK-266): for a manifest with no
+    /// `allowed_origins`, one whose type is not stdio and one with a relative
+    /// path, the `sendNativeMessage` promise rejects and the callback sees
+    /// `runtime.lastError` with Chrome's "not found", a `connectNative` port is
+    /// disconnected with it, and no host process starts.
+    @MainActor func testHostManifestsChromeRefusesAreRefusedFromAServiceWorker() async throws {
+        let id = measurementExtensionID("task266-worker")
+        let backgroundJS = ExtensionAPIPolyfill.polyfillJS + """
+
+
+        const describe = (error) => String(error && error.message !== undefined ? error.message : error);
+        function oneShot(host, form) {
+            return new Promise((resolve) => {
+                const timer = setTimeout(() => resolve({ outcome: 'pending' }), 3000);
+                const settle = (v) => { clearTimeout(timer); resolve(v); };
+                try {
+                    if (form === 'promise') {
+                        chrome.runtime.sendNativeMessage(host, { ping: 1 }).then(
+                            () => settle({ outcome: 'reply' }),
+                            (error) => settle({ outcome: 'error', error: describe(error) }));
+                    } else {
+                        chrome.runtime.sendNativeMessage(host, { ping: 1 }, () => {
+                            const error = chrome.runtime.lastError;
+                            settle(error ? { outcome: 'error', error: describe(error) } : { outcome: 'reply' });
+                        });
+                    }
+                } catch (error) { settle({ outcome: 'thrown', error: describe(error) }); }
+            });
+        }
+        function port(host) {
+            return new Promise((resolve) => {
+                const timer = setTimeout(() => resolve({ outcome: 'pending' }), 5000);
+                let opened;
+                try { opened = chrome.runtime.connectNative(host); }
+                catch (error) { clearTimeout(timer); resolve({ outcome: 'thrown', error: describe(error) }); return; }
+                opened.onDisconnect.addListener((p) => {
+                    clearTimeout(timer);
+                    const lastError = chrome.runtime.lastError ? describe(chrome.runtime.lastError) : null;
+                    const err = (p && p.error) || opened.error;
+                    resolve({ outcome: 'disconnected', lastError, portError: err ? describe(err) : null });
+                });
+            });
+        }
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (!message) return false;
+            if (message.type === 'ping') { sendResponse({ type: 'pong' }); return true; }
+            if (message.type === 'refusals') {
+                (async () => {
+                    sendResponse({
+                        promise: await oneShot(message.host, 'promise'),
+                        callback: await oneShot(message.host, 'callback'),
+                        port: await port(message.host),
+                    });
+                })();
+                return true;
+            }
+            return false;
+        });
+        """
+        let ext = try await makeWorkerExtension(id: id, permissions: ["nativeMessaging"], backgroundJS: backgroundJS)
+        defer { AppDatabase.shared.deleteExtension(id: ext.id) }
+        let started = try await startMeasurement(ext, profileName: "TASK-266 Worker")
+        let controller = started.profile.extensionController
+        try await waitUntil("the background worker to wake", timeout: 20) {
+            let ping = try await askWorker(from: started.page, message: ["type": "ping"], timeout: 5)
+            return (ping["reply"] as? [String: Any])?["type"] as? String == "pong"
+        }
+
+        let notFound = NativeMessagingHost.NativeMessagingError.notFoundMessage
+        let edits: [(String, (inout [String: Any], String) -> Void)] = [
+            ("no allowed_origins", { manifest, _ in manifest["allowed_origins"] = nil }),
+            ("type socket", { manifest, _ in manifest["type"] = "socket" }),
+            ("relative path", { manifest, scriptPath in
+                manifest["path"] = FakeNativeMessagingHost.relativeFromWorkingDirectory(scriptPath)
+            }),
+        ]
+        for (label, edit) in edits {
+            // Each fixture takes the hosts directory over from the last.
+            let host = try FakeNativeMessagingHost(allowing: [id], behavior: .silent, editingManifest: edit)
+            fakeNativeHosts.append(host)
+            let answer = try await askWorker(
+                from: started.page, message: ["type": "refusals", "host": host.name], timeout: 20)
+            let reply = try XCTUnwrap(answer["reply"] as? [String: Any], "\(label): \(answer)")
+            for form in ["promise", "callback"] {
+                let outcome = try XCTUnwrap(reply[form] as? [String: Any], "\(label) \(form): \(reply)")
+                XCTAssertEqual(outcome["outcome"] as? String, "error", "\(label) \(form): \(outcome)")
+                XCTAssertTrue((outcome["error"] as? String ?? "").contains(notFound), "\(label) \(form): \(outcome)")
+            }
+            let port = try XCTUnwrap(reply["port"] as? [String: Any], "\(label) port: \(reply)")
+            XCTAssertEqual(port["outcome"] as? String, "disconnected", "\(label) port: \(port)")
+            let portErrors = [port["portError"] as? String, port["lastError"] as? String].compactMap { $0 }
+            XCTAssertTrue(portErrors.contains { $0.contains(notFound) }, "\(label) port: \(port)")
+            XCTAssertEqual(host.processCount(), 0, "\(label): a refused host must not be started")
+        }
+        XCTAssertEqual(ExtensionManager.shared.pendingOneShotNativeMessageCountForTesting(extensionID: ext.id), 0)
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 0)
     }
 
     // MARK: - TASK-67: a background context replaced without its ports closing

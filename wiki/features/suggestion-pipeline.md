@@ -82,6 +82,8 @@ enum SuggestionItem {
     case historyResult(url:title:faviconURL:)
     case openTab(tabID:spaceID:url:title:favicon:)   // "Switch to Tab"
     case searchSuggestion(text:)   // from the search engine
+    case siteSearch(name:query:url:)             // site-search mode's row (TASK-287)
+    case siteSearchHint(id:name:fieldText:)       // "Search <name>" with a Tab badge
 }
 ```
 

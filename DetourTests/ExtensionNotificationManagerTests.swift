@@ -63,6 +63,13 @@ final class HeldNotificationCenter: ExtensionNotificationCenter {
     /// a test can act between the manager's listing and its filtering.
     var whileListing: (@MainActor () -> Void)?
 
+    /// Takes a notification off screen without the manager asking, as
+    /// Notification Center's Clear All or the system pruning it might
+    /// (TASK-272); not recorded in `removals`.
+    func takeAway(_ identifier: String) {
+        shown.removeValue(forKey: identifier)
+    }
+
     /// Puts a notification on screen as an earlier launch (or another app
     /// component) left it, without an `add`.
     func deliver(_ identifier: String, title: String = "left over") {
@@ -74,7 +81,11 @@ final class HeldNotificationCenter: ExtensionNotificationCenter {
         pending.insert(identifier)
     }
 
+    /// How many times `deliveredIdentifiers` was called (TASK-272).
+    private(set) var listings = 0
+
     func deliveredIdentifiers() async -> [String] {
+        listings += 1
         let identifiers = Array(shown.keys)
         whileListing?()
         return identifiers
@@ -119,9 +130,24 @@ final class HeldNotificationCenter: ExtensionNotificationCenter {
 
     var heldAuthorizationRequestCount: Int { heldAuthorizationRequests.count }
 
+    /// True: a status query waits until `releaseStatusQueries` is called,
+    /// as the real center's XPC round-trip takes a while (TASK-273).
+    var holdsStatusQueries = false
+    private var heldStatusQueries: [CheckedContinuation<Void, Never>] = []
+
     func authorizationStatus() async -> ExtensionNotificationAuthorization {
         statusQueries += 1
+        if holdsStatusQueries {
+            await withCheckedContinuation { heldStatusQueries.append($0) }
+        }
         return authorization
+    }
+
+    /// Answers every held status query.
+    func releaseStatusQueries() {
+        let waiting = heldStatusQueries
+        heldStatusQueries.removeAll()
+        for continuation in waiting { continuation.resume() }
     }
 
     func requestAuthorization() async -> Bool {
@@ -168,18 +194,26 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
     private var manager: ExtensionNotificationManager!
     /// The identifier each (owner, id) was last created under, by `startCreate`.
     private var createdIdentifiers: [String: String] = [:]
+    /// The authorization timeouts the manager scheduled, one per check, in
+    /// order; none fires until the test calls it (TASK-273).
+    private var authorizationTimeouts: [@MainActor () -> Void] = []
 
     @MainActor override func setUp() async throws {
         try await super.setUp()
         center = HeldNotificationCenter()
         manager = ExtensionNotificationManager(center: center)
+        manager.scheduleAuthorizationTimeout = { [unowned self] fire in authorizationTimeouts.append(fire) }
     }
 
     @MainActor override func tearDown() async throws {
         center.releaseAll()
+        // A failed test can leave the prompt up; answer it so the waits end.
+        center.releaseStatusQueries()
+        center.answerAuthorizationRequests(granting: false)
         manager = nil
         center = nil
         createdIdentifiers.removeAll()
+        authorizationTimeouts.removeAll()
         try await super.tearDown()
     }
 
@@ -351,6 +385,29 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["ok": true])
         XCTAssertEqual(center.authorizationRequests, 0, "an authorized app is never prompted")
         XCTAssertEqual(center.statusQueries, 1)
+    }
+
+    /// Chrome generates an id when `notificationId` is "not set or empty"
+    /// (TASK-269): two creates with an empty id are two notifications, and
+    /// neither is listed under the empty id.
+    @MainActor func testCreateWithAnEmptyIDGeneratesAFreshIDEachTime() async throws {
+        center.holdsAdds = false
+        var answered: [String] = []
+        for title in ["First", "Second"] {
+            let done = expectation(description: "create \(title) answers")
+            manager.create(owner: Self.ownerA, notificationID: "", options: ["title": title, "message": "m"]) {
+                answered.append($0)
+                done.fulfill()
+            }
+            await fulfillment(of: [done], timeout: 5)
+        }
+        XCTAssertEqual(answered.count, 2)
+        XCTAssertFalse(answered.contains(""), "an empty id is never kept: \(answered)")
+        XCTAssertEqual(Set(answered).count, 2, "each create gets its own id: \(answered)")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), Dictionary(uniqueKeysWithValues: answered.map { ($0, true) }))
+        XCTAssertEqual(center.addedIdentifiers.count, 2, "the second create adds, not replaces")
+        XCTAssertEqual(Set(center.shown.values), ["First", "Second"])
+        XCTAssertNil(manager.identifier(for: Self.ownerA, notificationID: ""))
     }
 
     /// Denied earlier: the create answers its id, as Chrome's does when the
@@ -537,6 +594,178 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         XCTAssertNil(center.shown[yIdentifier])
         XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
         XCTAssertEqual(center.addedIdentifiers.count, 2, "nothing is added once denied")
+    }
+
+    // MARK: - An unanswered authorization prompt (TASK-273)
+
+    /// The user leaves the prompt up: once it has been up for the timeout,
+    /// the waiting creates (any owner's) and updates are answered and stay
+    /// listed, a create arriving later is answered at once, and nothing is
+    /// added until the user allows notifications, when every one is shown.
+    @MainActor func testUnansweredPromptAnswersTheWaitingCallsAfterTheTimeoutAndShowsThemOnceAllowed() async throws {
+        center.authorization = .notDetermined
+        center.holdsAuthorizationRequests = true
+        center.holdsAdds = false
+        let a = startCreate("a", title: "A")
+        let b = startCreate("b", title: "B", owner: Self.ownerB)
+        try await waitForPrompt()
+        let update = startUpdate("a", title: "A updated")
+        // Give the joining tasks time to run.
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(a.answeredID(), "before the timeout the create waits for the user")
+        XCTAssertNil(update.result())
+        XCTAssertEqual(authorizationTimeouts.count, 1, "one timeout per check")
+
+        authorizationTimeouts[0]()
+        await fulfillment(of: [a.done, b.done, update.done], timeout: 5)
+        XCTAssertEqual(a.answeredID(), "a")
+        XCTAssertEqual(b.answeredID(), "b")
+        XCTAssertEqual(update.result(), true, "the update is recorded, so it answers true")
+        XCTAssertTrue(center.addedIdentifiers.isEmpty, "nothing is shown before the user allows it")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["a": true])
+        XCTAssertEqual(manager.getAll(owner: Self.ownerB), ["b": true])
+
+        let late = startCreate("late", title: "Late")
+        await fulfillment(of: [late.done], timeout: 5)
+        XCTAssertEqual(late.answeredID(), "late", "a create joining a timed-out check is answered at once")
+        XCTAssertTrue(center.addedIdentifiers.isEmpty)
+        XCTAssertEqual(center.authorizationRequests, 1)
+        XCTAssertEqual(center.statusQueries, 1, "the late create joined the check in flight")
+
+        center.answerAuthorizationRequests(granting: true)
+        try await waitUntil("every waiting notification is shown", timeout: 5, pollInterval: 0.01) {
+            center.shown.count == 3
+        }
+        XCTAssertEqual(center.shown[identifier("a")], "A updated", "the superseded create adds nothing")
+        XCTAssertEqual(center.shown[identifier("b", owner: Self.ownerB)], "B")
+        XCTAssertEqual(center.shown[identifier("late")], "Late")
+        XCTAssertEqual(center.addedIdentifiers.count, 3)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["a": true, "late": true])
+        XCTAssertEqual(center.authorizationRequests, 1)
+    }
+
+    /// Answered by the timeout, then declined: nothing is shown and the
+    /// entries go, as for a create declined before it was answered.
+    @MainActor func testUnansweredPromptThenDeclinedDropsTheAnsweredCreates() async throws {
+        center.authorization = .notDetermined
+        center.holdsAuthorizationRequests = true
+        center.holdsAdds = false
+        let create = startCreate("x", title: "X")
+        try await waitForPrompt()
+        authorizationTimeouts[0]()
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(create.answeredID(), "x")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["x": true])
+
+        center.answerAuthorizationRequests(granting: false)
+        try await waitUntil("the declined create is dropped", timeout: 5, pollInterval: 0.01) {
+            manager.getAll(owner: Self.ownerA).isEmpty
+        }
+        XCTAssertTrue(center.addedIdentifiers.isEmpty)
+        XCTAssertEqual(clear("x"), false)
+    }
+
+    /// A timeout fires only for the check it was scheduled for: one that
+    /// fires after its check finished does not answer a later check's calls.
+    @MainActor func testAnEarlierChecksTimeoutDoesNotAnswerALaterCheck() async throws {
+        center.authorization = .notDetermined
+        center.holdsAuthorizationRequests = true
+        center.holdsAdds = false
+        let first = startCreate("first", title: "First")
+        try await waitForPrompt()
+        center.answerAuthorizationRequests(granting: true)
+        await fulfillment(of: [first.done], timeout: 5)
+
+        // The user resets the permission (tccutil), so the next create asks again.
+        center.authorization = .notDetermined
+        let second = startCreate("second", title: "Second")
+        try await waitForPrompt()
+        XCTAssertEqual(authorizationTimeouts.count, 2)
+        authorizationTimeouts[0]()
+        XCTAssertNil(second.answeredID(), "the first check's timeout is spent")
+        authorizationTimeouts[1]()
+        XCTAssertEqual(second.answeredID(), "second")
+        await fulfillment(of: [second.done], timeout: 5)
+        center.answerAuthorizationRequests(granting: true)
+        try await waitUntil("the second create is shown", timeout: 5, pollInterval: 0.01) {
+            center.shown[identifier("second")] == "Second"
+        }
+    }
+
+    /// At most `authorizationWaitLimit` of one owner's creates wait on the
+    /// prompt; one more is refused at once (it answers its id, as a failed
+    /// add's create does, and is neither listed nor ever added), while
+    /// another owner's create still waits.
+    @MainActor func testCreatesPastTheWaitLimitAreRefused() async throws {
+        center.authorization = .notDetermined
+        center.holdsAuthorizationRequests = true
+        center.holdsAdds = false
+        let limit = ExtensionNotificationManager.authorizationWaitLimit
+        let first = startCreate("w0", title: "W0")
+        try await waitForPrompt()
+        var waiting = [first]
+        for index in 1..<limit { waiting.append(startCreate("w\(index)", title: "W\(index)")) }
+        let refused = startCreate("refused", title: "Refused")
+        let other = startCreate("other", title: "Other", owner: Self.ownerB)
+
+        await fulfillment(of: [refused.done], timeout: 5)
+        XCTAssertEqual(refused.answeredID(), "refused")
+        XCTAssertNil(waiting.last?.answeredID(), "the creates within the limit still wait")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA).count, limit, "the refused create is not listed")
+        XCTAssertNil(manager.identifier(for: Self.ownerA, notificationID: "refused"))
+
+        authorizationTimeouts[0]()
+        await fulfillment(of: waiting.map(\.done) + [other.done], timeout: 5)
+        center.answerAuthorizationRequests(granting: true)
+        try await waitUntil("the waiting creates are shown", timeout: 5, pollInterval: 0.01) {
+            center.shown.count == limit + 1
+        }
+        XCTAssertFalse(center.shown.values.contains("Refused"))
+        XCTAssertEqual(center.shown[identifier("other", owner: Self.ownerB)], "Other")
+        XCTAssertEqual(center.addedIdentifiers.count, limit + 1)
+    }
+
+    /// The limit and the timeout are for a prompt only: a burst of creates
+    /// joining a check that only reads the (authorized) status is shown in
+    /// full, however many there are, and schedules no timeout.
+    @MainActor func testABurstPastTheLimitWhileTheStatusIsReadIsShownInFull() async throws {
+        center.holdsAdds = false
+        center.holdsStatusQueries = true
+        let count = ExtensionNotificationManager.authorizationWaitLimit + 8
+        let creates = (0..<count).map { startCreate("burst\($0)", title: "B\($0)") }
+        // Give the joining tasks time to run.
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(center.statusQueries, 1, "every create joined the one status check")
+        center.releaseStatusQueries()
+        await fulfillment(of: creates.map(\.done), timeout: 5)
+        XCTAssertEqual(center.shown.count, count, "none is refused")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA).count, count)
+        XCTAssertTrue(authorizationTimeouts.isEmpty, "no prompt, so no timeout")
+    }
+
+    /// An update past the limit answers false and puts back the entry it
+    /// replaced (TASK-271), so the last update within the limit is shown.
+    @MainActor func testAnUpdatePastTheWaitLimitLeavesTheNotificationItWasUpdating() async throws {
+        center.authorization = .notDetermined
+        center.holdsAuthorizationRequests = true
+        center.holdsAdds = false
+        let limit = ExtensionNotificationManager.authorizationWaitLimit
+        let create = startCreate("u", title: "U0")
+        try await waitForPrompt()
+        var updates: [(done: XCTestExpectation, result: () -> Bool?)] = []
+        for index in 1..<limit { updates.append(startUpdate("u", title: "U\(index)")) }
+        let refused = startUpdate("u", title: "Refused")
+
+        await fulfillment(of: [refused.done], timeout: 5)
+        XCTAssertEqual(refused.result(), false)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["u": true])
+
+        center.answerAuthorizationRequests(granting: true)
+        await fulfillment(of: [create.done] + updates.map(\.done), timeout: 5)
+        XCTAssertEqual(updates.last?.result(), true)
+        XCTAssertEqual(center.addedIdentifiers, [identifier("u")], "only the newest update within the limit adds")
+        XCTAssertEqual(center.shown[identifier("u")], "U\(limit - 1)")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["u": true])
     }
 
     // MARK: - Clear while the create is in flight
@@ -819,11 +1048,33 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         await fulfillment(of: [create.done], timeout: 5)
         XCTAssertEqual(create.answeredID(), "fails", "create answers with its id even when the center refuses")
         XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertNil(manager.identifier(for: Self.ownerA, notificationID: "fails"), "no entry is left behind")
+        XCTAssertTrue(center.shown.isEmpty)
     }
 
-    /// An update whose add the center refuses answers false: the failure drops
-    /// the notification, so the extension must not be told it was updated.
-    @MainActor func testFailedUpdateAnswersFalseAndDropsTheEntry() async throws {
+    /// Updates `id` with only a new message and answers the title the
+    /// resulting add shows: the title the entry kept, as the merge keeps it.
+    @MainActor private func titleKeptByTheNextUpdate(_ id: String, file: StaticString = #filePath, line: UInt = #line) async throws -> String? {
+        let done = expectation(description: "message-only update of \(id) answers")
+        var result: Bool?
+        let adds = center.addedRequests.count
+        manager.update(owner: Self.ownerA, notificationID: id, options: ["message": "later"]) {
+            result = $0
+            done.fulfill()
+        }
+        try await waitForHeldAdds(1, file: file, line: line)
+        center.releaseAll()
+        await fulfillment(of: [done], timeout: 5)
+        XCTAssertEqual(result, true, file: file, line: line)
+        XCTAssertEqual(center.addedRequests.count, adds + 1, file: file, line: line)
+        return center.addedRequests.last?.content.title
+    }
+
+    /// TASK-271: an update whose add the center refuses answers false and
+    /// leaves the notification the create showed in place, as Chrome does:
+    /// still on screen, still listed, still under its identifier, and with
+    /// the create's options for the next update to merge into.
+    @MainActor func testFailedUpdateAnswersFalseAndLeavesTheOriginal() async throws {
         let create = startCreate("upd-fails", title: "Before")
         try await waitForHeldAdds(1)
         center.release()
@@ -833,9 +1084,183 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         try await waitForHeldAdds(1)
         center.release(failing: true)
         await fulfillment(of: [update.done], timeout: 5)
+        XCTAssertEqual(update.result(), false, "the update did not apply")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["upd-fails": true])
+        XCTAssertEqual(manager.identifier(for: Self.ownerA, notificationID: "upd-fails"), identifier("upd-fails"))
+        XCTAssertEqual(center.shown, [identifier("upd-fails"): "Before"])
+        XCTAssertTrue(center.removals.isEmpty, "the failure must not take the original away")
+
+        let kept = try await titleKeptByTheNextUpdate("upd-fails")
+        XCTAssertEqual(kept, "Before", "the next update merges into the original's options, not the failed update's")
+        XCTAssertEqual(clear("upd-fails"), true)
+        XCTAssertTrue(center.shown.isEmpty)
+    }
+
+    /// An update failing while the create's add is still in flight leaves
+    /// the create standing; the create's own add then settles it.
+    @MainActor func testFailedUpdateWhileTheCreateIsInFlightLeavesTheCreate() async throws {
+        let create = startCreate("both", title: "Before")
+        try await waitForHeldAdds(1)
+        let update = startUpdate("both", title: "After")
+        try await waitForHeldAdds(2)
+
+        center.release(at: 1, failing: true)
+        await fulfillment(of: [update.done], timeout: 5)
+        XCTAssertEqual(update.result(), false)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["both": true], "the create is still in flight")
+
+        center.release()
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["both": true])
+        XCTAssertEqual(center.shown, [identifier("both"): "Before"])
+        XCTAssertTrue(center.removals.isEmpty)
+    }
+
+    /// The update fails first and the create it fell back to then fails too:
+    /// nothing was shown, so nothing is left.
+    @MainActor func testFailedUpdateThenFailedCreateLeavesNoEntry() async throws {
+        let create = startCreate("neither", title: "Before")
+        try await waitForHeldAdds(1)
+        let update = startUpdate("neither", title: "After")
+        try await waitForHeldAdds(2)
+
+        center.release(at: 1, failing: true)
+        await fulfillment(of: [update.done], timeout: 5)
+        center.release(failing: true)
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertNil(manager.identifier(for: Self.ownerA, notificationID: "neither"))
+        XCTAssertTrue(center.shown.isEmpty)
+    }
+
+    /// The create fails first, while the update is in flight, and then the
+    /// update fails: the failed create is nothing to fall back to.
+    @MainActor func testFailedCreateThenFailedUpdateLeavesNoEntry() async throws {
+        let create = startCreate("none", title: "Before")
+        try await waitForHeldAdds(1)
+        let update = startUpdate("none", title: "After")
+        try await waitForHeldAdds(2)
+
+        center.release(at: 0, failing: true)
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["none": true], "the update is still in flight")
+        center.release(failing: true)
+        await fulfillment(of: [update.done], timeout: 5)
         XCTAssertEqual(update.result(), false)
         XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
         XCTAssertTrue(center.shown.isEmpty)
+    }
+
+    /// An update that supersedes the create before the create's add is made
+    /// skips that add, so when the update fails nothing was ever shown.
+    @MainActor func testFailedUpdateOfACreateThatNeverAddedLeavesNoEntry() async throws {
+        let create = startCreate("skipped", title: "Before")
+        let update = startUpdate("skipped", title: "After")
+        try await waitForHeldAdds(1)
+        await fulfillment(of: [create.done], timeout: 5)
+        XCTAssertEqual(center.heldTitles, ["After"], "only the update adds (TASK-253)")
+
+        center.release(failing: true)
+        await fulfillment(of: [update.done], timeout: 5)
+        XCTAssertEqual(update.result(), false)
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertTrue(center.shown.isEmpty)
+    }
+
+    /// Of two updates in flight, the later failing falls back to the earlier,
+    /// which then shows.
+    @MainActor func testFailedSecondUpdateFallsBackToTheFirst() async throws {
+        let create = startCreate("chain", title: "Created")
+        try await waitForHeldAdds(1)
+        center.release()
+        await fulfillment(of: [create.done], timeout: 5)
+
+        let first = startUpdate("chain", title: "First")
+        try await waitForHeldAdds(1)
+        let second = startUpdate("chain", title: "Second")
+        try await waitForHeldAdds(2)
+        center.release(at: 1, failing: true)
+        await fulfillment(of: [second.done], timeout: 5)
+        XCTAssertEqual(second.result(), false)
+        center.release()
+        await fulfillment(of: [first.done], timeout: 5)
+        XCTAssertEqual(first.result(), true)
+
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["chain": true])
+        XCTAssertEqual(center.shown, [identifier("chain"): "First"])
+        let kept = try await titleKeptByTheNextUpdate("chain")
+        XCTAssertEqual(kept, "First")
+    }
+
+    /// Of two updates in flight, the earlier shows first and the later then
+    /// fails: the later falls back to the earlier, which replaced the create.
+    @MainActor func testFailedSecondUpdateAfterTheFirstShowedFallsBackToTheFirst() async throws {
+        let create = startCreate("order", title: "Created")
+        try await waitForHeldAdds(1)
+        center.release()
+        await fulfillment(of: [create.done], timeout: 5)
+
+        let first = startUpdate("order", title: "First")
+        try await waitForHeldAdds(1)
+        let second = startUpdate("order", title: "Second")
+        try await waitForHeldAdds(2)
+        center.release(at: 0)
+        await fulfillment(of: [first.done], timeout: 5)
+        XCTAssertEqual(first.result(), true)
+        center.release(failing: true)
+        await fulfillment(of: [second.done], timeout: 5)
+        XCTAssertEqual(second.result(), false)
+
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["order": true])
+        XCTAssertEqual(center.shown, [identifier("order"): "First"])
+        XCTAssertTrue(center.removals.isEmpty)
+        let kept = try await titleKeptByTheNextUpdate("order")
+        XCTAssertEqual(kept, "First")
+    }
+
+    /// Both updates in flight fail, the earlier first: the notification falls
+    /// back past both to what the create showed.
+    @MainActor func testTwoFailedUpdatesFallBackToTheCreate() async throws {
+        let create = startCreate("twice", title: "Created")
+        try await waitForHeldAdds(1)
+        center.release()
+        await fulfillment(of: [create.done], timeout: 5)
+
+        let first = startUpdate("twice", title: "First")
+        try await waitForHeldAdds(1)
+        let second = startUpdate("twice", title: "Second")
+        try await waitForHeldAdds(2)
+        center.release(at: 0, failing: true)
+        await fulfillment(of: [first.done], timeout: 5)
+        center.release(failing: true)
+        await fulfillment(of: [second.done], timeout: 5)
+        XCTAssertEqual(first.result(), false)
+        XCTAssertEqual(second.result(), false)
+
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["twice": true])
+        XCTAssertEqual(center.shown, [identifier("twice"): "Created"])
+        XCTAssertTrue(center.removals.isEmpty)
+        let kept = try await titleKeptByTheNextUpdate("twice")
+        XCTAssertEqual(kept, "Created")
+    }
+
+    /// A create for an id the owner already has replaces it outright, so its
+    /// failure leaves no entry behind, and takes the old notification away
+    /// with it rather than leaving one the extension no longer has.
+    @MainActor func testFailedCreateOverAShownNotificationLeavesNoEntry() async throws {
+        let first = startCreate("again", title: "First")
+        try await waitForHeldAdds(1)
+        center.release()
+        await fulfillment(of: [first.done], timeout: 5)
+
+        let second = startCreate("again", title: "Second")
+        try await waitForHeldAdds(1)
+        center.release(failing: true)
+        await fulfillment(of: [second.done], timeout: 5)
+        XCTAssertEqual(second.answeredID(), "again")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:])
+        XCTAssertTrue(center.shown.isEmpty)
+        XCTAssertEqual(clear("again"), false)
     }
 
     /// A failed add for a superseded create leaves the newer entry alone.
@@ -937,7 +1362,8 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
     }
 
     /// A click or close resolves to the one owner whose identifier it carries,
-    /// and a close drops only that owner's entry.
+    /// and drops only that owner's entry (a click too: macOS takes the
+    /// banner away, TASK-272).
     @MainActor func testResponsesResolveOnlyToTheCreatingProfile() async throws {
         center.holdsAdds = false
         let createdA = startCreate("x", title: "A's")
@@ -947,13 +1373,13 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         XCTAssertEqual(manager.handleResponse(identifier: identifier("x", owner: Self.ownerA2),
                                               action: UNNotificationDefaultActionIdentifier),
                        .init(owner: Self.ownerA2, notificationID: "x", kind: .clicked))
-        XCTAssertEqual(manager.getAll(owner: Self.ownerA2), ["x": true], "a click keeps the notification")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA2), [:], "the click drops A2's entry")
+        XCTAssertEqual(manager.getAll(owner: Self.ownerA), ["x": true], "and only A2's")
 
         XCTAssertEqual(manager.handleResponse(identifier: identifier("x"),
                                               action: UNNotificationDismissActionIdentifier),
                        .init(owner: Self.ownerA, notificationID: "x", kind: .closed))
         XCTAssertEqual(manager.getAll(owner: Self.ownerA), [:], "the close drops A's entry")
-        XCTAssertEqual(manager.getAll(owner: Self.ownerA2), ["x": true], "and only A's")
     }
 
     /// Identifiers earlier builds delivered (`<extensionID>:<id>` before
@@ -1177,6 +1603,57 @@ nonisolated final class ExtensionNotificationManagerTests: XCTestCase {
         let quick = store.openQuickDetourTab(profile: privateProfile)
         XCTAssertEqual(manager.getAll(owner: Self.privateOwner), [:], "a Private Quick Detour starts it clean too")
         store.closeQuickDetourTab(quick, disposition: .discard)
+    }
+
+    /// A Private session starting or ending takes the notifications but not
+    /// the Private worker's wait for their events: its context stays loaded,
+    /// so a click and a dismissal on a notification created after either
+    /// boundary reach that wait (TASK-264).
+    @MainActor func testAPrivateSessionBoundaryLeavesTheWorkersWaitStanding() async throws {
+        center.holdsAdds = false
+        manager.wakeBackground = { _ in }
+        let (store, _) = try privateSessionStore()
+        var replies: [(value: Any?, error: String?)] = []
+        func park(ack: Int?) {
+            manager.awaitEvent(owner: Self.privateOwner, instance: "worker", ack: ack) { value, error in
+                replies.append((value, error))
+            }
+        }
+        func lastEvent() -> [String: Any]? {
+            ((replies.last?.value as? [String: Any])?["events"] as? [[String: Any]])?.last
+        }
+
+        let between = startCreate("between", title: "Between", owner: Self.privateOwner)
+        await fulfillment(of: [between.done], timeout: 5)
+        park(ack: nil)
+        let window = store.addIncognitoSpace()
+        XCTAssertEqual(manager.getAll(owner: Self.privateOwner), [:], "precondition: the session started clean")
+        XCTAssertTrue(replies.isEmpty, "the start leaves the wait standing")
+
+        let inSession = startCreate("in-session", title: "In session", owner: Self.privateOwner)
+        await fulfillment(of: [inSession.done], timeout: 5)
+        manager.handleResponse(identifier: inSession.identifier, action: UNNotificationDefaultActionIdentifier)
+        XCTAssertEqual(replies.count, 1)
+        XCTAssertNil(replies.last?.error)
+        let clickEvents = (replies.last?.value as? [String: Any])?["events"] as? [[String: Any]] ?? []
+        XCTAssertEqual(clickEvents.map { $0["kind"] as? String }, ["clicked", "closed"],
+                       "the click, then the close it ends the notification with (TASK-272)")
+        XCTAssertEqual(clickEvents.map { $0["notificationId"] as? String }, ["in-session", "in-session"])
+        park(ack: lastEvent()?["seq"] as? Int)
+
+        store.removeIncognitoSpace(id: window.id)
+        XCTAssertFalse(store.hasLivePrivateSession)
+        XCTAssertEqual(manager.getAll(owner: Self.privateOwner), [:])
+        XCTAssertEqual(replies.count, 1, "the end leaves the wait standing")
+
+        let after = startCreate("after", title: "After", owner: Self.privateOwner)
+        await fulfillment(of: [after.done], timeout: 5)
+        manager.handleResponse(identifier: after.identifier, action: UNNotificationDismissActionIdentifier)
+        XCTAssertEqual(replies.count, 2)
+        XCTAssertNil(replies.last?.error)
+        XCTAssertEqual(lastEvent()?["kind"] as? String, "closed")
+        XCTAssertEqual(lastEvent()?["notificationId"] as? String, "after")
+        XCTAssertEqual(lastEvent()?["byUser"] as? Bool, true)
     }
 
     /// Deleting a profile takes every extension's notifications in it.

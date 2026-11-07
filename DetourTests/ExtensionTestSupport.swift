@@ -249,6 +249,16 @@ func runTool(_ path: String, _ arguments: [String]) -> (status: Int32, output: S
     return (process.terminationStatus, String(decoding: data, as: UTF8.self))
 }
 
+/// SIGKILLs `pid` after `seconds` unless cancelled (TASK-265). A regression
+/// that blocks the main actor in a write to a host that never reads then
+/// fails (the kill unblocks the write, and the test finds the host gone and
+/// the time spent) instead of hanging the run.
+func killing(_ pid: pid_t, after seconds: TimeInterval) -> DispatchWorkItem {
+    let item = DispatchWorkItem { _ = Darwin.kill(pid, SIGKILL) }
+    DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: item)
+    return item
+}
+
 /// A stand-in native messaging host: a shell script that `exec`s
 /// `sleep <token>` and reads nothing, so a test gets a real host process that
 /// stays connected and silent (`Behavior` has variants that write fixed bytes
@@ -294,6 +304,18 @@ final class FakeNativeMessagingHost {
         /// As `.silent`, but SIGTERM is ignored (`trap '' TERM`, which the
         /// `exec`'d sleep inherits): only SIGKILL ends it (TASK-241).
         case silentIgnoringSIGTERM
+        /// Closes its stdin, then sleeps as `.silent` does: a write to it
+        /// fails with EPIPE while the process is still alive (TASK-265).
+        case closesStdin
+        /// A wrapper script that runs its real host without `exec`
+        /// (TASK-274): the script's shell is the host process and waits on a
+        /// `sleep <token>` child, which reads nothing, so it never sees its
+        /// stdin close. `processIDs()` sees the child, `wrapperIDs()` the
+        /// shell.
+        case wrapsSilentChild
+        /// As `wrapsSilentChild`, but the child ignores SIGTERM (`trap ''
+        /// TERM` in a shell that then `exec`s the sleep); the wrapper does not.
+        case wrapsChildIgnoringSIGTERM
     }
 
     /// The host name an extension passes to `connectNative` / `sendNativeMessage`.
@@ -302,10 +324,17 @@ final class FakeNativeMessagingHost {
     let sleepToken: String
 
     private let dir: URL
+    /// The host script, the manifest's `path`: what a test's sweep of its
+    /// own hosts names (`terminateSpawnedHostsForTesting`).
+    var scriptPath: String { dir.appendingPathComponent("fake-host.sh").path }
     private let previousHostsDir: String?
 
+    /// `editingManifest` changes the manifest before it is written, for a
+    /// test of a manifest Detour must refuse (TASK-266); it gets the script's
+    /// absolute path to build a relative one from.
     init(name: String = "com.detour.fake_host_test", allowing extensionIDs: [String],
-         behavior: Behavior = .silent) throws {
+         behavior: Behavior = .silent,
+         editingManifest: ((inout [String: Any], _ scriptPath: String) -> Void)? = nil) throws {
         self.name = name
         self.sleepToken = String(Int.random(in: 300_000...899_999))
         self.previousHostsDir = ProcessInfo.processInfo.environment["DETOUR_NATIVE_MESSAGING_HOSTS_DIR"]
@@ -342,20 +371,39 @@ final class FakeNativeMessagingHost {
             body = "/usr/bin/head -c 1 >/dev/null\n/bin/cat '\(outputFile.path)'\nexec sleep \(sleepToken)\n"
         case .silentIgnoringSIGTERM:
             body = "trap '' TERM\nexec sleep \(sleepToken)\n"
+        case .closesStdin:
+            body = "exec 0<&-\nexec sleep \(sleepToken)\n"
+        // `exit $?` after the child keeps the shell from running its last
+        // command in place.
+        case .wrapsSilentChild:
+            body = "/bin/sleep \(sleepToken)\nexit $?\n"
+        case .wrapsChildIgnoringSIGTERM:
+            body = "/bin/sh -c \"trap '' TERM; exec /bin/sleep \(sleepToken)\"\nexit $?\n"
         }
         try ("#!/bin/sh\n" + body).write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
 
-        let manifest: [String: Any] = [
+        var manifest: [String: Any] = [
             "name": name,
             "description": "Detour test fake native messaging host",
             "path": script.path,
             "type": "stdio",
             "allowed_origins": extensionIDs.map { "chrome-extension://\($0)/" },
         ]
+        editingManifest?(&manifest, script.path)
         try JSONSerialization.data(withJSONObject: manifest)
             .write(to: dir.appendingPathComponent("\(name).json"))
         setenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR", dir.path, 1)
+    }
+
+    /// `absolutePath` as a path relative to the process's working
+    /// directory that leads to the same file: `../` up to the root, then the
+    /// path. A manifest with it must be refused even though it resolves to
+    /// an executable (TASK-266).
+    static func relativeFromWorkingDirectory(_ absolutePath: String) -> String {
+        let depth = FileManager.default.currentDirectoryPath
+            .split(separator: "/", omittingEmptySubsequences: true).count
+        return String(repeating: "../", count: depth) + absolutePath.drop { $0 == "/" }
     }
 
     /// How many of this fixture's host processes are alive right now.
@@ -368,7 +416,18 @@ final class FakeNativeMessagingHost {
     /// the new context spawn the same number of hosts, so "the old ones exited"
     /// can only be said about specific processes (TASK-67).
     func processIDs() -> [Int32] {
-        runTool("/usr/bin/pgrep", ["-f", "sleep \(sleepToken)"])
+        pids(matching: "sleep \(sleepToken)")
+    }
+
+    /// The pids of this fixture's live host scripts that are still running
+    /// as shells: a wrapper behavior's host process (TASK-274). The script's
+    /// path is in this fixture's own directory, so nothing else matches.
+    func wrapperIDs() -> [Int32] {
+        pids(matching: scriptPath)
+    }
+
+    private func pids(matching pattern: String) -> [Int32] {
+        runTool("/usr/bin/pgrep", ["-f", pattern])
             .output.split(separator: "\n").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
     }
 
@@ -378,7 +437,10 @@ final class FakeNativeMessagingHost {
         } else {
             unsetenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR")
         }
+        // The token finds every sleep, a wrapper's child included even once
+        // it has been left to launchd; the script path finds a wrapper shell.
         runTool("/usr/bin/pkill", ["-KILL", "-f", "sleep \(sleepToken)"])
+        runTool("/usr/bin/pkill", ["-KILL", "-f", scriptPath])
         try? FileManager.default.removeItem(at: dir)
     }
 }

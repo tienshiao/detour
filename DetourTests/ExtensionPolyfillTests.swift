@@ -483,7 +483,8 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
     }
 
     /// TASK-254: Chrome's create(notificationId?, options, callback?) treats a
-    /// null or undefined id as absent and still uses the options; only an
+    /// null or undefined id as absent and still uses the options (and an
+    /// empty one gets a generated id too, TASK-269); only an
     /// options object in the first slot means the id was left out. Each form
     /// shows the given title, from the promise and the callback form alike.
     @MainActor func testNotificationsCreateArgumentForms() async throws {
@@ -493,6 +494,7 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         let forms: [(name: String, args: (String) -> String, expectedID: String?)] = [
             ("null id", { "null, { type: 'basic', title: '\($0)', message: 'm' }" }, nil),
             ("undefined id", { "undefined, { type: 'basic', title: '\($0)', message: 'm' }" }, nil),
+            ("empty id", { "'', { type: 'basic', title: '\($0)', message: 'm' }" }, nil),
             ("string id", { "'form-\($0)', { type: 'basic', title: '\($0)', message: 'm' }" }, "form-%@"),
             ("options only", { "{ type: 'basic', title: '\($0)', message: 'm' }" }, nil),
         ]

@@ -344,7 +344,7 @@ class Profile {
             for (key, saved) in savedPatterns where saved == status {
                 guard let pattern = try? WKWebExtension.MatchPattern(string: key) else { continue }
                 guard askablePatterns.contains(where: { $0.matches(pattern) }) else {
-                    log.debug("Skipping stale pattern decision \(key, privacy: .public) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
+                    log.debug("Skipping stale pattern decision \(ExtensionPermissionType.matchPattern.publicLogPart(ofKey: key), privacy: .public) (\(key, privacy: .private)) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
                     continue
                 }
                 // Already there with this status: WebKit keys its dictionaries
@@ -383,7 +383,7 @@ class Profile {
             where (ExtensionPermissionStatus(rawValue: record.status) ?? .denied) == status {
                 guard let url = URL(string: record.permissionKey) else { continue }
                 guard askablePatterns.contains(where: { $0.matches(url) }) else {
-                    log.debug("Skipping stale URL grant \(record.permissionKey, privacy: .public) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
+                    log.debug("Skipping stale URL decision \(ExtensionPermissionType.url.publicLogPart(ofKey: record.permissionKey), privacy: .public) (\(record.permissionKey, privacy: .private)) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
                     continue
                 }
                 context.setPermissionStatus(status.contextStatus, for: url)
@@ -452,6 +452,17 @@ class Profile {
         // match patterns (`<all_urls>` included), and the per-URL decisions taken
         // at the site-access prompt; leave undecided permissions for WebKit to
         // prompt via the delegate.
+        //
+        // These writes touch this profile's context alone, so they must keep
+        // the invariant `ExtensionManager.savedGrantsRevoked` relies on
+        // (TASK-276; stated on `applySavedDecisions`): WebKit posts a
+        // grant-removal notification for a Detour write as for the extension's
+        // own `permissions.remove`, and a saved grant whose key the context
+        // then neither grants nor denies, with no denied pattern covering it,
+        // is deleted for the extension, in every profile. The restore only adds
+        // statuses; a grant it takes out is one a later denial here erases or
+        // covers, so the key ends denied. A write that plainly removed a grant
+        // here would delete the saved grant everywhere.
         // One read, partitioned by type: a `.url` key can be the same string as
         // a `.matchPattern` key, so the two must never share a dictionary.
         let saved = AppDatabase.shared.loadPermissions(extensionID: ext.id)

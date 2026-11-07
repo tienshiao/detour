@@ -89,8 +89,10 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// rows of it a request may see is decided per request, from `profile`.
     var historyDatabase: HistoryDatabase = .shared
 
-    /// The clock `history.search` measures its default range from (TASK-153),
-    /// as a test seam for the same reason. Production never assigns it.
+    /// The clock `history.search` measures its default range from (TASK-153)
+    /// and the permission gates read grant and denial expiry against
+    /// (TASK-277), as a test seam for the same reason. Production never
+    /// assigns it.
     var now: () -> Date = Date.init
 
     /// The manager behind `notifications.*`, as a test seam for the same
@@ -121,9 +123,12 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     }
 
     /// Whether `extensionID` holds the `notifications` permission — declared,
-    /// or optional and granted in this profile (TASK-250) — as Chrome gates
-    /// the namespace (TASK-239). If not, answers the request with the refusal
-    /// and returns false.
+    /// or optional and granted (TASK-250) — as Chrome gates the namespace
+    /// (TASK-239). A decision is the extension's, not the profile's: Detour
+    /// applies it to every profile's context, the Private one included
+    /// (`ExtensionManager.setPermissionDecision`); this reads it from this
+    /// profile's context. If not, answers the request with the refusal and
+    /// returns false.
     private func notificationsPermitted(_ extensionID: String,
                                         orRefuse replyHandler: (Any?, String?) -> Void) -> Bool {
         if let refusal = permissionRefusal("notifications", extensionID: extensionID) {
@@ -153,12 +158,35 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             for: ExtensionNotificationManager.Owner(profileID: profileID, extensionID: extensionID))
     }
 
-    /// Takes away every extension's notifications in this profile: when the
-    /// profile is deleted, and when the Private session ends
-    /// (`TabStore.endPrivateSessionIfUnused`) or the app quits, so none carries
-    /// over into the next one.
+    /// Takes away the notifications `extensionID` created in this profile, and
+    /// answers its wait for their events with the permission refusal, when
+    /// `notifications` is not active in this profile's context any more
+    /// (TASK-270): the Settings switch turned off, or `permissions.remove` of
+    /// the optional permission. Either decision is the extension's and reaches
+    /// every profile's context, so `ExtensionManager` calls this for every
+    /// profile after a permission decision changes; while the permission is
+    /// active it does nothing. It writes no permission.
+    func revokeNotificationsIfNotPermitted(ofExtension extensionID: String) {
+        guard let manager = existingNotificationManager,
+              let refusal = permissionRefusal("notifications", extensionID: extensionID) else { return }
+        manager.revoke(for: ExtensionNotificationManager.Owner(profileID: profileID, extensionID: extensionID),
+                       refusal: refusal)
+    }
+
+    /// Takes away every extension's notifications in this profile when the
+    /// profile is deleted, and stops its contexts' waits for their events.
     func removeAllNotifications() {
         existingNotificationManager?.removeAll(profileID: profileID)
+    }
+
+    /// Takes away every extension's notifications in this profile, and the
+    /// events queued for them, at a Private session boundary
+    /// (`TabStore.removePrivateProfileNotifications`: a session starting or
+    /// ending, or the app quitting), so none carries over into the next one.
+    /// The contexts stay loaded across it, so their waits for events stand
+    /// (TASK-264).
+    func removeSessionNotifications() {
+        existingNotificationManager?.removeSession(profileID: profileID)
     }
 
     /// Active offscreen document hosts, keyed by extensionID.
@@ -898,8 +926,9 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                     return
                 }
                 let context = profile?.extensionContext(for: extensionID)
+                let now = self.now()
                 replyHandler(names.allSatisfy {
-                    Self.permissionIsActive($0, manifest: ext.manifest, context: context)
+                    Self.permissionIsActive($0, manifest: ext.manifest, context: context, now: now)
                 }, nil)
             }
 
@@ -917,7 +946,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 return
             }
             switch Self.permissionRequestPlan(names, manifest: ext.manifest,
-                                              context: profile?.extensionContext(for: extensionID)) {
+                                              context: profile?.extensionContext(for: extensionID), now: now()) {
             case .refuse(let message):
                 replyHandler(nil, message)
             case .answer(let granted):
@@ -1532,7 +1561,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             return Self.permissionNotDeclared(permission)
         }
         return Self.permissionRefusal(permission, manifest: ext.manifest,
-                                      context: profile?.extensionContext(for: extensionID))
+                                      context: profile?.extensionContext(for: extensionID), now: now())
     }
 
     /// The refusal of a call whose permission is not active
@@ -1565,6 +1594,16 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// The rule behind `permissionRefusal`, WebKit's own order for the APIs it
     /// implements (`WebExtensionContext::permissionState`): a denial in
     /// `context` refuses first, then a grant serves.
+    ///
+    /// `context` is one profile's, but what it holds is not a per-profile
+    /// decision: a saved grant or denial belongs to the extension, and Detour
+    /// applies it to the extension's context in every profile, the Private
+    /// one included (`ExtensionManager.setPermissionDecision`, the restore in
+    /// `Profile.loadExtensionContext`). The one gap: an answer to WebKit's own
+    /// `permissions.request` prompt is saved for the extension
+    /// (`ExtensionManager.handlePermissionPrompt`), but WebKit applies it to
+    /// the asking context alone, so the other profiles' contexts get it at
+    /// their next load.
     ///
     /// - A permission the manifest requires is active unless `context` holds
     ///   an unexpired denial of it: the Settings switch turned off
@@ -1642,12 +1681,14 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             info["description"] = desc
         }
         let context = profile?.extensionContext(for: ext.id)
-        info["permissions"] = Self.activeAPIPermissions(manifest: ext.manifest, context: context)
+        let now = self.now()
+        info["permissions"] = Self.activeAPIPermissions(manifest: ext.manifest, context: context, now: now)
         info["hostPermissions"] = context.map {
             Self.activeHostPermissions(granted: $0.grantedPermissionMatchPatterns,
                                        denied: $0.deniedPermissionMatchPatterns,
                                        askable: ext.askableMatchPatterns,
-                                       implicit: Self.implicitContentScriptPatterns(ext.manifest))
+                                       implicit: Self.implicitContentScriptPatterns(ext.manifest),
+                                       now: now)
         } ?? Self.declaredRequiredHosts(ext.manifest)
         return info
     }

@@ -28,6 +28,27 @@ sources:
   - id: task-242
     resource: backlog:TASK-242
     title: A one-shot sendNativeMessage with a non-object message leaks the host and never settles
+  - id: task-266
+    resource: backlog:TASK-266
+    title: "Native messaging: a host manifest without allowed_origins admits every extension"
+  - id: task-265
+    resource: backlog:TASK-265
+    title: "Native messaging: writing to a host that stops reading stdin blocks the main thread and freezes the app"
+  - id: chromium-limits
+    resource: https://github.com/chromium/chromium/blob/main/chrome/browser/extensions/api/messaging/native_message_process_host.cc
+    title: Chromium native_message_process_host.cc (kMaximumNativeMessageSize, the unbounded write queue, kHostInputOutputError) and extensions/renderer/api/messaging/messaging_util.cc (the 64 MiB kMaxMessageBytes)
+  - id: chromium-launcher
+    resource: https://github.com/chromium/chromium/blob/main/chrome/browser/extensions/api/messaging/native_process_launcher.cc
+    title: Chromium native_process_launcher.cc and native_messaging_host_manifest.cc (manifest checks, their order and result codes)
+  - id: manifest-tests
+    resource: ../../DetourTests/NativeHostManifestValidationTests.swift
+    title: NativeHostManifestValidationTests.swift
+  - id: task-277
+    resource: backlog:TASK-277
+    title: "Tests: cover native host quit refusal and the SIGTERM path, keep the host sweep to the test's own hosts, and route the injected clock through the permission gates"
+  - id: task-275
+    resource: backlog:TASK-275
+    title: "Native messaging: a failed connect leaves the host's pipes and stderr handler behind"
   - id: task-243
     resource: backlog:TASK-243
     title: "Native messaging: quitting Detour may leave live port hosts running"
@@ -37,6 +58,15 @@ sources:
   - id: webkit-325256
     resource: https://github.com/WebKit/WebKit/commit/c78afbcefdb9
     title: "WebKit 325256@main: Port.disconnect() fires onDisconnect on the port that called it"
+  - id: task-274
+    resource: backlog:TASK-274
+    title: "Native messaging: a wrapper-script host that does not exec leaves its real host running after quit"
+  - id: chromium-launch-posix
+    resource: https://github.com/chromium/chromium/blob/2fbb17b57270034f6c85ab9819c3ec4069a54986/chrome/browser/extensions/api/messaging/launch_context_posix.cc
+    title: Chromium launch_context_posix.cc (LaunchNativeProcess sets no new_process_group)
+  - id: xnu-pids
+    resource: https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_fork.c
+    title: XNU kern_fork.c (pid allocation skips live pids, process groups and sessions) and kern_sig.c (killpg1 skips zombies)
   - id: chromium-kill
     resource: https://github.com/chromium/chromium/blob/1a95d4d76ab47c2ff9b914eaa98d3f35b7f1fce1/base/process/kill_mac.cc
     title: Chromium base/process/kill_mac.cc (EnsureProcessTerminated, kWaitBeforeKillSeconds = 2)
@@ -95,7 +125,7 @@ desktop-app channel is the main user (see
    underscores (`isValidHostName`). The name is joined onto a directory path,
    so this is what stops `../../evil`.
 2. Looks for `<name>.json` in `searchDirectories`, in order, and takes the
-   first whose `name` field equals the requested name:
+   first file it finds:
 
    | Order | Directory |
    |---|---|
@@ -105,16 +135,62 @@ desktop-app channel is the main user (see
    | 3 | `~/Library/Application Support/Detour/NativeMessagingHosts` |
    | 4 | `/Library/Google/Chrome/NativeMessagingHosts` |
 
-3. If the manifest has `allowed_origins`, it must contain
-   `chrome-extension://<extension id>/`. This works with manifests written
-   for Chrome because Detour derives the same ids Chrome does (see
-   [installer and CRX](./installer-and-crx.md)).
-4. The manifest's `path` must be an executable file. It is spawned with the
-   origin as its one argument, as Chrome does, with pipes for stdin, stdout
-   and stderr.
+   A file that is there but refused (step 3, or a `name` field that is not
+   the requested name) ends the search, as in Chrome, which loads the first
+   manifest it finds: a later directory does not stand in for it.
+3. `NativeHostManifest.parse` refuses what Chrome's manifest parser
+   refuses: a file that is not a JSON object, a missing `name` or `path`,
+   a `type` other than `"stdio"`, and an `allowed_origins` that is missing,
+   null, not a list, or holds a non-string. `description`, required by
+   Chrome, is not checked: it plays no part in who may start the
+   host.[^task-266]
+4. `allowed_origins` must contain `chrome-extension://<extension id>/`.
+   This works with manifests written for Chrome because Detour derives the
+   same ids Chrome does (see [installer and CRX](./installer-and-crx.md)).
+   The manifests sit in user-writable directories, so this check is the only
+   thing tying a host to the extensions it was installed for; until TASK-266
+   it only ran when the key was present, so a manifest without it admitted
+   every extension with `nativeMessaging`.
+5. `path` must be absolute (macOS has no relative form; Chrome resolves one
+   against the manifest's directory only on Windows), checked after the
+   origin, where Chrome checks it. A relative path used to resolve against
+   Detour's working directory.
+6. `path` must be an executable file. It is spawned with the origin as its
+   one argument, as Chrome does, with pipes for stdin, stdout and stderr.
+   The process and pipes stay local to `connect()` until `run()` has
+   succeeded under the registry lock; when the spawn throws there (Detour
+   is [quitting](#quitting), or `run()` fails, e.g. on a `path` that is a
+   directory, which passes the executable check) every pipe end is closed
+   before the error goes out, and the stderr reader is only installed once
+   the host runs. Each failed connect used to keep 3 (failed `run()`) to 7
+   (quit refusal) descriptors open for as long as its host object
+   lived.[^task-275]
 
-Framing is a 4-byte little-endian length followed by UTF-8 JSON, capped at
-`maxMessageSize` (1 MB) **in both directions**. The read loop runs on a
+What the extension sees for each refusal is Chrome's text for the
+launcher's result, as a rejected `sendNativeMessage` (promise and
+`runtime.lastError`) or on the refused port's `port.error`; the specifics
+(host name, the manifest's fault, the directory) go to the
+`native-messaging` log category only, and `NativeMessagingError.logDetail`
+carries them into the rate-limited `connectNative` attempt line:[^chromium-launcher]
+
+| Refusal | `NativeMessagingError` | Text |
+|---|---|---|
+| Host name refused (step 1) | `.invalidName` | "Invalid native messaging host name specified." |
+| No manifest, invalid manifest (step 3) or one naming another host, relative path | `.manifestNotFound`, `.invalidManifest`, `.pathNotAbsolute` | "Specified native messaging host not found." |
+| Origin not listed (an empty list included) | `.originNotAllowed` | "Access to the specified native messaging host is forbidden." |
+| `path` not an executable | `.hostNotFound` | "Failed to start native messaging host." |
+
+The legs are tested in `NativeHostManifestValidationTests` (parse and
+`connect()` against a fake host whose manifest each test edits; the
+relative path resolves to the fake host's script, so only the refusal keeps
+it from running), `NativeMessagingEnforcementTests` (an extension page,
+all three delivery forms) and `ExtensionPolyfillProfileWiringTests` (a
+service worker).[^manifest-tests] Detour's own hosts never reach any of
+this (see below).
+
+Framing is a 4-byte little-endian length followed by UTF-8 JSON. A host
+may send at most `maxIncomingMessageSize` (1 MB); Detour sends a host at
+most 64 MiB (see [writing to the host](#writing-to-the-host)). The read loop runs on a
 private serial queue and delivers to the main queue. It reads the prefix
 (`Data.littleEndianUInt32()`, byte by byte, no raw-pointer load), refuses 0
 or anything above the cap ("Invalid message length: N"), then reads that
@@ -123,6 +199,68 @@ many bytes; a short read (the host closed stdout early) disconnects with
 stream (see [the host going away](#the-host-going-away)). Frames read before
 a bad one are delivered first.
 See [Strict memory safety](../platform/strict-memory-safety.md).[^task-231-8]
+
+## Writing to the host
+
+`sendMessage` encodes the message and queues the frame; it never writes in
+place. Until TASK-265 it wrote with a blocking `FileHandle.write` on the
+main actor, so a host that stopped reading its stdin froze the app once the
+pipe's 64 KB buffer was full, and a normal quit hung with it
+(`applicationWillTerminate` could not run; only the SIGTERM path still ended
+hosts).[^task-265]
+
+- **The writer.** Each connection has a `StdinWriter` (nonisolated,
+  `Sendable`, its counters behind a `Mutex`) owning a `DispatchIO` stream
+  channel on the stdin descriptor. libdispatch writes as the pipe drains,
+  without holding a thread, and a stream channel performs its writes in the
+  order they were submitted, so the host gets messages in `sendMessage`
+  order (tested with forty echoed messages, every other one 200 KB). The
+  descriptor is closed in the channel's cleanup handler, which also holds
+  the `FileHandle` until then: closing it under the channel could hand its
+  number to another file mid-write.
+- **Teardown abandons what is queued.** `teardownProcess` closes the
+  channel with `.stop`: a write still waiting on a host that never reads is
+  cancelled, then the descriptor closes and the process gets SIGTERM as
+  before. Chrome does the same: closing a host drops its write queue. A
+  message posted just before a port disconnect may therefore never reach the
+  host. Nothing on the teardown, kill-timer, quit-sweep or SIGTERM-handler
+  paths waits on a write, and no thread is ever blocked in one, so a quit
+  completes with a non-reading host and megabytes queued for it (tested).
+- **A failed write** (EPIPE: the host closed stdin or exited) is seen on a
+  global queue. The first one is logged (`NM WRITE FAILED`, errno only),
+  recorded in the join as `.writeFailed` before anything else, and the
+  teardown then runs on the main actor; the owner hears it through
+  `onDisconnect` like any end. ECANCELED from the teardown's own stop is
+  ignored. The descriptor has `F_SETNOSIGPIPE`, and `main.swift` ignores
+  SIGPIPE process-wide; the test of a host that closed its stdin runs with
+  SIGPIPE back at its default, so a write that raised it would kill the
+  test host.
+
+The limits (`NativeMessagingHost.OutgoingLimits.standard`; a static that
+tests lower so no leg needs 64 MiB of JSON):[^chromium-limits]
+
+| Limit | Value | Why | When exceeded |
+|---|---|---|---|
+| One message to a host | 64 MiB of JSON body | Chrome's: its renderer refuses any extension message over `kMaxMessageBytes` (64 MiB, "IPC messages will fail at > 128 MiB") with "Message exceeded maximum allowed size of 64MiB.", and the native messaging docs give 64 MiB as the limit to a host. It was 1 MB, a copy of the host-to-browser limit, which refused messages Chrome sends | `messageTooLarge`, Chrome's text |
+| Queued and not yet written, per host | 64 MiB + 4 (one maximum frame) | A host that reads at all drains a pipe at memory speed, so bytes only pile up behind one that has stopped. Chrome's queue has no bound; this keeps what a wedged host can make Detour hold to one largest message. A frame counts until it is completely written | `sendQueueFull`, Chrome's `kHostInputOutputError` text "Error when communicating with the native messaging host." |
+| One message from a host | 1 MB | Chrome's `kMaximumNativeMessageSize`, which protects the browser from a misbehaving host | The connection ends ("Invalid message length: N") |
+
+What the extension sees when a port message cannot be sent (too large, not
+encodable, queue full, host already gone): the port's `messageHandler`
+logs it (`extension-manager`, error level, with `logDetail`), releases the
+host from the keep-alive, disconnects the host and disconnects the port
+with the error. The extension gets `onDisconnect`; WebKit does not hand an
+established port's error over (see Gotchas), so the text only reaches the
+log. Dropping the message and keeping the port open, which is what Chrome's
+synchronous `postMessage` throw amounts to for an oversized message, is not
+available (WebKit gives Detour no way to throw into `postMessage`), and a
+silently dropped message would leave the host reading later messages with a
+hole before them. The exception is a host already going away whose end
+is still being joined (it exited or a write failed, and the read loop has not
+reached the end of stream): the message is dropped and the port left to the
+join's `onDisconnect`, so a reply the host wrote before going is still
+delivered. A one-shot `sendNativeMessage` is rejected with the same
+error, as before; its single message can never fill the queue.
 
 ## Two entry points
 
@@ -262,11 +400,71 @@ sends SIGKILL; it sends no SIGTERM. The Linux path (`kill_posix.cc`,
 `BackgroundReaper`) also waits 2 s and then kills.[^chromium-kill] Detour
 keeps its SIGTERM first, so a host that exits on it is unaffected.
 
+### The host's process tree
+
+Every signal goes to the host's process group, so a host's descendants end
+with it (TASK-274).[^task-274] Foundation's `Process` starts the host as the
+leader of a process group of its own: its pgid is its pid, a child it starts
+without `exec` shares it, and Detour's own group is a different one
+(measured with a standalone probe; `testAHostLeadsAProcessGroupOfItsOwn`
+fails if Foundation stops doing it). `Process.terminate()` signals that
+group too (Apple: "the receiver and all of its subtasks"), so the
+teardown's SIGTERM already reached a wrapper's child. What went to the pid
+alone was the TASK-241 SIGKILL, which also fired only while the host itself
+was running, and the quit sweep's SIGTERM and SIGKILL, and so the SIGTERM
+handler's. A host installed as a `#!/bin/sh` wrapper that runs `python3
+host.py` without `exec` dies on SIGTERM; its real host, reparented to
+launchd, stayed running if it ignored SIGTERM, and at quit whenever it did
+not watch its stdin.
+
+- **The group is recorded at spawn**, in the registry entry, only when
+  `getpgid(pid) == pid` and it is not Detour's group (a `killpg` of that
+  would end Detour). Otherwise only the pid is signalled, logged as
+  `NM GROUP`.
+- **`send`** `killpg`s the group, and `kill`s the host's pid as well when
+  the host is running but has moved out of the group. **`isAlive`** is the
+  host running, or `killpg(group, 0) == 0`: XNU's `killpg` skips zombies and
+  fails when only zombies are left.[^xnu-pids]
+- **A torn-down host that exits while its group still has a live member**
+  keeps its registry entry (`hostExited`) until its SIGKILL timer fires, so
+  the timer, and a quit before then, still kill a wrapper's
+  SIGTERM-ignoring child once the wrapper has died of the SIGTERM. The timer
+  goes into the entry before the SIGTERM is sent, so an exit caused by the
+  SIGTERM cannot get there first and cancel it. An entry with nothing left
+  in its group goes at the exit as before.
+- **The quit sweep** waits while a host or anything in its group is alive,
+  and SIGKILLs the groups still alive at the deadline.
+
+Why the group's id names nobody else: it is the host's pid, and XNU
+allocates pids one after the other, wrapping at `PID_MAX` (99,999) to 100,
+and skips any id that is in use as a pid, a process-group id or a session
+id (`kern_fork.c`). So the id cannot be handed to another process while the
+host is unreaped or any process in its group is alive. Once they have all
+gone, it comes back only after the counter has gone all the way round.
+Detour signals a group only while the host is unreaped, or within a
+teardown's grace (2 s) or the quit's wait (1 s) after the host's exit,
+never later. A process joining the group from outside would have to be in
+Detour's session and call `setpgid` with it, which nothing does.
+
+Limits, decided and not chased:
+
+- A descendant that leaves the group (`setsid`, `setpgid`, a host that
+  daemonises) is not reached.
+- Processes left behind by a host that exits on its own, such as a wrapper
+  that starts its real host in the background and exits, are not signalled:
+  nothing bounds how long ago the host went, so the group's id is no longer
+  safe to use.
+
+Chrome does none of this on macOS. `LaunchNativeProcess` sets no
+`new_process_group` (the host stays in Chrome's group), and
+`EnsureProcessTerminated` SIGKILLs the pid alone, so a wrapper's child
+outlives Chrome's teardown too.[^chromium-launch-posix]
+
 ### Quitting
 
-Exiting ends no host by itself. A host is a child of Detour but not in a
-process group that dies with it; the exit closes the host's stdin, which
-ends a host that reads it, and one that does not read it (a silent host
+Exiting ends no host by itself. A host is a child of Detour, in a process
+group of its own that nothing signals when Detour dies; the exit closes the
+host's stdin, which ends a host that reads it, and one that does not read it (a silent host
 holding the keep-alive) carries on, reparented to launchd. The exit also
 takes every pending SIGKILL timer with it. Measured before TASK-243 with two
 fake port hosts (`exec sleep`, one with `trap '' TERM`): after a normal quit
@@ -283,11 +481,17 @@ comes straight after `run()`. A sweep from a quit path sets `isQuitting`,
 after which `connect()` throws (`NativeMessagingError.quitting`). Without
 that, on the SIGTERM path, where the main thread keeps running, an extension
 reconnecting when its host exits on the sweep's SIGTERM would start a host
-that outlives Detour. The tests pass `refusingNewHosts: false`, since the
-flag cannot be cleared.
-`terminateAllSpawnedHosts(within:)` sends SIGTERM to each running one, waits
-for them all together, polling `isRunning`, then sends SIGKILL to the
-rest. It logs `NM QUIT: N host(s) sent SIGTERM, M … sent SIGKILL`. It blocks
+that outlives Detour. The flag is never cleared in the app; tests lift it
+with the Debug-only `setRefusingNewHostsForTesting`. Tests sweep through the
+Debug-only `terminateSpawnedHostsForTesting(running:within:refusingNewHosts:)`,
+the same sweep limited to the hosts started from the executables it names
+(each registry entry keeps its manifest `path`), so a test ends only its own
+fixtures' hosts and never one another suite left in the test
+host.[^task-277]
+`terminateAllSpawnedHosts(within:)` sends SIGTERM to each running one's
+process group, waits for them all together, polling `isAlive` (the host or
+anything left in its group), then sends SIGKILL to the groups still
+alive ([the host's process tree](#the-hosts-process-tree)). It logs `NM QUIT: N host(s) sent SIGTERM, M … sent SIGKILL`. It blocks
 the calling thread, which may be the main thread: Foundation reaps the child
 on a queue of its own, so `isRunning` changes while the main thread waits
 (checked with a standalone probe). The owners hear nothing, since their
@@ -304,7 +508,8 @@ reports are main-actor tasks and the app exits first.
   on a host that ignores SIGTERM.
 - **SIGTERM to Detour**: `installSIGTERMHandler()` (the first thing in
   `applicationDidFinishLaunching`) sets SIGTERM to `SIG_IGN` and handles it
-  with a `DispatchSource` on a global queue. That works even when the main
+  with a `DispatchSource` on a global queue (made by
+  `makeHostEndingSignalSource(_:endHosts:)`). That works even when the main
   thread is busy or hung. The handler ends the hosts in the same way, then
   cancels the source (it sees the re-sent signal too, whatever the
   disposition), restores `SIG_DFL` and sends SIGTERM to itself again. The app
@@ -415,15 +620,19 @@ evidence for. There is no level between notice and error to use:
   and is refused there. Every other value arrives as the JSON-parsed
   Foundation object (`NSString`, `NSNumber`, `__NSCFBoolean`, `NSArray`),
   measured 2026-11-03.
-- **A manifest without `allowed_origins` is accepted.** The origin check only
-  runs when the key is present. The manifest's `type` is decoded but not
-  checked.
 - **`DETOUR_NATIVE_MESSAGING_HOSTS_DIR` is compiled out of Release.** It is
   read on every lookup, not once, so a test can point it at a fixture
   in-process.
 - **A write to a dead host must not kill the app.** `Detour/App/main.swift`
-  ignores `SIGPIPE` process-wide, so the failure surfaces as an error in
-  `sendMessage`, which tears the host down and throws `notConnected`.
+  ignores `SIGPIPE` process-wide and the stdin descriptor has
+  `F_SETNOSIGPIPE`, so the failure surfaces as EPIPE in the writer, which
+  ends the connection (see [writing to the host](#writing-to-the-host)).
+- **A failed `Process.run()` closes half the pipes.** Measured on macOS
+  26: when the spawn fails (EACCES on a directory), Foundation has already
+  closed the child's ends (stdin's read end, stdout's and stderr's write
+  ends) through their `FileHandle`s; the parent's three stay open. Closing
+  all six handles afterwards is safe: a second `close()` on a handle is a
+  no-op and does not close a descriptor number reused in between.[^task-275]
 - **Host stderr at EOF.** Foundation keeps calling a `readabilityHandler`
   with empty data after EOF; the handler clears itself, or a host that closes
   stderr and stays alive spins a core.
@@ -490,6 +699,68 @@ evidence for. There is no level between notice and error to use:
   to end through a one-shot `sendNativeMessage`, while a `connectNative`
   port's host that stays alive keeps running until the page disconnects
   (TASK-233).
+- Process trees (TASK-274), in `NativeMessagingHostLifecycleTests`, with
+  wrapper hosts (`wrapsSilentChild`: the script runs `/bin/sleep <token>`
+  and then `exit $?`, so the shell cannot run it in place;
+  `wrapsChildIgnoringSIGTERM`: the child is a shell that sets `trap ''
+  TERM` and `exec`s the sleep). Each test first checks the shape: the
+  child's ppid is the wrapper and its pgid the wrapper's pid. The host leads
+  its own group; `signallableGroup(host:hostGroup:detourGroup:)`, the pure
+  check behind the recorded group, refuses Detour's group, a group the host
+  does not lead, a failed `getpgid` and the ids 0 and 1; `disconnect()` ends a wrapper and its child with no SIGKILL
+  (this passed before the fix, through `Process.terminate()`); a
+  SIGTERM-ignoring child outlives its wrapper until the grace period is over
+  and is then killed through the group; the quit sweep ends a wrapper's
+  child, waits for and kills a SIGTERM-ignoring one, and kills one left
+  from a teardown inside the grace period; a `Process` of the test's own
+  (also a group leader) survives a wrapper host's teardown, SIGKILL
+  included, and then the quit sweep, and another host survives the
+  teardown. Before
+  the fix, all of these failed except the `disconnect()` one and the group
+  check. `wrapperIDs()` finds the wrapper shell by the script's path, which
+  is in the fixture's own directory, and the fixture's `tearDown()` kills by
+  that path as well as by the token, so a child left by a failed run is
+  killed too.
+- Writing (TASK-265), in `NativeMessagingHostLifecycleTests`: 4 MB to a
+  `.silent` host (which never reads stdin) returns at once with the bytes
+  still queued and the host alive, and `disconnect()` ends it; the quit
+  sweep with 4 MB queued for a host ignoring SIGTERM returns after its
+  bounded wait having killed it; forty messages come back from an echoing
+  host in order; a body one byte over the (lowered) limit is refused and
+  never written while the connection stays usable; a third 200 KB frame
+  behind a non-reading host is refused once the bound is reached; a
+  `.closesStdin` host makes the write fail with EPIPE, ending the connection
+  with that reason, with SIGPIPE at its default. Each leg with a non-reading
+  host arms a 10 s SIGKILL of it, so a regression that blocks the main actor
+  fails rather than hangs. `NativeMessagingEnforcementTests` posts 6 MB on a
+  `connectNative` port to a `.silent` host from an extension page (the port
+  stays open, the page keeps answering, the host ends on disconnect), and
+  shows a too-large message and a full queue each disconnect the page's
+  port and end the host; `ExtensionPolyfillProfileWiringTests` repeats both
+  from a service worker.
+- A failed connect (TASK-275), in `NativeMessagingHostLifecycleTests`: 50
+  connects whose `run()` fails and 50 refused for quitting (a Debug-only
+  `setRefusingNewHostsForTesting` seam, reset in tearDown), with every host
+  kept alive, leave the test process's open descriptor count (`fcntl` over
+  `getdtablesize()`) within 10 of where it was; before the fix it grew by
+  149 and 350. A host refused once connects and echoes once the refusal is
+  lifted.
+- Quitting (TASK-277): `NativeMessagingEnforcementTests` sets the quit
+  refusal and shows an extension page's `sendNativeMessage` (promise and
+  callback) and `connectNative` all get "Detour is quitting", with no
+  process started and no live or pending host. The SIGTERM handler's
+  sequence runs in the test host through `makeHostEndingSignalSource` with
+  SIGURG (default action: discard) and a sweep limited to the test's host:
+  the handler runs once, the host is ended and new connects refused before
+  the signal is sent again, a second signal source sees both deliveries (a
+  signal source sees every delivery, even of a signal whose disposition
+  discards it), and the disposition is `SIG_DFL` again. SIGTERM itself
+  cannot be sent there (it would end the test host), and spawning Detour
+  from a test is ruled out (an app launch must have an isolated data
+  directory), so that SIGTERM's default action then ends Detour with status
+  143 rests on the kernel and the runtime check with
+  `docs/harness/task274-harness.patch`. A test's sweep leaves a host it does
+  not name running.
 - Framing helpers (`encodeMessage`, `decodeMessage`) are also covered in
   `ExtensionIDDerivationTests`. The log line *text* is not asserted anywhere.
 
@@ -512,8 +783,18 @@ evidence for. There is no level between notice and error to use:
 [^lifecycle-tests]: NativeMessagingHostLifecycleTests.swift
 [^task-241]: Native messaging: a host that ignores SIGTERM is never killed
 [^task-243]: Native messaging: quitting Detour may leave live port hosts running
+[^task-274]: Native messaging: a wrapper-script host that does not exec leaves its real host running after quit
+[^chromium-launch-posix]: Chromium launch_context_posix.cc (LaunchNativeProcess sets no new_process_group)
+[^xnu-pids]: XNU kern_fork.c (pid allocation skips live pids, process groups and sessions) and kern_sig.c (killpg1 skips zombies)
 [^chromium-kill]: Chromium base/process/kill_mac.cc (EnsureProcessTerminated, kWaitBeforeKillSeconds = 2)
 [^chromium-runtime]: Chromium extensions/common/api/runtime.json and extensions/renderer/bindings/argument_spec.cc
 [^task-242]: A one-shot sendNativeMessage with a non-object message leaks the host and never settles
 [^task-256]: Extensions: a port's onDisconnect fires in the context that called port.disconnect()
 [^webkit-325256]: WebKit 325256@main: Port.disconnect() fires onDisconnect on the port that called it
+[^task-266]: Native messaging: a host manifest without allowed_origins admits every extension
+[^task-265]: Native messaging: writing to a host that stops reading stdin blocks the main thread and freezes the app
+[^chromium-limits]: Chromium native_message_process_host.cc (kMaximumNativeMessageSize, the unbounded write queue, kHostInputOutputError) and extensions/renderer/api/messaging/messaging_util.cc (the 64 MiB kMaxMessageBytes)
+[^chromium-launcher]: Chromium native_process_launcher.cc and native_messaging_host_manifest.cc (manifest checks, their order and result codes)
+[^manifest-tests]: NativeHostManifestValidationTests.swift
+[^task-275]: Native messaging: a failed connect leaves the host's pipes and stderr handler behind
+[^task-277]: Tests: cover native host quit refusal and the SIGTERM path, keep the host sweep to the test's own hosts, and route the injected clock through the permission gates

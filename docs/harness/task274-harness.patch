@@ -1,0 +1,43 @@
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 68ac340..e5e8939 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -38,11 +38,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+     static let startsUpdater: Bool =
+         !AppDelegate.isRunningUnitTests && WebKitStorageScope.currentIsDefaultDataDirectory
+ 
++    #if DEBUG
++    static var task274Hosts: [NativeMessagingHost] = []
++    #endif
++
+     func applicationDidFinishLaunching(_ notification: Notification) {
+         // A SIGTERM to Detour ends its native hosts before the app dies
+         // (TASK-243); without it they are left running.
+         NativeMessagingHost.installSIGTERMHandler()
+         setupMainMenu()
++        #if DEBUG
++        // TASK-274 runtime harness (temporary): connect native hosts at
++        // launch and, optionally, quit normally after a delay.
++        if let names = ProcessInfo.processInfo.environment["DETOUR_TASK274_HOSTS"] {
++            for name in names.split(separator: ",").map(String.init) {
++                let host = NativeMessagingHost(hostName: name, extensionID: "abcdefghijklmnopabcdefghijklmnop")
++                do {
++                    try host.connect()
++                    Self.task274Hosts.append(host)
++                    NSLog("TASK274 connected \(name)")
++                } catch {
++                    NSLog("TASK274 connect \(name) failed: \(error)")
++                }
++            }
++            if let after = Double(ProcessInfo.processInfo.environment["DETOUR_TASK274_QUIT_AFTER"] ?? "") {
++                DispatchQueue.main.asyncAfter(deadline: .now() + after) {
++                    NSLog("TASK274 quitting")
++                    for window in NSApp.windows { window.close() }
++                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
++                }
++            }
++        }
++        #endif
+ 
+         // The Quick Detour hotkey (TASK-193.2): the menu item mirrors the
+         // shortcut everywhere; `start` registers the system-wide hotkey only

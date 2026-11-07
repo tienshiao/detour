@@ -115,7 +115,7 @@ nonisolated final class NativeMessagingFramingTests: XCTestCase {
     /// A prefix above Chrome's 1 MB limit, or of zero, ends the connection
     /// without reading a body.
     @MainActor func testAnOutOfRangePrefixIsRefusedBeforeReadingABody() async throws {
-        for claimed: UInt32 in [UInt32(NativeMessagingHost.maxMessageSize) + 1, .max, 0] {
+        for claimed: UInt32 in [UInt32(NativeMessagingHost.maxIncomingMessageSize) + 1, .max, 0] {
             try connect(.writesThenClosesStdout(Data(littleEndianBytesOf: claimed) + Data("{}".utf8)))
             try await waitForDisconnect()
             XCTAssertEqual(disconnects, ["Invalid message length: \(claimed)"])

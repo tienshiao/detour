@@ -37,6 +37,35 @@ nonisolated final class ExtensionPermissionTests: XCTestCase {
         )
     }
 
+    // MARK: - Log privacy (TASK-268)
+
+    /// A URL or match-pattern key is browsing data: only its scheme may be
+    /// logged publicly. API permission names and `<all_urls>` are not.
+    @MainActor func testPublicLogPartKeepsOnlyTheSchemeOfHostAccessKeys() {
+        XCTAssertEqual(ExtensionPermissionType.url.publicLogPart(
+            ofKey: "https://mail.example/inbox?token=secret"), "https")
+        XCTAssertEqual(ExtensionPermissionType.matchPattern.publicLogPart(
+            ofKey: "*://*.bank.example/*"), "*")
+        XCTAssertEqual(ExtensionPermissionType.matchPattern.publicLogPart(
+            ofKey: "<all_urls>"), "<all_urls>")
+        XCTAssertEqual(ExtensionPermissionType.url.publicLogPart(
+            ofKey: "<all_urls>"), "(no scheme)")
+        XCTAssertEqual(ExtensionPermissionType.matchPattern.publicLogPart(
+            ofKey: "mail.example"), "(no scheme)")
+        XCTAssertEqual(ExtensionPermissionType.apiPermission.publicLogPart(
+            ofKey: "history"), "history")
+        // The scheme ends at the first colon, so a "://" later in the key
+        // cannot pull its body into the public part.
+        XCTAssertEqual(ExtensionPermissionType.url.publicLogPart(
+            ofKey: "data:text/html,<a href=https://mail.example/inbox>"), "data")
+        XCTAssertEqual(ExtensionPermissionType.url.publicLogPart(
+            ofKey: "about:blank"), "about")
+        XCTAssertEqual(ExtensionPermissionType.url.publicLogPart(
+            ofKey: "mail.example/r?u=https://bank.example"), "(no scheme)")
+        XCTAssertEqual(ExtensionPermissionType.url.publicLogPart(
+            ofKey: "intranet.example:8080/x"), "(no scheme)")
+    }
+
     // MARK: - Positive Cases
 
     @MainActor func testSaveAndLoadPermission() throws {

@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: Session database
-description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v20, and the GRDB record types.
+description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v22, and the GRDB record types.
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
@@ -75,6 +75,8 @@ GRDB `DatabaseQueue`, opened at
 | `appState` | `key` | Key-value app state. | Keys in use: `lastActiveSpaceID`, `extensionUpdateLastCheckAt`. |
 | `linkRoute` | `id` | The link routes: URL condition, source app, target kind and space id, order ([Link Routes](../features/link-routing.md)). | App-wide. **No FK** on `targetSpaceID`: the session save deletes and re-inserts every space row. `TabStore.deleteSpace` refuses a space a route targets instead. |
 | `linkRouteDefault` | `id` (always 1) | The Default target for links no route matches. | `CHECK (id = 1)`; no row means Most Recent Space. |
+| `siteSearch` | `id` | Site searches: name, keyword, URL template, order, `isDiscovered` ([site search](../features/site-search.md)). | App-wide. The starter set is seeded by v21 only, so a deleted entry stays deleted. |
+| `siteSearchRemovedHost` | `host` | The host of every site search the user removed, so OpenSearch discovery never adds it back (TASK-288). | App-wide; written in the same transaction as the delete. |
 
 Related pages: [closed tabs and archive](../tabs/closed-tabs-and-archive.md),
 [pinned tabs and folders](../tabs/pinned-tabs-and-folders.md),
@@ -145,6 +147,8 @@ migration.
 | v18 | `siteSetting`; the `contentBlockerWhitelist` rows copied into it as `contentBlocking = false` (lowercased, rows of missing profiles dropped), then that table dropped (TASK-187). |
 | v19 | The Private profile's `contentBlocking` rows in `siteSetting` deleted: a Private window's switch is kept in memory only (TASK-195). |
 | v20 | `linkRoute` and `linkRouteDefault` (TASK-191.1). Tested against a database migrated to v19. |
+| v21 | `siteSearch`, seeded with the starter set in SQL, once (TASK-287; [site search](../features/site-search.md)). Tested against a database migrated to v20. |
+| v22 | `siteSearch.isDiscovered` (default false) and `siteSearchRemovedHost` (TASK-288, OpenSearch discovery). Tested against a database migrated to v21. |
 
 Patterns worth copying from the existing migrations:
 

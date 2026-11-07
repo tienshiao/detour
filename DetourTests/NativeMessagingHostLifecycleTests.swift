@@ -29,6 +29,8 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
     }
 
     @MainActor private func reset() {
+        NativeMessagingHost.outgoingLimits = .standard
+        NativeMessagingHost.setRefusingNewHostsForTesting(false)
         otherHost?.disconnect()
         otherHost = nil
         otherFixture?.tearDown()
@@ -51,6 +53,15 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
         host.onDisconnect = { [weak self] in self?.events.append("disconnect:\($0 ?? "nil")") }
         self.host = host
         try host.connect()
+    }
+
+    /// The quit sweep, limited to this test's own hosts (`fixture`'s and
+    /// `otherFixture`'s scripts): the registry is process-wide, and a host
+    /// another suite left in the test host is not this test's to end.
+    @discardableResult
+    @MainActor private func quit(within timeout: TimeInterval) -> NativeMessagingHost.QuitReport {
+        NativeMessagingHost.terminateSpawnedHostsForTesting(
+            running: Set([fixture, otherFixture].compactMap { $0?.scriptPath }), within: timeout)
     }
 
     @MainActor private func frame(_ object: [String: Any]) throws -> Data {
@@ -263,12 +274,10 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
         let stubbornPID = try XCTUnwrap(stubborn.processIDs().first)
 
         let start = Date()
-        let report = NativeMessagingHost.terminateAllSpawnedHosts(within: 0.5, refusingNewHosts: false)
+        let report = quit(within: 0.5)
         let elapsed = Date().timeIntervalSince(start)
 
-        // Supersets: a process an earlier test's tearDown killed may not be
-        // reaped yet.
-        XCTAssertTrue(Set(report.terminated).isSuperset(of: [silentPID, stubbornPID]), "\(report)")
+        XCTAssertEqual(Set(report.terminated), [silentPID, stubbornPID], "\(report)")
         XCTAssertTrue(report.killed.contains(stubbornPID), "the host ignoring SIGTERM is killed: \(report)")
         XCTAssertFalse(report.killed.contains(silentPID), "the host that exits on SIGTERM is not killed: \(report)")
         XCTAssertGreaterThanOrEqual(elapsed, 0.45, "it waits for the host ignoring SIGTERM")
@@ -291,7 +300,7 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
         try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertEqual(fixture.processCount(), 1, "SIGTERM alone does not end this host")
 
-        let report = NativeMessagingHost.terminateAllSpawnedHosts(within: 0.3, refusingNewHosts: false)
+        let report = quit(within: 0.3)
 
         XCTAssertTrue(report.killed.contains(pid), "\(report)")
         try await waitUntil("the host process to be gone", timeout: 5) { fixture.processCount() == 0 }
@@ -315,6 +324,517 @@ nonisolated final class NativeMessagingHostLifecycleTests: XCTestCase {
         host = nil
         try await waitUntil("the host process to exit", timeout: 5) { fixture.processCount() == 0 }
         try await waitUntil("the SIGKILL timer to be released", timeout: 3) { released == nil }
+    }
+
+    // MARK: - TASK-274: a wrapper host's children end with it
+
+    @MainActor private func psField(_ field: String, of pid: pid_t) -> String {
+        runTool("/bin/ps", ["-o", "\(field)=", "-p", "\(pid)"]).output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The wrapper host's pid and its child's, once the child is `sleep`
+    /// itself (so a SIGTERM-ignoring child has run its `trap`). Checks the
+    /// shape the tests rely on: the wrapper did not exec, and its child is
+    /// in the process group the wrapper leads.
+    @MainActor private func wrapperAndChild() async throws -> (wrapper: pid_t, child: pid_t) {
+        let fixture = try XCTUnwrap(fixture)
+        try await waitUntil("the wrapper host and its child to be running") {
+            guard fixture.wrapperIDs().count == 1, let child = fixture.processIDs().first,
+                  fixture.processCount() == 1 else { return false }
+            return psField("comm", of: child).hasSuffix("sleep")
+        }
+        let wrapper = try XCTUnwrap(fixture.wrapperIDs().first)
+        let child = try XCTUnwrap(fixture.processIDs().first)
+        XCTAssertNotEqual(child, wrapper, "the wrapper does not exec its child")
+        XCTAssertEqual(psField("ppid", of: child), "\(wrapper)")
+        XCTAssertEqual(getpgid(child), wrapper, "the child is in the wrapper's process group")
+        return (wrapper, child)
+    }
+
+    /// What the group signals rely on: Foundation's `Process` starts the host
+    /// as the leader of a process group of its own, not in Detour's.
+    @MainActor func testAHostLeadsAProcessGroupOfItsOwn() async throws {
+        try connect(.silent)
+        let pid = try await runningHostPID()
+        XCTAssertEqual(getpgid(pid), pid)
+        XCTAssertNotEqual(getpgid(pid), getpgrp())
+    }
+
+    /// The guard on the group id: only one the host leads, never Detour's
+    /// own (a `killpg` of it would end Detour), never 0, 1 or a failed
+    /// `getpgid`.
+    @MainActor func testOnlyAGroupTheHostLeadsAndThatIsNotDetoursIsSignalled() {
+        XCTAssertEqual(NativeMessagingHost.signallableGroup(host: 500, hostGroup: 500, detourGroup: 400), 500)
+        XCTAssertNil(NativeMessagingHost.signallableGroup(host: 500, hostGroup: 400, detourGroup: 400),
+                     "a host left in Detour's group")
+        XCTAssertNil(NativeMessagingHost.signallableGroup(host: 500, hostGroup: 500, detourGroup: 500),
+                     "the host's group is Detour's")
+        XCTAssertNil(NativeMessagingHost.signallableGroup(host: 500, hostGroup: 450, detourGroup: 400),
+                     "a group another process leads")
+        XCTAssertNil(NativeMessagingHost.signallableGroup(host: 500, hostGroup: -1, detourGroup: 400),
+                     "getpgid failed: the host is gone")
+        XCTAssertNil(NativeMessagingHost.signallableGroup(host: 1, hostGroup: 1, detourGroup: 400))
+        XCTAssertNil(NativeMessagingHost.signallableGroup(host: 0, hostGroup: 0, detourGroup: 400))
+    }
+
+    /// A wrapper script that runs its host without `exec`: the teardown's
+    /// SIGTERM reaches the child, which never sees its stdin close, as well
+    /// as the wrapper. This held before TASK-274 too, by way of
+    /// `Process.terminate()`, which signals the group; the quit's `kill` of
+    /// the pid alone did not (`testQuitEndsAWrapperHostsChild`).
+    @MainActor func testDisconnectEndsAWrapperHostsChild() async throws {
+        try connect(.wrapsSilentChild, termination: recordingKills(grace: 30))
+        let fixture = try XCTUnwrap(fixture)
+        _ = try await wrapperAndChild()
+        host?.disconnect()
+        try await waitUntil("the wrapper and its child to be gone", timeout: 5) {
+            fixture.processCount() == 0 && fixture.wrapperIDs().isEmpty
+        }
+        XCTAssertEqual(killed.all, [], "both exit on the SIGTERM")
+    }
+
+    /// The wrapper exits on SIGTERM at once; its child ignores it and is
+    /// killed when the grace period is over, though the host process the
+    /// timer was set for has gone by then.
+    @MainActor func testAWrapperHostsChildIgnoringSIGTERMIsKilledAfterTheGracePeriod() async throws {
+        // A grace well past the wrapper's exit, which a loaded machine can
+        // take seconds to show, so the checks before the SIGKILL hold.
+        try connect(.wrapsChildIgnoringSIGTERM, termination: recordingKills(grace: 4))
+        let fixture = try XCTUnwrap(fixture)
+        let (wrapper, child) = try await wrapperAndChild()
+        host?.disconnect()
+        try await waitUntil("the wrapper to exit on SIGTERM", timeout: 5) { fixture.wrapperIDs().isEmpty }
+        XCTAssertEqual(fixture.processIDs(), [child], "the child ignores SIGTERM")
+        XCTAssertEqual(killed.all, [])
+        try await waitUntil("the child to be killed", timeout: 8) {
+            !killed.all.isEmpty && fixture.processCount() == 0
+        }
+        XCTAssertEqual(killed.all, [wrapper], "the SIGKILL goes to the group the wrapper led")
+    }
+
+    /// The quit path ends a wrapper host's child too.
+    @MainActor func testQuitEndsAWrapperHostsChild() async throws {
+        try connect(.wrapsSilentChild)
+        let fixture = try XCTUnwrap(fixture)
+        let (wrapper, _) = try await wrapperAndChild()
+        let report = quit(within: 2)
+        XCTAssertTrue(report.terminated.contains(wrapper), "\(report)")
+        XCTAssertFalse(report.killed.contains(wrapper), "both exit on the SIGTERM: \(report)")
+        try await waitUntil("the wrapper and its child to be gone", timeout: 5) {
+            fixture.processCount() == 0 && fixture.wrapperIDs().isEmpty
+        }
+    }
+
+    /// The quit's wait lasts while the group has a live member, not only
+    /// while the wrapper does, and the SIGKILL at the deadline reaches the
+    /// child that ignored SIGTERM.
+    @MainActor func testQuitKillsAWrapperHostsChildIgnoringSIGTERM() async throws {
+        try connect(.wrapsChildIgnoringSIGTERM)
+        let fixture = try XCTUnwrap(fixture)
+        let (wrapper, _) = try await wrapperAndChild()
+        let start = Date()
+        let report = quit(within: 0.5)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertTrue(report.terminated.contains(wrapper), "\(report)")
+        XCTAssertTrue(report.killed.contains(wrapper), "the child was still running at the deadline: \(report)")
+        XCTAssertGreaterThanOrEqual(elapsed, 0.45, "it waits for the child, not only the wrapper")
+        try await waitUntil("the child to be gone", timeout: 5) {
+            fixture.processCount() == 0 && fixture.wrapperIDs().isEmpty
+        }
+    }
+
+    /// A wrapper torn down moments before the quit has exited, and its
+    /// SIGTERM-ignoring child is waiting out the grace period: the quit
+    /// kills the child rather than leave it to a timer that dies with the app.
+    @MainActor func testQuitKillsAWrapperHostsChildLeftWithinTheGracePeriod() async throws {
+        try connect(.wrapsChildIgnoringSIGTERM, termination: recordingKills(grace: 30))
+        let fixture = try XCTUnwrap(fixture)
+        let (wrapper, child) = try await wrapperAndChild()
+        host?.disconnect()
+        host = nil
+        try await waitUntil("the wrapper to exit on SIGTERM", timeout: 5) { fixture.wrapperIDs().isEmpty }
+        XCTAssertEqual(fixture.processIDs(), [child], "the child ignores SIGTERM")
+
+        let report = quit(within: 0.3)
+
+        XCTAssertTrue(report.killed.contains(wrapper), "\(report)")
+        try await waitUntil("the child to be gone", timeout: 5) { fixture.processCount() == 0 }
+        XCTAssertEqual(killed.all, [], "the 30 s timer has not fired")
+    }
+
+    /// The group signals stay inside the host's own tree: tearing down a
+    /// wrapper host, SIGKILL included, and then a quit leave alone a process
+    /// of the test's own (`Process` makes it a group leader, as it does a
+    /// host), and the teardown leaves another host's process alone too.
+    @MainActor func testHostSignalsReachNothingOutsideTheHostsTree() async throws {
+        let canary = Process()
+        canary.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        canary.arguments = ["\(Int.random(in: 900_000...999_999))"]
+        try canary.run()
+        // Our own child, unreaped while `isRunning`: its pid is still its own.
+        addTeardownBlock { if canary.isRunning { canary.terminate() } }
+
+        try connect(.wrapsChildIgnoringSIGTERM, termination: recordingKills(grace: 0.3))
+        let fixture = try XCTUnwrap(fixture)
+        let (wrapper, _) = try await wrapperAndChild()
+        let other = try FakeNativeMessagingHost(name: "com.detour.fake_host_test_other",
+                                                allowing: [Self.extensionID], behavior: .silent)
+        otherFixture = other
+        let otherHost = NativeMessagingHost(hostName: other.name, extensionID: Self.extensionID)
+        self.otherHost = otherHost
+        try otherHost.connect()
+        try await waitUntil("the other host process to be running") { other.processCount() == 1 }
+
+        host?.disconnect()
+        try await waitUntil("the wrapper host's tree to be killed", timeout: 5) {
+            !killed.all.isEmpty && fixture.processCount() == 0 && fixture.wrapperIDs().isEmpty
+        }
+        XCTAssertEqual(killed.all, [wrapper])
+        XCTAssertEqual(other.processCount(), 1, "another host is not in the torn-down host's tree")
+        XCTAssertTrue(canary.isRunning, "a process outside every host's tree")
+
+        quit(within: 0.5)
+        try await waitUntil("the other host process to be gone", timeout: 5) { other.processCount() == 0 }
+        XCTAssertTrue(canary.isRunning, "the quit ends hosts and their trees only")
+    }
+
+    // MARK: - TASK-265: writes never block the main actor
+
+    /// A JSON string body of exactly `bytes` bytes (the quotes included).
+    @MainActor private func stringBody(bytes: Int) -> String {
+        String(repeating: "x", count: bytes - 2)
+    }
+
+    /// The browser-to-host limits are deliberate values: Chrome's 64 MiB for
+    /// a message, room for one such message framed waiting to be written,
+    /// and 1 MB from the host.
+    @MainActor func testTheMessageLimitsAreChromes() {
+        XCTAssertEqual(NativeMessagingHost.OutgoingLimits.standard.maxMessageSize, 64 * 1024 * 1024)
+        XCTAssertEqual(NativeMessagingHost.OutgoingLimits.standard.maxPendingBytes, 64 * 1024 * 1024 + 4)
+        XCTAssertEqual(NativeMessagingHost.maxIncomingMessageSize, 1024 * 1024)
+    }
+
+    /// A host that never reads its stdin (`exec sleep`), sent 4 MB, sixty
+    /// times the pipe's buffer: every `sendMessage` returns at once, the
+    /// bytes wait off the main actor, and `disconnect()` still ends the host.
+    /// Before TASK-265 the first write past the buffer blocked the main
+    /// thread for as long as the host lived.
+    @MainActor func testSendingSeveralMegabytesToAHostThatNeverReadsDoesNotBlock() async throws {
+        try connect(.silent)
+        let fixture = try XCTUnwrap(fixture)
+        let pid = try await runningHostPID()
+        let safety = killing(pid, after: 10)
+        defer { safety.cancel() }
+
+        let blob = stringBody(bytes: 512 * 1024)
+        let start = Date()
+        for n in 1...8 {
+            try host?.sendMessage(["n": n, "blob": blob])
+        }
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertLessThan(elapsed, 2, "queued, not written in place (loose: a loaded machine)")
+        XCTAssertEqual(fixture.processCount(), 1, "the safety kill did not have to unblock a write")
+        XCTAssertGreaterThan(host?.pendingWriteBytes ?? 0, 3 * 1024 * 1024,
+                             "the host reads nothing, so nearly all of it is still waiting")
+        XCTAssertTrue(host?.isConnected ?? false)
+
+        host?.disconnect()
+        try await waitUntil("the host process to exit", timeout: 5) { fixture.processCount() == 0 }
+        XCTAssertEqual(events, [])
+    }
+
+    /// The quit sweep with writes waiting on a host that never reads and
+    /// ignores SIGTERM: it returns once its bounded wait is over, having
+    /// killed the host, as without the writes.
+    @MainActor func testQuitEndsAHostThatNeverReadsWithWritesWaiting() async throws {
+        try connect(.silentIgnoringSIGTERM)
+        let fixture = try XCTUnwrap(fixture)
+        let pid = try await runningHostPID()
+        let safety = killing(pid, after: 10)
+        defer { safety.cancel() }
+        let blob = stringBody(bytes: 1024 * 1024)
+        for n in 1...4 {
+            try host?.sendMessage(["n": n, "blob": blob])
+        }
+        XCTAssertGreaterThan(host?.pendingWriteBytes ?? 0, 3 * 1024 * 1024)
+
+        let start = Date()
+        let report = quit(within: 0.5)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertTrue(report.killed.contains(pid), "\(report)")
+        XCTAssertLessThan(elapsed, 3, "the wait is bounded (loose: a loaded machine oversleeps)")
+        try await waitUntil("the host process to be gone", timeout: 5) { fixture.processCount() == 0 }
+        // The waiting writes fail once the host is gone, and that ends the
+        // connection like any write to a host that went away.
+        try await waitForDisconnect()
+        XCTAssertFalse(host?.isConnected ?? true)
+    }
+
+    /// Messages reach the host in the order they were sent: forty of them,
+    /// every other one 200 KB, through a host that echoes them back.
+    @MainActor func testMessagesReachTheHostInOrder() async throws {
+        try connect(.echoes)
+        let blob = stringBody(bytes: 200 * 1024)
+        for n in 1...40 {
+            let message: [String: Any] = n.isMultiple(of: 2) ? ["n": n, "blob": blob] : ["n": n]
+            try host?.sendMessage(message)
+        }
+        try await waitUntil("every echo", timeout: 10) { self.events.count >= 40 }
+        XCTAssertEqual(events, (1...40).map { "message:\($0)" })
+    }
+
+    /// A body over `maxMessageSize` is refused and nothing is written: the
+    /// connection stays usable, and the next message gets through.
+    @MainActor func testAMessageOverTheLimitIsRefusedAndNothingIsWritten() async throws {
+        NativeMessagingHost.outgoingLimits = .init(maxMessageSize: 1000, maxPendingBytes: 10_000)
+        try connect(.echoes)
+        XCTAssertNoThrow(try host?.sendMessage(stringBody(bytes: 1000)), "the limit itself is allowed")
+        XCTAssertThrowsError(try host?.sendMessage(stringBody(bytes: 1001))) { error in
+            XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError, .messageTooLarge(1001))
+        }
+        try host?.sendMessage(["n": 7])
+        try await waitUntil("both echoes") { self.events.count >= 2 }
+        XCTAssertEqual(events, ["message:-1", "message:7"], "the refused message never reached the host")
+        XCTAssertTrue(host?.isConnected ?? false)
+    }
+
+    /// What waits for a host that never reads is bounded: a message that
+    /// would take it past `maxPendingBytes` is refused. A frame counts until
+    /// it is completely written, so with a 200 KB frame stuck behind the
+    /// pipe's 64 KB buffer the third is the one refused.
+    @MainActor func testWhatWaitsForAHostThatNeverReadsIsBounded() async throws {
+        NativeMessagingHost.outgoingLimits = .init(maxMessageSize: 300_000, maxPendingBytes: 500_000)
+        try connect(.silent)
+        let fixture = try XCTUnwrap(fixture)
+        let pid = try await runningHostPID()
+        let safety = killing(pid, after: 10)
+        defer { safety.cancel() }
+        let body = stringBody(bytes: 200_000)
+        try host?.sendMessage(body)
+        try host?.sendMessage(body)
+        XCTAssertEqual(host?.pendingWriteBytes, 2 * 200_004)
+        XCTAssertThrowsError(try host?.sendMessage(body)) { error in
+            XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError, .sendQueueFull)
+        }
+        XCTAssertEqual(host?.pendingWriteBytes, 2 * 200_004, "nothing of the refused one is queued")
+        XCTAssertEqual(fixture.processCount(), 1)
+        host?.disconnect()
+        try await waitUntil("the host process to exit", timeout: 5) { fixture.processCount() == 0 }
+    }
+
+    /// A host that closed its stdin and is still running: the write fails
+    /// with EPIPE off the main actor, which ends the connection with that
+    /// reason and the process with it. SIGPIPE is set back to its default
+    /// (death) for the write, so the test host itself shows the write does
+    /// not raise it: the descriptor has F_SETNOSIGPIPE, beside `main.swift`
+    /// ignoring the signal process-wide.
+    @MainActor func testAWriteToAHostThatClosedItsStdinEndsTheConnectionWithoutSIGPIPE() async throws {
+        try connect(.closesStdin)
+        let fixture = try XCTUnwrap(fixture)
+        _ = try await runningHostPID()
+        let previous = signal(SIGPIPE, SIG_DFL)
+        defer { signal(SIGPIPE, previous) }
+        try host?.sendMessage(["n": 1])
+        try await waitForDisconnect()
+        XCTAssertEqual(events, ["disconnect:Native host write failed: \(String(cString: strerror(EPIPE)))"])
+        try await waitUntil("the host process to be terminated", timeout: 5) { fixture.processCount() == 0 }
+        XCTAssertThrowsError(try host?.sendMessage(["n": 2])) { error in
+            XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError, .notConnected)
+        }
+    }
+
+    // MARK: - TASK-275: a failed connect leaves no pipes behind
+
+    /// The descriptors open in the test process right now.
+    nonisolated private static func openDescriptorCount() -> Int {
+        (0..<getdtablesize()).reduce(0) { count, fd in fcntl(fd, F_GETFD) != -1 ? count + 1 : count }
+    }
+
+    /// Makes `attempts` hosts for `hostName` whose `connect()` throws, keeps
+    /// them all alive (an owner that holds on to a host whose connect failed
+    /// must not hold its pipes), and checks the process's open descriptors
+    /// did not grow. Each failed connect used to keep three to six (the pipe
+    /// ends Foundation had not closed, and the stderr reader). The bound
+    /// leaves room for descriptors WebKit or the log open meanwhile.
+    @MainActor private func assertFailedConnectsLeaveNoDescriptors(
+        hostName: String, failingWith check: (any Error) -> Void,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let attempts = 50
+        var hosts: [NativeMessagingHost] = []
+        // A first attempt outside the count: whatever is opened once (the
+        // manifest read's caches, the log) is not a leak.
+        let warmUp = NativeMessagingHost(hostName: hostName, extensionID: Self.extensionID)
+        XCTAssertThrowsError(try warmUp.connect(), file: file, line: line)
+        let before = Self.openDescriptorCount()
+        for _ in 0..<attempts {
+            let host = NativeMessagingHost(hostName: hostName, extensionID: Self.extensionID)
+            XCTAssertThrowsError(try host.connect(), file: file, line: line) { check($0) }
+            XCTAssertFalse(host.isConnected, file: file, line: line)
+            hosts.append(host)
+        }
+        let grown = Self.openDescriptorCount() - before
+        XCTAssertLessThanOrEqual(grown, 10, "\(attempts) failed connects left \(grown) descriptors open",
+                                 file: file, line: line)
+        XCTAssertEqual(hosts.count, attempts)
+    }
+
+    /// A manifest whose path is a directory: it passes the executable check
+    /// (a directory's search bit), so `connect()` makes the pipes and gets to
+    /// `run()`, which fails with EACCES.
+    @MainActor func testAConnectWhoseSpawnFailsClosesItsPipes() throws {
+        let fixture = try FakeNativeMessagingHost(allowing: [Self.extensionID]) { manifest, scriptPath in
+            manifest["path"] = (scriptPath as NSString).deletingLastPathComponent
+        }
+        self.fixture = fixture
+        assertFailedConnectsLeaveNoDescriptors(hostName: fixture.name) { error in
+            XCTAssertNil(error as? NativeMessagingHost.NativeMessagingError, "run() itself failed: \(error)")
+        }
+    }
+
+    /// Quitting refuses a host after its pipes are made, under the lock
+    /// `run()` is called under.
+    @MainActor func testAConnectRefusedForQuittingClosesItsPipes() throws {
+        let fixture = try FakeNativeMessagingHost(allowing: [Self.extensionID])
+        self.fixture = fixture
+        NativeMessagingHost.setRefusingNewHostsForTesting(true)  // lifted by tearDown's reset()
+        assertFailedConnectsLeaveNoDescriptors(hostName: fixture.name) { error in
+            XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError, .quitting)
+        }
+        XCTAssertEqual(fixture.processCount(), 0, "no host starts while quitting")
+    }
+
+    /// The same host connects once the cause is gone: a failed connect
+    /// leaves it as a new one is.
+    @MainActor func testAHostWhoseConnectWasRefusedConnectsLater() async throws {
+        let fixture = try FakeNativeMessagingHost(allowing: [Self.extensionID], behavior: .echoes)
+        self.fixture = fixture
+        let host = NativeMessagingHost(hostName: fixture.name, extensionID: Self.extensionID)
+        host.onMessage = { [weak self] in self?.events.append("message:\(($0 as? [String: Any])?["n"] as? Int ?? -1)") }
+        self.host = host
+        NativeMessagingHost.setRefusingNewHostsForTesting(true)
+        XCTAssertThrowsError(try host.connect())
+        NativeMessagingHost.setRefusingNewHostsForTesting(false)
+        XCTAssertFalse(host.isConnected)
+        XCTAssertThrowsError(try host.sendMessage(["n": 0])) { error in
+            XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError, .notConnected)
+        }
+        try host.connect()
+        try host.sendMessage(["n": 1])
+        try await waitUntil("the echo") { self.events == ["message:1"] }
+    }
+
+    // MARK: - TASK-277: a test's sweep ends its own hosts only
+
+    /// The sweep these tests use ends the hosts started from the scripts it
+    /// names and leaves every other host running: the registry is
+    /// process-wide, and a host another suite left in the test host is not a
+    /// test's to end.
+    @MainActor func testATestsSweepEndsOnlyTheHostsItNames() async throws {
+        try connect(.silent)
+        let fixture = try XCTUnwrap(fixture)
+        let pid = try await runningHostPID()
+        let outsider = try FakeNativeMessagingHost(name: "com.detour.fake_host_test_outsider",
+                                                   allowing: [Self.extensionID], behavior: .silent)
+        otherFixture = outsider
+        let outsiderHost = NativeMessagingHost(hostName: outsider.name, extensionID: Self.extensionID)
+        otherHost = outsiderHost
+        try outsiderHost.connect()
+        try await waitUntil("the outsider host process to be running") { outsider.processCount() == 1 }
+
+        let report = NativeMessagingHost.terminateSpawnedHostsForTesting(running: [fixture.scriptPath], within: 0.5)
+
+        XCTAssertEqual(report, .init(terminated: [pid]))
+        try await waitUntil("the named host process to be gone", timeout: 5) { fixture.processCount() == 0 }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(outsider.processCount(), 1, "a host the sweep does not name is left running")
+        XCTAssertTrue(outsiderHost.isConnected)
+    }
+
+    // MARK: - TASK-277: a signal to Detour ends the hosts, then takes its course
+
+    /// How many times each signal-handling step ran, from whatever thread.
+    nonisolated private final class SignalLog: Sendable {
+        private let entries = Mutex<[String]>([])
+        func append(_ entry: String, times: Int = 1) {
+            entries.withLock { $0.append(contentsOf: repeatElement(entry, count: times)) }
+        }
+        var all: [String] { entries.withLock { $0 } }
+    }
+
+    /// What the signal handler's sweep reported, from whatever thread.
+    nonisolated private final class ReportLog: Sendable {
+        private let reports = Mutex<[NativeMessagingHost.QuitReport]>([])
+        func append(_ report: NativeMessagingHost.QuitReport) { reports.withLock { $0.append(report) } }
+        var all: [NativeMessagingHost.QuitReport] { reports.withLock { $0 } }
+    }
+
+    /// The SIGTERM handler's sequence (`installSIGTERMHandler`) driven
+    /// through a real signal in the test host. SIGTERM's default action
+    /// would end the test host, so the same source is made for SIGURG, whose
+    /// default action discards it, with a sweep limited to this test's host
+    /// in place of the full one: the signal is handled once, the host is
+    /// ended and new hosts are refused before the signal is sent again, and
+    /// the handler is gone and the disposition back to the default when it
+    /// is. A second source witnesses both deliveries (a signal source sees
+    /// every one, whatever the disposition). That SIGTERM's default action
+    /// then ends Detour with status 143 is the kernel's, measured at runtime
+    /// with docs/harness/task274-harness.patch.
+    @MainActor func testASignalSourceEndsTheHostsThenLetsTheSignalTakeItsDefaultCourse() async throws {
+        let signo = SIGURG
+        let previous = signal(signo, SIG_DFL)
+        defer { signal(signo, previous) }
+        try connect(.silent)
+        let fixture = try XCTUnwrap(fixture)
+        let pid = try await runningHostPID()
+        let scripts: Set<String> = [fixture.scriptPath]
+
+        let steps = SignalLog()
+        let witness = DispatchSource.makeSignalSource(signal: signo, queue: .global())
+        // Sendable: the handler runs on a global queue, and a closure written
+        // here would otherwise take the test's main-actor isolation.
+        witness.setEventHandler { @Sendable [witness] in steps.append("signal", times: Int(witness.data)) }
+        witness.resume()
+        defer { witness.cancel() }
+        let reports = ReportLog()
+        let source = NativeMessagingHost.makeHostEndingSignalSource(signo) {
+            steps.append("sweep")
+            let report = NativeMessagingHost.terminateSpawnedHostsForTesting(
+                running: scripts, within: 2, refusingNewHosts: true)
+            reports.append(report)
+            // Still ignored once the hosts are ended: the default disposition,
+            // and with it the re-send, comes after.
+            var current = sigaction()
+            sigaction(signo, nil, &current)
+            let ignored = unsafeBitCast(current.__sigaction_u.__sa_handler, to: Int.self)
+                == unsafeBitCast(SIG_IGN, to: Int.self)
+            steps.append(ignored ? "ignored after the sweep" : "not ignored after the sweep")
+        }
+        defer { source.cancel() }  // a no-op once the handler has run
+
+        kill(getpid(), signo)
+
+        try await waitUntil("the handler to run and the signal to be sent again", timeout: 5) {
+            source.isCancelled && steps.all.filter { $0 == "signal" }.count >= 2
+        }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let log = steps.all
+        XCTAssertEqual(log.filter { $0 == "sweep" }.count, 1, "handled once: cancelled before the re-send, \(log)")
+        XCTAssertEqual(log.filter { $0 == "signal" }.count, 2, "the test's signal and the re-sent one: \(log)")
+        XCTAssertTrue(log.contains("ignored after the sweep"),
+                      "the signal is restored to its default and sent again only after the sweep: \(log)")
+        XCTAssertEqual(reports.all, [.init(terminated: [pid])])
+        try await waitUntil("the host process to be gone", timeout: 5) { fixture.processCount() == 0 }
+        let disposition = signal(signo, SIG_DFL)
+        XCTAssertEqual(unsafeBitCast(disposition, to: Int.self), unsafeBitCast(SIG_DFL, to: Int.self),
+                       "the default disposition is back for the re-sent signal")
+        XCTAssertThrowsError(try NativeMessagingHost(hostName: fixture.name, extensionID: Self.extensionID).connect()) {
+            XCTAssertEqual($0 as? NativeMessagingHost.NativeMessagingError, .quitting, "no host starts after the sweep")
+        }
+        XCTAssertEqual(fixture.processCount(), 0)
     }
 
     // MARK: - The join, without a process

@@ -61,8 +61,12 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     }
 
     @MainActor override func tearDown() async throws {
-        // A failed test can leave an add held; answer it so its task finishes.
-        for center in centers { center.releaseAll() }
+        // A failed test can leave an add or the prompt held; answer it so
+        // its task finishes.
+        for center in centers {
+            center.releaseAll()
+            center.answerAuthorizationRequests(granting: false)
+        }
         centers.removeAll()
         for id in incognitoSpaceIDs { TabStore.shared.removeIncognitoSpace(id: id) }
         incognitoSpaceIDs.removeAll()
@@ -154,6 +158,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         const options = { type: 'basic', title: title || '', message: 'isolation test' };
         if (op === 'create') { return { result: await chrome.notifications.create(id, options) }; }
         if (op === 'createNullID') { return { result: await chrome.notifications.create(null, options) }; }
+        if (op === 'createEmptyID') { return { result: await chrome.notifications.create('', options) }; }
         if (op === 'update') { return { result: await chrome.notifications.update(id, options) }; }
         if (op === 'clear') { return { result: await chrome.notifications.clear(id) }; }
         if (op === 'getAll') { return { result: await chrome.notifications.getAll() }; }
@@ -667,6 +672,37 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         }
     }
 
+    /// create('', options) generates a fresh id each time, as Chrome's does
+    /// for an id "not set or empty" (TASK-269): two calls are two
+    /// notifications and getAll never lists an empty id, from the page and
+    /// the worker.
+    @MainActor func testCreateWithAnEmptyIDGeneratesOneFromBothTransports() async throws {
+        let ext = try await makeExtension()
+        let (profile, center) = try makeProfile("Notification Empty ID")
+        center.holdsAdds = false
+        let page = try await loadPage(ext, in: profile)
+
+        var all: [String: Any] = [:]
+        var generated: [String] = []
+        for transport in [Transport.page, .worker] {
+            for n in 1...2 {
+                let title = "Empty id \(transport) \(n)"
+                let id = try await call("createEmptyID", title: title, via: transport, in: page) as? String
+                let created = try XCTUnwrap(id, "\(transport): create answers an id")
+                XCTAssertFalse(created.isEmpty, "\(transport): a generated id, not the empty one")
+                XCTAssertFalse(generated.contains(created), "\(transport): a fresh id each time: \(generated)")
+                generated.append(created)
+                XCTAssertEqual(center.shown[identifier(created, of: ext, in: profile)], title, "\(transport)")
+            }
+            all = try await call("getAll", via: transport, in: page) as? [String: Any] ?? [:]
+            XCTAssertNil(all[""], "\(transport): no notification under the empty id: \(all)")
+            for id in generated {
+                XCTAssertNotNil(all[id], "\(transport): getAll lists \(id): \(all)")
+            }
+        }
+        XCTAssertEqual(Set(all.keys), Set(generated), "four creates, four notifications")
+    }
+
     @MainActor func testUpdateWhileCreateInFlightTakesEffect() async throws {
         let ext = try await makeExtension()
         let (profile, center) = try makeProfile("Notification Ordering Update")
@@ -974,7 +1010,7 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     }
 
     /// A click or close on a notification resolves to the profile that created
-    /// it, and a close drops only that profile's entry. (Delivery to
+    /// it, and drops only that profile's entry. (Delivery to
     /// `onClicked` / `onClosed` is `ExtensionNotificationEventTests`'.)
     @MainActor func testResponsesResolveOnlyToTheCreatingProfile() async throws {
         let ext = try await makeExtension()
@@ -1005,8 +1041,14 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             XCTAssertEqual(clicked, .init(owner: .init(profileID: TabStore.incognitoProfileID, extensionID: ext.id),
                                           notificationID: id, kind: .clicked), "\(transport)")
 
+            // macOS takes a clicked banner away, so the click drops the
+            // Private profile's entry too (TASK-272).
+            privateListed = try await listed(id, via: transport, in: privatePage)
+            XCTAssertEqual(privateListed, [], "\(transport): the click drops the Private profile's entry")
+
             // A notification a build before TASK-238 delivered carries no
             // profile and matches no entry.
+            _ = try await call("create", id, title: "Private again", via: transport, in: privatePage)
             XCTAssertNil(manager.handleResponse(identifier: "\(ext.id):\(id)",
                                                 action: UNNotificationDismissActionIdentifier))
             privateListed = try await listed(id, via: transport, in: privatePage)
@@ -1140,6 +1182,43 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             XCTAssertEqual(listedIDs, [id], "\(transport)")
         }
         XCTAssertEqual(center.authorizationRequests, 1, "the user is asked once, at the first create")
+    }
+
+    /// The user never answers the prompt (TASK-273): from the page and the
+    /// worker, `create` and `update` resolve once the prompt has been up for
+    /// the timeout (fired at once here) instead of hanging, the notification
+    /// is listed, and nothing is shown until the user allows notifications.
+    @MainActor func testUnansweredPromptAnswersCreateAndUpdateFromBothTransports() async throws {
+        let ext = try await makeExtension()
+        let (manager, center) = makeManager()
+        manager.scheduleAuthorizationTimeout = { fire in Task { fire() } }
+        let profile = try makeProfile("Notification Unanswered Prompt", manager: manager)
+        center.holdsAdds = false
+        center.authorization = .notDetermined
+        center.holdsAuthorizationRequests = true
+        let page = try await loadPage(ext, in: profile)
+
+        for transport in [Transport.page, .worker] {
+            let id = "unanswered-\(transport)"
+            let created = try await call("create", id, title: "Waiting", via: transport, in: page)
+            XCTAssertEqual(created as? String, id, "\(transport): create resolves with its id")
+            let updated = try await call("update", id, title: "Updated", via: transport, in: page)
+            XCTAssertEqual(updated as? Bool, true, "\(transport): the update is recorded")
+            let listedIDs = try await listed("unanswered-\(transport)", via: transport, in: page)
+            XCTAssertEqual(listedIDs, [id], "\(transport)")
+        }
+        XCTAssertTrue(center.addedIdentifiers.isEmpty, "nothing is shown while the prompt is up")
+        XCTAssertEqual(center.authorizationRequests, 1, "one prompt for every call")
+        XCTAssertEqual(center.heldAuthorizationRequestCount, 1, "the prompt is still unanswered")
+
+        center.answerAuthorizationRequests(granting: true)
+        try await waitUntil("both notifications are shown", timeout: 5, pollInterval: 0.01) {
+            center.shown.count == 2
+        }
+        for transport in [Transport.page, .worker] {
+            XCTAssertEqual(center.shown[identifier("unanswered-\(transport)", of: ext, in: profile)], "Updated",
+                           "\(transport)")
+        }
     }
 
     /// A request that reaches a handler whose profile has been released names

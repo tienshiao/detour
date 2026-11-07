@@ -43,6 +43,22 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// rather than stacking alerts.
     private var pendingUninstallSelfConfirmations: Set<String> = []
 
+    /// When each extension's last `uninstallSelf` confirmation was cancelled.
+    /// Another request for the dialog inside `uninstallSelfCancelCooldown` is
+    /// refused without one (TASK-267).
+    private var uninstallSelfCancelledAt: [String: Date] = [:]
+
+    /// How long after a Cancel an extension's `uninstallSelf` confirmation is
+    /// refused without being shown. Chrome stops a loop of these dialogs by
+    /// requiring a user gesture, which Detour cannot check; the cooldown caps a
+    /// worker that asks again after every Cancel at one alert per period, while
+    /// still letting a user who changed their mind retry later (TASK-267).
+    static let uninstallSelfCancelCooldown: TimeInterval = 10 * 60
+
+    /// The clock the `uninstallSelf` cooldown is measured with, as a test seam.
+    /// Production never assigns it.
+    var now: () -> Date = Date.init
+
     /// Extensions whose `permissions.request` prompt for a permission outside
     /// WebKit (TASK-260) is on screen or about to be. A second request while
     /// one is pending is refused rather than stacking alerts.
@@ -351,7 +367,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// wording for a host the extension may not use, delivered the same way as
     /// every other native-host failure — a rejected `sendNativeMessage` promise /
     /// `runtime.lastError`, or a port disconnected with that error.
-    static let nativeHostForbiddenMessage = "Access to the specified native messaging host is forbidden."
+    nonisolated static let nativeHostForbiddenMessage = "Access to the specified native messaging host is forbidden."
 
     /// The disconnect reason on a keep-alive port evicted by a newer one from the
     /// same extension (see the `.polyfillHost` case of the `connectUsing` delegate
@@ -1675,6 +1691,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         extensions.removeAll { $0.id == id }
         AppDatabase.shared.deleteExtension(id: id)
+        // A reinstall starts without an earlier copy's cancelled dialog.
+        uninstallSelfCancelledAt[id] = nil
 
         let extDir = detourDataDirectory().appendingPathComponent("Extensions/\(id)")
         try? FileManager.default.removeItem(at: extDir)
@@ -1701,7 +1719,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// `showConfirmDialog` the user is asked first, in the style of the
     /// Settings alert; Cancel refuses with Chromium's
     /// `kUninstallCanceledError`. Unlike Chrome, the dialog needs no user
-    /// gesture: the polyfill has no gesture signal to check.
+    /// gesture: the polyfill has no gesture signal to check. Instead, after a
+    /// Cancel the extension's next requests for the dialog are refused with
+    /// the same error, unasked, for `uninstallSelfCancelCooldown`; a call
+    /// without the dialog is not affected.
     func uninstallSelf(extensionID: String, showConfirmDialog: Bool,
                        completion: @escaping (String?) -> Void) {
         guard self.extension(withID: extensionID) != nil else {
@@ -1713,10 +1734,21 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             scheduleSelfUninstall(extensionID: extensionID)
             return
         }
+        let canceled = "Extension \(extensionID) uninstall canceled by user."
+        // Cancelled a moment ago: refused without asking again (TASK-267). A
+        // clock set back past the Cancel does not count as inside the period.
+        if let cancelledAt = uninstallSelfCancelledAt[extensionID] {
+            let elapsed = now().timeIntervalSince(cancelledAt)
+            if elapsed >= 0, elapsed < Self.uninstallSelfCancelCooldown {
+                completion(canceled)
+                return
+            }
+            uninstallSelfCancelledAt[extensionID] = nil
+        }
         // Claimed here, not in the task: WebKit dispatches a batch of incoming
         // messages in one go, so a second call can arrive before the task runs.
         guard pendingUninstallSelfConfirmations.insert(extensionID).inserted else {
-            completion("Extension \(extensionID) uninstall canceled by user.")
+            completion(canceled)
             return
         }
         // Off the caller's stack: the alert runs a modal loop.
@@ -1724,7 +1756,14 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             let confirmed = self.confirmUninstallSelf(extensionID: extensionID)
             self.pendingUninstallSelfConfirmations.remove(extensionID)
             guard confirmed else {
-                completion("Extension \(extensionID) uninstall canceled by user.")
+                // Measured from the Cancel, not from the request: the alert
+                // may have been up for a while. Not recorded for an extension
+                // uninstalled while the alert was up: `uninstall(id:)` has
+                // already forgotten it, and a reinstall must start clean.
+                if self.extension(withID: extensionID) != nil {
+                    self.uninstallSelfCancelledAt[extensionID] = self.now()
+                }
+                completion(canceled)
                 return
             }
             // Uninstalled from elsewhere while the alert was up.
@@ -2111,11 +2150,29 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// Shared by a Settings toggle (one key) and by an extension's own
     /// `permissions.remove` (TASK-258, every key it revoked), so both reach
     /// every profile the same way.
+    ///
+    /// The invariant `savedGrantsRevoked` relies on (TASK-276): WebKit posts
+    /// its grant-removal notification for these writes too, on the main queue
+    /// after the write, and the rule cannot tell them from the extension's own
+    /// `permissions.remove`. It deletes a saved grant whose key, at delivery,
+    /// the context neither grants nor denies and no denied pattern covers. So
+    /// every key written here must end this main-actor turn granted, denied or
+    /// covered by a denial, never plainly removed, unless its saved row is
+    /// gone or meant to go (the `.unknown` below is written only for a key
+    /// with no row). The host keys' clear-then-restore is fine: the restore
+    /// runs before the notification is delivered. A write that took a grant
+    /// out of one profile's context alone would delete the saved grant, and so
+    /// take it from every profile.
     @MainActor
     private func applySavedDecisions(extensionID: String,
                                      keys: [(key: String, type: ExtensionPermissionType)],
                                      to contexts: [WKWebExtensionContext]) {
         guard !contexts.isEmpty, !keys.isEmpty else { return }
+        defer {
+            if keys.contains(where: { $0.type == .apiPermission && $0.key == "notifications" }) {
+                revokeNotificationsWhereNotPermitted(extensionID: extensionID)
+            }
+        }
 
         for entry in keys where entry.type == .apiPermission {
             let permission = WKWebExtension.Permission(rawValue: entry.key)
@@ -2211,6 +2268,15 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             as? Set<WKWebExtension.Permission> ?? []
         let patterns = info[WKWebExtensionContext.NotificationUserInfoKey.matchPatterns]
             as? Set<WKWebExtension.MatchPattern> ?? []
+        // Whether or not a saved row goes with it, a removed `notifications`
+        // grant takes the extension's notifications in that profile with it
+        // (TASK-270). `clearRemovedGrants` sweeps again after bringing the
+        // other profiles' contexts along; a second sweep finds nothing.
+        defer {
+            if permissions.contains(WKWebExtension.Permission(rawValue: "notifications")) {
+                revokeNotificationsWhereNotPermitted(extensionID: extensionID)
+            }
+        }
 
         let revoked = Self.savedGrantsRevoked(
             removedPermissions: permissions, removedPatterns: patterns,
@@ -2227,6 +2293,20 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         })
     }
 
+    /// Take the extension's notifications away, and answer its wait for their
+    /// events with the permission refusal, in every profile where
+    /// `notifications` is no longer active for it (TASK-270): after a Settings
+    /// switch (`setPermissionDecision`) and after the extension's own
+    /// `permissions.remove` (`contextDidLoseGrants`, `clearRemovedGrants`). The rule
+    /// is read from each context's state, so a profile where it is still
+    /// active is untouched, and running it twice changes nothing.
+    @MainActor
+    private func revokeNotificationsWhereNotPermitted(extensionID: String) {
+        for profile in TabStore.shared.profiles {
+            profile.polyfillHandler?.revokeNotificationsIfNotPermitted(ofExtension: extensionID)
+        }
+    }
+
     /// Delete the saved grants of `keys` the extension removed itself, then
     /// bring every loaded context of it to what the next load restores.
     /// Shared by WebKit's removals (`contextDidLoseGrants`) and Detour's own
@@ -2235,7 +2315,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     private func clearRemovedGrants(extensionID: String, keys: [(key: String, type: ExtensionPermissionType)]) {
         guard !keys.isEmpty else { return }
         for (key, type) in keys {
-            log.info("\(extensionID, privacy: .public) removed its grant of \(key, privacy: .public); the saved decision is cleared")
+            // A URL or match-pattern key is browsing data: only its scheme is
+            // public (TASK-268).
+            log.info("\(extensionID, privacy: .public) removed its grant of \(type.logName, privacy: .public) \(type.publicLogPart(ofKey: key), privacy: .public) (\(key, privacy: .private)); the saved decision is cleared")
             AppDatabase.shared.revokePermission(extensionID: extensionID, key: key, type: type)
         }
         let contexts = TabStore.shared.profiles.compactMap { $0.extensionContext(for: extensionID) }
@@ -2250,7 +2332,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// of asking, `context` neither grants nor denies it: only a plain removal
     /// leaves that. A saved denial applied at load, or a Settings toggle, ends
     /// with the key denied or granted again; a grant a broader saved denial
-    /// subsumed counts as denied (a denied pattern covers it). The row is also
+    /// subsumed counts as denied (a denied pattern covers it). That holds only
+    /// while every write Detour makes to a context keeps to it; the invariant
+    /// is stated on `applySavedDecisions` and at the restore in
+    /// `Profile.loadExtensionContext` (TASK-276). The row is also
     /// skipped when:
     /// - it is outside what the manifest may ask for (the restore's gate). Such
     ///   a row is inert, and a removal is no decision about it;
@@ -3218,9 +3303,36 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // (TASK-242). WebKit's bindings refuse a JS null before it gets here;
         // nil is sent as null all the same. A delivery WebKit reports as an
         // error carries no message, and nothing is written for it.
-        port.messageHandler = { message, error in
+        //
+        // The write happens off the main actor (TASK-265). A message that
+        // cannot be sent (over 64 MiB, not JSON, the host not reading with
+        // the bound of queued bytes reached, the host gone) ends the port
+        // rather than vanishing: later messages would otherwise reach the
+        // host with a hole before them. Chrome refuses an oversized message
+        // in `postMessage` itself and closes the port on a failed write; the
+        // error given here is Chrome's text, though WebKit does not hand an
+        // established port's error to the extension, only `onDisconnect`. A
+        // write that fails after it was queued ends the port through
+        // `onDisconnect` above.
+        port.messageHandler = { [weak port] message, error in
             guard error == nil else { return }
-            try? host.sendMessage(message ?? NSNull())
+            do {
+                try host.sendMessage(message ?? NSNull())
+            } catch {
+                // A host that is already going away (it exited, or a write
+                // to it failed) with its end still being joined: the join
+                // ends the port through `onDisconnect` once what the host
+                // wrote before going is delivered. Ending it here would
+                // drop that reply.
+                if (error as? NativeMessagingHost.NativeMessagingError) == .notConnected, host.isConnected {
+                    return
+                }
+                let detail = (error as? NativeMessagingHost.NativeMessagingError)?.logDetail ?? error.localizedDescription
+                log.error("Native port to '\(hostName, privacy: .public)' from \(extID, privacy: .public) in profile \(profileName, privacy: .public): message not sent (\(detail, privacy: .public)); disconnecting the port")
+                releaseHost()
+                host.disconnect()
+                port?.disconnect(throwing: error)
+            }
         }
         port.disconnectHandler = { _ in
             releaseHost()
@@ -3235,7 +3347,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             // never asked for.
             logNativeConnectAttempt(
                 extensionID: extID, hostName: hostName, profileName: profileName,
-                outcome: .failed, detail: error.localizedDescription)
+                outcome: .failed,
+                detail: (error as? NativeMessagingHost.NativeMessagingError)?.logDetail ?? error.localizedDescription)
             completionHandler(error)
             // The refused port is removed like any closed one, and the removal
             // takes the background's open-ports entry with it (TASK-142). The

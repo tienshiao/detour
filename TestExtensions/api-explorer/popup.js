@@ -511,6 +511,24 @@ document.getElementById('btn-notif-race-popup').addEventListener('click', async 
   } catch (e) { showResult('res-notifications', e.message, true); }
 });
 
+// create('') generates a fresh id each time, as Chrome's does for an id "not
+// set or empty" (TASK-269): two calls are two notifications, none under ''.
+document.getElementById('btn-notif-empty-id').addEventListener('click', async () => {
+  try {
+    const options = {
+      type: 'basic', title: 'Empty id', message: 'Generated id',
+      iconUrl: chrome.runtime.getURL('icon.png')
+    };
+    const first = await chrome.notifications.create('', options);
+    const second = await chrome.notifications.create('', options);
+    const all = await chrome.notifications.getAll();
+    showResult('res-notifications', {
+      first, second, distinct: first !== second && first !== '' && second !== '',
+      listedUnderEmptyId: Object.prototype.hasOwnProperty.call(all, ''), notifications: all
+    });
+  } catch (e) { showResult('res-notifications', e.message, true); }
+});
+
 // --- Management ---
 
 document.getElementById('btn-mgmt-self').addEventListener('click', async () => {
@@ -555,7 +573,9 @@ document.getElementById('btn-mgmt-warnings-bg').addEventListener('click', async 
 });
 
 // Only ever with the confirmation dialog: confirming really uninstalls the
-// explorer, and the reply may never arrive (its contexts are unloaded).
+// explorer, and the reply may never arrive (its contexts are unloaded). After a
+// Cancel, pressing it again within 10 minutes is refused at once with the
+// cancel error and no dialog (TASK-267).
 document.getElementById('btn-mgmt-uninstall-self').addEventListener('click', async () => {
   showResult('res-management', 'uninstallSelf({ showConfirmDialog: true }) — waiting for the dialog…');
   try {

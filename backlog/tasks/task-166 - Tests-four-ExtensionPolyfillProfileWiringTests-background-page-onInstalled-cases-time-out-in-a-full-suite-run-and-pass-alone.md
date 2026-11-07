@@ -3,10 +3,10 @@ id: TASK-166
 title: >-
   Tests: four ExtensionPolyfillProfileWiringTests background-page onInstalled
   cases time out in a full-suite run and pass alone
-status: To Do
+status: Done
 assignee: []
-created_date: '2026-10-04 21:51'
-updated_date: '2026-10-13 01:22'
+created_date: 2026-10-04 21:51
+updated_date: '2026-11-04T08:54:00Z'
 labels:
   - bug
   - tests
@@ -47,11 +47,11 @@ Where to start: bisect the suite order with -only-testing (the wiring suite plus
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The earlier suite or suites that make the four cases fail are identified, with a minimal -only-testing order that reproduces the failure
-- [ ] #2 The cause is explained: what state crosses from the earlier suite and why it stops the background page answering the test's probe
+- [x] #1 The earlier suite or suites that make the four cases fail are identified, with a minimal -only-testing order that reproduces the failure
+- [x] #2 The cause is explained: what state crosses from the earlier suite and why it stops the background page answering the test's probe
 - [x] #3 It is stated whether main is affected or only the epic branch
-- [ ] #4 The fix is in the right place: test isolation if the leak is the test's, product code with a regression test if a real extension would hit it
-- [ ] #5 A full DetourTests run passes these four cases three times in a row, and wiki/playbooks/build-and-test.md section 8 is updated with the cause
+- [x] #4 The fix is in the right place: test isolation if the leak is the test's, product code with a regression test if a real extension would hit it
+- [x] #5 A full DetourTests run passes these four cases three times in a row, and wiki/playbooks/build-and-test.md section 8 is updated with the cause
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -72,4 +72,12 @@ main at db9024b had a full run the same day (2,095 tests, 11 skipped) with 0 fai
 Separately, on main the same day: ExtensionOriginTrackingPreventionTests.testTrackingPreventionPassSparesOriginsWithALoggedInteraction passed in one full run, then timed out ('waiting for the uninteracted origin's localStorage to be deleted', 30 s) in a full run on main + TASK-169 and twice alone a few minutes later, on that branch and on main; it passed again in the epic's full run half an hour after that. Not investigated; recorded here because it is another test whose result changed with no code change.
 
 2026-10-12, task sweep: main is not affected, as far as full runs show. The four cases passed in every full DetourTests run of main-based code on 2026-10-12 (four runs while TASK-175/176 were developed, the last at what is now main's tip 829d88a: 2,180 tests, 0 failures), and in the full run of main at db9024b on 2026-10-10. The failures have only been seen on epic-claude-extension. Criteria 1, 2, 4 and 5 are open.
+
+2026-11-04: Cause found on main during TASK-257 (fix 7c2bc2a). WebKit's single network process fails after about 190 persistent data-store sessions over its lifetime: sandbox extensions fail with errno = 12, and localStorage silently keeps nothing. So the background page's probe result was lost once a full run had created enough stores. No single earlier suite causes it; the cause is the number of stores (AC #1 is answered by that: there is no minimal poisoning suite, it is the cumulative store count). It is test-only: the app creates one store per profile. Fix in TestEnvironmentSetup: terminate the network process between suites every 60 new recorded stores. Full runs with the cases passing: main at 7c2bc2a (3570 tests, 0 failures); epic-claude-extension after merging main, at 45f5da1 (the wiring suite passed whole, 53 passed, no errno = 12) and at fd35b40 (3860 tests, 0 failures). Wiki: wiki/platform/webkit-test-host-traps.md 'Network process exhaustion', and a new trap in wiki/playbooks/build-and-test.md (the epic's section 8 is not on main).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The full-run-only background-page onInstalled failures were WebKit network-process exhaustion (about 190 persistent stores per process lifetime; errno = 12; localStorage keeps nothing), not a leak from one suite. Fixed test-side in 7c2bc2a: the test host restarts the network process every 60 new stores. Passed in three full runs: main 7c2bc2a, and the epic branch at 45f5da1 and fd35b40.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -54,6 +54,15 @@ sources:
   - id: task-261
     resource: backlog:TASK-261
     title: "Extensions: management.getSelf and getAll leave out permissions granted at runtime"
+  - id: task-268
+    resource: backlog:TASK-268
+    title: "Extensions: clearing a grant the extension removed writes the full page URL to the system log as public"
+  - id: task-277
+    resource: backlog:TASK-277
+    title: "Tests: cover native host quit refusal and the SIGTERM path, keep the host sweep to the test's own hosts, and route the injected clock through the permission gates"
+  - id: task-276
+    resource: backlog:TASK-276
+    title: "Docs: fix the permission-scope and notification-ordering descriptions the review found wrong"
   - id: polyfill-handler
     resource: ../../Detour/Extensions/Runtime/ExtensionPolyfillHandler.swift
     title: ExtensionPolyfillHandler.swift (permissionIsActive)
@@ -208,7 +217,21 @@ rows the removal revoked (`savedGrantsRevoked`).[^task-258]
   Detour's writes would not cover them. Instead, at delivery a saved
   granted row whose key was removed is deleted only when the context neither
   grants it nor denies it, and no denied pattern covers it. Detour's own
-  writes always leave the key granted or denied.
+  writes always leave the key granted, denied or covered by a denial.
+- **That is an invariant every Detour write must keep.** The rule is right
+  only while each write Detour makes to a context's grants and denials ends
+  its main-actor turn with every key it touched granted, denied or covered by
+  a denial, never plainly removed, unless the saved row is gone or meant to
+  go. Today's writes do: the load restore only adds statuses, and a grant it
+  takes out is one a later denial erases or covers; `applySavedDecisions`
+  clears a host key and re-runs the restore before the notification is
+  delivered, and writes `.unknown` only for a key with no row; the TASK-270
+  notification revocation writes no permission. A future write that removed
+  a grant from one profile's context alone (say, a Private-only rule) would
+  be read as the extension's own removal and delete the saved grant, which
+  is the extension's, for every profile. The invariant is stated in the code
+  on `applySavedDecisions` and at the restore in
+  `Profile.loadExtensionContext`.[^task-276]
   `permissionStatus(for:)` of a pattern under a broader denied pattern does
   not read as denied, which is why the covering-denial check is separate.
 - Skipped: rows outside the restore's manifest gate (inert), required keys
@@ -249,6 +272,20 @@ list.[^task-259]
 
 An update or unpacked reload that adds permissions installs disabled until the
 user accepts them; that policy is in [Updates](./updates.md).
+
+## Log privacy
+
+A `.url` key is the full address the site-access prompt asked about, path and
+query included, and a match-pattern key names the sites the user granted.
+Both are browsing data, so a log line about a saved decision prints only the
+key's scheme publicly and the whole key `.private`:
+`ExtensionPermissionType.publicLogPart(ofKey:)` gives the public part (an API
+permission name and `<all_urls>` whole, otherwise the scheme: the text before the first `:` when it is a plain scheme token or `*`, else `(no scheme)`), the rule
+`logRejectedOrigin` follows for origins. The lines that use it are the
+removal in `clearRemovedGrants` (`removed its grant of URL https
+(<private>)`) and the two stale-row lines of `applySavedHostAccessDecisions`.
+A test host run from Xcode or `xcodebuild` shows private values; a launch
+outside Xcode reads `<private>`.[^task-268]
 
 # WebKit behaviour the rules depend on
 
@@ -313,8 +350,17 @@ A refused call says which state it is in (`permissionRefusal`): "<name>
 permission not declared" (in neither list), "<name> permission denied by the
 user" (an unexpired denial: the switch off, a prompt answered Deny, or that
 saved denial restored), or "<name> permission is optional and has not been
-granted".[^task-260] The notifications event wait in the polyfill matches all
-three to decide whether to re-arm after a later grant.
+granted".[^task-260] "Unexpired" is measured against the handler's `now`
+clock (a test seam, `Date.init` in the app) at every gate: `permissionRefusal`,
+`permissions.contains`, the `permissions.request` plan and `management`'s
+`permissions` / `hostPermissions`. A test that moves that clock past a grant
+or denial still held by WebKit, which reads the wall clock, sees it
+expired.[^task-277] The notifications event wait in the polyfill matches all
+three to decide whether to re-arm after a later grant. When `notifications`
+stops being active in a profile, its notifications there go and the wait is
+answered with this refusal (`ExtensionManager.revokeNotificationsWhereNotPermitted`,
+after every saved-decision change and grant removal; see
+[Polyfill layer](./polyfill-layer.md#an-owners-notifications-go-with-its-scope)).
 
 The grant dictionary is read, not `hasPermission(_:)`. WebKit's
 `permissionState` answers `.unknown` for every name outside
@@ -355,7 +401,9 @@ still goes to WebKit.[^task-260]
   `setPermissionDecision`, so it reaches every loaded context, is restored at
   load and posts `permissionDecisionsDidChangeNotification`. A second request
   while the prompt is pending is refused ("A permissions request is already
-  pending."), like `uninstallSelf`'s confirmation.
+  pending."), like `uninstallSelf`'s confirmation. Unlike that
+  confirmation it needs no cooldown after a refusal: the saved denial already
+  stops the next request from asking.
 - `remove` refuses a required name ("You cannot remove required
   permissions.") or an undeclared one, then deletes the saved grant and
   re-applies, as for WebKit's own removals: the row is deleted, not saved as
@@ -474,8 +522,11 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 [^task-44]: nativeMessaging denials saved before TASK-25 become enforced on upgrade
 [^task-63]: Reinstalling or updating an extension overwrites a saved nativeMessaging denial
 [^task-75]: Origin patterns with a port make chrome.permissions calls throw in WebKit
+[^task-268]: Extensions: clearing a grant the extension removed writes the full page URL to the system log as public
 [^task-258]: Extensions: permissions.remove is not saved, so the revoked permission comes back at the next launch
 [^task-250]: Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions
 [^task-259]: Extensions: a required notifications, history or management permission switched off in Settings still works
 [^task-260]: Extensions: chrome.permissions.request, contains and remove do not work for history and management
 [^task-261]: Extensions: management.getSelf and getAll leave out permissions granted at runtime
+[^task-277]: Tests: cover native host quit refusal and the SIGTERM path, keep the host sweep to the test's own hosts, and route the injected clock through the permission gates
+[^task-276]: Docs: fix the permission-scope and notification-ordering descriptions the review found wrong

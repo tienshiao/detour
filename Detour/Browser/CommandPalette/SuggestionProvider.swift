@@ -101,6 +101,37 @@ nonisolated final class SuggestionProvider: Sendable {
                                 inlineCompletion: topHit?.inlineCompletion)
     }
 
+    /// History rows for a query in site-search mode (TASK-287): the profile's
+    /// visits matching `query` whose host is `host` (a `SiteSearch.displayHost`)
+    /// or one of its subdomains, so the site's own pages follow the search row.
+    /// `excludingURL` is the search row's own URL: a past search for the same
+    /// query is that row, not another one.
+    func siteSearchHistory(for query: String, host: String, historySpaceIDs: [String],
+                           excludingURL: String? = nil, limit: Int = 5) -> [SuggestionItem] {
+        db.searchHistory(query: query, spaceIDs: historySpaceIDs, limit: 30)
+            .filter {
+                guard $0.url != excludingURL else { return false }
+                let entryHost = Self.displayHost($0.url)
+                let hostOnly = entryHost.split(separator: ":").first.map(String.init) ?? entryHost
+                return hostOnly == host || hostOnly.hasSuffix("." + host)
+            }
+            .prefix(limit)
+            .map { .historyResult(url: $0.url, title: Self.displayTitle($0), faviconURL: $0.faviconURL) }
+    }
+
+    /// The favicon URL the profile has recorded for the site on `host`
+    /// (`SiteSearch.displayHost`: lowercased, no `www.`; TASK-290): its root,
+    /// or the page of the host visited most recently, without and with
+    /// `www.`. Nil with no scope (a Private window) or for a site the profile
+    /// never visited.
+    func siteFaviconURL(forHost host: String, historySpaceIDs: [String]) -> String? {
+        guard !historySpaceIDs.isEmpty, !host.isEmpty else { return nil }
+        for candidate in [host, "www." + host] {
+            if let url = db.faviconURL(for: "https://\(candidate)/", visitedInSpaces: historySpaceIDs) { return url }
+        }
+        return nil
+    }
+
     /// Visited hosts offered as rows after the verbatim one, besides the top hit.
     static let maxOtherHosts = 2
 

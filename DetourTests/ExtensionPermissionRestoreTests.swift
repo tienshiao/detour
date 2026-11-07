@@ -681,6 +681,100 @@ nonisolated final class ExtensionPermissionRestoreTests: XCTestCase {
                        "an undeclared name refuses the request even after a denied one")
     }
 
+    /// A request to the profile's polyfill handler, as the bridge delivers it.
+    /// A reply that never comes fails the test at the timeout rather than
+    /// hanging the run.
+    @MainActor private func call(_ handler: ExtensionPolyfillHandler, _ type: String, extensionID: String,
+                                 params: [String: Any] = [:]) async -> BridgeReply {
+        let replied = expectation(description: "\(type) reply")
+        var reply = BridgeReply(result: nil, error: "no reply")
+        handler.handleNativeMessage(
+            ["type": type, "extensionID": extensionID, "params": params],
+            verifiedExtensionID: extensionID
+        ) { result, error in
+            reply = BridgeReply(result: result, error: error?.localizedDescription)
+            replied.fulfill()
+        }
+        await fulfillment(of: [replied], timeout: 10)
+        return reply
+    }
+
+    /// TASK-277: the handler's permission gates read grant and denial expiry
+    /// against its own clock, as `history.search` does its range. A grant
+    /// and a denial expire an hour from now on the wall clock, so WebKit
+    /// still holds both, and the handler's clock is put two hours ahead:
+    /// `permissions.contains` answers false, `history.search` is refused,
+    /// `management.getSelf` lists neither the API grant nor the host grant,
+    /// and a `permissions.request` of the name whose denial has expired is
+    /// asked about rather than answered false. On the wall clock (the
+    /// positive control) all of them see the grant and the denial.
+    @MainActor func testThePermissionGatesReadExpiryOnTheHandlersClock() async throws {
+        let ext = try await makeTestExtension(
+            permissions: ["tabs"], optionalPermissions: ["history", "management"],
+            hostPermissions: ["https://a.example/*"], optionalHostPermissions: ["https://mail.example/*"])
+        let profile = makeProfile("Permission Clock Profile")
+        let context = try loadContext(profile, ext)
+        let handler = try XCTUnwrap(profile.polyfillHandler)
+        let history = WKWebExtension.Permission(rawValue: "history")
+        let management = WKWebExtension.Permission(rawValue: "management")
+        let mail = try WKWebExtension.MatchPattern(string: "https://mail.example/*")
+        let wall = Date()
+        context.setPermissionStatus(.grantedExplicitly, for: history, expirationDate: wall.addingTimeInterval(3600))
+        context.setPermissionStatus(.deniedExplicitly, for: management, expirationDate: wall.addingTimeInterval(3600))
+        context.setPermissionStatus(.grantedExplicitly, for: mail, expirationDate: wall.addingTimeInterval(3600))
+        var prompts: [[String]] = []
+        ExtensionManager.shared.permissionPromptAnswerOverride = { prompts.append($0); return false }
+
+        func contains(_ name: String) async throws -> Bool {
+            let reply = await call(handler, "permissions.contains", extensionID: ext.id, params: ["permissions": [name]])
+            XCTAssertNil(reply.error)
+            return try XCTUnwrap(reply.result as? Bool)
+        }
+        func selfInfo() async throws -> (permissions: [String], hosts: [String]) {
+            let reply = await call(handler, "management.getSelf", extensionID: ext.id)
+            let info = try XCTUnwrap(reply.result as? [String: Any], "\(reply.error ?? "")")
+            return (info["permissions"] as? [String] ?? [], info["hostPermissions"] as? [String] ?? [])
+        }
+        func request(_ name: String) async throws -> Bool? {
+            let reply = await call(handler, "permissions.request", extensionID: ext.id, params: ["permissions": [name]])
+            XCTAssertNil(reply.error)
+            return (reply.result as? [String: Any])?["granted"] as? Bool
+        }
+
+        // POSITIVE control: the wall clock, inside the hour.
+        handler.now = { wall }
+        let containsNow = try await contains("history")
+        XCTAssertTrue(containsNow)
+        let searchNow = await call(handler, "history.search", extensionID: ext.id, params: ["query": ["text": ""]])
+        XCTAssertNil(searchNow.error)
+        let infoNow = try await selfInfo()
+        XCTAssertEqual(infoNow.permissions, ["tabs", "history"])
+        XCTAssertTrue(infoNow.hosts.contains("https://mail.example/*"), "\(infoNow.hosts)")
+        let denied = try await request("management")
+        XCTAssertEqual(denied, false, "denied: false without asking")
+        let deniedRefusal = await call(handler, "management.getAll", extensionID: ext.id)
+        XCTAssertEqual(deniedRefusal.error, "management permission denied by the user")
+        XCTAssertEqual(prompts, [])
+
+        // Two hours on, by the handler's clock only.
+        handler.now = { wall.addingTimeInterval(7200) }
+        XCTAssertNotNil(context.grantedPermissions[history], "WebKit, on the wall clock, still holds the grant")
+        XCTAssertNotNil(context.deniedPermissions[management], "and the denial")
+        let containsLater = try await contains("history")
+        XCTAssertFalse(containsLater, "the grant has expired")
+        let searchLater = await call(handler, "history.search", extensionID: ext.id, params: ["query": ["text": ""]])
+        XCTAssertEqual(searchLater.error, "history permission is optional and has not been granted")
+        let infoLater = try await selfInfo()
+        XCTAssertEqual(infoLater.permissions, ["tabs"])
+        XCTAssertFalse(infoLater.hosts.contains("https://mail.example/*"), "\(infoLater.hosts)")
+        let refusalLater = await call(handler, "management.getAll", extensionID: ext.id)
+        XCTAssertEqual(refusalLater.error, "management permission is optional and has not been granted",
+                       "the denial has expired: undecided, not denied")
+        let asked = try await request("management")
+        XCTAssertEqual(asked, false, "the prompt's answer")
+        XCTAssertEqual(prompts.count, 1, "the expired denial no longer answers for the user")
+    }
+
     // MARK: - TASK-19 review: permissions.request sub-patterns
 
     /// `permissions.request({origins: ["https://mail.example/*"]})` prompts with

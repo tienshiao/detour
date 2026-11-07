@@ -29,6 +29,8 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
     private var fakeHost: FakeNativeMessagingHost?
 
     @MainActor override func tearDown() async throws {
+        NativeMessagingHost.outgoingLimits = .standard
+        NativeMessagingHost.setRefusingNewHostsForTesting(false)
         webViews.removeAll()
         for profile in createdProfiles {
             profile.unloadAllExtensions()
@@ -66,9 +68,12 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
 
     /// Install the silent fake host for `extensionIDs` (one manifest may list several
     /// origins) and point the host search at it. Torn down in this suite's tearDown.
-    @MainActor private func installFakeHost(allowing extensionIDs: [String],
-                                            behavior: FakeNativeMessagingHost.Behavior = .silent) throws {
-        let host = try FakeNativeMessagingHost(name: Self.hostName, allowing: extensionIDs, behavior: behavior)
+    @MainActor private func installFakeHost(
+        allowing extensionIDs: [String], behavior: FakeNativeMessagingHost.Behavior = .silent,
+        editingManifest: ((inout [String: Any], String) -> Void)? = nil
+    ) throws {
+        let host = try FakeNativeMessagingHost(name: Self.hostName, allowing: extensionIDs, behavior: behavior,
+                                               editingManifest: editingManifest)
         fakeHost = host
     }
 
@@ -151,6 +156,23 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
                 chrome.runtime.sendNativeMessage(host, message).then(
                     (reply) => { clearTimeout(timer); resolve({ outcome: 'reply', reply: reply === undefined ? null : reply }); },
                     (error) => { clearTimeout(timer); resolve({ outcome: 'error', error: String(error && error.message ? error.message : error) }); });
+            });
+            """, in: webView, arguments: ["host": host, "message": message, "timeoutMS": timeoutMS])
+    }
+
+    /// `runtime.sendNativeMessage` from the page in the callback form: the
+    /// error, if any, is `runtime.lastError` inside the callback.
+    @MainActor private func sendNativeMessageWithCallback(_ host: String, _ message: [String: Any], in webView: WKWebView,
+                                               timeoutMS: Int = 3000) async throws -> [String: Any] {
+        try await evalJSON("""
+            return await new Promise((resolve) => {
+                const timer = setTimeout(() => resolve({ outcome: 'pending' }), timeoutMS);
+                chrome.runtime.sendNativeMessage(host, message, (reply) => {
+                    clearTimeout(timer);
+                    const error = chrome.runtime.lastError;
+                    resolve(error ? { outcome: 'error', error: String(error.message) }
+                                  : { outcome: 'reply', reply: reply === undefined ? null : reply });
+                });
             });
             """, in: webView, arguments: ["host": host, "message": message, "timeoutMS": timeoutMS])
     }
@@ -414,6 +436,109 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
         XCTAssertEqual(fakeHostProcessCount(), 0, "an undeclared host must not be spawned")
         XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(
             controller: loaded.profile.extensionController, extensionID: ext.id), 0)
+    }
+
+    // MARK: - Host manifests Chrome refuses (TASK-266)
+
+    /// A host whose manifest `edit` makes invalid is refused on every path an
+    /// extension page has: the `sendNativeMessage` promise rejects and the
+    /// callback form sees `runtime.lastError`, both with `expected`, and a
+    /// `connectNative` port is disconnected with it. No host process starts:
+    /// the fixture's host is one that would otherwise run.
+    @MainActor private func assertHostManifestRefused(
+        _ label: String, expected: String,
+        editingManifest edit: @escaping (inout [String: Any], String) -> Void,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        let ext = try await makeExtension()
+        try installFakeHost(allowing: [ext.id], editingManifest: edit)
+        let loaded = try await load(ext, profileName: "NM Manifest \(label) Profile")
+        try await assertEveryPathRefused(ext, loaded, expected: expected, file: file, line: line)
+    }
+
+    /// Every path an extension page has to the suite's host is refused with
+    /// `expected` (see `assertHostManifestRefused`), and no host starts.
+    @MainActor private func assertEveryPathRefused(
+        _ ext: WebExtension, _ loaded: Loaded, expected: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        let promise = try await sendNativeMessage(Self.hostName, ["ping": 1], in: loaded.webView)
+        XCTAssertEqual(promise["outcome"] as? String, "error", "\(promise)", file: file, line: line)
+        XCTAssertTrue((promise["error"] as? String ?? "").contains(expected),
+                      "expected \"\(expected)\" from the promise, got: \(promise)", file: file, line: line)
+
+        let callback = try await sendNativeMessageWithCallback(Self.hostName, ["ping": 1], in: loaded.webView)
+        XCTAssertEqual(callback["outcome"] as? String, "error", "\(callback)", file: file, line: line)
+        XCTAssertTrue((callback["error"] as? String ?? "").contains(expected),
+                      "expected \"\(expected)\" in runtime.lastError, got: \(callback)", file: file, line: line)
+
+        try await connectNative(Self.hostName, as: "refused", in: loaded.webView)
+        var state: [String: Any] = [:]
+        try await waitUntil("the refused port to disconnect") {
+            state = try await self.portState("refused", in: loaded.webView)
+            return state["disconnected"] as? Bool == true
+        }
+        // WebKit reports a refused connect on the port (`port.error`), as for
+        // every other refused connect.
+        XCTAssertTrue((state["portError"] as? String ?? "").contains(expected),
+                      "expected \"\(expected)\" on the port, got: \(state)", file: file, line: line)
+
+        XCTAssertEqual(fakeHostProcessCount(), 0, "a refused host must not be started", file: file, line: line)
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(
+            controller: loaded.profile.extensionController, extensionID: ext.id), 0, file: file, line: line)
+        XCTAssertEqual(ExtensionManager.shared.pendingOneShotNativeMessageCountForTesting(extensionID: ext.id), 0,
+                       file: file, line: line)
+    }
+
+    private static let notFound = NativeMessagingHost.NativeMessagingError.notFoundMessage
+
+    // MARK: - Quitting (TASK-243, TASK-277)
+
+    /// Once a quit's sweep has refused new hosts, an extension's
+    /// `sendNativeMessage` (both forms) and `connectNative` get the refusal
+    /// and no host starts, though the manifest and the host are valid.
+    @MainActor func testWhileQuittingEveryPathIsRefusedWithoutSpawning() async throws {
+        let ext = try await makeExtension()
+        try installFakeHost(allowing: [ext.id])
+        let loaded = try await load(ext, profileName: "NM Quitting Profile")
+        // Unwrapped: an empty expectation would match every error.
+        let expected = try XCTUnwrap(NativeMessagingHost.NativeMessagingError.quitting.errorDescription)
+        NativeMessagingHost.setRefusingNewHostsForTesting(true)  // lifted by tearDown
+        try await assertEveryPathRefused(ext, loaded, expected: expected)
+    }
+
+    /// A manifest with no `allowed_origins` used to admit every extension.
+    @MainActor func testAHostManifestWithoutAllowedOriginsIsRefusedOnEveryPath() async throws {
+        try await assertHostManifestRefused("No Origins", expected: Self.notFound) { manifest, _ in
+            manifest["allowed_origins"] = nil
+        }
+    }
+
+    @MainActor func testAHostManifestWhoseAllowedOriginsIsNotAListIsRefusedOnEveryPath() async throws {
+        try await assertHostManifestRefused("Origins String", expected: Self.notFound) { manifest, _ in
+            manifest["allowed_origins"] = (manifest["allowed_origins"] as? [String])?.first
+        }
+    }
+
+    @MainActor func testAHostManifestWhoseTypeIsNotStdioIsRefusedOnEveryPath() async throws {
+        try await assertHostManifestRefused("Type", expected: Self.notFound) { manifest, _ in
+            manifest["type"] = "socket"
+        }
+    }
+
+    /// The relative path leads to the fixture's script from the test host's
+    /// working directory, so it is the refusal that keeps the host from running.
+    @MainActor func testAHostManifestWithARelativePathIsRefusedOnEveryPath() async throws {
+        try await assertHostManifestRefused("Relative Path", expected: Self.notFound) { manifest, scriptPath in
+            manifest["path"] = FakeNativeMessagingHost.relativeFromWorkingDirectory(scriptPath)
+        }
+    }
+
+    /// A manifest that does not list the extension is Chrome's "forbidden".
+    @MainActor func testAHostManifestThatDoesNotListTheExtensionIsForbiddenOnEveryPath() async throws {
+        try await assertHostManifestRefused("Other Origin", expected: ExtensionManager.nativeHostForbiddenMessage) { manifest, _ in
+            manifest["allowed_origins"] = ["chrome-extension://someotherextensionidabcdefghijkl/"]
+        }
     }
 
     // MARK: - Built-in hosts ignore the decision (positive)
@@ -824,6 +949,76 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
             XCTAssertEqual(ExtensionManager.shared.pendingOneShotNativeMessageCountForTesting(extensionID: ext.id), 0)
             fakeHost?.tearDown()
             fakeHost = nil
+        }
+    }
+
+    // MARK: - TASK-265: a host that never reads
+
+    /// Posts `count` strings of `bytes` JSON bytes each on the page's port
+    /// `name`.
+    @MainActor private func post(_ count: Int, stringsOf bytes: Int, on name: String,
+                                 in webView: WKWebView) async throws {
+        _ = try await evalJSON("""
+            const port = window.__ports[name].port;
+            const blob = 'x'.repeat(bytes - 2);
+            for (let i = 0; i < count; i++) port.postMessage(blob);
+            return { ok: true };
+            """, in: webView, arguments: ["name": name, "count": count, "bytes": bytes])
+    }
+
+    /// A page posts 6 MB on a `connectNative` port whose host never reads
+    /// its stdin: the posts go through while the main thread stays free (the
+    /// page answers the next evaluation, the host is still running, the port
+    /// still open), and the host ends when the page disconnects. Before
+    /// TASK-265 the write past the pipe's buffer blocked the main thread.
+    @MainActor func testAConnectNativePortTakesSeveralMegabytesForAHostThatNeverReads() async throws {
+        let ext = try await makeExtension()
+        try installFakeHost(allowing: [ext.id], behavior: .silent)
+        let loaded = try await load(ext, profileName: "NM Non-Reading Host Profile")
+        let controller = loaded.profile.extensionController
+        try await connectNative(Self.hostName, as: "stuck", in: loaded.webView)
+        try await waitUntil("the host to start", timeout: 5) { self.fakeHostProcessCount() == 1 }
+        let pid = try XCTUnwrap(fakeHost?.processIDs().first)
+        let safety = killing(pid, after: 15)
+        defer { safety.cancel() }
+
+        let start = Date()
+        try await post(6, stringsOf: 1024 * 1024, on: "stuck", in: loaded.webView)
+        let state = try await portState("stuck", in: loaded.webView)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10, "loose: a loaded machine")
+        XCTAssertEqual(state["disconnected"] as? Bool, false, "\(state)")
+        XCTAssertEqual(fakeHostProcessCount(), 1, "the safety kill did not have to unblock a write")
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 1)
+
+        _ = try await evalJSON("window.__ports.stuck.port.disconnect(); return { ok: true };",
+                               in: loaded.webView, arguments: [:])
+        try await waitUntil("the host to end", timeout: 5) { self.fakeHostProcessCount() == 0 }
+        XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 0)
+    }
+
+    /// A port message that cannot be sent ends the port rather than
+    /// vanishing: one over the size limit, and one that would take what
+    /// waits for a host that never reads past its bound. The page's
+    /// `onDisconnect` fires, the host process ends and the port no longer
+    /// counts as a live host. (WebKit does not hand the error to an
+    /// established port, so `port.error` is not checked.) The limits are
+    /// lowered so neither leg needs 64 MiB of JSON.
+    @MainActor func testAConnectNativePortIsDisconnectedWhenAMessageCannotBeSent() async throws {
+        NativeMessagingHost.outgoingLimits = .init(maxMessageSize: 300_000, maxPendingBytes: 500_000)
+        let ext = try await makeExtension()
+        try installFakeHost(allowing: [ext.id], behavior: .silent)
+        let loaded = try await load(ext, profileName: "NM Unsendable Message Profile")
+        let controller = loaded.profile.extensionController
+
+        for (name, count, bytes) in [("tooLarge", 1, 300_001), ("queueFull", 3, 200_000)] {
+            try await connectNative(Self.hostName, as: name, in: loaded.webView)
+            try await waitUntil("the \(name) host to start", timeout: 5) { self.fakeHostProcessCount() == 1 }
+            try await post(count, stringsOf: bytes, on: name, in: loaded.webView)
+            try await waitUntil("the \(name) port to be disconnected", timeout: 5) {
+                (try? await self.portState(name, in: loaded.webView))?["disconnected"] as? Bool == true
+            }
+            try await waitUntil("the \(name) host to end", timeout: 5) { self.fakeHostProcessCount() == 0 }
+            XCTAssertEqual(ExtensionManager.shared.liveNativeHostCountForTesting(controller: controller, extensionID: ext.id), 0, name)
         }
     }
 }
