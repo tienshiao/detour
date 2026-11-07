@@ -61,8 +61,12 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
     }
 
     @MainActor override func tearDown() async throws {
-        // A failed test can leave an add held; answer it so its task finishes.
-        for center in centers { center.releaseAll() }
+        // A failed test can leave an add or the prompt held; answer it so
+        // its task finishes.
+        for center in centers {
+            center.releaseAll()
+            center.answerAuthorizationRequests(granting: false)
+        }
         centers.removeAll()
         for id in incognitoSpaceIDs { TabStore.shared.removeIncognitoSpace(id: id) }
         incognitoSpaceIDs.removeAll()
@@ -1178,6 +1182,43 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
             XCTAssertEqual(listedIDs, [id], "\(transport)")
         }
         XCTAssertEqual(center.authorizationRequests, 1, "the user is asked once, at the first create")
+    }
+
+    /// The user never answers the prompt (TASK-273): from the page and the
+    /// worker, `create` and `update` resolve once the prompt has been up for
+    /// the timeout (fired at once here) instead of hanging, the notification
+    /// is listed, and nothing is shown until the user allows notifications.
+    @MainActor func testUnansweredPromptAnswersCreateAndUpdateFromBothTransports() async throws {
+        let ext = try await makeExtension()
+        let (manager, center) = makeManager()
+        manager.scheduleAuthorizationTimeout = { fire in Task { fire() } }
+        let profile = try makeProfile("Notification Unanswered Prompt", manager: manager)
+        center.holdsAdds = false
+        center.authorization = .notDetermined
+        center.holdsAuthorizationRequests = true
+        let page = try await loadPage(ext, in: profile)
+
+        for transport in [Transport.page, .worker] {
+            let id = "unanswered-\(transport)"
+            let created = try await call("create", id, title: "Waiting", via: transport, in: page)
+            XCTAssertEqual(created as? String, id, "\(transport): create resolves with its id")
+            let updated = try await call("update", id, title: "Updated", via: transport, in: page)
+            XCTAssertEqual(updated as? Bool, true, "\(transport): the update is recorded")
+            let listedIDs = try await listed("unanswered-\(transport)", via: transport, in: page)
+            XCTAssertEqual(listedIDs, [id], "\(transport)")
+        }
+        XCTAssertTrue(center.addedIdentifiers.isEmpty, "nothing is shown while the prompt is up")
+        XCTAssertEqual(center.authorizationRequests, 1, "one prompt for every call")
+        XCTAssertEqual(center.heldAuthorizationRequestCount, 1, "the prompt is still unanswered")
+
+        center.answerAuthorizationRequests(granting: true)
+        try await waitUntil("both notifications are shown", timeout: 5, pollInterval: 0.01) {
+            center.shown.count == 2
+        }
+        for transport in [Transport.page, .worker] {
+            XCTAssertEqual(center.shown[identifier("unanswered-\(transport)", of: ext, in: profile)], "Updated",
+                           "\(transport)")
+        }
     }
 
     /// A request that reaches a handler whose profile has been released names

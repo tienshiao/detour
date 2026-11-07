@@ -136,6 +136,9 @@ sources:
   - id: task-248
     resource: backlog:TASK-248
     title: "Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared"
+  - id: task-273
+    resource: backlog:TASK-273
+    title: "Extensions: an unanswered notification authorization prompt stalls notifications.create in every profile"
 ---
 
 `ExtensionAPIPolyfill` generates one JavaScript bundle (`polyfillJS`) that runs
@@ -536,12 +539,38 @@ nothing appeared.[^task-253]
 - The prompt is a banner ("“Detour” Notifications", Allow / Don't Allow). The
   unified log shows it as a NotificationCenter record with
   `app:"com.apple.notificationcenter.askpermissions" req:"com.detourbrowser.mac"`.
-  Until the user answers, every create and update waits, with no timeout;
-  a prompt the user ignores into Notification Center keeps them waiting. On
-  the development Mac the bundle id was still not determined in the TASK-253
+  On the development Mac the bundle id was still not determined in the TASK-253
   run, which is why earlier runs saw `add` succeed with nothing on screen.
   A Debug build shares `com.detourbrowser.mac` with the installed app, so
   answering a Debug build's prompt sets the installed app's permission too.
+- The wait for the answer is bounded (TASK-273). Once the prompt has been up
+  for `authorizationAnswerTimeout` (5 s), every create and update waiting on
+  it is answered, a create with its id and an update with true,
+  and one joining that check later is answered at once. Each stays recorded
+  (listed, clearable, updatable) and is shown when the user allows
+  notifications, or dropped as above if they decline. Before, a prompt the
+  user ignored into Notification Center left every `await create(...)` in
+  every profile hanging.[^task-273]
+  - Why answer rather than refuse: Chrome's `create` answers once the
+    notification is handed to its display service and never waits on the OS
+    permission, so answering is the closest match. The 5 s still lets a user
+    who answers the prompt at once give the real answer, and it is well inside
+    WebKit's 30 s unload timer for a worker whose reply is pending.
+  - The timeout is scheduled only when the status is not determined, right
+    before the prompt, through the `scheduleAuthorizationTimeout` seam, so
+    tests fire it by hand. A check that only reads the status (every create
+    once allowed) schedules none. A timeout that fires after its check
+    finished does nothing (checks are numbered).
+- While the prompt is up, at most `authorizationWaitLimit` (32) of one
+  owner's creates and updates wait on it; another owner's are counted
+  separately, and a burst joining a status-only check is never limited.
+  Shows cleared or superseded while waiting still count, as each still holds
+  a waiting task. One more is
+  settled as a failed `add` would be: a create answers its id but is neither
+  listed nor added, and an update answers false and puts back the entry it
+  replaced (the TASK-271 fallback). Without the limit an extension creating in
+  a loop, which the early answers make fast, would pile up waiting tasks and
+  update fallbacks until the user answered.[^task-273]
 
 ## chrome.notifications events reach the background through a parked request
 
@@ -940,3 +969,4 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^chromium-notifications-clear]: Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)
 [^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared
 [^task-253]: Extensions: Detour never requests notification permission, so extension notifications may never be shown
+[^task-273]: Extensions: an unanswered notification authorization prompt stalls notifications.create in every profile

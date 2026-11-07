@@ -148,6 +148,14 @@ final class SystemExtensionNotificationCenter: ExtensionNotificationCenter {
 /// answers its id as Chrome's does when the OS blocks them, but nothing is
 /// shown and the entry goes: `getAll` does not list it, and `clear` and
 /// `update` answer false for it.
+///
+/// The wait for the user's answer is bounded (TASK-273): once the prompt has
+/// been up for `authorizationAnswerTimeout`, every create and update waiting
+/// on it is answered (a create its id, an update true), as Chrome's are
+/// without waiting for the OS at all, and stays recorded; it is shown once
+/// the user allows notifications, and dropped as above if they decline. At
+/// most `authorizationWaitLimit` of an owner's creates and updates wait on
+/// one prompt; one past that is refused as a failed `add` would be.
 final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDelegate {
     private static var sharedInstance: ExtensionNotificationManager?
 
@@ -356,9 +364,84 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         identifiers.removeValue(forKey: Key(owner: entry.owner, notificationID: entry.notificationID))
     }
 
-    /// The shows waiting on the authorization check in flight, in call
-    /// order; nil when no check is in flight. See `authorize()`.
-    private var authorizationWaiters: [CheckedContinuation<Bool, Never>]?
+    /// A `show`'s completion, run once: when the show settles, or before
+    /// that when the authorization check it waits on times out (TASK-273),
+    /// whichever comes first.
+    private final class ShowReply {
+        let id: String
+        private var completion: ((_ id: String, _ succeeded: Bool) -> Void)?
+
+        init(id: String, completion: @escaping (_ id: String, _ succeeded: Bool) -> Void) {
+            self.id = id
+            self.completion = completion
+        }
+
+        func callAsFunction(succeeded: Bool) {
+            guard let completion else { return }
+            self.completion = nil
+            completion(id, succeeded)
+        }
+    }
+
+    /// The authorization check in flight; see `authorize(owner:reply:)`.
+    private struct AuthorizationCheck {
+        /// Which check this is, so a timeout scheduled for an earlier one
+        /// does nothing.
+        let number: Int
+        /// The shows that joined the check, in call order. The show that
+        /// started it is not among them.
+        var waiters: [CheckedContinuation<Bool, Never>] = []
+        /// How many shows of each owner wait on the check, the one that
+        /// started it included.
+        var waitingCounts: [Owner: Int]
+        /// The replies of every show waiting on the check, the one that
+        /// started it included, until the timeout answers them.
+        var unanswered: [ShowReply] = []
+        /// Whether the check is asking the user (the status was not
+        /// determined): only then does `authorizationWaitLimit` apply and the
+        /// timeout run. A check that only reads the status finishes on its
+        /// own, however many shows join it meanwhile.
+        var prompting = false
+        /// Whether `authorizationAnswerTimeout` has passed: a show joining
+        /// now is answered at once.
+        var timedOut = false
+    }
+
+    private enum AuthorizationOutcome {
+        case authorized, notAuthorized
+        /// `authorizationWaitLimit` of the owner's shows already wait.
+        case refused
+    }
+
+    /// Why a show past `authorizationWaitLimit` was refused, as its failed
+    /// `add` would be (TASK-273).
+    private struct AuthorizationWaitLimitReached: LocalizedError {
+        var errorDescription: String? {
+            "\(ExtensionNotificationManager.authorizationWaitLimit) notifications of the extension already wait for the authorization prompt"
+        }
+    }
+
+    private var authorizationCheck: AuthorizationCheck?
+    private var lastAuthorizationCheck = 0
+
+    /// How long the authorization prompt may be up before the creates and
+    /// updates waiting on it are answered anyway (TASK-273): long
+    /// enough for a user who answers at once to get the real answer, well
+    /// inside the 30 s after which WebKit may unload a service worker whose
+    /// reply is still pending.
+    static let authorizationAnswerTimeout: Duration = .seconds(5)
+    /// How many of one owner's creates and updates may wait on one
+    /// authorization check; one past it is refused (TASK-273).
+    nonisolated static let authorizationWaitLimit = 32
+
+    /// Runs `fire` once `authorizationAnswerTimeout` has passed. A seam: a
+    /// test fires it when it chooses instead of waiting.
+    var scheduleAuthorizationTimeout: @MainActor (_ fire: @escaping @MainActor () -> Void) -> Void = { fire in
+        Task {
+            try? await Task.sleep(for: ExtensionNotificationManager.authorizationAnswerTimeout)
+            fire()
+        }
+    }
 
     /// Whether the center may show notifications, asking the user the first
     /// time (TASK-253: Detour asks at the first `notifications.create` of any
@@ -369,11 +452,29 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// extensions made them. The status is asked afresh once a check has
     /// finished, as the user can turn notifications on or off in System
     /// Settings at any time.
-    private func authorize() async -> Bool {
-        if authorizationWaiters != nil {
-            return await withCheckedContinuation { authorizationWaiters?.append($0) }
+    ///
+    /// Once the prompt has been up for `authorizationAnswerTimeout`, `reply`
+    /// is answered (`authorizationTimedOut`) while the show keeps waiting for
+    /// the outcome (TASK-273). While the prompt is up, a show of an owner
+    /// that already has `authorizationWaitLimit` waiting is refused at once.
+    private func authorize(owner: Owner, reply: ShowReply) async -> AuthorizationOutcome {
+        if let check = authorizationCheck {
+            guard !check.prompting || check.waitingCounts[owner, default: 0] < Self.authorizationWaitLimit else {
+                log.info("Too many notifications of extension \(owner.extensionID, privacy: .public) wait for authorization; refusing one")
+                return .refused
+            }
+            authorizationCheck?.waitingCounts[owner, default: 0] += 1
+            if check.timedOut {
+                reply(succeeded: true)
+            } else {
+                authorizationCheck?.unanswered.append(reply)
+            }
+            let authorized = await withCheckedContinuation { authorizationCheck?.waiters.append($0) }
+            return authorized ? .authorized : .notAuthorized
         }
-        authorizationWaiters = []
+        lastAuthorizationCheck += 1
+        let number = lastAuthorizationCheck
+        authorizationCheck = AuthorizationCheck(number: number, waitingCounts: [owner: 1], unanswered: [reply])
         let authorized: Bool
         switch await center.authorizationStatus() {
         case .authorized:
@@ -381,13 +482,29 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         case .denied:
             authorized = false
         case .notDetermined:
+            authorizationCheck?.prompting = true
+            scheduleAuthorizationTimeout { [weak self] in self?.authorizationTimedOut(check: number) }
             authorized = await center.requestAuthorization()
             log.info("Notification authorization \(authorized ? "granted" : "declined", privacy: .public)")
         }
-        let waiters = authorizationWaiters ?? []
-        authorizationWaiters = nil
+        let waiters = authorizationCheck?.waiters ?? []
+        authorizationCheck = nil
         for waiter in waiters { waiter.resume(returning: authorized) }
-        return authorized
+        return authorized ? .authorized : .notAuthorized
+    }
+
+    /// Answers every show waiting on check `number`, if it is still in
+    /// flight (TASK-273): the user has left the prompt unanswered. A create
+    /// answers its id and an update true, as both are recorded; each still
+    /// shows once the user allows notifications, or goes if they decline.
+    private func authorizationTimedOut(check number: Int) {
+        guard var check = authorizationCheck, check.number == number, !check.timedOut else { return }
+        let replies = check.unanswered
+        check.unanswered = []
+        check.timedOut = true
+        authorizationCheck = check
+        log.info("Notification authorization still unanswered; answering \(replies.count) waiting call(s)")
+        for reply in replies { reply(succeeded: true) }
     }
 
     /// Whether `identifier`'s entry is still the one `generation` recorded:
@@ -437,7 +554,9 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// nothing is merged. `completion` runs once the center's `add` has
     /// returned, or once it is known there will be none (notifications not
     /// allowed, or the create cleared or superseded while authorization was
-    /// pending), with the notification id, whether or not it was shown.
+    /// pending), with the notification id, whether or not it was shown; or
+    /// once the authorization prompt has been up for
+    /// `authorizationAnswerTimeout`, before the outcome is known (TASK-273).
     ///
     /// Each create also checks the shown entries against the center
     /// (`synchronizeWithCenter`, coalesced and throttled), so the entries of an extension
@@ -485,12 +604,22 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
         // Awaited from a main-actor task: the completion-handler form of `add`
         // calls back on a background queue, and the entries are main-actor state.
         let center = self.center
+        let reply = ShowReply(id: id, completion: completion)
         Task { [weak self] in
             guard let self else {
-                completion(id, false)
+                reply(succeeded: false)
                 return
             }
-            let authorized = await self.authorize()
+            let authorization = await self.authorize(owner: owner, reply: reply)
+            guard authorization != .refused else {
+                // Settled as a failed `add`: a create's entry goes, an
+                // update's puts back the one it replaced (TASK-271).
+                self.addFinished(identifier: identifier, generation: generation,
+                                 failure: AuthorizationWaitLimitReached())
+                reply(succeeded: false)
+                return
+            }
+            let authorized = authorization == .authorized
             // Cleared or superseded while authorization was pending: nothing
             // has been shown for this generation, so there is nothing to add
             // or take away. A superseding create or update adds its own, and
@@ -499,12 +628,12 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
             // superseding update must not put it back.
             guard self.isCurrent(identifier: identifier, generation: generation) else {
                 self.dropFallback(identifier: identifier, generation: generation)
-                completion(id, authorized)
+                reply(succeeded: authorized)
                 return
             }
             guard authorized else {
                 self.notAuthorized(identifier: identifier, mayBeShown: existingIdentifier != nil)
-                completion(id, false)
+                reply(succeeded: false)
                 return
             }
             var failure: (any Error)?
@@ -514,7 +643,7 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
                 failure = error
             }
             self.addFinished(identifier: identifier, generation: generation, failure: failure)
-            completion(id, failure == nil)
+            reply(succeeded: failure == nil)
         }
     }
 
@@ -603,7 +732,9 @@ final class ExtensionNotificationManager: NSObject, UNUserNotificationCenterDele
     /// keeps the title. Answers false when the owner has no such notification,
     /// when notifications are not allowed (which drops it), or when the
     /// center refuses the updated one, which leaves the notification as it
-    /// was, listed and shown (TASK-271).
+    /// was, listed and shown (TASK-271). An update still waiting when the
+    /// authorization prompt times out answers true (TASK-273), and one past
+    /// `authorizationWaitLimit` false, as a refused `add` would.
     func update(owner: Owner, notificationID: String, options: [String: Any], completion: @escaping (Bool) -> Void) {
         guard let identifier = identifier(for: owner, notificationID: notificationID),
               let entry = entries[identifier] else {
