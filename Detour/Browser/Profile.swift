@@ -336,7 +336,7 @@ class Profile {
             for (key, saved) in savedPatterns where saved == status {
                 guard let pattern = try? WKWebExtension.MatchPattern(string: key) else { continue }
                 guard askablePatterns.contains(where: { $0.matches(pattern) }) else {
-                    log.debug("Skipping stale pattern decision \(key, privacy: .public) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
+                    log.debug("Skipping stale pattern decision \(ExtensionPermissionType.matchPattern.publicLogPart(ofKey: key), privacy: .public) (\(key, privacy: .private)) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
                     continue
                 }
                 // Already there with this status: WebKit keys its dictionaries
@@ -375,7 +375,7 @@ class Profile {
             where (ExtensionPermissionStatus(rawValue: record.status) ?? .denied) == status {
                 guard let url = URL(string: record.permissionKey) else { continue }
                 guard askablePatterns.contains(where: { $0.matches(url) }) else {
-                    log.debug("Skipping stale URL grant \(record.permissionKey, privacy: .public) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
+                    log.debug("Skipping stale URL decision \(ExtensionPermissionType.url.publicLogPart(ofKey: record.permissionKey), privacy: .public) (\(record.permissionKey, privacy: .private)) for \(ext.id, privacy: .public) — outside the manifest's host patterns")
                     continue
                 }
                 context.setPermissionStatus(status.contextStatus, for: url)

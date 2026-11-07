@@ -54,6 +54,9 @@ sources:
   - id: task-261
     resource: backlog:TASK-261
     title: "Extensions: management.getSelf and getAll leave out permissions granted at runtime"
+  - id: task-268
+    resource: backlog:TASK-268
+    title: "Extensions: clearing a grant the extension removed writes the full page URL to the system log as public"
   - id: polyfill-handler
     resource: ../../Detour/Extensions/Runtime/ExtensionPolyfillHandler.swift
     title: ExtensionPolyfillHandler.swift (permissionIsActive)
@@ -249,6 +252,20 @@ list.[^task-259]
 
 An update or unpacked reload that adds permissions installs disabled until the
 user accepts them; that policy is in [Updates](./updates.md).
+
+## Log privacy
+
+A `.url` key is the full address the site-access prompt asked about, path and
+query included, and a match-pattern key names the sites the user granted.
+Both are browsing data, so a log line about a saved decision prints only the
+key's scheme publicly and the whole key `.private`:
+`ExtensionPermissionType.publicLogPart(ofKey:)` gives the public part (an API
+permission name and `<all_urls>` whole, otherwise the scheme: the text before the first `:` when it is a plain scheme token or `*`, else `(no scheme)`), the rule
+`logRejectedOrigin` follows for origins. The lines that use it are the
+removal in `clearRemovedGrants` (`removed its grant of URL https
+(<private>)`) and the two stale-row lines of `applySavedHostAccessDecisions`.
+A test host run from Xcode or `xcodebuild` shows private values; a launch
+outside Xcode reads `<private>`.[^task-268]
 
 # WebKit behaviour the rules depend on
 
@@ -478,6 +495,7 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 [^task-44]: nativeMessaging denials saved before TASK-25 become enforced on upgrade
 [^task-63]: Reinstalling or updating an extension overwrites a saved nativeMessaging denial
 [^task-75]: Origin patterns with a port make chrome.permissions calls throw in WebKit
+[^task-268]: Extensions: clearing a grant the extension removed writes the full page URL to the system log as public
 [^task-258]: Extensions: permissions.remove is not saved, so the revoked permission comes back at the next launch
 [^task-250]: Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions
 [^task-259]: Extensions: a required notifications, history or management permission switched off in Settings still works

@@ -2263,7 +2263,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     private func clearRemovedGrants(extensionID: String, keys: [(key: String, type: ExtensionPermissionType)]) {
         guard !keys.isEmpty else { return }
         for (key, type) in keys {
-            log.info("\(extensionID, privacy: .public) removed its grant of \(key, privacy: .public); the saved decision is cleared")
+            // A URL or match-pattern key is browsing data: only its scheme is
+            // public (TASK-268).
+            log.info("\(extensionID, privacy: .public) removed its grant of \(type.logName, privacy: .public) \(type.publicLogPart(ofKey: key), privacy: .public) (\(key, privacy: .private)); the saved decision is cleared")
             AppDatabase.shared.revokePermission(extensionID: extensionID, key: key, type: type)
         }
         let contexts = TabStore.shared.profiles.compactMap { $0.extensionContext(for: extensionID) }
