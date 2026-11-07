@@ -91,6 +91,9 @@ sources:
   - id: task-257
     resource: backlog:TASK-257
     title: "Extensions: management.uninstallSelf and management.getPermissionWarningsByManifest are missing"
+  - id: task-267
+    resource: backlog:TASK-267
+    title: "Extensions: management.uninstallSelf with showConfirmDialog can show its app-modal alert again and again with no user action"
   - id: chromium-management-api
     resource: https://source.chromium.org/chromium/chromium/src/+/main:extensions/browser/api/management/management_api.cc
     title: "Chromium: management_api.cc (Uninstall, GetPermissionWarningsByManifest) and management_api_constants.h"
@@ -311,7 +314,17 @@ Settings' Uninstall button takes. It acts only on the verified caller.
 | Order | The reply (`undefined`) goes first, and the uninstall runs on the next main-actor turn. The uninstall unloads the caller's worker and closes its pages, so the reply may still never arrive. Chrome uninstalls first and then answers |
 | Arguments | `options` absent, null or an object; `showConfirmDialog` absent, null or a boolean. Anything else is refused (`management.uninstallSelf: options must be an object`) |
 | A second dialog | Refused at once, with the cancel text, while the extension's alert is up. The claim is taken before the alert's task runs, because WebKit can hand two messages over in one batch. A call without a dialog is not affected |
-| Not carried over | Chrome refuses a dialog without a user gesture (`kGestureNeededForUninstallError`). The polyfill has no gesture signal, so Detour shows the dialog anyway. As a result a worker that calls again after every Cancel can keep the app-modal alert up (`permissions.request` prompts have the same exposure) |
+| After a Cancel | For 10 minutes from the Cancel (`ExtensionManager.uninstallSelfCancelCooldown`), the extension's requests for the dialog are refused at once with the cancel text and no alert. Per extension; a call without a dialog is not affected; the clock is `ExtensionManager.now`, a test seam; a time before the Cancel (clock set back) does not refuse; `uninstall(id:)` forgets the Cancel[^task-267] |
+| Not carried over | Chrome refuses a dialog without a user gesture (`kGestureNeededForUninstallError`). The polyfill has no gesture signal, so Detour shows the dialog anyway, and the cooldown above stands in for the gesture check |
+
+Without the cooldown a worker that called again after every Cancel kept the
+app-modal alert up, naming itself with its manifest's name at a moment it
+chose. Chrome's gesture check still lets a user retry at once; a block for the
+whole session would refuse a deliberate retry until relaunch. Ten minutes caps
+a looping worker at one alert per period, which leaves time to remove or turn
+off the extension in Settings. `permissions.request` prompts for `history` and
+`management` cannot loop this way: a denial is saved, and later requests are
+refused without asking.[^task-267]
 
 `getPermissionWarningsByManifest(manifestStr)` returns the lines Detour's
 install prompt shows for the manifest: its required permissions, each through
@@ -956,6 +969,7 @@ in `CLAUDE.md` and the reasoning in [testing extensions](./testing-extensions.md
 [^task-251]: Extensions: the history and management namespaces exist for extensions without the permission
 [^task-250]: Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions
 [^task-257]: Extensions: management.uninstallSelf and management.getPermissionWarningsByManifest are missing
+[^task-267]: Extensions: management.uninstallSelf with showConfirmDialog can show its app-modal alert again and again with no user action
 [^task-240]: Extensions: notifications.clear and notifications.update diverge from Chrome
 [^task-254]: Extensions: notifications.create(null, options) is treated as create(options) with empty options
 [^task-269]: Extensions: notifications.create with an empty id keeps it instead of generating one

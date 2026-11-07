@@ -573,7 +573,9 @@ document.getElementById('btn-mgmt-warnings-bg').addEventListener('click', async 
 });
 
 // Only ever with the confirmation dialog: confirming really uninstalls the
-// explorer, and the reply may never arrive (its contexts are unloaded).
+// explorer, and the reply may never arrive (its contexts are unloaded). After a
+// Cancel, pressing it again within 10 minutes is refused at once with the
+// cancel error and no dialog (TASK-267).
 document.getElementById('btn-mgmt-uninstall-self').addEventListener('click', async () => {
   showResult('res-management', 'uninstallSelf({ showConfirmDialog: true }) — waiting for the dialog…');
   try {

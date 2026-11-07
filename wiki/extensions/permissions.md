@@ -376,7 +376,9 @@ still goes to WebKit.[^task-260]
   `setPermissionDecision`, so it reaches every loaded context, is restored at
   load and posts `permissionDecisionsDidChangeNotification`. A second request
   while the prompt is pending is refused ("A permissions request is already
-  pending."), like `uninstallSelf`'s confirmation.
+  pending."), like `uninstallSelf`'s confirmation. Unlike that
+  confirmation it needs no cooldown after a refusal: the saved denial already
+  stops the next request from asking.
 - `remove` refuses a required name ("You cannot remove required
   permissions.") or an undeclared one, then deletes the saved grant and
   re-applies, as for WebKit's own removals: the row is deleted, not saved as

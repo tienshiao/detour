@@ -43,6 +43,22 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// rather than stacking alerts.
     private var pendingUninstallSelfConfirmations: Set<String> = []
 
+    /// When each extension's last `uninstallSelf` confirmation was cancelled.
+    /// Another request for the dialog inside `uninstallSelfCancelCooldown` is
+    /// refused without one (TASK-267).
+    private var uninstallSelfCancelledAt: [String: Date] = [:]
+
+    /// How long after a Cancel an extension's `uninstallSelf` confirmation is
+    /// refused without being shown. Chrome stops a loop of these dialogs by
+    /// requiring a user gesture, which Detour cannot check; the cooldown caps a
+    /// worker that asks again after every Cancel at one alert per period, while
+    /// still letting a user who changed their mind retry later (TASK-267).
+    static let uninstallSelfCancelCooldown: TimeInterval = 10 * 60
+
+    /// The clock the `uninstallSelf` cooldown is measured with, as a test seam.
+    /// Production never assigns it.
+    var now: () -> Date = Date.init
+
     /// Extensions whose `permissions.request` prompt for a permission outside
     /// WebKit (TASK-260) is on screen or about to be. A second request while
     /// one is pending is refused rather than stacking alerts.
@@ -1675,6 +1691,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         extensions.removeAll { $0.id == id }
         AppDatabase.shared.deleteExtension(id: id)
+        // A reinstall starts without an earlier copy's cancelled dialog.
+        uninstallSelfCancelledAt[id] = nil
 
         let extDir = detourDataDirectory().appendingPathComponent("Extensions/\(id)")
         try? FileManager.default.removeItem(at: extDir)
@@ -1701,7 +1719,10 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// `showConfirmDialog` the user is asked first, in the style of the
     /// Settings alert; Cancel refuses with Chromium's
     /// `kUninstallCanceledError`. Unlike Chrome, the dialog needs no user
-    /// gesture: the polyfill has no gesture signal to check.
+    /// gesture: the polyfill has no gesture signal to check. Instead, after a
+    /// Cancel the extension's next requests for the dialog are refused with
+    /// the same error, unasked, for `uninstallSelfCancelCooldown`; a call
+    /// without the dialog is not affected.
     func uninstallSelf(extensionID: String, showConfirmDialog: Bool,
                        completion: @escaping (String?) -> Void) {
         guard self.extension(withID: extensionID) != nil else {
@@ -1713,10 +1734,21 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             scheduleSelfUninstall(extensionID: extensionID)
             return
         }
+        let canceled = "Extension \(extensionID) uninstall canceled by user."
+        // Cancelled a moment ago: refused without asking again (TASK-267). A
+        // clock set back past the Cancel does not count as inside the period.
+        if let cancelledAt = uninstallSelfCancelledAt[extensionID] {
+            let elapsed = now().timeIntervalSince(cancelledAt)
+            if elapsed >= 0, elapsed < Self.uninstallSelfCancelCooldown {
+                completion(canceled)
+                return
+            }
+            uninstallSelfCancelledAt[extensionID] = nil
+        }
         // Claimed here, not in the task: WebKit dispatches a batch of incoming
         // messages in one go, so a second call can arrive before the task runs.
         guard pendingUninstallSelfConfirmations.insert(extensionID).inserted else {
-            completion("Extension \(extensionID) uninstall canceled by user.")
+            completion(canceled)
             return
         }
         // Off the caller's stack: the alert runs a modal loop.
@@ -1724,7 +1756,14 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             let confirmed = self.confirmUninstallSelf(extensionID: extensionID)
             self.pendingUninstallSelfConfirmations.remove(extensionID)
             guard confirmed else {
-                completion("Extension \(extensionID) uninstall canceled by user.")
+                // Measured from the Cancel, not from the request: the alert
+                // may have been up for a while. Not recorded for an extension
+                // uninstalled while the alert was up: `uninstall(id:)` has
+                // already forgotten it, and a reinstall must start clean.
+                if self.extension(withID: extensionID) != nil {
+                    self.uninstallSelfCancelledAt[extensionID] = self.now()
+                }
+                completion(canceled)
                 return
             }
             // Uninstalled from elsewhere while the alert was up.

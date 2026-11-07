@@ -33,6 +33,7 @@ nonisolated final class ExtensionManagementSelfTests: XCTestCase {
 
     @MainActor override func tearDown() async throws {
         ExtensionManager.shared.uninstallSelfConfirmationAnswerOverride = nil
+        ExtensionManager.shared.now = Date.init
         for webView in openWebViews {
             webView.stopLoading()
             webView.loadHTMLString("", baseURL: nil)
@@ -197,14 +198,36 @@ nonisolated final class ExtensionManagementSelfTests: XCTestCase {
 
     /// Promise and callback form, from the page and from the worker, of
     /// `method(arg)`; `argJS` is the same argument as page JS source.
-    @MainActor private func allFourForms(_ method: String, arg: Any, argJS: String,
-                                         in page: WKWebView) async throws -> [(String, String, [String: Any])] {
-        [
-            ("page", "promise", try await pageEval(promiseOutcomeJS("chrome.management.\(method)(\(argJS))"), in: page)),
-            ("page", "callback", try await pageEval(callbackOutcomeJS(call: "return chrome.management.\(method)(\(argJS), cb);"), in: page)),
-            ("worker", "promise", try await worker("promise", method, arg: arg, via: page)),
-            ("worker", "callback", try await worker("callback", method, arg: arg, via: page)),
+    /// `beforeEach` runs before each of the four calls.
+    @MainActor private func allFourForms(_ method: String, arg: Any, argJS: String, in page: WKWebView,
+                                         beforeEach: () -> Void = {}) async throws -> [(String, String, [String: Any])] {
+        beforeEach()
+        let pagePromise = try await pageEval(promiseOutcomeJS("chrome.management.\(method)(\(argJS))"), in: page)
+        beforeEach()
+        let pageCallback = try await pageEval(
+            callbackOutcomeJS(call: "return chrome.management.\(method)(\(argJS), cb);"), in: page)
+        beforeEach()
+        let workerPromise = try await worker("promise", method, arg: arg, via: page)
+        beforeEach()
+        let workerCallback = try await worker("callback", method, arg: arg, via: page)
+        return [
+            ("page", "promise", pagePromise),
+            ("page", "callback", pageCallback),
+            ("worker", "promise", workerPromise),
+            ("worker", "callback", workerCallback),
         ]
+    }
+
+    /// A fixed clock for the `uninstallSelf` cancel cooldown, moved by hand.
+    @MainActor private final class FakeClock {
+        var date = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        func advance(by seconds: TimeInterval) { date += seconds }
+    }
+
+    @MainActor private func installFakeClock() -> FakeClock {
+        let clock = FakeClock()
+        ExtensionManager.shared.now = { clock.date }
+        return clock
     }
 
     // MARK: - The parsers, without WebKit
@@ -366,17 +389,20 @@ nonisolated final class ExtensionManagementSelfTests: XCTestCase {
 
     /// NEGATIVE: with `showConfirmDialog` and the dialog cancelled, every form
     /// from both transports is refused with Chromium's
-    /// `kUninstallCanceledError` and the extension stays installed.
+    /// `kUninstallCanceledError` and the extension stays installed. The clock
+    /// passes the cancel cooldown before each call, so each one asks.
     @MainActor func testCancelledDialogRefusesFromBothTransportsInBothForms() async throws {
         let ext = try await makeExtension("cancel")
         let a = makeProfile("Management Uninstall Cancel")
         let page = try await loadPage(ext, in: a)
+        let clock = installFakeClock()
         var asked: [String] = []
         ExtensionManager.shared.uninstallSelfConfirmationAnswerOverride = { id in asked.append(id); return false }
 
         let expected = "Extension \(ext.id) uninstall canceled by user."
         for (transport, form, outcome) in try await allFourForms(
-            "uninstallSelf", arg: ["showConfirmDialog": true], argJS: "{ showConfirmDialog: true }", in: page) {
+            "uninstallSelf", arg: ["showConfirmDialog": true], argJS: "{ showConfirmDialog: true }", in: page,
+            beforeEach: { clock.advance(by: ExtensionManager.uninstallSelfCancelCooldown) }) {
             if form == "promise" {
                 assertRejected(outcome, reading: expected, "\(transport) \(form)")
             } else {
@@ -423,6 +449,98 @@ nonisolated final class ExtensionManagementSelfTests: XCTestCase {
         XCTAssertEqual(replies, [cancelled, cancelled])
         XCTAssertEqual(asked, 1, "one dialog for the two calls")
         XCTAssertNotNil(ExtensionManager.shared.extension(withID: ext.id))
+    }
+
+    /// NEGATIVE (TASK-267): after a Cancel, the extension's next request for
+    /// the dialog — at once, and until the cooldown has passed — is refused
+    /// with the cancel error without asking. Once the cooldown has passed it
+    /// asks again. Another extension's dialog is not held back, and a clock
+    /// set back past the Cancel does not refuse.
+    @MainActor func testACancelledDialogIsNotShownAgainInsideTheCooldown() async throws {
+        let ext = try await makeExtension("cooldown")
+        let other = try await makeExtension("cooldown-other")
+        let clock = installFakeClock()
+        var asked: [String] = []
+        ExtensionManager.shared.uninstallSelfConfirmationAnswerOverride = { id in asked.append(id); return false }
+        let cooldown = ExtensionManager.uninstallSelfCancelCooldown
+        let cancelled = "Extension \(ext.id) uninstall canceled by user."
+
+        /// One request for the dialog, settled.
+        func request(_ id: String) async throws -> String? {
+            var replies: [String?] = []
+            ExtensionManager.shared.uninstallSelf(extensionID: id, showConfirmDialog: true) { replies.append($0) }
+            try await waitUntil("the uninstallSelf call for \(id) to settle") { replies.count == 1 }
+            return replies[0]
+        }
+
+        let reply1 = try await request(ext.id)
+        XCTAssertEqual(reply1, cancelled)
+        XCTAssertEqual(asked, [ext.id], "the first request asks")
+
+        // Immediately after: refused before any task runs, unasked.
+        var immediate: [String?] = []
+        ExtensionManager.shared.uninstallSelf(extensionID: ext.id, showConfirmDialog: true) { immediate.append($0) }
+        XCTAssertEqual(immediate, [cancelled], "refused synchronously, with the cancel error")
+        XCTAssertEqual(asked, [ext.id], "no second dialog right after a Cancel")
+
+        clock.advance(by: cooldown - 1)
+        let reply2 = try await request(ext.id)
+        XCTAssertEqual(reply2, cancelled)
+        XCTAssertEqual(asked, [ext.id], "still refused unasked just before the cooldown ends")
+
+        let reply3 = try await request(other.id)
+        XCTAssertEqual(reply3, "Extension \(other.id) uninstall canceled by user.")
+        XCTAssertEqual(asked, [ext.id, other.id], "another extension's dialog is shown")
+
+        clock.advance(by: 1)
+        let reply4 = try await request(ext.id)
+        XCTAssertEqual(reply4, cancelled)
+        XCTAssertEqual(asked, [ext.id, other.id, ext.id], "asked again once the cooldown has passed")
+
+        // That Cancel started a new period; a clock set back before it does
+        // not leave the extension refused.
+        clock.advance(by: -60)
+        let reply5 = try await request(ext.id)
+        XCTAssertEqual(reply5, cancelled)
+        XCTAssertEqual(asked, [ext.id, other.id, ext.id, ext.id], "a clock set back does not refuse")
+        XCTAssertNotNil(ExtensionManager.shared.extension(withID: ext.id))
+    }
+
+    /// NEGATIVE, real context (TASK-267): right after a Cancel, a request for
+    /// the dialog from the page and the worker, in the promise and the
+    /// callback form, is refused with the cancel error (promise rejection,
+    /// `runtime.lastError`) and no dialog. POSITIVE: a call without the
+    /// dialog is not held back by the cooldown and uninstalls.
+    @MainActor func testAfterACancelTheNextDialogsAreRefusedUnaskedFromBothTransports() async throws {
+        let ext = try await makeExtension("cooldown-context")
+        let a = makeProfile("Management Uninstall Cooldown")
+        let page = try await loadPage(ext, in: a)
+        _ = installFakeClock()
+        var asked: [String] = []
+        ExtensionManager.shared.uninstallSelfConfirmationAnswerOverride = { id in asked.append(id); return false }
+        let expected = "Extension \(ext.id) uninstall canceled by user."
+
+        assertRejected(try await pageEval(promiseOutcomeJS("chrome.management.uninstallSelf({ showConfirmDialog: true })"),
+                                          in: page),
+                       reading: expected, "the cancelled request")
+        XCTAssertEqual(asked, [ext.id])
+
+        for (transport, form, outcome) in try await allFourForms(
+            "uninstallSelf", arg: ["showConfirmDialog": true], argJS: "{ showConfirmDialog: true }", in: page) {
+            if form == "promise" {
+                assertRejected(outcome, reading: expected, "\(transport) \(form) inside the cooldown")
+            } else {
+                assertCallbackFailed(outcome, reading: expected, "\(transport) \(form) inside the cooldown")
+            }
+        }
+        XCTAssertEqual(asked, [ext.id], "no dialog inside the cooldown")
+        XCTAssertNotNil(ExtensionManager.shared.extension(withID: ext.id))
+
+        _ = try await page.callAsyncJavaScript(
+            "chrome.runtime.sendMessage({ type: 'promise', method: 'uninstallSelf', arg: { showConfirmDialog: false } }); return 'sent';",
+            arguments: [:], contentWorld: .page)
+        try await waitUntilUninstalled(ext, from: [a])
+        XCTAssertEqual(asked, [ext.id], "the call without a dialog asks nothing")
     }
 
     /// NEGATIVE: options that are not an object, or a `showConfirmDialog`
