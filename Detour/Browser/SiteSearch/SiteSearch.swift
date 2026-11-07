@@ -11,6 +11,10 @@ nonisolated struct SiteSearch: Equatable, Identifiable, Sendable {
     var urlTemplate: String
     /// The entry's place in the list; set by the store.
     var sortOrder: Int = 0
+    /// Added from the site's OpenSearch description (TASK-288) and not edited
+    /// since: it has no keyword, and Tab reaches it only through its host.
+    /// Set by the store, never by a form.
+    var isDiscovered: Bool = false
 
     /// What a template's query goes in place of (Chrome's and Safari's).
     static let placeholder = "%s"
@@ -39,8 +43,13 @@ nonisolated struct SiteSearch: Equatable, Identifiable, Sendable {
     /// template that does not make a URL. History rows in site-search mode are
     /// the visits to this host.
     var displayHost: String? {
-        guard let url = Self.url(template: urlTemplate, query: "x"), let host = url.host, !host.isEmpty
-        else { return nil }
+        Self.url(template: urlTemplate, query: "x").flatMap(Self.displayHost(of:))
+    }
+
+    /// `url`'s host lowercased without `www.`, the form `displayHost` names
+    /// a site by; nil when it has none.
+    static func displayHost(of url: URL) -> String? {
+        guard let host = url.host, !host.isEmpty else { return nil }
         let lowered = host.lowercased()
         return lowered.hasPrefix("www.") ? String(lowered.dropFirst(4)) : lowered
     }
@@ -131,7 +140,8 @@ nonisolated func siteSearchProblems(_ entry: SiteSearch, among others: [SiteSear
 ///    completion.
 /// 3. Else, with no completion pending, `typed` (two characters or more)
 ///    starts an entry's name or host: `wiki` searches Wikipedia on a Mac
-///    that has never visited it.
+///    that has never visited it. Not a discovered entry (TASK-288): a site
+///    added from its own page takes Tab only when the field is that site.
 ///
 /// A pending completion to a host that no entry has gives nil, so Tab goes
 /// on accepting the completion. Text with whitespace is a search being
@@ -150,6 +160,7 @@ nonisolated func siteSearchForTab(typed: String, completedText: String?, entries
 
     let prefix = typed.lowercased()
     return entries.first {
-        $0.name.lowercased().hasPrefix(prefix) || ($0.displayHost?.hasPrefix(prefix) ?? false)
+        !$0.isDiscovered
+            && ($0.name.lowercased().hasPrefix(prefix) || ($0.displayHost?.hasPrefix(prefix) ?? false))
     }
 }

@@ -17,6 +17,12 @@ final class SearchSettingsViewController: SettingsPaneViewController, NSTableVie
     private var emptyLabel: NSTextField!
     private var storeObserver: NSObjectProtocol?
 
+    /// What the Keyword column says for a site search added from the site
+    /// itself (TASK-288), which has no keyword until the user gives it one.
+    static let discoveredLabel = "From site"
+    static let discoveredToolTip =
+        "Found on the site's own pages. Press Tab when the address bar completes to this site to search it, or edit it to give it a keyword."
+
     private static let nameColumn = NSUserInterfaceItemIdentifier("name")
     private static let keywordColumn = NSUserInterfaceItemIdentifier("keyword")
     private static let addressColumn = NSUserInterfaceItemIdentifier("address")
@@ -37,7 +43,7 @@ final class SearchSettingsViewController: SettingsPaneViewController, NSTableVie
     }
 
     override var paneDescription: String? {
-        "Search a site straight from the address bar: type the start of its name or address, or its keyword, and press Tab (Space works after a keyword too), then type what you're looking for. Each profile's default search engine is set in Profiles."
+        "Search a site straight from the address bar: type the start of its name or address, or its keyword, and press Tab (Space works after a keyword too), then type what you're looking for. Sites that offer their own search are added when you visit them. Each profile's default search engine is set in Profiles."
     }
 
     override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }
@@ -257,10 +263,16 @@ final class SearchSettingsViewController: SettingsPaneViewController, NSTableVie
             ])
             return cell
         }()
+        cell.toolTip = nil
         switch column {
         case Self.nameColumn:
             cell.textField?.stringValue = entry.name
             cell.textField?.textColor = .labelColor
+        case Self.keywordColumn where entry.isDiscovered:
+            // Discovered (TASK-288): no keyword yet, and where it came from.
+            cell.textField?.stringValue = Self.discoveredLabel
+            cell.textField?.textColor = .tertiaryLabelColor
+            cell.toolTip = Self.discoveredToolTip
         case Self.keywordColumn:
             cell.textField?.stringValue = entry.keyword
             cell.textField?.textColor = .labelColor

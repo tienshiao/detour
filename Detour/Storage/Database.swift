@@ -788,15 +788,33 @@ nonisolated struct AppDatabase: Sendable {
         }
     }
 
-    func saveSiteSearch(_ record: SiteSearchRecord) {
+    /// Saves a site search; `removedHost`, when given, is recorded as removed
+    /// in the same write (TASK-288: an edit that moved the entry off a site).
+    func saveSiteSearch(_ record: SiteSearchRecord, recordingRemovedHost removedHost: String? = nil) {
         performWrite("save site search") { db in
             try record.save(db)
+            if let removedHost { try SiteSearchRemovedHostRecord(host: removedHost).save(db) }
         }
     }
 
     func deleteSiteSearch(id: String) {
         performWrite("delete site search") { db in
             _ = try SiteSearchRecord.deleteOne(db, key: id)
+        }
+    }
+
+    /// Removes a site search and records its host as removed, in one write
+    /// (TASK-288): discovery must never find the row gone without the host.
+    func deleteSiteSearch(id: String, recordingRemovedHost host: String) {
+        performWrite("delete site search") { db in
+            _ = try SiteSearchRecord.deleteOne(db, key: id)
+            try SiteSearchRemovedHostRecord(host: host).save(db)
+        }
+    }
+
+    func loadSiteSearchRemovedHosts() -> [String] {
+        performRead("load removed site search hosts", default: []) { db in
+            try SiteSearchRemovedHostRecord.fetchAll(db).map(\.host)
         }
     }
 
@@ -1423,6 +1441,18 @@ nonisolated struct AppDatabase: Sendable {
                 try db.execute(
                     sql: "INSERT INTO siteSearch (id, name, keyword, urlTemplate, sortOrder) VALUES (?, ?, ?, ?, ?)",
                     arguments: [UUID().uuidString, entry.name, entry.keyword, entry.urlTemplate, order])
+            }
+        }
+
+        migrator.registerMigration("v22") { db in
+            // TASK-288: site searches discovered from a page's OpenSearch
+            // description are marked, and the host of every entry the user
+            // removes is kept so discovery never adds that site again.
+            try db.alter(table: "siteSearch") { t in
+                t.add(column: "isDiscovered", .boolean).notNull().defaults(to: false)
+            }
+            try db.create(table: "siteSearchRemovedHost") { t in
+                t.primaryKey("host", .text)
             }
         }
 

@@ -428,12 +428,17 @@ class TabStore {
         store.thumbnailCache = .shared
         store.siteSettings = .shared
         store.linkRoutes = .shared
+        store.siteSearchDiscoverer = .shared
         return store
     }()
     nonisolated static let incognitoProfileID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
 
     private let appDB: AppDatabase
     private let historyDB: HistoryDatabase
+    /// Told when a tab's load ends, to find the site's OpenSearch description
+    /// (TASK-288). The shared store has the app's; a test store has none
+    /// unless the test gives it one.
+    var siteSearchDiscoverer: SiteSearchDiscoverer?
 
     private(set) var profiles: [Profile] = []
     /// A space's tabs become enumerable by a window only once the space is here:
@@ -5343,6 +5348,9 @@ class TabStore {
                 if !isLoading, let spaceID = tab.historySpaceID {
                     self.recordHistoryVisit(tab: tab, spaceID: spaceID)
                 }
+                // A site's OpenSearch description (TASK-288); the discoverer
+                // refuses Private and quarantined pages itself.
+                if !isLoading { self.siteSearchDiscoverer?.pageDidFinishLoading(in: tab) }
             }
             .store(in: &cancellables)
 

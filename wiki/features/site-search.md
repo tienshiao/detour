@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Site search
-description: "Keyword shortcuts in the command palette that search one site (TASK-287): typing a keyword then Tab or Space enters a mode with the site's name as a chip, Return opens the site's results URL; the app-wide list in the siteSearch table (migration v21, a starter set seeded once), its rules, and the Settings > Search pane that edits it."
+description: "Keyword shortcuts in the command palette that search one site (TASK-287): typing a keyword then Tab or Space enters a mode with the site's name as a chip, Return opens the site's results URL; the app-wide list in the siteSearch table (migration v21, a starter set seeded once), its rules, the Settings > Search pane that edits it, and entries discovered from a site's OpenSearch description (TASK-288, migration v22)."
 tags: [command-palette, search, settings]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-07T11:30:00Z }
@@ -30,6 +30,15 @@ sources:
   - id: site-color
     resource: ../../Detour/Browser/SiteSearch/SiteColor.swift
     title: SiteColor.swift (dominant color, text color)
+  - id: opensearch
+    resource: ../../Detour/Browser/SiteSearch/OpenSearchDescription.swift
+    title: OpenSearchDescription.swift (the parser, siteSearchTemplate(fromOpenSearch:))
+  - id: discovery
+    resource: ../../Detour/Browser/SiteSearch/SiteSearchDiscovery.swift
+    title: SiteSearchDiscovery.swift (the rules, OpenSearchFetcher, SiteSearchDiscoverer)
+  - id: discovery-tests
+    resource: ../../DetourTests/SiteSearchDiscoveryTests.swift
+    title: SiteSearchDiscoveryTests.swift
   - id: tests
     resource: ../../DetourTests/SiteSearchTests.swift
     title: SiteSearchTests.swift
@@ -49,7 +58,10 @@ Return opens the site's results page. A keyword is optional: as in Arc, Tab
 also searches the site the field completes to (`you` → `youtube.com`), or
 whose name you have started (`wiki`). This is Chrome's "Site search" (and
 its trigger) with Arc's keyword-free entry, Safari's Quick Website Search
-without the automatic part.
+without the automatic part. Sites that describe their search with
+OpenSearch are added by themselves when you visit them, as in Chrome and
+Arc, with no keyword: Tab reaches them only when the field is or completes
+to that site.
 
 The list is **app-wide**, like [Link Routes](./link-routing.md): one list
 for every profile, edited in Settings > Search. Each profile's default engine
@@ -90,9 +102,86 @@ struct cannot change what the migration did. Google Maps uses
 send Tab on a completed `google.com` to Maps. Seeding in the migration rather
 than at launch is what makes a deleted starter entry stay deleted.
 
+Migration **v22** (TASK-288) adds `isDiscovered` (default false) and the
+`siteSearchRemovedHost` table (`host` primary key): the host of every entry
+the user removed, written in the same transaction as the delete.
+
 `SiteSearchStore.shared` caches the rows, writes every change through and
 posts `didChangeNotification`. `add` and `update` refuse an entry with a
 problem, so nothing that reaches the table breaks the rules.
+
+## Discovered from the site (TASK-288)
+
+A page can name an OpenSearch description: `<link rel="search"
+type="application/opensearchdescription+xml" href=…>`, an XML document whose
+`<Url type="text/html" template="…{searchTerms}…">` is its results URL.
+Visiting such a page adds the site as a site search, named after the
+description's `<ShortName>` (the host when it has none), with **no
+keyword** and marked `isDiscovered`.[^task-288]
+
+**When it looks.** `TabStore`'s `isLoading` sink calls
+`SiteSearchDiscoverer.pageDidFinishLoading(in:)` when a load ends. Before
+the page is asked anything, all of these must hold (most loads stop here and
+cost nothing):
+
+- the page is a normal profile's (`SiteSearchDiscovery.mayLook`): not a
+  Private window, a Private Quick Detour or a quarantine (`owningProfile`
+  missing counts as Private), and the web view's URL is http(s), so an
+  error page (`browser-error:`) or internal page is not;
+- the site (`SiteSearch.displayHost`) has no entry, was never removed by
+  the user (`SiteSearchStore.mayDiscover(host:)`), was not fetched yet
+  this launch (`attemptedHosts`, in memory), and fewer than
+  `pagesAskedPerSite` (3) of its pages were asked this launch. Sites put
+  the link in a shared page head, so three pages without one mean the site
+  has none, and its other loads cost nothing.
+
+Then `SiteSearchDiscovery.lookupScript` runs in a private content world
+(`DetourSiteSearch`), so page script can neither see it nor answer it by
+patching `querySelectorAll`. It returns every description link; the first
+on the page's own site is fetched (a foreign link listed first does not hide
+it). The answer is used only if the web view is still on the same site. A
+host is marked attempted only when its description is fetched.
+
+**What it fetches.** The description must be on the page's site
+(`isSameSite`: http(s), no credentials, the same host with `www.` ignored,
+no https page → http description; the port is not compared, since a site
+search names a site by its host). `OpenSearchFetcher` fetches it with the
+app's own ephemeral session, not the profile's: no cookies sent or stored,
+no cache, 10 s for the whole fetch, 64 KB at most (`CappedDataFetcher`,
+shared with media artwork), only a 200, and a redirect is followed only to
+the same site (`allowsRedirect`; the other host is never contacted).
+
+**What it accepts.** `OpenSearchDescription(data:)` parses with
+`XMLParser`, namespaces on (any prefix), external entities never resolved;
+the root must be `OpenSearchDescription`, and only its own `<Url>` children
+count: GET, `type="text/html"`, `rel` absent or `results`; the first whose
+template converts wins. `siteSearchTemplate(fromOpenSearch:)` turns
+`{searchTerms}` into `%s`, the encodings into `UTF-8`, `{language}` into `*`,
+required `{count}`/`{startIndex}`/`{startPage}` into 20/1/1 and any other
+optional parameter into nothing; a required parameter it does not know
+(`{google:baseURL}`), no `{searchTerms}`, an unbalanced brace or a `%s`
+already in the template refuses it. The converted template must also be on
+the page's site and pass `siteSearchProblems`.
+
+**What the store does.** `addDiscovered` re-checks `mayDiscover` (the list
+may have changed while the description was on its way), clears any keyword
+and appends the entry marked. **Removing any entry** — discovered, starter or
+typed — records its host in `siteSearchRemovedHost`, so discovery never adds
+that site back; the user can still add it by hand. Editing a discovered
+entry so that its name, keyword or address changes makes it the user's
+(the mark goes); saving it unchanged keeps it. An edit that moves any entry
+to another host records the old host as removed, as a removal would.
+
+**In the palette** an untouched discovered entry is left out of the
+name/host *prefix* rule of `siteSearchForTab` (rule 3): it takes Tab only
+when the field is or completes to its host. A site visited once must not
+start answering two typed letters. In Settings > Search its Keyword column
+reads "From site" (tertiary label, with a tooltip saying how to use or
+edit it).
+
+The list is app-wide, so a site discovered in one profile is listed for
+all; Tab still needs the field to complete to it (that profile's history) or
+the host typed out.
 
 ## In the palette
 
@@ -192,12 +281,43 @@ store's notification, so a change from anywhere shows at once.
 - **App-wide**, not per profile (Chrome's is per profile): one list to set
   up, as with Link Routes.
 - **Seeded once** in the migration.
-- **OpenSearch discovery** is a separate task (TASK-288): with host
-  matching, a discovered site takes Tab only when the field completes to
-  that site, so discovered entries are to be active at once with no
-  keyword (Arc), not listed inactive (Chrome) as first planned.[^task-288]
+- **OpenSearch discovery active at once, no keyword** (the user, TASK-288):
+  with host matching, a discovered site takes Tab only when the field is or
+  completes to that site, so it can be live from the start (Arc) rather
+  than listed inactive until turned on (Chrome, the first plan). Left out of
+  prefix matching for the same reason.
+- **The description and its template on the page's own host** (subdomains
+  are other hosts): discovery never fetches from or adds a third site, and
+  a page cannot plant a search for another site. Sites that keep their
+  description on a CDN are not discovered; none of the common ones do.
+- **Any removal is remembered**, not only a discovered entry's: deleting the
+  YouTube starter entry and then visiting YouTube must not bring it back.
+  Removals made before v22 were not recorded.
+- **An edit adopts the entry** (the mark goes) rather than the mark staying
+  as provenance: the mark is what keeps an entry out of prefix matching and
+  says it has no keyword yet, and neither is true once the user has shaped
+  it.
 
 # Tests
+
+- `OpenSearchDescriptionTests`: valid, prefixed-namespace, malformed and
+  template-less descriptions, the first usable template, nested and
+  foreign roots, names, external entities, every template parameter.
+- `SiteSearchDiscoveryRuleTests`: Private, quarantine and non-http pages,
+  the description and template on the page's site, the first same-site
+  link, redirects, Tab on a discovered entry.
+- `SiteSearchDiscoveryStoreTests`: the mark, a listed site, removed hosts
+  across launches, an edit adopting the entry, an edit moving it to another
+  site, migration v22.
+- `SiteSearchDiscovererTests` (a fake fetch): once per site per launch,
+  listed or removed sites and foreign descriptions never fetched, a list
+  that changed during the fetch.
+- `OpenSearchFetcherTests` (loopback server): size limit, 404, timeout, a
+  redirect off the site never followed.
+- `SiteSearchDiscoveryTabTests`: a real tab's load adds the entry once
+  (past a foreign link listed first); a Private space's fetches nothing; a
+  site without a link is asked on three pages only; the lookup ignores a
+  patched `querySelectorAll`.
 
 - `SiteSearchRuleTests`: encoding in the path and query, every placeholder,
   UTF-8, the host, keyword matching, each problem, the starter set, where the
@@ -221,5 +341,5 @@ store's notification, so a change from anywhere shows at once.
 - [Session database](../architecture/session-database.md)
 
 [^task-287]: TASK-287, 2026-11-07.
-[^task-288]: TASK-288, filed 2026-11-07.
+[^task-288]: TASK-288, 2026-11-07.
 [^task-290]: TASK-290, 2026-11-07: measured in the app with YouTube's real favicon (the space's blue, then red, white text) and a never-visited GitHub in dark mode (the space's blue throughout).

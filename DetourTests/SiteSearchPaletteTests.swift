@@ -470,6 +470,29 @@ nonisolated final class SearchSettingsPaneTests: XCTestCase {
         XCTAssertEqual(pane.tableView.numberOfRows, SiteSearch.starterSet.count)
     }
 
+    /// TASK-288: a discovered entry says so where its keyword would be, and
+    /// giving it a keyword through the form makes it an ordinary row.
+    @MainActor func testADiscoveredEntryIsMarkedUntilTheUserEditsIt() throws {
+        let store = try makeStore()
+        let pane = SearchSettingsViewController(siteSearches: store)
+        _ = pane.view
+        let found = try XCTUnwrap(store.addDiscovered(
+            SiteSearch(name: "Docs", keyword: "", urlTemplate: "https://docs.example/?q=%s")))
+        let row = try XCTUnwrap(store.entries.firstIndex { $0.id == found.id })
+        func keywordCell() -> NSTableCellView? {
+            let column = pane.tableView.column(withIdentifier: NSUserInterfaceItemIdentifier("keyword"))
+            return pane.tableView.view(atColumn: column, row: row, makeIfNecessary: true) as? NSTableCellView
+        }
+        XCTAssertEqual(keywordCell()?.textField?.stringValue, SearchSettingsViewController.discoveredLabel)
+        XCTAssertEqual(keywordCell()?.toolTip, SearchSettingsViewController.discoveredToolTip)
+
+        let form = SiteSearchForm(store: store, editing: found)
+        form.keywordField.stringValue = "docs"
+        XCTAssertNotNil(form.save())
+        XCTAssertEqual(keywordCell()?.textField?.stringValue, "docs")
+        XCTAssertNil(keywordCell()?.toolTip)
+    }
+
     @MainActor func testAnEmptyFormCannotBeSavedAndSaysWhy() throws {
         let store = try makeStore()
         let form = SiteSearchForm(store: store, editing: nil)

@@ -1,0 +1,113 @@
+TASK-288 runtime harness: OpenSearch discovery in the running app and the
+Settings > Search marker. Temporary code, never committed to Detour/. Apply,
+build, run, revert:
+
+    git apply docs/harness/task288-harness.patch
+    xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    # a loopback site on 127.0.0.1:8288 whose / links /opensearch.xml
+    # (template http://127.0.0.1:8288/search?q={searchTerms}):
+    python3 -m http.server 8288 --bind 127.0.0.1   # in the fixture directory
+    OUT=<dir>; DETOUR_VERIFY_DIR="$OUT" DETOUR_DATA_DIR=DetourVerify288 \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # "SHOOT <windowNumber> settings": `screencapture -x -o -l <windowNumber>`;
+    # wait for "done" (about 20 s), kill that pid, then:
+    git apply -R docs/harness/task288-harness.patch && xcodegen generate
+
+Loads http://127.0.0.1:8288/ in a new normal tab, then a second page of the
+site, then http://localhost:8288/ in a Private window, logging the store
+after each; then opens Settings > Search for a capture.
+
+Results (2026-11-07): "Fixture Docs" added after the first load, no keyword,
+isDiscovered, template http://127.0.0.1:8288/search?q=%s; the server saw
+/opensearch.xml once (not for the second page); the Private page loaded and
+nothing was fetched or added. A second launch on the same data dir kept the
+entry and fetched no description (the site is listed). Settings showed the
+row with "From site" in the Keyword column (the first label, "Added from
+site", truncated in the 100 pt column).
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 68ac340..a8d351b 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -149,6 +149,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask288HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task288Harness.swift b/Detour/App/Task288Harness.swift
+new file mode 100644
+index 0000000..8feec1f
+--- /dev/null
++++ b/Detour/App/Task288Harness.swift
+@@ -0,0 +1,65 @@
++// TEMP TASK-288 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask288HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%6.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var clock: TimeInterval = 3.0
++        func at(_ dt: TimeInterval, _ block: @escaping @MainActor @Sendable () -> Void) {
++            clock += dt
++            Timer.scheduledMainTimer(withTimeInterval: clock, repeats: false) { _ in block() }
++        }
++        func entries() -> String {
++            SiteSearchStore.shared.entries.map { "\($0.name)|\($0.keyword)|\($0.urlTemplate)|d=\($0.isDiscovered)" }
++                .joined(separator: "; ")
++        }
++        let site = URL(string: "http://127.0.0.1:8288/")!
++        at(0) {
++            log("start: \(entries())")
++            guard let space = wc.activeSpace else { return log("no space") }
++            let tab = TabStore.shared.addTab(in: space)
++            wc.selectTab(id: tab.id)
++            tab.load(site)
++            log("normal tab loading \(site)")
++        }
++        at(4) { log("after first load: \(entries())") }
++        at(0.5) {
++            wc.selectedTab?.load(URL(string: "http://127.0.0.1:8288/search/?q=x")!)
++            log("normal tab: second page")
++        }
++        at(3) { log("after second page: \(entries())") }
++        at(0.5) {
++            self.createNewIncognitoWindow()
++            guard let pwc = NSApp.windows.compactMap({ $0.windowController as? BrowserWindowController })
++                .first(where: { $0.isIncognito }), let space = pwc.activeSpace else { return log("no private wc") }
++            let tab = TabStore.shared.addTab(in: space)
++            pwc.selectTab(id: tab.id)
++            tab.load(URL(string: "http://localhost:8288/")!)
++            log("private tab loading http://localhost:8288/ (space incognito=\(space.isIncognito))")
++        }
++        at(4) { log("after private load: \(entries())") }
++        at(0.5) {
++            let settings = SettingsWindowController.shared
++            settings.showWindow(nil)
++            if let item = settings.window?.toolbar?.items.first(where: { $0.itemIdentifier.rawValue == "search" }) {
++                settings.perform(Selector(("selectPane:")), with: item)
++            }
++            NSApp.activate(ignoringOtherApps: true)
++            settings.window?.makeKeyAndOrderFront(nil)
++            log("settings shown")
++        }
++        at(2) { log("SHOOT \(SettingsWindowController.shared.window?.windowNumber ?? -1) settings") }
++        at(3) { log("done") }
++    }
++}
++#endif
