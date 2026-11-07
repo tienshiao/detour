@@ -5,16 +5,69 @@ import Synchronization
 nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", category: "native-messaging")
 
 /// Represents a native messaging host manifest (e.g. `com.1password.1password.json`).
-struct NativeHostManifest: Codable {
+///
+/// Only what `parse` accepts exists: the fields a host needs before Detour
+/// may start it are all present and of the right type (TASK-266).
+nonisolated struct NativeHostManifest: Equatable, Sendable {
     let name: String
     let description: String?
     let path: String
-    let type: String?
-    let allowedOrigins: [String]?
+    let allowedOrigins: [String]
 
-    enum CodingKeys: String, CodingKey {
-        case name, description, path, type
-        case allowedOrigins = "allowed_origins"
+    /// Why a manifest file is refused. Chrome treats every one of these as
+    /// "host not found" (`NativeMessagingHostManifest::Parse` fails, or the
+    /// launcher finds the name is not the host's, and answers
+    /// `RESULT_NOT_FOUND`); the case is what Detour logs.
+    enum Invalid: Error, Equatable, Sendable, CustomStringConvertible {
+        case unreadable
+        case notAJSONObject
+        case nameMissing
+        /// `name` is not the name of the host whose file it is.
+        case nameMismatch
+        case pathMissing
+        case typeNotStdio
+        case allowedOriginsMissing
+        case allowedOriginsNotAList
+        case allowedOriginNotAString
+
+        var description: String {
+            switch self {
+            case .unreadable: return "the file cannot be read"
+            case .notAJSONObject: return "the file is not a JSON object"
+            case .nameMissing: return "\"name\" is missing or not a string"
+            case .nameMismatch: return "\"name\" is not the host's name"
+            case .pathMissing: return "\"path\" is missing or not a string"
+            case .typeNotStdio: return "\"type\" is not \"stdio\""
+            case .allowedOriginsMissing: return "\"allowed_origins\" is missing"
+            case .allowedOriginsNotAList: return "\"allowed_origins\" is not a list"
+            case .allowedOriginNotAString: return "an \"allowed_origins\" entry is not a string"
+            }
+        }
+    }
+
+    /// The manifest in `data`, or why it is refused. Chrome's checks: a
+    /// manifest with no `allowed_origins`, or one that is not a list of
+    /// strings, is invalid (it used to admit every extension, TASK-266), and
+    /// `type` must be "stdio". `description` is required by Chrome too but is
+    /// not checked here: it plays no part in who may start the host. Whether
+    /// `path` is absolute is checked by `connect()`, after the origin, where
+    /// Chrome checks it.
+    static func parse(_ data: Data) throws(Invalid) -> NativeHostManifest {
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let dict = object as? [String: Any] else { throw .notAJSONObject }
+        guard let name = dict["name"] as? String else { throw .nameMissing }
+        guard let path = dict["path"] as? String else { throw .pathMissing }
+        guard dict["type"] as? String == "stdio" else { throw .typeNotStdio }
+        guard let rawOrigins = dict["allowed_origins"], !(rawOrigins is NSNull) else {
+            throw .allowedOriginsMissing
+        }
+        guard let list = rawOrigins as? [Any] else { throw .allowedOriginsNotAList }
+        let origins = try list.map { entry throws(Invalid) -> String in
+            guard let origin = entry as? String else { throw .allowedOriginNotAString }
+            return origin
+        }
+        return NativeHostManifest(name: name, description: dict["description"] as? String,
+                                  path: path, allowedOrigins: origins)
     }
 }
 
@@ -176,17 +229,27 @@ class NativeMessagingHost {
 
         let manifest = try discoverManifest()
 
-        // Validate origin
+        // The checks and their order are Chrome's (`NativeProcessLauncher`):
+        // a valid manifest (`discoverManifest`), the origin, then an absolute
+        // path. The manifests are in user-writable directories, so the origin
+        // check is the only thing tying a host to the extensions it was
+        // installed for, and it is never skipped (TASK-266).
         let expectedOrigin = "chrome-extension://\(extensionID)/"
-        if let allowedOrigins = manifest.allowedOrigins {
-            guard allowedOrigins.contains(expectedOrigin) else {
-                log.error("Origin validation failed: extension \(self.extensionID, privacy: .public) not in allowed_origins for \(self.hostName, privacy: .public)")
-                throw NativeMessagingError.originNotAllowed(extensionID)
-            }
+        guard manifest.allowedOrigins.contains(expectedOrigin) else {
+            log.error("Origin validation failed: extension \(self.extensionID, privacy: .public) not in allowed_origins for \(self.hostName, privacy: .public)")
+            throw NativeMessagingError.originNotAllowed(extensionID)
+        }
+
+        // macOS has no relative form (Windows resolves one against the
+        // manifest's directory): a relative path would resolve against
+        // Detour's working directory.
+        let hostPath = manifest.path
+        guard hostPath.hasPrefix("/") else {
+            log.error("Refusing native host \(self.hostName, privacy: .public): its manifest's path is not absolute")
+            throw NativeMessagingError.pathNotAbsolute(hostName)
         }
 
         // Validate the host binary exists
-        let hostPath = manifest.path
         guard FileManager.default.isExecutableFile(atPath: hostPath) else {
             log.error("Native host binary not found at \(hostPath, privacy: .public) for \(self.hostName, privacy: .public)")
             throw NativeMessagingError.hostNotFound(hostPath)
@@ -529,7 +592,7 @@ class NativeMessagingHost {
     private func discoverManifest() throws -> NativeHostManifest {
         guard Self.isValidHostName(hostName) else {
             log.error("Rejecting native host name with illegal characters: \(self.hostName, privacy: .public)")
-            throw NativeMessagingError.manifestNotFound(hostName)
+            throw NativeMessagingError.invalidName(hostName)
         }
         let filename = "\(hostName).json"
 
@@ -537,10 +600,20 @@ class NativeMessagingHost {
             let path = (dir as NSString).appendingPathComponent(filename)
             guard FileManager.default.fileExists(atPath: path) else { continue }
 
-            let data = try Data(contentsOf: URL(fileURLWithPath: path))
-            let manifest = try JSONDecoder().decode(NativeHostManifest.self, from: data)
-
-            guard manifest.name == hostName else { continue }
+            // A file that is there but refused ends the search, as Chrome's
+            // does (it loads the first manifest it finds, and an invalid one
+            // is "not found"): a later directory does not stand in for it.
+            let manifest: NativeHostManifest
+            do throws(NativeHostManifest.Invalid) {
+                guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
+                    throw NativeHostManifest.Invalid.unreadable
+                }
+                manifest = try NativeHostManifest.parse(data)
+                guard manifest.name == hostName else { throw NativeHostManifest.Invalid.nameMismatch }
+            } catch {
+                log.error("Refusing native host \(self.hostName, privacy: .public): its manifest in \(dir, privacy: .public) is invalid: \(error.description, privacy: .public)")
+                throw NativeMessagingError.invalidManifest(hostName, error)
+            }
             return manifest
         }
 
@@ -627,8 +700,21 @@ class NativeMessagingHost {
 
     // MARK: - Errors
 
-    enum NativeMessagingError: LocalizedError {
+    /// What `connect()` and `sendMessage` throw. A `connect()` refusal is
+    /// what the extension sees (a rejected `sendNativeMessage`, a port
+    /// disconnected with the error), so those carry Chrome's own wording
+    /// (`native_process_launcher.cc` / `native_message_process_host.cc`);
+    /// the specifics (the host name, the manifest's fault) go to the log,
+    /// where `connect()` writes them (TASK-266).
+    enum NativeMessagingError: LocalizedError, Equatable {
+        /// The host name is not one Chrome allows (`isValidHostName`).
+        case invalidName(String)
+        /// No manifest file for the host in the search directories.
         case manifestNotFound(String)
+        /// The host's manifest file is there but refused.
+        case invalidManifest(String, NativeHostManifest.Invalid)
+        /// The manifest's `path` is not absolute.
+        case pathNotAbsolute(String)
         case hostNotFound(String)
         case originNotAllowed(String)
         case notConnected
@@ -637,15 +723,39 @@ class NativeMessagingHost {
         /// Detour is quitting and has ended its hosts (TASK-243).
         case quitting
 
+        static let invalidNameMessage = "Invalid native messaging host name specified."
+        static let notFoundMessage = "Specified native messaging host not found."
+        static let failedToStartMessage = "Failed to start native messaging host."
+
         var errorDescription: String? {
             switch self {
-            case .manifestNotFound(let name): return "Native messaging host \"\(name)\" not found"
-            case .hostNotFound(let path): return "Native messaging host binary not found at \(path)"
-            case .originNotAllowed(let id): return "Extension \(id) is not in the native host's allowed_origins"
+            // Chrome's RESULT_INVALID_NAME.
+            case .invalidName: return Self.invalidNameMessage
+            // Chrome's RESULT_NOT_FOUND: no manifest, an invalid one, or a
+            // relative path.
+            case .manifestNotFound, .invalidManifest, .pathNotAbsolute: return Self.notFoundMessage
+            // Chrome's RESULT_FAILED_TO_START: the launch itself fails.
+            case .hostNotFound: return Self.failedToStartMessage
+            // Chrome's RESULT_FORBIDDEN, the same text as a user's denial.
+            case .originNotAllowed: return ExtensionManager.nativeHostForbiddenMessage
             case .notConnected: return "Not connected to native messaging host"
             case .invalidMessage: return "Failed to serialize message as JSON"
             case .messageTooLarge(let size): return "Message size \(size) exceeds 1MB limit"
             case .quitting: return "Detour is quitting"
+            }
+        }
+
+        /// The specifics `errorDescription` leaves out (Chrome's wording is
+        /// the same for several causes), for Detour's own log.
+        var logDetail: String {
+            switch self {
+            case .invalidName(let name): return "invalid host name \(name)"
+            case .manifestNotFound(let name): return "no manifest for \(name)"
+            case .invalidManifest(let name, let fault): return "the manifest for \(name) is invalid: \(fault)"
+            case .pathNotAbsolute(let name): return "the manifest for \(name) has a path that is not absolute"
+            case .hostNotFound(let path): return "no executable at \(path)"
+            case .originNotAllowed(let id): return "\(id) is not in the manifest's allowed_origins"
+            default: return errorDescription ?? "\(self)"
             }
         }
     }

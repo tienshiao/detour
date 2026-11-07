@@ -304,8 +304,12 @@ final class FakeNativeMessagingHost {
     private let dir: URL
     private let previousHostsDir: String?
 
+    /// `editingManifest` changes the manifest before it is written, for a
+    /// test of a manifest Detour must refuse (TASK-266); it gets the script's
+    /// absolute path to build a relative one from.
     init(name: String = "com.detour.fake_host_test", allowing extensionIDs: [String],
-         behavior: Behavior = .silent) throws {
+         behavior: Behavior = .silent,
+         editingManifest: ((inout [String: Any], _ scriptPath: String) -> Void)? = nil) throws {
         self.name = name
         self.sleepToken = String(Int.random(in: 300_000...899_999))
         self.previousHostsDir = ProcessInfo.processInfo.environment["DETOUR_NATIVE_MESSAGING_HOSTS_DIR"]
@@ -346,16 +350,27 @@ final class FakeNativeMessagingHost {
         try ("#!/bin/sh\n" + body).write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
 
-        let manifest: [String: Any] = [
+        var manifest: [String: Any] = [
             "name": name,
             "description": "Detour test fake native messaging host",
             "path": script.path,
             "type": "stdio",
             "allowed_origins": extensionIDs.map { "chrome-extension://\($0)/" },
         ]
+        editingManifest?(&manifest, script.path)
         try JSONSerialization.data(withJSONObject: manifest)
             .write(to: dir.appendingPathComponent("\(name).json"))
         setenv("DETOUR_NATIVE_MESSAGING_HOSTS_DIR", dir.path, 1)
+    }
+
+    /// `absolutePath` as a path relative to the process's working
+    /// directory that leads to the same file: `../` up to the root, then the
+    /// path. A manifest with it must be refused even though it resolves to
+    /// an executable (TASK-266).
+    static func relativeFromWorkingDirectory(_ absolutePath: String) -> String {
+        let depth = FileManager.default.currentDirectoryPath
+            .split(separator: "/", omittingEmptySubsequences: true).count
+        return String(repeating: "../", count: depth) + absolutePath.drop { $0 == "/" }
     }
 
     /// How many of this fixture's host processes are alive right now.

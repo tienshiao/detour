@@ -367,7 +367,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// wording for a host the extension may not use, delivered the same way as
     /// every other native-host failure — a rejected `sendNativeMessage` promise /
     /// `runtime.lastError`, or a port disconnected with that error.
-    static let nativeHostForbiddenMessage = "Access to the specified native messaging host is forbidden."
+    nonisolated static let nativeHostForbiddenMessage = "Access to the specified native messaging host is forbidden."
 
     /// The disconnect reason on a keep-alive port evicted by a newer one from the
     /// same extension (see the `.polyfillHost` case of the `connectUsing` delegate
@@ -3304,7 +3304,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             // never asked for.
             logNativeConnectAttempt(
                 extensionID: extID, hostName: hostName, profileName: profileName,
-                outcome: .failed, detail: error.localizedDescription)
+                outcome: .failed,
+                detail: (error as? NativeMessagingHost.NativeMessagingError)?.logDetail ?? error.localizedDescription)
             completionHandler(error)
             // The refused port is removed like any closed one, and the removal
             // takes the background's open-ports entry with it (TASK-142). The

@@ -28,6 +28,15 @@ sources:
   - id: task-242
     resource: backlog:TASK-242
     title: A one-shot sendNativeMessage with a non-object message leaks the host and never settles
+  - id: task-266
+    resource: backlog:TASK-266
+    title: "Native messaging: a host manifest without allowed_origins admits every extension"
+  - id: chromium-launcher
+    resource: https://github.com/chromium/chromium/blob/main/chrome/browser/extensions/api/messaging/native_process_launcher.cc
+    title: Chromium native_process_launcher.cc and native_messaging_host_manifest.cc (manifest checks, their order and result codes)
+  - id: manifest-tests
+    resource: ../../DetourTests/NativeHostManifestValidationTests.swift
+    title: NativeHostManifestValidationTests.swift
   - id: task-243
     resource: backlog:TASK-243
     title: "Native messaging: quitting Detour may leave live port hosts running"
@@ -95,7 +104,7 @@ desktop-app channel is the main user (see
    underscores (`isValidHostName`). The name is joined onto a directory path,
    so this is what stops `../../evil`.
 2. Looks for `<name>.json` in `searchDirectories`, in order, and takes the
-   first whose `name` field equals the requested name:
+   first file it finds:
 
    | Order | Directory |
    |---|---|
@@ -105,13 +114,50 @@ desktop-app channel is the main user (see
    | 3 | `~/Library/Application Support/Detour/NativeMessagingHosts` |
    | 4 | `/Library/Google/Chrome/NativeMessagingHosts` |
 
-3. If the manifest has `allowed_origins`, it must contain
-   `chrome-extension://<extension id>/`. This works with manifests written
-   for Chrome because Detour derives the same ids Chrome does (see
-   [installer and CRX](./installer-and-crx.md)).
-4. The manifest's `path` must be an executable file. It is spawned with the
-   origin as its one argument, as Chrome does, with pipes for stdin, stdout
-   and stderr.
+   A file that is there but refused (step 3, or a `name` field that is not
+   the requested name) ends the search, as in Chrome, which loads the first
+   manifest it finds: a later directory does not stand in for it.
+3. `NativeHostManifest.parse` refuses what Chrome's manifest parser
+   refuses: a file that is not a JSON object, a missing `name` or `path`,
+   a `type` other than `"stdio"`, and an `allowed_origins` that is missing,
+   null, not a list, or holds a non-string. `description`, required by
+   Chrome, is not checked: it plays no part in who may start the
+   host.[^task-266]
+4. `allowed_origins` must contain `chrome-extension://<extension id>/`.
+   This works with manifests written for Chrome because Detour derives the
+   same ids Chrome does (see [installer and CRX](./installer-and-crx.md)).
+   The manifests sit in user-writable directories, so this check is the only
+   thing tying a host to the extensions it was installed for; until TASK-266
+   it only ran when the key was present, so a manifest without it admitted
+   every extension with `nativeMessaging`.
+5. `path` must be absolute (macOS has no relative form; Chrome resolves one
+   against the manifest's directory only on Windows), checked after the
+   origin, where Chrome checks it. A relative path used to resolve against
+   Detour's working directory.
+6. `path` must be an executable file. It is spawned with the origin as its
+   one argument, as Chrome does, with pipes for stdin, stdout and stderr.
+
+What the extension sees for each refusal is Chrome's text for the
+launcher's result, as a rejected `sendNativeMessage` (promise and
+`runtime.lastError`) or on the refused port's `port.error`; the specifics
+(host name, the manifest's fault, the directory) go to the
+`native-messaging` log category only, and `NativeMessagingError.logDetail`
+carries them into the rate-limited `connectNative` attempt line:[^chromium-launcher]
+
+| Refusal | `NativeMessagingError` | Text |
+|---|---|---|
+| Host name refused (step 1) | `.invalidName` | "Invalid native messaging host name specified." |
+| No manifest, invalid manifest (step 3) or one naming another host, relative path | `.manifestNotFound`, `.invalidManifest`, `.pathNotAbsolute` | "Specified native messaging host not found." |
+| Origin not listed (an empty list included) | `.originNotAllowed` | "Access to the specified native messaging host is forbidden." |
+| `path` not an executable | `.hostNotFound` | "Failed to start native messaging host." |
+
+The legs are tested in `NativeHostManifestValidationTests` (parse and
+`connect()` against a fake host whose manifest each test edits; the
+relative path resolves to the fake host's script, so only the refusal keeps
+it from running), `NativeMessagingEnforcementTests` (an extension page,
+all three delivery forms) and `ExtensionPolyfillProfileWiringTests` (a
+service worker).[^manifest-tests] Detour's own hosts never reach any of
+this (see below).
 
 Framing is a 4-byte little-endian length followed by UTF-8 JSON, capped at
 `maxMessageSize` (1 MB) **in both directions**. The read loop runs on a
@@ -415,9 +461,6 @@ evidence for. There is no level between notice and error to use:
   and is refused there. Every other value arrives as the JSON-parsed
   Foundation object (`NSString`, `NSNumber`, `__NSCFBoolean`, `NSArray`),
   measured 2026-11-03.
-- **A manifest without `allowed_origins` is accepted.** The origin check only
-  runs when the key is present. The manifest's `type` is decoded but not
-  checked.
 - **`DETOUR_NATIVE_MESSAGING_HOSTS_DIR` is compiled out of Release.** It is
   read on every lookup, not once, so a test can point it at a fixture
   in-process.
@@ -517,3 +560,6 @@ evidence for. There is no level between notice and error to use:
 [^task-242]: A one-shot sendNativeMessage with a non-object message leaks the host and never settles
 [^task-256]: Extensions: a port's onDisconnect fires in the context that called port.disconnect()
 [^webkit-325256]: WebKit 325256@main: Port.disconnect() fires onDisconnect on the port that called it
+[^task-266]: Native messaging: a host manifest without allowed_origins admits every extension
+[^chromium-launcher]: Chromium native_process_launcher.cc and native_messaging_host_manifest.cc (manifest checks, their order and result codes)
+[^manifest-tests]: NativeHostManifestValidationTests.swift
