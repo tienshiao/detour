@@ -196,6 +196,55 @@ nonisolated final class ExtensionPageUndoTests: XCTestCase {
         XCTAssertFalse(f.store.canReopenClosedTab(in: f.space))
     }
 
+    // MARK: - Close Peek (TASK-307)
+
+    /// A Peek of `url` on `host`, closed by the user: recorded, then gone.
+    @MainActor private func closePeek(of url: URL, on host: BrowserTab, _ f: Fixture) {
+        let peek = BrowserTab(id: UUID(), title: "Options", url: url, faviconURL: nil,
+                              cachedInteractionState: Data("dead origin state".utf8), spaceID: UUID())
+        peek.spaceID = nil
+        host.peekTab = peek
+        f.store.undoManager.removeAllActions()
+        f.store.recordClosedPeek(peek, host: host, in: f.space)
+        host.clearPeekState()
+        peek.teardown()
+    }
+
+    @MainActor func testUndoClosePeekAfterAContextReloadPutsItBackOnTheNewBase() async throws {
+        let f = try await makeFixture()
+        defer { teardownTabs(f) }
+        let host = sleepingTab(try XCTUnwrap(URL(string: "https://host.example/")), in: f.space)
+        f.space.tabs.append(host)
+        let url = try extensionPageURL("options.html?q=1#frag", on: f.base)
+        closePeek(of: url, on: host, f)
+        let newBase = try reloadContext(f.ext, in: f.profile, from: f.base)
+
+        f.store.undoManager.undo()
+
+        XCTAssertEqual(f.space.tabs.map(\.id), [host.id], "back on its host, not as a tab")
+        XCTAssertEqual(host.peekURL, rewriteExtensionPageURL(url, from: f.base, to: newBase))
+        XCTAssertNil(host.peekInteractionState, "the back/forward list is on the dead origin")
+        XCTAssertTrue(f.store.closedTabRecords(in: f.space).isEmpty)
+    }
+
+    @MainActor func testUndoClosePeekOfADisabledExtensionRestoresNothingAndKeepsTheRecord() async throws {
+        let f = try await makeFixture()
+        defer { teardownTabs(f) }
+        let host = sleepingTab(try XCTUnwrap(URL(string: "https://host.example/")), in: f.space)
+        f.space.tabs.append(host)
+        let url = try extensionPageURL("options.html", on: f.base)
+        closePeek(of: url, on: host, f)
+        f.db.setProfileExtensionEnabled(extensionID: f.ext.id, profileID: f.profile.id.uuidString, enabled: false)
+        _ = f.profile.unloadExtension(id: f.ext.id)
+
+        f.store.undoManager.undo()
+
+        XCTAssertNil(host.peekURL, "no Peek of a page nothing can show")
+        XCTAssertEqual(f.space.tabs.map(\.id), [host.id], "and no dead tab")
+        XCTAssertEqual(f.store.closedTabRecords(in: f.space).map(\.url), [url.absoluteString],
+                       "the record stays for a reopen after a later enable")
+    }
+
     @MainActor func testUndoCloseTabOfAnUninstalledExtensionRestoresNothing() async throws {
         let f = try await makeFixture()
         defer { teardownTabs(f) }

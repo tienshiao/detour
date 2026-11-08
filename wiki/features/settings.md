@@ -242,7 +242,7 @@ section title is 12 pt semibold, like System Settings' group headers.
 
 | Pane | Content height (examples measured 2026-10-24) | Opened by |
 |---|---|---|
-| General | 90, fixed | Detour > Settings… (Cmd+,), which opens whatever pane was last shown |
+| General | 164, fixed (with the Peek section, 2026-11-08) | Detour > Settings… (Cmd+,), which opens whatever pane was last shown |
 | Spaces | 400 minimum; 628 with 19 spaces | the sidebar's add-space and edit-space actions (`showSpacesPane(selectSpaceID:)`), the Spaces menu's Manage Spaces… (`openSpacesSettings`) |
 | Links | 400 minimum (no routes); 743 with 5 routes (measured before the Quick Detour section came and went); capped (1242 on a 1410 pt screen) with 12 routes, then the route list scrolls (177 pt of list at 400, 129 pt at a 352 pt cap, 2026-10-27) | toolbar; Open Links Settings… in the blocked space-deletion alert (`showLinksPane(highlightingSpaceID:)`) |
 | Quick Detour | 248, fixed (with the Debug build's warning line, 2026-10-27) | toolbar only |
@@ -256,10 +256,15 @@ sections) and Extensions (one column in the pane's scroll view).
 
 ## General
 
-One control: "Set as Default Browser". It calls
+Two sections. **Default Browser**: "Set as Default Browser", which calls
 `NSWorkspace.setDefaultApplication(at:toOpenURLsWithScheme:)` for `http` and
 `https`, and reports the current state by asking which application would open
-`https://example.com`.
+`https://example.com`. **Peek** (TASK-307): the checkbox "Open links from
+pinned tabs and favorites in a Peek" (`PeekSettings`, app-wide, on by
+default) with the help "Off, links to other sites from pinned tabs and
+favorites open in new tabs. Shift-click still opens a Peek." The stack is
+pinned to the body's full width so the help wraps at the pane's width
+([Peek](../tabs/peek.md#when-a-link-opens-in-a-peek)).
 
 ## Spaces
 

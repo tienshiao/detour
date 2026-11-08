@@ -150,16 +150,33 @@ extension BrowserWindowController: WKNavigationDelegate {
             let routed = routedDecision(for: inPageLinkRequest(for: navigationAction, to: url, in: webView,
                                                                entry: Self.linkRoutingEntry(for: navigationAction)))
             var peekHost: BrowserTab?
+            var opensTabFrom: BrowserTab?
             if let space = activeSpace,
                let tab = peekHostTab(firing: webView),
                let anchorURL = PeekAnchor.anchorURL(forTabID: tab.id,
                                                     pinnedEntries: space.pinnedEntries,
-                                                    favorites: space.profile?.favorites ?? []),
-               PeekAnchor.shouldPeek(anchorURL: anchorURL, to: url,
-                                     opensNewWindow: navigationAction.targetFrame == nil) {
-                peekHost = tab
+                                                    favorites: space.profile?.favorites ?? []) {
+                // With Peek turned off (TASK-307), a link that would have
+                // peeked opens a tab instead.
+                switch PeekAnchor.anchoredLinkAction(anchorURL: anchorURL, to: url,
+                                                     opensNewWindow: navigationAction.targetFrame == nil,
+                                                     peekEnabled: PeekSettings.shared.isEnabled) {
+                case .peek: peekHost = tab
+                case .newTab: opensTabFrom = tab
+                case .none: break
+                }
             }
             if performInPageLinkOutcome(for: url, routed: routed, peekHost: peekHost, firing: webView) {
+                return .cancel
+            }
+            if let opener = opensTabFrom, let space = activeSpace {
+                // A turn later, as a Peek is presented: the policy decision
+                // returns before the selection moves.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    let tab = self.store.addTab(in: space, url: url, parentID: opener.id)
+                    if space.id == self.activeSpaceID { self.selectTab(id: tab.id) }
+                }
                 return .cancel
             }
         }

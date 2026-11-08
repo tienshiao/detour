@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: Session database
-description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v22, and the GRDB record types.
+description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v23, and the GRDB record types.
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
@@ -149,6 +149,7 @@ migration.
 | v20 | `linkRoute` and `linkRouteDefault` (TASK-191.1). Tested against a database migrated to v19. |
 | v21 | `siteSearch`, seeded with the starter set in SQL, once (TASK-287; [site search](../features/site-search.md)). Tested against a database migrated to v20. |
 | v22 | `siteSearch.isDiscovered` (default false) and `siteSearchRemovedHost` (TASK-288, OpenSearch discovery). Tested against a database migrated to v21. |
+| v23 | `closedTab.peekHostTabID` (TASK-307): a closed Peek's host tab, nil for closed tabs ([closed tabs](../tabs/closed-tabs-and-archive.md#closed-peeks)). Tested against a database migrated to v22. |
 
 Patterns worth copying from the existing migrations:
 

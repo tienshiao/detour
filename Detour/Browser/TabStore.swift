@@ -4866,6 +4866,16 @@ class TabStore {
         appDB.deleteClosedTab(id: recordID)
         notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
 
+        // A closed Peek (TASK-307) comes back on its host when it can; the
+        // host is what the caller selects then, which presents the Peek.
+        if let hostID = record.peekHostTabID.flatMap(UUID.init(uuidString:)) {
+            return reopenClosedPeek(ClosedPeek(url: record.url.flatMap { URL(string: $0) }, title: record.title,
+                                               faviconURL: record.faviconURL.flatMap { URL(string: $0) },
+                                               interactionState: record.interactionState, hostTabID: hostID,
+                                               sortOrder: record.sortOrder),
+                                    page: page, in: space)
+        }
+
         guard let tab = restoredTab(
             url: record.url.flatMap { URL(string: $0) },
             title: record.title,
@@ -4878,6 +4888,114 @@ class TabStore {
             min(record.sortOrder, space.tabs.count),
             groupIDs: space.tabs.map(\.splitGroupID)
         )
+        space.tabs.insert(tab, at: insertionIndex)
+        subscribeToTab(tab)
+        notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertionIndex, in: space) }
+        scheduleSave()
+        return tab
+    }
+
+    // MARK: - Closed Peeks (TASK-307)
+
+    /// What a closed Peek leaves behind to come back from.
+    struct ClosedPeek {
+        let url: URL?
+        let title: String
+        let faviconURL: URL?
+        /// The Peek web view's interaction state: its back/forward list and
+        /// scroll position.
+        let interactionState: Data?
+        let hostTabID: UUID
+        /// Where it comes back as a tab when the host is gone: just after the
+        /// host in the normal section, or at the top for a pinned or favourite
+        /// host.
+        let sortOrder: Int
+    }
+
+    /// Records a Peek the user closed (the Close button, Escape, Cmd+W on the
+    /// Peek, a click outside), so Undo and Reopen Closed Tab bring it back as
+    /// they do a closed tab: a `closedTab` row naming its host
+    /// (`peekHostTabID`), and an undo action "Close Peek". Like a tab's, a
+    /// Private window's Peek writes no row but can still be undone. Called
+    /// before the Peek is torn down. Hiding a Peek (a tab or space switch) and
+    /// expanding it into a tab or a split are not closes and record nothing.
+    func recordClosedPeek(_ peek: BrowserTab, host: BrowserTab, in space: Space) {
+        guard let url = peek.url else { return }
+        let closed = ClosedPeek(
+            url: url, title: peek.title, faviconURL: peek.faviconURL,
+            interactionState: peek.currentInteractionStateData(), hostTabID: host.id,
+            sortOrder: space.tabs.firstIndex { $0.id == host.id }.map { $0 + 1 } ?? 0)
+        let recordTabID = peek.id.uuidString
+        let extensionID = space.profile?.extensionID(forPageURL: url)
+        let pushedRecord = !space.isIncognito
+        if pushedRecord {
+            appDB.pushClosedTab(ClosedTabRecord(
+                id: nil, tabID: recordTabID, spaceID: space.id.uuidString, url: url.absoluteString,
+                title: closed.title, faviconURL: closed.faviconURL?.absoluteString,
+                interactionState: closed.interactionState, sortOrder: closed.sortOrder,
+                archivedAt: nil, closedAt: Date().timeIntervalSince1970, extensionID: extensionID,
+                peekHostTabID: host.id.uuidString))
+            notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
+        }
+        registerUndo(actionName: "Close Peek") { [weak self] in
+            guard let self else { return }
+            // As for a closed tab: a record consumed since (Reopen Closed Tab,
+            // the Archived Tabs page) or deleted leaves nothing to undo.
+            if pushedRecord, !self.appDB.hasClosedTab(tabID: recordTabID) { return }
+            // A page of an extension disabled or uninstalled since cannot come
+            // back: the undo does nothing and leaves the record to Reopen
+            // Closed Tab, which skips or discards it (as a closed tab's does).
+            let page = self.classifyCapturedPage(url: url, extensionID: extensionID, in: space)
+            switch page {
+            case .disabled, .unavailable: return
+            case .notExtensionPage, .restorable: break
+            }
+            if pushedRecord {
+                self.appDB.deleteClosedTab(tabID: recordTabID)
+                self.notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
+            }
+            guard let shown = self.reopenClosedPeek(closed, page: page, in: space) else { return }
+            // The window on this space selects the host (which presents the
+            // Peek) or the tab it came back as.
+            NotificationCenter.default.post(name: .tabRestoredByUndo, object: nil,
+                                            userInfo: ["tabID": shown.id, "spaceID": space.id])
+        }
+    }
+
+    /// Brings a closed Peek back. On its host — a live tab of `space`, pinned
+    /// entry or favourite with no Peek of its own — it is put back as the
+    /// host's parked Peek (`peekURL`, `peekInteractionState`), which selecting
+    /// the host presents with its page and scroll position
+    /// (`restorePeekOverlayIfNeeded`), and the host is returned. Otherwise (the
+    /// host closed, gone dormant, or showing another Peek) it comes back as a
+    /// tab where the Peek was closed, which is returned. Nil when nothing can
+    /// show it (an extension page whose extension is gone).
+    private func reopenClosedPeek(_ closed: ClosedPeek, page: PersistedExtensionPage, in space: Space) -> BrowserTab? {
+        let hosts = space.tabs + space.pinnedEntries.compactMap(\.tab) + (space.profile?.favorites.compactMap(\.tab) ?? [])
+        if let url = closed.url, let host = hosts.first(where: { $0.id == closed.hostTabID }),
+           host.peekTab == nil, host.peekURL == nil {
+            switch page {
+            case .notExtensionPage:
+                host.peekURL = url
+                host.peekInteractionState = closed.interactionState
+            case .restorable(let extensionID, let originHost):
+                // As `restoredTab` does for a tab: an extension page comes back
+                // on its extension's live origin, and its back/forward list is
+                // on the dead one.
+                host.peekURL = liveExtensionPageURL(url, extensionID: extensionID, originHost: originHost, in: space)
+                host.peekInteractionState = nil
+            case .disabled, .unavailable:
+                return nil
+            }
+            host.peekFaviconURL = closed.faviconURL
+            host.downloadPeekFavicon()
+            scheduleSave()
+            return host
+        }
+        guard let tab = restoredTab(url: closed.url, title: closed.title, faviconURL: closed.faviconURL,
+                                    interactionState: closed.interactionState, page: page, in: space) else { return nil }
+        let insertionIndex = snappedToSplitGroupBoundary(min(closed.sortOrder, space.tabs.count),
+                                                         groupIDs: space.tabs.map(\.splitGroupID))
         space.tabs.insert(tab, at: insertionIndex)
         subscribeToTab(tab)
         notifyObservers { $0.tabStoreDidInsertTab(tab, at: insertionIndex, in: space) }

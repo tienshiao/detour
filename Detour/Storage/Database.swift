@@ -576,7 +576,7 @@ nonisolated struct AppDatabase: Sendable {
             var request = ClosedTabSummary.select(
                 Column("id"), Column("tabID"), Column("spaceID"), Column("url"),
                 Column("title"), Column("faviconURL"), Column("sortOrder"),
-                Column("archivedAt"), Column("closedAt"), Column("extensionID"))
+                Column("archivedAt"), Column("closedAt"), Column("extensionID"), Column("peekHostTabID"))
             if let spaceID {
                 request = request.filter(Column("spaceID") == spaceID)
             }
@@ -594,7 +594,7 @@ nonisolated struct AppDatabase: Sendable {
             try ClosedTabSummary.select(
                 Column("id"), Column("tabID"), Column("spaceID"), Column("url"),
                 Column("title"), Column("faviconURL"), Column("sortOrder"),
-                Column("archivedAt"), Column("closedAt"), Column("extensionID"))
+                Column("archivedAt"), Column("closedAt"), Column("extensionID"), Column("peekHostTabID"))
                 .filter(Column("id") == id)
                 .fetchOne(db)
         }
@@ -1454,6 +1454,13 @@ nonisolated struct AppDatabase: Sendable {
             try db.create(table: "siteSearchRemovedHost") { t in
                 t.primaryKey("host", .text)
             }
+        }
+
+        migrator.registerMigration("v23") { db in
+            // TASK-307: a closed Peek is a closed-tab row naming the tab it was
+            // peeked from, so Undo and Reopen Closed Tab bring it back as a
+            // Peek on that tab while it is open. Nil for every other row.
+            try db.alter(table: "closedTab") { t in t.add(column: "peekHostTabID", .text) }
         }
 
         return migrator

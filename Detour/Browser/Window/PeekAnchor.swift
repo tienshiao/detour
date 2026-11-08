@@ -86,4 +86,59 @@ enum PeekAnchor {
     static func shouldPeekScriptedWindow(to target: URL, wantsPopup: Bool) -> Bool {
         !wantsPopup && target.host != nil
     }
+
+    // MARK: - The Peek setting (TASK-307)
+
+    /// What a link activation on an anchored tab does, with the app-wide
+    /// Peek setting (`PeekSettings.isEnabled`) taken into account.
+    enum AnchoredLinkAction: Equatable {
+        /// Nothing special: navigate in place, or — for a `target="_blank"`
+        /// link — let WebKit open its new window, which becomes a tab.
+        case none
+        /// Open it in a Peek.
+        case peek
+        /// Open it in a new tab: a plain link that would have peeked, with
+        /// Peek turned off. Navigating in place would take the pinned tab or
+        /// favourite off its site, which is what the Peek was there to stop.
+        case newTab
+    }
+
+    /// `shouldPeek`, then the setting. With Peek off, a link that would have
+    /// peeked opens a new tab instead: a plain link through `.newTab`, a
+    /// `_blank` link by being left to WebKit's new window (`createWebViewWith`,
+    /// where `scriptedWindowPeeks` lets it through too). Shift-click is not an
+    /// auto-peek and is not asked here: it always peeks.
+    static func anchoredLinkAction(anchorURL: URL, to target: URL, opensNewWindow: Bool,
+                                   peekEnabled: Bool) -> AnchoredLinkAction {
+        guard shouldPeek(anchorURL: anchorURL, to: target, opensNewWindow: opensNewWindow) else { return .none }
+        if peekEnabled { return .peek }
+        return opensNewWindow ? .none : .newTab
+    }
+
+    /// `shouldPeekScriptedWindow`, then the setting: with Peek off, the
+    /// page's window opens as a tab, as it would from an ordinary tab.
+    static func scriptedWindowPeeks(to target: URL, wantsPopup: Bool, peekEnabled: Bool) -> Bool {
+        peekEnabled && shouldPeekScriptedWindow(to: target, wantsPopup: wantsPopup)
+    }
+}
+
+/// The app-wide Peek setting (Settings > General, TASK-307), in the data
+/// directory's defaults suite (`UserDefaultsScope.defaults`). On until turned
+/// off. Off, links that would open a Peek on their own — from pinned tabs and
+/// favourites to other sites, `target="_blank"` links and `window.open` from
+/// them — open as tabs; Shift-click, an explicit request, still peeks.
+final class PeekSettings {
+    static let enabledKey = "PeekEnabled"
+    static let shared = PeekSettings(defaults: UserDefaultsScope.defaults)
+
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults) {
+        self.defaults = defaults
+    }
+
+    var isEnabled: Bool {
+        get { defaults.object(forKey: Self.enabledKey) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Self.enabledKey) }
+    }
 }

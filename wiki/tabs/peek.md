@@ -51,6 +51,9 @@ sources:
   - id: task-306
     resource: backlog:TASK-306
     title: "History: record pages viewed in a Peek"
+  - id: task-307
+    resource: backlog:TASK-307
+    title: "Peek: Cmd+O opens the Peek as a tab, a setting turns Peek off, and Shift+Cmd+T / Cmd+Z reopen a closed Peek"
   - id: harness-185
     resource: ../../docs/harness/task185-harness.patch
     title: TASK-185 runtime harness and its results
@@ -61,8 +64,11 @@ sources:
 A Peek shows a page in a rounded panel over the current tab, dimming what is
 behind it. It is for following a link without leaving, or losing, the page you
 were on. Escape, Cmd+W, the close button or a click outside the panel dismiss
-it; the expand button turns it into a normal tab, and the split button puts its
-page beside the host in a [split](./split-tabs.md).
+it, and Edit > Undo (Cmd+Z) or Reopen Closed Tab (Shift+Cmd+T) bring it back;
+the expand button, or File > Open Peek in New Tab (Cmd+O), turns it into a
+normal tab, and the split button puts its page beside the host in a
+[split](./split-tabs.md). Settings > General can turn the automatic Peeks off
+(TASK-307).
 
 # When a link opens in a Peek
 
@@ -72,6 +78,18 @@ page beside the host in a [split](./split-tabs.md).
 | A plain link click | a live [pinned tab](./pinned-tabs-and-folders.md) or [favourite](./favorites.md) | the target's host differs from the anchor's host |
 | A `target="_blank"` link | pinned tab or favourite | the target has a host, **same host included** |
 | Script `window.open` | pinned tab or favourite | tab-style (no popup features) and the target has a host |
+
+Everything but Shift+click is an **auto-peek**, and Settings > General >
+Peek ("Open links from pinned tabs and favorites in a Peek", app-wide, on by
+default, `PeekSettings`, defaults key `PeekEnabled`) turns those off
+(TASK-307). Off, `PeekAnchor.anchoredLinkAction(anchorURL:to:opensNewWindow:peekEnabled:)`
+answers `.newTab` for a plain link that would have peeked: the policy cancels
+it and opens it in a new tab after the anchored one, selected, a turn later
+(navigating in place would take the pinned tab off its site). A `_blank`
+link gets `.none` and `scriptedWindowPeeks(…peekEnabled: false)` lets its
+`createWebViewWith` (and a tab-style `window.open`) through, so WebKit's new
+window becomes a tab as it would from an ordinary tab. Shift+click is an
+explicit request and still peeks. A Link Route still wins over all of this.
 
 "Anchored" tabs are the backing tabs of pinned entries and favourites. The
 anchor is `PinnedEntry.pinnedURL` or `Favorite.url`, resolved by
@@ -249,6 +267,45 @@ switcher uses it to draw the Peek on the host's card
   - The Peek is never a member: it hands its page over and is gone.
 - Closing or removing the host tears the Peek down with it
   (`BrowserTab.teardown()` cascades).
+- **Cmd+O** is File > Open Peek in New Tab: the same `expandPeekToNewTab`.
+  The File menu has one Cmd+O item, whose action is
+  `openInDefaultSpace(_:)`: a Quick Detour answers it with Open in <Space>
+  (unchanged), a browser window with the Peek's expand, and each window's
+  `validateMenuItem` names it. In a browser window it reads "Open Peek in
+  New Tab" and is enabled only while a Peek is presented; otherwise it keeps
+  the Quick Detour title, disabled, as before. The File menu is not
+  delegate-driven, so AppKit matches the key natively
+  (`MenuKeyEquivalentMatcher` is not involved).
+
+## Closed Peeks come back (TASK-307)
+
+A Peek the **user** closes is recorded like a closed tab:
+`closePeekOverlayByUser` (the Close button, a click outside the panel,
+Escape, Cmd+W) calls `TabStore.recordClosedPeek` before `closePeekOverlay`.
+It writes a [closed-tab record](./closed-tabs-and-archive.md) of the host's
+space with the Peek's URL, title, favicon and interaction state (back/forward
+list and scroll position), `sortOrder` just after the host, and
+`peekHostTabID` = the host's id (migration v23), and registers the undo
+"Close Peek". A Private window's Peek writes no row but can still be undone,
+as a Private tab's close can.
+
+Not closes, and not recorded: hiding the Peek (a tab or space switch, a
+window losing the web view), parking it (the host sleeps), expanding it
+into a tab or a split pane, replacing it with another Peek, and an
+extension's `tabs.remove` (that path calls `closePeekOverlay` directly).
+
+Every way back goes through `reopenClosedPeek`: Reopen Closed Tab, the
+Archived Tabs page (`reopenClosedTabRecord` sees `peekHostTabID`) and the
+undo. If the host is still a live tab of the space (normal, pinned or
+favourite) with no Peek of its own, the Peek is put back as the host's
+**parked** state (`peekURL`, `peekInteractionState`, `peekFaviconURL`) and
+the host is returned; selecting it (the caller does, or for an undo the
+`.tabRestoredByUndo` notification) presents the Peek through
+`restorePeekOverlayIfNeeded`, rebuilt from that state, so its page and
+scroll position come back. Otherwise (host closed or dormant, or showing
+another Peek) the page comes back as a tab at the record's position. A
+consumed record makes the undo do nothing, as for tabs. The undo registers
+no redo.
 
 ## Extensions
 
@@ -298,8 +355,23 @@ through save and restore), `FavoriteTileBadgeTests`,
 `ExtensionActiveTabTests` (a real window presenting and closing a Peek),
 `ExtensionTabLifecycleTests` (park closes the registration),
 `SplitOpeningTests` (the store half of Open in Split View: the web view kept,
-the button's rule), `PeekHistoryTests` (history under the host's space, the
+the button's rule), `ClosedPeekTests` (the record, Private, reopen with the
+host open, gone or busy, a pinned host, the archive page, undo and a consumed
+record, the v23 migration), `PeekWindowCommandsTests` (Cmd+O's validation and
+expand, Undo in a real window, the extension close not recorded),
+`PeekAnchorTests` (also the setting's effect on the auto-peek rule and
+`PeekSettings`), `PeekHistoryTests` (history under the host's space, the
 Private exclusions, no second recording after expanding, TASK-306).
+
+Checked at runtime (TASK-307, Nov 8 2026, posted keys and clicks): Cmd+O
+with a Peek up opened it as a tab and the File item read "Open Peek in New
+Tab" (disabled, with the Quick Detour title, otherwise); a Peek scrolled to
+1500 px came back at 1500 px after Escape then Cmd+Z, and after a click
+outside then Shift+Cmd+T; with its host closed it came back as a tab; with
+the setting off a plain cross-host link and a `_blank` link in a pinned tab
+opened tabs while Shift+click peeked, and on again the plain link peeked; in
+a Private window Escape then Cmd+Z brought the Peek back and Reopen Closed
+Tab had nothing; a Quick Detour's Cmd+O still moved it into its space.
 
 Checked at runtime (TASK-306, Nov 8 2026): a Shift-clicked link's page and a
 link followed inside the Peek were both on the History page and in

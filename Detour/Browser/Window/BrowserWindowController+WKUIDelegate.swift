@@ -55,7 +55,8 @@ extension BrowserWindowController: WKUIDelegate {
             if let host = peekHostTab(firing: webView),
                PeekAnchor.anchorURL(forTabID: host.id, pinnedEntries: space.pinnedEntries,
                                     favorites: space.profile?.favorites ?? []) != nil,
-               PeekAnchor.shouldPeekScriptedWindow(to: url, wantsPopup: wantsPopup) {
+               PeekAnchor.scriptedWindowPeeks(to: url, wantsPopup: wantsPopup,
+                                              peekEnabled: PeekSettings.shared.isEnabled) {
                 peekHost = host
             }
             if performInPageLinkOutcome(for: url, routed: routed, peekHost: peekHost, firing: webView) {

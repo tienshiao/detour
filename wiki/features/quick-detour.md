@@ -569,8 +569,10 @@ the title bar: its main part, **Open in 💼 Work ⌘O**, moves the page to the
 space it names; its chevron opens the dropdown. File > Open Quick Detour in
 Space (⌘O) does what the main part does while a Quick Detour is key, its
 title then naming the target ("Open in 💼 Work"; `validateMenuItem`, put
-back to the general title when the window resigns key); with any other
-window key nothing answers it and it is disabled.
+back to the general title when the window resigns key). Since TASK-307 a
+browser window answers the same item too: "Open Peek in New Tab" while a
+[Peek](../tabs/peek.md) is up, otherwise the general title, disabled; with
+any other window key nothing answers it and it is disabled.
 
 ### Which space the button names
 

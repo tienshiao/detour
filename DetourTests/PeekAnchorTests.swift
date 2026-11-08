@@ -200,4 +200,54 @@ nonisolated final class PeekAnchorTests: XCTestCase {
     @MainActor func testHostlessScriptedWindowDoesNotPeek() {
         XCTAssertFalse(PeekAnchor.shouldPeekScriptedWindow(to: url("about:blank"), wantsPopup: false))
     }
+
+    // MARK: - The Peek setting (TASK-307)
+
+    @MainActor func testWithPeekOnAnAnchoredLinkPeeks() {
+        let anchor = url("https://mail.example.com/")
+        XCTAssertEqual(PeekAnchor.anchoredLinkAction(anchorURL: anchor, to: url("https://other.example.org/"),
+                                                     opensNewWindow: false, peekEnabled: true), .peek)
+        XCTAssertEqual(PeekAnchor.anchoredLinkAction(anchorURL: anchor, to: url("https://mail.example.com/x"),
+                                                     opensNewWindow: true, peekEnabled: true), .peek)
+    }
+
+    @MainActor func testWithPeekOffACrossHostLinkOpensANewTab() {
+        XCTAssertEqual(PeekAnchor.anchoredLinkAction(anchorURL: url("https://mail.example.com/"),
+                                                     to: url("https://other.example.org/"),
+                                                     opensNewWindow: false, peekEnabled: false), .newTab)
+    }
+
+    /// A `_blank` link is left to WebKit's new window, which becomes a tab.
+    @MainActor func testWithPeekOffABlankLinkIsLeftToItsNewWindow() {
+        XCTAssertEqual(PeekAnchor.anchoredLinkAction(anchorURL: url("https://mail.example.com/"),
+                                                     to: url("https://other.example.org/"),
+                                                     opensNewWindow: true, peekEnabled: false), .none)
+    }
+
+    /// What would not have peeked is untouched by the setting either way.
+    @MainActor func testTheSettingLeavesSameHostLinksAlone() {
+        for enabled in [true, false] {
+            XCTAssertEqual(PeekAnchor.anchoredLinkAction(anchorURL: url("https://mail.example.com/"),
+                                                         to: url("https://mail.example.com/inbox"),
+                                                         opensNewWindow: false, peekEnabled: enabled), .none)
+        }
+    }
+
+    @MainActor func testWithPeekOffAScriptedWindowOpensAsATab() {
+        XCTAssertTrue(PeekAnchor.scriptedWindowPeeks(to: url("https://zoom.us/j/1"), wantsPopup: false, peekEnabled: true))
+        XCTAssertFalse(PeekAnchor.scriptedWindowPeeks(to: url("https://zoom.us/j/1"), wantsPopup: false, peekEnabled: false))
+        XCTAssertFalse(PeekAnchor.scriptedWindowPeeks(to: url("https://a.example/"), wantsPopup: true, peekEnabled: true))
+    }
+
+    @MainActor func testPeekSettingIsOnUntilTurnedOff() throws {
+        let suite = "PeekAnchorTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = PeekSettings(defaults: defaults)
+        XCTAssertTrue(settings.isEnabled)
+        settings.isEnabled = false
+        XCTAssertFalse(PeekSettings(defaults: defaults).isEnabled, "kept in the defaults")
+        settings.isEnabled = true
+        XCTAssertTrue(PeekSettings(defaults: defaults).isEnabled)
+    }
 }

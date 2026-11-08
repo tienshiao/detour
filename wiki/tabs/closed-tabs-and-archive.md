@@ -6,6 +6,9 @@ tags: [tabs, closed-tabs, archive, undo, sidebar]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T19:00:00Z }
 sources:
+  - id: task-307
+    resource: backlog:TASK-307
+    title: "Peek: Cmd+O opens the Peek as a tab, a setting turns Peek off, and Shift+Cmd+T / Cmd+Z reopen a closed Peek"
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
     title: TabStore.swift (closeTab, reopenClosedTab, archiveEntries, restoreClosedTab)
@@ -110,6 +113,21 @@ never recorded. The listing knows the scopes of the live normal profiles
 reopens a Quick Detour window instead of a tab
 (`QuickDetourWindowController.restore`), Clear covers the scopes when no
 space filter is set, and deleting a profile deletes its rows.
+
+## Closed Peeks
+
+Since TASK-307 a [Peek](./peek.md#closed-peeks-come-back-task-307) the user
+closed is a row of the same table too: `spaceID` = the host's space,
+`peekHostTabID` = the host tab's id (v23; nil for every other row), the
+Peek's URL, title, favicon and interaction state, `sortOrder` just after the
+host. It is a plain close, so Reopen Closed Tab and the Archived Tabs page
+list and reopen it like a tab, through the same `reopenClosedTabRecord`,
+which hands a row with `peekHostTabID` to `reopenClosedPeek`: back on the
+host as its Peek while the host is a live tab of the space with no Peek,
+else as a tab. The returned tab is the host in the first case, which is what
+the callers select. Its undo ("Close Peek") follows the close-undo rules
+below. Private windows write none. `sessions.restore` from an extension
+returns the host for such a row.
 
 ## The database is the only store
 

@@ -2660,7 +2660,7 @@ class BrowserWindowController: NSWindowController {
     @objc func closeCurrentTab(_ sender: Any?) {
         // If peek overlay is showing, dismiss it instead of closing the tab
         if peekOverlayView != nil {
-            closePeekOverlay()
+            closePeekOverlayByUser()
             return
         }
 
@@ -2811,7 +2811,7 @@ class BrowserWindowController: NSWindowController {
     // raw keyDown or as cancelOperation, so both are overridden.
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53, peekOverlayView != nil { // Esc
-            closePeekOverlay()
+            closePeekOverlayByUser()
             return
         }
         // The page already saw this key and passed on it: end the chain here
@@ -2870,7 +2870,7 @@ class BrowserWindowController: NSWindowController {
 
     override func cancelOperation(_ sender: Any?) {
         if peekOverlayView != nil {
-            closePeekOverlay()
+            closePeekOverlayByUser()
         }
     }
 
@@ -3058,8 +3058,9 @@ class BrowserWindowController: NSWindowController {
         assertExtensionRegistered(peek, "the presented peek \(peek.id)")
         let overlay = PeekOverlayView(clickPoint: clickPoint, showsSplitButton: peekCanOpenInSplitView)
         overlay.translatesAutoresizingMaskIntoConstraints = false
+        // The Close button and a click outside the panel.
         overlay.onClose = { [weak self] in
-            self?.closePeekOverlay()
+            self?.closePeekOverlayByUser()
         }
         overlay.onExpand = { [weak self] in
             self?.expandPeekToNewTab()
@@ -3125,9 +3126,36 @@ class BrowserWindowController: NSWindowController {
         window?.makeFirstResponder(peekWebView)
     }
 
-    /// Closes and destroys the peek tab. Used when the user explicitly dismisses.
-    /// Also the close path `BrowserTab.close(for:)` uses when an extension
-    /// removes a presented peek.
+    /// The user closed the presented Peek: the Close button, a click outside
+    /// the panel, Escape or Cmd+W. It is recorded like a closed tab first, so
+    /// Edit > Undo and Reopen Closed Tab bring it back (TASK-307). The other
+    /// ways a Peek goes — hidden by a tab or space switch, expanded into a tab
+    /// or a split, replaced, removed by an extension — are not closes the user
+    /// can take back, and go through `closePeekOverlay` (or none) directly.
+    func closePeekOverlayByUser() {
+        if peekOverlayView != nil, let host = selectedTab, let peek = host.peekTab, let space = activeSpace {
+            store.recordClosedPeek(peek, host: host, in: space)
+        }
+        closePeekOverlay()
+    }
+
+    /// File > Open Peek in New Tab (Cmd+O, TASK-307): the presented Peek
+    /// becomes a tab, as its Open in New Tab button does. The File menu has one
+    /// Cmd+O item whose action is this selector: a Quick Detour answers it with
+    /// Open in Space (`QuickDetourWindowController.openInDefaultSpace`), a
+    /// browser window with this, and `validateMenuItem` names the item for the
+    /// window in front.
+    @objc func openInDefaultSpace(_ sender: Any?) {
+        guard peekOverlayView != nil else { return }
+        expandPeekToNewTab()
+    }
+
+    /// The Cmd+O item's title in a browser window with a Peek up.
+    static let openPeekInNewTabMenuItemTitle = "Open Peek in New Tab"
+
+    /// Closes and destroys the peek tab. Used when the user explicitly dismisses
+    /// (through `closePeekOverlayByUser`), and the close path
+    /// `BrowserTab.close(for:)` uses when an extension removes a presented peek.
     func closePeekOverlay() {
         guard let overlay = peekOverlayView else { return }
         let tab = selectedTab
@@ -3346,6 +3374,13 @@ extension BrowserWindowController: NSMenuItemValidation {
             }
             menuItem.title = store.undoManager.redoMenuItemTitle
             return store.undoManager.canRedo
+        }
+        if menuItem.action == #selector(openInDefaultSpace(_:)) {
+            // One Cmd+O item for two windows (TASK-307): with no Peek up it
+            // keeps the Quick Detour title, disabled, as before.
+            let hasPeek = peekOverlayView != nil
+            menuItem.title = hasPeek ? Self.openPeekInNewTabMenuItemTitle : QuickDetourWindowController.openInMenuItemTitle
+            return hasPeek
         }
         if menuItem.action == #selector(showArchivedTabs(_:)) {
             return !isIncognito

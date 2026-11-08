@@ -19,6 +19,10 @@ struct ClosedTabRecord: Codable, FetchableRecord, PersistableRecord {
     var closedAt: Double?
     /// Extension id of the extension page the record's URL names (TASK-24); nil otherwise.
     var extensionID: String? = nil
+    /// For a closed Peek (TASK-307), the id of the tab it was peeked from:
+    /// reopening brings it back as that tab's Peek while the tab is open, else
+    /// as a tab. Nil for a closed tab.
+    var peekHostTabID: String? = nil
 }
 
 /// A closedTab row without its interactionState blob — what menu validation,
@@ -36,4 +40,5 @@ struct ClosedTabSummary: Codable, FetchableRecord, TableRecord {
     var archivedAt: Double?
     var closedAt: Double?
     var extensionID: String?
+    var peekHostTabID: String?
 }
