@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T07:14:00Z'
+updated_date: '2026-11-08T07:19:00Z'
 labels:
   - website
 dependencies: []
@@ -68,6 +68,8 @@ Not done yet: criterion 4 (http -> https redirect: Cloudflare Always Use HTTPS, 
 Nov 7 2026: user turned on Always Use HTTPS. http://detourbrowser.com/, /sitemap.xml and /assets/favicon.svg now answer 301 to the same https path. Criterion 4 waits only on the deploy (the live page still has the old http canonical/OG URLs).
 
 Nov 7 2026: pushed website 0c266e2 (9389482..0c266e2) and deployed from a clean git-archive export (npm ci + astro build, Node 24.22.1, wrangler@4 deploy; version 7dfa69f4-872c-40f4-a7e0-f1f86fcb8808). Live https://detourbrowser.com: canonical, og:url, og:image https; v0.4.0 pill; sitemap.xml lists https://detourbrowser.com/ with lastmod; robots.txt ends with the https Sitemap line; styles.css, script.js, spaces.mp4, split.webp, the dark screenshot and favicon answer 200. Noticed: Cloudflare's managed robots.txt is prepended to ours (Content-Signal search=yes, ai-train=no; blocks ClaudeBot, GPTBot, Google-Extended, Baiduspider and other crawlers). That is a zone setting predating this task; relevant to TASK-292.12.
+
+Nov 7 2026, after Done: the website repo has Cloudflare's Git integration (Workers Builds: npm ci, then npx wrangler deploy, no build step). The first push after the Astro move failed there (assets directory dist/ missing); the manual deploy stayed live. Fixed in website 8893dd2: wrangler.jsonc build.command = npm run build (checked with wrangler deploy --dry-run in a clean export without dist/). The Git build of 8893dd2 deployed (version 552d7523, 07:17:45Z); live page still https canonical, v0.4.0, sitemap ok. Every push to the website's main now deploys; publish-release.sh also deploys the same commit (harmless duplicate).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
