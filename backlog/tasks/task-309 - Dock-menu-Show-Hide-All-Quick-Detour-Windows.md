@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T10:04:00Z'
-updated_date: '2026-11-08T10:46:00Z'
+updated_date: '2026-11-08T11:18:00Z'
 labels:
   - quick-detour
   - menus
@@ -59,6 +59,8 @@ Implemented (Nov 8 2026, @claude):
 - Runtime (/verify, DETOUR_DATA_DIR=DetourB8-309-1, temporary DEBUG harness calling NSApp.delegate.applicationDockMenu(NSApp) and performing its item): none open -> Dock menu New Window, New Private Window only; two Default + one Private Quick Detour open -> 'Hide All Quick Detour Windows'; chosen -> all three not visible, still open, menu reads 'Show All ...'; a fourth opened -> shown, the others stayed hidden, menu reads 'Hide All ...'; chosen -> all four hidden; 'Show All' -> all four visible, the newest frontmost; all closed -> item gone. Full-screen captures before and after the hide confirm the windows left the screen. Not checked at runtime: minimized windows, the app hidden with Cmd-H (rule unit-tested only for minimized). Defaults keys and data dir removed; the WebKit store directories under ~/Library/WebKit/com.detourbrowser.mac/ left.
 - Website facts for AC #4 (Quick Detour page: move from 'Not in Detour' to the how-to steps): Right-click (or Control-click) Detour's icon in the Dock and choose 'Hide All Quick Detour Windows' to tuck every open Quick Detour away (Private ones too); they stay open with their pages. The item then reads 'Show All Quick Detour Windows' and brings them all back. It only appears while a Quick Detour is open. A Quick Detour opened while the others are hidden shows on its own; the others stay hidden until Show All. Hidden Quick Detours still close after the idle time set in Settings > Quick Detour, as ones behind other windows do. Quarantine windows are not affected.
 Website AC pending (held for release).
+
+Website: updated Quick Detour (/features/quick-detour/: new 'Hide them all at once' how-to for Hide All / Show All Quick Detour Windows; Arc box moved from Not in Detour to Same) on website branch next-release (3e3a2cb), held for the release
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

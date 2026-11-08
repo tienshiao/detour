@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T08:40:00Z'
-updated_date: '2026-11-08T09:00:00Z'
+updated_date: '2026-11-08T11:18:00Z'
 labels:
   - private
   - privacy
@@ -67,4 +67,6 @@ Tests: new PrivateSessionResetTests (6): cookie and every data record gone after
 /verify (Debug build of this change, isolated DETOUR_DATA_DIR DetourVerify298, temporary harness, patch kept at docs/harness/task298-harness.patch): on https://example.com in real Private windows, cookie and localStorage set in window 1 were visible in window 2 and after window 2 closed (session live); closing window 1 started the reset; a new Private window saw neither (" | none"). Same run with the reset hook removed (DetourVerify298b): the new window still saw "t298=one | one". Defaults keys and data dirs of both runs removed.
 
 Open: criterion 7 (website Private Browsing page and home grid line) is to change with the release that ships this fix; until then they describe v0.4.0.
+
+Website: updated Private Browsing (lede, description, FAQ, body, table, extensions: cleared when the last Private window or Private Quick Detour closes), the Quarantine comparison, Web Extensions' Allow in Private line and the home grid line on website branch next-release (3db4d97), held for the release
 <!-- SECTION:NOTES:END -->

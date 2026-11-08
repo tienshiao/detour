@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T08:41:00Z'
-updated_date: '2026-11-08T10:34:00Z'
+updated_date: '2026-11-08T11:18:00Z'
 labels:
   - link-routes
   - ui
@@ -57,6 +57,8 @@ Implemented (Nov 8 2026, agent-links):
 - Runtime (/verify, harness kept out of the repo: scratch agent-links/Task302Harness.swift; DETOUR_DATA_DIR=DetourB8-302-1; real posted clicks and real pop-up menus): New Route -> draft warns 'Enter a domain, such as example.com, or choose an app. Not saved yet.'; choosing Finder in From app with nothing typed saved the route at once (store: 'Links from com.apple.finder'), no warning, placeholder 'Any URL from this app, or a domain such as example.com'; a second draft with Any App warned as above; switching it to Any URL warned 'Choose a URL condition or an app. Not saved yet.'; after relaunch the saved row showed Domain is / empty / Finder unchanged and the DB row is (domainIs, '', com.apple.finder). Captures in the scratchpad (out302/*.png). Cleaned: defaults keys NSWindow Frame/NSSplitView for DetourB8-302-1, the com.detourbrowser.mac.DetourB8-302-1 suite, App Support/DetourB8-302-1. WebKit stores under ~/Library/WebKit/com.detourbrowser.mac/WebsiteDataStore created by that run were left (UUID-named).
 - Website facts for AC #4 (not edited here): Settings › Links: to send every link from an app (e.g. Mail) somewhere, click New Route and choose the app in From app; leave the URL field empty — it then reads 'Any URL from this app, or a domain such as example.com'. No need to switch the URL condition to Any URL (it still exists and means the same). Typing a domain as well limits the route to that domain from that app. A route with no URL and no app is not saved: 'Enter a domain, such as example.com, or choose an app.' Drop the 'switch to Any URL' step from the Quarantine and Link Routes pages.
 Website AC pending (held for release).
+
+Website: updated Link Routes, Quarantine and Quick Detour (Any URL workaround removed: choose the app and leave the URL field empty; Link Routes quotes the placeholder and the neither-condition warning) on website branch next-release (128af13), held for the release
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

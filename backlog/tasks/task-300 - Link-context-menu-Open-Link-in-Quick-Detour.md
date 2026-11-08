@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T08:40:00Z'
-updated_date: '2026-11-08T10:39:00Z'
+updated_date: '2026-11-08T11:18:00Z'
 labels:
   - quick-detour
   - menus
@@ -55,6 +55,8 @@ Implemented (Nov 8 2026, @claude):
 - Runtime (/verify, DETOUR_DATA_DIR=DetourB8-300-2, temporary DEBUG harness posting real right-clicks with NSApp.postEvent and choosing from the real menus once they tracked), with the Opt-Cmd-click setting OFF: normal window link menu read 'Open Link in New Tab, Open Link in New Window, Open Link in Quick Detour, Open Link in Split View, Download Linked File, Copy Link, ...' and choosing it opened a Quick Detour on Default with https://example.com/linked; in a Peek the menu had the item (no Split View) and it opened the same on Default; the sidebar tab menu (Copy URL, Share, Open in Quick Detour, ...) opened a copy of the tab's address on Default; in a Private window the link menu and the sidebar tab menu each opened a Private Quick Detour (profile Private). Not checked at runtime: a split row's pane choice and a non-web link (unit-tested). Defaults keys and data dirs of DetourB8-300-1/-2 removed; their WebKit store directories under ~/Library/WebKit/com.detourbrowser.mac/ were left.
 - Website facts for AC #5 (Quick Detour guide page, TASK-292.8): right-click a link in a browser window (also in a Peek) and choose 'Open Link in Quick Detour' (listed after Open Link in New Window); it opens the link in a new Quick Detour exactly as Option-Command-click does: on the page's profile, a Private Quick Detour from a Private window. It is always in the menu, even when Settings > Quick Detour > 'Open links and sidebar tabs in Quick Detour with ⌥⌘-click' is off (that setting only controls the click). Right-click a tab in the sidebar and choose 'Open in Quick Detour' to open a copy of that tab's page in a Quick Detour (the tab stays where it is; on a split tab, the half you right-clicked).
 Website AC pending (held for release).
+
+Website: updated Quick Detour (/features/quick-detour/: Open Link in Quick Detour in the link menu, also in a Peek; Open in Quick Detour in the sidebar tab menu; both offered with the ⌥⌘-click setting off; Arc box Same) on website branch next-release (ef26356), held for the release
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
