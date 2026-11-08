@@ -3424,6 +3424,8 @@ extension TabSidebarViewController: NSMenuDelegate {
             menu.addItem(picker.standardShareMenuItem)
         }
 
+        addOpenInQuickDetourItem(to: menu, row: clickedRow)
+
         menu.addItem(.separator())
 
         // Duplicate
@@ -3511,8 +3513,9 @@ extension TabSidebarViewController: NSMenuDelegate {
             let copyItem = NSMenuItem(title: "Copy URL", action: #selector(contextMenuCopyURL(_:)), keyEquivalent: "")
             copyItem.target = self
             menu.addItem(copyItem)
-            menu.addItem(.separator())
         }
+        addOpenInQuickDetourItem(to: menu, row: tableView.clickedRow)
+        if menu.numberOfItems > 0 { menu.addItem(.separator()) }
 
         let separateItem = NSMenuItem(title: "Separate Tabs", action: #selector(contextMenuSeparateSplit(_:)), keyEquivalent: "")
         separateItem.target = self
@@ -3536,11 +3539,37 @@ extension TabSidebarViewController: NSMenuDelegate {
         let copyItem = NSMenuItem(title: "Copy URL", action: #selector(contextMenuCopyURL(_:)), keyEquivalent: "")
         copyItem.target = self
         menu.addItem(copyItem)
+        addOpenInQuickDetourItem(to: menu, row: tableView.clickedRow)
         menu.addItem(.separator())
 
         let separateItem = NSMenuItem(title: "Separate Tabs", action: #selector(contextMenuSeparatePinnedSplit(_:)), keyEquivalent: "")
         separateItem.target = self
         menu.addItem(separateItem)
+    }
+
+    /// The row menu's Open in Quick Detour item (TASK-300): what Opt-Cmd-click
+    /// on the row does — a copy of the tab's address (a split row's: the pane
+    /// under the pointer) in a new Quick Detour on the sidebar's profile —
+    /// offered whatever the Opt-Cmd-click setting says. None for a tab with
+    /// no address yet.
+    static let openInQuickDetourTitle = "Open in \(QuickDetour.displayName)"
+
+    private func addOpenInQuickDetourItem(to menu: NSMenu, row: Int) {
+        guard row >= 0 else { return }
+        let rowRect = tableView.rect(ofRow: row)
+        let point = tableView.lastMenuPoint.flatMap { rowRect.contains($0) ? $0 : nil }
+            ?? NSPoint(x: rowRect.minX, y: rowRect.midY)
+        guard let url = quickDetourCopyURL(forRow: row, at: point) else { return }
+        let item = NSMenuItem(title: Self.openInQuickDetourTitle, action: #selector(contextMenuOpenInQuickDetour(_:)),
+                              keyEquivalent: "")
+        item.target = self
+        item.representedObject = url
+        menu.addItem(item)
+    }
+
+    @objc private func contextMenuOpenInQuickDetour(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        delegate?.tabSidebar(self, didRequestQuickDetourCopyOf: url)
     }
 
     @objc private func contextMenuSeparatePinnedSplit(_ sender: NSMenuItem) {

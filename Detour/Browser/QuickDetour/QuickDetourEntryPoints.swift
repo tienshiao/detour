@@ -89,6 +89,14 @@ extension QuickDetour {
         enabled && flags.contains(.command) && flags.contains(.option)
     }
 
+    /// Whether a link Opt-Cmd-clicked, or opened with the link menu's Open
+    /// Link in Quick Detour (TASK-300), opens a Quick Detour: a web link
+    /// (http or https) does; any other is a Cmd-click instead.
+    static func opensLinkInQuickDetour(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
     /// The pane of a split row a click at `x` (from the row's leading edge)
     /// is on: the row shows the two panes side by side, halves of its width.
     static func splitRowPane(forX x: CGFloat, rowWidth: CGFloat) -> SplitEdge {

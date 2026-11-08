@@ -163,7 +163,8 @@ enum InPageLinkClickBranch: Equatable {
 /// a web page (an `http`/`https` URL).
 func inPageLinkClickBranch(_ modifiers: LinkClickModifiers, target: URL,
                            quickDetourClickEnabled: Bool) -> InPageLinkClickBranch {
-    if quickDetourClickEnabled, modifiers.isSuperset(of: [.command, .option]), isWebURL(target) { return .quickDetour }
+    if quickDetourClickEnabled, modifiers.isSuperset(of: [.command, .option]),
+       QuickDetour.opensLinkInQuickDetour(target) { return .quickDetour }
     if modifiers.contains(.command) { return .backgroundTab }
     if modifiers.contains(.shift) { return .peek }
     if modifiers.contains(.option) { return .split }

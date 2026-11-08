@@ -47,6 +47,19 @@ extension BrowserWindowController {
         }
     }
 
+    /// Open Link in Quick Detour, from a page's link menu (TASK-300): what an
+    /// Opt-Cmd-click on the link does. A web link opens a Quick Detour on the
+    /// page's profile (Private in a Private window, a Peek's on the window's
+    /// space's); any other link is no Quick Detour click, which then is a
+    /// Cmd-click: a tab in the background.
+    func openLinkInQuickDetourFromMenu(_ url: URL, firing webView: WKWebView, in space: Space) {
+        if QuickDetour.opensLinkInQuickDetour(url) {
+            openQuickDetour(url, firing: webView)
+        } else {
+            _ = store.addTab(in: space, url: url, parentID: selectedTabID)
+        }
+    }
+
     /// Where a link leaving a page in this window is routed; nil when it is
     /// not routed, or its route keeps it here, so the caller carries on as
     /// before routes.

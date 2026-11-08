@@ -1,6 +1,9 @@
 import WebKit
 
 class BrowserWebView: WKWebView {
+    /// The link menu's Quick Detour item (TASK-300).
+    static let openLinkInQuickDetourTitle = "Open Link in \(QuickDetour.displayName)"
+
     // MARK: - Split pane focus
 
     /// Clicking a pane of a split tab moves focus between panes; the window
@@ -94,6 +97,16 @@ class BrowserWebView: WKWebView {
             newWindowItem.image = NSImage(systemSymbolName: "macwindow.badge.plus", accessibilityDescription: nil)
             menu.insertItem(newWindowItem, at: min(insertIndex + 1, menu.items.count))
 
+            // What Opt-Cmd-click does (TASK-300), offered whatever its setting
+            // says (the setting governs only the gesture), inside a Peek too.
+            let quickDetourItem = NSMenuItem(title: Self.openLinkInQuickDetourTitle,
+                                             action: #selector(BrowserWindowController.contextMenuOpenInQuickDetour(_:)),
+                                             keyEquivalent: "")
+            quickDetourItem.representedObject = originalItem
+            quickDetourItem.target = windowController
+            quickDetourItem.image = NSImage(systemSymbolName: "macwindow.on.rectangle", accessibilityDescription: nil)
+            menu.insertItem(quickDetourItem, at: min(insertIndex + 2, menu.items.count))
+
             // Not in a Peek: its page hands over to a split by the panel's own
             // button, and Option-click inside a Peek is left alone too.
             if let windowController, windowController.selectedTab?.peekTab?.webView !== self {
@@ -101,7 +114,7 @@ class BrowserWebView: WKWebView {
                 splitItem.representedObject = originalItem
                 splitItem.target = windowController
                 splitItem.image = NSImage(systemSymbolName: "rectangle.split.2x1", accessibilityDescription: nil)
-                menu.insertItem(splitItem, at: min(insertIndex + 2, menu.items.count))
+                menu.insertItem(splitItem, at: min(insertIndex + 3, menu.items.count))
             }
         }
 
@@ -154,6 +167,14 @@ extension BrowserWindowController {
     @objc func contextMenuOpenInSplitView(_ sender: NSMenuItem) {
         guard let originalItem = sender.representedObject as? NSMenuItem else { return }
         contextMenuLinkAction = .openInSplitView
+        _ = originalItem.target?.perform(originalItem.action, with: originalItem)
+    }
+
+    /// Open Link in Quick Detour (TASK-300): Opt-Cmd-click's rules for the
+    /// link, applied in `createWebViewWith`.
+    @objc func contextMenuOpenInQuickDetour(_ sender: NSMenuItem) {
+        guard let originalItem = sender.representedObject as? NSMenuItem else { return }
+        contextMenuLinkAction = .openInQuickDetour
         _ = originalItem.target?.perform(originalItem.action, with: originalItem)
     }
 

@@ -147,7 +147,7 @@ class BrowserWindowController: NSWindowController {
         BrowserWindowController.runPrivateDownloadCloseAlert
 
     enum ContextMenuLinkAction {
-        case none, openInNewTab, openInNewWindow, openInSplitView
+        case none, openInNewTab, openInNewWindow, openInSplitView, openInQuickDetour
     }
     var contextMenuLinkAction: ContextMenuLinkAction = .none
 

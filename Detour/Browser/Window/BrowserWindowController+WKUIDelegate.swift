@@ -28,6 +28,8 @@ extension BrowserWindowController: WKUIDelegate {
             if let clickedTab = tab(owning: webView) {
                 openLinkInSplit(url, from: clickedTab, in: space)
             }
+        case .openInQuickDetour:
+            openLinkInQuickDetourFromMenu(url, firing: webView, in: space)
         case .none:
             // A page's own new-window request (a `target=_blank` link, a
             // script's window.open) for a `data:` URL. A peek below loads the

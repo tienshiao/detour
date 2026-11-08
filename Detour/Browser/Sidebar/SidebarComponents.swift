@@ -26,6 +26,16 @@ class DraggableTableView: NSTableView {
     /// APIs don't hand the originating event to the data source).
     private(set) var lastMouseDownPoint: NSPoint?
 
+    /// Where the last context menu was asked for, in table coordinates: the
+    /// row menu's Open in Quick Detour copies the split pane under it, as
+    /// Opt-Cmd-click does (TASK-300).
+    private(set) var lastMenuPoint: NSPoint?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        lastMenuPoint = convert(event.locationInWindow, from: nil)
+        return super.menu(for: event)
+    }
+
     /// Fired from `draggingExited`/`draggingEnded` so the sidebar can clear
     /// drop affordances the table-view delegate is never told about.
     var onDragTargetingEnded: (() -> Void)?

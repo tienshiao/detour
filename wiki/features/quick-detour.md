@@ -91,6 +91,9 @@ sources:
   - id: task-213
     resource: backlog:TASK-213
     title: "Site settings popover: host header, separate site switches, none in Quick Detour"
+  - id: task-300
+    resource: backlog:TASK-300
+    title: "Link context menu: Open Link in Quick Detour"
   - id: task-299
     resource: backlog:TASK-299
     title: "Address bars: the sidebar's and Quick Detour's icons in one order"
@@ -837,9 +840,25 @@ Routes never move an Opt-Cmd-click: the user chose where it opens.
 Synthetic clicks carry no modifiers, so a page cannot fake one (as for
 Cmd+click). **Inside a Quick Detour** Cmd+click already opened another
 Quick Detour on the same profile; Opt-Cmd is a Cmd+click there, so it does
-the same. **Not added**: a link-menu item ("Open Link in Quick Detour"), and
-Opt-Cmd on a script's `window.open` (not a link; WebKit's policy never sees
-it).
+the same. **Not added**: Opt-Cmd on a script's `window.open` (not a link;
+WebKit's policy never sees it).
+
+### Open Link in Quick Detour (the link menu)
+
+TASK-300 (user decision, Nov 8 2026) added the link menu's **Open Link in
+Quick Detour**, after Open Link in New Window and before Open Link in Split
+View (`BrowserWebView.willOpenMenu`, browser windows only; a Quick Detour
+keeps WebKit's own link items). It is **always offered**: the Opt-Cmd-click
+setting governs only the gesture. It is offered **inside a Peek** too (where
+Split View is not). It works as the other items do: it sets
+`contextMenuLinkAction = .openInQuickDetour` and performs WebKit's Open Link
+in New Window item, whose `createWebViewWith` hands the link to
+`openLinkInQuickDetourFromMenu(_:firing:in:)`. That does what an
+Opt-Cmd-click on the link does: a web link (`QuickDetour.opensLinkInQuickDetour`,
+http or https — the rule `inPageLinkClickBranch` now reads too) opens in
+`openQuickDetour(_:firing:)`, the page's profile (Private in a Private
+window; a Peek's is the window's space's), and is never routed; any other
+link is no Quick Detour click, so it is a Cmd-click: a background tab.
 
 ### Opt-Cmd-click on a sidebar tab: a copy
 
@@ -864,6 +883,14 @@ the selection never moves; the sidebar resolves the row
 An internal page (the History page) opens as one (armed, as typed). The
 rule is `QuickDetour.sidebarCopyURL(liveURL:storedURL:)`; with the setting
 off the click is the table's (and the tile's) own.
+
+The tab row menus (a tab, a pinned entry, a split row, a pinned split row)
+offer **Open in Quick Detour** (TASK-300), whatever the setting: the same
+copy through the same delegate call, the row's address resolved by
+`quickDetourCopyURL(forRow:at:)` at the right-click point
+(`DraggableTableView.lastMenuPoint`), so a split row copies the pane under
+the pointer. None for a row with no address yet. Favourite tiles' menu has
+no such item (only Remove from Favorites).
 
 ### Links from other apps: the Link Routes Quick Detour target
 
