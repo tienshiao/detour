@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T09:35:00Z'
-updated_date: '2026-11-08T21:01:00Z'
+updated_date: '2026-11-08T21:04:00Z'
 labels:
   - link-routes
 dependencies: []
@@ -83,6 +83,8 @@ Website: updated Link Routes and Quarantine (a From app route also applies to th
 Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
 
 Nov 8 2026, user narrowed the fail-closed rule ('if the trigger can be determined to be falsy we do not need to fail closed'): a launch link with no known sender goes to Quarantine only where a From app route to Quarantine is reached (in route order) whose URL condition holds. A route whose URL condition fails, one behind a matching route, and a URL-only route to Quarantine resolve as usual. Supersedes the 'any Quarantine route' rule and linkRoutesSendToQuarantine above (removed); the resolver core takes senderMightMatchQuarantine. Tests: LinkRouteResolverTests (fail-closed and new skip test), ExternalLinkRoutingTests (launch test now adds a Mail→Quarantine route; new test: URL-only Quarantine route that does not match → the Default), 117 tests in the link-routing suites, 0 failures. /code-review medium --fix: 6 findings (doc comment, wiki tests summary, log placement, duplicated decision call, this note), all fixed. Runtime: not run; a pure resolver change whose launch path the wiring tests drive in the test host, and an unknown-sender launch cannot reach a Debug build while the production Detour is the default browser.
+
+Nov 8 2026, user's production build with the TASK-304 code (macOS 26.7), unified log 'External link from': 13:03:34 a link from Mimestream while running -> 'External link from com.mimestream.Mimestream: quarantine'; 13:03:54 Detour quit, a Mimestream link launched it (pid 38893) -> 'External link from com.mimestream.Mimestream (launched Detour): quarantine'. The sender is known at launch in the signed build, so the user's From app route matched the launch link (before TASK-304 it was 'no known sender'). No lines from Mail, Messages, Notes or Slack in the last 3 h. Still open for #1: other apps, macOS 15.4.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
