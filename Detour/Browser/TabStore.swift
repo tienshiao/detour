@@ -2584,12 +2584,14 @@ class TabStore {
     /// Detour closes or switches profile. The next session reuses the same
     /// built-in profile (its id is a constant), so whatever the session kept
     /// in memory goes here or it would carry over: the Private site settings,
-    /// and the notifications the Private profile's extensions created, which
-    /// are taken off screen too (TASK-238).
+    /// the notifications the Private profile's extensions created, which are
+    /// taken off screen too (TASK-238), and the website data and extension
+    /// storage of the profile's non-persistent store (TASK-298).
     func endPrivateSessionIfUnused() {
         guard !hasLivePrivateSession else { return }
         siteSettings?.discardPrivateSession()
         removePrivateProfileNotifications()
+        profile(withID: Self.incognitoProfileID)?.resetPrivateSession()
     }
 
     /// Call just before something starts using the Private session (a Private

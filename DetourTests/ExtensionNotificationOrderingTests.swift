@@ -1088,8 +1088,14 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         incognitoSpaceIDs.removeAll()
         XCTAssertFalse(TabStore.shared.hasLivePrivateSession)
 
+        // The session's end also resets the Private extension contexts
+        // (TASK-298): the old page's origin is gone with its context, so the
+        // rest runs from a page of the context loaded for the next session.
+        await privateProfile.privateSessionReset?.value
+        let nextPrivatePage = try await loadPage(ext, in: privateProfile)
+
         for transport in [Transport.page, .worker] {
-            let privateAfter = try await listed("session-", via: transport, in: privatePage)
+            let privateAfter = try await listed("session-", via: transport, in: nextPrivatePage)
             XCTAssertEqual(privateAfter, [], "\(transport): the ended session's notifications are gone")
             let persistentAfter = try await listed("session-", via: transport, in: persistentPage)
             XCTAssertEqual(persistentAfter, ["session-page", "session-worker"], "\(transport)")
@@ -1103,9 +1109,9 @@ nonisolated final class ExtensionNotificationOrderingTests: XCTestCase {
         // identifiers, and nothing of the last session's is listed.
         let next = TabStore.shared.addIncognitoSpace()
         incognitoSpaceIDs.append(next.id)
-        _ = try await call("create", "session-page", title: "Next", via: .page, in: privatePage)
+        _ = try await call("create", "session-page", title: "Next", via: .page, in: nextPrivatePage)
         XCTAssertFalse(privateIdentifiers.contains(identifier("session-page", of: ext, in: privateProfile)))
-        let nextListed = try await listed("session-", via: .worker, in: privatePage)
+        let nextListed = try await listed("session-", via: .worker, in: nextPrivatePage)
         XCTAssertEqual(nextListed, ["session-page"])
     }
 

@@ -4,7 +4,7 @@ title: Incognito (Private windows)
 description: "How Private browsing is built — one built-in Private profile with a non-persistent store, one throwaway space per Private window, and the list of things that are and are not kept."
 tags: [architecture, privacy, profiles, incognito]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T09:00:00Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -83,11 +83,35 @@ Private window ──► its own Space ("Private", created with the window)
   non-persistent configuration, and extension pages in it run in the same
   ephemeral store (TASK-73).
 
-**The store is per profile, not per window.** `dataStore` is a lazy property
-on the one Private profile object, so every Private window shares cookies
-and logins, and they survive closing the Private window. They are gone when
-the app quits. Loaded extension contexts for the Private profile also live
-until quit.[^private-notes]
+**The store is per profile, not per window, and per session, not per
+process.** `dataStore` is a lazy property on the one Private profile object,
+so every Private window of a session shares cookies and logins. The object
+and its store are reused by every Private session, so the session's end
+wipes the store in place (TASK-298): `TabStore.endPrivateSessionIfUnused`,
+once no Private window or Private Quick Detour is left, calls
+`Profile.resetPrivateSession`, which
+
+1. unloads every loaded Private extension context through `unloadExtension`
+   (ports, offscreen document, notifications),
+2. clears each one's extension storage in the non-persistent controller
+   (`fetchDataRecord` + `removeData`, all extension data types),
+3. removes all website data types from the store (`distantPast`): cookies,
+   local and session storage, IndexedDB, caches and service workers, for
+   sites and extension origins alike,
+4. and only then loads the contexts still allowed in Private again, each
+   on a new origin, in the background-recovery sequence:
+   `loadExtensionContext`, `retargetExtensionPages` from the old origin (for
+   a page a session started during the reset opened), then
+   `didReloadExtensionContext`, and `loadBackgroundContent` only for an
+   extension with background content.
+
+The store cannot be replaced instead: the extension controller is built with
+it as its `defaultWebsiteDataStore` and its extension pages' store, and a
+controller cannot be swapped under loaded contexts. Resets are chained
+(`privateSessionReset`, which tests await). A session that starts during a
+reset fails safe: the in-flight wipe can only remove the new session's fresh
+data. Before TASK-298 the store and the contexts lived until quit, so a new
+Private window saw the previous session's cookies.[^private-notes]
 
 ## The window and its space
 
@@ -130,8 +154,8 @@ non-persistent store, records no history (`recordHistoryVisit` checks the
 tab's `quickDetourProfile`), and is never saved. The Private session's
 in-memory state goes only when neither a Private space nor a Private Quick
 Detour is left: closing the last Private window while a Private Quick Detour
-is open keeps the Private site settings, and the store itself is never torn
-down either way (it lives until quit). Its downloads are scoped to the Quick
+is open keeps the Private site settings and the store's data, which are
+reset only when the last Private page of either kind closes (TASK-298). Its downloads are scoped to the Quick
 Detour's tab id (`.incognito(spaceID: tab.id)`), kept while the window is
 open and dropped, cancelled if still running, when it closes
 (`TabStore.liveIncognitoDownloadScopeIDs`). Tests: `QuickDetourTests` (the
@@ -180,7 +204,7 @@ A download started in a Private window carries
   and Chrome.
 
 This is per window, unlike the Private profile's cookies, which every Private
-window shares until quit. The mechanics are on
+window of a session shares until the session ends. The mechanics are on
 [downloads](../features/downloads.md).
 
 ## What crosses the boundary: nothing may move

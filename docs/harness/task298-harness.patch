@@ -1,0 +1,74 @@
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 68ac340..438788a 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -149,6 +149,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        if let out = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] { runPrivateResetHarness(out: out) } // TEMP TASK-298 harness
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/VerifyHarness298.swift b/Detour/App/VerifyHarness298.swift
+new file mode 100644
+index 0000000..21b67e0
+--- /dev/null
++++ b/Detour/App/VerifyHarness298.swift
+@@ -0,0 +1,56 @@
++// TEMP verify harness for TASK-298 — DO NOT COMMIT
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runPrivateResetHarness(out: String) {
++        let path = out + "/verify.log"
++        FileManager.default.createFile(atPath: path, contents: nil)
++        let fh = FileHandle(forWritingAtPath: path)!
++        func log(_ s: String) { fh.write((s + "\n").data(using: .utf8)!) }
++        log("pid \(ProcessInfo.processInfo.processIdentifier)")
++        let url = URL(string: "https://example.com/")!
++        func openPrivateWindow() -> BrowserWindowController {
++            let wc = BrowserWindowController(incognito: true)
++            wc.showWindow(nil)
++            registerWindowController(wc)
++            let tab = TabStore.shared.addTab(in: wc.activeSpace!, url: url)
++            wc.selectTab(id: tab.id)
++            return wc
++        }
++        func loaded(_ wc: BrowserWindowController) async -> WKWebView? {
++            for _ in 0..<200 {
++                if let wv = wc.selectedTab?.webView, wv.url?.host == "example.com", !wv.isLoading { return wv }
++                try? await Task.sleep(for: .milliseconds(100))
++            }
++            return nil
++        }
++        func read(_ wv: WKWebView) async -> String {
++            let js = "return document.cookie + ' | ' + (localStorage.getItem('t298') ?? 'none');"
++            return ((try? await wv.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)) as? String) ?? "eval failed"
++        }
++        Task { @MainActor in
++            try? await Task.sleep(for: .seconds(2))
++            let w1 = openPrivateWindow()
++            guard let v1 = await loaded(w1) else { log("w1 did not load"); log("done"); return }
++            _ = try? await v1.callAsyncJavaScript("document.cookie = 't298=one; max-age=3600'; localStorage.setItem('t298', 'one');", arguments: [:], contentWorld: .page)
++            log("w1 after set: \(await read(v1))")
++            let w2 = openPrivateWindow()
++            guard let v2 = await loaded(w2) else { log("w2 did not load"); log("done"); return }
++            log("w2 while w1 open: \(await read(v2))")
++            w2.window?.close()
++            try? await Task.sleep(for: .seconds(1))
++            log("w1 after w2 closed: \(await read(v1)); live session \(TabStore.shared.hasLivePrivateSession)")
++            let profile = TabStore.shared.profile(withID: TabStore.incognitoProfileID)
++            w1.window?.close()
++            try? await Task.sleep(for: .milliseconds(300))
++            log("after closing all: live session \(TabStore.shared.hasLivePrivateSession); reset started \(profile?.privateSessionReset != nil)")
++            await profile?.privateSessionReset?.value
++            let w3 = openPrivateWindow()
++            guard let v3 = await loaded(w3) else { log("w3 did not load"); log("done"); return }
++            log("w3 new session: \(await read(v3))")
++            w3.window?.close()
++            log("done")
++        }
++    }
++}

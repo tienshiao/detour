@@ -4,7 +4,7 @@ title: Quick Detour
 description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, what is not restored, and Open in <Space> (Cmd+O): the default space, the dropdown grouped by profile, the same tab and web view handed to a space of the same profile, a reload in another profile's, Private into a Private window, and the teardown order; and the profile pill (TASK-193.4): its menu, switching reloading the address in a new page on the other profile in the same window (a close and an open for extensions, the new profile's history scope, into and out of Private with the download question), and Open in following; and TASK-193.5's other entry points and archive: Opt-Cmd-click on a link (any frame, in a Peek, a Private page's into Private; never routed) or on a sidebar tab (a copy of its address: normal, sleeping, a split row's clicked pane, pinned, favourite), links from other apps through the Link Routes Quick Detour target (the frontmost window's profile, never Private), the archive (closed-tab rows under the profile's Quick Detour scope, no migration; closed, at quit, and auto-closed; restore reopens a window with the back/forward list; Private never; profile deletion), the idle auto-close (a pure wall-clock rule, what counts as use, a periodic and wake check, a Debug override) and the Settings controls; and TASK-210's bar: the main window's site settings popover in place of the extensions list, the host and Open in dragging the window once a press moves (a first press on a background window only brings it forward), no subtitle on the dropdown, and the palette's own prompt; and TASK-213's popover layout: the host as its header, picture in picture and dev mode in a section of their own, left out of a Quick Detour's."
 tags: [window, tabs, history, privacy, extensions, palette]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T09:00:00Z }
 stale_after: 2026-12-31T00:00:00Z
 sources:
   - id: task-193
@@ -468,8 +468,8 @@ Private site settings) is dropped only when **no** Private page is left —
 neither a Private space nor a Private Quick Detour
 (`TabStore.hasLivePrivateSession`) — so closing the last Private window does
 not take settings from a Private Quick Detour still open, and the reverse.
-The data store itself is never torn down by either; it lives until quit
-([incognito](../architecture/incognito.md)). A Private Quick Detour's
+The data store is reset at the same moment, when no Private page of either
+kind is left ([incognito](../architecture/incognito.md), TASK-298). A Private Quick Detour's
 downloads are scoped to its tab id and go when it closes. With one in
 flight, closing the window asks first, as a Private window does
 (`windowShouldClose` with `PrivateDownloadClosePolicy` and the same alert):

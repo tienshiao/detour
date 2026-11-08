@@ -4,7 +4,7 @@ title: Extensions in the Private profile
 description: The rules for extensions in Private windows — off unless allowed per extension, pages in the profile's own non-persistent store, and the WebKit private-data gate that silently stops events without hasAccessToPrivateData.
 tags: [extensions, privacy, incognito, webkit, data-store]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:48:49Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T09:00:00Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -82,10 +82,14 @@ Consequences worth knowing:
   cascade, so a reinstall starts off. Chrome remembers; Detour does not.
 - **The rule is keyed on the profile id, not on `isIncognito`.** Only one
   incognito profile exists in production.
-- **Private state lives until quit, not until the window closes.** The
-  profile, its store and its loaded contexts are created once and kept, like
-  its browsing cookies. An allowed extension's Private context also loads at
-  every launch, before any Private window exists.
+- **Private state lives until the Private session ends.** The profile, its
+  store and its controller are created once and kept, but when the last
+  Private window or Private Quick Detour closes, `Profile.resetPrivateSession`
+  unloads every Private context, clears its extension storage and the store's
+  website data, and loads the allowed contexts again on new origins (TASK-298;
+  see [incognito](../architecture/incognito.md)). An allowed extension's
+  Private context also loads at every launch, before any Private window
+  exists, and its worker restarts after every Private session.
 - **First-run setup never happens in Private.** Storage there is empty after
   every launch and `onInstalled` is never delivered, so an extension that
   seeds `storage.local` only from that event must cope with missing state.

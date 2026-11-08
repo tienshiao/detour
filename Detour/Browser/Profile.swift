@@ -581,12 +581,8 @@ class Profile {
         ExtensionManager.shared.closeExtensionPorts(for: id, in: extensionController)
         try? extensionController.unload(context)
         if removeData {
-            let allTypes = WKWebExtensionController.allExtensionDataTypes
-            extensionController.fetchDataRecord(ofTypes: allTypes, for: context) { [weak self] record in
-                guard let record, let self else { return }
-                self.extensionController.removeData(ofTypes: allTypes, from: [record]) {
-                    log.info("Removed extension data for \(id, privacy: .public)")
-                }
+            removeExtensionData(of: context) { removed in
+                if removed { log.info("Removed extension data for \(id, privacy: .public)") }
             }
         }
         // The last context out takes the daily interaction refresh with it —
@@ -598,6 +594,19 @@ class Profile {
         return context.baseURL
     }
 
+    /// Removes the extension storage (storage.local, .session, .sync) `context`
+    /// keeps in this profile's controller. `done` gets whether a record was
+    /// found and removed; it is always called.
+    private func removeExtensionData(of context: WKWebExtensionContext, done: @escaping @MainActor (Bool) -> Void) {
+        let allTypes = WKWebExtensionController.allExtensionDataTypes
+        extensionController.fetchDataRecord(ofTypes: allTypes, for: context) { [weak self] record in
+            guard let record, let self else { return done(false) }
+            self.extensionController.removeData(ofTypes: allTypes, from: [record]) {
+                done(true)
+            }
+        }
+    }
+
     /// Unload every extension loaded in this profile. Called before the profile
     /// is discarded (`TabStore.deleteProfile`): each unload releases the state
     /// other owners key on this profile's controller (keep-alive ports in
@@ -606,6 +615,95 @@ class Profile {
     func unloadAllExtensions() {
         for id in Array(extensionContexts.keys) {
             unloadExtension(id: id)
+        }
+    }
+
+    // MARK: - Private session reset (TASK-298)
+
+    /// The Private session reset in flight, if any. A session that ends while
+    /// one runs queues behind it, and tests await it.
+    private(set) var privateSessionReset: Task<Void, Never>?
+
+    /// Ends a Private session's data: everything sites and extensions stored
+    /// while it was live. Called by `TabStore.endPrivateSessionIfUnused` once no
+    /// Private window or Private Quick Detour is left. This profile object, its
+    /// non-persistent `dataStore` and its extension controller are reused for
+    /// every Private session (the profile id is a constant), so without this the
+    /// next Private window would find the previous one's cookies and logins.
+    ///
+    /// The store cannot simply be replaced: the extension controller is built
+    /// with it as its `defaultWebsiteDataStore` and its extension pages'
+    /// store, and a controller cannot be swapped under loaded contexts. So the
+    /// store is wiped in place, and the Private extension contexts — whose
+    /// workers run in it — are unloaded first, have their own storage cleared,
+    /// and are loaded again only after both wipes finish, so nothing from this
+    /// session reaches the next one (the behaviour of an incognito-split
+    /// extension in Chrome).
+    ///
+    /// A Private session that starts while the reset runs fails safe: the
+    /// in-flight wipe can only remove the new session's fresh data, never show
+    /// it the old.
+    func resetPrivateSession() {
+        guard isIncognito else { return }
+        let previous = privateSessionReset
+        privateSessionReset = Task { @MainActor [weak self] in
+            await previous?.value
+            await self?.performPrivateSessionReset()
+        }
+    }
+
+    private func performPrivateSessionReset() async {
+        // Unload through the same path as a disable, which also closes the
+        // context's ports, offscreen document and notifications. The contexts
+        // are kept to clear their storage afterwards.
+        let contexts = extensionContexts
+        // The origin each context's pages are left on: a page a session that
+        // started during the reset opened is moved to the new origin below,
+        // as a background-failure reload does.
+        var oldBases: [String: URL] = [:]
+        for id in contexts.keys {
+            oldBases[id] = unloadExtension(id: id)
+        }
+
+        // Extension storage (storage.local, .session, .sync) lives in the
+        // non-persistent controller, apart from the website data store.
+        for context in contexts.values {
+            await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                removeExtensionData(of: context) { _ in done.resume() }
+            }
+        }
+
+        // Cookies, local and session storage, IndexedDB, caches and service
+        // workers, for every site and every extension origin in the store.
+        await dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                                   modifiedSince: .distantPast)
+        log.info("Private session ended: cleared its website data and the storage of \(contexts.count) extension context(s)")
+
+        // Load the contexts again for the next session, unless the extension
+        // was disallowed in Private or removed while the reset ran. The same
+        // sequence as a background-failure reload: announce the new context to
+        // the windows and tabs, then start its background content.
+        for id in contexts.keys {
+            guard extensionContexts[id] == nil,
+                  ExtensionManager.shared.isEnabled(extensionID: id, inProfile: self.id),
+                  let ext = ExtensionManager.shared.extension(withID: id) else { continue }
+            let hasBackgroundContent = loadExtensionContext(ext)
+            guard let context = extensionContexts[id] else {
+                log.error("Private session reset could not reload \(id, privacy: .public); it stays unloaded in Private until it is re-allowed or the app relaunches")
+                continue
+            }
+            // Before announcing, as in `recoverFromBackgroundLoadFailure`.
+            if let oldBase = oldBases[id] {
+                retargetExtensionPages(from: oldBase, to: context.baseURL)
+            }
+            ExtensionManager.shared.didReloadExtensionContext(context, in: self)
+            guard hasBackgroundContent else { continue }
+            context.loadBackgroundContent { error in
+                if let error {
+                    let nsError = error as NSError
+                    log.error("Private session reset: background content for \(id, privacy: .public) failed to load: domain=\(nsError.domain, privacy: .public) code=\(nsError.code)")
+                }
+            }
         }
     }
 
