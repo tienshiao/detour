@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T07:33:00Z'
+updated_date: '2026-11-08T07:35:00Z'
 labels:
   - website
 dependencies:
@@ -59,4 +59,6 @@ Browser check: both pages at 1462 px wide (Chrome) and in 390 px frames: no hori
 Found while researching (not changed, for the user): Settings › Spaces "−" deletes a space with tabs and no confirmation, while sidebar Delete Space refuses a non-empty space.
 
 Review (/code-review medium --fix, 7 findings): fixed the inline-Markdown helper (protocol-relative hrefs, formatting inside hrefs and code spans), the Spaces description length, link underline scope; skipped hrefs with parentheses and accent validation. Website commit 9a32167 local, not pushed: pushing deploys through Cloudflare. Criteria 1 (live) and 6 (Rich Results Test on the live URLs) wait for the push.
+
+Arc comparisons re-checked against Arc's help center via the Wayback Machine (website 2nd commit): dropped the unsupported 'swap panes' item, added Arc's add-split shortcut gap and Space sharing.
 <!-- SECTION:NOTES:END -->

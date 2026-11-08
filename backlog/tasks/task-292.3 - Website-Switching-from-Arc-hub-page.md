@@ -4,6 +4,7 @@ title: 'Website: Switching from Arc hub page'
 status: To Do
 assignee: []
 created_date: '2026-11-08T06:59:00Z'
+updated_date: '2026-11-08T07:35:00Z'
 labels:
   - website
 dependencies:
@@ -30,3 +31,9 @@ Arc is no longer developed and its users search for a replacement ("Arc browser 
 - [ ] #4 Statements about Arc are factual and verifiable; no Arc logos, screenshots or styling
 - [ ] #5 Feature pages with a Coming from Arc box link to the hub, and the hub is linked from the home page
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 7 2026 (from TASK-292.2): Arc's help center (resources.arc.net) answers 403 to scripted fetches, but the Wayback Machine has it: archive.org/wayback/available?url=resources.arc.net/hc/en-us/articles/<id> gives the latest capture, web.archive.org/web/<ts>id_/<url> the original page (gzip). About 220 article URLs captured (CDX: web.archive.org/cdx/search/cdx?url=resources.arc.net/hc/en-us/articles/*&collapse=urlkey). Checked so far: Split View (Dec 2025 capture: ⌘⇧+ or drop a tab in the center; side by side or top-and-bottom; no maximum stated, the 'four' comes from TechCrunch/How-To Geek), Spaces (Jul 2026: + in the sidebar creates one; switch by icon, two-finger swipe, ⌃1/⌃2…, ⌘T + name; theme and icon per Space; Share Space as a link; Air Traffic Control routes), Keyboard Shortcuts (Jul 2026; key column did not extract from the table).
+<!-- SECTION:NOTES:END -->
