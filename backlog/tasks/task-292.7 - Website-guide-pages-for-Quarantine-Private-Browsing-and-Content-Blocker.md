@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T08:36:00Z'
+updated_date: '2026-11-08T09:08:00Z'
 labels:
   - website
 dependencies:
@@ -23,12 +23,12 @@ The privacy pages, written to the pilot template (TASK-292). Quarantine and Priv
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Quarantine and Private Browsing are separate pages that each say when to use which and link to each other
-- [ ] #2 The Quarantine page leads with link triage and states exactly what is and is not shared with your profiles, checked against the code and the running app
-- [ ] #3 Each page follows the template from the pilot (H1 + lede, media, what/why, how-to steps, FAQ, related features, download) with its own title tag and meta description pairing the feature name with the generic search phrase
-- [ ] #4 Steps, menu paths and shortcuts on each page were checked against the current release build
+- [x] #1 Quarantine and Private Browsing are separate pages that each say when to use which and link to each other
+- [x] #2 The Quarantine page leads with link triage and states exactly what is and is not shared with your profiles, checked against the code and the running app
+- [x] #3 Each page follows the template from the pilot (H1 + lede, media, what/why, how-to steps, FAQ, related features, download) with its own title tag and meta description pairing the feature name with the generic search phrase
+- [x] #4 Steps, menu paths and shortcuts on each page were checked against the current release build
 - [ ] #5 Images and loops have alt text or aria-labels describing what is on screen, fixed dimensions, and loops meet the TASK-110 size and reduced-motion rules
-- [ ] #6 Pages are in the sitemap and linked from the home page entry for the feature
+- [x] #6 Pages are in the sitemap and linked from the home page entry for the feature
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -43,4 +43,6 @@ Browser check: Chrome at 1462 px (pages, home grid underline, Arc box) and 390 p
 Cleanup: removed both NSWindow Frame / NSSplitView keys and the com.detourbrowser.mac.DetourDocs2927(b) defaults suites, and ~/Library/Application Support/DetourDocs2927(b). Left for the lead (outside the allowed deletions): WebKit stores ~/Library/WebKit/com.detourbrowser.mac/WebsiteDataStore/752d233c-948d-5bb5-81a4-55b3c0b87081 (14 MB) and 80bcf68f-fcf5-5f8c-89c1-4c83f22f46aa (536 KB), created by the two runs; empty prefs plists may linger until cfprefsd flushes.
 
 Follow-up (coordinator, Nov 8): website commit 6c7a23c rewords the home grid's Private Browsing line ('A throwaway Space with no history and nothing written to disk. Logins and cookies are cleared when you quit Detour.') and the page's opening (drops the 'someone else's account' example; says nothing is written to disk). The page already said Private cookies last until quit (runtime-confirmed here too) and contrasts Quarantine's per-window store; Quarantine's wipe on close is code-only (QuarantineSession deinit), its separate store was confirmed at runtime. The pages don't use the File menu's 'Pin/Unpin Tab' title.
+
+Nov 8 2026: merged into the website (6d89c71), reviewed with the TASK-292.5 batch (a0a35d5: Private downloads do reach disk, Private site settings last until the last Private and Quarantine window closes, Quarantine fingerprinting protections apply where the Mac's WebKit offers them, target=_blank links share the Quarantine window's store), pushed with the user's approval and live: /features/quarantine/, /features/private-browsing/, /features/content-blocker/ answer 200, in the sitemap, linked from the home grid; the Arc hub links Quarantine. Open: criterion 5 waits for the captures (Quarantine loop, Private window still, Content Blocker popover still), to be made in one capture session per docs/feature-pages.md. The Private Browsing page describes v0.4.0's Private data lifetime; TASK-298 (fixed on main) changes it at the next release.
 <!-- SECTION:NOTES:END -->
