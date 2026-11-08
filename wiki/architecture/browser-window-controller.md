@@ -130,8 +130,9 @@ the palette, cycles Picture in Picture and re-announces activation. Callers
 that only need hosting to match the model use `refreshSplitHostingIfNeeded()`
 or `ensureOwnsWebView()` instead.
 
-`deselectAllTabs()` is the empty state: no selection, the "tab peace" label,
-disabled navigation buttons.
+`deselectAllTabs()` is the empty state: no selection, the "tab peace" label
+(hidden while the command palette is open, TASK-297), disabled navigation
+buttons.
 
 ## Claiming content
 

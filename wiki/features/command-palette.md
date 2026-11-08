@@ -24,6 +24,9 @@ sources:
   - id: doc
     resource: ../../docs/command-palette.md
     title: docs/command-palette.md
+  - id: task-297
+    resource: backlog:TASK-297
+    title: "Command palette: the empty-state line shows under the palette, off-center from it"
   - id: task-78
     resource: backlog:TASK-78
     title: After Cmd+L and Return the page does not regain keyboard focus
@@ -279,12 +282,26 @@ whatever was under it.
 - **`currentTabID` is never switched to by the top hit**, so Cmd+L on a page
   does not autocomplete to that same tab. Its host can still complete: Cmd+L
   on a video, then `you`, goes to the site root in place.
-- **No selected tab**: only the split-view scrim is added.
+- **No selected tab**: only the split-view scrim is added, and the
+  empty-state line ("A rare moment of tab peace." / "Where to next?") is
+  hidden while the palette is up. The palette centers on the whole window
+  and the label on the content area, so both on screen sat half a sidebar
+  apart; in a Private window the suggestion list is short enough that both
+  showed. The label's visibility is derived from the empty state and
+  `commandPaletteView != nil` (`updateEmptyStateLabelVisibility`), so a
+  dismiss without opening anything shows it again, and a commit that
+  selects a tab ends the empty state in the same turn (no frame shows the
+  label). The palette shows and hides without animation, so the label
+  simply toggles in the same transaction (TASK-297).
 - **Search engine**: `activeSpace?.profile?.searchEngine`, default Google;
   suggestions can be turned off per profile (`searchSuggestionsEnabled`).
 
 # Tests
 
+- `EmptyStatePaletteTests` - the empty-state line is hidden under the
+  palette in all three modes (Cmd+T, Cmd+L, anchored), shown again after a
+  dismiss, stays hidden after a commit, and stays hidden when the selection
+  is cleared under an open palette (TASK-297).
 - `CommandPaletteFocusTests` - commit in place, commit into a new tab, Escape,
   and Escape in a split leave the right web view first responder. All four
   fail with `restoreWebContentFocus()` disabled.[^task-78]

@@ -119,6 +119,15 @@ class BrowserWindowController: NSWindowController {
         label.isHidden = true
         return label
     }()
+    /// The window shows its empty state (no tab selected). The label is only
+    /// visible while this holds and the command palette is closed: the palette
+    /// centers on the whole window, the label on the content area, so the two
+    /// would sit half a sidebar apart (TASK-297).
+    private var isShowingEmptyState = false {
+        didSet { updateEmptyStateLabelVisibility() }
+    }
+    /// The empty-state line is on screen (for tests).
+    var isEmptyStateLabelVisible: Bool { !emptyStateLabel.isHidden }
     let toastManager = ToastManager()
     private var webViewTopConstraint: NSLayoutConstraint?
     private lazy var findSession = FindInPageSession(bar: findBar)
@@ -2019,7 +2028,7 @@ class BrowserWindowController: NSWindowController {
     }
 
     private func removeContentViews() {
-        emptyStateLabel.isHidden = true
+        isShowingEmptyState = false
         // Reparent before the container teardown below removes its subtree.
         if linkStatusBar.superview !== contentContainerView {
             anchorLinkStatusBar(to: contentContainerView)
@@ -2568,6 +2577,16 @@ class BrowserWindowController: NSWindowController {
         }
 
         palette.show(in: window!.contentView!, initialText: initialText, anchorFrame: anchorFrame)
+        // The palette appears without animation, so the label goes in the
+        // same transaction: no frame shows both.
+        updateEmptyStateLabelVisibility()
+    }
+
+    /// Hides the empty-state line while the palette is open (TASK-297). A
+    /// dismiss that opens a page shows it for no frame: the selection that
+    /// follows in the same turn ends the empty state before anything draws.
+    private func updateEmptyStateLabelVisibility() {
+        emptyStateLabel.isHidden = !isShowingEmptyState || commandPaletteView != nil
     }
 
     func dismissCommandPalette(restoringFocus: Bool = true) {
@@ -2579,6 +2598,7 @@ class BrowserWindowController: NSWindowController {
         splitScrimView = nil
         contentScrimView?.removeFromSuperview()
         contentScrimView = nil
+        updateEmptyStateLabelVisibility()
         // The palette's field held first responder; without this the window
         // keeps it and the page gets no keys until clicked (TASK-78).
         if wasShowing && restoringFocus { restoreWebContentFocus() }
@@ -2626,7 +2646,7 @@ class BrowserWindowController: NSWindowController {
         removeContentViews()
         let hasTabs = !(activeSpace?.tabs.isEmpty ?? true) || !(activeSpace?.pinnedEntries.isEmpty ?? true)
         emptyStateLabel.stringValue = hasTabs ? "Where to next?" : "A rare moment of tab peace."
-        emptyStateLabel.isHidden = false
+        isShowingEmptyState = true
         tabSidebar.fauxAddressBar.displayText = ""
         tabSidebar.fauxAddressBar.isSecure = true
         tabSidebar.backButton.isEnabled = false
