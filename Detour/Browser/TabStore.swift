@@ -2162,7 +2162,9 @@ class TabStore {
                 faviconURL: tab.faviconURL,
                 interactionState: tab.currentInteractionStateData(),
                 parentID: tab.parentID,
-                lastDeselectedAt: tab.lastDeselectedAt,
+                // The archive clock (TASK-305), as a save folds it: the rebuilt
+                // tab is silent and has no `lastAudibleAt` of its own.
+                lastDeselectedAt: tab.archiveClockStart(now: Date()),
                 peekURL: tab.peekURL,
                 peekInteractionState: tab.peekInteractionState,
                 peekFaviconURL: tab.peekFaviconURL,
@@ -5254,9 +5256,12 @@ class TabStore {
             guard threshold != .never else { continue }
             let cutoff = now.addingTimeInterval(-threshold.rawValue)
 
+            // Counted from the later of the deselection and the end of the
+            // tab's last audible playback; a tab playing sound is never stale
+            // (TASK-305). Muted or paused media is not audible.
             func isStale(_ tab: BrowserTab) -> Bool {
-                guard let lastDeselected = tab.lastDeselectedAt else { return false }
-                return lastDeselected < cutoff
+                guard let since = tab.archiveClockStart(now: now) else { return false }
+                return since < cutoff
             }
 
             let staleTabIDs = space.tabs.compactMap { tab -> UUID? in

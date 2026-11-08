@@ -30,7 +30,7 @@ extension TabRecord {
     /// isolated, so GRDB can build and decode rows on its own queue).
     @MainActor
     init(tab: BrowserTab, spaceID: UUID, sortOrder: Int, profile: Profile?,
-         splitGroupID: UUID? = nil, splitFraction: Double? = nil) {
+         splitGroupID: UUID? = nil, splitFraction: Double? = nil, now: Date = Date()) {
         self.init(
             id: tab.id.uuidString,
             spaceID: spaceID.uuidString,
@@ -39,7 +39,11 @@ extension TabRecord {
             faviconURL: tab.faviconURL?.absoluteString,
             interactionState: tab.currentInteractionStateData(),
             sortOrder: sortOrder,
-            lastDeselectedAt: tab.lastDeselectedAt?.timeIntervalSince1970,
+            // The archive clock (TASK-305): a relaunch stops a background
+            // tab's sound, so its countdown restarts from the save, not from
+            // a deselection hours before. Only the archive sweep reads the
+            // restored value off screen; a restored tab sleeps until selected.
+            lastDeselectedAt: tab.archiveClockStart(now: now)?.timeIntervalSince1970,
             parentID: tab.parentID?.uuidString,
             peekURL: tab.peekURL?.absoluteString,
             peekInteractionState: tab.peekInteractionState,

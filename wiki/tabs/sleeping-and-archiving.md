@@ -30,6 +30,9 @@ sources:
   - id: task-45
     resource: backlog:TASK-45
     title: A failed wake of a restored ordinary tab replaces its restored session with an error page
+  - id: task-305
+    resource: backlog:TASK-305
+    title: "Tab archiving: a tab playing audio or video is archived (closed) like any idle tab"
   - id: task-115
     resource: backlog:TASK-115
     title: Sidebar Archive Tab / Archive Tabs Below record the tab as archived
@@ -171,9 +174,28 @@ or `navigationPending`, and a failure leaves the restored session in place.
 
 ## Archiving
 
-`archiveStaleTabs` closes normal tabs whose `lastDeselectedAt` is older than the
+`archiveStaleTabs` closes normal tabs whose archive clock is older than the
 profile's `archiveThreshold` (**12 h default**, 24 h, 7 days, 30 days, never),
 by calling `closeTab(id:in:archivedAt: now, registersUndo: false)`.
+
+The archive clock is `BrowserTab.archiveClockStart(now:)`:[^task-305]
+
+- nil while the tab is selected (`lastDeselectedAt == nil`), so never stale;
+- `now` while the tab, or its Peek, plays sound the user can hear
+  (`isAudible`: `_isPlayingAudio` and not page-muted, the same gate sleep, auto
+  PiP and the GPU recycler use), so a playing tab is never archived;
+- otherwise the later of `lastDeselectedAt` and `lastAudibleAt`, the moment
+  audible playback last ended. `lastAudibleAt` is stamped whenever `isAudible`
+  goes from true to false: a pause or the end of the media, a mute, the web
+  view going away. So once playback stops, "Archive tabs after" restarts from
+  the stop, not from the deselection (the user's rule, Nov 8 2026).
+  Muted or paused media does not hold a tab back; a mute ends the audible run
+  like a pause does.
+- `lastAudibleAt` lives in memory. A save writes the archive clock into the
+  saved `lastDeselectedAt` (the `TabRecord` factory), so a tab still playing
+  at quit restarts its countdown from the save rather than from a
+  deselection hours earlier. Only the archive sweep reads that column for a
+  tab off screen: a restored tab has no web view, so the sleep sweep skips it.
 
 - Only `space.tabs` of non-incognito spaces. Pinned entries and favourites are
   never archived.
@@ -184,8 +206,10 @@ by calling `closeTab(id:in:archivedAt: now, registersUndo: false)`.
   "Archive Tab" and "Archive Tabs Below" go through the same `closeTab` with
   `archivedAt` set and *do* register undo, named "Archive Tab"; a redo keeps the
   stamp.[^task-115]
-- Unlike the sleep sweep, the archive sweep checks neither audio playback nor
-  whether a window is hosting the tab. It relies on `lastDeselectedAt` alone.
+- Unlike the sleep sweep, the archive sweep does not check whether a window
+  is hosting the tab; it relies on the archive clock alone. Audio it does
+  check (above). Until TASK-305 it did not, and a podcast left playing in a
+  background tab was closed mid-playback after 12 hours.
 
 # Where it lives
 
@@ -206,7 +230,15 @@ by calling `closeTab(id:in:archivedAt: now, registersUndo: false)`.
 `SleepShowBudgetTests` (both rules, the audio, selected, hosted and split
 exemptions, the environment overrides), `BrowserTabWakeTests` (failed wake
 keeps session, title and favicon; reload after a failed wake; a commit ends the
-protection), `TabStoreTests` ("Archive vs close records"), `SplitTabTests`.
+protection), `TabStoreTests` ("Archive vs close records"), `ArchiveMediaTests`
+(playing, muted and paused tabs, the countdown restarting from a stop or a mute,
+an audible Peek, a split with one playing member, the saved clock; TASK-305),
+`SplitTabTests`.
+
+Checked at runtime (TASK-305, Nov 8 2026): a deselected tab playing a looped
+WAV survived a sweep at now + 13 h while a silent and a muted-playing tab were
+archived; after a scripted pause it survived a sweep 11 h after the stop and was
+archived 13 h after it.
 
 # Related
 
@@ -219,4 +251,5 @@ protection), `TabStoreTests` ("Archive vs close records"), `SplitTabTests`.
 
 [^task-104]: GPU process leaks IOSurfaces until the 16384 per-process limit
 [^task-45]: A failed wake of a restored ordinary tab replaces its restored session with an error page
+[^task-305]: Tab archiving: a tab playing audio or video is archived (closed) like any idle tab
 [^task-115]: Sidebar Archive Tab / Archive Tabs Below record the tab as archived

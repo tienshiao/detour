@@ -211,10 +211,18 @@ class BrowserTab: NSObject {
     @Published var isLoading: Bool = false
     @Published var isSleeping: Bool = false
     @Published var isPlayingAudio: Bool = false {
-        didSet { if isPlayingAudio != oldValue { updatePlaybackSession() } }
+        didSet {
+            guard isPlayingAudio != oldValue else { return }
+            updatePlaybackSession()
+            noteAudibilityChange(wasAudible: oldValue && !isMuted)
+        }
     }
     @Published var isMuted: Bool = false {
-        didSet { if isMuted != oldValue { postNowPlayingChange() } }
+        didSet {
+            guard isMuted != oldValue else { return }
+            postNowPlayingChange()
+            noteAudibilityChange(wasAudible: isPlayingAudio && !oldValue)
+        }
     }
     /// Playing sound the user can hear. Page mute (`PageMediaControl`) keeps
     /// `_isPlayingAudio` true, where the old script mute turned it off, so the
@@ -222,6 +230,33 @@ class BrowserTab: NSObject {
     /// picture in picture, the GPU recycler — read this rather than
     /// `isPlayingAudio`.
     var isAudible: Bool { isPlayingAudio && !isMuted }
+
+    /// When the tab last stopped being audible: playback paused or ended,
+    /// the tab was muted, or its web view went away (TASK-305). The archive
+    /// sweep counts "Archive tabs after" from the later of this and
+    /// `lastDeselectedAt`, so music left playing in a background tab is not
+    /// closed the moment it stops. In memory; a save folds it into the saved
+    /// `lastDeselectedAt` (`archiveClockStart(now:)`).
+    var lastAudibleAt: Date?
+    /// The clock `lastAudibleAt` is read from; tests inject one.
+    var audibilityClock: () -> Date = { Date() }
+
+    private func noteAudibilityChange(wasAudible: Bool) {
+        if wasAudible && !isAudible { lastAudibleAt = audibilityClock() }
+    }
+
+    /// Sound the user can hear from this tab or from its Peek, which the
+    /// archive sweep would close with it.
+    var isAudibleIncludingPeek: Bool { isAudible || (peekTab?.isAudible ?? false) }
+
+    /// When the archive countdown of a deselected tab started (TASK-305):
+    /// the later of its deselection and the end of its (or its Peek's) last
+    /// audible playback; `now` while it is audible. Nil while selected.
+    func archiveClockStart(now: Date) -> Date? {
+        guard let lastDeselectedAt else { return nil }
+        if isAudibleIncludingPeek { return now }
+        return [lastDeselectedAt, lastAudibleAt, peekTab?.lastAudibleAt].compactMap { $0 }.max()
+    }
 
     // MARK: Now playing (TASK-192) — written only by BrowserTab+NowPlaying.swift
     // and `releaseWebView`.
