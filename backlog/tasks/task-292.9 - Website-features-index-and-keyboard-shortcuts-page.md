@@ -1,11 +1,11 @@
 ---
 id: TASK-292.9
 title: 'Website: features index and keyboard shortcuts page'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T10:37:00Z'
+updated_date: '2026-11-08T19:51:00Z'
 labels:
   - website
 dependencies:
@@ -52,4 +52,6 @@ Shortcuts: from AppDelegate.setupMainMenu at v0.4.0 plus validateMenuItem retitl
 Checks: npm ci + npm run build clean (22 pages), both URLs in dist/sitemap.xml. Chrome: both pages at desktop width (1462 px) and in 390 px frames (plus a feature page and /arc/): scrollWidth 390, no element past the edge; key glyphs, tables, link cards, footer links render. Not done: /code-review; runtime check of the menus in the app (code only, per the brief).
 
 Awaiting the user's push of website branch task-292.9 (merge to main deploys). When TASK-292.10 adds the Help menu, /shortcuts/ needs a Help row if it has keys.
+
+Deployed Nov 8 2026: website main 12827cd (task-292.9 469ee69 fast-forwarded, task-292-media a3178c5 merged), pushed at the user's request; checked live on detourbrowser.com (/features/, /shortcuts/, /features/peek/ with peek.mp4, Favorites loop is-landscape at 900 px).
 <!-- SECTION:NOTES:END -->

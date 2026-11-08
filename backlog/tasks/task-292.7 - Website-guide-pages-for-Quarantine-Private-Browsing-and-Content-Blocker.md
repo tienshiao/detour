@@ -1,11 +1,11 @@
 ---
 id: TASK-292.7
 title: 'Website: guide pages for Quarantine, Private Browsing and Content Blocker'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T12:15:00Z'
+updated_date: '2026-11-08T19:51:00Z'
 labels:
   - website
 dependencies:
@@ -49,4 +49,6 @@ Nov 8 2026: merged into the website (6d89c71), reviewed with the TASK-292.5 batc
 Nov 8 2026, user: the Content Blocker page's level is right (no promises about YouTube or specific ad types). The two WebKit data stores the agent's runs left in ~/Library/WebKit/com.detourbrowser.mac/WebsiteDataStore (752d233c…, 80bcf68f…, created 00:23/00:26 during its runs) were deleted with the user's OK.
 
 Nov 8 2026, captures (agent-capture): quarantine.mp4 570 KB 7.8 s 2640x1760 (a TextEdit document's MDN link lands in a Quarantine window with the orange badge, tracking parameters stripped; Open in Reading moves it into a tab; delivered through AppDelegate.openExternalURLs with sender com.apple.TextEdit and an app-only TextEdit -> Quarantine route, no real link click) + poster 145 KB; private-browsing.webp 174 KB 2280x1640 (dark Private window, Wikipedia's Private browsing article); content-blocker.webp 38 KB 880x880 shown at 400 px (Site Settings popover on www.theverge.com: 13 resources blocked on this page). Website branch task-292-media (worktree /Users/tma/Projects/browser/dw-media), commit a3178c5 on top of 57dd0d1; not pushed, merged or deployed. Captured in one session from a v0.4.0 Debug build (scratchpad worktree, docs/task-110 kit: 2x virtual display, DETOUR_DATA_DIR DetourCap292, wallpaper F7F2EA, restored afterwards). Public pages only. Loops are H.264 CFR 30 fps, muted, with a WebP poster; frontmatter width/height in CSS px (half the pixel size). npm run build passes; Chrome check at 390 px (scrollWidth 386 on all 13 pages, media 346 px wide) and 1280 px. The page template now gives landscape loops the 'is-landscape' width (900 px) as it already did for landscape stills; this also widens the existing Favorites loop. Posters show the feature at work (Peek open, palette suggestions, the card row, the chip), not only the end frame.
+
+Deployed Nov 8 2026: website main 12827cd (task-292.9 469ee69 fast-forwarded, task-292-media a3178c5 merged), pushed at the user's request; checked live on detourbrowser.com (/features/, /shortcuts/, /features/peek/ with peek.mp4, Favorites loop is-landscape at 900 px).
 <!-- SECTION:NOTES:END -->

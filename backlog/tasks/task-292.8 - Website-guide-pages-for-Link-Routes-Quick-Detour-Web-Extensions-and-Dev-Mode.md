@@ -3,11 +3,11 @@ id: TASK-292.8
 title: >-
   Website: guide pages for Link Routes, Quick Detour, Web Extensions and Dev
   Mode
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T12:15:00Z'
+updated_date: '2026-11-08T19:51:00Z'
 labels:
   - website
 dependencies:
@@ -47,4 +47,6 @@ Cleanup: removed WebsiteDataStore 33ec675e-5977-5cc1-9d5f-691d3ca51c7e and 4d4b5
 Nov 8 2026: merged into the website with TASK-292.6/292.8 (607c9f1, 3674acd), reviewed (/code-review medium --fix on a0a35d5..HEAD: 7 overstatements corrected in 6aa5b3e; the two disputed Arc claims are backed by Arc's 2023 release notes), plus user corrections (Archived Tabs: swipe right on the first Space, checked on a trackpad; home grid 'Peek'; Arc also kept archived tabs on a sidebar page; Quick Detour's Arc box drops the link-menu item, TASK-300) and a YAML quoting fix the review's edit needed (29a930b). Pushed with the user's approval (a0a35d5..57dd0d1); all pages answer 200, are in the sitemap and linked from the home grid; the Arc hub links them. Open: the media criterion waits for the capture session (capture list in the agent notes above). Follow-ups filed from this batch: TASK-305 (tabs playing media get archived), TASK-306 (record Peek pages in History), TASK-307 (Peek ⌘O, off setting, reopen), TASK-308 (close from the switcher with ⌃W), TASK-309 (Dock: show/hide all Quick Detours), TASK-303 (1Password without Chrome), TASK-304 (launch link has no sender).
 
 Nov 8 2026, captures (agent-capture): quick-detour.mp4 402 KB 7.9 s 2440x1700 (over TextEdit the Quick Detour palette appears via the app's own hotkey action, 'ted nelson xanadu', Return opens the results in a Quick Detour window) + poster 132 KB; link-routes.webp 81 KB 1760x1662 shown at 680 px (Settings > Links: github.com -> Work, wikipedia.org -> Reading, TextEdit -> Quarantine, Default Most Recent Space); web-extensions.webp 202 KB 2280x1640 (Dark Reader installed from the Chrome Web Store through Add to Chrome, pinned in the address bar with its popup open over Wikipedia; a Settings > Extensions still is kept in the scratch folder only); dev-mode.webp 90 KB 2280x1640 (http://localhost:5173 demo page on a python http.server, striped Dev Mode toolbar, hazard-bordered sidebar row). Website branch task-292-media (worktree /Users/tma/Projects/browser/dw-media), commit a3178c5 on top of 57dd0d1; not pushed, merged or deployed. Captured in one session from a v0.4.0 Debug build (scratchpad worktree, docs/task-110 kit: 2x virtual display, DETOUR_DATA_DIR DetourCap292, wallpaper F7F2EA, restored afterwards). Public pages only. Loops are H.264 CFR 30 fps, muted, with a WebP poster; frontmatter width/height in CSS px (half the pixel size). npm run build passes; Chrome check at 390 px (scrollWidth 386 on all 13 pages, media 346 px wide) and 1280 px. The page template now gives landscape loops the 'is-landscape' width (900 px) as it already did for landscape stills; this also widens the existing Favorites loop. Posters show the feature at work (Peek open, palette suggestions, the card row, the chip), not only the end frame.
+
+Deployed Nov 8 2026: website main 12827cd (task-292.9 469ee69 fast-forwarded, task-292-media a3178c5 merged), pushed at the user's request; checked live on detourbrowser.com (/features/, /shortcuts/, /features/peek/ with peek.mp4, Favorites loop is-landscape at 900 px).
 <!-- SECTION:NOTES:END -->
