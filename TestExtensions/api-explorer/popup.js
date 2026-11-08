@@ -970,6 +970,40 @@ const debuggerRuntimeActions = {
   'btn-dbg-rt-frames': () => debuggerOp('sendCommand', { method: 'Page.getFrameTree', params: {} }),
 };
 
+// --- Debugger: console and network events (TASK-132.16) ---
+//
+// What the page does is started through Runtime.evaluate (a timer, so the
+// evaluation answers first); the events it causes arrive in the events list.
+
+const debuggerEventActions = {
+  'btn-dbg-ev-runtime-on': () => debuggerOp('sendCommand', { method: 'Runtime.enable', params: {} }),
+  'btn-dbg-ev-runtime-off': () => debuggerOp('sendCommand', { method: 'Runtime.disable', params: {} }),
+  'btn-dbg-ev-network-on': () => debuggerOp('sendCommand', { method: 'Network.enable', params: { maxPostDataSize: 65536 } }),
+  'btn-dbg-ev-network-off': () => debuggerOp('sendCommand', { method: 'Network.disable', params: {} }),
+  'btn-dbg-ev-discard': () => debuggerOp('sendCommand', { method: 'Runtime.discardConsoleEntries', params: {} }),
+  'btn-dbg-ev-log': () => evaluateHere(
+    "console.log('API Explorer', 42, { a: 1 }); console.warn('a warning'); console.error(new Error('an error')); 'logged'", false),
+  'btn-dbg-ev-throw': () => evaluateHere(
+    "setTimeout(function explorerThrows() { throw new TypeError('thrown by the API Explorer'); }, 0); 'thrown'", false),
+  'btn-dbg-ev-reject': () => evaluateHere("Promise.reject(new Error('rejected by the API Explorer')); 'rejected'", false),
+  'btn-dbg-ev-fetch': () => evaluateHere(`setTimeout(() => {
+      fetch(location.href).catch(() => {});
+      fetch('/explorer-missing', { method: 'POST', body: 'a=1' }).catch(() => {});
+      fetch('http://127.0.0.1:1/').catch(() => {});
+      const xhr = new XMLHttpRequest(); xhr.open('GET', location.href); xhr.send();
+    }, 0); 'requested'`, false),
+};
+
+for (const [id, action] of Object.entries(debuggerEventActions)) {
+  document.getElementById(id).addEventListener('click', async () => {
+    try {
+      showResult('res-dbg-ev', await action());
+    } catch (e) {
+      showResult('res-dbg-ev', e.message, true);
+    }
+  });
+}
+
 for (const [id, action] of Object.entries(debuggerRuntimeActions)) {
   document.getElementById(id).addEventListener('click', async () => {
     try {

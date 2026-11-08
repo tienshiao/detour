@@ -461,6 +461,25 @@ await new Promise((r) => setTimeout(r, 50));
       <button id="btn-dbg-rt-frames" class="secondary">Page.getFrameTree</button>
     </div>
     <div class="result" id="res-dbg-rt"></div>
+    <!-- Console and network events (TASK-132.16) -->
+    <div class="row" style="font-size:11px;color:#555">
+      Runtime.enable replays what the page logged since the attach, then reports each console message and uncaught
+      error; Network.enable reports the page's requests from then on. Both arrive in the events list.
+    </div>
+    <div class="row">
+      <button id="btn-dbg-ev-runtime-on">Runtime.enable</button>
+      <button id="btn-dbg-ev-runtime-off" class="secondary">Runtime.disable</button>
+      <button id="btn-dbg-ev-network-on">Network.enable</button>
+      <button id="btn-dbg-ev-network-off" class="secondary">Network.disable</button>
+    </div>
+    <div class="row">
+      <button id="btn-dbg-ev-log" class="secondary">Log in page</button>
+      <button id="btn-dbg-ev-throw" class="secondary">Throw in page</button>
+      <button id="btn-dbg-ev-reject" class="secondary">Reject in page</button>
+      <button id="btn-dbg-ev-fetch" class="secondary">fetch + XHR in page</button>
+      <button id="btn-dbg-ev-discard" class="secondary">Runtime.discardConsoleEntries</button>
+    </div>
+    <div class="result" id="res-dbg-ev"></div>
   </section>
 
   <!-- Side panel (TASK-132.8) and runtime.getContexts (TASK-132.9) -->
