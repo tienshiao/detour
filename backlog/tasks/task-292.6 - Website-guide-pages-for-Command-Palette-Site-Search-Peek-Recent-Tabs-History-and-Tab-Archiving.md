@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T10:07:00Z'
+updated_date: '2026-11-08T12:15:00Z'
 labels:
   - website
 dependencies:
@@ -27,7 +27,7 @@ Getting around and finding things again, written to the pilot template (TASK-292
 <!-- AC:BEGIN -->
 - [x] #1 Each page follows the template from the pilot (H1 + lede, media, what/why, how-to steps, FAQ, related features, download) with its own title tag and meta description pairing the feature name with the generic search phrase
 - [x] #2 Steps, menu paths and shortcuts on each page were checked against the current release build
-- [ ] #3 Images and loops have alt text or aria-labels describing what is on screen, fixed dimensions, and loops meet the TASK-110 size and reduced-motion rules
+- [x] #3 Images and loops have alt text or aria-labels describing what is on screen, fixed dimensions, and loops meet the TASK-110 size and reduced-motion rules
 - [x] #4 Pages are in the sitemap and linked from the home page entry for the feature
 - [x] #5 A Coming from Arc box appears only on pages whose feature Arc had in comparable form
 <!-- AC:END -->
@@ -47,4 +47,6 @@ Browser check: Chrome, local dist/ build: desktop width (Peek page incl. Arc box
 Data dirs used: DetourDocs2926, DetourDocs2926b, DetourDocs2926c. Removed their NSWindow Frame / NSSplitView defaults keys, the com.detourbrowser.mac.DetourDocs2926* suites and plists, ~/Library/Application Support/DetourDocs2926*, and the three WebKit stores the runs created (45d59815…, d7dc7b6c…, 5682bdc3…, created 01:25, 01:28, 01:45 during the runs); the store list matches the one taken before the first launch. The harness stays in the app worktree (scratchpad agent-2926/app) for the lead to remove.
 
 Nov 8 2026: merged into the website with TASK-292.6/292.8 (607c9f1, 3674acd), reviewed (/code-review medium --fix on a0a35d5..HEAD: 7 overstatements corrected in 6aa5b3e; the two disputed Arc claims are backed by Arc's 2023 release notes), plus user corrections (Archived Tabs: swipe right on the first Space, checked on a trackpad; home grid 'Peek'; Arc also kept archived tabs on a sidebar page; Quick Detour's Arc box drops the link-menu item, TASK-300) and a YAML quoting fix the review's edit needed (29a930b). Pushed with the user's approval (a0a35d5..57dd0d1); all pages answer 200, are in the sitemap and linked from the home grid; the Arc hub links them. Open: the media criterion waits for the capture session (capture list in the agent notes above). Follow-ups filed from this batch: TASK-305 (tabs playing media get archived), TASK-306 (record Peek pages in History), TASK-307 (Peek ⌘O, off setting, reopen), TASK-308 (close from the switcher with ⌃W), TASK-309 (Dock: show/hide all Quick Detours), TASK-303 (1Password without Chrome), TASK-304 (launch link has no sender).
+
+Nov 8 2026, captures (agent-capture): peek.mp4 887 KB 7.6 s 2280x1640 (Shift-click the Safari link on Wikipedia's Web browser article -> Peek slides up -> Open in New Tab makes it a selected tab) + peek-poster.webp 157 KB; command-palette.mp4 520 KB 7.8 s 2280x1640 (Cmd-T, 'app', open Apple tab + history + suggestions, Return opens apple.com/mac) + poster 119 KB; recent-tabs.mp4 492 KB 6.1 s 2280x1640 (hold Ctrl, Tab twice, release selects the second card) + poster 166 KB; site-search.mp4 491 KB 7.9 s 2280x1640 (Cmd-T, 'w' Space -> Wikipedia chip, 'early hypertext systems', Return -> Wikipedia search results) + poster 155 KB; history.webp 89 KB 2280x1640 (History page, search field, All time, Clear History, visits grouped Yesterday/Friday/Thursday); tab-archiving.webp 182 KB 2280x1640 (Archived Tabs sidebar page, groups Yesterday / 2 days ago / 3 days ago). Website branch task-292-media (worktree /Users/tma/Projects/browser/dw-media), commit a3178c5 on top of 57dd0d1; not pushed, merged or deployed. Captured in one session from a v0.4.0 Debug build (scratchpad worktree, docs/task-110 kit: 2x virtual display, DETOUR_DATA_DIR DetourCap292, wallpaper F7F2EA, restored afterwards). Public pages only. Loops are H.264 CFR 30 fps, muted, with a WebP poster; frontmatter width/height in CSS px (half the pixel size). npm run build passes; Chrome check at 390 px (scrollWidth 386 on all 13 pages, media 346 px wide) and 1280 px. The page template now gives landscape loops the 'is-landscape' width (900 px) as it already did for landscape stills; this also widens the existing Favorites loop. Posters show the feature at work (Peek open, palette suggestions, the card row, the chip), not only the end frame.
 <!-- SECTION:NOTES:END -->

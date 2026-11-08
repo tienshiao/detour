@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T09:10:00Z'
+updated_date: '2026-11-08T12:15:00Z'
 labels:
   - website
 dependencies:
@@ -27,7 +27,7 @@ The privacy pages, written to the pilot template (TASK-292). Quarantine and Priv
 - [x] #2 The Quarantine page leads with link triage and states exactly what is and is not shared with your profiles, checked against the code and the running app
 - [x] #3 Each page follows the template from the pilot (H1 + lede, media, what/why, how-to steps, FAQ, related features, download) with its own title tag and meta description pairing the feature name with the generic search phrase
 - [x] #4 Steps, menu paths and shortcuts on each page were checked against the current release build
-- [ ] #5 Images and loops have alt text or aria-labels describing what is on screen, fixed dimensions, and loops meet the TASK-110 size and reduced-motion rules
+- [x] #5 Images and loops have alt text or aria-labels describing what is on screen, fixed dimensions, and loops meet the TASK-110 size and reduced-motion rules
 - [x] #6 Pages are in the sitemap and linked from the home page entry for the feature
 <!-- AC:END -->
 
@@ -47,4 +47,6 @@ Follow-up (coordinator, Nov 8): website commit 6c7a23c rewords the home grid's P
 Nov 8 2026: merged into the website (6d89c71), reviewed with the TASK-292.5 batch (a0a35d5: Private downloads do reach disk, Private site settings last until the last Private and Quarantine window closes, Quarantine fingerprinting protections apply where the Mac's WebKit offers them, target=_blank links share the Quarantine window's store), pushed with the user's approval and live: /features/quarantine/, /features/private-browsing/, /features/content-blocker/ answer 200, in the sitemap, linked from the home grid; the Arc hub links Quarantine. Open: criterion 5 waits for the captures (Quarantine loop, Private window still, Content Blocker popover still), to be made in one capture session per docs/feature-pages.md. The Private Browsing page describes v0.4.0's Private data lifetime; TASK-298 (fixed on main) changes it at the next release.
 
 Nov 8 2026, user: the Content Blocker page's level is right (no promises about YouTube or specific ad types). The two WebKit data stores the agent's runs left in ~/Library/WebKit/com.detourbrowser.mac/WebsiteDataStore (752d233c…, 80bcf68f…, created 00:23/00:26 during its runs) were deleted with the user's OK.
+
+Nov 8 2026, captures (agent-capture): quarantine.mp4 570 KB 7.8 s 2640x1760 (a TextEdit document's MDN link lands in a Quarantine window with the orange badge, tracking parameters stripped; Open in Reading moves it into a tab; delivered through AppDelegate.openExternalURLs with sender com.apple.TextEdit and an app-only TextEdit -> Quarantine route, no real link click) + poster 145 KB; private-browsing.webp 174 KB 2280x1640 (dark Private window, Wikipedia's Private browsing article); content-blocker.webp 38 KB 880x880 shown at 400 px (Site Settings popover on www.theverge.com: 13 resources blocked on this page). Website branch task-292-media (worktree /Users/tma/Projects/browser/dw-media), commit a3178c5 on top of 57dd0d1; not pushed, merged or deployed. Captured in one session from a v0.4.0 Debug build (scratchpad worktree, docs/task-110 kit: 2x virtual display, DETOUR_DATA_DIR DetourCap292, wallpaper F7F2EA, restored afterwards). Public pages only. Loops are H.264 CFR 30 fps, muted, with a WebP poster; frontmatter width/height in CSS px (half the pixel size). npm run build passes; Chrome check at 390 px (scrollWidth 386 on all 13 pages, media 346 px wide) and 1280 px. The page template now gives landscape loops the 'is-landscape' width (900 px) as it already did for landscape stills; this also widens the existing Favorites loop. Posters show the feature at work (Peek open, palette suggestions, the card row, the chip), not only the end frame.
 <!-- SECTION:NOTES:END -->
