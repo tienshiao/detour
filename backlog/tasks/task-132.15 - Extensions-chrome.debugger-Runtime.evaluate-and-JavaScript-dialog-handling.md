@@ -1,9 +1,11 @@
 ---
 id: TASK-132.15
 title: 'Extensions: chrome.debugger Runtime.evaluate and JavaScript dialog handling'
-status: To Do
-assignee: []
-created_date: '2026-10-03 23:09'
+status: In Progress
+assignee:
+  - '@claude'
+created_date: 2026-10-03 23:09
+updated_date: '2026-11-08T03:33:00Z'
 labels: []
 dependencies:
   - TASK-132.13

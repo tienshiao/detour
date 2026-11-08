@@ -408,6 +408,25 @@
     <div class="row">
       <textarea id="dbg-params" rows="2" style="width:100%;font-family:'SF Mono',Menlo,monospace;font-size:11px">{"expression": "location.href", "returnByValue": true}</textarea>
     </div>
+    <!-- Debugger input (TASK-132.14) -->
+    <div class="row" style="font-size:11px;color:#555">
+      Input: x / y are CSS pixels of the target tab's viewport (attach first).
+    </div>
+    <div class="row">
+      <input type="number" id="dbg-in-x" placeholder="x" value="100" style="width:56px"/>
+      <input type="number" id="dbg-in-y" placeholder="y" value="100" style="width:56px"/>
+      <button id="btn-dbg-in-click">Click</button>
+      <button id="btn-dbg-in-dblclick" class="secondary">Double click</button>
+      <button id="btn-dbg-in-rightclick" class="secondary">Right click</button>
+      <button id="btn-dbg-in-wheel" class="secondary">Wheel ↓300</button>
+    </div>
+    <div class="row">
+      <input type="text" id="dbg-in-text" value="Hello, Détour" style="width:150px"/>
+      <button id="btn-dbg-in-type">Type (key events)</button>
+      <button id="btn-dbg-in-insert" class="secondary">Input.insertText</button>
+      <button id="btn-dbg-in-selectall" class="secondary">Cmd+A</button>
+      <button id="btn-dbg-in-enter" class="secondary">Enter</button>
+    </div>
     <div class="result" id="res-dbg"></div>
     <div class="row">
       <button id="btn-dbg-events" class="secondary">Events (popup + worker)</button>

@@ -20,6 +20,7 @@ extension ExtensionDebugger {
         let handled: Bool
         switch method.prefix(while: { $0 != "." }) {
         case "Page": handled = ExtensionDebuggerPage.run(method, params: params, in: session, reply: reply)
+        case "Input": handled = ExtensionDebuggerInput.run(method, params: params, in: session, reply: reply)
         default: handled = false
         }
         if !handled {
@@ -249,7 +250,7 @@ enum ExtensionDebuggerScreenshot {
     /// The viewport as the page's main frame reports it, read in a world of
     /// Detour's own so the page cannot see or intercept the question. Nil when
     /// the page cannot answer (between documents).
-    private static func readViewport(_ webView: WKWebView) async -> Viewport? {
+    static func readViewport(_ webView: WKWebView) async -> Viewport? {
         let script = "return [innerWidth, innerHeight, scrollX, scrollY, devicePixelRatio];"
         let answer = try? await webView.callAsyncJavaScript(script, arguments: [:], in: nil,
                                                             contentWorld: ExtensionDebugger.contentWorld)

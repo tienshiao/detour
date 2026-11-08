@@ -28,7 +28,7 @@
 
 # Features
 
-* [Debugger API](debugger-api.md) - chrome.debugger over an emulated subset of the Chrome DevTools Protocol — attachments and Chrome's rules for them, how an attachment ends, tab ids kept natively, the shared parked event channel, Page.captureScreenshot geometry, the user's Stop, and what differs from Chrome. *(draft)*
+* [Debugger API](debugger-api.md) - chrome.debugger over an emulated subset of the Chrome DevTools Protocol — attachments and Chrome's rules for them, how an attachment ends, tab ids kept natively, the shared parked event channel, Page.captureScreenshot geometry, synthesized input and what keeps it in the tab, the user's Stop, and what differs from Chrome. *(draft)*
 * [Extension command shortcuts](command-shortcuts.md) - How an extension's manifest commands fire — WebKit keeps the commands and raises commands.onCommand, but Detour has to notice the key press and hand it over; the order in which the page, Detour's menu and the extensions get a key, and why a shortcut counts as a user gesture.
 * [Extension side panel](side-panel.md) - Detour's chrome.sidePanel — a polyfilled API whose state is kept natively per profile and extension, and a panel web view hosted beside the tab's content; tab panels and window panels, which window shows which panel, how a panel closes, and the keyboard focus rule.
 * [Extension updates](updates.md) - How installed extensions move to newer versions — the update2 poll, the verification gate, the added-permissions hold, deferring an update while the extension is busy, runtime.onUpdateAvailable, and why runtime.reload has to be recognised natively.

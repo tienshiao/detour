@@ -179,9 +179,20 @@ final class BrowserWindow: NSWindow {
     /// How many times a parked view was refused — for tests.
     private(set) var refusedParkedFirstResponderCount = 0
 
+    /// How many times a displayed web view was refused while it was handling
+    /// an extension's input — for tests.
+    private(set) var refusedDrivenFirstResponderCount = 0
+
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
         if let view = responder as? NSView, view.isInAutomationParking {
             refusedParkedFirstResponderCount += 1
+            return false
+        }
+        // The same request from a displayed page an extension is clicking in
+        // (TASK-132.14): the user may be typing elsewhere — the address bar,
+        // the side panel, another pane — and keeps their focus.
+        if AutomationInput.refusesFirstResponder(responder, in: self) {
+            refusedDrivenFirstResponderCount += 1
             return false
         }
         return super.makeFirstResponder(responder)
@@ -497,6 +508,188 @@ enum AutomationInput {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { AutomationInput.filter($0) }
     }
+
+    // MARK: Mouse
+
+    /// Mouse downs sent through `sendMouse`, by identity. WebKit begins a drag
+    /// with the press that started it, which is how `AutomationDragGuard`
+    /// recognises a drag nobody's hand is holding.
+    private static let drivenMouseDowns = NSHashTable<NSEvent>(options: [.weakMemory, .objectPointerPersonality])
+
+    /// Sends a mouse or wheel event to `webView`, by the view method for its
+    /// type. Build it for `webView.window`.
+    static func sendMouse(_ event: NSEvent, to webView: WKWebView) {
+        switch event.type {
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            AutomationDragGuard.installIfNeeded()
+            drivenMouseDowns.add(event)
+            if event.type == .rightMouseDown || (event.type == .leftMouseDown && event.modifierFlags.contains(.control)) {
+                contextMenuPresses[ObjectIdentifier(webView)] = ProcessInfo.processInfo.systemUptime
+            }
+        default:
+            break
+        }
+        switch event.type {
+        case .leftMouseDown: webView.mouseDown(with: event)
+        case .leftMouseUp: webView.mouseUp(with: event)
+        case .leftMouseDragged: webView.mouseDragged(with: event)
+        case .rightMouseDown: webView.rightMouseDown(with: event)
+        case .rightMouseUp: webView.rightMouseUp(with: event)
+        case .rightMouseDragged: webView.rightMouseDragged(with: event)
+        case .otherMouseDown: webView.otherMouseDown(with: event)
+        case .otherMouseUp: webView.otherMouseUp(with: event)
+        case .otherMouseDragged: webView.otherMouseDragged(with: event)
+        case .mouseMoved: webView.mouseMoved(with: event)
+        case .scrollWheel: webView.scrollWheel(with: event)
+        default: assertionFailure("AutomationInput.sendMouse takes mouse events, not \(event.type)")
+        }
+    }
+
+    /// Whether `event` is a mouse down sent through `sendMouse`.
+    static func isDrivenMouseDown(_ event: NSEvent) -> Bool {
+        drivenMouseDowns.contains(event)
+    }
+
+    // MARK: Context menus
+
+    /// When a synthesized right press (or Control-click) was last sent to a
+    /// web view, by its identity.
+    private static var contextMenuPresses: [ObjectIdentifier: TimeInterval] = [:]
+    /// How long a synthesized press can take to become WebKit's menu request.
+    /// WebKit asks after the page has handled the press, and can ask after
+    /// processing the menu's content asynchronously, so the request can come
+    /// after the event's dispatch has ended.
+    static let contextMenuWindow: TimeInterval = 2
+    /// How many menus were withheld — for tests.
+    private(set) static var suppressedContextMenuCount = 0
+
+    /// Whether the context menu WebKit is about to show for `webView` answers
+    /// an extension's synthesized press rather than the user's: no menu then.
+    /// A parked page has no user to click it, so it never gets one. Otherwise
+    /// a synthesized press is good for one menu, within `contextMenuWindow`.
+    static func consumeSynthesizedContextMenu(for webView: WKWebView) -> Bool {
+        let key = ObjectIdentifier(webView)
+        let pressed = contextMenuPresses.removeValue(forKey: key)
+        // A press the page answered with `preventDefault` leaves its mark
+        // behind; the user's own right click is still theirs.
+        if !webView.isInAutomationParking, userJustPressed(in: webView.window) { return false }
+        let synthesized = webView.isInAutomationParking || isDispatching(to: webView)
+            || pressed.map { ProcessInfo.processInfo.systemUptime - $0 < contextMenuWindow } == true
+        if synthesized { suppressedContextMenuCount += 1 }
+        return synthesized
+    }
+
+    // MARK: Dispatch
+
+    /// Web views with a synthesized event being handled, and how many.
+    private static var dispatching: [ObjectIdentifier: Int] = [:]
+
+    /// Brackets the handling of synthesized input to `webView`, from sending it
+    /// until the page has handled it. Meanwhile what the page asks of the app
+    /// in answer — first responder when it focuses an element, a context menu
+    /// for a right click — is refused: it is the extension's input, and the
+    /// user's focus and screen are not its to take.
+    static func beginDispatch(to webView: WKWebView) {
+        installMenuGuardIfNeeded()
+        dispatching[ObjectIdentifier(webView), default: 0] += 1
+    }
+
+    // MARK: Popup menus
+
+    /// How many menus were closed — for tests.
+    private(set) static var cancelledMenuCount = 0
+    private static var menuObserver: (any NSObjectProtocol)?
+
+    /// A synthesized click on a `<select>` (or another control WebKit shows a
+    /// native popup for) opens a real menu. It is modal: it appears over
+    /// whatever the user is looking at, even for a parked page, and holds the
+    /// main thread until dismissed. WebKit has no delegate hook for it, so a
+    /// menu that begins tracking while synthesized input is being handled,
+    /// and is not the user's own (`userJustPressed`), is closed on the next
+    /// turn of the tracking loop. The page's control keeps its value; an
+    /// extension sets a `<select>` from script, as the Claude extension does.
+    private static func installMenuGuardIfNeeded() {
+        guard menuObserver == nil else { return }
+        menuObserver = NotificationCenter.default.addObserver(
+            forName: NSMenu.didBeginTrackingNotification, object: nil, queue: nil) { note in
+            // AppKit posts it on the main thread, from the menu's tracking.
+            nonisolated(unsafe) let note = note
+            MainActor.assumeIsolated {
+                guard !dispatching.isEmpty, let menu = note.object as? NSMenu, menu.supermenu == nil, menu !== NSApp.mainMenu,
+                      !userJustPressed(in: NSApp.keyWindow) else { return }
+                cancelledMenuCount += 1
+                // Cancelling before the tracking loop runs leaves it running:
+                // close it from inside the loop, which runs timers in its mode.
+                let timer = Timer(timeInterval: 0, repeats: false) { _ in
+                    nonisolated(unsafe) let menu = menu
+                    MainActor.assumeIsolated { menu.cancelTrackingWithoutAnimation() }
+                }
+                RunLoop.main.add(timer, forMode: .common)
+            }
+        }
+    }
+
+    static func endDispatch(to webView: WKWebView) {
+        let key = ObjectIdentifier(webView)
+        guard let count = dispatching[key] else { return }
+        dispatching[key] = count > 1 ? count - 1 : nil
+    }
+
+    static func isDispatching(to webView: WKWebView) -> Bool {
+        dispatching[ObjectIdentifier(webView)] != nil
+    }
+
+    /// Whether `window` must refuse to make `responder` first responder: a
+    /// page an extension is clicking in asks for it when it focuses an element,
+    /// and the user's focus elsewhere in the window is not the extension's to
+    /// take. For every window a driven tab can be displayed in.
+    static func refusesFirstResponder(_ responder: NSResponder?, in window: NSWindow) -> Bool {
+        guard let view = responder as? NSView, window.firstResponder !== view, isDispatching(into: view) else {
+            return false
+        }
+        // The user clicked the page meanwhile: that focus is theirs.
+        return !userJustPressed(in: window)
+    }
+
+    /// Whether the event AppKit is handling is the user's own mouse press in
+    /// `window` — so what WebKit asks for now answers them, not an extension.
+    static func userJustPressed(in window: NSWindow?) -> Bool {
+        guard let event = NSApp.currentEvent, let window,
+              [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type),
+              !isDrivenMouseDown(event), event.window === window else { return false }
+        return ProcessInfo.processInfo.systemUptime - event.timestamp < 1
+    }
+
+    /// Whether `view` is, or is inside, a web view synthesized input is being
+    /// handled by.
+    static func isDispatching(into view: NSView) -> Bool {
+        guard !dispatching.isEmpty else { return false }
+        var current: NSView? = view
+        while let candidate = current {
+            if let webView = candidate as? WKWebView { return isDispatching(to: webView) }
+            current = candidate.superview
+        }
+        return false
+    }
+}
+
+// MARK: - The UI delegate of a never-displayed parked page
+
+/// What a parked web view that no window has wired answers WebKit with
+/// (`BrowserWindowController.wireOwnedWebView` replaces it as soon as a window
+/// displays the tab). It implements only the context-menu SPI, so everything
+/// else — JavaScript dialogs, new windows, file panels — keeps WebKit's
+/// behaviour for a web view with no UI delegate.
+final class AutomationUIDelegate: NSObject, WKUIDelegate {
+    static let shared = AutomationUIDelegate()
+
+    /// See `BrowserWindowController`'s implementation: no menu for an
+    /// extension's synthesized press.
+    @objc(_webView:getContextMenuFromProposedMenu:forElement:userInfo:completionHandler:)
+    func _webView(_ webView: WKWebView, getContextMenuFromProposedMenu menu: NSMenu, forElement element: AnyObject,
+                  userInfo: AnyObject?, completionHandler: @escaping @MainActor @Sendable (NSMenu?) -> Void) {
+        completionHandler(AutomationInput.consumeSynthesizedContextMenu(for: webView) ? nil : menu)
+    }
 }
 
 // MARK: - BrowserWindowController: parking
@@ -515,6 +708,11 @@ extension BrowserWindowController {
     func parkForAutomation(_ tab: BrowserTab) {
         // Also re-wraps a web view that was hosted bare (a peek).
         tab.ensureWebViewContainer()
+        // A tab no window has displayed has no UI delegate, so WebKit would
+        // show a synthesized right click's menu without asking (TASK-132.14).
+        if let webView = tab.webView, webView.uiDelegate == nil {
+            webView.uiDelegate = AutomationUIDelegate.shared
+        }
         guard let container = tab.webViewContainer else { return }
         let host = automationParkingView
         host.frame = contentContainerView.bounds

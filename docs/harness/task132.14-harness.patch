@@ -1,0 +1,227 @@
+TASK-132.14 runtime harness: installs the API Explorer into an isolated profile, attaches chrome.debugger to an unselected (parked) tab from the worker and drives it with Input.* while the user types in the selected tab (posted key events), then drives the displayed tab from a page with the command palette open. Logs focus, menus, drag refusals and both pages' values. Temporary, never committed to Detour/.
+
+    git apply docs/harness/task132.14-harness.patch && xcodegen generate && build
+    DETOUR_DATA_DIR=DetourVerify13214-<n> DETOUR_VERIFY_DIR=$OUT DETOUR_API_EXPLORER=$PWD/TestExtensions/api-explorer .derived/.../Detour
+    # "SHOOT <name> <windowNumber>" lines in $OUT/verify.log cue screencapture -l; ends with "done".
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 2f165c2..2bf20a1 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -149,6 +149,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask13214HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task13214Harness.swift b/Detour/App/Task13214Harness.swift
+new file mode 100644
+index 0000000..d094660
+--- /dev/null
++++ b/Detour/App/Task13214Harness.swift
+@@ -0,0 +1,201 @@
++// TEMP TASK-132.14 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask13214HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"], let explorerPath = env["DETOUR_API_EXPLORER"] else { return }
++        let out = URL(fileURLWithPath: outDir)
++        let logURL = out.appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier)")
++        guard let window = wc.window, let space = wc.activeSpace, let profile = wc.activeSpace?.profile else { return log("no window/space") }
++        let store = TabStore.shared
++        var menus = 0
++        let menuObserver = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: nil) { note in
++            nonisolated(unsafe) let note = note
++            MainActor.assumeIsolated {
++                guard let menu = note.object as? NSMenu, menu.supermenu == nil else { return }
++                menus += 1
++                log("MENU began tracking: \(menu.items.prefix(2).map(\.title))")
++                let timer = Timer(timeInterval: 1, repeats: false) { _ in
++                    nonisolated(unsafe) let menu = menu
++                    MainActor.assumeIsolated { menu.cancelTrackingWithoutAnimation() }
++                }
++                RunLoop.main.add(timer, forMode: .common)
++            }
++        }
++        _ = menuObserver
++
++        func page(_ title: String, _ color: String, _ body: String) -> URL {
++            let html = "<title>\(title)</title><body style='margin:0;font:22px system-ui;background:\(color);height:2400px'>\(body)</body>"
++            return URL(string: "data:text/html," + html.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)!
++        }
++        let alphaBody = "<p style='margin:30px'>Alpha (the user's tab)</p><input id='u' style='margin:0 30px;font:22px system-ui;width:400px'><br><input id='x' style='margin:20px 30px;font:22px system-ui;width:400px' placeholder='extension types here'>"
++        let bravoBody = """
++            <p style='margin:30px'>Bravo (parked, driven)</p>
++            <button id='b' style='margin:0 30px;font:22px system-ui' onclick="document.getElementById('out').textContent='clicks: '+(++window.n)">click me</button>
++            <span id='out'>clicks: 0</span><br>
++            <input id='i' style='margin:20px 30px;font:22px system-ui;width:400px'><br>
++            <p id='p' style='margin:0 30px'>Alpha beta gamma delta epsilon.</p>
++            <script>window.n=0; document.addEventListener('contextmenu', () => document.getElementById('out').textContent += ' [contextmenu]');</script>
++            """
++
++        Task { @MainActor in
++            @MainActor func sleep(_ s: Double) async { try? await Task.sleep(for: .milliseconds(Int(s * 1000))) }
++            do {
++                let ext = try ExtensionManager.shared.install(from: URL(fileURLWithPath: explorerPath))
++                log("installed \(ext.id)")
++                await sleep(2)
++                guard let context = profile.extensionContext(for: ext.id) else { return log("no context") }
++                let alpha = store.addTab(in: space, url: page("Alpha", "rgb(200,215,255)", alphaBody))
++                let bravo = store.addTab(in: space, url: page("Bravo", "rgb(200,240,200)", bravoBody))
++                wc.selectTab(id: alpha.id)
++                window.makeKeyAndOrderFront(nil)
++                NSApp.activate(ignoringOtherApps: true)
++                await sleep(3)
++                let extPage = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300),
++                                        configuration: context.webViewConfiguration!)
++                extPage.load(URLRequest(url: context.baseURL.appendingPathComponent("options.html")))
++                await sleep(3)
++
++                @MainActor func js(_ body: String, quiet: Bool = false) async -> Any? {
++                    do {
++                        let raw = try await extPage.callAsyncJavaScript(
++                            "try { return JSON.stringify({ ok: true, value: await (async () => { \(body) })() }); } catch (e) { return JSON.stringify({ ok: false, error: String(e && e.message || e) }); }",
++                            arguments: [:], contentWorld: .page)
++                        let text = raw as? String ?? "nil"
++                        if !quiet || !text.contains("\"ok\":true") { log("JS -> \(text.count > 300 ? String(text.prefix(300)) + "…" : text)") }
++                        return (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
++                    } catch { log("JS threw \(error)"); return nil }
++                }
++                @MainActor func pageValue(_ tab: BrowserTab, _ expr: String) async -> String {
++                    let v = try? await tab.webView?.callAsyncJavaScript("return String(\(expr))", arguments: [:], contentWorld: .page)
++                    return v as? String ?? "?"
++                }
++                @MainActor func state(_ label: String) async {
++                    let fr = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
++                    let frIsAlpha = window.firstResponder === alpha.webView
++                    log("STATE \(label): selected=\(wc.selectedTab?.title ?? "nil") firstResponder=\(fr) frIsAlphaWebView=\(frIsAlpha) key=\(window.isKeyWindow) bravo=\(bravo.automationHosting) alpha=\(alpha.automationHosting) menus=\(menus) refusedDrivenFR=\((window as? BrowserWindow)?.refusedDrivenFirstResponderCount ?? -1) refusedDrags=\(AutomationDragGuard.refusedDragCount) suppressedMenus=\(AutomationInput.suppressedContextMenuCount)")
++                    log("  alpha u=\(await pageValue(alpha, "document.getElementById('u').value")) x=\(await pageValue(alpha, "document.getElementById('x').value")) active=\(await pageValue(alpha, "document.activeElement.id"))")
++                    log("  bravo i=\(await pageValue(bravo, "document.getElementById('i').value")) out=\(await pageValue(bravo, "document.getElementById('out').textContent")) sel=\(await pageValue(bravo, "getSelection()")) scrollY=\(await pageValue(bravo, "scrollY")) vis=\(await pageValue(bravo, "document.visibilityState"))")
++                }
++                @MainActor func shoot(_ name: String) async {
++                    log("SHOOT \(name) \(window.windowNumber)")
++                    await sleep(2.5)
++                }
++                func cmd(_ tabId: Int, _ method: String, _ params: String, worker: Bool) -> String {
++                    worker
++                        ? "return await chrome.runtime.sendMessage({ type: 'debuggerOp', op: 'sendCommand', target: { tabId: \(tabId) }, args: { method: '\(method)', params: \(params) } });"
++                        : "return await chrome.debugger.sendCommand({ tabId: \(tabId) }, '\(method)', \(params));"
++                }
++                @MainActor func center(_ tab: BrowserTab, _ id: String) async -> (Int, Int) {
++                    let v = try? await tab.webView?.callAsyncJavaScript("const r = document.getElementById('\(id)').getBoundingClientRect(); return [Math.round(r.left + r.width/2), Math.round(r.top + r.height/2)]", arguments: [:], contentWorld: .page)
++                    let n = (v as? [NSNumber])?.map(\.intValue) ?? [0, 0]
++                    return (n[0], n[1])
++                }
++                @MainActor func click(_ tabId: Int, _ p: (Int, Int), button: String = "left", count: Int = 1, worker: Bool) async {
++                    let held = button == "right" ? 2 : 1
++                    _ = await js(cmd(tabId, "Input.dispatchMouseEvent", "{type:'mouseMoved',x:\(p.0),y:\(p.1),button:'none',buttons:0}", worker: worker), quiet: true)
++                    for n in 1...count {
++                        _ = await js(cmd(tabId, "Input.dispatchMouseEvent", "{type:'mousePressed',x:\(p.0),y:\(p.1),button:'\(button)',buttons:\(held),clickCount:\(n)}", worker: worker), quiet: true)
++                        _ = await js(cmd(tabId, "Input.dispatchMouseEvent", "{type:'mouseReleased',x:\(p.0),y:\(p.1),button:'\(button)',buttons:0,clickCount:\(n)}", worker: worker), quiet: true)
++                    }
++                }
++                @MainActor func typeKey(_ tabId: Int, _ ch: Character, worker: Bool) async {
++                    let s = String(ch), up = s.uppercased()
++                    if ch.isLetter, ch.isASCII {
++                        let mods = s == up ? 8 : 0
++                        _ = await js(cmd(tabId, "Input.dispatchKeyEvent", "{type:'keyDown',key:'\(s)',code:'Key\(up)',text:'\(s)',unmodifiedText:'\(s)',windowsVirtualKeyCode:\(up.unicodeScalars.first!.value),modifiers:\(mods)}", worker: worker), quiet: true)
++                        _ = await js(cmd(tabId, "Input.dispatchKeyEvent", "{type:'keyUp',key:'\(s)',code:'Key\(up)',windowsVirtualKeyCode:\(up.unicodeScalars.first!.value),modifiers:\(mods)}", worker: worker), quiet: true)
++                    } else if ch == " " {
++                        _ = await js(cmd(tabId, "Input.dispatchKeyEvent", "{type:'keyDown',key:' ',code:'Space',text:' ',windowsVirtualKeyCode:32}", worker: worker), quiet: true)
++                        _ = await js(cmd(tabId, "Input.dispatchKeyEvent", "{type:'keyUp',key:' ',code:'Space',windowsVirtualKeyCode:32}", worker: worker), quiet: true)
++                    } else {
++                        _ = await js(cmd(tabId, "Input.insertText", "{text:'\(s)'}", worker: worker), quiet: true)
++                    }
++                }
++                /// A key the user types: posted to the app, so AppKit routes it to the first responder.
++                @MainActor func userKey(_ ch: Character) {
++                    let s = String(ch)
++                    let code = ExtensionDebuggerInput.macKeyCode(forDOMCode: "Key\(s.uppercased())") ?? 0
++                    for type in [NSEvent.EventType.keyDown, .keyUp] {
++                        if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
++                                                    windowNumber: window.windowNumber, context: nil, characters: s,
++                                                    charactersIgnoringModifiers: s, isARepeat: false, keyCode: code) {
++                            NSApp.postEvent(e, atStart: false)
++                        }
++                    }
++                }
++
++                let ids = await js("const targets = await chrome.debugger.getTargets(); return targets.map(t => [t.tabId, t.title]);")
++                let pairs = ((ids as? [String: Any])?["value"] as? [[Any]]) ?? []
++                @MainActor func id(_ title: String) -> Int { pairs.first { $0[1] as? String == title }?[0] as? Int ?? -1 }
++                let a = id("Alpha"), b = id("Bravo")
++                log("ids Alpha=\(a) Bravo=\(b)")
++
++                // The user is typing in Alpha's field.
++                window.makeFirstResponder(alpha.webView)
++                _ = try? await alpha.webView?.callAsyncJavaScript("document.getElementById('u').focus()", arguments: [:], contentWorld: .page)
++                _ = await js("return await chrome.runtime.sendMessage({ type: 'debuggerOp', op: 'attach', target: { tabId: \(b) } });")
++                await sleep(1)
++                await state("attached bravo")
++
++                // Worker drives parked Bravo while the user types in Alpha.
++                await click(b, await center(bravo, "b"), worker: true)
++                await click(b, await center(bravo, "b"), worker: true)
++                await click(b, await center(bravo, "i"), worker: true)
++                let userText = Array("hello from the user")
++                let extText = Array("Typed by Claude ünï 🎉")
++                for k in 0..<max(userText.count, extText.count) {
++                    if k < userText.count { userKey(userText[k]) }
++                    if k < extText.count { await typeKey(b, extText[k], worker: true) }
++                }
++                await sleep(0.5)
++                await click(b, await center(bravo, "p"), count: 2, worker: true)
++                await click(b, await center(bravo, "b"), button: "right", worker: true)
++                _ = await js(cmd(b, "Input.dispatchMouseEvent", "{type:'mouseWheel',x:300,y:300,deltaX:0,deltaY:120}", worker: true))
++                await sleep(1)
++                await state("after driving bravo")
++                let shot = await js("""
++                    const v = await chrome.debugger.sendCommand({ tabId: \(b) }, 'Page.captureScreenshot', { format: 'png' });
++                    return { b64: v.data };
++                    """)
++                if let value = (shot as? [String: Any])?["value"] as? [String: Any], let b64 = value["b64"] as? String, let data = Data(base64Encoded: b64) {
++                    try? data.write(to: out.appendingPathComponent("capture-bravo.png"))
++                    log("captured bravo")
++                }
++                await shoot("01-user-typed-alpha")
++
++                // Displayed Alpha, from the page, while the user is in the command palette.
++                _ = await js("await chrome.debugger.attach({ tabId: \(a) }, '1.3'); return 'ok';")
++                wc.showCommandPalette(initialText: "pal")
++                await sleep(1)
++                let paletteFR = window.firstResponder
++                log("palette FR=\(paletteFR.map { String(describing: type(of: $0)) } ?? "nil")")
++                await click(a, await center(alpha, "x"), worker: false)
++                for ch in "ext" { await typeKey(a, ch, worker: false) }
++                _ = await js(cmd(a, "Input.dispatchKeyEvent", "{type:'keyDown',key:'a',code:'KeyA',text:'a',windowsVirtualKeyCode:65,modifiers:4,commands:['selectAll']}", worker: false))
++                _ = await js(cmd(a, "Input.dispatchKeyEvent", "{type:'keyUp',key:'a',code:'KeyA',windowsVirtualKeyCode:65,modifiers:4}", worker: false))
++                await click(a, await center(alpha, "x"), button: "right", worker: false)
++                await sleep(1)
++                log("palette FR unchanged=\(window.firstResponder === paletteFR) paletteShowing=\(wc.commandPaletteView != nil)")
++                await state("after driving alpha with palette open")
++                await shoot("02-palette-open")
++                log("done")
++            } catch {
++                log("harness error \(error)")
++            }
++        }
++    }
++}
++#endif

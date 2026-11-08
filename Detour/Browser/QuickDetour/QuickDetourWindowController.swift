@@ -1234,4 +1234,11 @@ final class QuickDetourWindow: NSWindow {
         }
         super.sendEvent(event)
     }
+
+    /// A page an extension is clicking in (TASK-132.14) does not take the
+    /// user's focus, as in a browser window (`BrowserWindow.makeFirstResponder`).
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        if AutomationInput.refusesFirstResponder(responder, in: self) { return false }
+        return super.makeFirstResponder(responder)
+    }
 }

@@ -351,6 +351,14 @@ extension QuickDetourWindowController: WKUIDelegate {
         alert.addButton(withTitle: "Deny")
         alert.beginSheetModal(for: window) { decisionHandler($0 == .alertFirstButtonReturn ? .grant : .deny) }
     }
+
+    /// Private SPI, as in `BrowserWindowController`: no native menu for a right
+    /// click an extension synthesizes (TASK-132.14) in the page shown here.
+    @objc(_webView:getContextMenuFromProposedMenu:forElement:userInfo:completionHandler:)
+    func _webView(_ webView: WKWebView, getContextMenuFromProposedMenu menu: NSMenu, forElement element: AnyObject,
+                  userInfo: AnyObject?, completionHandler: @escaping @MainActor @Sendable (NSMenu?) -> Void) {
+        completionHandler(AutomationInput.consumeSynthesizedContextMenu(for: webView) ? nil : menu)
+    }
 }
 
 // MARK: - WKWebExtensionWindow

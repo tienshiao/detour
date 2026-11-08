@@ -287,6 +287,20 @@ extension BrowserWindowController: WKUIDelegate {
         }
     }
 
+    // MARK: - Context menu
+    //
+    // Private WKUIDelegate SPI (macOS 10.14+): WebKit offers the menu it is
+    // about to show and shows whatever comes back, nothing for nil. A right
+    // click (or Control-click) an extension synthesizes (TASK-132.14) would
+    // otherwise open a real menu — modal, over whatever the user is looking at
+    // even when the page is parked out of sight, holding the main thread until
+    // someone dismisses it. The page still gets its `contextmenu` event.
+    @objc(_webView:getContextMenuFromProposedMenu:forElement:userInfo:completionHandler:)
+    func _webView(_ webView: WKWebView, getContextMenuFromProposedMenu menu: NSMenu, forElement element: AnyObject,
+                  userInfo: AnyObject?, completionHandler: @escaping @MainActor @Sendable (NSMenu?) -> Void) {
+        completionHandler(AutomationInput.consumeSynthesizedContextMenu(for: webView) ? nil : menu)
+    }
+
     // MARK: - Private Helpers
 
     private func originString(from origin: WKSecurityOrigin) -> String {

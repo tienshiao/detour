@@ -930,6 +930,100 @@ for (const [id, action] of Object.entries(debuggerActions)) {
   });
 }
 
+// --- Debugger input (TASK-132.14) ---
+//
+// Input.dispatchMouseEvent / dispatchKeyEvent / insertText, shaped the way the
+// Claude extension sends them: a click is mouseMoved, mousePressed and
+// mouseReleased; a typed key is keyDown with text, then keyUp; Cmd+A carries
+// the Mac editing command.
+
+const inputPoint = () => ({
+  x: Number(document.getElementById('dbg-in-x').value) || 0,
+  y: Number(document.getElementById('dbg-in-y').value) || 0,
+});
+
+async function sendInput(method, params) {
+  const response = await debuggerOp('sendCommand', { method, params });
+  return response.result;
+}
+
+async function inputClick(button, count) {
+  const { x, y } = inputPoint();
+  const held = { left: 1, right: 2, middle: 4 }[button];
+  const sent = [];
+  await sendInput('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0, modifiers: 0 });
+  for (let n = 1; n <= count; n++) {
+    await sendInput('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, buttons: held, clickCount: n, modifiers: 0 });
+    await sendInput('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, buttons: 0, clickCount: n, modifiers: 0 });
+    sent.push(`press+release ${n}`);
+  }
+  return { x, y, button, sent };
+}
+
+async function inputKey(key, code, text, keyCode, modifiers = 0, commands = []) {
+  await sendInput('Input.dispatchKeyEvent', {
+    type: text ? 'keyDown' : 'rawKeyDown', key, code, windowsVirtualKeyCode: keyCode, modifiers,
+    text: text || '', unmodifiedText: text || '', commands,
+  });
+  await sendInput('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: keyCode, modifiers });
+}
+
+const debuggerInputActions = {
+  'btn-dbg-in-click': () => inputClick('left', 1),
+  'btn-dbg-in-dblclick': () => inputClick('left', 2),
+  'btn-dbg-in-rightclick': () => inputClick('right', 1),
+  'btn-dbg-in-wheel': async () => {
+    const { x, y } = inputPoint();
+    await sendInput('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY: 300, modifiers: 0 });
+    return { x, y, deltaY: 300 };
+  },
+  'btn-dbg-in-type': async () => {
+    const text = document.getElementById('dbg-in-text').value;
+    const typed = [];
+    for (const ch of text) {
+      const upper = ch.toUpperCase();
+      if (/^[A-Za-z]$/.test(ch)) {
+        await inputKey(ch, 'Key' + upper, ch, upper.charCodeAt(0), ch === upper ? 8 : 0);
+        typed.push(ch);
+      } else if (/^[0-9]$/.test(ch)) {
+        await inputKey(ch, 'Digit' + ch, ch, ch.charCodeAt(0));
+        typed.push(ch);
+      } else if (ch === ' ') {
+        await inputKey(' ', 'Space', ' ', 32);
+        typed.push(ch);
+      } else {
+        // As the extension does for characters it has no key for.
+        await sendInput('Input.insertText', { text: ch });
+        typed.push(`insertText(${ch})`);
+      }
+    }
+    return { typed };
+  },
+  'btn-dbg-in-insert': async () => {
+    const text = document.getElementById('dbg-in-text').value;
+    await sendInput('Input.insertText', { text });
+    return { inserted: text };
+  },
+  'btn-dbg-in-selectall': async () => {
+    await inputKey('a', 'KeyA', 'a', 65, 4, ['selectAll']);
+    return { sent: 'Cmd+A', commands: ['selectAll'] };
+  },
+  'btn-dbg-in-enter': async () => {
+    await inputKey('Enter', 'Enter', '\r', 13);
+    return { sent: 'Enter' };
+  },
+};
+
+for (const [id, action] of Object.entries(debuggerInputActions)) {
+  document.getElementById(id).addEventListener('click', async () => {
+    try {
+      showResult('res-dbg', await action());
+    } catch (e) {
+      showResult('res-dbg', e.message, true);
+    }
+  });
+}
+
 // What the popup hears while it is open (the last 50).
 const popupDebuggerEvents = [];
 const recordPopupDebuggerEvent = (entry) => {

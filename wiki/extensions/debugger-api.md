@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Debugger API
-description: chrome.debugger over an emulated subset of the Chrome DevTools Protocol — attachments and Chrome's rules for them, how an attachment ends, tab ids kept natively, the shared parked event channel, Page.captureScreenshot geometry, the user's Stop, and what differs from Chrome.
+description: chrome.debugger over an emulated subset of the Chrome DevTools Protocol — attachments and Chrome's rules for them, how an attachment ends, tab ids kept natively, the shared parked event channel, Page.captureScreenshot geometry, synthesized input and what keeps it in the tab, the user's Stop, and what differs from Chrome.
 tags: [extensions, debugger, cdp, polyfill, events, claude-extension]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T02:30:00Z }
@@ -27,6 +27,27 @@ sources:
   - id: tests
     resource: ../../DetourTests/ExtensionDebuggerTests.swift
     title: ExtensionDebuggerTests (real contexts) and ExtensionDebuggerUnitTests
+  - id: input
+    resource: ../../Detour/Extensions/Runtime/ExtensionDebugger+Input.swift
+    title: ExtensionDebugger+Input.swift (the Input domain)
+  - id: drag-guard
+    resource: ../../Detour/Browser/Window/AutomationDragGuard.swift
+    title: AutomationDragGuard.swift
+  - id: webkit-drag
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/mac/WebViewImpl.mm
+    title: WebKit, WebViewImpl.mm (startDrag, mouse handlers)
+  - id: webkit-menu
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/mac/WebContextMenuProxyMac.mm
+    title: WebKit, WebContextMenuProxyMac.mm
+  - id: chromium-input
+    resource: https://github.com/chromium/chromium/blob/main/content/browser/devtools/protocol/input_handler.cc
+    title: Chromium, input_handler.cc
+  - id: input-tests
+    resource: ../../DetourTests/ExtensionDebuggerInputTests.swift
+    title: ExtensionDebuggerInputTests and ExtensionDebuggerInputUnitTests
+  - id: task-input
+    resource: backlog:TASK-132.14
+    title: "Extensions: chrome.debugger input — Input.dispatchMouseEvent, dispatchKeyEvent, insertText"
   - id: task
     resource: backlog:TASK-132.13
     title: "Extensions: chrome.debugger attach/detach/sendCommand plumbing and Page.captureScreenshot"
@@ -141,6 +162,118 @@ main actor (PNG, JPEG with white under transparency and Chrome's default
 quality 80, WebP). A snapshot that does not answer in 15 s fails
 "Unable to capture screenshot".
 
+# Input
+
+`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent` and `Input.insertText`
+are real NSEvents sent straight to the attached tab's web view, parked or
+displayed, so the page sees trusted events (`isTrusted` true).[^task-input]
+Never through `NSApp.sendEvent` or the window, which route by key window,
+first responder and hit testing (see the tab parking notes in
+[webview ownership](../../docs/webview-ownership.md)).
+
+**Coordinates.** CDP's `x` / `y` are CSS pixels of the viewport. They are
+mapped exactly as a screenshot is (view width over `innerWidth`), so a point
+read off a screenshot lands on what the screenshot shows, at any page zoom.
+The scroll offset does not enter: the coordinates are viewport-relative.
+
+**One event at a time, answered after the page handled it.** WebKit queues
+mouse and key events per page and sends the next one only after the page has
+acknowledged the last. Measured: three key presses sent back to back,
+followed by one script round trip, left one letter typed when the round trip
+returned. So each session has a serial queue. An event is sent while nothing
+is queued, and a script round trip in the `DetourDebugger` world behind it
+returns after the page has handled it, because both go to the same process
+in order. The command is answered then, given up after 10 s, as Chrome
+answers when the renderer acks. A caller can screenshot right after a click
+and see its effect.
+
+**What is built how.**
+
+| CDP | AppKit |
+|---|---|
+| left / right press, release, move with `buttons` | `NSEvent.mouseEvent` (a move with a button held is `…MouseDragged`) |
+| middle, back, forward; `mouseWheel` | a `CGEvent` made into an NSEvent: the factory has no wheel events and gives other-button events button number 0. With no window, such an event reports its screen location as `locationInWindow`, so it is placed where the screen point equals the window point. Pixel wheel units, sign flipped (CDP's down is AppKit's negative) |
+| `keyDown` / `rawKeyDown` / `keyUp` | `NSEvent.keyEvent` through `AutomationInput.sendKey`. Key code from `code`, else `windowsVirtualKeyCode`, else `key`; `nativeVirtualKeyCode` wins. Named keys carry AppKit's function-key characters (arrows with `.function` + `.numericPad`), so their bindings act on a `rawKeyDown` as Chrome's keydown does; only Enter's line break, which is text, is withheld. Control+letter carries the control character, which the text system's bindings match (also on a `rawKeyDown`). Shift+Tab is a back tab. A `rawKeyDown` of a character key carries no characters, so nothing is typed |
+| a modifier key itself (`Shift`, `Meta`, …) | `flagsChanged` |
+| `char`, `Input.insertText` | `NSTextInputClient.insertText` (WKWebView implements it without declaring it): `beforeinput` / `input`, no key events. Non-ASCII and emoji work |
+
+**`commands`.** On a Mac, Chrome clients attach editing commands to a key
+down (the Claude extension: `cmd+a` → `selectAll`, `backspace` →
+`deleteBackward`, …). A key event sent to the view already performs the text
+system's key bindings: arrows, Backspace, Ctrl+A (start of line) and Enter
+work with no help. Running those commands again would do them twice. What
+the key event does not do is a menu key equivalent. Measured: Cmd+A sent as
+a key down reaches the page, but selects nothing on a parked page. On the
+displayed one, WebKit hands it back unhandled, and AppKit would give it to
+the menu. A parked view also answers `performKeyEquivalent` with false
+before the page sees it, because it is not first responder. So only
+`selectAll`, `copy`, `cut`, `paste` and `pasteAndMatchStyle` run, sent to the
+web view itself, and only when the key down was not cancelled. As in Chrome,
+a page that handles Cmd+A itself gets no second select-all. Cancellation is
+read from a capture listener in Detour's own world on the main frame. A key
+down into a subframe is not seen there, and its commands run regardless.
+`undo` / `redo` run only on a parked page, whose edits have an undo manager
+of their own. A displayed page's edits share the window's with the
+browser's own actions, where undo could reopen a closed tab.
+
+**Keeping it in the tab.** Three things the page asks of the app in answer
+to input are the user's, not the extension's. Each is refused while that web
+view is handling synthesized input (`AutomationInput.beginDispatch` …
+`endDispatch`, from sending until the round trip returns).
+
+- *First responder.* When the page focuses an element, WebKit asks the window
+  to make the web view first responder. Measured: asynchronously, after the
+  mouse event returns but before the round trip does. `BrowserWindow` refuses
+  it, as it always does for a parked view. The page's element still gets
+  focus and typing; `document.hasFocus()` stays false and `:focus` does not
+  match, as on any page whose view is not first responder.
+- *The context menu.* A synthesized right click opened WebKit's real menu.
+  It is modal, appears over whatever the user is looking at even for a
+  parked page, and holds the main thread until someone dismisses it. A
+  test host sat in its tracking loop until killed. WebKit pops it up with a
+  synthetic event of its own, so `willOpenMenu` cannot tell it apart. The
+  UI-delegate SPI
+  `_webView:getContextMenuFromProposedMenu:forElement:userInfo:completionHandler:`
+  answers nil, and WebKit shows nothing. The page still gets `contextmenu`.
+  WebKit can ask after the page has answered the press, so a synthesized
+  press is good for one withheld menu within 2 s, and a parked page never
+  gets one. A tab no window has ever displayed has no UI delegate at all
+  (only a displaying window wires one), so parking gives it
+  `AutomationUIDelegate`, which implements only this SPI: its dialogs and
+  everything else keep WebKit's no-delegate behaviour.
+- *OS drags.* When a page drag begins (a draggable element, a link,
+  selected text, an image), WebKit starts an AppKit drag with the mouse down
+  that started it. The shipped WebKit uses the window's legacy
+  `dragImage:at:offset:event:pasteboard:source:slideBack:`; newer ones use
+  the view's `beginDraggingSession`. AppKit runs the drag with the real
+  pointer. Measured: a test host sat in `NSCoreDragManager`'s drag loop
+  waiting for a physical mouse-up, which would have dropped the drag
+  wherever the user next released the button. `AutomationDragGuard`
+  replaces both methods, on `BrowserWindow` and `BrowserWebView`, through the
+  Objective-C runtime, because the session result is declared nonnull and
+  the window method is deprecated. For a press that `sendMouse` sent,
+  it makes no session and tells WebKit the drag ended with no drop, so the
+  page gets `dragstart` then `dragend`. Selection, slider and canvas drags
+  (plain mouse events) work. HTML drag and drop between elements does not.
+  `Input.cancelDragging` succeeds, since there is never an OS drag to cancel.
+
+- *Popup menus.* A synthesized click on a `<select>` opens WebKit's native
+  popup, another modal menu, and WebKit has no delegate hook for it. A menu
+  that begins tracking while synthesized input is being handled is closed
+  from inside its own tracking loop by a zero-delay timer in the common modes.
+  Cancelling it synchronously in `didBeginTracking` left the loop running. The
+  main menu and menus answering the user's own press are left alone. The
+  Claude extension sets a `<select>` from script rather than by clicking it.
+
+Each refusal yields to the user. While AppKit is handling the user's own
+mouse press in that window (`AutomationInput.userJustPressed`), the focus or
+menu WebKit asks for is theirs. That also covers a synthesized right press
+the page answered with `preventDefault`, which leaves its mark unconsumed.
+
+A key down the page declines is handed back through `NSApp.sendEvent` and
+dropped by `AutomationInput`'s monitor (TASK-132.3), so a declined Cmd+W
+closes nothing.
+
 # The indicator
 
 A driven tab shows a small indicator in its sidebar row (tooltip
@@ -168,7 +301,16 @@ Things learnt building it:
   sessions (`sessionId`), no `Target.*`.
 - Only the methods each domain file emulates; everything else is "wasn't
   found" (including `Emulation.setFocusEmulationEnabled`, which the Claude
-  extension tolerates).
+  extension tolerates: it mutes and redraws the tab the same either way).
+  A page the extension drives does not have focus (`document.hasFocus()`
+  false), because its view is never made first responder for it.
+- Input: no native context menu for a synthesized right click, and a
+  `<select>`'s popup closes at once; no HTML drag
+  and drop (a drag ends at once, with no drop); `char` is text input with no
+  key events; `commands` other than the menu key equivalents are left to the
+  text system's bindings; `undo` / `redo` only on a parked page; no touch,
+  gesture or IME composition methods (`Input.dispatchTouchEvent`,
+  `imeSetComposition`).
 - `captureBeyondViewport` is not emulated: a clip past the viewport shows
   nothing there.
 - The user's indicator is Detour's own (a sidebar row indicator and a
@@ -191,5 +333,31 @@ screenshot parameters and geometry, encoding, reply-once, in-flight failure on
 end, one debugger per tab, and event routing. `ExtensionPolyfillTests` pins
 the namespace and the call shapes against a fake bridge.
 
+`ExtensionDebuggerInputTests` (worker and page, parked and displayed tabs):
+- a trusted click on the element at the point, also zoomed and scrolled;
+- double and triple click, right click with no menu, a `<select>` popup
+  closed, middle click, a drag
+  that selects text, a draggable element's drag refused as an OS drag, and
+  the wheel;
+- typed keys with key, code and modifiers: arrows, Backspace, Cmd+A with its
+  command (and not when the page cancels it), Ctrl+A, Enter submitting a
+  form, Tab moving focus;
+- `insertText` into an input, a textarea and contenteditable;
+- the user typing in the selected tab while the extension types in a parked
+  one;
+- nothing reaching a field of the window's own: no first responder change,
+  declined keys including Cmd+W dropped, no menu;
+- parameter errors in Chrome's words, in both forms.
+
+`ExtensionDebuggerInputUnitTests`: parameter parsing (including integers out of range, which would trap) and the event mapping.
+
+The guards cover every window a driven tab can be shown in (`BrowserWindow`,
+`QuickDetourWindow`) and every tab web view (the drag-session guard is on
+`WKWebView`, since an extension's own page tab is a plain one).
+
+Per mouse event there are two round trips (the viewport, then the
+acknowledgement). Caching the viewport per session would halve that; not done.
+
 [^task]: TASK-132.13 in Backlog.
+[^task-input]: TASK-132.14 in Backlog; the measurements come from a temporary spike test on a parked and a displayed tab, 2026-11-07.
 [^chromium]: chrome/browser/extensions/api/debugger/debugger_api.cc, read 2026-11-07.
