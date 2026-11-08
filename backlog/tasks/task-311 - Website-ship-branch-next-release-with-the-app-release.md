@@ -1,9 +1,10 @@
 ---
 id: TASK-311
 title: 'Website: ship branch next-release with the app release'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-08T19:54:00Z'
+updated_date: '2026-11-08T21:25:00Z'
 labels:
   - website
 dependencies: []
@@ -19,8 +20,14 @@ The website page updates for app changes merged after v0.4.0 are written on webs
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 next-release is rebased onto the website main and builds
-- [ ] #2 Every page change is checked against the release build before it goes live (menu titles, shortcuts, settings paths)
+- [x] #1 next-release is rebased onto the website main and builds
+- [x] #2 Every page change is checked against the release build before it goes live (menu titles, shortcuts, settings paths)
 - [ ] #3 The Link Routes still is re-captured without the v0.4.0 Any URL workaround (TASK-302), and the Peek page gets a capture showing the new behavior if useful
-- [ ] #4 Merged and pushed to the website main together with the release (publish-release.sh), and checked live
+- [x] #4 Merged and pushed to the website main together with the release (publish-release.sh), and checked live
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 8 2026, released with Detour 0.4.1 (build 9, app commit 71240af, tag v0.4.1): next-release rebased onto website main (11 commits) and fast-forwarded; publish-release.sh committed release.json ('Update to 0.4.1'), built and deployed; checked live (home shows 0.4.1, /features/peek/ has Open Peek in New Tab). Page wording checked against the released code (Open Peek in New Tab, Settings › General Peek checkbox title, Quick Detour menu titles built from QuickDetour.displayName; the per-task /verify runs read the real menus). Worktree ../dw-next and branch next-release removed. Open: #3 re-capture the Link Routes still (still shows the v0.4.0 Any URL workaround).
+<!-- SECTION:NOTES:END -->
