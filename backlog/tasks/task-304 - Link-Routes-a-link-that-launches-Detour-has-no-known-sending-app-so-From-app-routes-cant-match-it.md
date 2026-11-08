@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T09:35:00Z'
-updated_date: '2026-11-08T19:42:00Z'
+updated_date: '2026-11-08T21:01:00Z'
 labels:
   - link-routes
 dependencies: []
@@ -28,8 +28,8 @@ Likely possible, needs a spike first: register Detour's own handler for kInterne
 <!-- AC:BEGIN -->
 - [ ] #1 A spike on macOS 15.4 and the current macOS records what the launch URL's event carries (sender PID, address) with a custom Get URL handler, for links from Mail, Messages, Notes and Slack while Detour is not running
 - [x] #2 When the sending app can be known at launch, a From app route matches the link that launched Detour, as it does for links while Detour runs
-- [x] #3 When it can't, Detour fails closed (user, Nov 8 2026): if any route sends links to Quarantine, the link that launched Detour with no known sender opens in Quarantine
-- [x] #4 LinkSender/route resolver tests cover the launch case, both with a known sender and the fail-closed fallback; checked at runtime with /verify by launching Detour from a link in another app
+- [x] #3 LinkSender/route resolver tests cover the launch case, both with a known sender and the fail-closed fallback; checked at runtime with /verify by launching Detour from a link in another app
+- [x] #4 When it can't, Detour fails closed (user, Nov 8 2026, narrowed the same day): the link that launched Detour with no known sender opens in Quarantine where a From app route to Quarantine could have matched it (reached in route order, URL condition holds)
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -89,4 +89,6 @@ Nov 8 2026, user narrowed the fail-closed rule ('if the trigger can be determine
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 Detour now handles Get URL Apple Events itself (handler installed in applicationWillFinishLaunching). The spike showed the event that launches Detour then arrives before applicationDidFinishLaunching with the opener's PID, exactly like a link while running, so a From app route matches the link that launched Detour (the old 'no sender' came from AppKit queueing launch URLs). Launch links are queued and opened once the session is restored. When the launch link's sender can't be named (a tool, an exited opener, a helper NSRunningApplication doesn't know), it fails closed: any route to Quarantine sends it to Quarantine (user decision; taken literally). Links while running are unchanged. Pure pieces: LaunchLinkTracker, linkURLs(in:), resolveExternalLinkRoute; tests 156/0 across the five Link Routes suites. Runtime: cold launches from a LaunchServices test app (known sender -> its route) and a bare tool (unknown -> Quarantine, or the Default with no Quarantine route), and a running copy (unchanged). Open: AC #1 for real apps (Mail, Messages, Notes, Slack) and macOS 15.4, which need the user's machine setup.
+
+Narrowed Nov 8 2026 (user): the launch fail-closed applies only where a From app route to Quarantine could have matched (reached in route order, URL condition holds), not 'any route to Quarantine'; a579af9.
 <!-- SECTION:FINAL_SUMMARY:END -->
