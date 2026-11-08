@@ -553,6 +553,7 @@ class TabSidebarViewController: NSViewController {
         // Reconfigure normal tab cells (may have been reused from the pinned section
         // by moveRow, which keeps the cell's pinned-mode state and — critically —
         // its pinned onClose handler, whose row guard fails on a normal-tab row)
+        let stripes = tabGroupStripes(for: tabItems, groups: tabGroupsForTableView(tableView))
         for (i, item) in tabItems.enumerated() {
             let row = rowForNormalTab(at: i)
             if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
@@ -566,6 +567,7 @@ class TabSidebarViewController: NSViewController {
                     return departedSplitMember(survivorID: tab.id, in: oldTabItems)
                 }()
                 configureItemCell(cell, item: item, isActive: true, profileID: profileID,
+                                  stripe: stripes[i],
                                   animatedReveal: true, departingFavicon: departed?.favicon,
                                   departingTitle: departed?.title)
             }
@@ -2328,12 +2330,39 @@ class TabSidebarViewController: NSViewController {
     /// profile's per-site override (TASK-186.5), and a dormant pinned entry or
     /// favourite has no tab to ask.
     private func profileIDForTableView(_ tv: NSTableView) -> UUID? {
+        spaceForTableView(tv)?.profileID
+    }
+
+    /// The space a page's table shows, read live from TabStore.
+    private func spaceForTableView(_ tv: NSTableView) -> Space? {
         guard let index = spacePages.firstIndex(where: { $0.tableView === tv }),
               index < pageSpaceIDs.count else { return nil }
-        return TabStore.shared.space(withID: pageSpaceIDs[index])?.profileID
+        return TabStore.shared.space(withID: pageSpaceIDs[index])
     }
 
     private var activeProfileID: UUID? { profileIDForTableView(tableView) }
+
+    /// The tab groups of a page's space, read from TabStore like its profile.
+    /// The rows' tabs carry their live `tabGroupID`, so the groups are read
+    /// live too, never from a copy that could disagree with them.
+    private func tabGroupsForTableView(_ tv: NSTableView) -> [TabGroup] {
+        spaceForTableView(tv)?.tabGroups ?? []
+    }
+
+    /// The active space's tab groups changed (created, renamed, recoloured,
+    /// moved, removed) or tabs joined or left one: repaints the stripes of the
+    /// visible rows in place, without reloading them (TASK-132.11). Structural
+    /// changes need no call: `applyState` reconfigures every visible row.
+    func refreshTabGroupStripes() {
+        let groups = tabGroupsForTableView(tableView)
+        for (i, stripe) in tabGroupStripes(for: tabItems, groups: groups).enumerated() {
+            let row = rowForNormalTab(at: i)
+            guard row < tableView.numberOfRows,
+                  let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView
+            else { continue }
+            cell.updateTabGroupStripe(stripe)
+        }
+    }
 
     private func tabItemsForTableView(_ tv: NSTableView) -> [TabListItem] {
         inactivePageContent(for: tv)?.tabItems ?? tabItems
@@ -2362,8 +2391,9 @@ class TabSidebarViewController: NSViewController {
         // Update existing cell in-place if visible (preserves hover state, enables smooth animation)
         if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView {
             // A split row's state is a fold over both members — reconfigure it whole.
+            let stripe = tabGroupStripe(at: itemIdx, in: tabItems, groups: tabGroupsForTableView(tableView))
             if case .split = item {
-                configureItemCell(cell, item: item, isActive: true, profileID: activeProfileID)
+                configureItemCell(cell, item: item, isActive: true, profileID: activeProfileID, stripe: stripe)
                 return
             }
             let tab = tabs[index]
@@ -2377,6 +2407,7 @@ class TabSidebarViewController: NSViewController {
             cell.updateLoading(tab.isLoading)
             cell.updateProgress(tab.sidebarProgress)
             cell.updateAudio(isPlaying: tab.isPlayingAudio, isMuted: tab.isMuted)
+            cell.updateTabGroupStripe(stripe)
             return
         }
         tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
@@ -2986,7 +3017,9 @@ extension TabSidebarViewController: NSTableViewDelegate {
             let items = tabItemsForTableView(tableView)
             guard itemIndex < items.count else { return makeTabCell(tableView) }
             let cell = makeTabCell(tableView)
-            configureItemCell(cell, item: items[itemIndex], isActive: isActive, profileID: profileID)
+            configureItemCell(cell, item: items[itemIndex], isActive: isActive, profileID: profileID,
+                              stripe: tabGroupStripe(at: itemIndex, in: items,
+                                                     groups: tabGroupsForTableView(tableView)))
             return cell
         }
     }
@@ -3004,9 +3037,13 @@ extension TabSidebarViewController: NSTableViewDelegate {
     }
 
     /// Configures a tab-section cell for a `TabListItem` (single tab or split row).
+    /// `stripe` is the item's tab group stripe (`tabGroupStripe(at:in:groups:)`),
+    /// passed by every caller so no path leaves a reused cell with another
+    /// row's stripe.
     private func configureItemCell(_ cell: TabCellView, item: TabListItem, isActive: Bool, profileID: UUID?,
-                                   animatedReveal: Bool = false,
+                                   stripe: TabGroupStripe?, animatedReveal: Bool = false,
                                    departingFavicon: NSImage? = nil, departingTitle: String? = nil) {
+        cell.updateTabGroupStripe(stripe)
         switch item {
         case .single(let tab):
             configureTabCell(cell, tab: tab, title: tab.title, isActive: isActive, profileID: profileID,

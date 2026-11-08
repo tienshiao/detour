@@ -121,10 +121,11 @@ refused tile with a toast, arming split animations.
 The delegate speaks **tab indexes and IDs**, never table rows or item
 indexes. Converting is the sidebar's job ([row layout](./row-layout.md)).
 
-Three places bypass the delegate, all read-only or tab-local: `relevantSpaces`
-reads `TabStore.shared.spaces` to build pages, the archive page reads
-`TabStore.shared.archiveEntries()`, and a row's speaker button calls
-`tab.toggleMute()` directly.
+Four places bypass the delegate, all read-only or tab-local: `relevantSpaces`
+reads `TabStore.shared.spaces` to build pages, `tabGroupsForTableView` reads
+a page's space's `tabGroups` for the [tab group](../tabs/tab-groups.md)
+stripes, the archive page reads `TabStore.shared.archiveEntries()`, and a
+row's speaker button calls `tab.toggleMute()` directly.
 
 # Things to know before editing
 

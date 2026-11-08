@@ -27,6 +27,15 @@ sources:
   - id: task
     resource: backlog:TASK-132.10
     title: "Tabs: tab group model in TabStore (membership, title, colour, collapsed) with persistence"
+  - id: stripe-rule
+    resource: ../../Detour/Browser/Sidebar/TabListItems.swift
+    title: TabListItems.swift (TabGroupStripe and the stripe rule)
+  - id: color-view
+    resource: ../../Detour/Browser/Sidebar/TabGroupColorView.swift
+    title: TabGroupColorView.swift (colour names drawn as system colours)
+  - id: task-stripe
+    resource: backlog:TASK-132.11
+    title: "Sidebar: colour stripe on tab rows that belong to a tab group"
 ---
 
 # Summary
@@ -38,7 +47,8 @@ shared id on tabs: `BrowserTab.tabGroupID` names a `TabGroup` in
 `Space.tabGroups`, which holds the group's own state (title, one of Chrome's
 nine colour names, collapsed). There is no user-facing way to make a group
 yet. The extension API is the [tab groups API](../extensions/tab-groups-api.md)
-(TASK-132.12), the sidebar stripe TASK-132.11, and header rows TASK-132.19.
+(TASK-132.12) and header rows TASK-132.19; the sidebar shows a group as a
+stripe on its members' rows (TASK-132.11, see [In the sidebar](#in-the-sidebar)).
 
 # Invariants
 
@@ -168,6 +178,50 @@ names no group. The migration is registered on the `epic-claude-extension`
 branch, so whoever merges the branch into main renumbers it after main's own
 migrations. Incognito spaces are not saved, so their groups end with them.
 
+# In the sidebar
+
+A member's row carries a 3 pt stripe in the group's colour, in the 10 pt
+gutter between the tab list's edge and the row highlight; there is no header
+row yet.[^task-stripe]
+
+- **Which rows.** The pure `tabGroupStripe(at:in:groups:)` in
+  [TabListItems.swift](../../Detour/Browser/Sidebar/TabListItems.swift)
+  decides, per tab-list item: a row has a stripe when every tab in it names
+  the same `tabGroupID` and that id is a group of the space. A split row is
+  one item, so it shows the stripe once for the pair. A pair whose panes
+  disagree, or an id naming no group, gets none (rendering never trusts group
+  data, as with splits). Pinned rows, favourites and the New Tab row never
+  have one.
+- **One bar per group.** The stripe runs the row's full height into an
+  adjacent row of the same group (`continuesAbove` / `continuesBelow`) and
+  is held 7 pt in, with rounded ends, at the group's first and last rows. Two
+  adjacent groups of the same colour stay two bars.
+- **Where.** In the gutter, the selection, the hover background, the
+  progress bar and the dev-mode border never reach it, and it covers none of
+  them; the drag image (the cell widened by 6 pt) leaves it out, since the
+  drop decides the dragged row's group. It has no constraints and changes no
+  row height; an ungrouped row has no stripe view at all (made on first use).
+- **Colours.** Each of Chrome's names is the macOS system colour of that
+  name (`systemGray`, `systemBlue`, …, `systemCyan`, `systemOrange`):
+  `TabGroupColor.displayColor` in
+  [TabGroupColorView.swift](../../Detour/Browser/Sidebar/TabGroupColorView.swift).
+  `TabGroupColorView` resolves it in `updateLayer` against plain light or
+  dark (keeping increased contrast), because the vibrant sidebar's rows and
+  its selected row resolve system colours differently ([AppKit
+  gotchas](../platform/appkit-gotchas.md)).
+- **The title.** The [tab hover card](../features/tab-hover-card.md) of a
+  member row names the group above the page title: a dot in its colour and
+  the title, "Unnamed group" for an empty one (Chrome's words). The stripe
+  is also an accessibility element labelled "Tab group: <title>".
+- **Updates in place.** Insert, remove and reorder callbacks already run
+  `applyState`, which reconfigures every visible row, stripe included. The
+  window answers the five group callbacks with
+  `TabSidebarViewController.refreshTabGroupStripes()`, which sets each
+  visible row's stripe on its existing cell (no reload), or with
+  `inactiveSpaceContentDidChange()` for another space. Groups are read live
+  from the page's space in `TabStore` (`tabGroupsForTableView`), like its
+  profile, since the rows' tabs carry their live `tabGroupID` anyway.
+
 # Decisions and their alternatives
 
 - **Contiguous members**, not free membership: Chrome's model, required by
@@ -181,8 +235,24 @@ migrations. Incognito spaces are not saved, so their groups end with them.
 - **Join the opener's group**, rather than only an explicit `tabs.group`
   adding tabs: Chrome's behaviour, and the Claude extension then sees pages
   its agent tabs open (user).
+- **Stripes before header rows**, one stripe per member row visible without
+  selecting it, the colour shown nowhere else (user, TASK-132.11).
+- **System colours, not Chrome's hex palette**: they come with light, dark
+  and increased-contrast variants made for the system's own backgrounds; the
+  names match one to one. Chrome's palette would need its own dark and
+  contrast values.
+- **A joined bar, not a capsule per row**: without a header row the bar is
+  what shows where a group starts and ends, and it keeps two same-coloured
+  neighbours apart.
+- **In the gutter, not inside the highlight**: inside, it would sit under
+  the selection tint and over the dev-mode border, and a reused cell would
+  need both reconciled.
+- **The hover card for the title, not a tooltip**: sidebar rows have no
+  tooltips since the hover card replaced them, and a 3 pt stripe is too
+  narrow to hover on purpose.
 
 [^task]: TASK-132.10 in Backlog, and the epic TASK-132.
 [^model]: `Detour/Browser/TabGroup.swift`.
 [^store]: `Detour/Browser/TabStore+TabGroups.swift`.
 [^database]: `Detour/Storage/Database.swift`, migration `v23`.
+[^task-stripe]: TASK-132.11 in Backlog: the stripe, its colours and the hover card line.

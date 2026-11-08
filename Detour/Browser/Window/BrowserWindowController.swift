@@ -3845,4 +3845,9 @@ extension BrowserWindowController: TabHoverCardHost {
     func hoverCardThumbnailKey(for tab: BrowserTab) -> UUID? {
         store.thumbnailKey(for: tab)
     }
+
+    func hoverCardTabGroup(for tab: BrowserTab) -> TabGroup? {
+        guard let groupID = tab.tabGroupID, let spaceID = tab.spaceID else { return nil }
+        return store.space(withID: spaceID)?.tabGroup(id: groupID)
+    }
 }

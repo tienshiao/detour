@@ -1,0 +1,288 @@
+TASK-132.11 runtime harness: the tab group stripe on sidebar rows and the
+group line on the hover card. Temporary code, never committed to Detour/.
+Apply, build, run, revert:
+
+    git apply docs/harness/task132.11-harness.patch
+    xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug -derivedDataPath .derived build
+    # 1. Seed phase (fresh data dir): eight data: URL tabs, Charlie|Delta split, saved.
+    #    New tabs open at the top, so the list is Hotel, Golf, Foxtrot, Echo,
+    #    Charlie|Delta, Bravo, Alpha.
+    DETOUR_DATA_DIR=DetourVerify13211 DETOUR_VERIFY_DIR="$OUT" DETOUR_VERIFY_PHASE=seed \
+        .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour &
+    # wait for "done" in $OUT/verify-seed.log, kill that pid, then seed the groups:
+    DB="$HOME/Library/Application Support/DetourVerify13211/browser.db"
+    SP=$(sqlite3 "$DB" "select spaceID from tab limit 1")
+    G1=11111111-1111-4111-8111-111111111111; G2=22222222-2222-4222-8222-222222222222
+    sqlite3 "$DB" "insert into tabGroup (id, spaceID, title, color, isCollapsed, sortOrder)
+        values ('$G1','$SP','Research','blue',0,0), ('$G2','$SP','','purple',0,1);
+        update tab set tabGroupID='$G1' where title in ('Echo','Charlie','Delta','Bravo');
+        update tab set tabGroupID='$G2' where title='Golf';"
+    # 2. Check phase: same data dir, DETOUR_VERIFY_PHASE=check. Each "SHOOT <name>
+    #    <window> <panel>" line in $OUT/verify-check.log is a cue to run
+    #    `screencapture -x -o -l<window>` (and -l<panel> when it is not 0) from
+    #    the shell; the harness pauses 1.5-2 s after each. It also writes an
+    #    in-process sidebar PNG (layer.render) per cue. Ends with "done".
+    git apply -R docs/harness/task132.11-harness.patch && xcodegen generate
+
+The check phase logs every visible tab row (height, stripe colour, title and
+continuation, the stripe's frame in row coordinates, the row's selection rect,
+whether the stripe clears it, TabGroupColorView count and the accessibility
+label), in light then dark: at rest, with the split row selected, and while
+hovering Bravo (Research), Golf (unnamed) and Foxtrot (ungrouped) with the
+hover card's texts and dot. Then it drives TabStore live: recolour and rename
+Research, ungroup Echo, create a group on Hotel, add Echo back, name the
+unnamed group, move Bravo out; after each it logs the rows and whether every
+row still has the same cell instance (no reload).
+
+Results (2026-11-07, screen unlocked, 1x window captures): see the
+TASK-132.11 notes in Backlog.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 2f165c2..423aae4 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -149,6 +149,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask13211HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task13211Harness.swift b/Detour/App/Task13211Harness.swift
+new file mode 100644
+index 0000000..4573c7c
+--- /dev/null
++++ b/Detour/App/Task13211Harness.swift
+@@ -0,0 +1,228 @@
++// TEMP TASK-132.11 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++
++extension AppDelegate {
++    func runTask13211HarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let phase = ProcessInfo.processInfo.environment["DETOUR_VERIFY_PHASE"] ?? "seed"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(phase).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var clock: TimeInterval = 2.0
++        func at(_ dt: TimeInterval, _ block: @escaping @MainActor () -> Void) {
++            clock += dt
++            let timer = Timer(timeInterval: clock, repeats: false) { _ in MainActor.assumeIsolated { block() } }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier) phase=\(phase)")
++        guard let window = wc.window else { return log("no window") }
++        let store = TabStore.shared
++        let sidebar = wc.tabSidebar
++        let card = wc.hoverCard
++        func page(_ title: String) -> URL {
++            URL(string: "data:text/html,<title>\(title)</title><body style='font:40px system-ui'>\(title)</body>")!
++        }
++        func rect(_ r: NSRect) -> String { String(format: "(%.1f,%.1f %.1fx%.1f)", r.minX, r.minY, r.width, r.height) }
++        func allSubviews(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap(allSubviews) }
++
++        if phase == "seed" {
++            at(0) {
++                guard let space = wc.activeSpace else { return log("no space") }
++                var tabs: [String: BrowserTab] = [:]
++                for name in ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel"] {
++                    tabs[name] = store.addTab(in: space, url: page(name))
++                }
++                log("seeded \(space.tabs.count) tabs")
++                _ = tabs
++            }
++            at(4) {
++                guard let space = wc.activeSpace,
++                      let c = space.tabs.first(where: { $0.title == "Charlie" }),
++                      let d = space.tabs.first(where: { $0.title == "Delta" }) else { return log("no C/D") }
++                store.createSplit(draggedTabID: d.id, targetTabID: c.id, edge: .right, in: space)
++                if let first = space.tabs.first(where: { $0.title == "Alpha" }) { wc.selectTab(id: first.id) }
++                log("split; titles=\(space.tabs.map(\.title))")
++            }
++            at(2) {
++                let outcome = store.saveNow()
++                log("saved \(outcome)")
++                log("done")
++            }
++            return
++        }
++
++        // phase "check": groups were seeded into browser.db between launches.
++        func cells() -> [(row: Int, cell: TabCellView)] {
++            let table = sidebar.tableView
++            return (0 ..< table.numberOfRows).compactMap { row in
++                (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView).map { (row, $0) }
++            }
++        }
++        func cell(_ prefix: String) -> TabCellView? {
++            cells().first { $0.cell.titleLabel.stringValue.hasPrefix(prefix) }?.cell
++        }
++        var identities: [Int: ObjectIdentifier] = [:]
++        func describeRows(_ label: String, compareIdentity: Bool = false) {
++            log("ROWS \(label):")
++            let table = sidebar.tableView
++            for (row, cell) in cells() {
++                let rowView = table.rowView(atRow: row, makeIfNecessary: false)
++                let stripe = cell.tabGroupStripe
++                let frame = cell.tabGroupStripeFrame.flatMap { f in rowView.map { $0.convert(f, from: cell) } }
++                let highlight = (rowView as? TabRowView)?.selectionRect
++                let colorViews = allSubviews(cell).filter { $0 is TabGroupColorView }
++                let visibleColorViews = colorViews.filter { !$0.isHidden }.count
++                let clear = frame.map { f in highlight.map { f.maxX <= $0.minX } ?? false }
++                let same = identities[row].map { $0 == ObjectIdentifier(cell) }
++                let title = cell.titleLabel.stringValue + (cell.splitTitleLabel.isHidden ? "" : " | " + cell.splitTitleLabel.stringValue)
++                log("  row \(row) h=\(table.rect(ofRow: row).height) \"\(title)\" selected=\(rowView?.isSelected ?? false) "
++                    + "stripe=\(stripe.map { "\($0.color.rawValue) \"\($0.title)\" above=\($0.continuesAbove) below=\($0.continuesBelow)" } ?? "none") "
++                    + "frameInRow=\(frame.map(rect) ?? "-") highlight=\(highlight.map(rect) ?? "-") clearOfHighlight=\(clear.map(String.init) ?? "-") "
++                    + "colorViews=\(colorViews.count)/visible=\(visibleColorViews) a11y=\(colorViews.first(where: { !$0.isHidden })?.accessibilityLabel() ?? "-")"
++                    + (compareIdentity ? " sameCell=\(same.map(String.init) ?? "new")" : ""))
++            }
++        }
++        func rememberIdentities() {
++            identities = Dictionary(uniqueKeysWithValues: cells().map { ($0.row, ObjectIdentifier($0.cell)) })
++        }
++        var reloads = 0
++        func shoot(_ name: String) {
++            // In-process sidebar PNG (layer.render; cacheDisplay leaves it blank).
++            let view = sidebar.view
++            let scale = window.backingScaleFactor
++            let w = Int(view.bounds.width * scale), h = Int(view.bounds.height * scale)
++            if let layer = view.layer, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
++                                                           space: CGColorSpaceCreateDeviceRGB(),
++                                                           bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
++                ctx.scaleBy(x: scale, y: scale)
++                if !view.isFlipped { } // layer.render draws in layer coordinates
++                view.effectiveAppearance.performAsCurrentDrawingAppearance { layer.render(in: ctx) }
++                if let image = ctx.makeImage() {
++                    let rep = NSBitmapImageRep(cgImage: image)
++                    try? rep.representation(using: .png, properties: [:])?
++                        .write(to: URL(fileURLWithPath: outDir).appendingPathComponent("\(name)-sidebar-inproc.png"))
++                }
++            }
++            let panel = card.isShowing ? (card.panelForTesting?.windowNumber ?? 0) : 0
++            log("SHOOT \(name) \(window.windowNumber) \(panel)")
++        }
++        func event(_ type: NSEvent.EventType, _ view: NSView, _ point: NSPoint) -> NSEvent {
++            let p = view.convert(point, to: nil)
++            return NSEvent.enterExitEvent(with: type, location: p, modifierFlags: [],
++                                          timestamp: ProcessInfo.processInfo.systemUptime,
++                                          windowNumber: window.windowNumber, context: nil,
++                                          eventNumber: 0, trackingNumber: 0, userData: nil)!
++        }
++        func enter(_ name: String) {
++            guard let view = cell(name) else { return log("ENTER \(name): no cell") }
++            view.mouseEntered(with: event(.mouseEntered, view, NSPoint(x: view.bounds.width * 0.3, y: view.bounds.midY)))
++            log("ENTER \(name)")
++        }
++        func leave(_ name: String) {
++            guard let view = cell(name) else { return }
++            view.mouseExited(with: event(.mouseExited, view, NSPoint(x: -10, y: -10)))
++            log("EXIT \(name)")
++        }
++        func describeCard(_ label: String) {
++            guard card.isShowing, let panel = card.panelForTesting else {
++                return log("CARD \(label): not showing (pending=\(card.isPendingForTesting))")
++            }
++            let views = allSubviews(panel.contentView!)
++            let texts = views.compactMap { $0 as? NSTextField }.filter { !$0.isHidden && $0.superview?.isHidden == false }
++                .map { "\"\($0.stringValue)\"" }
++            let dots = views.compactMap { $0 as? TabGroupColorView }.filter { !$0.isHidden && $0.superview?.isHidden == false }
++                .map { "\($0.color?.rawValue ?? "nil") \(rect($0.frame))" }
++            log("CARD \(label): texts=\(texts) groupDot=\(dots)")
++        }
++        func space() -> Space? { wc.activeSpace }
++        func tab(_ title: String) -> BrowserTab? { space()?.tabs.first { $0.title == title } }
++        func group(_ title: String) -> TabGroup? { space()?.tabGroups.first { $0.title == title } }
++
++        // Count full reloads of the active table during the live-update leg.
++        let reloadObserver = NotificationCenter.default.addObserver(forName: NSTableView.selectionDidChangeNotification,
++                                                                    object: sidebar.tableView, queue: .main) { _ in }
++        _ = reloadObserver
++
++        at(1) {
++            window.makeKeyAndOrderFront(nil)
++            NSApp.appearance = NSAppearance(named: .aqua)
++            log("groups=\(space()?.tabGroups.map { "\($0.title)/\($0.color.rawValue)" } ?? []) "
++                + "tabs=\(space()?.tabs.map { "\($0.title):\($0.tabGroupID.map { _ in "G" } ?? "-")" } ?? [])")
++            if let alpha = tab("Alpha") { wc.selectTab(id: alpha.id) }
++        }
++        for theme in ["light", "dark"] {
++            at(1.5) {
++                NSApp.appearance = NSAppearance(named: theme == "light" ? .aqua : .darkAqua)
++                if let alpha = tab("Alpha") { wc.selectTab(id: alpha.id) }
++                log(theme.uppercased())
++            }
++            at(1.5) { describeRows("\(theme) rest"); shoot("\(theme)-1-rest") }
++            at(2.0) { if let c = tab("Charlie") { wc.selectTab(id: c.id) }; log("selected Charlie (split row)") }
++            at(1.0) { describeRows("\(theme) split selected"); shoot("\(theme)-2-split-selected") }
++            at(2.0) { if let e = tab("Echo") { wc.selectTab(id: e.id) }; log("selected Echo") }
++            at(1.0) { enter("Bravo") }
++            at(1.0) { describeCard("Bravo \(theme)"); shoot("\(theme)-3-hover-bravo-card") }
++            at(2.0) { leave("Bravo"); enter("Golf") }
++            at(1.0) { describeCard("Golf (unnamed) \(theme)"); shoot("\(theme)-4-hover-golf-card") }
++            at(2.0) { leave("Golf"); enter("Foxtrot") }
++            at(1.0) { describeCard("Foxtrot (ungrouped) \(theme)") }
++            at(0.5) { leave("Foxtrot") }
++        }
++        // Live updates (AC #2), in light.
++        at(1.5) {
++            NSApp.appearance = NSAppearance(named: .aqua)
++            if let alpha = tab("Alpha") { wc.selectTab(id: alpha.id) }
++            log("LIVE")
++        }
++        let steps: [(String, () throws -> Void)] = [
++            ("recolour+rename Research -> green Reading", {
++                guard let s = space(), let g = group("Research") else { throw NSError(domain: "h", code: 1) }
++                try store.updateTabGroup(g.id, title: "Reading", color: .green, in: s)
++            }),
++            ("ungroup Echo", {
++                guard let s = space(), let e = tab("Echo") else { throw NSError(domain: "h", code: 2) }
++                try store.ungroupTabs([e.id], in: s)
++            }),
++            ("create red group New with Hotel", {
++                guard let s = space(), let h = tab("Hotel") else { throw NSError(domain: "h", code: 3) }
++                _ = try store.createTabGroup(tabIDs: [h.id], title: "New", color: .red, in: s)
++            }),
++            ("Echo joins Reading", {
++                guard let s = space(), let e = tab("Echo"), let g = group("Reading") else { throw NSError(domain: "h", code: 4) }
++                try store.addTabs([e.id], toTabGroup: g.id, in: s)
++            }),
++            ("name the unnamed group", {
++                guard let s = space(), let g = s.tabGroups.first(where: { $0.title.isEmpty }) else { throw NSError(domain: "h", code: 5) }
++                try store.updateTabGroup(g.id, title: "Named", in: s)
++            }),
++            ("move Bravo to the end (leaves Reading)", {
++                guard let s = space(), let b = tab("Bravo") else { throw NSError(domain: "h", code: 6) }
++                store.moveTab(id: b.id, toGapIndex: s.tabs.count, in: s)
++            }),
++        ]
++        for (index, step) in steps.enumerated() {
++            at(1.5) {
++                rememberIdentities()
++                do { try step.1(); log("STEP \(index + 1): \(step.0)") } catch { log("STEP \(index + 1) FAILED: \(error)") }
++            }
++            at(0.6) {
++                describeRows("after step \(index + 1)", compareIdentity: true)
++                shoot("live-\(index + 1)")
++            }
++        }
++        at(2.0) {
++            log("tabs=\(space()?.tabs.map { "\($0.title):\($0.tabGroupID.flatMap { id in space()?.tabGroup(id: id)?.title } ?? "-")" } ?? [])")
++            _ = reloads
++            NSApp.appearance = nil
++            log("done")
++        }
++    }
++}
++#endif

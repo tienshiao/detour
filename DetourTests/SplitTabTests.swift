@@ -100,6 +100,142 @@ nonisolated final class SplitTabTests: XCTestCase {
         XCTAssertEqual(tabGapIndex(forItemGap: 3, in: items), 4)
     }
 
+    // MARK: - Tab group stripes (TASK-132.11)
+
+    /// Tabs A..F: A ungrouped; B, (C|D) split and E in `group`; F ungrouped.
+    /// Items: A, B, (C|D), E, F.
+    @MainActor private func makeStripeFixture() -> (tabs: [BrowserTab], group: TabGroup, items: [TabListItem]) {
+        let tabs = (0..<6).map { _ in makeSleepingTab(spaceID: UUID()) }
+        let group = TabGroup(title: "Research", color: .purple)
+        for tab in tabs[1...4] { tab.tabGroupID = group.id }
+        let splitID = UUID()
+        tabs[2].splitGroupID = splitID
+        tabs[3].splitGroupID = splitID
+        return (tabs, group, tabListItems(from: tabs))
+    }
+
+    @MainActor func testStripesMarkEveryMemberRowOnceAndJoinAdjacentMembers() {
+        let (_, group, items) = makeStripeFixture()
+        XCTAssertEqual(items.count, 5)
+
+        let stripes = tabGroupStripes(for: items, groups: [group])
+
+        XCTAssertEqual(stripes.count, items.count, "one entry per row: the split row shows its stripe once")
+        XCTAssertNil(stripes[0], "a row outside the group has no stripe")
+        XCTAssertNil(stripes[4])
+        XCTAssertEqual(stripes[1], TabGroupStripe(groupID: group.id, color: .purple, title: "Research",
+                                                  continuesAbove: false, continuesBelow: true))
+        XCTAssertEqual(stripes[2], TabGroupStripe(groupID: group.id, color: .purple, title: "Research",
+                                                  continuesAbove: true, continuesBelow: true),
+                       "the split row carries the pair's group")
+        XCTAssertEqual(stripes[3], TabGroupStripe(groupID: group.id, color: .purple, title: "Research",
+                                                  continuesAbove: true, continuesBelow: false))
+    }
+
+    @MainActor func testUngroupedRowsHaveNoStripes() {
+        let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: UUID()) }
+        let unrelated = TabGroup(color: .blue)
+        XCTAssertEqual(tabGroupStripes(for: tabListItems(from: tabs), groups: [unrelated]), [nil, nil, nil])
+        XCTAssertEqual(tabGroupStripes(for: tabListItems(from: tabs), groups: []), [nil, nil, nil])
+    }
+
+    @MainActor func testOneMemberGroupStripeIsCappedAtBothEnds() {
+        let tabs = (0..<3).map { _ in makeSleepingTab(spaceID: UUID()) }
+        let group = TabGroup(color: .orange)
+        tabs[1].tabGroupID = group.id
+
+        let stripe = tabGroupStripe(at: 1, in: tabListItems(from: tabs), groups: [group])
+
+        XCTAssertEqual(stripe?.color, .orange)
+        XCTAssertEqual(stripe?.continuesAbove, false)
+        XCTAssertEqual(stripe?.continuesBelow, false)
+    }
+
+    @MainActor func testAdjacentGroupsDoNotJoin() {
+        let tabs = (0..<4).map { _ in makeSleepingTab(spaceID: UUID()) }
+        let first = TabGroup(color: .blue), second = TabGroup(color: .blue)
+        tabs[0].tabGroupID = first.id
+        tabs[1].tabGroupID = first.id
+        tabs[2].tabGroupID = second.id
+        tabs[3].tabGroupID = second.id
+
+        let stripes = tabGroupStripes(for: tabListItems(from: tabs), groups: [first, second])
+
+        XCTAssertEqual(stripes.map { $0?.groupID }, [first.id, first.id, second.id, second.id])
+        XCTAssertEqual(stripes[1]?.continuesBelow, false, "the same colour, but another group: the bars stay apart")
+        XCTAssertEqual(stripes[2]?.continuesAbove, false)
+    }
+
+    @MainActor func testStripeNeverTrustsGroupData() {
+        let tabs = (0..<4).map { _ in makeSleepingTab(spaceID: UUID()) }
+        let group = TabGroup(color: .green)
+        // A split whose panes disagree, then a tab naming a group the space does not have.
+        let splitID = UUID()
+        tabs[0].splitGroupID = splitID
+        tabs[1].splitGroupID = splitID
+        tabs[0].tabGroupID = group.id
+        tabs[2].tabGroupID = UUID()
+        tabs[3].tabGroupID = group.id
+        let items = tabListItems(from: tabs)
+        XCTAssertEqual(items.count, 3)
+
+        let stripes = tabGroupStripes(for: items, groups: [group])
+
+        XCTAssertNil(stripes[0], "a pair whose panes name different groups shows none")
+        XCTAssertNil(stripes[1], "an id naming no group shows none")
+        XCTAssertEqual(stripes[2]?.continuesAbove, false, "a row without a stripe never joins one")
+        XCTAssertNil(tabGroupStripe(at: 3, in: items, groups: [group]))
+        XCTAssertNil(tabGroupStripe(at: -1, in: items, groups: [group]))
+    }
+
+    @MainActor func testStripeFollowsTheGroupsCurrentColourAndTitle() {
+        let (_, group, items) = makeStripeFixture()
+        group.color = .cyan
+        group.title = "Trip"
+
+        let stripe = tabGroupStripe(at: 2, in: items, groups: [group])
+
+        XCTAssertEqual(stripe?.color, .cyan)
+        XCTAssertEqual(stripe?.title, "Trip")
+    }
+
+    @MainActor func testTabGroupDisplayTitle() {
+        XCTAssertEqual(tabGroupDisplayTitle("Research"), "Research")
+        XCTAssertEqual(tabGroupDisplayTitle("  Trip  "), "Trip")
+        XCTAssertEqual(tabGroupDisplayTitle(""), "Unnamed group")
+        XCTAssertEqual(tabGroupDisplayTitle(" \n"), "Unnamed group")
+        let stripe = TabGroupStripe(groupID: UUID(), color: .grey, title: "", continuesAbove: false, continuesBelow: false)
+        XCTAssertEqual(stripe.displayTitle, "Unnamed group")
+    }
+
+    /// The stripe sits in the gutter left of the row highlight, so the
+    /// selection, hover background and dev-mode border never cover it; an
+    /// ungrouped cell has none, and reuse clears it.
+    @MainActor func testCellStripeSitsInTheGutterAndClearsOnReuse() {
+        let row = NSTableRowView(frame: NSRect(x: 0, y: 0, width: 240, height: 36))
+        let cell = TabCellView(frame: NSRect(x: 16, y: 0, width: 208, height: 36))
+        row.addSubview(cell)
+        XCTAssertNil(cell.tabGroupStripeFrame, "an ungrouped row has no stripe")
+
+        let groupID = UUID()
+        cell.updateTabGroupStripe(TabGroupStripe(groupID: groupID, color: .red, title: "", continuesAbove: false,
+                                                 continuesBelow: true))
+        cell.layoutSubtreeIfNeeded()
+        guard let frame = cell.tabGroupStripeFrame else { return XCTFail("a member row shows its stripe") }
+        let inRow = row.convert(frame, from: cell)
+        XCTAssertEqual(inRow.width, TabCellView.tabGroupStripeWidth)
+        XCTAssertEqual(inRow.midX, UIConstants.sidebarRowHighlightInset / 2, accuracy: 0.5,
+                       "centred in the gutter, on a whole pixel")
+        XCTAssertEqual(inRow.minX, inRow.minX.rounded(), "no half-pixel origin without a window (1x)")
+        XCTAssertLessThanOrEqual(inRow.maxX, UIConstants.sidebarRowHighlightInset, "left of the highlight")
+        XCTAssertEqual(inRow.height, 36 - TabCellView.tabGroupStripeEndInset, accuracy: 0.01,
+                       "capped at the group's first row only: it runs on into the row below")
+
+        cell.prepareForReuse()
+        XCTAssertNil(cell.tabGroupStripeFrame)
+        XCTAssertNil(cell.tabGroupStripe)
+    }
+
     // MARK: - sanitizeSplitGroups
 
     @MainActor func testSanitizeClearsSingletonAndNonAdjacentGroups() throws {

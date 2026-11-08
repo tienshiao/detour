@@ -94,6 +94,9 @@ sources:
   - id: notes-hittest
     resource: "Agent session notes, 2026-10-01 (not in the repository)"
     title: Hit-test and resize-region probe findings
+  - id: task-132-11
+    resource: backlog:TASK-132.11
+    title: "Sidebar: colour stripe on tab rows that belong to a tab group"
   - id: notes-harness
     resource: "Agent session notes, 2026-07 to 2026-09 (not in the repository)"
     title: Runtime debug harness notes (zero-width split pane root cause)
@@ -192,6 +195,7 @@ Related.
 | Behavior | Where it bit | Do instead |
 |---|---|---|
 | A `CGColor` assigned to a layer is resolved once and does not follow light / dark changes. | Dividers, hover backgrounds, drop hints, split pane borders | Re-resolve in `viewDidChangeEffectiveAppearance` or `updateLayer`, inside `performAsCurrentDrawingAppearance` |
+| In the sidebar's source-list table, a dynamic system colour resolved in a row's subview came out different on the selected row than on the others: `systemBlue` in light measured #5199FA on the selected row and #4584F2 on unselected ones (1x window capture). Resolved against plain `.aqua`, every row gave #5199FA, so the unselected rows' subviews carry another appearance (likely the source list's vibrant one).[^task-132-11] | A tab group's stripe, one bar across rows, showed a lighter segment on the selected row | Resolve a colour that must match across rows against `effectiveAppearance.bestMatch(from: [.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua])` (`TabGroupColorView`) |
 | `contentView.cacheDisplay(in:to:)` renders web content but leaves the sidebar blank.[^notes-harness] | Capturing the sidebar for verification | Render the sidebar's layer instead; see [in-process UI automation](../playbooks/in-process-ui-automation.md) |
 
 # Why it matters here
@@ -243,6 +247,7 @@ from a probe or a measurement.
 [^notes-keyloop]: Key-view loop probe findings
 [^notes-hittest]: Hit-test and resize-region probe findings
 [^notes-harness]: Runtime debug harness notes (zero-width split pane root cause)
+[^task-132-11]: Sidebar: colour stripe on tab rows that belong to a tab group
 [^notes-inprocess]: In-process UI verification notes
 [^task-186-2]: Dev mode: an under-construction toolbar above the page with the URL
 [^task-186-3]: Dev mode: capture buttons in the dev toolbar

@@ -65,6 +65,40 @@ extension BrowserWindowController: TabStoreObserver {
         tabSidebar.reloadTab(at: index)
     }
 
+    // Tab groups (TASK-132.11): the sidebar shows a member's group as a stripe
+    // on its row. A group's own changes and membership changes repaint the
+    // stripes in place; a mutation that also moved rows has already been
+    // through applyState above, which reconfigures every visible row.
+
+    func tabStoreDidCreateTabGroup(_ group: TabGroup, in space: Space) {
+        tabGroupsDidChange(in: space.id)
+    }
+
+    func tabStoreDidUpdateTabGroup(_ group: TabGroup, in space: Space) {
+        tabGroupsDidChange(in: space.id)
+    }
+
+    func tabStoreDidRemoveTabGroup(_ group: TabGroup, in space: Space) {
+        tabGroupsDidChange(in: space.id)
+    }
+
+    func tabStoreDidMoveTabGroup(_ group: TabGroup, in space: Space) {
+        tabGroupsDidChange(in: space.id)
+    }
+
+    func tabStoreDidChangeTabGroupMembership(of tabs: [BrowserTab]) {
+        // A tab moved to another space reports its new space here, so the
+        // window showing the old one refreshes through that move's removal.
+        for spaceID in Set(tabs.compactMap(\.spaceID)) {
+            tabGroupsDidChange(in: spaceID)
+        }
+    }
+
+    private func tabGroupsDidChange(in spaceID: UUID) {
+        guard spaceID == activeSpaceID else { tabSidebar.inactiveSpaceContentDidChange(); return }
+        tabSidebar.refreshTabGroupStripes()
+    }
+
     // Pinned entry observer methods
 
     func tabStoreDidInsertPinnedEntry(_ entry: PinnedEntry, at index: Int, in space: Space) {

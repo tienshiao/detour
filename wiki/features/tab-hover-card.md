@@ -67,6 +67,13 @@ tooltip, which was slow and showed only the title.[^task-190]
 - **What it says:** the full title (semibold 13 pt, wrapping to at most
   three lines), then the URL on one line (11 pt, tail-truncated) with the
   host in `labelColor` and the rest in `secondaryLabelColor`.
+- **A tab group member** (a normal row, or either half of a split row in a
+  group) has a line above the title: a dot in the group's colour and its
+  title in 11 pt `secondaryLabelColor`, "Unnamed group" when it has none.
+  It is how the group's title is read, since the row shows only the colour
+  (TASK-132.11, [tab groups](../tabs/tab-groups.md)). `HoverCardContent.tabGroup`,
+  from the host's `hoverCardTabGroup(for:)`; pinned, favourite and Peek
+  cards never have one.
 - **Live pinned entries and favourites** describe the tab's *current* page,
   not the pinned title and URL. A dormant entry or tile describes its own
   saved title and URL.

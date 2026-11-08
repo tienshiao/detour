@@ -36,6 +36,7 @@ driven.
 | `task132.4-install-harness.patch` | TASK-132.4 | Installing the Claude extension from its Chrome Web Store page, answering Detour's prompt | `DETOUR_INSTALL_HARNESS_DIR` |
 | `task132.6-harness.patch` | TASK-132.6 | `externally_connectable` pages: runs `step-N.js` files from the output directory in a tab | `DETOUR_EC_HARNESS_DIR`, `_EXT`, `_URL`, `_MODE` |
 | `task132.8-harness.patch` | TASK-132.8, 132.9 | An extension's side panel; procedure in `wiki/playbooks/side-panel-runtime-check.md` | `DETOUR_SP_HARNESS_DIR`, `_MODE` (explorer, width, claude), `_EXT`, `_URL` |
+| `task132.11-harness.patch` | TASK-132.11 | Tab group stripes on sidebar rows (seeded with sqlite between two launches) and the hover card's group line, light and dark, selected and hovered rows, then live recolour, rename, ungroup, create, add and move through TabStore with a no-reload check; the shell takes `screencapture -l` shots on the log's SHOOT cues | `DETOUR_VERIFY_DIR`, `DETOUR_VERIFY_PHASE` (seed, check) |
 
 ## Spikes
 

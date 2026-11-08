@@ -132,3 +132,65 @@ func sanitizeSplitGroups(_ tabs: [BrowserTab]) {
         tab.splitFraction = nil
     }
 }
+
+// MARK: - Tab group stripes (TASK-132.11)
+
+/// How a tab-section row shows the tab group it belongs to: a stripe in the
+/// group's colour at the row's leading edge. The stripe runs on into the row
+/// above or below when that row is in the same group, so a group's rows read
+/// as one bar with rounded ends.
+struct TabGroupStripe: Equatable {
+    let groupID: UUID
+    let color: TabGroupColor
+    /// The group's own title, as stored (may be empty).
+    let title: String
+    let continuesAbove: Bool
+    let continuesBelow: Bool
+
+    /// The title a person reads (`tabGroupDisplayTitle`).
+    var displayTitle: String { tabGroupDisplayTitle(title) }
+}
+
+/// A tab group's title as a person reads it: trimmed, and "Unnamed group"
+/// (Chrome's wording) for a group without one.
+func tabGroupDisplayTitle(_ title: String) -> String {
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? "Unnamed group" : trimmed
+}
+
+/// The tab group an item's row shows: the group every tab of the item names,
+/// when it is one of `groups`. A split row stands for its pair, so it shows
+/// the group once. Defensive, like `tabListItems`: a pair whose panes name
+/// different groups, or an id naming no group, gets no stripe (TabStore keeps
+/// neither from happening, but rendering must never trust group data).
+func tabGroup(of item: TabListItem, in groups: [TabGroup]) -> TabGroup? {
+    let tabs = item.tabs
+    guard let id = tabs.first?.tabGroupID, tabs.allSatisfy({ $0.tabGroupID == id }) else { return nil }
+    return groups.first { $0.id == id }
+}
+
+/// The stripe of the item at `index`, or nil for a row outside any group.
+func tabGroupStripe(at index: Int, in items: [TabListItem], groups: [TabGroup]) -> TabGroupStripe? {
+    guard items.indices.contains(index), let group = tabGroup(of: items[index], in: groups) else { return nil }
+    func sameGroup(_ neighbour: Int) -> Bool {
+        items.indices.contains(neighbour) && tabGroup(of: items[neighbour], in: groups)?.id == group.id
+    }
+    return makeTabGroupStripe(group, continuesAbove: sameGroup(index - 1), continuesBelow: sameGroup(index + 1))
+}
+
+/// Every item's stripe, in item order. Resolves each item's group once.
+func tabGroupStripes(for items: [TabListItem], groups: [TabGroup]) -> [TabGroupStripe?] {
+    let itemGroups = items.map { tabGroup(of: $0, in: groups) }
+    return itemGroups.indices.map { i in
+        guard let group = itemGroups[i] else { return nil }
+        func sameGroup(_ neighbour: Int) -> Bool {
+            itemGroups.indices.contains(neighbour) && itemGroups[neighbour]?.id == group.id
+        }
+        return makeTabGroupStripe(group, continuesAbove: sameGroup(i - 1), continuesBelow: sameGroup(i + 1))
+    }
+}
+
+private func makeTabGroupStripe(_ group: TabGroup, continuesAbove: Bool, continuesBelow: Bool) -> TabGroupStripe {
+    TabGroupStripe(groupID: group.id, color: group.color, title: group.title,
+                   continuesAbove: continuesAbove, continuesBelow: continuesBelow)
+}

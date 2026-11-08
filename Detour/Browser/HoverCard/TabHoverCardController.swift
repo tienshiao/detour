@@ -13,6 +13,8 @@ protocol TabHoverCardHost: AnyObject {
     func hoverCardIsOnScreen(_ tab: BrowserTab) -> Bool
     /// `TabStore.thumbnailKey(for:)`.
     func hoverCardThumbnailKey(for tab: BrowserTab) -> UUID?
+    /// The tab group `tab` is a member of, named on its card (TASK-132.11).
+    func hoverCardTabGroup(for tab: BrowserTab) -> TabGroup?
 }
 
 /// Shows the sidebar's tab hover card (TASK-190), one per browser window.
@@ -141,7 +143,8 @@ final class TabHoverCardController {
         guard let host else { return nil }
         return HoverCardContent.make(for: target,
                                      isOnScreen: { host.hoverCardIsOnScreen($0) },
-                                     thumbnailKey: { host.hoverCardThumbnailKey(for: $0) })
+                                     thumbnailKey: { host.hoverCardThumbnailKey(for: $0) },
+                                     tabGroup: { host.hoverCardTabGroup(for: $0) })
     }
 
     private func show() {
@@ -162,7 +165,7 @@ final class TabHoverCardController {
         let panel = self.panel ?? TabHoverCardPanel()
         self.panel = panel
         panel.appearance = window.effectiveAppearance
-        panel.cardView.configure(text: content.text, thumbnail: thumbnail)
+        panel.cardView.configure(text: content.text, thumbnail: thumbnail, tabGroup: content.tabGroup)
 
         let sidebarOnScreen = window.convertToScreen(sidebarRect)
         let rowOnScreen = window.convertToScreen(hover.rowRectInWindow)

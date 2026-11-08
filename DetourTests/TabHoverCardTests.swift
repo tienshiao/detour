@@ -203,6 +203,37 @@ nonisolated final class TabHoverCardTests: XCTestCase {
         XCTAssertEqual(content.thumbnailKey, tab.id)
     }
 
+    @MainActor func testGroupedTabNamesItsGroup() {
+        let tab = makeTab("Docs", url: "https://www.example.com/docs")
+        let group = TabGroup(title: "Research", color: .purple)
+        tab.tabGroupID = group.id
+        let content = HoverCardContent.make(for: .tab(tab), isOnScreen: { _ in false }, thumbnailKey: { $0.id },
+                                            tabGroup: { $0 === tab ? group : nil })
+        XCTAssertEqual(content.tabGroup, HoverCardTabGroup(title: "Research", color: .purple))
+        XCTAssertEqual(content.text.title, "Docs", "the page's own text is unchanged")
+
+        group.title = ""
+        let unnamed = HoverCardContent.make(for: .tab(tab), isOnScreen: { _ in false }, thumbnailKey: { $0.id },
+                                            tabGroup: { _ in group })
+        XCTAssertEqual(unnamed.tabGroup?.title, "Unnamed group")
+    }
+
+    @MainActor func testOnlyANormalTabsCardNamesAGroup() {
+        let tab = makeTab()
+        let group = TabGroup(title: "Research", color: .blue)
+        XCTAssertNil(HoverCardContent.make(for: .tab(tab), isOnScreen: { _ in false }, thumbnailKey: { $0.id },
+                                           tabGroup: { _ in nil }).tabGroup, "an ungrouped tab names none")
+        XCTAssertNil(HoverCardContent.make(for: .tab(tab), isOnScreen: { _ in false }, thumbnailKey: { $0.id }).tabGroup)
+        let entry = PinnedEntry(pinnedURL: URL(string: "https://example.com")!, pinnedTitle: "Pinned", tab: tab)
+        XCTAssertNil(HoverCardContent.make(for: .pinned(entry), isOnScreen: { _ in false }, thumbnailKey: { $0.id },
+                                           tabGroup: { _ in group }).tabGroup)
+        let peek = makeTab("Article", url: "https://news.example/story")
+        tab.peekTab = peek
+        tab.peekURL = peek.url
+        XCTAssertNil(HoverCardContent.make(for: .peek(host: tab), isOnScreen: { _ in false }, thumbnailKey: { $0.id },
+                                           tabGroup: { _ in group }).tabGroup, "a Peek's card describes the Peek")
+    }
+
     @MainActor func testTabWithoutPreviewFallsBackToTheDiskKey() {
         let tab = makeTab()
         let content = HoverCardContent.make(for: .tab(tab), isOnScreen: { _ in false }, thumbnailKey: { $0.id })
@@ -496,6 +527,7 @@ nonisolated final class TabHoverCardControllerTests: XCTestCase {
         var hoverCardSidebarRectInWindow: NSRect? { NSRect(x: 0, y: 0, width: 240, height: 500) }
         func hoverCardIsOnScreen(_ tab: BrowserTab) -> Bool { onScreen.contains(ObjectIdentifier(tab)) }
         func hoverCardThumbnailKey(for tab: BrowserTab) -> UUID? { nil }
+        func hoverCardTabGroup(for tab: BrowserTab) -> TabGroup? { nil }
     }
 
     private var window: NSWindow!
@@ -655,6 +687,7 @@ nonisolated final class TabHoverCardControllerTests: XCTestCase {
             var hoverCardSidebarRectInWindow: NSRect? { nil }
             func hoverCardIsOnScreen(_ tab: BrowserTab) -> Bool { false }
             func hoverCardThumbnailKey(for tab: BrowserTab) -> UUID? { nil }
+            func hoverCardTabGroup(for tab: BrowserTab) -> TabGroup? { nil }
         }
         let hidden = HiddenSidebarHost(window: window)
         controller.host = hidden

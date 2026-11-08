@@ -67,6 +67,7 @@ mute, rename and collapse.
 | Title | always | Pinned entries show `displayTitle`. There is no tooltip: the sidebar's [tab hover card](../features/tab-hover-card.md) replaced it, and the cell's `accessibilityHelp` keeps the old tooltip text (the tab title, a pinned entry's pinned title, a split row's "left — right") |
 | Host line | the row is in [dev mode](../features/dev-mode.md) (single rows only) | 10 pt `secondaryLabelColor` label under the title, `hostLineLabel`; the title moves up so both lines are centred in the unchanged 36 pt row |
 | Hazard border | the row, or a split half, is in dev mode **and the row is the window's selected row** (`isRowSelected`, pushed by `TabRowView.isSelected`) | Orange/black dashed `HazardBorderView`, made on first use and only hidden on deselection, framed like the hover background (a split half's border matches its half highlight); over the progress bar, under the content |
+| Tab group stripe | the row is a [tab group](../tabs/tab-groups.md) member (normal tabs only) | 3 pt bar in the group's colour in the 10 pt gutter left of the row highlight, outside the cell's bounds; full height where the next row is in the same group, held 7 pt in with rounded ends at the group's first and last rows. `updateTabGroupStripe(_:)`; the view is made on first use, so an ungrouped row has none |
 | Close button | hover only | Glyph says what it will do: xmark closes a normal tab; **minus** makes a live pinned entry dormant; xmark on a dormant entry removes the pin (`updatePinnedMode`) |
 | Peek favicon | the tab has a live or parked [Peek](../tabs/peek.md) | Trailing chip: a single tab's, or a split row's right pane's. A split's left pane has its own (`leftPanePeekFaviconImageView`) between its close button and the divider, shown only while the row is a split. Hovering either shows that Peek's [hover card](../features/tab-hover-card.md) (TASK-229) |
 | Split segment | the row is a split | See below |
@@ -207,6 +208,11 @@ background; Esc restores the original text and gives focus to the table.
   that turns a dissolved pinned split back into a single row. A path that
   skips it leaves a reused cell with another row's border and host line;
   `prepareForReuse` clears it.
+- **Every normal-row path passes the row's tab group stripe**:
+  `configureItemCell` takes it as a required argument, `reloadTab` sets it
+  too. A pinned row's `updatePinnedMode(entry:)` (with an entry) and
+  `updateSplitPinnedMode` clear it, as does `prepareForReuse`, so a cell
+  `moveRow` carried into the pinned section drops its stripe.
 
 # Gotchas
 

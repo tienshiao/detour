@@ -159,6 +159,15 @@ enum HoverCardTarget {
     }
 }
 
+/// The tab group a card names, above the page's title (TASK-132.11): the
+/// sidebar row shows only the group's colour, so the card is where its title
+/// is read.
+struct HoverCardTabGroup: Equatable {
+    /// `tabGroupDisplayTitle` of the group's title.
+    let title: String
+    let color: TabGroupColor
+}
+
 /// Everything the card shows for a target, short of the disk read.
 struct HoverCardContent {
     let text: HoverCardText
@@ -167,13 +176,30 @@ struct HoverCardContent {
     /// Where to look on disk when there is no `preview`; nil when the row
     /// gets no thumbnail at all.
     let thumbnailKey: UUID?
+    /// The group of a normal tab's row; nil for every other target.
+    var tabGroup: HoverCardTabGroup? = nil
 
     /// - Parameters:
     ///   - isOnScreen: whether a tab is showing in this window (no thumbnail).
     ///   - thumbnailKey: `TabStore.thumbnailKey(for:)` for a live tab.
+    ///   - tabGroup: the tab group a tab is in, if any.
     static func make(for target: HoverCardTarget,
                      isOnScreen: (BrowserTab) -> Bool,
-                     thumbnailKey: (BrowserTab) -> UUID?) -> HoverCardContent {
+                     thumbnailKey: (BrowserTab) -> UUID?,
+                     tabGroup: (BrowserTab) -> TabGroup? = { _ in nil }) -> HoverCardContent {
+        var content = pageContent(for: target, isOnScreen: isOnScreen, thumbnailKey: thumbnailKey)
+        // Only a normal tab (a single row or a split half) is ever a member;
+        // a Peek's card describes the Peek, not its host's group.
+        if case .tab(let tab) = target, let group = tabGroup(tab) {
+            content.tabGroup = HoverCardTabGroup(title: tabGroupDisplayTitle(group.title), color: group.color)
+        }
+        return content
+    }
+
+    /// The card's page: its text and picture.
+    private static func pageContent(for target: HoverCardTarget,
+                                    isOnScreen: (BrowserTab) -> Bool,
+                                    thumbnailKey: (BrowserTab) -> UUID?) -> HoverCardContent {
         // A live pinned entry or favourite describes the tab's current page,
         // not the pinned one; a dormant tile its own.
         let text: HoverCardText

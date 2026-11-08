@@ -144,6 +144,16 @@ One asymmetry to know: `selectedPinnedTabIndex`'s setter takes an index into
 `pinnedEntries`, but its getter returns the selected row's *flat* index. Only
 the setter is used by the window controller.
 
+# Tab group stripes
+
+Which tab-list rows show a [tab group](../tabs/tab-groups.md) stripe is also
+item-space logic in
+[TabListItems.swift](../../Detour/Browser/Sidebar/TabListItems.swift):
+`tabGroupStripe(at:in:groups:)` / `tabGroupStripes(for:groups:)` give each
+item its group's colour and title and whether the stripe runs on into the
+item above and below, so a split row shows it once. The view controller only
+passes the result to the cell; tests are in `SplitTabTests`.
+
 # Pinned tree flattening
 
 `flattenPinnedTree(entries:folders:collapsedFolderIDs:selectedTabID:)` turns

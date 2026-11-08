@@ -324,6 +324,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
         isRowSelected = (superview as? NSTableRowView)?.isSelected ?? false
+        layoutTabGroupStripe()
     }
 
     override func prepareForReuse() {
@@ -353,6 +354,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         onRename = nil
         onCloseLeft = nil
         updateDevMode(.none)
+        updateTabGroupStripe(nil)
         if isEditing { endEditing(commit: false) }
         resetSplitRevealState()
         updateLayoutState()
@@ -383,6 +385,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         guard bounds.width > 12, bounds.height > 2 else { return }
         hoverBackground.frame = hoverBackgroundFrame
         layoutDevModeBorders()
+        layoutTabGroupStripe()
         // Progress bar spans the full row area regardless of hover
         let rowRect = bounds.insetBy(dx: -6, dy: 1)
         let progressWidth = rowRect.width * max(currentProgress, 0)
@@ -882,6 +885,87 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         }
     }
 
+    // MARK: - Tab group stripe (TASK-132.11)
+
+    static let tabGroupStripeWidth: CGFloat = 3
+    /// How far a group's first and last rows hold the stripe in from the row's
+    /// top and bottom edges, so the group reads as one bar with rounded ends.
+    static let tabGroupStripeEndInset: CGFloat = 7
+
+    /// The member row's stripe, made on first use: an ungrouped row has none.
+    private var tabGroupStripeView: TabGroupColorView?
+    private(set) var tabGroupStripe: TabGroupStripe?
+
+    /// Shows the row's tab group as a stripe in the gutter left of the row's
+    /// highlight, where the selection, the hover background, the progress bar
+    /// and the dev-mode border never reach, so none of them changes it.
+    /// `nil` hides it. It takes no constraints and changes nothing else in
+    /// the row.
+    func updateTabGroupStripe(_ stripe: TabGroupStripe?) {
+        guard stripe != tabGroupStripe else { return }
+        tabGroupStripe = stripe
+        guard let stripe else {
+            tabGroupStripeView?.isHidden = true
+            tabGroupStripeView?.setAccessibilityElement(false)
+            return
+        }
+        let view = tabGroupStripeView ?? makeTabGroupStripeView()
+        tabGroupStripeView = view
+        view.color = stripe.color
+        var capped: CACornerMask = []
+        // The stripe view is unflipped, so its layer's minY is the bottom.
+        if !stripe.continuesAbove { capped.formUnion([.layerMinXMaxYCorner, .layerMaxXMaxYCorner]) }
+        if !stripe.continuesBelow { capped.formUnion([.layerMinXMinYCorner, .layerMaxXMinYCorner]) }
+        view.roundedCorners = capped
+        view.setAccessibilityElement(true)
+        view.setAccessibilityLabel("Tab group: \(stripe.displayTitle)")
+        view.isHidden = false
+        layoutTabGroupStripe()
+    }
+
+    private func makeTabGroupStripeView() -> TabGroupColorView {
+        let view = TabGroupColorView()
+        view.cornerRadius = Self.tabGroupStripeWidth / 2
+        view.setAccessibilityRole(.image)
+        addSubview(view)
+        return view
+    }
+
+    /// The stripe spans the row view's full height (so adjacent members join)
+    /// and sits centred in the gutter between the row's leading edge and its
+    /// highlight. The cell is inset in its row by the source-list table, so
+    /// the frame is derived from the row view's bounds rather than the cell's.
+    private func layoutTabGroupStripe() {
+        guard let view = tabGroupStripeView, let stripe = tabGroupStripe else { return }
+        let rowRect = superview.map { convert($0.bounds, from: $0) } ?? bounds
+        let gutterMinX = rowRect.minX
+        let gutterWidth = UIConstants.sidebarRowHighlightInset
+        var minY = rowRect.minY
+        var maxY = rowRect.maxY
+        let capsTop = !stripe.continuesAbove, capsBottom = !stripe.continuesBelow
+        // The row above is at higher y unless the cell is flipped.
+        if isFlipped ? capsBottom : capsTop { maxY -= Self.tabGroupStripeEndInset }
+        if isFlipped ? capsTop : capsBottom { minY += Self.tabGroupStripeEndInset }
+        // On a whole pixel: centring a 3 pt stripe in a 10 pt gutter lands on
+        // a half point, which a 1x screen drew a pixel apart from row to row.
+        let scale = window?.backingScaleFactor ?? 1
+        let x = ((gutterMinX + (gutterWidth - Self.tabGroupStripeWidth) / 2) * scale).rounded(.down) / scale
+        view.frame = NSRect(x: x, y: minY, width: Self.tabGroupStripeWidth, height: max(0, maxY - minY))
+    }
+
+    /// The stripe's x is rounded to the screen's pixels: a window moved to a
+    /// screen of another scale re-rounds it.
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        layoutTabGroupStripe()
+    }
+
+    /// The stripe's frame while it shows, for tests.
+    var tabGroupStripeFrame: NSRect? {
+        guard let view = tabGroupStripeView, !view.isHidden else { return nil }
+        return view.frame
+    }
+
     func updateSleeping(_ isSleeping: Bool) {
         sleepBadge.isHidden = !isSleeping
     }
@@ -1000,6 +1084,9 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             splitCloseButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close Left Pane")?.withSymbolConfiguration(boldConfig)
             return
         }
+        // Pinned rows are never in a tab group: a cell moved here from the tab
+        // section (moveRow keeps it) drops its stripe on every pinned path.
+        updateTabGroupStripe(nil)
         if entry.isLive {
             // Live pinned tab: minus to make dormant
             let boldConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .bold)
@@ -1014,6 +1101,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     /// Per-half close glyphs for a pinned split row: minus = live (close makes
     /// the entry dormant), xmark = dormant (close deletes the entry).
     func updateSplitPinnedMode(left: PinnedEntry, right: PinnedEntry) {
+        updateTabGroupStripe(nil)  // as in updatePinnedMode(entry:)
         let boldConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .bold)
         splitCloseButton.image = NSImage(
             systemSymbolName: left.isLive ? "minus" : "xmark",

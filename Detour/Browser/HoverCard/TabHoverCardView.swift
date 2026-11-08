@@ -10,6 +10,12 @@ final class TabHoverCardView: NSView {
     private static let maxThumbnailHeight: CGFloat = 160
 
     private let glass = GlassContainerView(cornerRadius: 12)
+    /// The tab group line above the title: a dot in the group's colour and
+    /// its title (TASK-132.11). Hidden for a row outside any group.
+    private let groupRow = NSStackView()
+    private let groupDot = TabGroupColorView()
+    private let groupLabel = NSTextField(labelWithString: "")
+    private static let groupDotSize: CGFloat = 8
     private let titleLabel = NSTextField(wrappingLabelWithString: "")
     private let urlLabel = NSTextField(labelWithString: "")
     private let thumbnailView = HoverCardThumbnailView()
@@ -41,6 +47,22 @@ final class TabHoverCardView: NSView {
         urlLabel.isSelectable = false
         urlLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        groupDot.cornerRadius = Self.groupDotSize / 2
+        groupDot.translatesAutoresizingMaskIntoConstraints = false
+        groupLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        groupLabel.textColor = .secondaryLabelColor
+        groupLabel.lineBreakMode = .byTruncatingTail
+        groupLabel.maximumNumberOfLines = 1
+        groupLabel.cell?.usesSingleLineMode = true
+        groupLabel.isSelectable = false
+        groupLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        groupRow.orientation = .horizontal
+        groupRow.alignment = .centerY
+        groupRow.spacing = 5
+        groupRow.addArrangedSubview(groupDot)
+        groupRow.addArrangedSubview(groupLabel)
+        groupRow.isHidden = true
+
         thumbnailView.translatesAutoresizingMaskIntoConstraints = false
         thumbnailHeight = thumbnailView.heightAnchor.constraint(equalToConstant: 0)
 
@@ -49,8 +71,10 @@ final class TabHoverCardView: NSView {
         stack.spacing = 3
         stack.edgeInsets = Self.padding
         stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(groupRow)
         stack.addArrangedSubview(titleLabel)
         stack.addArrangedSubview(urlLabel)
+        stack.setCustomSpacing(4, after: groupRow)
         stack.addArrangedSubview(thumbnailView)
         stack.setCustomSpacing(10, after: urlLabel)
         glass.contentView.addSubview(stack)
@@ -69,12 +93,24 @@ final class TabHoverCardView: NSView {
 
             titleLabel.widthAnchor.constraint(equalToConstant: Self.contentWidth),
             urlLabel.widthAnchor.constraint(lessThanOrEqualToConstant: Self.contentWidth),
+            groupRow.widthAnchor.constraint(lessThanOrEqualToConstant: Self.contentWidth),
+            groupDot.widthAnchor.constraint(equalToConstant: Self.groupDotSize),
+            groupDot.heightAnchor.constraint(equalToConstant: Self.groupDotSize),
             thumbnailView.widthAnchor.constraint(equalToConstant: Self.contentWidth),
             thumbnailHeight,
         ])
     }
 
-    func configure(text: HoverCardText, thumbnail: NSImage?) {
+    func configure(text: HoverCardText, thumbnail: NSImage?, tabGroup: HoverCardTabGroup?) {
+        if let tabGroup {
+            groupDot.color = tabGroup.color
+            groupLabel.stringValue = tabGroup.title
+            groupRow.isHidden = false
+        } else {
+            groupDot.color = nil
+            groupLabel.stringValue = ""
+            groupRow.isHidden = true
+        }
         titleLabel.stringValue = text.title
         if let line = text.url {
             let attributed = NSMutableAttributedString()
