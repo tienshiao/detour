@@ -1,11 +1,11 @@
 ---
 id: TASK-292.2
 title: 'Website: feature page template, piloted on Spaces and Split Tabs'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T07:35:00Z'
+updated_date: '2026-11-08T07:47:00Z'
 labels:
   - website
 dependencies:
@@ -27,12 +27,12 @@ Spaces is a headline feature with an Arc counterpart; Split Tabs exercises a sti
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Spaces and Split Tabs pages are live at /features/spaces/ and /features/split-tabs/
+- [x] #1 Spaces and Split Tabs pages are live at /features/spaces/ and /features/split-tabs/
 - [x] #2 Each page follows the template from the pilot (H1 + lede, media, what/why, how-to steps, FAQ, related features, download) with its own title tag and meta description pairing the feature name with the generic search phrase
 - [x] #3 Steps, menu paths and shortcuts on each page were checked against the current release build
 - [x] #4 Images and loops have alt text or aria-labels describing what is on screen, fixed dimensions, and loops meet the TASK-110 size and reduced-motion rules
 - [x] #5 The home page Spaces and Split Tabs sections link to their pages
-- [ ] #6 Pages have BreadcrumbList structured data that validates in the Rich Results Test
+- [x] #6 Pages have BreadcrumbList structured data that validates in the Rich Results Test
 - [x] #7 The template is documented in the website repo (sections, title and H1 rules, when to include Coming from Arc) so later page tasks follow it
 - [x] #8 Checked in a browser at desktop and phone widths
 <!-- AC:END -->
@@ -61,4 +61,14 @@ Found while researching (not changed, for the user): Settings › Spaces "−" d
 Review (/code-review medium --fix, 7 findings): fixed the inline-Markdown helper (protocol-relative hrefs, formatting inside hrefs and code spans), the Spaces description length, link underline scope; skipped hrefs with parentheses and accent validation. Website commit 9a32167 local, not pushed: pushing deploys through Cloudflare. Criteria 1 (live) and 6 (Rich Results Test on the live URLs) wait for the push.
 
 Arc comparisons re-checked against Arc's help center via the Wayback Machine (website 2nd commit): dropped the unsupported 'swap panes' item, added Arc's add-split shortcut gap and Space sharing.
+
+Nov 7 2026: user approved; pushed website 9a32167 + 1139c7d (8893dd2..1139c7d), Cloudflare's Git build deployed them. Live: /features/spaces/ and /features/split-tabs/ 200, in sitemap.xml, linked from the home page. Rich Results Test (live URLs, Google smartphone crawler): both 'Crawled successfully', Breadcrumbs: 1 valid item detected. The no-slash URLs redirect with 307 (Cloudflare assets default); links and canonicals all use the slash.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Feature guide pages now have a template, piloted on Spaces and Split Tabs, both live at detourbrowser.com/features/spaces/ and /features/split-tabs/ and linked from the home page sections. Each feature is a Markdown file in the website's src/content/features rendered by one route in a fixed order (label, H1 + lede, media, What it does, How to use it, Coming from Arc when Arc had the feature, Questions, Related, download footer), with BreadcrumbList data; related cards and the Arc hub link appear only for pages that exist. docs/feature-pages.md in the website repo documents the template, the title/H1/FAQ rules, the Arc rules and how to read Arc's help center through the Wayback Machine.
+
+Verification: facts from the app code at v0.4.0 (two agents, file:line evidence) and a runtime harness on the v0.4.0 code (menus and shortcuts, tab/split/space menus, sidebar and Settings + buttons, Split with Next Tab); Arc claims checked against Arc's archived help center plus coverage; Chrome at desktop and 390 px; /code-review medium --fix (4 of 7 applied); Rich Results Test valid on both live URLs. Not checked at runtime: Option-click, drag-to-split, divider, swipe, delete/undo flows (code only). Follow-ups filed: TASK-294 (space delete rule differs between sidebar and Settings), TASK-295 (jump-to-space shortcuts); both name the Spaces page for an update.
+<!-- SECTION:FINAL_SUMMARY:END -->
