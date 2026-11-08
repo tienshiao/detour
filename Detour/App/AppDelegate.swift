@@ -880,6 +880,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         windowMenuItem.submenu = windowMenu
         NSApp.windowsMenu = windowMenu
 
+        // Help menu, last (TASK-292.10): registered, so macOS adds its search field.
+        let helpMenuItem = makeHelpMenuItem()
+        mainMenu.addItem(helpMenuItem)
+        NSApp.helpMenu = helpMenuItem.submenu
+
         NSApp.mainMenu = mainMenu
     }
 

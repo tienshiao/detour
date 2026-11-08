@@ -7,6 +7,12 @@ tags: [architecture, app, menus, sparkle, startup]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T05:10:00Z }
 sources:
+  - id: task-292-10
+    resource: backlog:TASK-292.10
+    title: "Help menu: open the Detour guide, keyboard shortcuts, Switching from Arc, release notes and issue reporting"
+  - id: task-309
+    resource: backlog:TASK-309
+    title: "Dock menu: Show / Hide All Quick Detour Windows"
   - id: app-delegate
     resource: ../../Detour/App/AppDelegate.swift
     title: AppDelegate.swift
@@ -123,9 +129,23 @@ the responder chain to the key window's controller, which validates them in
 | Extensions | One submenu per enabled extension (Show Popup, Options…), then three static items | `menuNeedsUpdate` |
 | Develop | Web Inspector, Load Unpacked Extension…, per-extension inspect and reload items | Rebuilt on a notification |
 | Window | Minimize, Zoom | No |
+| Help | Detour Help, Keyboard Shortcuts, Switching from Arc, Release Notes, Report an Issue (TASK-292.10) | No |
 
 Dynamic items are tagged (`spacesMenuTag`, `extensionMenuTag`,
 `extensionInspectorTag`) so a rebuild removes exactly what it added.
+
+The **Help menu** is last and is registered as `NSApp.helpMenu`, which is
+what makes macOS add its menu search field (Shift-Cmd-/). It is built in
+[HelpMenu.swift](../../Detour/App/HelpMenu.swift) (`makeHelpMenuItem`); its
+pages are defined once in `HelpLinks`: https://detourbrowser.com/features/,
+/shortcuts/ and /arc/, and the GitHub project's
+(https://github.com/tienshiao/detour, the repo scripts/publish-release.sh
+publishes to) /releases and /issues/new. A page opens as a selected tab in
+the active space of the frontmost normal browser window
+(`NSApp.browserWindowControllersFrontToBack`, Private windows passed over;
+Quick Detour and quarantine windows are not browser windows), or in a new
+window (`createNewWindowWithURL`) when there is none; the choice is the pure
+`HelpLinks.placement(windows:)`.
 
 The **Dock menu** (`applicationDockMenu`, built fresh each time macOS asks):
 New Window, New Private Window, then, while any Quick Detour is open and not
