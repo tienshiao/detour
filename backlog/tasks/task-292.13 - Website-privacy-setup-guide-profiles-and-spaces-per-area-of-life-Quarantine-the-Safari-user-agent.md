@@ -3,9 +3,10 @@ id: TASK-292.13
 title: >-
   Website: privacy setup guide (profiles and spaces per area of life,
   Quarantine, the Safari user agent)
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-08T21:35:00Z'
+updated_date: '2026-11-08T22:15:00Z'
 labels:
   - website
 dependencies:
@@ -28,3 +29,9 @@ A guide page for privacy-conscious users on setting up Detour (user request, Nov
 - [ ] #3 Media captured in an isolated DETOUR_DATA_DIR with seeded profiles, spaces and routes (no personal data), meeting the TASK-110 size and reduced-motion rules, at most 1800 px wide
 - [ ] #4 Linked from the features index, the Quarantine, Private Browsing and Profiles pages, and the home page if it fits; in the sitemap
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 8 2026: draft written on website branch privacy-guide (worktree ../dw-privacy; 61e04eb + c13288c, extensions' background work line), /features/privacy/, linked from the features index, Quarantine, Private Browsing and Profiles; builds, in the sitemap; no media yet (captures per the shot list). Held for the release that ships TASK-216. Not yet checked at desktop/390 px in a browser.
+<!-- SECTION:NOTES:END -->
