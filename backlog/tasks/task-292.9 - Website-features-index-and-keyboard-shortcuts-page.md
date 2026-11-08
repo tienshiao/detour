@@ -1,9 +1,11 @@
 ---
 id: TASK-292.9
 title: 'Website: features index and keyboard shortcuts page'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-08T06:59:00Z'
+updated_date: '2026-11-08T10:22:00Z'
 labels:
   - website
 dependencies:
