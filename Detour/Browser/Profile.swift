@@ -19,7 +19,21 @@ enum UserAgentMode: Int {
     /// release and set Detour apart from every Safari on it.
     nonisolated static func safariUserAgent(safariVersion: String) -> String {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
-            + "Version/\(safariVersion) Safari/605.1.15"
+            + safariApplicationName(safariVersion: safariVersion)
+    }
+
+    /// The part of Safari's user agent after WebKit's own base
+    /// (`… (KHTML, like Gecko) `): what `applicationNameForUserAgent` must be
+    /// for a web view Detour does not give a `customUserAgent` (extension
+    /// background workers, popups, options pages) to send Safari's exact
+    /// string. Without it WebKit sends its bare base, no Version/ or Safari/.
+    nonisolated static func safariApplicationName(safariVersion: String) -> String {
+        "Version/\(safariVersion) Safari/605.1.15"
+    }
+
+    /// `safariApplicationName(safariVersion:)` with the installed Safari's.
+    nonisolated static var safariApplicationName: String {
+        safariApplicationName(safariVersion: installedSafariVersion)
     }
 
     /// `safariUserAgent(safariVersion:)` with the installed Safari's version:
@@ -44,6 +58,18 @@ enum UserAgentMode: Int {
         }
         return "18.0"
     }()
+
+    /// A Custom user agent as it is saved: trimmed, nil when it is blank or
+    /// holds a line break or other control character (a header value cannot;
+    /// a tab is allowed), so Settings refuses it and keeps the last valid one
+    /// (TASK-216).
+    nonisolated static func validatedCustomUserAgent(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains(where: \.isNewline),
+              !trimmed.unicodeScalars.contains(where: { $0 != "\t" && CharacterSet.controlCharacters.contains($0) })
+        else { return nil }
+        return trimmed
+    }
 
     /// "Detour/" and the major version of the app ("Detour/0" for 0.4.1):
     /// enough to count Detour, no more.
@@ -268,6 +294,13 @@ class Profile {
         if !isDeleted {
             config.webViewConfiguration.websiteDataStore = dataStore
         }
+
+        // Extension web views (background worker or page, popup, options,
+        // offscreen) get no customUserAgent: WebKit builds theirs from its
+        // base and this name. Safari's, so they send Safari's exact user agent
+        // (TASK-216), not WebKit's bare base; not the profile's mode, which can
+        // change while the controller, made once, keeps this configuration.
+        config.webViewConfiguration.applicationNameForUserAgent = UserAgentMode.safariApplicationName
 
         // Register favicon scheme handler so extensions can use chrome.runtime.getURL("/_favicon/...")
         config.webViewConfiguration.setURLSchemeHandler(
@@ -1089,14 +1122,35 @@ class Profile {
         self.isMalwareFilterEnabled = isMalwareFilterEnabled
     }
 
-    func resolvedUserAgent() -> String? {
+    /// The saved Custom string when it is valid
+    /// (`UserAgentMode.validatedCustomUserAgent`), else nil.
+    var validCustomUserAgent: String? {
+        customUserAgent.flatMap(UserAgentMode.validatedCustomUserAgent)
+    }
+
+    /// Switches the user agent mode. Custom never starts blank (TASK-216):
+    /// with no valid saved string, it starts from the user agent the profile
+    /// sent until now.
+    func selectUserAgentMode(_ mode: UserAgentMode) {
+        let previous = resolvedUserAgent()
+        userAgentMode = mode
+        if mode == .custom, validCustomUserAgent == nil {
+            customUserAgent = previous
+        }
+    }
+
+    func resolvedUserAgent() -> String {
         switch userAgentMode {
         case .detour:
             return UserAgentMode.detourUserAgent
         case .safari:
             return UserAgentMode.safariUserAgent
         case .custom:
-            return customUserAgent ?? ""
+            // Settings refuses a blank string (TASK-216); one saved before
+            // that, or a Custom mode never given a string, sends the
+            // default mode's user agent rather than WebKit's bare default
+            // (no Version/ or Safari/ tokens, so rarer than either).
+            return validCustomUserAgent ?? UserAgentMode.detourUserAgent
         }
     }
 

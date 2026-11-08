@@ -188,17 +188,11 @@ enum Quarantine {
 
     // MARK: - User agent
 
-    /// The user agent of a quarantine page: Safari's own, as Safari sends it —
-    /// the macOS version frozen at 10_15_7, as every Safari does — and no
-    /// "Detour/1" token, so the page sees one of many Safari users.
-    static func userAgent(safariVersion: String) -> String {
-        UserAgentMode.safariUserAgent(safariVersion: safariVersion)
-    }
-
-    /// `userAgent(safariVersion:)` with the installed Safari's version.
-    static var userAgent: String {
-        userAgent(safariVersion: UserAgentMode.installedSafariVersion)
-    }
+    /// The user agent of a quarantine page: Safari's own, exactly as the
+    /// Safari mode sends it (`UserAgentMode.safariUserAgent`: the macOS
+    /// version frozen at 10_15_7, no Detour token), whatever the Private
+    /// profile's setting, so the page sees one of many Safari users.
+    static var userAgent: String { UserAgentMode.safariUserAgent }
 
     // MARK: - WebKit's privacy protections (SPI)
 

@@ -164,9 +164,7 @@ nonisolated final class QuarantineTests: XCTestCase {
     // MARK: - User agent
 
     @MainActor func testTheUserAgentIsSafarisWithTheFrozenOSVersionAndNoDetourToken() {
-        XCTAssertEqual(Quarantine.userAgent(safariVersion: "26.1"),
-                       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
-                       + "Version/26.1 Safari/605.1.15")
+        XCTAssertEqual(Quarantine.userAgent, UserAgentMode.safariUserAgent, "the Safari mode's, exactly")
         XCTAssertFalse(Quarantine.userAgent.contains("Detour"))
     }
 

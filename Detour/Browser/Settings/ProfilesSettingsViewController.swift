@@ -462,7 +462,8 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
         suggestionsSwitch.state = profile.searchSuggestionsEnabled ? .on : .off
         perTabIsolationSwitch.state = profile.isPerTabIsolation ? .on : .off
         userAgentPopUp.selectItem(at: profile.userAgentMode.rawValue)
-        customUserAgentField.stringValue = profile.customUserAgent ?? ""
+        customUserAgentField.stringValue = profile.validCustomUserAgent
+            ?? (profile.userAgentMode == .custom ? profile.resolvedUserAgent() : "")
         // Ad blocking
         adBlockSwitch.state = profile.isAdBlockingEnabled ? .on : .off
         easyListSwitch.state = profile.isEasyListEnabled ? .on : .off
@@ -524,7 +525,7 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
             } else if profile.isIncognito {
                 // The same opt-in as "Allow in Private" in Extensions settings,
                 // so it carries the same warning (TASK-74).
-                let note = "Extensions allowed in Private windows keep their data (storage, caches, cookies) in memory only. It is never written to disk and is discarded when Detour quits."
+                let note = "Extensions allowed in Private windows keep their data (storage, caches, cookies) in memory only. It is never written to disk and is cleared when the last Private window closes."
                 toggle.toolTip = note
                 label.toolTip = note
             }
@@ -651,7 +652,9 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
     @objc private func userAgentModeChanged() {
         guard let profile = selectedProfile,
               let mode = UserAgentMode(rawValue: userAgentPopUp.indexOfSelectedItem) else { return }
-        profile.userAgentMode = mode
+        // Custom never starts blank (TASK-216): see `selectUserAgentMode`.
+        profile.selectUserAgentMode(mode)
+        customUserAgentField.stringValue = profile.customUserAgent ?? ""
         TabStore.shared.updateProfile(profile)
         updateUAPreview()
         applyRowLayout()
@@ -659,7 +662,18 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
 
     @objc private func customUserAgentChanged() {
         guard let profile = selectedProfile else { return }
-        profile.customUserAgent = customUserAgentField.stringValue
+        // A blank (or multi-line) string is refused: the field goes back to
+        // the saved one and the profile keeps sending it (TASK-216).
+        // With no valid saved string (one saved before the refusal), the field
+        // shows what the profile sends instead.
+        guard let text = UserAgentMode.validatedCustomUserAgent(customUserAgentField.stringValue) else {
+            customUserAgentField.stringValue = profile.validCustomUserAgent ?? profile.resolvedUserAgent()
+            NSSound.beep()
+            updateUAPreview()
+            return
+        }
+        customUserAgentField.stringValue = text
+        profile.customUserAgent = text
         TabStore.shared.updateProfile(profile)
         updateUAPreview()
     }

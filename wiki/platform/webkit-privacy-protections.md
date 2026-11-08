@@ -157,7 +157,8 @@ search suggestions) went out with CFNetwork's default
 |---|---|
 | Safari mode, quarantine pages | `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/<installed Safari> Safari/605.1.15`, exactly Safari's |
 | Detour mode (the default) | the same, then ` Detour/<major version>` (`Detour/0` for 0.4.x): the user's choice to be counted (user decision, Nov 8 2026) |
-| Custom | the string as typed |
+| Custom | the string as saved: trimmed; Settings refuses a blank one or one with a line break or control character (`UserAgentMode.validatedCustomUserAgent`), and switching to Custom with none saved starts from the string the profile sent until then (`Profile.selectUserAgentMode`); a blank one saved earlier sends the Detour mode's |
+| Extension web views WebKit makes (background worker or page, popup, options, offscreen) | Safari's: `applicationNameForUserAgent` on the controller's `webViewConfiguration` is `Version/<Safari> Safari/605.1.15`, so WebKit builds Safari's exact string (measured on a worker); without it WebKit sent its bare base `… (KHTML, like Gecko)`. Profile-wide and set once, so not the mode. An extension page in a tab follows the profile, like any tab |
 | Detour's own GETs (`URLRequest.withSafariUserAgent`: favicons, search suggestions, Media Session artwork and OpenSearch descriptions via `CappedDataFetcher`, filter-list downloads) | Safari's: one favicon cache serves every profile, and a Safari-mode profile must never send the token |
 | Chrome Web Store spoof, extension updater | Chrome's, OS frozen at `10_15_7`, `Chrome/131.0.0.0` |
 
@@ -166,10 +167,11 @@ request's `User-Agent`): the page's headers, `navigator.userAgent`, the
 service worker script request, a fetch made inside the worker and the
 worker's own `navigator.userAgent` all carried the mode's string, and
 `navigator.platform` / `navigator.vendor` read `MacIntel` / `Apple Computer,
-Inc.`, as in Safari. Not measured: extension pages and workers (WebKit's
-WKWebExtension views). A Custom profile with a blank string falls back
-to WebKit's default (`… (KHTML, like Gecko) Detour/0`, no Version/Safari),
-as before TASK-216.
+Inc.`, as in Safari. An extension's background worker (a seeded MV3 probe fetching the same
+server) sent Safari's exact string and reported it as
+`navigator.userAgent`; its page opened with `tabs.create` sent the
+profile's. Not measured: popups and options pages (the same configuration
+as the worker).
 
 # Related
 

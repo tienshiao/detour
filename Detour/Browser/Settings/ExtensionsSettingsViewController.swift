@@ -341,7 +341,7 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         }
 
         let privateNote = SettingsWrappingLabel(
-            wrapping: "Extensions allowed in Private windows keep their data (storage, caches, cookies) in memory only. It is never written to disk and is discarded when Detour quits.",
+            wrapping: "Extensions allowed in Private windows keep their data (storage, caches, cookies) in memory only. It is never written to disk and is cleared when the last Private window closes.",
             estimatedWidth: column)
 
         // Permissions section — interactive toggles
