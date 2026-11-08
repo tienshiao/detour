@@ -3,10 +3,11 @@ id: TASK-292.6
 title: >-
   Website: guide pages for Command Palette, Site Search, Peek, Recent Tabs,
   History and Tab Archiving
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T07:56:00Z'
+updated_date: '2026-11-08T09:11:00Z'
 labels:
   - website
 dependencies:
