@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T07:42:00Z'
+updated_date: '2026-11-08T07:56:00Z'
 labels:
   - website
 dependencies:
@@ -19,7 +19,7 @@ ordinal: 347000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Getting around and finding things again, written to the pilot template (TASK-292). Site Search has no Arc counterpart, so its page has no Arc box. Each is its own page. Captures come from the staged demo profile and kit in docs/task-110 (public pages only, no personal data, every launch with DETOUR_DATA_DIR set).
+Getting around and finding things again, written to the pilot template (TASK-292). Arc had Site Search (keyword in the Command Bar) and the Control-Tab Tab Switcher (five most recent tabs; Command-Option-Up/Down walks the sidebar), so both pages get a Coming from Arc box (Arc's help center via the Wayback Machine, see TASK-292.3 notes). Each is its own page. Captures come from the staged demo profile and kit in docs/task-110 (public pages only, no personal data, every launch with DETOUR_DATA_DIR set).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

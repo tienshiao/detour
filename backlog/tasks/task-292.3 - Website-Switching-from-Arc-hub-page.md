@@ -1,10 +1,11 @@
 ---
 id: TASK-292.3
 title: 'Website: Switching from Arc hub page'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T07:35:00Z'
+updated_date: '2026-11-08T07:47:00Z'
 labels:
   - website
 dependencies:

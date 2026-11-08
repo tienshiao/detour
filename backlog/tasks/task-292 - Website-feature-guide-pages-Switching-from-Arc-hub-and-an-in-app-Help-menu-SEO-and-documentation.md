@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08T06:57:00Z'
-updated_date: '2026-11-08T06:58:00Z'
+updated_date: '2026-11-08T07:56:00Z'
 labels:
   - website
 dependencies: []
@@ -25,7 +25,7 @@ Decisions from planning (user, Nov 7 2026):
 - The guide stays a clear manual. Search phrasing goes in the title tag, meta description, URL slug, lede and FAQ headings; the H1 is the feature name with a plain one-line outcome, never a search question. Coined names (Quarantine, Link Routes, Quick Detour) are always paired with the generic phrase people search for.
 - Not every feature gets a page: one only when there is a real guide to write (steps or settings) or real search demand. The rest are listed on a /features/ index and the /shortcuts/ page; thin pages are worse than none.
 - Quarantine and Private Browsing are separate pages. Quarantine is pitched to privacy-conscious users as a way to triage incoming links without leaking data (cookies, history, tracking parameters), which is a different job from a private window.
-- Detour is positioned as its own browser, no longer as an Arc clone (user, Nov 7 2026: "I can evolve away from being just an Arc clone"). Arc users are one audience with one entry point, the Switching from Arc hub, not the frame for every page. Several features have no Arc counterpart (Quarantine, Dev Mode, Site Search among them) and their pages say nothing about Arc. A "Coming from Arc" box appears only on pages whose feature Arc had in comparable form.
+- Detour is positioned as its own browser, no longer as an Arc clone (user, Nov 7 2026: "I can evolve away from being just an Arc clone"). Arc users are one audience with one entry point, the Switching from Arc hub, not the frame for every page. Several features have no Arc counterpart (Quarantine, Link Routes by source app) and their pages say nothing about Arc. (Corrected Nov 7 2026 from Arc's archived help center: Arc did have Site Search, Developer Mode for localhost and the Control-Tab switcher.) A "Coming from Arc" box appears only on pages whose feature Arc had in comparable form.
 - Arc comparisons are factual and name Arc only to compare (no Arc logos or screenshots), including an honest "not in Detour" list.
 - Google no longer shows HowTo rich results and limits FAQ rich results to government and health sites, so no effort goes into chasing them; BreadcrumbList on subpages, SoftwareApplication on the home page.
 - Order: site generator and https fixes, then a pilot (Spaces, Split Tabs, Arc hub) to settle the template, then the remaining pages, then the Help menu, then a Search Console review that rewrites FAQs and titles from real queries.

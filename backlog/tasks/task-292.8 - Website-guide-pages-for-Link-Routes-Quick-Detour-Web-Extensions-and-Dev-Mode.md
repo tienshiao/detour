@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08T06:59:00Z'
+updated_date: '2026-11-08T07:56:00Z'
 labels:
   - website
 dependencies:
@@ -18,7 +19,7 @@ ordinal: 349000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Links from other apps and power-user features, written to the pilot template (TASK-292). Link Routes and Quick Detour have Arc counterparts (Air Traffic Control, Little Arc); Dev Mode does not. The Web Extensions page sets expectations honestly: which extensions are known to work, which are known not to, and that support is in progress. Captures come from the staged demo profile and kit in docs/task-110 (public pages only, no personal data, every launch with DETOUR_DATA_DIR set).
+Links from other apps and power-user features, written to the pilot template (TASK-292). Link Routes, Quick Detour and Dev Mode have Arc counterparts (Air Traffic Control, Little Arc, Developer Mode, which Arc also turned on for localhost); per Arc's help center (Wayback Machine, see TASK-292.3 notes). The Web Extensions page sets expectations honestly: which extensions are known to work, which are known not to, and that support is in progress. Captures come from the staged demo profile and kit in docs/task-110 (public pages only, no personal data, every launch with DETOUR_DATA_DIR set).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
