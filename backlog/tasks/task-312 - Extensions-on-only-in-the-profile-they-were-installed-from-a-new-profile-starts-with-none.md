@@ -3,11 +3,11 @@ id: TASK-312
 title: >-
   Extensions: on only in the profile they were installed from; a new profile
   starts with none
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T22:20:00Z'
-updated_date: '2026-11-08T23:15:00Z'
+updated_date: '2026-11-08T23:22:00Z'
 labels:
   - extensions
   - privacy
@@ -29,7 +29,7 @@ User decision, Nov 8 2026. Today a missing profileExtension row means ON in ever
 - [x] #3 Installing (Web Store tab, the install command, Settings) turns the extension on in exactly the profile it was installed from and loads it there only; reinstalling or updating an installed extension keeps its per-profile choices
 - [x] #4 Settings › Extensions offers Turn On in All Profiles (normal profiles; not Private), and says which profile a Settings install went to
 - [x] #5 Tests cover the default, the migration, each install path's target profile, updates keeping rows, Private unchanged; the change is checked at runtime with /verify
-- [ ] #6 Wiki updated; the privacy guide (TASK-292.13 branch) and any website page that describes the old default are updated on a branch held for the release
+- [x] #6 Wiki updated; the privacy guide (TASK-292.13 branch) and any website page that describes the old default are updated on a branch held for the release
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -67,6 +67,8 @@ Tests (final run, harness removed): 79 suites touching extension enablement, pro
 Nov 8 2026 (lead): /code-review high on main..task-312: no correctness bugs (migration idempotent via INSERT OR IGNORE, Private excluded case-insensitively, reinstall/update keep rows, rows written before load); fixed: 2 test gaps (profileWasAdded loading a turned-on extension; lowercase Private id in v24) and the duplicated profile-name/confirmation lines (ExtensionInstallTarget.profileName / confirmationLine), folded into the commit. Skipped: per-profile transactions in setEnabled(id:profileIDs:), a duplicated normal-profile filter, and the 'Extension Installed' alert pointing at Turn On in All Profiles when only one normal profile exists. Merged to main as 85872d7 (ff). Website: privacy guide step 2 + FAQ and the Web Extensions install paragraph rewritten on website branch privacy-guide (a21a323), held for the release.
 
 Full DetourTests on main 85872d7: 3908 tests, 18 skipped, 2 failures, both the pre-existing TASK-310 pair (DevToolbarHostingTests.testTheToolbarFollowsNavigationInTheSameTab, ExtensionNotificationEventDeliveryTests.testAPrivateWorkerHearsEventsAcrossSessionBoundaries); no host crashes.
+
+Released with Detour 0.4.2 (build 10, tag v0.4.2, app 5fbad23) on Nov 8 2026; website main 7b78e8c deployed and checked live. Privacy guide step 2/FAQ and the Web Extensions install paragraph are live (Web Extensions page shows Turn On in All Profiles).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

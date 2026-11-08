@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-11-08T21:35:00Z'
-updated_date: '2026-11-08T22:15:00Z'
+updated_date: '2026-11-08T23:22:00Z'
 labels:
   - website
 dependencies:
@@ -24,14 +24,16 @@ A guide page for privacy-conscious users on setting up Detour (user request, Nov
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 /features/privacy/ (or a fitting path) follows the guide template: H1 + lede, media, step-by-step setup, what Detour does and does not protect, FAQ, related features, download
-- [ ] #2 Every setting name, menu path and default is checked against the release build that ships TASK-216
+- [x] #1 /features/privacy/ (or a fitting path) follows the guide template: H1 + lede, media, step-by-step setup, what Detour does and does not protect, FAQ, related features, download
+- [x] #2 Every setting name, menu path and default is checked against the release build that ships TASK-216
 - [ ] #3 Media captured in an isolated DETOUR_DATA_DIR with seeded profiles, spaces and routes (no personal data), meeting the TASK-110 size and reduced-motion rules, at most 1800 px wide
-- [ ] #4 Linked from the features index, the Quarantine, Private Browsing and Profiles pages, and the home page if it fits; in the sitemap
+- [x] #4 Linked from the features index, the Quarantine, Private Browsing and Profiles pages, and the home page if it fits; in the sitemap
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Nov 8 2026: draft written on website branch privacy-guide (worktree ../dw-privacy; 61e04eb + c13288c, extensions' background work line), /features/privacy/, linked from the features index, Quarantine, Private Browsing and Profiles; builds, in the sitemap; no media yet (captures per the shot list). Held for the release that ships TASK-216. Not yet checked at desktop/390 px in a browser.
+
+Released with Detour 0.4.2 (build 10, tag v0.4.2, app 5fbad23) on Nov 8 2026; website main 7b78e8c deployed and checked live. /features/privacy/ live (200), linked from the features index, Quarantine, Private Browsing and Profiles. Facts checked against the released code (agent report + lead edits for TASK-216/312). Open: #3 media (shot list in the description; schedule with TASK-311's Link Routes re-capture) and a look at desktop and 390 px widths.
 <!-- SECTION:NOTES:END -->
