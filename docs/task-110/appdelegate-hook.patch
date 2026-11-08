@@ -1,14 +1,14 @@
 diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
-index 694674a..568692b 100644
+index 138fa29..9bacbb9 100644
 --- a/Detour/App/AppDelegate.swift
 +++ b/Detour/App/AppDelegate.swift
-@@ -98,6 +98,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+@@ -166,6 +166,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
          }
  
          observeWindowClose(wc)
 +        #if DEBUG
 +        if let dir = ProcessInfo.processInfo.environment["DETOUR_DEMO_STAGE"] { DemoStage.current = DemoStage(dir: dir, wc: wc) }  // TEMP TASK-110
 +        #endif
-     }
  
-     func applicationWillTerminate(_ notification: Notification) {
+         // Last: the links that launched Detour, now that the session and
+         // the routes are loaded (TASK-304).

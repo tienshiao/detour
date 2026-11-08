@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import WebKit
+import GRDB
 
 // TEMPORARY (TASK-110): stages a demo world for website screenshots and
 // executes commands appended to <dir>/cmd, one per line. Enabled only with
@@ -189,7 +190,7 @@ final class DemoStage {
             }
             log("frame \(window.frame) window=\(window.windowNumber) selected=\(wc.selectedTab?.title ?? "-")")
         default:
-            log("unknown \(cmd)")
+            extra(cmd, arg, wc: wc, window: window)
         }
     }
 
@@ -292,6 +293,392 @@ final class DemoStage {
             pending.forEach { $0() }
             self.store.saveNow()
             self.log("seed done")
+        }
+    }
+}
+// MARK: - Capture session (agent-capture, TASK-292.6/.7/.8 media). Temporary, never committed.
+extension DemoStage {
+    static var quickFrame: NSRect?   // top-left (x, y from the 2x screen's top-left), w, h
+
+    var retina: NSScreen? { NSScreen.screens.first { $0.backingScaleFactor >= 2 && $0.localizedName.contains("Capture") } ?? NSScreen.screens.first { $0.backingScaleFactor >= 2 } }
+
+    /// Global Quartz (top-left origin) rect of an AppKit screen rect.
+    func quartz(_ r: NSRect) -> String {
+        let h = NSScreen.screens[0].frame.maxY
+        return String(format: "%.0f %.0f %.0f %.0f", r.minX, h - r.maxY, r.width, r.height)
+    }
+
+    /// An AppKit frame from a rect given relative to the 2x screen's top-left.
+    func onRetina(x: Double, y: Double, w: Double, h: Double) -> NSRect? {
+        guard let f = retina?.frame else { return nil }
+        return NSRect(x: f.minX + x, y: f.maxY - y - h, width: w, height: h)
+    }
+
+    func centered(_ size: NSSize, dy: Double = 0) -> NSRect? {
+        guard let f = retina?.frame else { return nil }
+        return NSRect(x: (f.midX - size.width / 2).rounded(), y: (f.midY - size.height / 2 + dy).rounded(), width: size.width, height: size.height)
+    }
+
+    func keyEvent(_ type: NSEvent.EventType, code: UInt16, chars: String, flags: NSEvent.ModifierFlags) {
+        guard let w = NSApp.keyWindow ?? wc?.window,
+              let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags,
+                                       timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
+                                       context: nil, characters: chars, charactersIgnoringModifiers: chars,
+                                       isARepeat: false, keyCode: code) else { log("no key window"); return }
+        NSApp.postEvent(e, atStart: false)
+    }
+
+    static let keys: [String: (UInt16, String)] = [
+        "return": (36, "\r"), "tab": (48, "\t"), "esc": (53, "\u{1b}"), "space": (49, " "), "delete": (51, "\u{7f}"),
+        "t": (17, "t"), "n": (45, "n"), "w": (13, "w"), "y": (16, "y"), "l": (37, "l"), "o": (31, "o"), "down": (125, "\u{F701}"),
+    ]
+
+    func flags(_ words: [String]) -> NSEvent.ModifierFlags {
+        var f: NSEvent.ModifierFlags = []
+        for m in words {
+            switch m { case "ctrl": f.insert(.control); case "shift": f.insert(.shift)
+            case "cmd": f.insert(.command); case "opt": f.insert(.option); default: break }
+        }
+        return f
+    }
+
+    func allViews(_ v: NSView) -> [NSView] { [v] + v.subviews.flatMap(allViews) }
+
+    func describe(_ v: NSView) -> String {
+        var parts: [String] = []
+        if let s = v.accessibilityLabel(), !s.isEmpty { parts.append("label=\(s)") }
+        if let b = v as? NSButton { if !b.title.isEmpty { parts.append("title=\(b.title)") }
+            if let d = b.image?.accessibilityDescription { parts.append("img=\(d)") } }
+        if let t = v as? NSTextField, !t.stringValue.isEmpty { parts.append("text=\(t.stringValue)") }
+        if let t = v.toolTip { parts.append("tip=\(t)") }
+        if let iv = v as? NSImageView, let d = iv.image?.accessibilityDescription { parts.append("img=\(d)") }
+        return parts.joined(separator: " ")
+    }
+
+    func extra(_ cmd: String, _ arg: String, wc: BrowserWindowController, window: NSWindow) {
+        let words = arg.split(separator: " ").map(String.init)
+        switch cmd {
+        case "center":
+            // center W H [dy]: the main window, mid 2x display.
+            let v = words.compactMap { Double($0) }
+            guard v.count >= 2, let r = centered(NSSize(width: v[0], height: v[1]), dy: v.count > 2 ? v[2] : 0) else { return }
+            window.setFrame(r, display: true)
+            log("frame quartz=\(quartz(window.frame)) window=\(window.windowNumber)")
+        case "type":
+            // type <text>: one character every 0.09 s to the key window.
+            for (i, ch) in arg.enumerated() {
+                after(Double(i) * 0.09) {
+                    let c = String(ch)
+                    let code: UInt16 = c == " " ? 49 : 0
+                    self.keyEvent(.keyDown, code: code, chars: c, flags: [])
+                    self.keyEvent(.keyUp, code: code, chars: c, flags: [])
+                }
+            }
+        case "press":
+            // press <name> [mods...]
+            guard let k = Self.keys[words.first ?? ""] else { log("no key \(arg)"); return }
+            let f = flags(Array(words.dropFirst()))
+            keyEvent(.keyDown, code: k.0, chars: k.1, flags: f)
+            keyEvent(.keyUp, code: k.0, chars: k.1, flags: f)
+        case "ctrl":
+            switch arg {
+            case "down": keyEvent(.flagsChanged, code: 59, chars: "", flags: .control)
+            case "tab": keyEvent(.keyDown, code: 48, chars: "\t", flags: .control); keyEvent(.keyUp, code: 48, chars: "\t", flags: .control)
+            case "up": keyEvent(.flagsChanged, code: 59, chars: "", flags: [])
+            default: break
+            }
+        case "winfo":
+            for w in NSApp.windows where w.isVisible {
+                log("win \(w.windowNumber) \(type(of: w)) ctl=\(w.windowController.map { "\(type(of: $0))" } ?? "-") key=\(w.isKeyWindow) quartz=\(quartz(w.frame)) title=\(w.title)")
+            }
+        case "frames":
+            // frames <text>: views whose label/title/tooltip/text contains <text>, in global Quartz coordinates.
+            for w in NSApp.windows where w.isVisible {
+                guard let root = w.contentView?.superview ?? w.contentView else { continue }
+                for v in allViews(root) where !v.isHiddenOrHasHiddenAncestor {
+                    let d = describe(v)
+                    guard !d.isEmpty, d.lowercased().contains(arg.lowercased()) else { continue }
+                    let r = w.convertToScreen(v.convert(v.bounds, to: nil))
+                    log("view \(type(of: v)) win=\(w.windowNumber) quartz=\(quartz(r)) \(d)")
+                }
+            }
+        case "jsrect":
+            // jsrect <css selector>: the element's rect in global Quartz coordinates (selected tab).
+            guard let web = wc.selectedTab?.webView else { log("no webview"); return }
+            let js = "(()=>{const e=document.querySelector(\(String(reflecting: arg)));if(!e)return 'null';const r=e.getBoundingClientRect();return JSON.stringify([r.x,r.y,r.width,r.height,e.textContent.slice(0,60)])})()"
+            web.evaluateJavaScript(js) { r, e in
+                guard let str = r as? String, let a = (try? JSONSerialization.jsonObject(with: Data(str.utf8))) as? [Any], a.count == 5,
+                      let x = (a[0] as? NSNumber)?.doubleValue, let y = (a[1] as? NSNumber)?.doubleValue,
+                      let w = (a[2] as? NSNumber)?.doubleValue, let h = (a[3] as? NSNumber)?.doubleValue else {
+                    self.log("jsrect none \(String(describing: r)) \(String(describing: e))"); return }
+                let local = NSRect(x: x, y: web.isFlipped ? y : web.bounds.height - y - h, width: w, height: h)
+                let rr = web.window!.convertToScreen(web.convert(local, to: nil))
+                self.log("jsrect quartz=\(self.quartz(rr)) center=\(Int(rr.midX)) \(Int(NSScreen.screens[0].frame.maxY - rr.midY)) text=\(a[4])")
+            }
+        case "load":
+            if let u = URL(string: arg) { wc.selectedTab?.load(u, typed: false) }
+        case "newtab":
+            wc.newTab(nil)
+        case "addtab":
+            // addtab <url>: a tab in the active space, selected.
+            guard let s = wc.activeSpace, let u = URL(string: arg) else { return }
+            let t = store.addTab(in: s, url: u)
+            wc.selectTab(id: t.id)
+        case "closetab":
+            guard let s = wc.activeSpace, let t = s.tabs.first(where: { ($0.url?.absoluteString ?? "").contains(arg) || $0.title.contains(arg) }) else { log("no tab \(arg)"); return }
+            store.closeTab(id: t.id, in: s)
+        case "qdframe":
+            // qdframe X Y W H (relative to the 2x screen's top-left): where new Quick Detour windows go.
+            let v = words.compactMap { Double($0) }
+            guard v.count == 4 else { return }
+            Self.quickFrame = onRetina(x: v[0], y: v[1], w: v[2], h: v[3])
+            QuickDetourLauncher.shared.openWindow = { p, s, u, t in
+                let c = QuickDetourWindowController.open(profile: p, sourceSpace: s, url: u, typed: t)
+                if let f = DemoStage.quickFrame { c.window?.setFrame(f, display: false) }
+                NSApp.activate()
+            }
+            log("qdframe \(String(describing: Self.quickFrame))")
+        case "openext":
+            // openext <bundleID> <url>: the external-link entry point, as a click in that app.
+            guard words.count == 2, let u = URL(string: words[1]), let app = NSApp.delegate as? AppDelegate else { return }
+            app.openExternalURLs([u], sourceApp: words[0])
+            if let c = QuickDetourWindowController.openControllers.last {
+                if let f = Self.quickFrame { c.window?.setFrame(f, display: false) }
+                // As LaunchServices does for a clicked link: the app comes forward with the new window.
+                NSApp.activate()
+                c.window?.makeKeyAndOrderFront(nil)
+            }
+        case "quicklaunch":
+            (NSApp.delegate as? AppDelegate)?.quickDetourHotKeyPressed()
+            after(0.3) { if let p = QuickDetourLauncher.shared.panel { self.log("launcher quartz=\(self.quartz(p.frame))") } }
+        case "routes":
+            let lr = store.linkRoutes
+            for r in lr.routes { lr.removeRoute(id: r.id) }
+            var order = 0
+            func add(_ m: LinkRouteMatch?, _ app: String?, _ t: LinkRouteTarget) {
+                if lr.add(LinkRoute(match: m, sourceApp: app, target: t, sortOrder: order)) == nil { log("route refused") }
+                order += 1
+            }
+            if words.contains("quarantine") { add(nil, "com.apple.TextEdit", .quarantine) }
+            if words.contains("all") {
+                if let work = space(named: "Work") { add(LinkRouteMatch(kind: .domainIs, pattern: "github.com"), nil, .space(work.id)) }
+                if let r = space(named: "Reading") { add(LinkRouteMatch(kind: .domainIs, pattern: "wikipedia.org"), nil, .space(r.id)) }
+                add(nil, "com.apple.TextEdit", .quarantine)
+            }
+            log("routes \(lr.routes.count)")
+        case "private":
+            // private <url> <W> <H>: a Private window with the page, mid 2x display.
+            guard let u = URL(string: words.first ?? ""), let app = NSApp.delegate as? AppDelegate else { return }
+            app.createNewWindowWithURL(u, incognito: true)
+            let v = words.dropFirst().compactMap { Double($0) }
+            if v.count == 2, let r = centered(NSSize(width: v[0], height: v[1])),
+               let pw = NSApp.windows.first(where: { ($0.windowController as? BrowserWindowController)?.isIncognito == true }) {
+                pw.setFrame(r, display: true)
+                log("private window=\(pw.windowNumber) quartz=\(quartz(pw.frame))")
+            }
+        case "history":
+            wc.showHistory(nil)
+        case "archive":
+            wc.showArchivedTabs(nil)
+        case "archiveseed":
+            // archiveseed: opens pages in the active space, then archives them on past days.
+            guard let s = wc.activeSpace else { return }
+            let plan: [(String, Double)] = [
+                ("https://en.wikipedia.org/wiki/Hypertext", 2), ("https://www.apple.com/macbook-air/", 3),
+                ("https://developer.mozilla.org/en-US/docs/Web/HTML", 5),
+                ("https://en.wikipedia.org/wiki/Tim_Berners-Lee", 26), ("https://webkit.org/blog/", 28),
+                ("https://www.youtube.com/results?search_query=swift+concurrency", 30),
+                ("https://en.wikipedia.org/wiki/World_Wide_Web", 51), ("https://developer.apple.com/xcode/", 53),
+            ]
+            let tabs = plan.map { (store.addTab(in: s, url: URL(string: $0.0)!), $0.1) }
+            log("archiveseed loading \(tabs.count)")
+            after(15) {
+                for (t, hours) in tabs { self.store.closeTab(id: t.id, in: s, archivedAt: Date(timeIntervalSinceNow: -hours * 3600)) }
+                self.store.saveNow()
+                self.log("archiveseed done")
+            }
+        case "agehistory":
+            // agehistory <substring> <days>: moves that URL's visits back by <days>.
+            guard words.count == 2, let days = Double(words[1]) else { return }
+            let pattern = "%\(words[0])%"
+            do {
+                try HistoryDatabase.shared.dbQueue.write { db in
+                    try db.execute(sql: "UPDATE historyVisit SET visitTime = visitTime - ? WHERE urlID IN (SELECT id FROM historyURL WHERE url LIKE ?)", arguments: [days * 86400, pattern])
+                    try db.execute(sql: "UPDATE historyURL SET lastVisitTime = (SELECT MAX(visitTime) FROM historyVisit WHERE urlID = historyURL.id) WHERE url LIKE ?", arguments: [pattern])
+                }
+                log("aged \(words[0])")
+            } catch { log("agehistory failed \(error)") }
+        case "settingspane":
+            let sc = SettingsWindowController.shared
+            switch words.first {
+            case "links": sc.showLinksPane()
+            case "extensions": sc.showExtensionsPane()
+            default: sc.showWindow(nil)
+            }
+            after(0.6) {
+                guard let sw = sc.window else { return }
+                if let r = self.centered(sw.frame.size) { sw.setFrame(r, display: true) }
+                sw.makeKeyAndOrderFront(nil)
+                self.log("settings window=\(sw.windowNumber) quartz=\(self.quartz(sw.frame))")
+            }
+        case "sitesettings":
+            let bar = wc.tabSidebar.fauxAddressBar
+            guard let b = allViews(bar).first(where: { ($0 as? NSButton)?.image?.accessibilityDescription == "Site Settings" }) else { log("no site settings button"); return }
+            wc.showSiteSettingsPopover(relativeTo: b, fromAddressBar: true)
+        case "sqlh", "sqls":
+            // sqlh|sqls <statement>: runs SQL on the history / session database (demo data only).
+            do {
+                let q = cmd == "sqlh" ? HistoryDatabase.shared.dbQueue : AppDatabase.shared.dbQueue
+                try q.write { db in try db.execute(sql: arg); self.log("sql changed \(db.changesCount)") }
+            } catch { log("sql failed \(error)") }
+        case "hidemain":
+            window.orderOut(nil)
+        case "showmain":
+            window.orderFront(nil)
+        case "activate":
+            NSApp.activate()
+        case "closequick":
+            for c in QuickDetourWindowController.openControllers { c.window?.performClose(nil) }
+        case "quit":
+            NSApp.terminate(nil)
+        case "blocked":
+            log("blocked=\(wc.displayTab?.blockedCount ?? -1) url=\(wc.displayTab?.url?.absoluteString ?? "-")")
+        default:
+            extra2(cmd, arg, words: words, wc: wc)
+        }
+    }
+}
+// MARK: - Capture session 2 (agent-capture2, link-routes + privacy stills). Temporary, never committed.
+extension DemoStage {
+    func settingsViews() -> [NSView] {
+        guard let root = SettingsWindowController.shared.window?.contentView else { return [] }
+        return allViews(root.superview ?? root)
+    }
+
+    func extra2(_ cmd: String, _ arg: String, words: [String], wc: BrowserWindowController) {
+        switch cmd {
+        case "seed2":
+            // Profiles Work, Personal, Banking; Spaces Work, Personal, Reading, Banking. No favourites or pins.
+            guard space(named: "Work") == nil else { log("already seeded"); return }
+            let original = store.spaces
+            let originalProfiles = store.profiles.filter { !$0.isIncognito }
+            let work = store.addProfile(name: "Work")
+            let personal = store.addProfile(name: "Personal")
+            let banking = store.addProfile(name: "Banking")
+            let plans: [(String, String, String, Profile, [String])] = [
+                ("Work", "🍊", "FF7600", work, ["https://github.com/tienshiao/detour", "https://developer.apple.com/documentation/webkit"]),
+                ("Personal", "🌿", "7C5CFF", personal, ["https://en.wikipedia.org/wiki/Tab_(interface)"]),
+                ("Reading", "📚", "1FB6A8", personal, ["https://en.wikipedia.org/wiki/Hypertext"]),
+                ("Banking", "🏦", "2F6FDB", banking, ["https://en.wikipedia.org/wiki/Online_banking"]),
+            ]
+            for (name, emoji, color, profile, tabs) in plans {
+                let sp = store.addSpace(name: name, emoji: emoji, colorHex: color, profileID: profile.id)
+                for u in tabs.reversed() { _ = store.addTab(in: sp, url: URL(string: u)!) }
+            }
+            for s in original { store.deleteSpace(id: s.id) }
+            for p in originalProfiles { _ = store.deleteProfile(id: p.id) }
+            if let w = space(named: "Personal") { wc.setActiveSpace(id: w.id) }
+            store.saveNow()
+            log("seed2 done profiles=\(store.profiles.map(\.name))")
+        case "uasafari":
+            guard let p = store.profiles.first(where: { $0.name == arg }) else { log("no profile \(arg)"); return }
+            p.selectUserAgentMode(.safari)
+            store.updateProfile(p)
+            log("ua \(arg) = \(p.resolvedUserAgent())")
+        case "installcrx":
+            // installcrx <profileName> <url>: the store install path (gate + install) without its two modal alerts.
+            guard words.count == 2, let p = store.profiles.first(where: { $0.name == words[0] }),
+                  let u = URL(string: words[1]) else { log("installcrx: bad args"); return }
+            let pid = p.id
+            URLSession.shared.dataTask(with: u) { data, resp, err in
+                let final = resp?.url ?? u
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard let data else { self.log("installcrx download failed \(String(describing: err))"); return }
+                        do {
+                            let verified = try CRXInstallGate.verify(crxData: data, downloadURL: final)
+                            let c = try CRXInstallGate.admit(verified, crxData: data) { _ in nil }
+                            defer { try? FileManager.default.removeItem(at: c.directory) }
+                            var options = ExtensionInstaller.Options()
+                            (options.source, options.updateURL) = ExtensionSource.classifyCRX(
+                                fromWebStore: c.origin == .webStore, manifestUpdateURL: c.manifest.updateURL)
+                            let ext = try ExtensionManager.shared.install(from: c.directory, publicKey: c.publicKey, options: options, turningOnIn: pid)
+                            self.log("installed \(ext.id) \(ExtensionManager.shared.displayName(for: ext.id)) store=\(c.origin == .webStore) from=\(final.host ?? "-")")
+                        } catch { self.log("installcrx failed \(error)") }
+                    }
+                }
+            }.resume()
+        case "extstate":
+            for e in ExtensionManager.shared.extensions {
+                let on = store.profiles.map { "\($0.name)=\(AppDatabase.shared.isExtensionEnabledByProfile(extensionID: e.id, profileID: $0.id.uuidString))" }
+                log("ext \(ExtensionManager.shared.displayName(for: e.id)) enabled=\(e.isEnabled) \(on.joined(separator: " "))")
+            }
+        case "settingsframe":
+            // settingsframe W H [dy]: the Settings window, centred on the 2x display.
+            let v = words.compactMap { Double($0) }
+            guard v.count >= 2, let sw = SettingsWindowController.shared.window,
+                  let r = centered(NSSize(width: v[0], height: v[1]), dy: v.count > 2 ? v[2] : 0) else { return }
+            sw.setFrame(r, display: true)
+            log("settings window=\(sw.windowNumber) quartz=\(quartz(sw.frame))")
+        case "settingsinfo":
+            guard let sw = SettingsWindowController.shared.window else { log("no settings"); return }
+            log("settings window=\(sw.windowNumber) quartz=\(quartz(sw.frame)) min=\(sw.minSize) max=\(sw.maxSize) resizable=\(sw.styleMask.contains(.resizable))")
+            for case let sv as NSScrollView in settingsViews() {
+                log("scroll \(type(of: sv)) doc=\(sv.documentView.map { "\(type(of: $0))" } ?? "-") visible=\(sv.documentVisibleRect) docsize=\(sv.documentView?.frame.size ?? .zero) quartz=\(quartz(sv.window!.convertToScreen(sv.convert(sv.bounds, to: nil))))")
+            }
+        case "settingsscroll":
+            // settingsscroll <y>: scrolls every non-table scroll view in Settings to <y> points from its top.
+            guard let y = Double(arg) else { return }
+            for case let sv as NSScrollView in settingsViews() where !(sv.documentView is NSTableView) {
+                guard let doc = sv.documentView else { continue }
+                let maxY = max(0, doc.frame.height - sv.contentView.bounds.height)
+                let yy = min(y, maxY)
+                let pt = NSPoint(x: 0, y: doc.isFlipped ? yy : maxY - yy)
+                sv.contentView.scroll(to: pt)
+                sv.reflectScrolledClipView(sv.contentView)
+                log("scrolled to \(pt) max=\(maxY)")
+            }
+        case "sframes":
+            // sframes <text>: Settings views matching <text>, Quartz rects.
+            for v in settingsViews() where !v.isHiddenOrHasHiddenAncestor {
+                let d = describe(v)
+                guard !d.isEmpty, d.lowercased().contains(arg.lowercased()), let w = v.window else { continue }
+                log("view \(type(of: v)) quartz=\(quartz(w.convertToScreen(v.convert(v.bounds, to: nil)))) \(d)")
+            }
+        case "routes2":
+            let lr = store.linkRoutes
+            for r in lr.routes { lr.removeRoute(id: r.id) }
+            var order = 0
+            func add(_ m: LinkRouteMatch?, _ app: String?, _ t: LinkRouteTarget) {
+                if lr.add(LinkRoute(match: m, sourceApp: app, target: t, sortOrder: order)) == nil { log("route refused") }
+                order += 1
+            }
+            if let work = space(named: "Work") { add(LinkRouteMatch(kind: .domainIs, pattern: "github.com"), nil, .space(work.id)) }
+            if let r = space(named: "Reading") { add(LinkRouteMatch(kind: .domainIs, pattern: "wikipedia.org"), nil, .space(r.id)) }
+            add(words.count > 1 ? LinkRouteMatch(kind: .domainIs, pattern: "") : nil, words.first ?? "com.apple.mail", .quarantine)
+            log("routes \(lr.routes.count)")
+        case "settingspane2":
+            let sc = SettingsWindowController.shared
+            switch words.first {
+            case "links": sc.showLinksPane()
+            case "extensions": sc.showExtensionsPane()
+            case "profiles":
+                sc.showWindow(nil)
+                if let tb = sc.window?.toolbar,
+                   let item = tb.items.first(where: { $0.itemIdentifier.rawValue.lowercased().contains("profile") }),
+                   let action = item.action {
+                    NSApp.sendAction(action, to: item.target ?? sc, from: item)
+                }
+            default: sc.showWindow(nil)
+            }
+            after(0.6) {
+                guard let sw = sc.window else { return }
+                if let r = self.centered(sw.frame.size) { sw.setFrame(r, display: true) }
+                sw.makeKeyAndOrderFront(nil)
+                self.log("settings window=\(sw.windowNumber) quartz=\(self.quartz(sw.frame))")
+            }
+        default:
+            log("unknown \(cmd)")
         }
     }
 }
