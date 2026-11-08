@@ -381,6 +381,30 @@ WebKit has no `chrome.debugger` and no Chrome DevTools Protocol. Detour emulates
   - Not emulated: touch, gestures, IME composition. A driven page never has focus (`document.hasFocus()` is false).
 - **The user sees and stops it**: a driven tab's sidebar row shows an indicator, and a window that displays it shows a capsule with the extension's name and Stop (`TabAutomationStop`).
 
+### Runtime, dialogs and frames (TASK-132.15)
+
+`ExtensionDebugger+Runtime.swift` (`Runtime.enable` / `disable` as domain switches, `Runtime.evaluate`), `ExtensionDebuggerReplSource.swift` (finding the completion value), `ExtensionDebugger+Dialogs.swift` (`Page.handleJavaScriptDialog` and the dialog events), `ExtensionDebugger+Frames.swift` (`Page.getFrameTree`, `Page.frameNavigated`). Design and measurements: `wiki/extensions/debugger-api.md`.
+
+- **`Runtime.evaluate`** runs in the page's main world through `callAsyncJavaScript`, which a page's CSP does not block (`eval` is blocked under `script-src 'self'`). The code becomes an async function, so top-level `await` works in REPL mode. Syntax is checked first in Detour's `DetourDebugger` world (as a function body, then as a script, where `return` is illegal). A compile error is answered as V8 answers one: a SyntaxError with a `scriptId` and no `stackTrace`, in V8's words where the Claude extension relies on them ("Illegal return statement"). The completion value comes from rewriting the code's last statement to store its value; each candidate rewrite is compiled in Detour's world first. With `returnByValue` the RemoteObject follows V8's JSON mode (`type` + `value`, no subtype or description for objects; `unserializableValue` for NaN, ±Infinity, -0 and bigints; a circular object or a symbol fails the command as in Chrome). Otherwise type, subtype, className and description, with no `objectId`. REPL mode returns the completion value as it is (a promise is not awaited, as in V8); otherwise `awaitPromise` awaits it. Exceptions carry `exceptionDetails` (`text: "Uncaught"`, line and column in the evaluated code, `scriptId`, `stackTrace`, and the exception described).
+- **Where the value is lost** (undefined where V8 has one): the last statement is an `if`/`else`, a loop, `switch`, `try`, or a labelled statement, or a declaration comes after the last expression (`x; let y = 1`). The code still runs. If no rewrite compiles, the code runs unchanged and the value is undefined.
+- **Not like Chrome:**
+  - Each evaluation is its own function. `let`/`const` never clash with an earlier evaluation, and they never persist either. Top-level `var` and function declarations are not globals.
+  - `eval` inside the evaluated code is still subject to the page's CSP.
+  - `timeout` answers `{"code":-32000,"message":"Execution was terminated"}` (V8's answer) and also covers an awaited promise that never settles. WebKit cannot stop a busy script: a synchronous infinite loop keeps the page's process spinning after the command has answered.
+  - The description code runs in the page world with the page's own `Object` / `Promise`, so a page that replaced them can confuse a description.
+- **Dialogs**:
+  - Attached tab with Page enabled: `alert` / `confirm` / `prompt` emit `Page.javascriptDialogOpening {url, frameId, message, type, hasBrowserHandler: false, defaultPrompt}` and wait for `Page.handleJavaScriptDialog {accept, promptText}`. No sheet is shown. Then `Page.javascriptDialogClosed {result, userInput, frameId}` is emitted.
+  - `handleJavaScriptDialog` with nothing showing fails `{"code":-32602,"message":"No dialog is showing"}`.
+  - A waiting dialog is dismissed (Chromium's behaviour without a browser handler) on detach, on the tab closing, on Stop and on `Page.disable`, with no event. A navigation dismisses it and reports `javascriptDialogClosed {result: false}`. WebKit's completion handler is always called once.
+  - A tab no debugger holds shows Detour's sheet as before. So does an attached tab without Page enabled while a window displays it. An attached tab without Page that is parked answers at once (alert acknowledged, confirm and prompt declined), Chromium's rule for a background tab's dialog, so no sheet lands over the tab the user is on.
+  - A tab no window has displayed has no UI delegate, and WebKit answers its dialogs itself. Parking an attached tab gives it `AutomationUIDelegate` (AutomationParking.swift), which hands its dialogs to the debugger and otherwise answers as WebKit does without a delegate. A window that displays the tab replaces it.
+  - `beforeunload` is not reported. WebKit dispatches `beforeunload` only to a page whose UI delegate implements the `_webView:runBeforeUnloadConfirmPanelWithMessage:…` SPI, and the window is every tab's delegate, so implementing it would start running every tab's beforeunload handlers. Pages navigate away as they do today.
+- **Frames**:
+  - The main frame only. Its `id` is stable for the tab; its `loaderId` is new at every main-frame commit.
+  - `Page.getFrameTree` answers `{frameTree: {frame}}` with no child frames.
+  - `Page.frameNavigated {frame, type: "Navigation"}` fires once per main-frame commit while Page is enabled. Same-document navigations fire nothing (no `navigatedWithinDocument`).
+  - `mimeType` and the secure-context fields are read from the page in Detour's world. `domainAndRegistry` is the host's last two labels, because there is no public suffix list.
+
 ## Side panel
 
 `chrome.sidePanel` is Detour's (TASK-132.8). Released WebKit compiles its side panel out: the namespace is undefined in workers and pages, the `sidePanel` permission is not recognised (it is absent from `WKWebExtension.requestedPermissions`) and `sidebarForTab:` answers nil (TASK-132.1). So the API is a polyfill module (`ExtensionAPIPolyfill.sidePanelJS`), defined only when the manifest declares the `sidePanel` permission, and the panel is a `WKWebView` Detour builds from the context's `webViewConfiguration` — like the offscreen document, it gets the extension's `chrome.*`, the polyfill and the profile's data store.

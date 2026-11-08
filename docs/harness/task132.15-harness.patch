@@ -1,0 +1,185 @@
+TASK-132.15 runtime harness: installs the API Explorer into an isolated profile; attaches a parked tab (page) and the selected tab (worker), Page.enable on both; Runtime.evaluate on both, Claude's return retry; alert and confirm on both answered by the extension (no sheet expected); frameNavigated and getFrameTree's loaderId across a navigation; an unattached tab's confirm shows Detour's sheet; a pending dialog released by detach. Temporary, never committed to Detour/.
+
+    git apply docs/harness/task132.15-harness.patch && xcodegen generate && build
+
+    DETOUR_DATA_DIR=DetourVerify13215-<n> DETOUR_VERIFY_DIR=$OUT DETOUR_API_EXPLORER=$PWD/TestExtensions/api-explorer .derived/.../Detour
+
+    # "SHOOT <name> <windowNumber>" lines in $OUT/verify.log cue screencapture -l; "SHEET" lines report window.attachedSheet; ends with "done".
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 2f165c2..c50c122 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -149,6 +149,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask13215HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task13215Harness.swift b/Detour/App/Task13215Harness.swift
+new file mode 100644
+index 0000000..075717f
+--- /dev/null
++++ b/Detour/App/Task13215Harness.swift
+@@ -0,0 +1,157 @@
++// TEMP TASK-132.15 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask13215HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"], let explorerPath = env["DETOUR_API_EXPLORER"] else { return }
++        let out = URL(fileURLWithPath: outDir)
++        let logURL = out.appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier)")
++        guard let window = wc.window, let space = wc.activeSpace, let profile = wc.activeSpace?.profile else { return log("no window/space") }
++        let store = TabStore.shared
++
++        func page(_ title: String, _ color: String) -> URL {
++            let html = "<title>\(title)</title><body style='margin:0;font:28px system-ui;background:\(color);height:2400px'>"
++                + "<p style='margin:140px 40px 0'>\(title) page</p><script>window.pageSecret = '\(title)-secret';</script></body>"
++            return URL(string: "data:text/html," + html.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)!
++        }
++
++        Task { @MainActor in
++            @MainActor func sleep(_ s: Double) async { try? await Task.sleep(for: .milliseconds(Int(s * 1000))) }
++            do {
++                let ext = try ExtensionManager.shared.install(from: URL(fileURLWithPath: explorerPath))
++                log("installed \(ext.id)")
++                await sleep(2)
++                guard let context = profile.extensionContext(for: ext.id) else { return log("no context") }
++                let alpha = store.addTab(in: space, url: page("Alpha", "rgb(200,220,255)"))
++                let bravo = store.addTab(in: space, url: page("Bravo", "rgb(200,255,200)"))
++                wc.selectTab(id: alpha.id)
++                await sleep(3)
++                let extPage = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300),
++                                        configuration: context.webViewConfiguration!)
++                extPage.load(URLRequest(url: context.baseURL.appendingPathComponent("options.html")))
++                await sleep(3)
++
++                @MainActor func js(_ body: String) async -> [String: Any]? {
++                    do {
++                        let raw = try await extPage.callAsyncJavaScript(
++                            "try { return JSON.stringify({ ok: true, value: await (async () => { \(body) })() }); } catch (e) { return JSON.stringify({ ok: false, error: String(e && e.message || e) }); }",
++                            arguments: [:], contentWorld: .page)
++                        let text = raw as? String ?? "nil"
++                        log("JS -> \(text.count > 700 ? String(text.prefix(700)) + "…" : text)")
++                        return (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
++                    } catch { log("JS threw \(error)"); return nil }
++                }
++                @MainActor func shoot(_ name: String) async {
++                    log("SHOOT \(name) \(window.windowNumber)")
++                    await sleep(2.5)
++                }
++                @MainActor func sheet(_ label: String) { log("SHEET \(label): attachedSheet=\(window.attachedSheet != nil)") }
++
++                let ids = await js("const targets = await chrome.debugger.getTargets(); return targets.map(t => [t.tabId, t.title]);")
++                let pairs = (ids?["value"] as? [[Any]]) ?? []
++                @MainActor func id(_ title: String) -> Int { pairs.first { $0[1] as? String == title }?[0] as? Int ?? -1 }
++                let a = id("Alpha"), b = id("Bravo")
++                log("ids Alpha=\(a) Bravo=\(b)")
++
++                // Listen in the page too.
++                _ = await js("globalThis.__ev = []; chrome.debugger.onEvent.addListener((s, m, p) => __ev.push([s.tabId, m, p])); return 'listening';")
++                // Bravo (parked) from the page; Alpha (selected) from the worker. Page.enable on both.
++                _ = await js("await chrome.debugger.attach({ tabId: \(b) }, '1.3'); return await chrome.debugger.sendCommand({ tabId: \(b) }, 'Page.enable');")
++                _ = await js("await chrome.runtime.sendMessage({ type: 'debuggerOp', op: 'attach', target: { tabId: \(a) } }); return await chrome.runtime.sendMessage({ type: 'debuggerOp', op: 'sendCommand', target: { tabId: \(a) }, args: { method: 'Page.enable', params: {} } });")
++                log("hosting Alpha=\(alpha.automationHosting) Bravo=\(bravo.automationHosting)")
++
++                let evalParams = { (tab: Int, code: String, repl: Bool) -> String in
++                    "{ expression: \(code.debugDescription), returnByValue: true, awaitPromise: true, replMode: \(repl), timeout: 10000 }"
++                }
++                for (tabId, via) in [(b, "page"), (a, "worker")] {
++                    let code = "{const t = document.title; await new Promise(r => setTimeout(r, 20)); `${t} ${pageSecret} ${document.querySelectorAll('p').length}`\n}"
++                    if via == "page" {
++                        _ = await js("return await chrome.debugger.sendCommand({ tabId: \(tabId) }, 'Runtime.evaluate', \(evalParams(tabId, code, true)));")
++                    } else {
++                        _ = await js("return await chrome.runtime.sendMessage({ type: 'debuggerOp', op: 'sendCommand', target: { tabId: \(tabId) }, args: { method: 'Runtime.evaluate', params: \(evalParams(tabId, code, true)) } });")
++                    }
++                }
++                // Claude's retry, from the page.
++                _ = await js("""
++                    const d = (e, t) => chrome.debugger.sendCommand({ tabId: \(b) }, 'Runtime.evaluate', { expression: e, returnByValue: true, awaitPromise: true, replMode: t, timeout: 10000 });
++                    const o = 'const n = document.title.length;\\nreturn n * 3';
++                    let g = await d(`{${o}\\n}`, true);
++                    const first = g;
++                    const f = 'SyntaxError' !== g.exceptionDetails?.exception?.className || g.exceptionDetails?.stackTrace || undefined === g.exceptionDetails?.scriptId ? '' : g.exceptionDetails.exception.description ?? '';
++                    let retried = false;
++                    if (/Illegal return statement/.test(f)) { g = await d(`(async()=>{\\n${o}\\n})()`, false); retried = true; }
++                    return { retried, first: first.exceptionDetails && first.exceptionDetails.exception.description, final: g.result };
++                    """)
++
++                // Dialogs on both attached tabs, answered by the extension.
++                for (tabId, label) in [(b, "Bravo parked"), (a, "Alpha selected")] {
++                    for call in ["alert('hello from \(label)')", "confirm('ok, \(label)?')"] {
++                        // The dialog opens inside the evaluation, which answers once the
++                        // dialog has been: not awaited here, as the extension would not.
++                        _ = await js("globalThis.__pending = chrome.debugger.sendCommand({ tabId: \(tabId) }, 'Runtime.evaluate', { expression: \"(window.__answers = window.__answers || []).push(\(call)); window.__answers.length\", returnByValue: true, awaitPromise: true }); return 'sent';")
++                        await sleep(0.8)
++                        sheet("\(label) after \(call)")
++                        _ = await js("return __ev.filter(e => e[0] === \(tabId) && e[1].startsWith('Page.javascriptDialog')).slice(-1);")
++                        if call.hasPrefix("alert"), label.hasPrefix("Alpha") { await shoot("01-alpha-dialog-pending") }
++                        _ = await js("return await chrome.debugger.sendCommand({ tabId: \(tabId) }, 'Page.handleJavaScriptDialog', { accept: true });")
++                        await sleep(0.4)
++                        _ = await js("return { closed: __ev.filter(e => e[0] === \(tabId) && e[1] === 'Page.javascriptDialogClosed').length, evaluation: await __pending };")
++                    }
++                    _ = await js("return (await chrome.debugger.sendCommand({ tabId: \(tabId) }, 'Runtime.evaluate', { expression: 'window.__answers', returnByValue: true })).result;")
++                }
++                _ = await js("return await new Promise((res) => chrome.debugger.sendCommand({ tabId: \(b) }, 'Page.handleJavaScriptDialog', { accept: true }, () => res(chrome.runtime.lastError && chrome.runtime.lastError.message)));")
++
++                // Navigate Bravo: frameNavigated, and getFrameTree's loaderId changes.
++                _ = await js("return (await chrome.debugger.sendCommand({ tabId: \(b) }, 'Page.getFrameTree')).frameTree.frame;")
++                bravo.load(page("Bravo two", "rgb(255,230,200)"))
++                await sleep(2)
++                _ = await js("return __ev.filter(e => e[0] === \(b) && e[1] === 'Page.frameNavigated').map(e => [e[2].frame.url.slice(0, 40), e[2].frame.loaderId, e[2].frame.id]);")
++                _ = await js("return (await chrome.debugger.sendCommand({ tabId: \(b) }, 'Page.getFrameTree')).frameTree.frame.loaderId;")
++
++                // Alpha detached: its dialog is Detour's sheet again.
++                _ = await js("return await chrome.runtime.sendMessage({ type: 'debuggerOp', op: 'detach', target: { tabId: \(a) } });")
++                await sleep(0.5)
++                if let webView = alpha.webView {
++                    // Not awaited: WebKit holds the script's answer behind the dialog.
++                    webView.evaluateJavaScript("setTimeout(() => { window.__unattached = confirm('Unattached Alpha: a sheet'); }, 20); 0",
++                                               completionHandler: nil)
++                }
++                await sleep(1)
++                sheet("unattached Alpha")
++                await shoot("02-unattached-sheet")
++                if let attached = window.attachedSheet { window.endSheet(attached, returnCode: .alertFirstButtonReturn) }
++                await sleep(0.5)
++                let answer = try? await alpha.webView?.callAsyncJavaScript("return window.__unattached;", arguments: [:], contentWorld: .page)
++                log("unattached Alpha answered \(String(describing: answer))")
++
++                // A pending dialog released by detach.
++                _ = await js("globalThis.__releasing = chrome.debugger.sendCommand({ tabId: \(b) }, 'Runtime.evaluate', { expression: \"window.__released = confirm('released?')\", returnByValue: true }).then(r => r, e => String(e && e.message || e)); return 'sent';")
++                await sleep(0.6)
++                log("pending before detach: \(ExtensionDebuggerDialogs.pendingDialog(forTabUUID: bravo.id) != nil)")
++                _ = await js("await chrome.debugger.detach({ tabId: \(b) }); return 'detached';")
++                await sleep(0.5)
++                log("pending after detach: \(ExtensionDebuggerDialogs.pendingDialog(forTabUUID: bravo.id) != nil)")
++                let released = try? await bravo.webView?.callAsyncJavaScript("return window.__released;", arguments: [:], contentWorld: .page)
++                log("Bravo released answer \(String(describing: released))")
++                _ = await js("return await __releasing;")
++                sheet("end")
++                log("done")
++            } catch {
++                log("harness error \(error)")
++            }
++        }
++    }
++}
++#endif

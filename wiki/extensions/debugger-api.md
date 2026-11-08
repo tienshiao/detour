@@ -1,8 +1,8 @@
 ---
 type: Feature
 title: Debugger API
-description: chrome.debugger over an emulated subset of the Chrome DevTools Protocol — attachments and Chrome's rules for them, how an attachment ends, tab ids kept natively, the shared parked event channel, Page.captureScreenshot geometry, synthesized input and what keeps it in the tab, the user's Stop, and what differs from Chrome.
-tags: [extensions, debugger, cdp, polyfill, events, claude-extension]
+description: chrome.debugger over an emulated subset of the Chrome DevTools Protocol — attachments and Chrome's rules for them, how an attachment ends, tab ids kept natively, the shared parked event channel, Page.captureScreenshot geometry, synthesized input and what keeps it in the tab, Runtime.evaluate under CSP with V8-shaped results, JavaScript dialogs and the frame model, the user's Stop, and what differs from Chrome.
+tags: [extensions, debugger, cdp, polyfill, events, claude-extension, csp, dialogs, input]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T02:30:00Z }
 sources:
@@ -51,6 +51,24 @@ sources:
   - id: task
     resource: backlog:TASK-132.13
     title: "Extensions: chrome.debugger attach/detach/sendCommand plumbing and Page.captureScreenshot"
+  - id: runtime
+    resource: ../../Detour/Extensions/Runtime/ExtensionDebugger+Runtime.swift
+    title: ExtensionDebugger+Runtime.swift and ExtensionDebuggerReplSource.swift (Runtime.evaluate)
+  - id: dialogs
+    resource: ../../Detour/Extensions/Runtime/ExtensionDebugger+Dialogs.swift
+    title: ExtensionDebugger+Dialogs.swift and ExtensionDebugger+Frames.swift
+  - id: v8
+    resource: https://github.com/v8/v8/tree/main/src/inspector
+    title: V8 inspector (value-mirror.cc, v8-runtime-agent-impl.cc, injected-script.cc)
+  - id: pagehandler
+    resource: https://github.com/chromium/chromium/blob/main/content/browser/devtools/protocol/page_handler.cc
+    title: Chromium, page_handler.cc and components/javascript_dialogs/tab_modal_dialog_manager.cc
+  - id: webkit
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Cocoa/UIDelegate.mm
+    title: WebKit, UIDelegate.mm and FrameLoader::shouldClose
+  - id: task15
+    resource: backlog:TASK-132.15
+    title: "Extensions: chrome.debugger Runtime.evaluate and JavaScript dialog handling"
 ---
 
 # Summary
@@ -274,6 +292,130 @@ A key down the page declines is handed back through `NSApp.sendEvent` and
 dropped by `AutomationInput`'s monitor (TASK-132.3), so a declined Cmd+W
 closes nothing.
 
+# Runtime.evaluate
+
+What the Claude extension sends, from its bundle: `{expression, returnByValue: true, awaitPromise: true, replMode, timeout}`.
+Its first try is `{code\n}` in REPL mode. It retries as `(async()=>{\ncode\n})()` outside REPL mode only when the answer is a
+SyntaxError with a `scriptId`, no `stackTrace`, and a description matching `/Illegal return statement/`. Its tool tells the
+model that top-level `await` works and that the last expression's value comes back.[^task15]
+
+**What WebKit allows, measured** (a standalone WKWebView spike, page served with `Content-Security-Policy: script-src 'self'`):
+
+| Path | Under that CSP | Page globals | Completion value | `await` |
+|---|---|---|---|---|
+| `eval` / `new Function` in the page world | refused (EvalError) | yes | yes | no |
+| `evaluateJavaScript` of a raw script | runs | yes | by value only (a promise or node is "an unsupported type") | SyntaxError |
+| `callAsyncJavaScript`, code as the body, page world | runs | yes | none (a function body; `return` is legal) | yes |
+| `eval` / `new Function` in a named world | runs | no (DOM only) | yes | no |
+
+So the code runs through `callAsyncJavaScript` in the page world as an async arrow function. Detour's `DetourDebugger`
+world, where `eval` is never refused, does the checks that must not run the code:[^runtime]
+
+1. **Syntax.** The code is compiled as a function body (`new Function`), then as a script (`eval('if (0) {…}')` inside
+   a function, so `return` is illegal and `var`s stay local). In REPL mode the `await` words are blanked first: `await x`
+   becomes `void  x`, at the same length. A failure is answered as V8 answers a compile error (no `stackTrace`, with a
+   `scriptId`). The text is JSC's, except for "Illegal return statement" and V8's top-level-await message.
+2. **The completion value.** `ExtensionDebuggerReplSource` tokenises the code: strings, templates with their holes,
+   comments, and a regex told from division by the token before it. It then lists where the last statement of the list
+   could start: the list's start, after a `;` or `}` of the list's own depth, or at a line break where ASI ends a
+   statement (the next token cannot continue, the previous one does not ask for more). A final block is looked into
+   recursively, which is the Claude extension's wrapper. Each rewrite `…; $c = (expr\n)` is compiled in Detour's world,
+   latest start first, and the first that compiles is used; a start in the middle of a statement does not compile. If
+   none compiles, the code runs unchanged, with an undefined value.
+3. **The page** awaits the arrow and unboxes the value: it is returned in an array, so a promise is not adopted. In REPL
+   mode the value is returned as it is, because V8 awaits only the REPL script's own promise
+   (`ProtocolPromiseHandler::thenCallback` reads `.repl_result` and wraps it). Otherwise `awaitPromise` awaits it, with
+   `Promise.resolve` semantics. The page then describes the value.
+
+**Rejected alternatives:**
+- `eval` in the page world when the CSP allows it: two behaviours depending on the site, and still no top-level await.
+- `evaluateJavaScript`: by value only, no await.
+- The named world alone: page globals are invisible.
+- Vendoring a real parser (acorn): third-party code in the app. That is the user's decision, so it was left out for
+  now. `ExtensionDebuggerEvaluation.prepare` is the one boundary such a parser would replace.
+- Full spec completion rules (if/loop/try reset to undefined): not needed for what the extension sends.
+
+**RemoteObject, as V8 builds it**[^v8]:
+- With `returnByValue` (JSON mode), objects get `{type: "object", value}` with no subtype, className or description. A DOM
+  node is `{}`, and so is a function's value. `toProtocolValue` keeps own enumerable properties and drops `undefined`
+  ones; a non-finite number inside becomes null; depth is capped at 1000 ("Object reference chain is too long"). A symbol,
+  or a bigint inside an object, is "Object couldn't be returned by value". These failures fail the command (-32000), as in
+  Chrome.
+- Top-level numbers carry a `description`. NaN, ±Infinity and -0 are `unserializableValue`. A bigint is
+  `unserializableValue` "10n". null is `{type: "object", subtype: "null", value: null}`. undefined is `{type: "undefined"}`.
+- Without `returnByValue`: type, subtype (array, node, regexp, date, map, set, weakmap, weakset, promise, typedarray,
+  arraybuffer, dataview, generator, error), className, and description ("Array(3)", "div#id.a.b", "Map(1)", the function's
+  source). There is no `objectId` (no remote object handles).
+- An exception is wrapped as V8's `addExceptionToDetails` does: an Error is `{type, subtype: "error", className,
+  description: "Name: message\n    at …"}`; anything else is described. `exceptionDetails` has `exceptionId`,
+  `text: "Uncaught"`, line and column mapped back through the rewrite to the evaluated code, `scriptId`, `stackTrace`
+  (page frames parsed from JSC's `name@url:line:col`, plus the evaluated code's frame), and `url` when a page script threw.
+- `timeout`: V8 only times the synchronous part and answers `{"code":-32000,"message":"Execution was terminated"}`. Detour
+  gives the same answer when the timeout passes, awaiting included, so a never-settling promise ends. WebKit cannot stop a
+  running script: after the answer, a synchronous loop keeps the page's process busy.
+- Errors outside the code: no web view gives "Cannot find default execution context"; a failed `callAsyncJavaScript`
+  (navigated or closed) gives "Inspected target navigated or closed", which the Claude extension recognises.
+
+**Not like Chrome**:
+- Each evaluation is its own function. `let`/`const` never clash with an earlier evaluation (AC #4), but never persist
+  either. Top-level `var` and function declarations are not globals.
+- `eval` inside the code is still subject to the page's CSP. Chrome lifts the CSP for the evaluation
+  (`allowUnsafeEvalBlockedByCSP`).
+- The value is lost when the last statement is an if/loop/switch/try/label, or when a declaration follows the last
+  expression.
+- The description code uses the page world's own `Object` / `Promise`, so a hostile page can confuse it.
+
+# Dialogs
+
+From Chromium[^pagehandler]:
+- With Page enabled, a dialog raises `Page.javascriptDialogOpening` and waits for `Page.handleJavaScriptDialog`. With
+  nothing showing, that command fails -32602 "No dialog is showing".
+- `Page.disable`, or the session going away with no browser dialog manager to leave the dialog to, runs the callback with
+  `(false, "")` and reports nothing.
+- A navigation cancels the dialog (`kTabNavigated`) and reports `javascriptDialogClosed`.
+- Detour shows no browser dialog for such a tab, because its sheet is window-modal and would cover whatever tab the user
+  is on. So it says `hasBrowserHandler: false` and always takes the no-manager branch.
+- A prompt answered with accept and no `promptText` returns "" (Chromium's `prompt_override`).
+
+The hook is one call at the top of each `alert` / `confirm` / `prompt` delegate method (`BrowserWindowController`,
+`QuickDetourWindowController`, `ExtensionDebuggerDialogs.intercept`). It decides by the pure
+`decision(pageEnabled:displayed:)`:
+- Page enabled: the dialog is reported.
+- Page not enabled and a window displays the tab: Detour's sheet, as before.
+- Page not enabled and the tab is parked: answered at once, as Chromium answers a background tab's dialog
+  (tab_modal_dialog_manager.cc: an alert is acknowledged, a confirm or prompt is suppressed). No sheet lands over the
+  user's tab.
+
+A tab is unaffected when no debugger holds it.
+
+**A tab no window ever wired has no UI delegate.** Windows set `uiDelegate` only when they claim a web view, and WebKit
+answers a delegate-less page's dialogs itself (`UIDelegate::UIClient::runJavaScriptAlert` and friends call the completion
+at once). `parkForAutomation` therefore gives such a web view `AutomationUIDelegate`, which hands its dialogs to
+`intercept` and otherwise gives WebKit's no-delegate answer, so nothing changes for a tab nobody drives. A window that
+displays the tab replaces it (`wireOwnedWebView`). The completion handler is held until it is answered and is always
+called once; WebKit raises if it is released uncalled.
+
+**beforeunload is left out.** WebKit tells the web process whether the delegate responds to
+`_webView:runBeforeUnloadConfirmPanelWithMessage:initiatedByFrame:completionHandler:`, and `FrameLoader::shouldClose`
+returns early without dispatching `beforeunload` at all when it does not.[^webkit] The window is every tab's delegate,
+so implementing the SPI there would make every tab start running its beforeunload handlers: a change for unattached tabs,
+which the task ruled out. Pages navigate away as they do today. The Claude extension's beforeunload waiters are also
+released by `frameNavigated`.
+
+# Frames
+
+Only a tab's main frame is modelled (`ExtensionDebugger+Frames.swift`).[^dialogs]
+- The frame `id` is the tab's UUID as 32 hex digits, stable for the tab.
+- `loaderId` is new at every main-frame commit. `BrowserTab.didCommitNavigation()` calls
+  `ExtensionDebuggerFrames.tabDidCommit`, which costs a map lookup for a tab no debugger has seen.
+- `Page.frameNavigated {frame, type: "Navigation"}` is sent once per commit while Page is enabled.
+- WebKit commits nothing for a same-document navigation, so none is reported (no `navigatedWithinDocument`).
+- `Page.getFrameTree` answers the main frame without children. The Claude extension compares its `loaderId` before and
+  after a screenshot.
+- `mimeType`, `isSecureContext` and `crossOriginIsolated` are read in Detour's world.
+- `domainAndRegistry` is the last two host labels, because Detour has no public suffix list.
+- A dialog names the main frame's id even when a child frame opened it.
+
 # The indicator
 
 A driven tab shows a small indicator in its sidebar row (tooltip
@@ -311,6 +453,7 @@ Things learnt building it:
   text system's bindings; `undo` / `redo` only on a parked page; no touch,
   gesture or IME composition methods (`Input.dispatchTouchEvent`,
   `imeSetComposition`).
+- Runtime, dialogs and frames: their own lists above.
 - `captureBeyondViewport` is not emulated: a clip past the viewport shows
   nothing there.
 - The user's indicator is Detour's own (a sidebar row indicator and a
@@ -358,6 +501,29 @@ The guards cover every window a driven tab can be shown in (`BrowserWindow`,
 Per mouse event there are two round trips (the viewport, then the
 acknowledgement). Caching the viewport per session would halve that; not done.
 
+TASK-132.15: `ExtensionDebuggerRuntimeTests` runs evaluations in a bare web view:
+- WebKit's own `evaluateJavaScript` completion values as the oracle, plain and block-wrapped;
+- REPL vs awaitPromise;
+- V8's by-value and described shapes;
+- thrown, rejected, compile-time and run-time SyntaxErrors;
+- the extension's two-step retry, timeout, let/const;
+- a CSP page that refuses eval.
+
+`ExtensionDebuggerRuntimeExtensionTests` covers the same through the API from the worker and a page, plus:
+- dialogs answered by the extension, with no sheet;
+- Detour's sheet for unattached and displayed tabs, and an immediate answer for a parked tab without Page;
+- release on detach and on close;
+- frameNavigated once per navigation, with the loader id changing.
+
+`ExtensionDebuggerRuntimeUnitTests` covers the tokeniser, the rewrite candidates, the position mapping, the messages and
+the frame fields.
+
 [^task]: TASK-132.13 in Backlog.
 [^task-input]: TASK-132.14 in Backlog; the measurements come from a temporary spike test on a parked and a displayed tab, 2026-11-07.
+[^task15]: TASK-132.15 in Backlog; the Claude extension 1.0.105 bundle (`mcpPermissions` chunk), read 2026-11-07.
+[^runtime]: ExtensionDebugger+Runtime.swift, ExtensionDebuggerReplSource.swift.
+[^dialogs]: ExtensionDebugger+Dialogs.swift, ExtensionDebugger+Frames.swift.
+[^v8]: v8/src/inspector value-mirror.cc, injected-script.cc, v8-runtime-agent-impl.cc, read 2026-11-07.
+[^pagehandler]: chromium content/browser/devtools/protocol/page_handler.cc and components/javascript_dialogs/tab_modal_dialog_manager.cc, read 2026-11-07.
+[^webkit]: WebKit Source/WebKit/UIProcess/Cocoa/UIDelegate.mm, WebPageProxy.cpp, Source/WebCore/loader/FrameLoader.cpp, read 2026-11-07.
 [^chromium]: chrome/browser/extensions/api/debugger/debugger_api.cc, read 2026-11-07.
