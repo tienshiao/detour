@@ -18,8 +18,11 @@ import WebKit
 //  - Page disabled, or the session ending (detach, tab closed, Stop) with no
 //    browser handler to leave it to: the dialog is dismissed (accept false,
 //    empty input) and nothing is reported (the domain, or the session, is gone);
-//  - the frame navigating: the dialog manager cancels it (kTabNavigated) and
-//    `javascriptDialogClosed {result: false}` is reported.
+//  - the tab navigating (a load or reload issued, a main-frame commit) or its
+//    process going away: the dialog manager cancels it (kTabNavigated) and
+//    `javascriptDialogClosed {result: false}` is reported. The load must
+//    cancel it, not only the commit: a process held by a dialog reads no
+//    load, so a same-process navigation would wait on the extension.
 // Whatever happens, WebKit's completion handler is called exactly once: a
 // handler that is released uncalled raises an exception in WebKit.
 //
@@ -65,8 +68,6 @@ final class ExtensionDebuggerPendingDialog {
         self.completion = completion
         tab.scriptDialogDidBegin()
     }
-
-    var isAnswered: Bool { completion == nil }
 
     func answer(accept: Bool, userInput: String) {
         guard let completion else { return }

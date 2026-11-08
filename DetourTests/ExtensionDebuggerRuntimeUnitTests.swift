@@ -33,6 +33,14 @@ nonisolated final class ExtensionDebuggerRuntimeUnitTests: XCTestCase {
         XCTAssertEqual(Source.tokenize("f(/[/]/)")[2].kind, .regex, "a slash inside a class does not end it")
         XCTAssertEqual(Source.tokenize("{}\n/a/.test(b)")[2].kind, .regex, "after a block, a regex")
         XCTAssertEqual(Source.tokenize("x = {}\n/a/g").filter { $0.kind == .regex }.count, 0, "after an object, division")
+        XCTAssertEqual(Source.tokenize("`${/[}]/.test(s)}`")[1].kind, .regex, "a template's hole starts an expression")
+        XCTAssertEqual(Source.tokenize("`a` / 2")[1].kind, .punctuator, "after a whole template, division")
+    }
+
+    @MainActor func testAStringContinuesOverAnEscapedCRLF() {
+        let tokens = Source.tokenize("const s = 'a\\\r\nb'\ns")
+        XCTAssertEqual(tokens.map(\.kind), [.identifier, .identifier, .punctuator, .string, .identifier])
+        XCTAssertEqual(Source.rewrites(for: "const s = 'a\\\r\nb'\ns").count, 1)
     }
 
     // MARK: - Rewrites
@@ -99,6 +107,9 @@ nonisolated final class ExtensionDebuggerRuntimeUnitTests: XCTestCase {
             XCTFail("replMode must be a boolean")
         }
         XCTAssertNil(try? ExtensionDebuggerEvaluation.Request.parse(["expression": "1", "timeout": 0]).get().timeout)
+        // A `Duration` of 1e300 ms traps: the timeout is capped.
+        XCTAssertEqual(try? ExtensionDebuggerEvaluation.Request.parse(["expression": "1", "timeout": 1e300]).get().timeout,
+                       ExtensionDebuggerEvaluation.Request.maximumTimeout)
     }
 
     @MainActor func testSyntaxMessagesInV8sWords() {

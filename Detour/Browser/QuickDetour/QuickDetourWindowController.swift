@@ -488,11 +488,11 @@ final class QuickDetourWindowController: NSWindowController {
     }
 
     @objc func goBack(_ sender: Any?) {
-        tab?.webView?.goBack()
+        tab?.goBack()
     }
 
     @objc func goForward(_ sender: Any?) {
-        tab?.webView?.goForward()
+        tab?.goForward()
     }
 
     @objc func zoomIn(_ sender: Any?) {

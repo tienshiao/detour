@@ -330,6 +330,39 @@ nonisolated final class ExtensionDebuggerRuntimeExtensionTests: XCTestCase {
         XCTAssertEqual(ExtensionDebuggerDialogs.releasedCount, released + 2, "WebKit's handler was called")
     }
 
+    /// Page.disable dismisses a waiting dialog without a report; a load
+    /// cancels one and reports it closed (a process held by the dialog would
+    /// never read the load otherwise). Page.getFrameTree answers while one
+    /// waits.
+    @MainActor func testAPendingDialogIsReleasedOnPageDisableAndOnALoad() async throws {
+        let scene = try await makeScene("Runtime Dialog Disable")
+        let tab = scene.tabs[1]
+        let id = try await attach(tab, .worker, scene)
+        let released = ExtensionDebuggerDialogs.releasedCount
+
+        try openDialog(tab, "confirm('disabled away')")
+        _ = try await waitForEvents(.worker, scene, "Page.javascriptDialogOpening", tabID: id, count: 1)
+        let tree = try await send(.worker, scene, id, "Page.getFrameTree")
+        XCTAssertNotNil((tree["frameTree"] as? [String: Any])?["frame"], "answered while the page is held")
+        _ = try await send(.worker, scene, id, "Page.disable")
+        XCTAssertNil(ExtensionDebuggerDialogs.pendingDialog(forTabUUID: tab.id))
+        XCTAssertEqual(ExtensionDebuggerDialogs.releasedCount, released + 1)
+        try await waitUntil("the page to go on", timeout: 10) { ((try? await self.answers(tab)) ?? []).count == 1 }
+        let awaited = try await answers(tab)
+        XCTAssertEqual(awaited.first as? Bool, false, "dismissed")
+
+        _ = try await send(.worker, scene, id, "Page.enable")
+        try openDialog(tab, "alert('navigated away')")
+        _ = try await waitForEvents(.worker, scene, "Page.javascriptDialogOpening", tabID: id, count: 2)
+        tab.load(world.url("four"))
+        XCTAssertNil(ExtensionDebuggerDialogs.pendingDialog(forTabUUID: tab.id))
+        XCTAssertEqual(ExtensionDebuggerDialogs.releasedCount, released + 2)
+        let closed = try await waitForEvents(.worker, scene, "Page.javascriptDialogClosed", tabID: id, count: 1)
+        XCTAssertEqual((closed.first?["params"] as? [String: Any])?["result"] as? Bool, false)
+        _ = try await waitForEvents(.worker, scene, "Page.frameNavigated", tabID: id, count: 1)
+        try await detach(id, .worker, scene)
+    }
+
     // MARK: - Frames (AC #7)
 
     @MainActor func testFrameNavigatedFiresOncePerNavigationAndTheLoaderIDChanges() async throws {

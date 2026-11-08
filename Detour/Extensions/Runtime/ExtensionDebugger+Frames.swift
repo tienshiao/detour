@@ -101,6 +101,24 @@ enum ExtensionDebuggerFrames {
     /// Loader ids by tab, weak on the tab: an entry goes with its tab.
     private static let loaderIDs = NSMapTable<BrowserTab, NSString>.weakToStrongObjects()
 
+    /// What the page said about its document, for the loader id it was read
+    /// under: a document's MIME type and security state do not change, and a
+    /// page held by a dialog cannot be asked.
+    private final class DocumentFacts {
+        let loaderID: String
+        let mimeType: String
+        let isSecureContext: Bool
+        let isCrossOriginIsolated: Bool
+
+        init(loaderID: String, mimeType: String, isSecureContext: Bool, isCrossOriginIsolated: Bool) {
+            self.loaderID = loaderID
+            self.mimeType = mimeType
+            self.isSecureContext = isSecureContext
+            self.isCrossOriginIsolated = isCrossOriginIsolated
+        }
+    }
+    private static let documentFacts = NSMapTable<BrowserTab, DocumentFacts>.weakToStrongObjects()
+
     /// A new CDP-shaped token: 32 upper-case hex digits.
     static func makeToken() -> String {
         UUID().uuidString.replacingOccurrences(of: "-", with: "")
@@ -143,12 +161,21 @@ enum ExtensionDebuggerFrames {
 
     /// The tab's main frame now. What only the page knows (its MIME type and
     /// security state) is read in Detour's own content world, which the page
-    /// can neither see nor answer for.
+    /// can neither see nor answer for — once per document. A page held by a
+    /// debugger's dialog runs no script until the dialog is answered, so it is
+    /// not asked then (the defaults stand): `Page.getFrameTree` must not wait
+    /// on the extension answering a dialog.
     static func currentFrame(of tab: BrowserTab, loaderID: String? = nil) async -> ExtensionDebuggerFrame {
         let loaderID = loaderID ?? self.loaderID(for: tab)
         var frame = ExtensionDebuggerFrame(id: frameID(for: tab), loaderID: loaderID,
                                            url: tab.webView?.url ?? tab.url)
-        if let webView = tab.webView {
+        if let facts = documentFacts.object(forKey: tab), facts.loaderID == loaderID {
+            frame.mimeType = facts.mimeType
+            frame.isSecureContext = facts.isSecureContext
+            frame.isCrossOriginIsolated = facts.isCrossOriginIsolated
+            return frame
+        }
+        if let webView = tab.webView, ExtensionDebuggerDialogs.pendingDialog(forTabUUID: tab.id) == nil {
             let script = "return [document.contentType, isSecureContext, !!globalThis.crossOriginIsolated];"
             if let answer = try? await webView.callAsyncJavaScript(script, arguments: [:], in: nil,
                                                                   contentWorld: ExtensionDebugger.contentWorld),
@@ -156,6 +183,13 @@ enum ExtensionDebuggerFrames {
                 if let mime = values[0] as? String, !mime.isEmpty { frame.mimeType = mime }
                 frame.isSecureContext = (values[1] as? Bool) ?? false
                 frame.isCrossOriginIsolated = (values[2] as? Bool) ?? false
+                // Only for the document it was read in.
+                if self.loaderID(for: tab) == loaderID {
+                    documentFacts.setObject(DocumentFacts(loaderID: loaderID, mimeType: frame.mimeType,
+                                                          isSecureContext: frame.isSecureContext,
+                                                          isCrossOriginIsolated: frame.isCrossOriginIsolated),
+                                            forKey: tab)
+                }
             }
         }
         return frame

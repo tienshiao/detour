@@ -1556,7 +1556,21 @@ class BrowserTab: NSObject {
 
     /// The web process went away by itself (a crash, a memory kill).
     func webProcessDidTerminate() {
+        // A debugger's dialog went with the process that was waiting on it.
+        ExtensionDebuggerDialogs.release(tabUUID: id, emitClosed: true)
         applyLoadRecovery(.reset)
+    }
+
+    /// Back or forward in the tab's history. Like a load, it is not read by a
+    /// process held by a debugger's dialog, so the dialog is cancelled first.
+    func goBack() {
+        ExtensionDebuggerDialogs.release(tabUUID: id, emitClosed: true)
+        webView?.goBack()
+    }
+
+    func goForward() {
+        ExtensionDebuggerDialogs.release(tabUUID: id, emitClosed: true)
+        webView?.goForward()
     }
 
     /// Asks the web view for `load`, in a fresh web process when this one is
@@ -1565,6 +1579,10 @@ class BrowserTab: NSObject {
         // No web view, nothing to wait on: a request remembered here would be
         // replayed into whichever web view the tab got next.
         guard webView != nil else { return }
+        // A process held by a debugger's dialog reads no load: navigating
+        // cancels the dialog, as Chromium's dialog manager does when its tab
+        // navigates (TASK-132.15). Without this the load waits on the extension.
+        ExtensionDebuggerDialogs.release(tabUUID: id, emitClosed: true)
         guard !applyLoadRecovery(.requested(load)) else { return }
         perform(load)
         // Nothing went in flight (a reload with nothing to reload): there is

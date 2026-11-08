@@ -106,7 +106,9 @@ enum ExtensionDebuggerReplSource {
         func regexAllowed() -> Bool {
             guard let last = tokens.last else { return true }
             switch last.kind {
-            case .number, .string, .template, .regex: return false
+            // A template part that opens a hole (`…${`) starts an expression.
+            case .template: return last.text.hasSuffix("${")
+            case .number, .string, .regex: return false
             case .identifier: return keywordsBeforeExpression.contains(last.text)
             case .punctuator:
                 switch last.text {
@@ -152,6 +154,11 @@ enum ExtensionDebuggerReplSource {
             if unit == 0x22 || unit == 0x27 {
                 index += 1
                 while index < units.count, units[index] != unit, !isLineBreak(units[index]) {
+                    // A `\` before CR LF continues the string over both.
+                    if units[index] == 0x5C, index + 2 < units.count, units[index + 1] == 0x0D, units[index + 2] == 0x0A {
+                        index += 3
+                        continue
+                    }
                     index += units[index] == 0x5C ? 2 : 1
                 }
                 index = min(units.count, index + 1)
@@ -448,11 +455,5 @@ enum ExtensionDebuggerReplSource {
             units.replaceSubrange(token.start..<token.end, with: replacement)
         }
         return String(utf16CodeUnits: units, count: units.count)
-    }
-
-    /// Whether `code` uses `await` outside any brackets' function — roughly,
-    /// at all: only to pick V8's wording for a script that fails on it.
-    static func usesAwait(_ code: String) -> Bool {
-        tokenize(code).contains { $0.kind == .identifier && $0.text == "await" }
     }
 }

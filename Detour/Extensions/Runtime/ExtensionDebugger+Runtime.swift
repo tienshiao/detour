@@ -115,10 +115,14 @@ enum ExtensionDebuggerEvaluation {
                       number.doubleValue.isFinite else {
                     return .failure(.init(message: "Invalid parameters: timeout: number value expected"))
                 }
-                request.timeout = number.doubleValue > 0 ? number.doubleValue : nil
+                // Capped: a `Duration` of more milliseconds than this traps.
+                request.timeout = number.doubleValue > 0 ? min(number.doubleValue, maximumTimeout) : nil
             }
             return .success(request)
         }
+
+        /// The longest `timeout` honoured, in milliseconds (about 31 years).
+        static let maximumTimeout: Double = 1e12
     }
 
     static let terminatedMessage = "Execution was terminated"

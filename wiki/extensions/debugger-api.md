@@ -373,6 +373,8 @@ From Chromium[^pagehandler]:
 - `Page.disable`, or the session going away with no browser dialog manager to leave the dialog to, runs the callback with
   `(false, "")` and reports nothing.
 - A navigation cancels the dialog (`kTabNavigated`) and reports `javascriptDialogClosed`.
+  The release happens when the load is issued (`BrowserTab.issue`, `goBack`, `goForward`), not at commit: a process held by a dialog reads no load, so a same-process navigation would never commit. Commit and a web process crash are backstops. A swipe gesture's history navigation is not hooked.
+- `Page.getFrameTree` answers while a dialog is pending, from per-document facts kept by loader id, because page script cannot run under a dialog.
 - Detour shows no browser dialog for such a tab, because its sheet is window-modal and would cover whatever tab the user
   is on. So it says `hasBrowserHandler: false` and always takes the no-manager branch.
 - A prompt answered with accept and no `promptText` returns "" (Chromium's `prompt_override`).

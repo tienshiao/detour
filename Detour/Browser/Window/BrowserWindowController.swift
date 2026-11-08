@@ -2451,7 +2451,7 @@ class BrowserWindowController: NSWindowController {
         guard let tab = selectedTab else { return }
         if tab.canGoBack {
             ensureOwnsWebView()
-            tab.webView?.goBack()
+            tab.goBack()
         } else if let parent = parentTab(for: tab) {
             guard let space = activeSpace else { return }
             store.closeTab(id: tab.id, in: space)
@@ -2465,7 +2465,7 @@ class BrowserWindowController: NSWindowController {
             return
         }
         ensureOwnsWebView()
-        selectedTab?.webView?.goForward()
+        selectedTab?.goForward()
     }
 
     @objc func toggleSidebarMode(_ sender: Any?) {
