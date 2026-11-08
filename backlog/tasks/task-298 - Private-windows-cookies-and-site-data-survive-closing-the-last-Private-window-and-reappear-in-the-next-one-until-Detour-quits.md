@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T08:40:00Z'
-updated_date: '2026-11-08T19:54:00Z'
+updated_date: '2026-11-08T21:26:00Z'
 labels:
   - private
   - privacy
@@ -70,6 +70,8 @@ Open: criterion 7 (website Private Browsing page and home grid line) is to chang
 Website: updated Private Browsing (lede, description, FAQ, body, table, extensions: cleared when the last Private window or Private Quick Detour closes), the Quarantine comparison, Web Extensions' Allow in Private line and the home grid line on website branch next-release (3db4d97), held for the release
 
 Nov 8 2026 (user): closed with the app change shipped on main (pushed 6edaf24); the website criterion moved to TASK-311, which ships branch next-release with the app release. (removed criterion: the website page update, written on next-release)
+
+Nov 8 2026: the user ran the post-release check list on the released 0.4.1 (signed build) and reported no problems. Check: Private session reset with 1Password allowed in Private: works in the next Private session, normal windows still signed in.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

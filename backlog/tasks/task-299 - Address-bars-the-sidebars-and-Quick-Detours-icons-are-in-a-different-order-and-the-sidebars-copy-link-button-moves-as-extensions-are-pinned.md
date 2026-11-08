@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T08:40:00Z'
-updated_date: '2026-11-08T11:35:00Z'
+updated_date: '2026-11-08T21:26:00Z'
 labels:
   - ui
   - quick-detour
@@ -62,6 +62,8 @@ Implemented (Nov 8 2026, @claude):
 Nov 8 2026 (lead review): /code-review medium found Copy's 6 pt padded hit area overlapping the neighbouring extension button and Site Settings (2 pt gaps), so clicks on their edges copied the link. FauxAddressBar now resolves the trailing button exactly first, then with 4 pt padding, then Copy's 6 pt (trailingHit(at:)). Built and AddressBarIconOrderTests/HelpMenuTests/QuickDetourDockMenuTests pass (47); the edge click itself was not exercised at runtime.
 
 Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
+
+Nov 8 2026: the user ran the post-release check list on the released 0.4.1 (signed build) and reported no problems. Check: edge clicks between extension icons, Copy Link and Site Settings in both address bars.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

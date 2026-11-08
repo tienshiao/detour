@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T10:00:00Z'
-updated_date: '2026-11-08T19:54:00Z'
+updated_date: '2026-11-08T21:26:00Z'
 labels:
   - peek
 dependencies: []
@@ -81,6 +81,8 @@ Website: updated Peek (File › Open Peek in New Tab ⌘O; new sections 'Bring b
 Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
 
 Nov 8 2026 (user): closed with the app change shipped on main (pushed 6edaf24); the website criterion moved to TASK-311, which ships branch next-release with the app release. (removed criterion: the website page update, written on next-release)
+
+Nov 8 2026: the user ran the post-release check list on the released 0.4.1 (signed build) and reported no problems. Check: Peek: Cmd+Z / Shift-Cmd+T bring back a closed Peek, Cmd+O opens it as a tab, Settings > General Peek off.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
