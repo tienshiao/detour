@@ -4,7 +4,7 @@ title: Extensions are off in Private unless allowed
 description: Why extensions do not load in the Private profile until the user allows each one, why that was implemented as a changed default rather than a migration, and what was rejected.
 tags: [extensions, privacy, incognito, decision]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:48:49Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
 sources:
   - id: database
     resource: ../../Detour/Storage/Database.swift
@@ -51,6 +51,9 @@ Private profile unless the user turns on "Allow in Private" for it.**
 - The rule is one function, `AppDatabase.extensionEnabledByDefault(inProfile:)`:
   a missing `profileExtension` row means off for `TabStore.incognitoProfileID`
   and on for every other profile. All enabled-state readers go through it.
+  (Since TASK-312 it answers off for every profile; migration v24 wrote the
+  normal profiles' old implicit ON as rows. See
+  [extensions on per profile](./extensions-on-per-profile.md).)
 - The switch lives in Extension settings, next to the global Enabled switch,
   and writes only the Private profile's row. It takes effect at once.
 - A context loaded into the Private profile gets `hasAccessToPrivateData`,
@@ -94,6 +97,7 @@ window, whatever the storage does.
 
 # Related
 
+- [Extensions on per profile](./extensions-on-per-profile.md) — the later decision that made a missing row off everywhere
 - [Private profile extensions](../extensions/private-profile-extensions.md) — the full rules and the WebKit gate
 - [Incognito](../architecture/incognito.md) — the Private profile
 - [Extension manager](../extensions/extension-manager.md) — per-profile enablement

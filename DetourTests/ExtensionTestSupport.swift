@@ -591,6 +591,27 @@ func installTestExtension(_ ext: WebExtension, in db: AppDatabase,
     ))
 }
 
+/// Write the ON `profileExtension` row each profile that has `ext` on carries:
+/// what an install from that profile, or migration v24 for a profile that
+/// existed before TASK-312, leaves behind. No row is off in every profile, so a
+/// suite that loads through the real rule (`loadExtensionsIntoProfile`, the
+/// toggles, an install's reload) needs it. Rows only — nothing is loaded — and
+/// the manager's enabled-set cache is dropped so the next read sees them.
+@MainActor
+func turnOnTestExtension(_ ext: WebExtension, in profiles: Profile..., db: AppDatabase = .shared) {
+    for profile in profiles {
+        db.setProfileExtensionEnabled(extensionID: ext.id, profileID: profile.id.uuidString, enabled: true)
+    }
+    ExtensionManager.shared.invalidateEnabledExtensionsCache()
+}
+
+/// `array[index]` as a test failure rather than a crash when it is out of range
+/// (a test host crash takes every later test in the run with it).
+func testElement<T>(_ array: [T], _ index: Int, file: StaticString = #filePath, line: UInt = #line) throws -> T {
+    try XCTUnwrap(array.indices.contains(index) ? array[index] : nil,
+                  "index \(index) out of range: \(array.count) element(s)", file: file, line: line)
+}
+
 /// Load `ext`'s context into `profile` and return it. The caller is responsible
 /// for unloading it in tearDown.
 @MainActor

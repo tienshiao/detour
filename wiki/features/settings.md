@@ -5,7 +5,7 @@ description: "The Settings window and its eight panes (General, Spaces, Links, Q
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
 sources:
   - id: task-211
     resource: backlog:TASK-211
@@ -393,17 +393,23 @@ would refuse the entry. Details on [site search](./site-search.md).
 
 A list of installed extensions and a detail view for the selected one:
 version, a "Settings…" button when the extension declares an options page,
-Enabled and "Allow in Private" switches, API permissions and site-access
+Enabled, **Turn On in All Profiles** with a line saying which profiles have
+it on (TASK-312: an install is on only in its own profile and a new profile
+starts with none; the button is off when every normal profile has it on, and
+never touches Private), "Allow in Private", API permissions and site-access
 decisions with their own switches, the install source with "Check for
 Updates" / "Reload" / "Install Now" and the banner for permissions an update
 added, and Uninstall. "Add Extension…" offers loading an unpacked extension
-or opening the Chrome Web Store. The list's rows are 28 pt. The detail
+or opening the Chrome Web Store; an unpacked load is turned on in the
+profile of the browser window behind Settings, and both alerts name it
+([extensions on per profile](../decisions/extensions-on-per-profile.md)). The list's rows are 28 pt. The detail
 column is one vertical stack in a column scroll view of its own (TASK-211;
 before, in the pane's scroll view, so scrolling it moved the list too), as
 tall as its content: the header (icon; the name, wrapping to two lines and then
 truncated; the version; "Settings…" at the trailing edge), the description,
 the source and update rows, the pending-permissions banner (it makes the
-column taller and squeezes nothing), Enabled, Allow in Private and its note,
+column taller and squeezes nothing), Enabled, Turn On in All Profiles and
+its line, Allow in Private and its note,
 "Permissions". **Uninstall Extension** is not in the column: it sits
 under it, 20 pt below the column's scroll view and level with the bottom of
 the list, so it stays in view however far the details scroll (user request

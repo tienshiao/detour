@@ -4,8 +4,11 @@ import GRDB
 @testable import Detour
 
 /// TASK-74: extensions are OFF in the built-in Private profile
-/// (`TabStore.incognitoProfileID`) until the user allows each one, and
-/// unchanged — on — in every other profile. The rule lives in
+/// (`TabStore.incognitoProfileID`) until the user allows each one. Since
+/// TASK-312 a missing row is off in every other profile too (an install writes
+/// the ON row for the profile it came from; `ExtensionProfileScopeTests`), so
+/// these tests give a normal profile an explicit row wherever they need it on,
+/// and check that Private is unchanged by that move. The rule lives in
 /// `AppDatabase.extensionEnabledByDefault(inProfile:)` and every reader goes
 /// through it: `isExtensionEnabled(extensionID:profileID:)`,
 /// `isExtensionEnabledByProfile(extensionID:profileID:)` and
@@ -72,24 +75,24 @@ nonisolated final class ExtensionPrivateDefaultTests: XCTestCase {
 
     // MARK: - The rule
 
-    @MainActor func testMissingRowIsOffInPrivateAndOnElsewhere() throws {
+    @MainActor func testMissingRowIsOffInEveryProfile() throws {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord())
 
         XCTAssertFalse(AppDatabase.extensionEnabledByDefault(inProfile: privateID),
                        "the built-in Private profile defaults to off")
-        XCTAssertTrue(AppDatabase.extensionEnabledByDefault(inProfile: normalID),
-                      "every other profile defaults to on")
-        XCTAssertTrue(AppDatabase.extensionEnabledByDefault(inProfile: normalID.uppercased()),
-                      "the id is matched as a UUID, not as a string, so case cannot flip the rule")
-        XCTAssertTrue(AppDatabase.extensionEnabledByDefault(inProfile: "not-a-uuid"),
-                      "only the one Private id is default-off; anything else stays on")
+        XCTAssertFalse(AppDatabase.extensionEnabledByDefault(inProfile: normalID),
+                       "every other profile defaults to off too (TASK-312)")
+        XCTAssertFalse(AppDatabase.extensionEnabledByDefault(inProfile: normalID.uppercased()))
+        XCTAssertFalse(AppDatabase.extensionEnabledByDefault(inProfile: "not-a-uuid"))
 
         assertState(db, "ext-1", privateID, enabled: false, byProfile: false,
                     "no row means off in Private")
-        assertState(db, "ext-1", normalID, enabled: true, byProfile: true,
-                    "no row means on in a normal profile")
+        assertState(db, "ext-1", normalID, enabled: false, byProfile: false,
+                    "no row means off in a normal profile")
         XCTAssertTrue(try rows(db, profileID: privateID).isEmpty,
+                      "reading the state must not write a row")
+        XCTAssertTrue(try rows(db, profileID: normalID).isEmpty,
                       "reading the state must not write a row")
     }
 
@@ -116,19 +119,22 @@ nonisolated final class ExtensionPrivateDefaultTests: XCTestCase {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord())
         db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: privateID, enabled: true)
+        db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: normalID, enabled: true)
 
         db.setEnabled(id: "ext-1", enabled: false)
         assertState(db, "ext-1", privateID, enabled: false, byProfile: true,
                     "globally off beats a Private allow, which is kept")
         assertState(db, "ext-1", normalID, enabled: false, byProfile: true,
-                    "globally off beats the default-on profile too")
+                    "globally off beats a normal profile's ON row too")
     }
 
     @MainActor func testAnUninstalledIdIsInNeitherAnswerForEitherProfile() throws {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord())
         db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: privateID, enabled: true)
+        db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: normalID, enabled: true)
         XCTAssertEqual(db.enabledExtensionIDs(for: privateID), ["ext-1"], "precondition: allowed")
+        XCTAssertEqual(db.enabledExtensionIDs(for: normalID), ["ext-1"], "precondition: on")
 
         db.deleteExtension(id: "ext-1")
 
@@ -136,8 +142,8 @@ nonisolated final class ExtensionPrivateDefaultTests: XCTestCase {
         // profile's default falls.
         assertState(db, "ext-1", privateID, enabled: false, byProfile: false,
                     "an uninstalled id is never enabled, and its allow is gone with it")
-        assertState(db, "ext-1", normalID, enabled: false, byProfile: true,
-                    "an uninstalled id is never enabled in a default-on profile either")
+        assertState(db, "ext-1", normalID, enabled: false, byProfile: false,
+                    "an uninstalled id is never enabled in a normal profile either, and its row is gone too")
         XCTAssertTrue(db.enabledExtensionIDs(for: privateID).isEmpty)
         XCTAssertTrue(db.enabledExtensionIDs(for: normalID).isEmpty)
     }
@@ -149,18 +155,19 @@ nonisolated final class ExtensionPrivateDefaultTests: XCTestCase {
         db.saveExtension(extensionRecord(id: "refused"))
         db.setProfileExtensionEnabled(extensionID: "allowed", profileID: privateID, enabled: true)
         db.setProfileExtensionEnabled(extensionID: "refused", profileID: privateID, enabled: false)
+        db.setProfileExtensionEnabled(extensionID: "allowed", profileID: normalID, enabled: true)
         db.setProfileExtensionEnabled(extensionID: "refused", profileID: normalID, enabled: false)
 
         XCTAssertEqual(db.enabledExtensionIDs(for: privateID), ["allowed"],
                        "Private is the intersection with its explicit allows")
-        XCTAssertEqual(db.enabledExtensionIDs(for: normalID), ["allowed", "untouched"],
-                       "a normal profile subtracts only what it turned off")
+        XCTAssertEqual(db.enabledExtensionIDs(for: normalID), ["allowed"],
+                       "a normal profile too, since TASK-312: no row is off")
         for id in ["allowed", "untouched", "refused"] {
             assertState(db, id, privateID,
                         enabled: id == "allowed", byProfile: id == "allowed",
                         "\(id) in Private")
             assertState(db, id, normalID,
-                        enabled: id != "refused", byProfile: id != "refused",
+                        enabled: id == "allowed", byProfile: id == "allowed",
                         "\(id) in a normal profile")
         }
     }
@@ -170,12 +177,14 @@ nonisolated final class ExtensionPrivateDefaultTests: XCTestCase {
     @MainActor func testInstallAndUpdateNeverWriteAPrivateRow() throws {
         let db = try makeDatabase()
 
-        // Install: the only row an install writes is the `extension` row.
+        // Install: the installer writes the `extension` row; the one
+        // per-profile row an install adds is its normal target profile's, which
+        // `ExtensionManager.install` writes (TASK-312, `ExtensionProfileScopeTests`).
         db.saveExtension(extensionRecord(version: "1.0"))
         assertState(db, "ext-1", privateID, enabled: false, byProfile: false,
                     "a fresh install is off in Private")
-        assertState(db, "ext-1", normalID, enabled: true, byProfile: true,
-                    "a fresh install is on in a normal profile")
+        assertState(db, "ext-1", normalID, enabled: false, byProfile: false,
+                    "the extension row alone turns it on nowhere")
 
         // Update: the same row saved again at a new version.
         db.saveExtension(extensionRecord(version: "2.0"))
@@ -201,6 +210,7 @@ nonisolated final class ExtensionPrivateDefaultTests: XCTestCase {
         db.saveExtension(extensionRecord(id: "never-allowed"))
         db.saveExtension(extensionRecord(id: "allowed"))
         db.setProfileExtensionEnabled(extensionID: "allowed", profileID: privateID, enabled: true)
+        db.setProfileExtensionEnabled(extensionID: "never-allowed", profileID: normalID, enabled: true)
 
         db.setEnabled(id: "never-allowed", enabled: false)
         db.setEnabled(id: "allowed", enabled: false)
@@ -215,6 +225,8 @@ nonisolated final class ExtensionPrivateDefaultTests: XCTestCase {
                     "a global re-enable restores a normal profile")
         XCTAssertEqual(try rows(db, profileID: privateID).map(\.extensionID), ["allowed"],
                        "the global toggle writes no per-profile rows")
+        XCTAssertEqual(try rows(db, profileID: normalID).map(\.extensionID), ["never-allowed"],
+                       "nor in a normal profile")
     }
 
     // MARK: - Pinning
@@ -233,12 +245,24 @@ nonisolated final class ExtensionPrivateDefaultTests: XCTestCase {
     @MainActor func testPinningInANormalProfileKeepsItEnabled() throws {
         let db = try makeDatabase()
         db.saveExtension(extensionRecord())
+        db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: normalID, enabled: true)
 
         db.toggleExtensionPinned(extensionID: "ext-1", profileID: normalID)
 
         XCTAssertEqual(db.pinnedExtensionIDs(for: normalID), ["ext-1"])
         assertState(db, "ext-1", normalID, enabled: true, byProfile: true,
                     "pinning must not disable it in a normal profile")
+    }
+
+    @MainActor func testPinningInANormalProfileWithoutARowDoesNotTurnItOn() throws {
+        let db = try makeDatabase()
+        db.saveExtension(extensionRecord())
+
+        db.toggleExtensionPinned(extensionID: "ext-1", profileID: normalID)
+
+        XCTAssertEqual(db.pinnedExtensionIDs(for: normalID), ["ext-1"], "the pin is recorded")
+        assertState(db, "ext-1", normalID, enabled: false, byProfile: false,
+                    "the fresh row carries the default, off (TASK-312)")
     }
 
     @MainActor func testPinningAnAllowedPrivateExtensionKeepsItAllowed() throws {

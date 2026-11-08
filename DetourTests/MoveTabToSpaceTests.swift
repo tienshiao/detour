@@ -605,6 +605,11 @@ nonisolated final class MoveTabToSpaceTests: XCTestCase {
         let f = makeSharedFixture("ExtCrossProfile")
         _ = f.profile.extensionController
         _ = f.other.extensionController
+        // On in both profiles through the Settings switch's path (TASK-312: a
+        // profile without its row has the extension off, and the move would
+        // treat the page as a disabled extension's).
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: f.profile.id, enabled: true)
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: f.other.id, enabled: true)
         let source = try loadTestContext(ext, in: f.profile)
         let destination = try loadTestContext(ext, in: f.other)
         XCTAssertNotEqual(source.baseURL.host?.lowercased(), destination.baseURL.host?.lowercased(),

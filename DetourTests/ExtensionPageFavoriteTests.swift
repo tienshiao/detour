@@ -80,6 +80,9 @@ nonisolated final class ExtensionPageFavoriteTests: XCTestCase {
         let space = store.addSpace(name: "Favorite \(name)", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
         createdSpaceIDs.append(space.id)
         _ = profile.extensionController
+        // Turned on in this profile through the Settings switch's path, which
+        // loads the context (TASK-312: a new profile starts with none).
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: true)
         let context = try loadTestContext(ext, in: profile)
         store.undoManager.removeAllActions()
         return Fixture(ext: ext, store: store, profile: profile, space: space, context: context)

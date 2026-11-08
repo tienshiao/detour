@@ -4,7 +4,7 @@ title: Extensions in the Private profile
 description: The rules for extensions in Private windows — off unless allowed per extension, pages in the profile's own non-persistent store, and the WebKit private-data gate that silently stops events without hasAccessToPrivateData.
 tags: [extensions, privacy, incognito, webkit, data-store]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T09:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -63,7 +63,7 @@ The third point cost a week of misdiagnosis and is the one to remember.
 
 | Rule | Where |
 |---|---|
-| A missing `profileExtension` row means **off** for `TabStore.incognitoProfileID` and on for every other profile | `AppDatabase.extensionEnabledByDefault(inProfile:)` |
+| A missing `profileExtension` row means **off** for `TabStore.incognitoProfileID` — and, since TASK-312, for every other profile too ([extensions on per profile](../decisions/extensions-on-per-profile.md)); an install never targets Private, and Turn On in All Profiles leaves it out | `AppDatabase.extensionEnabledByDefault(inProfile:)`, `ExtensionInstallTarget` |
 | All enabled-state readers share that default | `isExtensionEnabled`, `isExtensionEnabledByProfile`, `enabledExtensionIDs(for:)` |
 | Pinning an extension in Private inserts a row carrying the default, so a pin does not allow it | `toggleExtensionPinned` |
 | "Allow in Private" writes only the Private profile's row and loads or unloads the context at once; a disable closes its extension pages | `ExtensionsSettingsViewController.allowInPrivateToggled`, `ExtensionManager.setEnabled(id:profileID:enabled:)` |

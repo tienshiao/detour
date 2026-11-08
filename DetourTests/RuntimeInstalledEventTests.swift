@@ -202,7 +202,9 @@ nonisolated final class RuntimeInstalledEventTests: XCTestCase {
 
         let db = AppDatabase.shared
         let profileID = "task29-reinstall-\(UUID().uuidString)"
-        let first = try ExtensionManager.shared.install(from: source)
+        // No target profile: the ledger is read for a made-up profile id, so
+        // nothing needs to load (TASK-312).
+        let first = try ExtensionManager.shared.install(from: source, turningOnIn: nil)
         defer { ExtensionManager.shared.uninstall(id: first.id) }
         // install finishes loading on a later main-actor turn; let it, so the two
         // installs' loads never interleave with each other or with the uninstall.
@@ -212,7 +214,7 @@ nonisolated final class RuntimeInstalledEventTests: XCTestCase {
         XCTAssertNil(db.pendingRuntimeInstalledEvent(extensionID: first.id, profileID: profileID, isPrivateProfile: false, currentVersion: "4.2.0"),
                      "a reload after the install owes nothing")
 
-        let second = try ExtensionManager.shared.install(from: source)
+        let second = try ExtensionManager.shared.install(from: source, turningOnIn: nil)
         XCTAssertEqual(second.id, first.id)
         try await waitUntil("the reinstall to load") { second.wkExtension != nil }
         XCTAssertEqual(db.claimRuntimeInstalledEvent(extensionID: first.id, profileID: profileID, isPrivateProfile: false, currentVersion: "4.2.0"),

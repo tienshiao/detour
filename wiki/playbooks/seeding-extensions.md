@@ -4,7 +4,7 @@ title: Seeding extensions
 description: How to put an extension into an isolated Detour profile by hand for a runtime check — the files, the database rows (including the permission rows a real install writes), a fake native host, and readable worker console output.
 tags: [playbook, extensions, runtime, verify, seeding]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
 sources:
   - id: database
     resource: ../../Detour/Storage/Database.swift
@@ -121,10 +121,12 @@ declared permission and host pattern as granted
 the load path only restores saved decisions. With no rows, nothing is
 granted.[^notes-seeding]
 
-To run the extension in the Private profile as well, add a
-`profileExtension` row for the built-in Private profile id
-(`TabStore.incognitoProfileID`) with `isEnabled` 1; a missing row means
-off there and on everywhere else
+**So is a `profileExtension` row per profile.** Since TASK-312 a missing
+row means off in every profile, so a seeded extension loads nowhere until
+each profile it should run in has a row with `isEnabled` 1 (`isPinned` 0)
+([extensions on per profile](../decisions/extensions-on-per-profile.md)).
+The same row for the built-in Private profile id
+(`TabStore.incognitoProfileID`) runs it in Private as well
 ([private profile extensions](../extensions/private-profile-extensions.md)).
 
 ## 4. Launch with readable console output

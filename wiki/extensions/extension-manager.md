@@ -5,7 +5,7 @@ description: The singleton that installs, loads, enables and uninstalls extensio
 resource: ../../Detour/Extensions/Runtime/ExtensionManager.swift
 tags: [extensions, lifecycle, profiles, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
 sources:
   - id: extension-manager
     resource: ../../Detour/Extensions/Runtime/ExtensionManager.swift
@@ -40,6 +40,12 @@ sources:
   - id: startup-tests
     resource: ../../DetourTests/ExtensionStartupEnabledReadsTests.swift
     title: ExtensionStartupEnabledReadsTests
+  - id: scope-tests
+    resource: ../../DetourTests/ExtensionProfileScopeTests.swift
+    title: ExtensionProfileScopeTests
+  - id: task-312
+    resource: backlog:TASK-312
+    title: "Extensions: on only in the profile they were installed from; a new profile starts with none"
 ---
 
 `ExtensionManager.shared` holds the list of installed extensions and decides,
@@ -119,8 +125,11 @@ The Bool it returns means "has background content", not "loaded"; check
 One rule, read by every path that loads a context and every per-profile list:
 
 > enabled in a profile = the global flag is on **and** the profile's answer is
-> on. With no `profileExtension` row the profile's answer is its default: on,
-> except in the Private profile ([private extensions opt-in](../decisions/private-extensions-opt-in.md)).
+> on. With no `profileExtension` row the profile's answer is its default:
+> off, in every profile since TASK-312
+> ([extensions on per profile](../decisions/extensions-on-per-profile.md));
+> before it, off only in the Private profile
+> ([private extensions opt-in](../decisions/private-extensions-opt-in.md)).
 
 - The two flags are stored independently and each toggle writes only its own.
   A global disable keeps the per-profile rows, so re-enabling restores them; a
@@ -137,11 +146,16 @@ One rule, read by every path that loads a context and every per-profile list:
 
 ## Install, update, uninstall
 
-`install(from:publicKey:options:)` is the single path for a first install, a
-reinstall, an update and an unpacked reload:
+`install(from:publicKey:options:turningOnIn:)` is the single path for a first
+install, a reinstall, an update and an unpacked reload:
 
 1. `ExtensionInstaller.install` copies the files and writes the row
-   ([Installer and CRX](./installer-and-crx.md)).
+   ([Installer and CRX](./installer-and-crx.md)). Then, when the caller names
+   a target profile (the one the user installed from, chosen by
+   `ExtensionInstallTarget`), that profile's ON `profileExtension` row is
+   written, so the reconcile below loads the context there and nowhere else.
+   An update and a reload pass nil and write no row; a Private target is
+   ignored.[^task-312]
 2. If the id was already installed: unload it in every profile, remember each
    old origin and register it as pending, and mark the `onInstalled` ledger as
    reinstalled.
@@ -163,7 +177,13 @@ discards any staged update.
 `TabStore` tells observers when it creates a profile, including the Private
 and Default profiles created on demand. `ExtensionTabObserver` forwards that to
 `profileWasAdded`, which runs `loadExtensionsIntoProfile` once the launch load
-has reached its per-profile loop.[^task-27]
+has reached its per-profile loop.[^task-27] Since TASK-312 a profile created in
+Settings has no rows, so this loads nothing: a new profile starts with no
+extensions until the user turns one on there (Settings › Profiles, or Turn On
+in All Profiles, `turnOnInAllProfiles(id:)`, which writes every normal
+profile's ON row and reconciles each in one pass). The Private profile's
+"Allow in Private" rows outlive the profile object, so for it the load still
+matters.[^task-312]
 
 ## Background-load recovery
 
@@ -222,7 +242,8 @@ tabs.
 # Tests
 
 - [ExtensionEnabledStateTests](../../DetourTests/ExtensionEnabledStateTests.swift) — toggle combinations against real profiles, per-profile page closing.
-- [NewProfileExtensionLoadTests](../../DetourTests/NewProfileExtensionLoadTests.swift) — a new profile gets its extensions and one `install` event.
+- [NewProfileExtensionLoadTests](../../DetourTests/NewProfileExtensionLoadTests.swift) — a new profile starts with none; one turned on there loads at once and gets one `install` event.
+- [ExtensionProfileScopeTests](../../DetourTests/ExtensionProfileScopeTests.swift) — migration v24, the install target rule, install / reinstall / reload rows, Turn On in All Profiles.
 - [ExtensionStartupEnabledReadsTests](../../DetourTests/ExtensionStartupEnabledReadsTests.swift) — one enabled-state read per profile at startup.
 - `ExtensionPageRehostTests` — recovery, disable and uninstall against real contexts.
 
@@ -238,4 +259,5 @@ tabs.
 [^task-27]: Load extensions into a newly created profile
 [^task-46]: Startup reads enabled state once per profile
 [^task-14]: Reload or close open extension pages when their context is reloaded
+[^task-312]: TASK-312
 [^task-2]: 1Password: service worker restart after idle termination

@@ -612,7 +612,8 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
         try writeManifest(version: "1.0.0", permissions: ["nativeMessaging", "storage"])
 
         let db = AppDatabase.shared
-        let first = try ExtensionManager.shared.install(from: source)
+        // No target profile: only the saved decisions are read (TASK-312).
+        let first = try ExtensionManager.shared.install(from: source, turningOnIn: nil)
         registeredExtensionIDs.append(first.id)
         defer { ExtensionManager.shared.uninstall(id: first.id) }
         // install finishes loading on a later main-actor turn; let it, so the
@@ -631,7 +632,7 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
             extensionID: first.id, key: hostPattern, type: .matchPattern, granted: false)
 
         // Reinstalling the same version re-declares everything; the decisions stand.
-        let second = try ExtensionManager.shared.install(from: source)
+        let second = try ExtensionManager.shared.install(from: source, turningOnIn: nil)
         XCTAssertEqual(second.id, first.id)
         try await waitUntil("the reinstall to load") { second.wkExtension != nil }
 
@@ -650,7 +651,7 @@ nonisolated final class NativeMessagingEnforcementTests: XCTestCase {
         // An update that declares a new permission: the new key is granted, the
         // re-declared denials still stand.
         try writeManifest(version: "1.1.0", permissions: ["nativeMessaging", "storage", "alarms"])
-        let third = try ExtensionManager.shared.install(from: source)
+        let third = try ExtensionManager.shared.install(from: source, turningOnIn: nil)
         XCTAssertEqual(third.id, first.id)
         try await waitUntil("the update to load") { third.wkExtension != nil }
 

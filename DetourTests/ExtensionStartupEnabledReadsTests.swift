@@ -105,6 +105,7 @@ nonisolated final class ExtensionStartupEnabledReadsTests: XCTestCase {
         let b = try await installExtension(named: "one-b")
         let c = try await installExtension(named: "one-c")
         let profile = makeProfile("Startup Reads One")
+        for ext in [a, b, c] { turnOnTestExtension(ext, in: profile) }
 
         AppDatabase.resetReadCounts()
         ExtensionManager.shared.loadExtensionsIntoProfile(profile)
@@ -115,7 +116,7 @@ nonisolated final class ExtensionStartupEnabledReadsTests: XCTestCase {
                        "no per-extension isExtensionEnabled read may happen while loading a profile")
         for ext in [a, b, c] {
             XCTAssertTrue(isLoaded(ext, in: profile),
-                          "an extension with no per-profile row must still load at launch")
+                          "an extension with the profile's ON row loads at launch")
         }
     }
 
@@ -142,7 +143,10 @@ nonisolated final class ExtensionStartupEnabledReadsTests: XCTestCase {
         let enabled = try await installExtension(named: "mixed-enabled")
         let offForProfile = try await installExtension(named: "mixed-profile-off")
         let offGlobally = try await installExtension(named: "mixed-global-off")
+        let noRow = try await installExtension(named: "mixed-no-row")
         let profile = makeProfile("Startup Reads Mixed")
+        turnOnTestExtension(enabled, in: profile)
+        turnOnTestExtension(offGlobally, in: profile)
 
         // The two ways an extension is not enabled in a profile, written the way
         // the real toggles write them (only the flag each one owns).
@@ -164,9 +168,11 @@ nonisolated final class ExtensionStartupEnabledReadsTests: XCTestCase {
                        "an extension the profile turned off must not load")
         XCTAssertFalse(isLoaded(offGlobally, in: profile),
                        "a globally disabled extension must not load")
+        XCTAssertFalse(isLoaded(noRow, in: profile),
+                       "an extension never turned on in the profile must not load (TASK-312)")
 
         // The one rule, read per extension, must agree with the set that decided.
-        for ext in [enabled, offForProfile, offGlobally] {
+        for ext in [enabled, offForProfile, offGlobally, noRow] {
             XCTAssertEqual(ExtensionManager.shared.isEnabled(extensionID: ext.id, inProfile: profile.id),
                            isLoaded(ext, in: profile),
                            "isEnabled must agree with what the precomputed set loaded (\(ext.id))")
@@ -178,8 +184,9 @@ nonisolated final class ExtensionStartupEnabledReadsTests: XCTestCase {
     @MainActor func testAContextDisabledForTheProfileIsUnloadedOnReload() async throws {
         let ext = try await installExtension(named: "unload")
         let profile = makeProfile("Startup Reads Unload")
+        turnOnTestExtension(ext, in: profile)
         ExtensionManager.shared.loadExtensionsIntoProfile(profile)
-        XCTAssertTrue(isLoaded(ext, in: profile), "precondition: it loads with no per-profile row")
+        XCTAssertTrue(isLoaded(ext, in: profile), "precondition: it loads with its ON row")
 
         AppDatabase.shared.setProfileExtensionEnabled(extensionID: ext.id,
                                                       profileID: profile.id.uuidString,
@@ -214,8 +221,8 @@ nonisolated final class ExtensionStartupEnabledReadsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(enabledSetReads, 1,
                                     "the added profile's enabled set is read")
         for ext in [a, b, c] {
-            XCTAssertTrue(isLoaded(ext, in: profile),
-                          "a profile added mid-session gets its enabled extensions loaded")
+            XCTAssertFalse(isLoaded(ext, in: profile),
+                           "a profile added mid-session starts with no extensions (TASK-312)")
         }
     }
 }

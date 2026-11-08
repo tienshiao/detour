@@ -84,6 +84,8 @@ nonisolated final class ExtensionPageUndoTests: XCTestCase {
         installTestExtension(ext, in: db)
         let store = TabStore(appDB: db)
         let profile = store.addProfile(name: "Undo")
+        // On in this profile, as the install from it left it (TASK-312: no row is off).
+        turnOnTestExtension(ext, in: profile, db: db)
         let space = store.addSpace(name: "Undo", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
         let base = try loadContext(ext, in: profile).baseURL
         return Fixture(db: db, ext: ext, store: store, profile: profile, space: space, base: base)
@@ -111,7 +113,7 @@ nonisolated final class ExtensionPageUndoTests: XCTestCase {
         f.store.undoManager.undo()
 
         XCTAssertEqual(f.space.tabs.count, 2)
-        let restored = f.space.tabs[1]
+        let restored = try testElement(f.space.tabs, 1)
         XCTAssertNotEqual(restored.id, page.id)
         XCTAssertEqual(restored.url, url)
         XCTAssertEqual(restored.title, "Options")
@@ -280,7 +282,7 @@ nonisolated final class ExtensionPageUndoTests: XCTestCase {
         f.store.undoManager.undo()
 
         XCTAssertEqual(f.space.tabs.count, 3)
-        let restored = f.space.tabs[2]
+        let restored = try testElement(f.space.tabs, 2)
         XCTAssertEqual(restored.url, URL(string: "https://example.com/2"))
         XCTAssertFalse(restored.isSleeping, "an ordinary tab still comes back live")
         XCTAssertNotNil(restored.webView)
@@ -315,11 +317,11 @@ nonisolated final class ExtensionPageUndoTests: XCTestCase {
         f.store.undoManager.undo()
 
         XCTAssertEqual(f.space.tabs.map(\.url), [webURL, rewriteExtensionPageURL(extURL, from: f.base, to: newBase)])
-        XCTAssertNotNil(f.space.tabs[0].splitGroupID)
-        XCTAssertEqual(f.space.tabs[0].splitGroupID, f.space.tabs[1].splitGroupID, "the split is rejoined")
-        XCTAssertEqual(f.space.tabs[1].splitFraction, 0.3)
-        XCTAssertFalse(f.space.tabs[0].isSleeping)
-        XCTAssertTrue(f.space.tabs[1].isSleeping)
+        XCTAssertNotNil(try testElement(f.space.tabs, 0).splitGroupID)
+        XCTAssertEqual(try testElement(f.space.tabs, 0).splitGroupID, try testElement(f.space.tabs, 1).splitGroupID, "the split is rejoined")
+        XCTAssertEqual(try testElement(f.space.tabs, 1).splitFraction, 0.3)
+        XCTAssertFalse(try testElement(f.space.tabs, 0).isSleeping)
+        XCTAssertTrue(try testElement(f.space.tabs, 1).isSleeping)
         XCTAssertTrue(f.store.closedTabRecords(in: f.space).isEmpty)
 
         f.store.undoManager.redo()
@@ -350,8 +352,8 @@ nonisolated final class ExtensionPageUndoTests: XCTestCase {
         f.store.undoManager.undo()
 
         XCTAssertEqual(f.space.tabs.map(\.url), [before.url, webURL], "only the ordinary member comes back")
-        XCTAssertNil(f.space.tabs[1].splitGroupID, "alone, without a split group")
-        XCTAssertNil(f.space.tabs[1].splitFraction)
+        XCTAssertNil(try testElement(f.space.tabs, 1).splitGroupID, "alone, without a split group")
+        XCTAssertNil(try testElement(f.space.tabs, 1).splitFraction)
         XCTAssertEqual(f.store.closedTabRecords(in: f.space).map(\.url), [extURL.absoluteString],
                        "the web member's record is consumed, the extension member's is left alone")
 
@@ -455,6 +457,8 @@ nonisolated final class ExtensionPageUndoTests: XCTestCase {
         let store = TabStore.shared
         let profile = store.addProfile(name: "Delete-shared")
         sharedProfiles.append(profile)
+        // On in this profile through the Settings switch's path (TASK-312).
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: true)
         let space = store.addSpace(name: "Delete-shared", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
         sharedSpaceIDs.append(space.id)
         _ = profile.extensionController
@@ -549,7 +553,7 @@ nonisolated final class ExtensionPageUndoTests: XCTestCase {
         f.store.undoManager.undo()
 
         XCTAssertEqual(f.space.pinnedEntries.map(\.id), entries.map(\.id))
-        let restored = f.space.pinnedEntries[1]
+        let restored = try testElement(f.space.pinnedEntries, 1)
         XCTAssertEqual(restored.pinnedURL, urls[1])
         XCTAssertNil(restored.tab)
         XCTAssertNotNil(restored.splitGroupID, "the split is rejoined")
@@ -569,6 +573,7 @@ nonisolated final class ExtensionPageUndoTests: XCTestCase {
         defer { teardownTabs(f) }
         let other = try await makeExtension()
         installTestExtension(other, in: f.db)
+        turnOnTestExtension(other, in: f.profile, db: f.db)
         let otherBase = try loadContext(other, in: f.profile).baseURL
 
         let space2 = f.store.addSpace(name: "Two", emoji: "2️⃣", colorHex: "FF0000", profileID: f.profile.id)
@@ -613,6 +618,7 @@ nonisolated final class ExtensionPageUndoTests: XCTestCase {
         defer { teardownTabs(f) }
         let other = try await makeExtension()
         installTestExtension(other, in: f.db)
+        turnOnTestExtension(other, in: f.profile, db: f.db)
         let otherBase = try loadContext(other, in: f.profile).baseURL
 
         let space2 = f.store.addSpace(name: "Two", emoji: "2️⃣", colorHex: "FF0000", profileID: f.profile.id)
@@ -668,6 +674,8 @@ nonisolated final class ExtensionPageUndoTests: XCTestCase {
         let store = TabStore.shared
         let profile = store.addProfile(name: "Undo-shared")
         sharedProfiles.append(profile)
+        // On in this profile through the Settings switch's path (TASK-312).
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: true)
         let space = store.addSpace(name: "Undo-shared", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
         sharedSpaceIDs.append(space.id)
         _ = profile.extensionController

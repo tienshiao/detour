@@ -628,6 +628,13 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// ledger row, so that is `install` (TASK-22) — and resolves pending pages
     /// (TASK-24). Once loaded, the per-profile Settings toggles reconcile it like
     /// any other profile.
+    ///
+    /// Since TASK-312 a profile created in Settings has no `profileExtension`
+    /// rows, so this loads nothing into it: a new profile starts with no
+    /// extensions, and the user turns each on there (Settings › Profiles, or
+    /// Turn On in All Profiles). It still matters for the Private profile, whose
+    /// "Allow in Private" rows outlive the profile object, and it keeps the rule
+    /// in one place should rows ever exist before the profile is added.
     func profileWasAdded(_ profile: Profile) {
         guard loadsExtensionsIntoAddedProfiles, hasLoadedInstalledExtensions else { return }
         MainActor.assumeIsolated {
@@ -1559,10 +1566,30 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     // MARK: - Install
 
+    /// Install (or replace) the extension in `sourceURL` and load it into every
+    /// profile where it is on.
+    ///
+    /// `targetProfileID` is the profile the user installed it from
+    /// (`ExtensionInstallTarget`): it gets an explicit ON row before anything
+    /// loads, so a new install is on — and loads — there and nowhere else
+    /// (TASK-312; a missing row is off in every profile). Every other row is
+    /// left alone, so a reinstall keeps each profile's choice and only turns
+    /// it on in the profile it was reinstalled from. An update or a reload
+    /// passes nil: it never changes where the extension is on. The built-in
+    /// Private profile is never a target — it stays off until the user allows
+    /// the extension there — so a Private id is ignored.
     @discardableResult
     func install(from sourceURL: URL, publicKey: Data? = nil,
-                 options: ExtensionInstaller.Options = ExtensionInstaller.Options()) throws -> WebExtension {
+                 options: ExtensionInstaller.Options = ExtensionInstaller.Options(),
+                 turningOnIn targetProfileID: UUID?) throws -> WebExtension {
         let ext = try ExtensionInstaller.install(from: sourceURL, publicKey: publicKey, options: options)
+
+        // After the `extension` row exists (the foreign key) and before any
+        // context is reconciled below, so the load reads it.
+        if let targetProfileID, targetProfileID != TabStore.incognitoProfileID {
+            AppDatabase.shared.setProfileExtensionEnabled(extensionID: ext.id, profileID: targetProfileID.uuidString,
+                                                          enabled: true)
+        }
 
         // Clean up existing extension with same ID. An update replaces the
         // context, so the origins its pages are open on are noted here and those
@@ -1809,8 +1836,9 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// list (menus, pinned toolbar icons) goes through: the global flag is on AND
     /// the profile's own answer is on. With no per-profile row that answer is the
     /// profile's default (`AppDatabase.extensionEnabledByDefault(inProfile:)`):
-    /// on everywhere except the built-in Private profile, where an extension is
-    /// off until the user allows it there (TASK-74).
+    /// off in every profile (TASK-312), so an extension is on only in the
+    /// profile it was installed from and those the user turned it on in — in
+    /// the built-in Private profile only after "Allow in Private" (TASK-74).
     ///
     /// The two flags are stored independently and each toggle writes only its
     /// own: a global disable leaves the per-profile rows alone, so re-enabling
@@ -1915,12 +1943,37 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// once the global flag is on again.
     @MainActor
     func setEnabled(id: String, profileID: UUID, enabled: Bool) {
-        log.info("Extension \(id, privacy: .public) \(enabled ? "enabled" : "disabled") for profile \(profileID.uuidString, privacy: .public)")
-        AppDatabase.shared.setProfileExtensionEnabled(extensionID: id, profileID: profileID.uuidString, enabled: enabled)
+        setEnabled(id: id, profileIDs: [profileID], enabled: enabled)
+    }
 
-        if let profile = TabStore.shared.profile(withID: profileID),
-           let ext = self.extension(withID: id) {
-            applyEnabledState(of: ext, to: [profile])
+    /// Settings › Extensions › Turn On in All Profiles (TASK-312): the
+    /// per-profile switch turned on in every normal profile, never in Private
+    /// (that stays "Allow in Private"). One write and one reconcile per profile,
+    /// one notification.
+    @MainActor
+    func turnOnInAllProfiles(id: String) {
+        setEnabled(id: id, profileIDs: ExtensionInstallTarget.normalProfileIDs(), enabled: true)
+    }
+
+    /// The normal profiles the extension is on in by their own choice (the
+    /// per-profile switches, ignoring the global flag), in `TabStore` order.
+    @MainActor
+    func normalProfilesTurnedOn(extensionID: String) -> [Profile] {
+        TabStore.shared.profiles.filter {
+            !$0.isIncognito
+                && AppDatabase.shared.isExtensionEnabledByProfile(extensionID: extensionID, profileID: $0.id.uuidString)
+        }
+    }
+
+    @MainActor
+    private func setEnabled(id: String, profileIDs: [UUID], enabled: Bool) {
+        for profileID in profileIDs {
+            log.info("Extension \(id, privacy: .public) \(enabled ? "enabled" : "disabled") for profile \(profileID.uuidString, privacy: .public)")
+            AppDatabase.shared.setProfileExtensionEnabled(extensionID: id, profileID: profileID.uuidString, enabled: enabled)
+        }
+
+        if let ext = self.extension(withID: id) {
+            applyEnabledState(of: ext, to: profileIDs.compactMap { TabStore.shared.profile(withID: $0) })
         }
 
         invalidateEnabledExtensionsCache()

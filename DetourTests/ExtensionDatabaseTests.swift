@@ -163,12 +163,14 @@ nonisolated final class ExtensionDatabaseTests: XCTestCase {
 
     // MARK: - Per-Profile Extension State
 
-    @MainActor func testProfileExtensionEnabledByDefault() throws {
+    @MainActor func testProfileExtensionOffByDefaultAndOnWithARow() throws {
         let db = try makeDatabase()
         db.saveProfile(ProfileRecord(id: "profile-1", name: "Default", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true))
         db.saveExtension(sampleRecord())
 
-        // No per-profile row means enabled
+        // No per-profile row means off (TASK-312); an explicit row turns it on.
+        XCTAssertFalse(db.isExtensionEnabled(extensionID: "ext-1", profileID: "profile-1"))
+        db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: "profile-1", enabled: true)
         XCTAssertTrue(db.isExtensionEnabled(extensionID: "ext-1", profileID: "profile-1"))
     }
 
@@ -185,10 +187,11 @@ nonisolated final class ExtensionDatabaseTests: XCTestCase {
         let db = try makeDatabase()
         db.saveProfile(ProfileRecord(id: "profile-1", name: "Default", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true))
         db.saveExtension(sampleRecord())
+        db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: "profile-1", enabled: true)
         // Globally disable
         db.setEnabled(id: "ext-1", enabled: false)
 
-        // Even without per-profile row, should be disabled
+        // Even with the profile's ON row, should be disabled
         XCTAssertFalse(db.isExtensionEnabled(extensionID: "ext-1", profileID: "profile-1"))
     }
 
@@ -197,11 +200,14 @@ nonisolated final class ExtensionDatabaseTests: XCTestCase {
         db.saveProfile(ProfileRecord(id: "profile-1", name: "Default", userAgentMode: 0, customUserAgent: nil, archiveThreshold: 43200, sleepThreshold: 3600, searchEngine: 0, searchSuggestionsEnabled: true, isPerTabIsolation: false, isAdBlockingEnabled: true, isEasyListEnabled: true, isEasyPrivacyEnabled: true, isEasyListCookieEnabled: true, isMalwareFilterEnabled: true))
         db.saveExtension(sampleRecord(id: "ext-1"))
         db.saveExtension(sampleRecord(id: "ext-2"))
+        db.saveExtension(sampleRecord(id: "ext-3"))
+        db.setProfileExtensionEnabled(extensionID: "ext-1", profileID: "profile-1", enabled: true)
         db.setProfileExtensionEnabled(extensionID: "ext-2", profileID: "profile-1", enabled: false)
 
         let ids = db.enabledExtensionIDs(for: "profile-1")
         XCTAssertTrue(ids.contains("ext-1"))
         XCTAssertFalse(ids.contains("ext-2"))
+        XCTAssertFalse(ids.contains("ext-3"), "no row is off (TASK-312)")
     }
 
     @MainActor func testDeleteExtensionCascadesProfileState() throws {

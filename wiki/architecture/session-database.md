@@ -1,11 +1,11 @@
 ---
 type: Reference
 title: Session database
-description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v23, and the GRDB record types.
+description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v24, and the GRDB record types.
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T00:52:01Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
 sources:
   - id: task-231-2
     resource: backlog:TASK-231.2
@@ -67,7 +67,7 @@ GRDB `DatabaseQueue`, opened at
 | `externalAppPermission` | (`profileID`, `origin`, `scheme`) | "Always allow" for external URL schemes. | Never written for the Private profile. |
 | `extension` | `id` | Installed extensions: manifest, path, enabled, source, update URL. | |
 | `extensionStorage` | (`extensionID`, `key`) | Dead: left from the pre-WKWebExtension runtime. Only tests call its accessors; `chrome.storage` is WebKit's. | Cascades from `extension`. |
-| `profileExtension` | (`profileID`, `extensionID`) | Per-profile enabled and pinned flags. | A **missing row** means the profile's default: on, except in the Private profile. |
+| `profileExtension` | (`profileID`, `extensionID`) | Per-profile enabled and pinned flags. | A **missing row** means the profile's default: off, in every profile since v24 / TASK-312 (before: on, except in the Private profile). An install writes its target profile's ON row ([extensions on per profile](../decisions/extensions-on-per-profile.md)). |
 | `extensionPermission` | (`extensionID`, `permissionKey`, `permissionType`) | Saved permission decisions. | Status 0 is granted; any other value reads as denied. |
 | `extensionInstalledEvent` | (`extensionID`, `profileID`) | Ledger for `runtime.onInstalled`. | No FK; deleted explicitly. |
 | `pendingProfileDataRemoval` | `profileID` | Deleted profiles whose on-disk WebKit data is not removed yet. | No FK: the profile row is already gone. |
@@ -150,6 +150,7 @@ migration.
 | v21 | `siteSearch`, seeded with the starter set in SQL, once (TASK-287; [site search](../features/site-search.md)). Tested against a database migrated to v20. |
 | v22 | `siteSearch.isDiscovered` (default false) and `siteSearchRemovedHost` (TASK-288, OpenSearch discovery). Tested against a database migrated to v21. |
 | v23 | `closedTab.peekHostTabID` (TASK-307): a closed Peek's host tab, nil for closed tabs ([closed tabs](../tabs/closed-tabs-and-archive.md#closed-peeks)). Tested against a database migrated to v22. |
+| v24 | Data only (TASK-312): an ON `profileExtension` row for every normal profile × installed extension that has none, the old implicit default written down before a missing row became off everywhere; existing rows and the Private profile untouched ([extensions on per profile](../decisions/extensions-on-per-profile.md)). Tested against a database migrated to v23. |
 
 Patterns worth copying from the existing migrations:
 

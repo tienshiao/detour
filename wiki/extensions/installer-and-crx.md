@@ -5,7 +5,7 @@ description: How an extension gets from a Chrome Web Store download or an unpack
 resource: ../../Detour/Extensions/Installer
 tags: [extensions, install, crx, security]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T04:48:28Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
 sources:
   - id: task-231-8
     resource: backlog:TASK-231.8
@@ -80,9 +80,15 @@ into WebKit is [ExtensionManager](./extension-manager.md)'s job.
 
 `handleCRXDownload` fetches the file itself with `URLSession` and a Chrome
 user agent (it shows as a manual item in [Downloads](../features/downloads.md)),
-passes it through the install gate below, shows where it came from and the
-manifest's permissions in a confirmation alert, and only then calls
-`ExtensionManager.install`.
+passes it through the install gate below, shows where it came from, the
+profile it will be turned on in and the manifest's permissions in a
+confirmation alert, and only then calls `ExtensionManager.install`.
+
+Every user install names the profile it is from, and the extension is on
+there only: the tab's (or Quick Detour's) profile for a CRX, the frontmost
+normal browser window's for an unpacked folder, never Private, else the
+first normal profile (`ExtensionInstallTarget`;
+[extensions on per profile](../decisions/extensions-on-per-profile.md)).
 
 ## The install gate
 

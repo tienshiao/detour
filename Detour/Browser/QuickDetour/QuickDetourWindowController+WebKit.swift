@@ -117,7 +117,8 @@ extension QuickDetourWindowController: WKNavigationDelegate {
             let url = navigationResponse.response.url
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                BrowserWindowController.downloadAndOfferCRX(from: url, scope: self.downloadScope) { [weak self] in
+                BrowserWindowController.downloadAndOfferCRX(from: url, scope: self.downloadScope,
+                                                            sourceProfileID: self.profile.id) { [weak self] in
                     self?.toastManager.show(message: "Downloading extension")
                 }
             }

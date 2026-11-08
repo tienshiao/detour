@@ -104,7 +104,9 @@ extension ExtensionManager {
                          updateURL: URL?, sourcePath: URL?) throws -> UpdateApplication {
         let options = Self.replacementOptions(for: installed, manifest: manifest, forcedID: forcedID,
                                               source: source, updateURL: updateURL, sourcePath: sourcePath)
-        let ext = try install(from: sourceDir, publicKey: publicKey, options: options)
+        // No target profile: an update or a reload never changes where the
+        // extension is on (TASK-312).
+        let ext = try install(from: sourceDir, publicKey: publicKey, options: options, turningOnIn: nil)
         if let pending = ext.pendingPermissionApproval {
             return .installedPendingPermissions(version: ext.manifest.version, delta: pending.delta)
         }
@@ -198,6 +200,8 @@ extension ExtensionManager {
                     for: installed, manifest: manifest, forcedID: nil, source: installed.source,
                     updateURL: manifest.updateURL.flatMap(ExtensionSource.pollableUpdateURL) ?? installed.updateURL,
                     sourcePath: installed.sourcePath)
+                // The installer alone writes no `profileExtension` row, so the
+                // update keeps every profile's choice (TASK-312).
                 let replaced = try ExtensionInstaller.install(from: staged.directory, publicKey: staged.publicKey, options: options)
                 StagedExtensionUpdate.removeMarker(installedAt: replaced.basePath)
                 log.notice("Applied staged update \(manifest.version, privacy: .public) for \(record.id, privacy: .public) at launch")

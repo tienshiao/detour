@@ -4,7 +4,7 @@ title: Incognito (Private windows)
 description: "How Private browsing is built — one built-in Private profile with a non-persistent store, one throwaway space per Private window, and the list of things that are and are not kept."
 tags: [architecture, privacy, profiles, incognito]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T09:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -255,8 +255,9 @@ another space.
 ## Extensions
 
 Extensions are **off** in the Private profile unless the user allows each
-one. A missing `profileExtension` row means "on" for every profile except
-this one (`AppDatabase.extensionEnabledByDefault(inProfile:)`). A context
+one. A missing `profileExtension` row means off
+(`AppDatabase.extensionEnabledByDefault(inProfile:)`; since TASK-312 in every
+profile, and an install never targets Private). A context
 loaded into the Private profile gets `hasAccessToPrivateData = true`;
 without it WebKit hides Private windows and tabs from the context and
 delivers no events to a worker running in an ephemeral store. Private

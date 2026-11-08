@@ -1,6 +1,7 @@
 import Synchronization
 import XCTest
 import CryptoKit
+import GRDB
 @testable import Detour
 
 /// TASK-113: the whole update path against canned update2 responses — a real
@@ -93,12 +94,23 @@ nonisolated final class ExtensionUpdaterTests: XCTestCase {
         var options = ExtensionInstaller.Options()
         options.source = .webStore
         options.updateURL = fixture.updateURL
-        let ext = try ExtensionManager.shared.install(from: source, publicKey: pair.publicKeySPKI, options: options)
+        // No target profile: the fixture loads nowhere until a test turns it on
+        // in (or loads it into) a profile of its own (TASK-312).
+        let ext = try ExtensionManager.shared.install(from: source, publicKey: pair.publicKeySPKI, options: options,
+                                                      turningOnIn: nil)
         installedIDs.append(ext.id)
         XCTAssertEqual(ext.id, fixture.id)
         try await waitUntil("the install to load") { ext.wkExtension != nil }
         fixture = Fixture(pair: pair, id: ext.id)
         return fixture
+    }
+
+    /// The fixture's `profileExtension` rows, profile id → isEnabled.
+    @MainActor private func profileRows(_ extensionID: String) throws -> [String: Bool] {
+        try AppDatabase.shared.dbQueue.read { db in
+            Dictionary(uniqueKeysWithValues: try ProfileExtensionRecord
+                .filter(Column("extensionID") == extensionID).fetchAll(db).map { ($0.profileID, $0.isEnabled) })
+        }
     }
 
     /// A CRX for the fixture. `storeSigned` false leaves out the store's proof:
@@ -144,12 +156,17 @@ nonisolated final class ExtensionUpdaterTests: XCTestCase {
     @MainActor func testANewerVersionIsInstalledInPlaceKeepingRowsPermissionsAndTheLedger() async throws {
         let fixture = try await installVersionOne()
         let db = AppDatabase.shared
-        // A real profile: the per-profile row has a foreign key to it. Adding it
-        // loads the fixture there (it is enabled), which the update must unload
-        // and, with the row below off, not reload.
+        // A real profile: the per-profile row has a foreign key to it. With the
+        // row below off, the update must not load the fixture there.
         let profile = TabStore.shared.addProfile(name: "Updater Test")
         createdProfiles.append(profile)
         let profileID = profile.id.uuidString
+        // A profile that has it on (TASK-312: the update must keep that row and
+        // load the replacement there) and nowhere else.
+        let onProfile = TabStore.shared.addProfile(name: "Updater Test On")
+        createdProfiles.append(onProfile)
+        turnOnTestExtension(try XCTUnwrap(ExtensionManager.shared.extension(withID: fixture.id)), in: onProfile)
+        let rowsBefore = try profileRows(fixture.id)
         // Per-profile choice, a saved denial and a delivered onInstalled.
         db.setProfileExtensionEnabled(extensionID: fixture.id, profileID: profileID, enabled: false)
         db.savePermission(ExtensionPermissionRecord(extensionID: fixture.id, key: "storage", type: .apiPermission, status: .denied))
@@ -185,6 +202,12 @@ nonisolated final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertFalse(db.isExtensionEnabledByProfile(extensionID: fixture.id, profileID: profileID),
                        "the per-profile choice survives (AC #5)")
         XCTAssertNil(profile.extensionContext(for: fixture.id), "and is honoured by the replacement's load")
+        XCTAssertEqual(try profileRows(fixture.id),
+                       rowsBefore.merging([profileID: false]) { _, new in new },
+                       "an update writes no per-profile row of its own (TASK-312)")
+        try await waitUntil("the replacement to load where the profile has it on") {
+            onProfile.extensionContext(for: fixture.id) != nil
+        }
         XCTAssertEqual(db.permissionStatus(extensionID: fixture.id, key: "storage", type: .apiPermission), .denied,
                        "a saved denial survives the update's declared-permission recording (TASK-63)")
         XCTAssertEqual(db.pendingRuntimeInstalledEvent(extensionID: fixture.id, profileID: profileID, isPrivateProfile: false, currentVersion: "2.0"),
@@ -472,7 +495,7 @@ nonisolated final class ExtensionUpdaterTests: XCTestCase {
         var options = ExtensionInstaller.Options()
         options.source = .unpacked
         options.sourcePath = source
-        let ext = try ExtensionManager.shared.install(from: source, options: options)
+        let ext = try ExtensionManager.shared.install(from: source, options: options, turningOnIn: nil)
         installedIDs.append(ext.id)
         try await waitUntil("the install to load") { ext.wkExtension != nil }
         XCTAssertEqual(ext.source, .unpacked)
@@ -518,7 +541,11 @@ nonisolated final class ExtensionUpdaterTests: XCTestCase {
         let profile = TabStore.shared.addProfile(name: "Busy Updater Test")
         createdProfiles.append(profile)
         // The test host's manager does not load extensions into added profiles;
-        // load the context by hand, as the other extension-page suites do.
+        // load the context by hand, as the other extension-page suites do, with
+        // the ON row a context loaded in a real profile has (TASK-312: without
+        // it the update's reload would leave the profile without one).
+        AppDatabase.shared.setProfileExtensionEnabled(extensionID: fixture.id, profileID: profile.id.uuidString,
+                                                      enabled: true)
         let context = try loadTestContext(try XCTUnwrap(ExtensionManager.shared.extension(withID: fixture.id)), in: profile)
         let space = TabStore.shared.addSpace(name: "Busy", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
         createdSpaceIDs.append(space.id)
@@ -710,6 +737,13 @@ nonisolated final class ExtensionUpdaterTests: XCTestCase {
         let fixture = try await installVersionOne()
         let db = AppDatabase.shared
         db.savePermission(ExtensionPermissionRecord(extensionID: fixture.id, key: "storage", type: .apiPermission, status: .denied))
+        // Where it is on and off: the launch-time install must leave both (TASK-312).
+        let onProfile = TabStore.shared.addProfile(name: "Staged On")
+        let offProfile = TabStore.shared.addProfile(name: "Staged Off")
+        createdProfiles += [onProfile, offProfile]
+        db.setProfileExtensionEnabled(extensionID: fixture.id, profileID: onProfile.id.uuidString, enabled: true)
+        db.setProfileExtensionEnabled(extensionID: fixture.id, profileID: offProfile.id.uuidString, enabled: false)
+        let rowsBefore = try profileRows(fixture.id)
 
         // Stage a verified copy by hand, as the updater would have at the last quit.
         let crx = try crx(fixture, version: "2.0", permissions: ["storage", "history"])
@@ -730,6 +764,9 @@ nonisolated final class ExtensionUpdaterTests: XCTestCase {
         XCTAssertEqual(db.permissionStatus(extensionID: fixture.id, key: "storage", type: .apiPermission), .denied)
         XCTAssertEqual(try ExtensionManifest.parse(at: URL(fileURLWithPath: row.basePath).appendingPathComponent("manifest.json")).version, "2.0")
         XCTAssertNil(ExtensionManager.shared.stagedUpdate(for: fixture.id))
+        XCTAssertEqual(try profileRows(fixture.id), rowsBefore, "the per-profile rows are untouched (TASK-312)")
+        XCTAssertEqual(rowsBefore[onProfile.id.uuidString], true)
+        XCTAssertEqual(rowsBefore[offProfile.id.uuidString], false)
 
         // A staged copy for an extension that is no longer installed is dropped.
         let orphanDir = FileManager.default.temporaryDirectory.appendingPathComponent("detour-orphan-\(UUID().uuidString.prefix(8))")

@@ -136,6 +136,8 @@ nonisolated final class ExtensionPagePersistenceTests: XCTestCase {
         // dormant), and a closed tab.
         let store1 = TabStore(appDB: db)
         let profile1 = store1.addProfile(name: "Persist")
+        // On in this profile, as the install from it left it (TASK-312: no row is off).
+        turnOnTestExtension(ext, in: profile1, db: db)
         let space1 = store1.addSpace(name: "Persist", emoji: "🧪", colorHex: "007AFF", profileID: profile1.id)
         let base1 = try loadContext(ext, in: profile1).baseURL
 
@@ -191,7 +193,7 @@ nonisolated final class ExtensionPagePersistenceTests: XCTestCase {
         let oldHost = try XCTUnwrap(base1.host)
 
         XCTAssertEqual(space2.tabs.map(\.url), [tabURL, webURL])
-        let restoredTab = space2.tabs[0]
+        let restoredTab = try testElement(space2.tabs, 0)
         XCTAssertTrue(restoredTab.isSleeping, "an extension page is never restored eagerly, selected or not")
         XCTAssertNil(restoredTab.webView)
         XCTAssertEqual(space2.selectedTabID, restoredTab.id)
@@ -210,22 +212,22 @@ nonisolated final class ExtensionPagePersistenceTests: XCTestCase {
         XCTAssertEqual(restoredTab.url, try moved(tabURL))
         XCTAssertEqual(restoredTab.url?.query, "next=https%3A%2F%2Fa.example%2F")
         XCTAssertEqual(restoredTab.url?.fragment, "section")
-        XCTAssertEqual(space2.tabs[1].url, webURL, "an ordinary tab is untouched")
+        XCTAssertEqual(try testElement(space2.tabs, 1).url, webURL, "an ordinary tab is untouched")
 
         XCTAssertEqual(space2.pinnedEntries.count, 2)
-        XCTAssertEqual(space2.pinnedEntries[0].pinnedURL, try moved(pinnedLiveURL))
-        XCTAssertEqual(space2.pinnedEntries[0].tab?.url, try moved(pinnedLiveURL))
-        XCTAssertEqual(space2.pinnedEntries[1].pinnedURL, try moved(pinnedDormantURL))
-        XCTAssertNil(space2.pinnedEntries[1].tab)
+        XCTAssertEqual(try testElement(space2.pinnedEntries, 0).pinnedURL, try moved(pinnedLiveURL))
+        XCTAssertEqual(try testElement(space2.pinnedEntries, 0).tab?.url, try moved(pinnedLiveURL))
+        XCTAssertEqual(try testElement(space2.pinnedEntries, 1).pinnedURL, try moved(pinnedDormantURL))
+        XCTAssertNil(try testElement(space2.pinnedEntries, 1).tab)
 
         XCTAssertEqual(profile2.favorites.map(\.url), [try moved(favLiveURL), try moved(favDormantURL)])
-        XCTAssertEqual(profile2.favorites[0].tab?.url, try moved(favLiveURL))
-        XCTAssertNil(profile2.favorites[1].tab)
+        XCTAssertEqual(try testElement(profile2.favorites, 0).tab?.url, try moved(favLiveURL))
+        XCTAssertNil(try testElement(profile2.favorites, 1).tab)
 
         // A dormant tile opens on the new origin, and the closed tab reopens there.
-        store2.activatePinnedEntry(id: space2.pinnedEntries[1].id, in: space2)
-        XCTAssertEqual(space2.pinnedEntries[1].tab?.url, try moved(pinnedDormantURL))
-        XCTAssertEqual(space2.pinnedEntries[1].tab?.isSleeping, true,
+        store2.activatePinnedEntry(id: try testElement(space2.pinnedEntries, 1).id, in: space2)
+        XCTAssertEqual(try testElement(space2.pinnedEntries, 1).tab?.url, try moved(pinnedDormantURL))
+        XCTAssertEqual(try testElement(space2.pinnedEntries, 1).tab?.isSleeping, true,
                        "materialised sleeping, so wake builds it from the context's configuration")
         let reopened = try XCTUnwrap(store2.reopenClosedTab(in: space2))
         XCTAssertEqual(reopened.url, try moved(closedURL))
@@ -247,6 +249,8 @@ nonisolated final class ExtensionPagePersistenceTests: XCTestCase {
 
         let store1 = TabStore(appDB: db)
         let profile1 = store1.addProfile(name: "Persist")
+        // On in this profile, as the install from it left it (TASK-312: no row is off).
+        turnOnTestExtension(ext, in: profile1, db: db)
         let space1 = store1.addSpace(name: "Persist", emoji: "🧪", colorHex: "007AFF", profileID: profile1.id)
         let base1 = try loadContext(ext, in: profile1).baseURL
         let url = try extensionPageURL("options.html#early-quit", on: base1)
@@ -277,6 +281,8 @@ nonisolated final class ExtensionPagePersistenceTests: XCTestCase {
 
         let store1 = TabStore(appDB: db)
         let profile1 = store1.addProfile(name: "Persist")
+        // On in this profile, as the install from it left it (TASK-312: no row is off).
+        turnOnTestExtension(ext, in: profile1, db: db)
         let space1 = store1.addSpace(name: "Persist", emoji: "🧪", colorHex: "007AFF", profileID: profile1.id)
         let base1 = try loadContext(ext, in: profile1).baseURL
         let extURL = try extensionPageURL("options.html", on: base1)
@@ -329,17 +335,17 @@ nonisolated final class ExtensionPagePersistenceTests: XCTestCase {
         let space2 = try XCTUnwrap(store2.space(withID: space1.id))
 
         XCTAssertEqual(space2.tabs.map(\.url), [webURL], "the extension tab is dropped, not restored blank")
-        XCTAssertNil(space2.tabs[0].splitGroupID, "its split partner is left a lone tab")
-        XCTAssertEqual(space2.selectedTabID, space2.tabs[0].id, "selection moves off the dropped tab")
+        XCTAssertNil(try testElement(space2.tabs, 0).splitGroupID, "its split partner is left a lone tab")
+        XCTAssertEqual(space2.selectedTabID, try testElement(space2.tabs, 0).id, "selection moves off the dropped tab")
 
         XCTAssertEqual(space2.pinnedEntries.map(\.pinnedURL), [webURL, otherWebURL],
                        "the extension-home entry is dropped")
-        XCTAssertNil(space2.pinnedEntries[0].splitGroupID, "the orphaned pinned split partner is dissolved")
-        XCTAssertNil(space2.pinnedEntries[1].tab,
+        XCTAssertNil(try testElement(space2.pinnedEntries, 0).splitGroupID, "the orphaned pinned split partner is dissolved")
+        XCTAssertNil(try testElement(space2.pinnedEntries, 1).tab,
                      "a backing tab on the extension page is dropped, leaving its entry dormant")
 
         XCTAssertEqual(profile2.favorites.map(\.url), [webURL], "the extension favourite is dropped")
-        XCTAssertNil(profile2.favorites[0].tab, "and a backing tab on the extension page leaves it dormant")
+        XCTAssertNil(try testElement(profile2.favorites, 0).tab, "and a backing tab on the extension page leaves it dormant")
 
         XCTAssertFalse(store2.canReopenClosedTab(in: space2), "the closed extension page is discarded")
         XCTAssertNil(store2.reopenClosedTab(in: space2))
@@ -366,6 +372,8 @@ nonisolated final class ExtensionPagePersistenceTests: XCTestCase {
 
         let store1 = TabStore(appDB: db)
         let profile1 = store1.addProfile(name: "Persist")
+        // On in this profile, as the install from it left it (TASK-312: no row is off).
+        turnOnTestExtension(ext, in: profile1, db: db)
         let space1 = store1.addSpace(name: "Persist", emoji: "🧪", colorHex: "007AFF", profileID: profile1.id)
         let base1 = try loadContext(ext, in: profile1).baseURL
         let tabURL = try extensionPageURL("options.html?open=1", on: base1)
@@ -418,9 +426,9 @@ nonisolated final class ExtensionPagePersistenceTests: XCTestCase {
         // A dormant tile of the disabled extension cannot be opened: a tab on its
         // pending origin would wake blank and be dropped at the next restore, so
         // the entry is left dormant, unchanged (TASK-34).
-        store2.activatePinnedEntry(id: space2.pinnedEntries[1].id, in: space2)
-        XCTAssertNil(space2.pinnedEntries[1].tab, "no blank tab while the extension is disabled")
-        XCTAssertTrue(profile2.isAwaitingExtensionContext(space2.pinnedEntries[1].pinnedURL),
+        store2.activatePinnedEntry(id: try testElement(space2.pinnedEntries, 1).id, in: space2)
+        XCTAssertNil(try testElement(space2.pinnedEntries, 1).tab, "no blank tab while the extension is disabled")
+        XCTAssertTrue(profile2.isAwaitingExtensionContext(try testElement(space2.pinnedEntries, 1).pinnedURL),
                       "it still waits on its pending origin")
 
         // The ids are written back out, and a second relaunch still keeps it all.

@@ -589,7 +589,8 @@ nonisolated final class ExtensionPageRehostTests: XCTestCase {
         let space = makeSpace("Rehost Reinstall", in: profile)
         _ = profile.extensionController
 
-        let ext = try ExtensionManager.shared.install(from: source, publicKey: publicKey)
+        // Installed from this profile, so it loads there (TASK-312).
+        let ext = try ExtensionManager.shared.install(from: source, publicKey: publicKey, turningOnIn: profile.id)
         registeredExtensionIDs.append(ext.id)
         // tearDown only unloads the profiles this suite made; an install also
         // reaches the host app's own, so the uninstall must run even when a
@@ -603,7 +604,8 @@ nonisolated final class ExtensionPageRehostTests: XCTestCase {
         TabStore.shared.pinTab(id: tab.id, in: space)
         let entry = try XCTUnwrap(space.pinnedEntries.first)
 
-        let replacement = try ExtensionManager.shared.install(from: source, publicKey: publicKey)
+        let replacement = try ExtensionManager.shared.install(from: source, publicKey: publicKey,
+                                                               turningOnIn: profile.id)
         XCTAssertEqual(replacement.id, ext.id, "precondition: the same key derives the same id")
         // Synchronously, before the replacement's Task has run: the old context
         // is gone and only the pending origin can still name the extension.

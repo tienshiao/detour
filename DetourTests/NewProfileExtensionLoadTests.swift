@@ -3,11 +3,15 @@ import WebKit
 import GRDB
 @testable import Detour
 
-/// TASK-27: a profile created mid-session gets its enabled extensions loaded
-/// straight away — through `TabStore.shared.addProfile`, the observer
+/// TASK-27: a profile created mid-session goes through the same load path as
+/// launch — `TabStore.shared.addProfile`, the observer
 /// `ExtensionManager.initialize` registers, and `loadExtensionsIntoProfile` —
-/// instead of only after a relaunch. It follows TASK-26's per-profile rule and
+/// instead of waiting for a relaunch. It follows TASK-26's per-profile rule and
 /// gets TASK-22's `runtime.onInstalled` delivery.
+///
+/// TASK-312: under that rule a new profile has no `profileExtension` rows, so it
+/// starts with no extensions — none loads and no row is written — and an
+/// extension the user then turns on there loads at once.
 ///
 /// The whole suite runs with `loadsExtensionsIntoAddedProfiles` off
 /// (`TestEnvironmentSetup`), so other tests' `addProfile` calls load nothing;
@@ -122,6 +126,19 @@ nonisolated final class NewProfileExtensionLoadTests: XCTestCase {
         profile.extensionContext(for: ext.id) != nil
     }
 
+    /// The per-profile Settings switch turned on (TASK-312: a new profile starts
+    /// with every extension off).
+    @MainActor private func turnOn(_ ext: WebExtension, in profile: Profile) {
+        ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: true)
+    }
+
+    @MainActor private func rowCount(in profile: Profile) throws -> Int {
+        let profileID = profile.id.uuidString
+        return try AppDatabase.shared.dbQueue.read { db in
+            try ProfileExtensionRecord.filter(Column("profileID") == profileID).fetchCount(db)
+        }
+    }
+
     /// Load an https page in a web view on the profile's controller, registered as
     /// a tab of `context` (content scripts need that before the load).
     @MainActor private func loadPage(in profile: Profile, context: WKWebExtensionContext) async throws -> WKWebView {
@@ -134,15 +151,23 @@ nonisolated final class NewProfileExtensionLoadTests: XCTestCase {
         return webView
     }
 
-    // MARK: - AC #1: loads without a relaunch
+    // MARK: - TASK-312: a new profile starts with none; turning one on loads it at once
 
-    @MainActor func testGloballyEnabledExtensionLoadsIntoAProfileCreatedMidSession() async throws {
+    @MainActor func testANewProfileStartsWithNoExtensionsAndOneTurnedOnLoadsAtOnce() async throws {
         let ext = try await installContentScriptExtension()
 
         let profile = addProfile("New Profile Loads")
 
+        XCTAssertFalse(isLoaded(ext, in: profile),
+                       "a globally enabled extension must not load into a new profile (TASK-312)")
+        XCTAssertTrue(profile.extensionContexts.isEmpty, "no extension at all")
+        XCTAssertFalse(ExtensionManager.shared.isEnabled(extensionID: ext.id, inProfile: profile.id))
+        XCTAssertTrue(ExtensionManager.shared.enabledExtensions(for: profile.id).isEmpty)
+        XCTAssertEqual(try rowCount(in: profile), 0, "adding a profile copies no rows")
+
+        turnOn(ext, in: profile)
         let context = try XCTUnwrap(profile.extensionContext(for: ext.id),
-                                    "addProfile must load the enabled extension without a relaunch")
+                                    "turning it on in the new profile must load it without a relaunch")
         XCTAssertEqual(context.webExtensionController, profile.extensionController,
                        "the context must live in the new profile's own controller")
         XCTAssertNotNil(context.action(for: nil), "the toolbar action comes from the loaded context")
@@ -156,6 +181,28 @@ nonisolated final class NewProfileExtensionLoadTests: XCTestCase {
         }
     }
 
+    /// `profileWasAdded` itself still loads what a row turns on (TASK-27 AC #1):
+    /// the path the Private profile takes when its "Allow in Private" rows were
+    /// written before the profile object is (re)created. The profile is added
+    /// with the hook off, so the row is in place before the hook runs.
+    @MainActor func testProfileWasAddedLoadsAnExtensionItsRowTurnsOn() async throws {
+        let ext = try await installContentScriptExtension()
+        let other = try await installContentScriptExtension()
+        ExtensionManager.shared.loadsExtensionsIntoAddedProfiles = false
+        let profile = addProfile("New Profile Row First")
+        XCTAssertFalse(isLoaded(ext, in: profile), "precondition: nothing loaded while the hook is off")
+        AppDatabase.shared.setProfileExtensionEnabled(extensionID: ext.id, profileID: profile.id.uuidString,
+                                                      enabled: true)
+        ExtensionManager.shared.invalidateEnabledExtensionsCache()
+        XCTAssertFalse(isLoaded(ext, in: profile), "precondition: a row write alone loads nothing")
+        ExtensionManager.shared.loadsExtensionsIntoAddedProfiles = true
+
+        ExtensionManager.shared.profileWasAdded(profile)
+
+        XCTAssertTrue(isLoaded(ext, in: profile), "profileWasAdded must load the extension its row turns on")
+        XCTAssertFalse(isLoaded(other, in: profile), "and nothing without a row")
+    }
+
     // MARK: - AC #2: the per-profile rule is respected
 
     @MainActor func testGloballyDisabledExtensionDoesNotLoadIntoANewProfileUntilEnabled() async throws {
@@ -164,6 +211,8 @@ nonisolated final class NewProfileExtensionLoadTests: XCTestCase {
 
         let profile = addProfile("New Profile Global Off")
         XCTAssertFalse(isLoaded(ext, in: profile), "a globally disabled extension must not load into a new profile")
+        turnOn(ext, in: profile)
+        XCTAssertFalse(isLoaded(ext, in: profile), "nor when turned on there while globally off")
 
         ExtensionManager.shared.setEnabled(id: ext.id, enabled: true)
         XCTAssertTrue(isLoaded(ext, in: profile), "the global enable must reach the new profile")
@@ -175,6 +224,8 @@ nonisolated final class NewProfileExtensionLoadTests: XCTestCase {
         let ext = try await installContentScriptExtension()
         let profile = addProfile("New Profile Toggle")
         let other = addProfile("New Profile Toggle Other")
+        turnOn(ext, in: profile)
+        turnOn(ext, in: other)
         XCTAssertTrue(isLoaded(ext, in: profile))
 
         ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: false)
@@ -248,6 +299,8 @@ nonisolated final class NewProfileExtensionLoadTests: XCTestCase {
         // no ledger row.
         let profile = addProfile("New Profile Worker")
         let profileID = profile.id.uuidString
+        XCTAssertFalse(isLoaded(ext, in: profile), "a new profile starts with it off (TASK-312)")
+        turnOn(ext, in: profile)
         XCTAssertTrue(isLoaded(ext, in: profile))
 
         // The woken worker claims on its own; the claim advances the ledger.
@@ -330,6 +383,7 @@ nonisolated final class NewProfileExtensionLoadTests: XCTestCase {
 
         let profile = addProfile("Failing Worker \(deliveredBefore ?? "install")")
         let profileID = profile.id.uuidString
+        turnOn(ext, in: profile)
         XCTAssertTrue(isLoaded(ext, in: profile))
         // Before the woken worker's claim can be handled (it needs the main
         // queue): what this profile had delivered before this version.

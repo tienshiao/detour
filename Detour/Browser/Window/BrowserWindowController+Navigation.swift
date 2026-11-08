@@ -196,8 +196,12 @@ extension BrowserWindowController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
         switch Self.responseHandling(for: navigationResponse) {
         case .extensionPackage:
+            // The profile it installs into is the tab's (TASK-312), read now:
+            // the tab may be gone by the time the package has downloaded.
+            let sourceProfileID = tab(owning: webView)?.spaceID.flatMap { TabStore.shared.space(withID: $0) }?.profileID
+                ?? activeSpace?.profileID
             DispatchQueue.main.async { [weak self] in
-                self?.handleCRXDownload(from: navigationResponse.response.url)
+                self?.handleCRXDownload(from: navigationResponse.response.url, sourceProfileID: sourceProfileID)
             }
             // A tab opened on the package's link is left as empty as a
             // download's (TASK-205).
@@ -243,8 +247,8 @@ extension BrowserWindowController: WKNavigationDelegate {
         return false
     }
 
-    func handleCRXDownload(from url: URL?) {
-        Self.downloadAndOfferCRX(from: url, scope: downloadScope) { [weak self] in
+    func handleCRXDownload(from url: URL?, sourceProfileID: UUID?) {
+        Self.downloadAndOfferCRX(from: url, scope: downloadScope, sourceProfileID: sourceProfileID) { [weak self] in
             self?.triggerDownloadAnimation(iconName: "puzzlepiece.extension.fill")
         }
     }
@@ -252,7 +256,12 @@ extension BrowserWindowController: WKNavigationDelegate {
     /// Fetches the package at `url` as a listed download of `scope`, then
     /// runs the install gate and asks the user. Shared by a browser window
     /// and a Quick Detour window; `didStart` is the window's own feedback.
-    static func downloadAndOfferCRX(from url: URL?, scope: DownloadScope, didStart: () -> Void) {
+    /// `sourceProfileID` is the profile of the tab (or Quick Detour) the
+    /// package was opened in: the extension is turned on there only, or in
+    /// the first normal profile when that is Private
+    /// (`ExtensionInstallTarget.profileForSource`, TASK-312).
+    static func downloadAndOfferCRX(from url: URL?, scope: DownloadScope, sourceProfileID: UUID?,
+                                    didStart: () -> Void) {
         guard let url else { return }
 
         let filename = url.lastPathComponent.hasSuffix(".crx") ? url.lastPathComponent : "Extension.crx"
@@ -271,14 +280,15 @@ extension BrowserWindowController: WKNavigationDelegate {
                 // The URL the bytes were served from, after this fetch's own
                 // redirects: it is what the prompt names and what decides
                 // whether this counts as a store install.
-                finishCRXInstall(data: data, error: error, downloadURL: response?.url ?? url)
+                finishCRXInstall(data: data, error: error, downloadURL: response?.url ?? url,
+                                 sourceProfileID: sourceProfileID)
             }
         }
         item.observeURLSessionTask(task)
         task.resume()
     }
 
-    private static func finishCRXInstall(data: Data?, error: Error?, downloadURL: URL) {
+    private static func finishCRXInstall(data: Data?, error: Error?, downloadURL: URL, sourceProfileID: UUID?) {
         guard let data, error == nil else {
             let alert = NSAlert()
             alert.messageText = "Failed to Download Extension"
@@ -312,9 +322,16 @@ extension BrowserWindowController: WKNavigationDelegate {
                 optionalPermissions: manifest.optionalPermissions
             )
 
+            // Resolved now, not when the download started: a profile deleted
+            // meanwhile is no target.
+            let target = ExtensionInstallTarget.profileForSource(sourceProfileID)
+            let targetName = ExtensionInstallTarget.profileName(target)
+
             let confirmAlert = NSAlert()
             confirmAlert.messageText = "Install \"\(displayName)\"?"
-            confirmAlert.informativeText = origin.description + "\n\n" + permissionSummary
+            confirmAlert.informativeText = origin.description + "\n\n"
+                + ExtensionInstallTarget.confirmationLine(profileName: targetName)
+                + permissionSummary
             confirmAlert.alertStyle = .warning
             confirmAlert.addButton(withTitle: "Install")
             confirmAlert.addButton(withTitle: "Cancel")
@@ -334,11 +351,13 @@ extension BrowserWindowController: WKNavigationDelegate {
             var options = ExtensionInstaller.Options()
             (options.source, options.updateURL) = ExtensionSource.classifyCRX(
                 fromWebStore: candidate.origin == .webStore, manifestUpdateURL: manifest.updateURL)
-            try ExtensionManager.shared.install(from: unpackedDir, publicKey: candidate.publicKey, options: options)
+            try ExtensionManager.shared.install(from: unpackedDir, publicKey: candidate.publicKey, options: options,
+                                                turningOnIn: target)
 
             let successAlert = NSAlert()
             successAlert.messageText = "Extension Installed"
-            successAlert.informativeText = "\"\(displayName)\" has been installed and enabled."
+            successAlert.informativeText = ExtensionInstallTarget.installedMessage(displayName: displayName,
+                                                                                   profileName: targetName)
             successAlert.alertStyle = .informational
             successAlert.runModal()
         } catch {

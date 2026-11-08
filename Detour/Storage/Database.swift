@@ -1111,8 +1111,8 @@ nonisolated struct AppDatabase: Sendable {
             }
 
             // Per-profile extension state. A missing row means the profile's
-            // default, which since TASK-74 is off for the built-in Private
-            // profile and on everywhere else — see
+            // default: off in every profile since TASK-312 (before it, off only
+            // in the built-in Private profile, TASK-74) — see
             // `extensionEnabledByDefault(inProfile:)`.
             try db.create(table: "profileExtension") { t in
                 t.column("profileID", .text).notNull()
@@ -1463,6 +1463,26 @@ nonisolated struct AppDatabase: Sendable {
             try db.alter(table: "closedTab") { t in t.add(column: "peekHostTabID", .text) }
         }
 
+        migrator.registerMigration("v24") { db in
+            // TASK-312: a missing `profileExtension` row now means off in
+            // every profile, not only in Private. What a missing row meant
+            // until now — on in every normal profile — is written down as an
+            // explicit ON row for every existing normal profile × installed
+            // extension that has none, so no existing setup changes. Rows that
+            // exist (an explicit off, a pin, a Private allow) are left as they
+            // are; the built-in Private profile gets nothing, its default was
+            // already off. The literal is TabStore.incognitoProfileID, spelled
+            // out (as in v10 and v19) so this migration cannot change meaning
+            // later. Profile ids are compared case-insensitively, as
+            // `extensionEnabledByDefault` compared them as UUIDs.
+            try db.execute(sql: """
+                INSERT OR IGNORE INTO profileExtension (profileID, extensionID, isEnabled, isPinned)
+                SELECT profile.id, "extension".id, 1, 0
+                FROM profile CROSS JOIN "extension"
+                WHERE UPPER(profile.id) != '00000000-0000-0000-0000-000000000001'
+                """)
+        }
+
         return migrator
     }
 
@@ -1791,23 +1811,24 @@ nonisolated struct AppDatabase: Sendable {
     static let isExtensionEnabledReadLabel = "check extension enabled for profile"
     static let enabledExtensionIDsReadLabel = "load enabled extension IDs for profile"
 
-    /// What a missing `profileExtension` row means for this profile: on
-    /// everywhere except the built-in Private profile, where it means off
-    /// (TASK-74).
+    /// What a missing `profileExtension` row means for this profile: off, in
+    /// every profile (TASK-312). An extension is on only where a row says so:
+    /// the profile it was installed from (`ExtensionManager.install`'s target),
+    /// a profile where the user turned it on (Settings › Profiles, "Allow in
+    /// Private", "Turn On in All Profiles"), and — through migration v24 —
+    /// every profile that existed when this default changed. So a new profile
+    /// starts with no extensions, as a new Chrome profile does.
     ///
-    /// Chrome's incognito default, and when it landed it was more than a
-    /// convention: the Private profile's extension pages then ran in WebKit's
-    /// default *persistent* store, so an extension allowed in Private kept its
-    /// storage, caches and cookies after the private session ended. TASK-73 has
-    /// since moved those pages to the profile's own ephemeral store, but the
-    /// default stands on its own — opting in per extension ("Allow in Private"
-    /// in Extension settings) is the state the user can be presumed to want.
-    /// No migration was needed: the live DB had no `profileExtension`
-    /// rows for the Private profile at all, so flipping the default is exactly
-    /// the behaviour change, and a user who had explicitly allowed one would
-    /// have a row that still reads ON.
+    /// History: until TASK-312 a missing row meant on everywhere except the
+    /// built-in Private profile (TASK-74, Chrome's incognito default, then also
+    /// a storage-leak guard until TASK-73 moved Private extension pages to the
+    /// profile's ephemeral store). Migration v24 recorded that old implicit ON
+    /// as explicit rows for the normal profiles; Private had no rows to write.
+    ///
+    /// The parameter stays so every reader keeps asking one place, should the
+    /// default ever differ by profile again.
     static func extensionEnabledByDefault(inProfile profileID: String) -> Bool {
-        UUID(uuidString: profileID) != TabStore.incognitoProfileID
+        false
     }
 
     /// Check if an extension is enabled for a specific profile.
@@ -1833,7 +1854,7 @@ nonisolated struct AppDatabase: Sendable {
 
     /// The profile's own choice, ignoring the global flag: the row's value, or
     /// the profile's default when it has no row
-    /// (`extensionEnabledByDefault(inProfile:)` — on, except in Private).
+    /// (`extensionEnabledByDefault(inProfile:)` — off, TASK-312).
     func isExtensionEnabledByProfile(extensionID: String, profileID: String) -> Bool {
         let byDefault = Self.extensionEnabledByDefault(inProfile: profileID)
         return performRead("check profile extension enabled row", default: byDefault) { db in
@@ -1877,8 +1898,8 @@ nonisolated struct AppDatabase: Sendable {
                 try existing.update(db)
             } else {
                 // A pin must not decide the enabled flag: the fresh row carries
-                // the profile's default, so pinning in Private does not silently
-                // allow the extension there (TASK-74).
+                // the profile's default (off, TASK-312), so pinning does not
+                // silently turn the extension on — in Private above all (TASK-74).
                 try ProfileExtensionRecord(profileID: profileID, extensionID: extensionID,
                                            isEnabled: Self.extensionEnabledByDefault(inProfile: profileID),
                                            isPinned: true).insert(db)
@@ -1897,7 +1918,7 @@ nonisolated struct AppDatabase: Sendable {
     ///
     /// The same rule as `isExtensionEnabled(extensionID:profileID:)`, in one
     /// query: globally enabled AND (the profile's row, or with no row the profile's
-    /// default — `extensionEnabledByDefault(inProfile:)`, off in Private). An id with no `extension`
+    /// default — `extensionEnabledByDefault(inProfile:)`, off everywhere). An id with no `extension`
     /// row is in neither answer. Ids only — neither row is decoded as a record,
     /// so the `extension` table's `manifestJSON` blob is never read for this
     /// answer (TASK-46).

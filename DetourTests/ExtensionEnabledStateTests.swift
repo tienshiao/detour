@@ -5,8 +5,10 @@ import GRDB
 
 /// TASK-26: an extension is enabled in a profile iff it is enabled globally AND
 /// the profile's own answer is on (no per-profile row = the profile's default:
-/// on, except in the built-in Private profile — TASK-74,
-/// `ExtensionPrivateDefaultTests`). The global and
+/// off in every profile since TASK-312, `ExtensionProfileScopeTests`; before
+/// that off only in the built-in Private profile — TASK-74,
+/// `ExtensionPrivateDefaultTests`). A profile that has the extension on has an
+/// ON row, as the install or migration v24 left it (`turnOn`). The global and
 /// per-profile toggles each write only their own flag, and every path that
 /// loads a context — launch (`loadExtensionsIntoProfile`) and both
 /// `ExtensionManager.setEnabled` overloads — applies that one rule. These tests
@@ -76,6 +78,17 @@ nonisolated final class ExtensionEnabledStateTests: XCTestCase {
         return profile
     }
 
+    /// The saved ON row an install from the profile, or migration v24, leaves:
+    /// what a profile with the extension on looks like (TASK-312). Rows only —
+    /// nothing is loaded.
+    @MainActor private func turnOn(_ ext: WebExtension, in profiles: Profile...) {
+        for profile in profiles {
+            AppDatabase.shared.setProfileExtensionEnabled(extensionID: ext.id, profileID: profile.id.uuidString,
+                                                          enabled: true)
+        }
+        ExtensionManager.shared.invalidateEnabledExtensionsCache()
+    }
+
     @MainActor private func makeSpace(_ name: String, in profile: Profile) -> Space {
         let space = TabStore.shared.addSpace(name: name, emoji: "🧪", colorHex: "007AFF",
                                              profileID: profile.id)
@@ -120,10 +133,11 @@ nonisolated final class ExtensionEnabledStateTests: XCTestCase {
         let ext = try await makeTestExtension(named: "global-reenable")
         let a = makeProfile("Enabled State A")
         let b = makeProfile("Enabled State B")
+        turnOn(ext, in: a, b)
         ExtensionManager.shared.loadExtensionsIntoProfile(a)
         ExtensionManager.shared.loadExtensionsIntoProfile(b)
-        assertLoaded(ext, in: a, true, "precondition: loads at launch with no rows")
-        assertLoaded(ext, in: b, true, "precondition: loads at launch with no rows")
+        assertLoaded(ext, in: a, true, "precondition: loads at launch with its ON row")
+        assertLoaded(ext, in: b, true, "precondition: loads at launch with its ON row")
 
         ExtensionManager.shared.setEnabled(id: ext.id, profileID: b.id, enabled: false)
         assertLoaded(ext, in: a, true, "a per-profile disable elsewhere must not unload it here")
@@ -133,10 +147,10 @@ nonisolated final class ExtensionEnabledStateTests: XCTestCase {
         assertLoaded(ext, in: a, false, "a global disable unloads it everywhere")
         assertLoaded(ext, in: b, false, "a global disable unloads it everywhere")
         XCTAssertFalse(profileRow(ext, b), "a global disable must keep the per-profile choice")
-        XCTAssertTrue(profileRow(ext, a), "a global disable must not write per-profile rows")
+        XCTAssertTrue(profileRow(ext, a), "a global disable must not change per-profile rows")
 
         ExtensionManager.shared.setEnabled(id: ext.id, enabled: true)
-        assertLoaded(ext, in: a, true, "a global enable loads it where the profile has no row")
+        assertLoaded(ext, in: a, true, "a global enable loads it where the profile's row is on")
         assertLoaded(ext, in: b, false, "a global enable must not load it where the profile turned it off")
     }
 
@@ -159,6 +173,7 @@ nonisolated final class ExtensionEnabledStateTests: XCTestCase {
         let ext = try await makeTestExtension(named: "profile-enable-while-off")
         let a = makeProfile("Enabled State Off A")
         let b = makeProfile("Enabled State Off B")
+        turnOn(ext, in: a)
         ExtensionManager.shared.setEnabled(id: ext.id, profileID: b.id, enabled: false)
         ExtensionManager.shared.setEnabled(id: ext.id, enabled: false)
 
@@ -176,6 +191,7 @@ nonisolated final class ExtensionEnabledStateTests: XCTestCase {
         let ext = try await makeTestExtension(named: "profile-disable-while-off")
         let a = makeProfile("Enabled State Off Disable A")
         let b = makeProfile("Enabled State Off Disable B")
+        turnOn(ext, in: a, b)
         ExtensionManager.shared.setEnabled(id: ext.id, enabled: false)
 
         ExtensionManager.shared.setEnabled(id: ext.id, profileID: a.id, enabled: false)
@@ -184,12 +200,13 @@ nonisolated final class ExtensionEnabledStateTests: XCTestCase {
 
         ExtensionManager.shared.setEnabled(id: ext.id, enabled: true)
         assertLoaded(ext, in: a, false, "the choice made while globally off must stick")
-        assertLoaded(ext, in: b, true, "an untouched profile loads it")
+        assertLoaded(ext, in: b, true, "a profile whose ON row was left alone loads it")
     }
 
     @MainActor func testRepeatedTogglesAreIdempotent() async throws {
         let ext = try await makeTestExtension(named: "idempotent")
         let a = makeProfile("Enabled State Idempotent")
+        turnOn(ext, in: a)
         ExtensionManager.shared.loadExtensionsIntoProfile(a)
         let first = try XCTUnwrap(a.extensionContexts[ext.id])
 
@@ -205,15 +222,19 @@ nonisolated final class ExtensionEnabledStateTests: XCTestCase {
         let ext = try await makeTestExtension(named: "launch")
         let a = makeProfile("Enabled State Launch A")
         let b = makeProfile("Enabled State Launch B")
+        let c = makeProfile("Enabled State Launch C")
         // Saved state as a previous session left it.
+        turnOn(ext, in: a)
         AppDatabase.shared.setProfileExtensionEnabled(extensionID: ext.id, profileID: b.id.uuidString, enabled: false)
 
         ExtensionManager.shared.loadExtensionsIntoProfile(a)
         ExtensionManager.shared.loadExtensionsIntoProfile(b)
-        assertLoaded(ext, in: a, true, "launch loads it where the profile has no row")
+        ExtensionManager.shared.loadExtensionsIntoProfile(c)
+        assertLoaded(ext, in: a, true, "launch loads it where the profile's row is on")
         assertLoaded(ext, in: b, false, "launch must not load it where the profile turned it off")
+        assertLoaded(ext, in: c, false, "nor where the profile has no row (TASK-312)")
 
-        for profile in [a, b] { profile.unloadAllExtensions() }
+        for profile in [a, b, c] { profile.unloadAllExtensions() }
         AppDatabase.shared.setEnabled(id: ext.id, enabled: false)
         AppDatabase.shared.setProfileExtensionEnabled(extensionID: ext.id, profileID: b.id.uuidString, enabled: true)
         ext.isEnabled = false
@@ -233,6 +254,7 @@ nonisolated final class ExtensionEnabledStateTests: XCTestCase {
         let b = makeProfile("Enabled State Pages B")
         let spaceA = makeSpace("Enabled State Pages A", in: a)
         let spaceB = makeSpace("Enabled State Pages B", in: b)
+        turnOn(ext, in: a, b)
         ExtensionManager.shared.loadExtensionsIntoProfile(a)
         ExtensionManager.shared.loadExtensionsIntoProfile(b)
         let pageA = try openOptionsPage(ext, in: a, space: spaceA)
@@ -260,6 +282,7 @@ nonisolated final class ExtensionEnabledStateTests: XCTestCase {
     @MainActor func testPinnedExtensionsHideWhereTheExtensionIsDisabled() async throws {
         let ext = try await makeTestExtension(named: "pinned")
         let a = makeProfile("Enabled State Pinned")
+        turnOn(ext, in: a)
         AppDatabase.shared.toggleExtensionPinned(extensionID: ext.id, profileID: a.id.uuidString)
         XCTAssertTrue(ExtensionManager.shared.pinnedExtensions(for: a.id).contains { $0.id == ext.id })
 

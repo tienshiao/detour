@@ -1800,8 +1800,10 @@ extension BrowserTab: WKNavigationDelegate {
         case .extensionPackage:
             let url = navigationResponse.response.url
             let scope = downloadScope
+            let sourceProfileID = spaceID.flatMap { TabStore.shared.space(withID: $0) }?.profileID
             DispatchQueue.main.async {
-                BrowserWindowController.downloadAndOfferCRX(from: url, scope: scope) {}
+                BrowserWindowController.downloadAndOfferCRX(from: url, scope: scope,
+                                                            sourceProfileID: sourceProfileID) {}
             }
             DownloadOpenedTab.navigationBecameDownload(in: self)
             return .cancel

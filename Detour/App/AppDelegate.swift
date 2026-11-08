@@ -260,7 +260,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                 let confirmAlert = NSAlert()
                 confirmAlert.messageText = "Install \"\(displayName)\"?"
-                confirmAlert.informativeText = "This extension will be installed and enabled."
+                // On in the frontmost normal window's profile only (TASK-312).
+                let target = ExtensionInstallTarget.profileForFrontWindow()
+                let targetName = ExtensionInstallTarget.profileName(target)
+                confirmAlert.informativeText = targetName.map {
+                    "This extension will be installed and turned on in the \"\($0)\" profile."
+                } ?? "This extension will be installed."
                 confirmAlert.alertStyle = .warning
                 confirmAlert.addButton(withTitle: "Install")
                 confirmAlert.addButton(withTitle: "Cancel")
@@ -271,11 +276,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 var options = ExtensionInstaller.Options()
                 options.source = .unpacked
                 options.sourcePath = url
-                try ExtensionManager.shared.install(from: url, options: options)
+                try ExtensionManager.shared.install(from: url, options: options, turningOnIn: target)
                 // Toolbar rebuild is handled by extensionsDidChangeNotification
                 let alert = NSAlert()
                 alert.messageText = "Extension Installed"
-                alert.informativeText = "\"\(displayName)\" has been installed and enabled."
+                alert.informativeText = ExtensionInstallTarget.installedMessage(displayName: displayName,
+                                                                                profileName: targetName)
                 alert.alertStyle = .informational
                 alert.runModal()
             } catch {

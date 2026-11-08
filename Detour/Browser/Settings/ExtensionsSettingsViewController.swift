@@ -313,6 +313,22 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         enabledRow.spacing = SettingsMetrics.labelToControl
         enabledRow.setHuggingPriority(.required, for: .horizontal)
 
+        // Where it is on (TASK-312): an install turns it on in one profile, and
+        // a new profile starts with none, so the pane says which normal
+        // profiles have it on and offers to turn it on in all of them. Private
+        // is the switch below, never part of "all".
+        let normalProfiles = ExtensionInstallTarget.normalProfileIDs()
+        let onIn = ExtensionManager.shared.normalProfilesTurnedOn(extensionID: ext.id)
+        let allProfilesButton = NSButton(title: "Turn On in All Profiles", target: self,
+                                         action: #selector(turnOnInAllProfilesClicked))
+        allProfilesButton.controlSize = .regular
+        allProfilesButton.isEnabled = onIn.count < normalProfiles.count
+        allProfilesButton.identifier = NSUserInterfaceItemIdentifier("turnOnInAllProfiles")
+        let profilesNote = SettingsWrappingLabel(
+            wrapping: Self.profilesSummary(onIn: onIn.map(\.name), normalProfileCount: normalProfiles.count),
+            estimatedWidth: column)
+        profilesNote.identifier = NSUserInterfaceItemIdentifier("extensionProfilesSummary")
+
         // Allow in Private (TASK-74). Extensions are off in the built-in Private
         // profile until the user opts in per extension, so this switch shows and
         // writes only that profile's own row. Like the per-profile toggles in
@@ -350,13 +366,14 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
 
         var views: [NSView] = [header, descLabel, sep, updateSection]
         if let pendingBanner { views.append(pendingBanner) }
-        views += [enabledRow, privateRow, privateNote, permsHeader, permissions]
+        views += [enabledRow, allProfilesButton, profilesNote, privateRow, privateNote, permsHeader, permissions]
         let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = SettingsMetrics.rowGap
         stack.setCustomSpacing(SettingsMetrics.descriptionToBody, after: descLabel)
         stack.setCustomSpacing(SettingsMetrics.descriptionToBody, after: sep)
+        stack.setCustomSpacing(SettingsMetrics.controlToHelp, after: allProfilesButton)
         stack.setCustomSpacing(SettingsMetrics.controlToHelp, after: privateRow)
         stack.setCustomSpacing(SettingsMetrics.sectionGap, after: privateNote)
         stack.setCustomSpacing(SettingsMetrics.sectionTitleToRows, after: permsHeader)
@@ -366,7 +383,7 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         // Full width: the header (its name wraps, "Settings…" sits at the
         // trailing edge), wrapping text, the update rows (their labels truncate)
         // and the permission list.
-        var fullWidth: [NSView] = [header, descLabel, sep, updateSection, privateNote, permissions]
+        var fullWidth: [NSView] = [header, descLabel, sep, updateSection, profilesNote, privateNote, permissions]
         if let pendingBanner { fullWidth.append(pendingBanner) }
         // Nothing in the column is squeezed: it is as tall as its content, and
         // the column scrolls when that is taller than the window.
@@ -908,6 +925,25 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         ExtensionManager.shared.setEnabled(id: ext.id, enabled: enabled)
     }
 
+    /// The line under Turn On in All Profiles: which normal profiles have the
+    /// extension on by their own choice (TASK-312).
+    static func profilesSummary(onIn names: [String], normalProfileCount: Int) -> String {
+        let perProfile = "Turn it on or off per profile in Settings › Profiles."
+        if names.isEmpty { return "Off in every profile. \(perProfile)" }
+        if names.count >= normalProfileCount, normalProfileCount > 1 { return "On in all profiles. \(perProfile)" }
+        let list = ListFormatter.localizedString(byJoining: names.map { "\u{201C}\($0)\u{201D}" })
+        return "On in \(list). \(perProfile)"
+    }
+
+    /// Turn On in All Profiles: the per-profile switch of Settings › Profiles,
+    /// turned on in every normal profile in one go — loading the context in
+    /// each — and never in Private (TASK-312). `extensionsDidChange` rebuilds
+    /// this detail view, so the button and the summary read back the result.
+    @objc private func turnOnInAllProfilesClicked() {
+        guard let ext = selectedExtension else { return }
+        ExtensionManager.shared.turnOnInAllProfiles(id: ext.id)
+    }
+
     /// "Allow in Private": writes only the built-in Private profile's row
     /// (TASK-74). `setEnabled(id:profileID:enabled:)` loads or unloads the
     /// context in that profile right away when it exists, closes its extension
@@ -1006,9 +1042,15 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
                     optionalPermissions: manifest.optionalPermissions
                 )
 
+                // On in the profile of the browser window behind Settings only
+                // (TASK-312), and the alerts say which.
+                let target = ExtensionInstallTarget.profileForFrontWindow()
+                let targetName = ExtensionInstallTarget.profileName(target)
+
                 let confirmAlert = NSAlert()
                 confirmAlert.messageText = "Install \"\(displayName)\"?"
-                confirmAlert.informativeText = permissionSummary
+                confirmAlert.informativeText = ExtensionInstallTarget.confirmationLine(profileName: targetName)
+                    + permissionSummary
                 confirmAlert.alertStyle = .warning
                 confirmAlert.addButton(withTitle: "Install")
                 confirmAlert.addButton(withTitle: "Cancel")
@@ -1019,11 +1061,12 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
                 var options = ExtensionInstaller.Options()
                 options.source = .unpacked
                 options.sourcePath = url
-                let installed = try ExtensionManager.shared.install(from: url, options: options)
+                let installed = try ExtensionManager.shared.install(from: url, options: options, turningOnIn: target)
 
                 let alert = NSAlert()
                 alert.messageText = "Extension Installed"
-                alert.informativeText = "\"\(displayName)\" has been installed and enabled."
+                alert.informativeText = ExtensionInstallTarget.installedMessage(displayName: displayName,
+                                                                                profileName: targetName)
                 alert.alertStyle = .informational
                 alert.runModal()
 
