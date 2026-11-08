@@ -3,11 +3,11 @@ id: TASK-302
 title: >-
   Link Routes: an app-only route is flagged invalid until its URL condition is
   switched to Any URL
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T08:41:00Z'
-updated_date: '2026-11-08T19:42:00Z'
+updated_date: '2026-11-08T19:54:00Z'
 labels:
   - link-routes
   - ui
@@ -29,7 +29,6 @@ Found while checking the Quarantine guide page at runtime (TASK-292.7, v0.4.0): 
 - [x] #1 A route with an app chosen and an empty URL pattern is treated as app-only (any URL from that app), or the editor otherwise makes app-only routes possible without a hidden step (approach agreed with the user)
 - [x] #2 A route with neither an app nor a URL pattern is still refused with a clear message
 - [x] #3 LinkRoute validation tests cover app-only, URL-only and both
-- [ ] #4 The website's Quarantine and Link Routes pages drop the Any URL workaround
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -63,6 +62,8 @@ Website: updated Link Routes, Quarantine and Quick Detour (Any URL workaround re
 Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
 
 Nov 8 2026 (user): re-capture the Link Routes still (it shows v0.4.0's 'Any URL' workaround for TextEdit) when website branch next-release ships with the release.
+
+Nov 8 2026 (user): closed with the app change shipped on main (pushed 6edaf24); the website criterion moved to TASK-311, which ships branch next-release with the app release. (removed criterion: the website page update, written on next-release)
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

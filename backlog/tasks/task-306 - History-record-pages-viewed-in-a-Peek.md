@@ -1,11 +1,11 @@
 ---
 id: TASK-306
 title: 'History: record pages viewed in a Peek'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T09:55:00Z'
-updated_date: '2026-11-08T11:35:00Z'
+updated_date: '2026-11-08T19:54:00Z'
 labels:
   - history
   - peek
@@ -33,7 +33,6 @@ The website's Peek and History guide pages (TASK-292.6) currently say Peek pages
 - [x] #3 Expanding a Peek into a tab (Open in New Tab / Open in Split View) does not record the same visit twice
 - [x] #4 Tests cover Peek recording in a normal space, the Private exclusions and the expand path
 - [x] #5 Checked at runtime with /verify: a Shift-clicked link's page appears on the History page
-- [ ] #6 The website's Peek and History pages and wiki/tabs/peek.md are updated
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -63,6 +62,8 @@ Website AC pending (held for release).
 Website: updated History and Peek (Peek pages and links followed inside them are recorded under the host tab's Space, no second visit on expand; 'not recorded' lines removed) on website branch next-release (e41442e), held for the release
 
 Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
+
+Nov 8 2026 (user): closed with the app change shipped on main (pushed 6edaf24); the website criterion moved to TASK-311, which ships branch next-release with the app release. (removed criterion: the website page update, written on next-release)
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

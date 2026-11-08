@@ -3,11 +3,11 @@ id: TASK-307
 title: >-
   Peek: ⌘O opens the Peek as a tab, a setting turns Peek off, and ⇧⌘T / ⌘Z
   reopen a closed Peek
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T10:00:00Z'
-updated_date: '2026-11-08T11:35:00Z'
+updated_date: '2026-11-08T19:54:00Z'
 labels:
   - peek
 dependencies: []
@@ -34,7 +34,6 @@ Three Peek behaviors Arc had (Arc's Peek help article; Arc for macOS 2023 releas
 - [x] #3 Closing a Peek can be undone with ⌘Z and reopened with ⇧⌘T: it comes back as a Peek on its host tab with its page and scroll state, or as a tab when the host is gone; Private windows follow their existing closed-tab rules
 - [x] #4 Tests cover the setting's effect on the auto-peek rule, the closed-Peek record and both reopen paths
 - [x] #5 Checked at runtime with /verify
-- [ ] #6 The website's Peek guide page moves these from Not in Detour to how-to steps
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -80,6 +79,8 @@ Nov 8 2026 (lead, /code-review high on the integrated branch): fixed in the TASK
 Website: updated Peek (File › Open Peek in New Tab ⌘O; new sections 'Bring back a closed Peek' (⌘Z / ⇧⌘T, as a tab when the host is gone, Private: ⌘Z only, Archived Tabs) and 'Turn Peek off for pinned tabs and favorites' (Settings › General › Peek; Shift-click still peeks); new FAQ; Arc box items moved from Not in Detour to Same) and Keyboard Shortcuts (File-menu ⌘O row, Peek table) on website branch next-release (909c9ba), held for the release
 
 Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
+
+Nov 8 2026 (user): closed with the app change shipped on main (pushed 6edaf24); the website criterion moved to TASK-311, which ships branch next-release with the app release. (removed criterion: the website page update, written on next-release)
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

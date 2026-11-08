@@ -1,11 +1,11 @@
 ---
 id: TASK-309
 title: 'Dock menu: Show / Hide All Quick Detour Windows'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T10:04:00Z'
-updated_date: '2026-11-08T11:35:00Z'
+updated_date: '2026-11-08T19:54:00Z'
 labels:
   - quick-detour
   - menus
@@ -29,7 +29,6 @@ To settle while building it: hide means orderOut (windows stay open, idle auto-c
 - [x] #1 The Dock icon's menu has an item that hides every open Quick Detour window and, when they are hidden, shows them all again (title reflects the state); it is absent or disabled when no Quick Detour is open
 - [x] #2 Hidden Quick Detours keep their pages and the idle auto-close rule agreed with the user; a newly opened Quick Detour shows normally
 - [x] #3 Checked at runtime with /verify with several Quick Detours, including a Private one
-- [ ] #4 The website's Quick Detour page moves it from Not in Detour to the how-to steps
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -63,6 +62,8 @@ Website AC pending (held for release).
 Website: updated Quick Detour (/features/quick-detour/: new 'Hide them all at once' how-to for Hide All / Show All Quick Detour Windows; Arc box moved from Not in Detour to Same) on website branch next-release (3e3a2cb), held for the release
 
 Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
+
+Nov 8 2026 (user): closed with the app change shipped on main (pushed 6edaf24); the website criterion moved to TASK-311, which ships branch next-release with the app release. (removed criterion: the website page update, written on next-release)
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

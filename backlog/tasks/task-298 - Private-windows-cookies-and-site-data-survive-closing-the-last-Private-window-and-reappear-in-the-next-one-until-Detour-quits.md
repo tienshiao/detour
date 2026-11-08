@@ -3,11 +3,11 @@ id: TASK-298
 title: >-
   Private windows: cookies and site data survive closing the last Private window
   and reappear in the next one, until Detour quits
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T08:40:00Z'
-updated_date: '2026-11-08T11:18:00Z'
+updated_date: '2026-11-08T19:54:00Z'
 labels:
   - private
   - privacy
@@ -41,7 +41,6 @@ The website's Private Browsing page (detour-website src/content/features/private
 - [x] #4 Normal profiles and Quarantine windows are unaffected
 - [x] #5 Tests cover the session boundary (data set in session 1 is absent in session 2; present across two windows of one session)
 - [x] #6 Checked at runtime with /verify: cookie and localStorage gone after closing all Private windows, kept across two open Private windows
-- [ ] #7 The website's Private Browsing page and home grid line are updated to the new behavior
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -69,4 +68,12 @@ Tests: new PrivateSessionResetTests (6): cookie and every data record gone after
 Open: criterion 7 (website Private Browsing page and home grid line) is to change with the release that ships this fix; until then they describe v0.4.0.
 
 Website: updated Private Browsing (lede, description, FAQ, body, table, extensions: cleared when the last Private window or Private Quick Detour closes), the Quarantine comparison, Web Extensions' Allow in Private line and the home grid line on website branch next-release (3db4d97), held for the release
+
+Nov 8 2026 (user): closed with the app change shipped on main (pushed 6edaf24); the website criterion moved to TASK-311, which ships branch next-release with the app release. (removed criterion: the website page update, written on next-release)
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Ending the Private session (the last Private window or Private Quick Detour closes) now clears the Private profile's website data and resets its extensions: every Private extension context is unloaded, its extension storage removed, all website data types removed from the Private data store, then allowed extensions reload on a fresh origin. Covered by PrivateSessionResetTests (6) and a /verify run in real Private windows on example.com (cookie + localStorage gone in the next session). Accepted risks from review: a Private session started mid-reset may lose its first milliseconds of data (fails safe); an extension re-allowed during the reset could have its fresh context's data wiped. Website update on next-release (3db4d97), shipped by TASK-311.
+<!-- SECTION:FINAL_SUMMARY:END -->

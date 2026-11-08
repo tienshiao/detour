@@ -3,11 +3,11 @@ id: TASK-305
 title: >-
   Tab archiving: a tab playing audio or video is archived (closed) like any idle
   tab
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T09:53:00Z'
-updated_date: '2026-11-08T11:35:00Z'
+updated_date: '2026-11-08T19:54:00Z'
 labels:
   - tabs
   - archiving
@@ -32,7 +32,6 @@ Found by the TASK-292.6 code read (Nov 8 2026, not yet seen at runtime): the arc
 - [x] #2 A tab that is playing audible media is not archived; it becomes eligible once playback stops, counting from then or from its last deselection (rule agreed with the user)
 - [x] #3 Muted or paused media does not block archiving
 - [x] #4 TabStore archive tests cover playing, paused and muted tabs, with an injected clock
-- [ ] #5 The website's Tab Archiving page mentions the rule
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -68,6 +67,8 @@ Nov 8 2026 (lead review): the Delete Space undo snapshot now stores archiveClock
 Website: updated Tab Archiving (/features/tab-archiving/: a tab playing audible sound, or with an audible Peek, is never archived; the countdown restarts when the sound stops; muted/paused tabs archive as usual; FAQ too) on website branch next-release (65b076e), held for the release
 
 Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
+
+Nov 8 2026 (user): closed with the app change shipped on main (pushed 6edaf24); the website criterion moved to TASK-311, which ships branch next-release with the app release. (removed criterion: the website page update, written on next-release)
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

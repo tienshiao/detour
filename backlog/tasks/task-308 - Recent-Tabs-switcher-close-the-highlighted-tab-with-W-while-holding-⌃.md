@@ -1,11 +1,11 @@
 ---
 id: TASK-308
 title: 'Recent Tabs switcher: close the highlighted tab with W while holding ⌃'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T10:00:00Z'
-updated_date: '2026-11-08T11:35:00Z'
+updated_date: '2026-11-08T19:54:00Z'
 labels:
   - tabs
   - recent-tabs
@@ -31,7 +31,6 @@ Things to settle while building it: a split card (one card for two tabs) closes 
 - [x] #3 Closing the last card closes the switcher; releasing ⌃ afterwards selects the highlighted tab as usual
 - [x] #4 Tests cover the switcher's close handling (RecentTabOrder / switcher model) for normal, split and pinned cards
 - [x] #5 Checked at runtime with /verify
-- [ ] #6 The website's Recent Tabs page moves it from Not in Detour to the how-to steps
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -66,6 +65,8 @@ Nov 8 2026 (lead review): ⌃W now matches the typed character ('w', charactersI
 Website: updated Recent Tabs (new 'Close tabs from the switcher' section: hold ⌃ and press W; split closes both; pinned/favorites unloaded; Undo / Reopen Closed Tab; Arc box moved to Same) and Keyboard Shortcuts (switcher row) on website branch next-release (1fe0664), held for the release
 
 Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
+
+Nov 8 2026 (user): closed with the app change shipped on main (pushed 6edaf24); the website criterion moved to TASK-311, which ships branch next-release with the app release. (removed criterion: the website page update, written on next-release)
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
