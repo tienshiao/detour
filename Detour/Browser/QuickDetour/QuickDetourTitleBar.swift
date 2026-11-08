@@ -4,8 +4,9 @@ import AppKit
 /// Arc (docs/little-window/arc-little-arc.png): past the traffic lights an
 /// address capsule holding the profile pill, the page's host in the centre
 /// (click: the palette, navigating in place), the pinned extensions' buttons,
-/// the page settings button (the main window's site settings popover,
-/// TASK-210) and the copy-link button; then Open in <Space> at the trailing
+/// the copy-link button and the page settings button (the main window's site
+/// settings popover, TASK-210) at the capsule's trailing edge, in the sidebar
+/// address bar's order (TASK-299); then Open in <Space> at the trailing
 /// edge: a capsule like the address one, whose main part moves the page
 /// (TASK-193.3, Cmd+O) and whose chevron lists the spaces to move it to.
 ///
@@ -115,11 +116,12 @@ final class QuickDetourTitleBar: NSView {
         extensionStack.setContentCompressionResistancePriority(.required, for: .horizontal)
         capsule.addSubview(extensionStack)
 
-        configureIconButton(pageSettingsButton, symbol: "slider.horizontal.3", label: "Site Settings",
+        configureIconButton(copyButton, symbol: "link", label: FauxAddressBar.copyLinkLabel,
+                            action: #selector(copyClicked))
+        capsule.addSubview(copyButton)
+        configureIconButton(pageSettingsButton, symbol: "slider.horizontal.3", label: FauxAddressBar.siteSettingsLabel,
                             action: #selector(pageSettingsClicked))
         capsule.addSubview(pageSettingsButton)
-        configureIconButton(copyButton, symbol: "link", label: "Copy Link", action: #selector(copyClicked))
-        capsule.addSubview(copyButton)
 
         openInControl.wantsLayer = true
         openInControl.layer?.cornerRadius = 8
@@ -184,11 +186,13 @@ final class QuickDetourTitleBar: NSView {
             lockIcon.trailingAnchor.constraint(equalTo: hostButton.leadingAnchor, constant: -3),
             lockIcon.centerYAnchor.constraint(equalTo: hostButton.centerYAnchor),
 
-            copyButton.trailingAnchor.constraint(equalTo: capsule.trailingAnchor, constant: -6),
-            copyButton.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
-            pageSettingsButton.trailingAnchor.constraint(equalTo: copyButton.leadingAnchor, constant: -2),
+            // Copy and Site Settings sit together at the trailing edge, so they
+            // stay put whatever extensions are pinned (TASK-299).
+            pageSettingsButton.trailingAnchor.constraint(equalTo: capsule.trailingAnchor, constant: -6),
             pageSettingsButton.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
-            extensionStack.trailingAnchor.constraint(equalTo: pageSettingsButton.leadingAnchor, constant: -2),
+            copyButton.trailingAnchor.constraint(equalTo: pageSettingsButton.leadingAnchor, constant: -2),
+            copyButton.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
+            extensionStack.trailingAnchor.constraint(equalTo: copyButton.leadingAnchor, constant: -2),
             extensionStack.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
 
             openInControl.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
@@ -329,6 +333,7 @@ final class QuickDetourTitleBar: NSView {
             button.imageScaling = .scaleProportionallyDown
             button.identifier = NSUserInterfaceItemIdentifier(item.id)
             button.toolTip = ExtensionManager.shared.displayName(for: item.id)
+            button.setAccessibilityLabel(button.toolTip)
             extensionStack.addArrangedSubview(button)
         }
     }

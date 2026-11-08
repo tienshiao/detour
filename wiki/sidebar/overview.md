@@ -24,6 +24,9 @@ sources:
   - id: window
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
     title: BrowserWindowController.swift
+  - id: task-299
+    resource: backlog:TASK-299
+    title: "Address bars: the sidebar's and Quick Detour's icons in one order"
   - id: commit-b9ef265
     resource: commit:b9ef265
     title: "Sidebar: ID-based drag payloads, pure drop resolver, drag fixes"
@@ -58,7 +61,7 @@ a dispatcher.
 |---|---|---|
 | `TabSidebarViewController` | [TabSidebarViewController.swift](../../Detour/Browser/Sidebar/TabSidebarViewController.swift) | The controller. Data source, delegate and menu delegate for every page's table |
 | Title-bar row | same | Sidebar toggle, Back / Forward / Reload (`HoverButton`). Reload becomes Stop while loading |
-| `FauxAddressBar` | [FauxAddressBar.swift](../../Detour/Browser/Sidebar/FauxAddressBar.swift) | Read-only host display; click opens the [command palette](../features/command-palette.md) in place; hosts the site-settings button and pinned extension buttons |
+| `FauxAddressBar` | [FauxAddressBar.swift](../../Detour/Browser/Sidebar/FauxAddressBar.swift) | Read-only host display; click opens the [command palette](../features/command-palette.md) in place; on hover shows, left to right, the pinned extension buttons, Copy Link and Site Settings — a Quick Detour bar's order and labels (TASK-299). Copy and Site Settings are fixed at the trailing edge and extensions grow leftward from Copy, so nothing moves as extensions are pinned; all the trailing icons stay hover-only and appear together |
 | `SpacePageView` | [SpacePageView.swift](../../Detour/Browser/Sidebar/SpacePageView.swift) | One per space: `FavoritesBarView`, `SpaceHeaderView`, `FavoriteDropHintView`, a scroll view with the tab table, fade shadows |
 | `ArchivePageView` | [ArchivePageView.swift](../../Detour/Browser/Sidebar/ArchivePageView.swift) | The Archived Tabs page, left of the first space; see [closed tabs and archive](../tabs/closed-tabs-and-archive.md) |
 | `TabCellView`, `FolderCellView`, `NewTabCellView`, `SeparatorCellView`, `TabRowView` | [TabCellView.swift](../../Detour/Browser/Sidebar/TabCellView.swift), [FolderCellView.swift](../../Detour/Browser/Sidebar/FolderCellView.swift) | Row views; see [tab cell](./tab-cell.md) |

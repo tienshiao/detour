@@ -91,6 +91,9 @@ sources:
   - id: task-213
     resource: backlog:TASK-213
     title: "Site settings popover: host header, separate site switches, none in Quick Detour"
+  - id: task-299
+    resource: backlog:TASK-299
+    title: "Address bars: the sidebar's and Quick Detour's icons in one order"
   - id: harness-213
     resource: ../../docs/harness/task213-harness.patch
     title: TASK-213 runtime harness and its results
@@ -129,9 +132,15 @@ The window is a normal-level window, 900 × 640 points by default (minimum
 480 × 320), centred, each later one cascading 22 points down and right of the
 last. Its title bar, after the reference image, holds the traffic lights, an
 address capsule with the **profile pill**, the page's host in the centre, the
-pinned extensions' buttons, the **site settings** button (the main window's
-popover, [below](#the-bar-site-settings-and-handles)) and Copy Link, then
-**Open in <Space> ⌘O** at the right. The bar's background, the host and
+pinned extensions' buttons, Copy Link and the **site settings** button (the
+main window's popover, [below](#the-bar-site-settings-and-handles)) at the
+capsule's trailing edge, then **Open in <Space> ⌘O** at the right. The
+trailing icons are in the sidebar address bar's order (TASK-299, user
+decision): host … extensions, Copy Link, Site Settings, with the same
+tooltips and accessibility labels ("Copy Link", "Site Settings", an
+extension's display name). Copy and Site Settings sit together at the
+trailing edge, so they never move as extensions are pinned or unpinned;
+extensions grow leftward from Copy. The bar's background, the host and
 Open in's main part all drag the window. There is no sidebar.
 
 **Open in <Space> ⌘O** moves the page into a tab of a space and closes

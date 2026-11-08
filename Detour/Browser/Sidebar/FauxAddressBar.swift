@@ -1,6 +1,17 @@
 import AppKit
 
+/// The sidebar's address bar: the host, then (on hover) the trailing icons in
+/// the same order as a Quick Detour's bar (TASK-299): the pinned extensions,
+/// Copy Link and Site Settings. Copy and Site Settings sit together at the
+/// trailing edge, so they never move; extensions grow leftward from Copy.
 class FauxAddressBar: NSView {
+    /// The copy button's tooltip and accessibility label, shared with a Quick
+    /// Detour's title bar (TASK-299).
+    static let copyLinkLabel = "Copy Link"
+    /// The site settings button's tooltip and accessibility label, shared
+    /// with a Quick Detour's title bar.
+    static let siteSettingsLabel = "Site Settings"
+
     var displayText: String = "" {
         didSet {
             label.stringValue = displayText
@@ -20,14 +31,13 @@ class FauxAddressBar: NSView {
     private let label = NSTextField(labelWithString: "")
     private let leadingIcon = NSImageView()
     let settingsButton = HoverButton()
-    private let copyButton = HoverButton()
+    let copyButton = HoverButton()
     let pinnedExtensionStack = NSStackView()
     private var labelLeadingDefault: NSLayoutConstraint!
     private var labelLeadingAfterIcon: NSLayoutConstraint!
     private var labelTrailingToButtons: NSLayoutConstraint!
+    private var labelTrailingToStack: NSLayoutConstraint!
     private var labelTrailingToEdge: NSLayoutConstraint!
-    private var copyToStackConstraint: NSLayoutConstraint!
-    private var copyToSettingsConstraint: NSLayoutConstraint!
     private var hasPinnedExtensions = false
     private var isHovering = false
     var keepButtonsVisible = false
@@ -69,7 +79,8 @@ class FauxAddressBar: NSView {
         // Settings button
         settingsButton.bezelStyle = .inline
         settingsButton.isBordered = false
-        settingsButton.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: "Site Settings")
+        settingsButton.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: Self.siteSettingsLabel)
+        settingsButton.toolTip = Self.siteSettingsLabel
         settingsButton.contentTintColor = .secondaryLabelColor
         settingsButton.target = self
         settingsButton.action = #selector(settingsClicked)
@@ -92,7 +103,8 @@ class FauxAddressBar: NSView {
 
         copyButton.bezelStyle = .inline
         copyButton.isBordered = false
-        copyButton.image = NSImage(systemSymbolName: "link", accessibilityDescription: "Copy URL")
+        copyButton.image = NSImage(systemSymbolName: "link", accessibilityDescription: Self.copyLinkLabel)
+        copyButton.toolTip = Self.copyLinkLabel
         copyButton.contentTintColor = .secondaryLabelColor
         copyButton.target = self
         copyButton.action = #selector(copyClicked)
@@ -105,15 +117,15 @@ class FauxAddressBar: NSView {
 
         labelLeadingDefault = label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
         labelLeadingAfterIcon = label.leadingAnchor.constraint(equalTo: leadingIcon.trailingAnchor, constant: 6)
+        // On hover the label ends before the leftmost trailing icon: the
+        // extensions when there are any, Copy otherwise.
         labelTrailingToButtons = label.trailingAnchor.constraint(equalTo: copyButton.leadingAnchor, constant: -4)
+        labelTrailingToStack = label.trailingAnchor.constraint(equalTo: pinnedExtensionStack.leadingAnchor, constant: -4)
         labelTrailingToEdge = label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8)
-        copyToStackConstraint = copyButton.trailingAnchor.constraint(equalTo: pinnedExtensionStack.leadingAnchor, constant: -2)
-        copyToSettingsConstraint = copyButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -2)
 
         // Start with buttons hidden — label extends to trailing edge
         pinnedExtensionStack.isHidden = true
         labelTrailingToEdge.isActive = true
-        copyToSettingsConstraint.isActive = true
 
         NSLayoutConstraint.activate([
             leadingIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
@@ -122,7 +134,8 @@ class FauxAddressBar: NSView {
             leadingIcon.heightAnchor.constraint(equalToConstant: 14),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             copyButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            pinnedExtensionStack.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -2),
+            copyButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -2),
+            pinnedExtensionStack.trailingAnchor.constraint(equalTo: copyButton.leadingAnchor, constant: -2),
             pinnedExtensionStack.centerYAnchor.constraint(equalTo: centerYAnchor),
             settingsButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             settingsButton.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -138,8 +151,7 @@ class FauxAddressBar: NSView {
 
         hasPinnedExtensions = !items.isEmpty
         pinnedExtensionStack.isHidden = !hasPinnedExtensions
-        copyToStackConstraint.isActive = hasPinnedExtensions
-        copyToSettingsConstraint.isActive = !hasPinnedExtensions
+        updateLabelTrailing()
 
         for item in items {
             let button = HoverButton()
@@ -154,6 +166,8 @@ class FauxAddressBar: NSView {
             button.image = resized
             button.imageScaling = .scaleNone
             button.identifier = NSUserInterfaceItemIdentifier(item.id)
+            button.toolTip = ExtensionManager.shared.displayName(for: item.id)
+            button.setAccessibilityLabel(button.toolTip)
             button.translatesAutoresizingMaskIntoConstraints = false
             button.fixedHoverSize = 22
             button.setContentHuggingPriority(.required, for: .horizontal)
@@ -222,10 +236,21 @@ class FauxAddressBar: NSView {
 
     // MARK: - Mouse Tracking
 
+    /// The label's trailing edge: the bar's edge while the icons are hidden,
+    /// else the leftmost icon. The one going inactive goes first, so the
+    /// constraints never conflict.
+    private func updateLabelTrailing() {
+        let target: NSLayoutConstraint = !isHovering ? labelTrailingToEdge
+            : hasPinnedExtensions ? labelTrailingToStack : labelTrailingToButtons
+        for constraint in [labelTrailingToEdge!, labelTrailingToStack!, labelTrailingToButtons!] where constraint !== target {
+            constraint.isActive = false
+        }
+        target.isActive = true
+    }
+
     private func showButtons() {
         isHovering = true
-        labelTrailingToEdge.isActive = false
-        labelTrailingToButtons.isActive = true
+        updateLabelTrailing()
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             copyButton.animator().alphaValue = 1
@@ -238,8 +263,7 @@ class FauxAddressBar: NSView {
 
     private func hideButtons() {
         isHovering = false
-        labelTrailingToButtons.isActive = false
-        labelTrailingToEdge.isActive = true
+        updateLabelTrailing()
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             copyButton.animator().alphaValue = 0
@@ -288,45 +312,50 @@ class FauxAddressBar: NSView {
         }
     }
 
+    private enum TrailingHit {
+        case copy
+        case settings
+        case pinnedExtension(NSView)
+    }
+
+    /// The trailing button under `point`. The buttons sit 2 pt apart and each
+    /// has a padded hit area, so an exact hit on any button wins before the
+    /// padding is considered; otherwise Copy's padding would take clicks on
+    /// the edge of its neighbours.
+    private func trailingHit(at point: NSPoint) -> TrailingHit? {
+        let extensions = pinnedExtensionStack.arrangedSubviews.map { ($0, convert($0.bounds, from: $0)) }
+        for padding: CGFloat in [0, 4] {
+            if settingsButton.frame.insetBy(dx: -padding, dy: -padding).contains(point) { return .settings }
+            for (view, frame) in extensions where frame.insetBy(dx: -padding, dy: -padding).contains(point) {
+                return .pinnedExtension(view)
+            }
+            if copyButton.frame.insetBy(dx: -padding, dy: -padding).contains(point) { return .copy }
+        }
+        if copyButton.frame.insetBy(dx: -6, dy: -6).contains(point) { return .copy }
+        return nil
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        if isHovering {
-            if copyButton.frame.insetBy(dx: -6, dy: -6).contains(point) {
-                copyButton.contentTintColor = .labelColor
-                return
-            }
-            if settingsButton.frame.insetBy(dx: -4, dy: -4).contains(point) {
-                return
-            }
-            for view in pinnedExtensionStack.arrangedSubviews {
-                let buttonFrame = convert(view.bounds, from: view)
-                if buttonFrame.insetBy(dx: -4, dy: -4).contains(point) {
-                    return
-                }
-            }
+        if isHovering, let hit = trailingHit(at: point) {
+            if case .copy = hit { copyButton.contentTintColor = .labelColor }
+            return
         }
         onClick?()
     }
 
     override func mouseUp(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        guard isHovering else { return }
-        if copyButton.frame.insetBy(dx: -6, dy: -6).contains(point) {
+        guard isHovering, let hit = trailingHit(at: point) else { return }
+        switch hit {
+        case .copy:
             copyButton.contentTintColor = .secondaryLabelColor
             onCopyURL?()
-            return
-        }
-        if settingsButton.frame.insetBy(dx: -4, dy: -4).contains(point) {
+        case .settings:
             onSettingsClick?()
-            return
-        }
-        for view in pinnedExtensionStack.arrangedSubviews {
-            let buttonFrame = convert(view.bounds, from: view)
-            if buttonFrame.insetBy(dx: -4, dy: -4).contains(point) {
-                if let button = view as? HoverButton {
-                    pinnedExtensionClicked(button)
-                }
-                return
+        case .pinnedExtension(let view):
+            if let button = view as? HoverButton {
+                pinnedExtensionClicked(button)
             }
         }
     }
