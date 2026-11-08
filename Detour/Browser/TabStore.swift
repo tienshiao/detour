@@ -255,9 +255,20 @@ class Space {
         Self.makeUserContentController(for: usableProfile)
     }
 
+    /// The controllers made here, each a single tab's (an extension page's tab
+    /// shares its extension's instead). Weak.
+    private static let tabUserContentControllers = NSHashTable<WKUserContentController>.weakObjects()
+
+    /// Whether `controller` is one tab's own — what may be given scripts for
+    /// that tab alone (the debugger's instrumentation, TASK-132.16).
+    static func isTabUserContentController(_ controller: WKUserContentController) -> Bool {
+        tabUserContentControllers.contains(controller)
+    }
+
     static func makeUserContentController(for profile: Profile?) -> WKUserContentController {
         let usableProfile = profile.flatMap { $0.isDeleted ? nil : $0 }
         let controller = WKUserContentController()
+        tabUserContentControllers.add(controller)
 
         let script = WKUserScript(source: Space.linkHoverScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
         controller.addUserScript(script)

@@ -6,8 +6,8 @@ import WebKit
 // TASK-132.13: the CDP commands `chrome.debugger.sendCommand` runs. Each
 // domain Detour emulates has a handler; a method none of them takes fails the
 // way Chrome's protocol does, `{"code":-32601,"message":"'X' wasn't found"}`.
-// Input (TASK-132.14) and Runtime (TASK-132.15) add their own domain files and
-// one line each to `run`.
+// Input (TASK-132.14), Runtime (TASK-132.15) and Network (TASK-132.16) add
+// their own domain files and one line each to `run`.
 
 extension ExtensionDebugger {
 
@@ -22,6 +22,7 @@ extension ExtensionDebugger {
         case "Page": handled = ExtensionDebuggerPage.run(method, params: params, in: session, reply: reply)
         case "Input": handled = ExtensionDebuggerInput.run(method, params: params, in: session, reply: reply)
         case "Runtime": handled = ExtensionDebuggerRuntime.run(method, params: params, in: session, reply: reply)
+        case "Network": handled = ExtensionDebuggerNetwork.run(method, params: params, in: session, reply: reply)
         default: handled = false
         }
         if !handled {

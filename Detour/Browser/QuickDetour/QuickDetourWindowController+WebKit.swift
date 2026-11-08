@@ -14,7 +14,7 @@ extension QuickDetourWindowController: WKNavigationDelegate {
                  preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
         let page = tab.flatMap { $0.webView === webView ? $0 : nil }
         if navigationAction.targetFrame?.isMainFrame == true {
-            page?.didReceiveMainFrameNavigationPolicyRequest()
+            page?.didReceiveMainFrameNavigationPolicyRequest(navigationAction.request)
         }
         let policy = decidePolicy(for: navigationAction, in: webView, page: page)
         if policy == .allow, navigationAction.targetFrame?.isMainFrame == true {
@@ -110,6 +110,9 @@ extension QuickDetourWindowController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView,
                  decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
+        if navigationResponse.isForMainFrame, let page = tab, page.webView === webView {
+            page.didReceiveMainFrameResponse(navigationResponse.response)
+        }
         // An extension package is offered for install, as in a browser window
         // (in a quarantine it is a download like any other, and asked about:
         // installing would fetch it again outside the quarantine).

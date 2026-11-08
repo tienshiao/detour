@@ -13,7 +13,7 @@ extension BrowserWindowController: WKNavigationDelegate {
         // Before the decision: a navigation refused below never starts, and the
         // tab must still learn its web process read the request (TASK-176).
         if navigationAction.targetFrame?.isMainFrame == true {
-            tab(owning: webView)?.didReceiveMainFrameNavigationPolicyRequest()
+            tab(owning: webView)?.didReceiveMainFrameNavigationPolicyRequest(navigationAction.request)
         }
         let policy = await decidePolicy(for: navigationAction, in: webView)
         // Main frame only: a subframe's preferences do not govern the document's
@@ -177,6 +177,7 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
+        if navigationResponse.isForMainFrame { tab(owning: webView)?.didReceiveMainFrameResponse(navigationResponse.response) }
         switch Self.responseHandling(for: navigationResponse) {
         case .extensionPackage:
             DispatchQueue.main.async { [weak self] in

@@ -119,6 +119,22 @@ enum ExtensionDebuggerFrames {
     }
     private static let documentFacts = NSMapTable<BrowserTab, DocumentFacts>.weakToStrongObjects()
 
+    /// The loader id a provisional main-frame load will commit under, by tab:
+    /// a document's request reports it before the commit (TASK-132.16).
+    private static let provisionalLoaderIDs = NSMapTable<BrowserTab, NSString>.weakToStrongObjects()
+
+    /// A main-frame load started that a debugger reports: the loader id its
+    /// document will have.
+    static func startProvisionalLoad(for tab: BrowserTab) -> String {
+        let token = makeToken()
+        provisionalLoaderIDs.setObject(token as NSString, forKey: tab)
+        return token
+    }
+
+    static func cancelProvisionalLoad(for tab: BrowserTab) {
+        provisionalLoaderIDs.removeObject(forKey: tab)
+    }
+
     /// A new CDP-shaped token: 32 upper-case hex digits.
     static func makeToken() -> String {
         UUID().uuidString.replacingOccurrences(of: "-", with: "")
@@ -142,9 +158,12 @@ enum ExtensionDebuggerFrames {
     /// every other tab's commit costs a map lookup.
     static func tabDidCommit(_ tab: BrowserTab) {
         let session = ExtensionDebugger.shared.session(forTabUUID: tab.id)
+        let provisional = provisionalLoaderIDs.object(forKey: tab)
+        provisionalLoaderIDs.removeObject(forKey: tab)
         guard session != nil || loaderIDs.object(forKey: tab) != nil else { return }
-        loaderIDs.setObject(makeToken() as NSString, forKey: tab)
+        loaderIDs.setObject(provisional ?? (makeToken() as NSString), forKey: tab)
         guard let session else { return }
+        ExtensionDebuggerNetwork.documentDidCommit(tab, loaderID: loaderID(for: tab))
         // Chromium cancels a dialog when its frame navigates away (the
         // dialog manager's kTabNavigated), before the new document reports.
         ExtensionDebuggerDialogs.release(tabUUID: tab.id, emitClosed: true)

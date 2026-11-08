@@ -84,6 +84,9 @@ final class ExtensionDebuggerSession {
     /// CDP domains the extension enabled (`Page.enable`, …): a domain's events
     /// are sent only while it is enabled, as in Chrome.
     var enabledDomains: Set<String> = []
+    /// `Network.enable`'s `maxPostDataSize`: the longest request body, in
+    /// bytes, a `requestWillBeSent` carries (TASK-132.16).
+    var maxPostDataSize = 0
     /// Commands still being handled, failed with "Detached while handling
     /// command." if the session ends first.
     fileprivate var pending: [ObjectIdentifier: ExtensionDebuggerReply] = [:]
@@ -288,6 +291,8 @@ final class ExtensionDebugger {
             return .refused(Self.noTabError(tabID))
         }
         sessions[tab.id] = session
+        // Console and request reports, for Runtime and Network (TASK-132.16).
+        ExtensionDebuggerInstrumentation.sessionDidStart(session)
         // Navigating somewhere the extension may not be ends the attachment, as
         // Chrome's client host does on a navigation it may not follow.
         session.urlObservation = tab.$url.dropFirst().sink { [weak self, weak tab] url in

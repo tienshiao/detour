@@ -69,9 +69,16 @@ enum ExtensionDebuggerRuntime {
         switch method {
         case "Runtime.enable":
             session.enabledDomains.insert("Runtime")
+            // The document's console messages so far, then each as it comes
+            // (TASK-132.16).
+            ExtensionDebuggerInstrumentation.stateDidChange(session)
             reply.succeed()
         case "Runtime.disable":
             session.enabledDomains.remove("Runtime")
+            ExtensionDebuggerInstrumentation.stateDidChange(session)
+            reply.succeed()
+        case "Runtime.discardConsoleEntries":
+            ExtensionDebuggerInstrumentation.discardConsoleEntries(session)
             reply.succeed()
         case "Runtime.evaluate":
             ExtensionDebuggerEvaluation.evaluate(params: params, in: session, reply: reply)
@@ -306,12 +313,12 @@ enum ExtensionDebuggerEvaluation {
         return ["result": exception, "exceptionDetails": details]
     }
 
-    private static func takeExceptionID() -> Int {
+    static func takeExceptionID() -> Int {
         defer { nextExceptionID += 1 }
         return nextExceptionID
     }
 
-    private static func urlScriptID(_ url: String) -> String {
+    static func urlScriptID(_ url: String) -> String {
         if let existing = scriptIDsByURL[url] { return existing }
         let id = String(nextScriptID)
         nextScriptID += 1
@@ -340,6 +347,26 @@ enum ExtensionDebuggerEvaluation {
         guard !url.isEmpty else { return nil }
         return StackFrame(functionName: name == "global code" ? "" : name, url: url, line: max(0, line - 1),
                           column: max(0, column - 1))
+    }
+
+    /// An error's description as V8 gives it — its `stack`: `Name: message`,
+    /// then a line per frame (`at fn (url:line:column)`, 1-based).
+    static func v8ErrorDescription(name: String, message: String, callFrames: [[String: Any]]) -> String {
+        var description = message.isEmpty ? name : (name.isEmpty ? message : "\(name): \(message)")
+        for frame in callFrames {
+            let url = frame["url"] as? String ?? ""
+            let line = (frame["lineNumber"] as? Int ?? 0) + 1
+            let column = (frame["columnNumber"] as? Int ?? 0) + 1
+            let function = frame["functionName"] as? String ?? ""
+            if url.isEmpty {
+                description += "\n    at <anonymous>:\(line):\(column)"
+            } else if function.isEmpty {
+                description += "\n    at \(url):\(line):\(column)"
+            } else {
+                description += "\n    at \(function) (\(url):\(line):\(column))"
+            }
+        }
+        return description
     }
 
     /// The result of code that threw (or whose awaited value rejected).
@@ -373,21 +400,7 @@ enum ExtensionDebuggerEvaluation {
         if let error, error["isError"] as? Bool == true {
             let name = error["name"] as? String ?? (exception["className"] as? String ?? "Error")
             let message = error["message"] as? String ?? ""
-            var description = message.isEmpty ? name : (name.isEmpty ? message : "\(name): \(message)")
-            for frame in callFrames {
-                let url = frame["url"] as? String ?? ""
-                let line = (frame["lineNumber"] as? Int ?? 0) + 1
-                let column = (frame["columnNumber"] as? Int ?? 0) + 1
-                let function = frame["functionName"] as? String ?? ""
-                if url.isEmpty {
-                    description += "\n    at <anonymous>:\(line):\(column)"
-                } else if function.isEmpty {
-                    description += "\n    at \(url):\(line):\(column)"
-                } else {
-                    description += "\n    at \(function) (\(url):\(line):\(column))"
-                }
-            }
-            exception["description"] = description
+            exception["description"] = v8ErrorDescription(name: name, message: message, callFrames: callFrames)
         }
         var details: [String: Any] = [
             "exceptionId": takeExceptionID(), "text": "Uncaught",
@@ -458,10 +471,12 @@ enum ExtensionDebuggerEvaluation {
         return { chosen: -1, compileError: compileError };
         """
 
-    /// Runs in the page world, called with the evaluated function and the
-    /// options: runs it, awaits as asked, and describes what came out.
-    static let pageRunner = """
-        async function (run, options) {
+    /// Describes a value as V8 does, in the page world: `remote(value, byValue)`
+    /// gives a `RemoteObject` (throwing `Unreturnable` when a by-value result
+    /// cannot be made). It captures the page's intrinsics where it is placed:
+    /// at each evaluation in `pageRunner`, and at document start in the
+    /// console instrumentation (TASK-132.16), which shares it.
+    static let describerSource = """
             const ObjectRef = Object, ArrayRef = Array, StringRef = String;
             const toTag = ObjectRef.prototype.toString, getPrototypeOf = ObjectRef.getPrototypeOf;
             const keysOf = ObjectRef.keys, isArray = ArrayRef.isArray, define = ObjectRef.defineProperty, same = ObjectRef.is;
@@ -594,6 +609,11 @@ enum ExtensionDebuggerEvaluation {
                 if (subtype) object.subtype = subtype;
                 return object;
             };
+        """
+
+    /// Runs in the page world, called with the evaluated function and the
+    /// options: runs it, awaits as asked, and describes what came out.
+    static let pageRunner = "async function (run, options) {\n" + describerSource + "\n" + """
             const thrown = (e) => {
                 let exception;
                 try { exception = remote(e, false); } catch (failure) { exception = { type: 'object', className: 'Object', description: 'Object' }; }

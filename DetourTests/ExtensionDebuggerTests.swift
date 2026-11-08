@@ -582,6 +582,9 @@ enum DebuggerFixture {
         }
         case 'events':
             return (globalThis.__detourTestEvents || []).slice();
+        case 'clearEvents':
+            globalThis.__detourTestEvents = [];
+            return true;
         }
         throw new Error('unknown op ' + message.op);
     }

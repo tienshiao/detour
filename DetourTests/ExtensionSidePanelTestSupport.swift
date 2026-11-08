@@ -303,10 +303,14 @@ final class SidePanelTestWorld {
     /// its own ops on the same world.
     let opJS: String
     let workerJS: String
+    /// Pages the server has besides `/one` … `/four`, by path (TASK-132.16).
+    let extraRoutes: [String: String]
 
-    init(opJS: String = SidePanelFixture.opJS, workerJS: String = SidePanelFixture.workerJS) {
+    init(opJS: String = SidePanelFixture.opJS, workerJS: String = SidePanelFixture.workerJS,
+         extraRoutes: [String: String] = [:]) {
         self.opJS = opJS
         self.workerJS = workerJS
+        self.extraRoutes = extraRoutes
     }
 
     struct Loaded {
@@ -358,7 +362,7 @@ final class SidePanelTestWorld {
         let server = try LoopbackHTTPServer(routes: Dictionary(uniqueKeysWithValues:
             ["one", "two", "three", "four"].map {
                 ("/\($0)", "<html><head><title>\($0)</title></head><body><input id=\"f\">\($0)</body></html>")
-            }))
+            }).merging(extraRoutes) { _, extra in extra })
         serverPort = try await server.start()
         self.server = server
     }

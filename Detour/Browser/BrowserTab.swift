@@ -178,6 +178,9 @@ class BrowserTab: NSObject {
                 FaviconLinkBridge.register(webView, for: self)
                 ExternallyConnectablePages.track(webView)
                 MediaSessionBridge.register(webView, for: self)
+                // A debugger's instrumentation follows the tab to a new web
+                // view (TASK-132.16).
+                ExtensionDebuggerInstrumentation.tabWebViewDidChange(self)
             }
         }
     }
@@ -1528,6 +1531,7 @@ class BrowserTab: NSObject {
     /// navigation delegate the web view has, like the callbacks below.
     func didStartProvisionalNavigation() {
         applyLoadRecovery(.answered)
+        ExtensionDebuggerNetwork.documentLoadDidStart(self)
     }
 
     /// WebKit asked what to do with a main-frame navigation — through
@@ -1539,8 +1543,15 @@ class BrowserTab: NSObject {
     /// `isLoading` true nothing else would mark it answered, and the next
     /// unresponsive report — a busy page is enough — would replay it in a new
     /// process.
-    func didReceiveMainFrameNavigationPolicyRequest() {
+    func didReceiveMainFrameNavigationPolicyRequest(_ request: URLRequest) {
         applyLoadRecovery(.answered)
+        ExtensionDebuggerNetwork.documentPolicyRequest(self, request)
+    }
+
+    /// The main frame's response arrived — through whichever navigation
+    /// delegate the web view has. A debugger's `Network` domain reports it.
+    func didReceiveMainFrameResponse(_ response: URLResponse) {
+        ExtensionDebuggerNetwork.documentDidReceiveResponse(self, response)
     }
 
     func webProcessDidBecomeUnresponsive() {
@@ -1687,6 +1698,8 @@ class BrowserTab: NSObject {
     /// out a minute after commit, and became "The request timed out."
     /// (TASK-178).
     func didFailProvisionalNavigation(error: Error) {
+        // A debugger reports every failure, a superseded load's too.
+        ExtensionDebuggerNetwork.documentLoadDidFail(self, error: error)
         // A superseded load is followed by its replacement; nothing to show.
         guard !error.isIgnoredNavigationError else { return }
         // The restore of a cached session dying before it commits is not a
@@ -1819,7 +1832,9 @@ class BrowserTab: NSObject {
 extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
-        if navigationAction.targetFrame?.isMainFrame == true { didReceiveMainFrameNavigationPolicyRequest() }
+        if navigationAction.targetFrame?.isMainFrame == true {
+            didReceiveMainFrameNavigationPolicyRequest(navigationAction.request)
+        }
         guard authorizesNavigation(navigationAction, in: webView) else { return (.cancel, preferences) }
         // The window's rule (TASK-205): an `<a download>` downloads rather
         // than navigating, through `navigationAction:didBecome:` below.
@@ -1857,6 +1872,7 @@ extension BrowserTab: WKNavigationDelegate {
     /// can and drops the rest, so a background tab opened on a download link
     /// (Cmd+click) never downloaded and was left empty.
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
+        if navigationResponse.isForMainFrame { didReceiveMainFrameResponse(navigationResponse.response) }
         switch BrowserWindowController.responseHandling(for: navigationResponse) {
         case .extensionPackage:
             let url = navigationResponse.response.url
