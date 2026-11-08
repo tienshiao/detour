@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T08:40:00Z'
-updated_date: '2026-11-08T10:33:00Z'
+updated_date: '2026-11-08T11:02:00Z'
 labels:
   - ui
   - quick-detour
@@ -58,6 +58,8 @@ Implemented (Nov 8 2026, @claude):
 - Decision: the sidebar's copy stays hover-only, as all of the sidebar bar's trailing icons are (extensions and Site Settings too); they appear together on hover, and Copy's slot is fixed beside Site Settings, so its appearing moves nothing and pinning moves neither Copy nor Site Settings. Only the host label's truncation point changes on hover, as before.
 - Tests: new AddressBarIconOrderTests (5): in each bar Copy and Site Settings frames are identical with 0, 1, 3 and 0 pinned extensions, the left-to-right order is extensions, Copy, Site Settings, and both bars label Copy and Site Settings the same. Run with QuickDetourTitleBarTests (9), QuickDetourWindowTests (15), QuickDetourExtensionTests (18): 47 tests, 0 failures.
 - Runtime (/verify, DETOUR_DATA_DIR=DetourB8-299-1, temporary DEBUG harness, three seeded copies of TestExtensions/hello-world): pinned 0, 1, 3, then 0 again at runtime through ExtensionManager.toggleExtensionPinned, with the sidebar bar hovered and a Quick Detour open on example.com. Sidebar bar (200 pt): Copy x=158, Site Settings x=177 in every state; extensions at 134 / 86,110,134. Quick Detour bar: Copy x=647, Site Settings x=673 in every state; extensions at 621 / 569,595,621; Open in unchanged. Tooltips 'Copy Link', 'Site Settings', 'Hello World 1..3'. Layer captures of both bars in each state confirmed the order visually. Not checked: a Private window's sidebar bar or a second profile (the code path is the same view). Defaults keys and the data dir removed; the run's WebKit store directories under ~/Library/WebKit/com.detourbrowser.mac/ were left in place.
+
+Nov 8 2026 (lead review): /code-review medium found Copy's 6 pt padded hit area overlapping the neighbouring extension button and Site Settings (2 pt gaps), so clicks on their edges copied the link. FauxAddressBar now resolves the trailing button exactly first, then with 4 pt padding, then Copy's 6 pt (trailingHit(at:)). Built and AddressBarIconOrderTests/HelpMenuTests/QuickDetourDockMenuTests pass (47); the edge click itself was not exercised at runtime.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
