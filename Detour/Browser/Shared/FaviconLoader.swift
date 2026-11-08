@@ -15,7 +15,7 @@ final class FaviconLoader {
     /// network. The cache, the coalescing and the main-thread delivery around it
     /// are unchanged — the seam only produces (or fails to produce) an image.
     var fetch: (URL, @escaping @Sendable (NSImage?) -> Void) -> Void = { url, completion in
-        URLSession.shared.dataTask(with: url) { data, response, _ in
+        URLSession.shared.dataTask(with: URLRequest.withSafariUserAgent(url)) { data, response, _ in
             var image: NSImage?
             if let data,
                let httpResponse = response as? HTTPURLResponse,

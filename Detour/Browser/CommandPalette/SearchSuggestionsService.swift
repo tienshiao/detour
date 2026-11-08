@@ -10,7 +10,7 @@ final class SearchSuggestionsService {
         else { return [] }
 
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.data(for: URLRequest.withSafariUserAgent(url))
 
             if engine == .yahoo {
                 return parseYahooSuggestions(data)

@@ -1,0 +1,30 @@
+---
+id: TASK-292.13
+title: >-
+  Website: privacy setup guide (profiles and spaces per area of life,
+  Quarantine, the Safari user agent)
+status: To Do
+assignee: []
+created_date: '2026-11-08T21:35:00Z'
+labels:
+  - website
+dependencies:
+  - TASK-216
+parent_task_id: TASK-292
+priority: medium
+ordinal: 373000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+A guide page for privacy-conscious users on setting up Detour (user request, Nov 8 2026): separate profiles, each with its own cookies, history and extensions, and spaces for areas of life (Work, Personal, Banking, …), e.g. a Banking profile with no extensions; Link Routes sending bank and work domains to their spaces; Quarantine as the Default (or per app) for links from other apps; the Safari user agent in Settings › Profiles (after TASK-216: Safari's exact string, no Detour token, frozen macOS version); content blocker lists (EasyPrivacy); Private windows (data cleared when the last one closes, since 0.4.1) and which extensions are allowed in Private; search suggestions off. Says plainly what Detour does not hide (IP address, fonts, hardware, time zone: see wiki/platform/webkit-privacy-protections.md) and links Quarantine, Private Browsing, Profiles, Spaces, Link Routes and Content Blocker guides. Facts checked against the release that ships TASK-216; held on a website branch until then (as with next-release for 0.4.1). Media capture to schedule with the TASK-311 re-capture: Settings › Profiles with Work/Personal/Banking profiles and the User Agent set to Safari; a sidebar with those spaces; Settings › Links with bank-domain routes and Quarantine as the Default; a link from Mail opening in a quarantine window (loop); the content blocker lists.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 /features/privacy/ (or a fitting path) follows the guide template: H1 + lede, media, step-by-step setup, what Detour does and does not protect, FAQ, related features, download
+- [ ] #2 Every setting name, menu path and default is checked against the release build that ships TASK-216
+- [ ] #3 Media captured in an isolated DETOUR_DATA_DIR with seeded profiles, spaces and routes (no personal data), meeting the TASK-110 size and reduced-motion rules, at most 1800 px wide
+- [ ] #4 Linked from the features index, the Quarantine, Private Browsing and Profiles pages, and the home page if it fits; in the sitemap
+<!-- AC:END -->

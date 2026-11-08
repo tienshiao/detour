@@ -192,8 +192,7 @@ enum Quarantine {
     /// the macOS version frozen at 10_15_7, as every Safari does — and no
     /// "Detour/1" token, so the page sees one of many Safari users.
     static func userAgent(safariVersion: String) -> String {
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
-            + "Version/\(safariVersion) Safari/605.1.15"
+        UserAgentMode.safariUserAgent(safariVersion: safariVersion)
     }
 
     /// `userAgent(safariVersion:)` with the installed Safari's version.

@@ -52,7 +52,7 @@ nonisolated final class FaviconPNGLoader: Sendable {
         set { fetchSeam.withLock { $0 = newValue } }
     }
     private let fetchSeam = Mutex<Fetch>({ url, completion in
-        URLSession.shared.dataTask(with: url) { data, response, _ in
+        URLSession.shared.dataTask(with: URLRequest.withSafariUserAgent(url)) { data, response, _ in
             guard let data, (response as? HTTPURLResponse)?.statusCode == 200 else {
                 completion(nil)
                 return

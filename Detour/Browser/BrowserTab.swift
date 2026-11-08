@@ -747,7 +747,7 @@ class BrowserTab: NSObject {
             webView?.customUserAgent = profile.resolvedUserAgent()
         } else {
             // Fallback for tabs not yet assigned to a space
-            webView?.customUserAgent = "\(UserAgentMode.safariUserAgent) \(UserAgentMode.detourAppName)"
+            webView?.customUserAgent = UserAgentMode.detourUserAgent
         }
     }
 

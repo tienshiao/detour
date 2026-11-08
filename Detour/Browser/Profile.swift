@@ -11,18 +11,33 @@ enum UserAgentMode: Int {
     case safari = 1
     case custom = 2
 
-    /// Constructs a Safari-matching UA using the real macOS version and Safari version.
-    /// AppleWebKit/605.1.15 and Safari/605.1.15 are frozen tokens that never change.
-    static var safariUserAgent: String {
-        let os = ProcessInfo.processInfo.operatingSystemVersion
-        let osString = "\(os.majorVersion)_\(os.minorVersion)_\(os.patchVersion)"
-        return "Mozilla/5.0 (Macintosh; Intel Mac OS X \(osString)) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(installedSafariVersion) Safari/605.1.15"
+    /// Safari's user agent exactly as Safari sends it (TASK-216): the macOS
+    /// version frozen at 10_15_7, as every Safari and WebKit's own default
+    /// report it whatever macOS runs, and AppleWebKit/605.1.15 and
+    /// Safari/605.1.15, which never change. Only `Version/` follows the
+    /// installed Safari. The real macOS version would tell sites the exact
+    /// release and set Detour apart from every Safari on it.
+    nonisolated static func safariUserAgent(safariVersion: String) -> String {
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            + "Version/\(safariVersion) Safari/605.1.15"
+    }
+
+    /// `safariUserAgent(safariVersion:)` with the installed Safari's version:
+    /// the Safari mode's user agent, and a quarantine page's.
+    nonisolated static var safariUserAgent: String {
+        safariUserAgent(safariVersion: installedSafariVersion)
+    }
+
+    /// The Detour mode's user agent (the default): Safari's, then the Detour
+    /// token.
+    nonisolated static var detourUserAgent: String {
+        "\(safariUserAgent) \(detourAppName)"
     }
 
     /// The installed Safari's version (`CFBundleShortVersionString`), "18.0"
     /// when it cannot be read. Read once: a quarantine page asks on every
     /// navigation (`Quarantine.userAgent`).
-    static let installedSafariVersion: String = {
+    nonisolated static let installedSafariVersion: String = {
         if let bundle = Bundle(path: "/Applications/Safari.app"),
            let version = bundle.infoDictionary?["CFBundleShortVersionString"] as? String {
             return version
@@ -30,17 +45,19 @@ enum UserAgentMode: Int {
         return "18.0"
     }()
 
-    static var detourAppName: String {
+    /// "Detour/" and the major version of the app ("Detour/0" for 0.4.1):
+    /// enough to count Detour, no more.
+    nonisolated static var detourAppName: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1"
         let major = version.split(separator: ".").first.map(String.init) ?? "1"
         return "Detour/\(major)"
     }
 
-    /// Chrome-compatible UA for sites that block non-Chrome browsers (e.g. Chrome Web Store).
+    /// Chrome-compatible UA for sites that block non-Chrome browsers (e.g.
+    /// Chrome Web Store). The macOS version is frozen at 10_15_7, as Chrome
+    /// sends it (TASK-216).
     static var chromeUserAgent: String {
-        let os = ProcessInfo.processInfo.operatingSystemVersion
-        let osString = "\(os.majorVersion)_\(os.minorVersion)_\(os.patchVersion)"
-        return "Mozilla/5.0 (Macintosh; Intel Mac OS X \(osString)) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     }
 
     /// Domains that require a Chrome UA to function properly.
@@ -54,6 +71,21 @@ enum UserAgentMode: Int {
         guard let host else { return nil }
         if chromeUASpoofDomains.contains(host) { return chromeUserAgent }
         return nil
+    }
+}
+
+extension URLRequest {
+    /// A GET for `url` that Detour makes itself (favicons, search
+    /// suggestions, media artwork, OpenSearch descriptions, filter lists),
+    /// sending Safari's user agent instead of CFNetwork's
+    /// default, which names the app, its build and the Darwin version
+    /// (TASK-216). Safari's, not a profile's: these requests serve every
+    /// profile (one favicon cache), and a profile set to Safari must never
+    /// send the Detour token.
+    nonisolated static func withSafariUserAgent(_ url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.setValue(UserAgentMode.safariUserAgent, forHTTPHeaderField: "User-Agent")
+        return request
     }
 }
 
@@ -1060,7 +1092,7 @@ class Profile {
     func resolvedUserAgent() -> String? {
         switch userAgentMode {
         case .detour:
-            return "\(UserAgentMode.safariUserAgent) \(UserAgentMode.detourAppName)"
+            return UserAgentMode.detourUserAgent
         case .safari:
             return UserAgentMode.safariUserAgent
         case .custom:

@@ -1,7 +1,7 @@
 ---
 type: Platform Quirk
 title: WebKit privacy protections
-description: What the shipped macOS WebKit (macOS 26.7) offers an embedder against fingerprinting and link tracking — the _networkConnectionIntegrityPolicy SPI on WKWebpagePreferences and its obfuscated bit names, what each bit measurably does (canvas and audio noise, screen reported as the window, WebKit's own click-ID stripping that keeps utm_*), why it must be called through its IMP and not key-value coding, and what no API changes (IP, fonts, hardware concurrency, the OS version in Detour's own user agent).
+description: What the shipped macOS WebKit (macOS 26.7) offers an embedder against fingerprinting and link tracking — the _networkConnectionIntegrityPolicy SPI on WKWebpagePreferences and its obfuscated bit names, what each bit measurably does (canvas and audio noise, screen reported as the window, WebKit's own click-ID stripping that keeps utm_*), why it must be called through its IMP and not key-value coding, and what no API changes (IP, fonts, hardware concurrency); and the user agents every profile sends since TASK-216 (Safari's string with the macOS version frozen at 10_15_7, the Detour token only in the Detour mode, Safari's string on Detour's own favicon and suggestion requests), measured in page headers, navigator.userAgent and service workers.
 tags: [webkit, privacy, fingerprinting, spi, quarantine]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
@@ -122,7 +122,7 @@ What WebKit does not cover, Detour adds itself for quarantine pages:
 | Gap | Measure |
 |---|---|
 | `utm_*` and click IDs not on WebKit's list | `Quarantine.removingTrackingParameters`: a fixed list (`gclid`, `fbclid`, `msclkid`, `mc_eid`, `igshid`, `ttclid`, `_hsenc`, `mkt_tok`, …) plus every `utm_` parameter, removed from the link before it loads and from every main-frame GET the page navigates to (cancelled and loaded again without them; back/forward, reloads, POSTs, downloads and anchor jumps untouched; each clean address rewritten once per user navigation, so a page or server that insists on its parameters gets them the second time instead of a loop) |
-| Detour's user agent (`… Safari/605.1.15 Detour/1`, with the real OS version) is rarer than Safari's | Safari's own string, the OS version frozen at `10_15_7` as Safari sends it, no Detour token (`Quarantine.userAgent`) |
+| The Detour token in the default mode's user agent makes it rarer than Safari's | Safari's own string, no Detour token (`Quarantine.userAgent`, the same `UserAgentMode.safariUserAgent` the Safari mode sends) |
 | Favicons are fetched with the app's `URLSession.shared`, outside the page's store (its cookie jar is the app's) | none fetched for a quarantine page |
 
 Unlike WebKit's own filtering, which rewrites the request in place, Detour's
@@ -141,6 +141,35 @@ signs into. Quarantine makes a visit hard to link to your normal browsing
 through stored state and the common fingerprinting reads; it does not make
 you anonymous. Without the SPI (an older or changed WebKit) the store,
 user agent and parameter rule still hold.
+
+# User agents (TASK-216)
+
+Before TASK-216 every mode but Custom built the user agent with the real
+macOS version (`Intel Mac OS X 26_7_0`), which Safari never sends: Safari,
+Chrome and WebKit's own default all freeze it at `10_15_7`. That told
+sites the exact macOS release and set Detour apart from every Safari on
+the same Mac. Detour's own requests (favicons for every page visited,
+search suggestions) went out with CFNetwork's default
+(`Detour/<build> CFNetwork/… Darwin/…`). Now (`UserAgentMode` in
+`Profile.swift`):
+
+| Who | User agent |
+|---|---|
+| Safari mode, quarantine pages | `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/<installed Safari> Safari/605.1.15`, exactly Safari's |
+| Detour mode (the default) | the same, then ` Detour/<major version>` (`Detour/0` for 0.4.x): the user's choice to be counted (user decision, Nov 8 2026) |
+| Custom | the string as typed |
+| Detour's own GETs (`URLRequest.withSafariUserAgent`: favicons, search suggestions, Media Session artwork and OpenSearch descriptions via `CappedDataFetcher`, filter-list downloads) | Safari's: one favicon cache serves every profile, and a Safari-mode profile must never send the token |
+| Chrome Web Store spoof, extension updater | Chrome's, OS frozen at `10_15_7`, `Chrome/131.0.0.0` |
+
+Measured (Debug build, isolated data dir, a local server logging every
+request's `User-Agent`): the page's headers, `navigator.userAgent`, the
+service worker script request, a fetch made inside the worker and the
+worker's own `navigator.userAgent` all carried the mode's string, and
+`navigator.platform` / `navigator.vendor` read `MacIntel` / `Apple Computer,
+Inc.`, as in Safari. Not measured: extension pages and workers (WebKit's
+WKWebExtension views). A Custom profile with a blank string falls back
+to WebKit's default (`… (KHTML, like Gecko) Detour/0`, no Version/Safari),
+as before TASK-216.
 
 # Related
 

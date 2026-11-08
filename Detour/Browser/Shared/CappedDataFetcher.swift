@@ -40,7 +40,8 @@ nonisolated final class CappedDataFetcher: NSObject, URLSessionDataDelegate {
     /// `allowsRedirect` nil follows every redirect.
     func start(_ url: URL, allowsRedirect: RedirectPolicy? = nil,
                completion: @escaping @Sendable (Data?) -> Void) -> () -> Void {
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        var request = URLRequest.withSafariUserAgent(url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpShouldHandleCookies = false
         let task = session.dataTask(with: request)
         downloads.withLock {

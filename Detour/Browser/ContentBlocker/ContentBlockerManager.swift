@@ -449,7 +449,7 @@ class ContentBlockerManager {
     /// is parsed on a utility queue. `refresh` is the token of the refresh
     /// this fetch is (nil for one nobody asked for), ended on every path.
     private func fetchAndCompile(list: FilterList, conditional: Bool = true, refresh: Int? = nil) {
-        var request = URLRequest(url: list.url)
+        var request = URLRequest.withSafariUserAgent(list.url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
 
         // Add conditional fetch headers
