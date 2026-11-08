@@ -95,6 +95,10 @@ final class QuickDetourWindowController: NSWindowController {
     let quarantine: QuarantineSession?
     var isQuarantine: Bool { quarantine != nil }
 
+    /// Set by the Dock menu's Hide All (TASK-309, `QuickDetourDockMenu.swift`)
+    /// when it orders the window out; Show All clears it.
+    var isOrderedOutByDockMenu = false
+
     /// Download questions still waiting for an answer (TASK-194), answered
     /// "no" if the window goes first.
     var pendingDownloadAnswers: [UUID: (Bool) -> Void] = [:]
@@ -1083,6 +1087,9 @@ extension QuickDetourWindowController: NSWindowDelegate {
     private var privateDownloadClosing: PrivateDownloadClosePolicy.Closing { .window(downloadScope) }
 
     func windowDidBecomeKey(_ notification: Notification) {
+        // Back by any route (Show All, the Window menu, an extension): no
+        // longer the Dock menu's to show (TASK-309).
+        isOrderedOutByDockMenu = false
         noteUse()
         announceExtensionActiveTabIfChanged()
         // Another space may have been used since (the most recent one).

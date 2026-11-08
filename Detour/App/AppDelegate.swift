@@ -691,6 +691,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "New Window", action: #selector(createNewWindow as () -> Void), keyEquivalent: "")
         menu.addItem(withTitle: "New Private Window", action: #selector(createNewIncognitoWindow), keyEquivalent: "")
+        addQuickDetourDockMenuItem(to: menu)
         return menu
     }
 

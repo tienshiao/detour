@@ -127,6 +127,12 @@ the responder chain to the key window's controller, which validates them in
 Dynamic items are tagged (`spacesMenuTag`, `extensionMenuTag`,
 `extensionInspectorTag`) so a rebuild removes exactly what it added.
 
+The **Dock menu** (`applicationDockMenu`, built fresh each time macOS asks):
+New Window, New Private Window, then, while any Quick Detour is open and not
+all are minimized, one item flipping between Hide All and Show All Quick
+Detour Windows (TASK-309, `addQuickDetourDockMenuItem`; see
+[Quick Detour](../features/quick-detour.md#the-dock-menu-hide-all--show-all)).
+
 Two rules for anything that builds an extension menu item:
 
 - **Never read `action.popupWebView`.** It is created lazily, so reading it

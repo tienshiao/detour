@@ -94,6 +94,9 @@ sources:
   - id: task-300
     resource: backlog:TASK-300
     title: "Link context menu: Open Link in Quick Detour"
+  - id: task-309
+    resource: backlog:TASK-309
+    title: "Dock menu: Show / Hide All Quick Detour Windows"
   - id: task-299
     resource: backlog:TASK-299
     title: "Address bars: the sidebar's and Quick Detour's icons in one order"
@@ -1026,6 +1029,37 @@ an injected clock (`now`) and settings. **Debug override**:
 `DETOUR_QUICK_DETOUR_IDLE_SECONDS=<n>` replaces the interval of any setting
 but Never and checks every n/4 seconds (at least 1, at most 60); read in
 Debug builds only.
+
+## The Dock menu: Hide All / Show All
+
+TASK-309 (user decisions, Nov 8 2026), after Arc's "Show/Hide All Little Arc
+Windows". Detour's Dock menu (`AppDelegate.applicationDockMenu`: New Window,
+New Private Window) gets one more item after a separator, whose title flips
+between **Hide All Quick Detour Windows** and **Show All Quick Detour
+Windows** ([QuickDetourDockMenu.swift](../../Detour/Browser/QuickDetour/QuickDetourDockMenu.swift)).
+No main-menu counterpart.
+
+- **Which windows**: every open Quick Detour, Private ones included;
+  quarantine windows are not (decided here: they are not Quick Detours on
+  a profile, and the item does not name them).
+- **The rule** is pure, `QuickDetourDockAction.action(for:)` over each
+  window's `QuickDetourDockWindowState`: `onScreen` (visible, not
+  minimized), `hiddenByDockMenu` (ordered out by the item and still out:
+  `isOrderedOutByDockMenu` and not visible) or `elsewhere` (minimized, or
+  out with the app hidden). Hide All while any is on screen; Show All when
+  none is but some were hidden by the item; **no item** when no Quick
+  Detour is open, or when every one is minimized (nothing to hide, nothing
+  hidden). The title is computed each time macOS asks for the Dock menu.
+- **Hide** orders the on-screen ones out (`orderOut`): they stay open with
+  their pages. **Show** orders the hidden ones front, oldest first, the
+  newest key, and activates Detour. Minimized windows are left alone.
+- **Idle auto-close keeps running while hidden** (user decision): a hidden
+  window is not visible, so never frontmost, so the rule closes it once it
+  has gone unused for the interval, as one behind other windows would be.
+- **A new Quick Detour shows normally and does not unhide the others**
+  (decided here, the conservative option): the item then reads Hide All
+  (one is on screen) and hides it with the rest; the next Show All brings
+  them all back.
 
 ## The Settings section
 
