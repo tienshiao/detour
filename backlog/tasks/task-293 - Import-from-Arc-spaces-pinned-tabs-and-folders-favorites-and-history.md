@@ -4,6 +4,7 @@ title: 'Import from Arc: spaces, pinned tabs and folders, favorites, and history
 status: To Do
 assignee: []
 created_date: '2026-11-08T06:59:00Z'
+updated_date: '2026-11-08T07:54:00Z'
 labels:
   - import
 dependencies: []
@@ -33,3 +34,12 @@ What to verify before scoping (from memory during planning, not checked): Arc ke
 - [ ] #8 A missing or unreadable Arc install fails with a clear message and changes nothing
 - [ ] #9 Parsing and mapping are unit-tested against fixture files covering nested folders, multiple profiles and an empty sidebar
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 7 2026 (found while building the Arc hub, TASK-292.3; Arc's help center via the Wayback Machine, captures Oct 22-Nov 7 2026):
+- Arc is being sunset on December 22, 2026 (announced Oct 22): Arc for macOS stops working that day, sign-in ends, accounts are deactivated and their data deleted within 30 days. The Browser Company points users to Dia, which imports Spaces, Favorites, pinned tabs, folders, bookmarks, history, passwords and extensions straight from Arc ("Arc Sunset: Key Dates and What to Expect", "Move from Arc to Dia"; Dia "finds your Arc data through the Arc app, so keep Arc installed until your import finishes").
+- Arc now has an export: Arc › Settings › Advanced › Export Data saves "Arc Data Export.md", a section per Space listing Favorites, pinned tabs, folders and other sidebar tabs as links ("How Do I Export My Data from Arc?"). Folders also have Copy All Links (and, holding Option, Copy All Links as Markdown).
+- Implications to weigh before scoping: importing Arc Data Export.md is a documented, stable format that survives the shutdown (a user can export now and import later), while reading Arc's own files works only as long as their format holds and people still have them; after Dec 22 nobody can open Arc to export, so the value of an importer is front-loaded into the next six weeks.
+<!-- SECTION:NOTES:END -->
