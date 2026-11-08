@@ -593,6 +593,11 @@ class Profile {
         // And its tab group event waits: they belong to the origin that is
         // going away (TASK-132.12).
         polyfillHandler?.tabGroupEvents?.drop(extensionID: id)
+        // And its debugger attachments and event waits (TASK-132.13): the
+        // attached tabs are released, and the extension is not told (Chrome
+        // does not tell an extension that is going away).
+        ExtensionDebugger.shared.extensionWillUnload(id, profileID: self.id)
+        polyfillHandler?.debuggerEvents?.drop(extensionID: id)
         // And the session header rules: WebKit drops its session rules with the
         // context, so Detour's part of them goes too (TASK-132.4).
         polyfillHandler?.forgetSessionHeaderRules(for: id)

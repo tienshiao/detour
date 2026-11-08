@@ -2,16 +2,13 @@ import XCTest
 import WebKit
 @testable import Detour
 
-/// TASK-132.4: the INTERIM `chrome.tabGroups` / `chrome.debugger` stand-ins
-/// (`ExtensionAPIPolyfill.interimNamespacesJS`) in a real extension context —
-/// the service worker and an extension page.
-///
-/// They exist for one reason: the Claude extension's worker dereferences
+/// TASK-132.4: the Claude extension's worker dereferences
 /// `chrome.tabGroups.Color` and `chrome.debugger.onEvent` while its modules are
-/// still being evaluated, so without the namespaces the worker never loads. The
-/// fixture worker here does the same two things at module evaluation and must
-/// come up. TASK-132.12 and TASK-132.13 replace the stand-ins with the real
-/// APIs; until then no method of either API may exist.
+/// still being evaluated, so without the namespaces the worker never loads.
+/// TASK-132.4 added interim stand-ins for that; TASK-132.12 and TASK-132.13
+/// replaced them with the real APIs. The fixture worker here still does the
+/// same two things at module evaluation and must come up, in a real extension
+/// context — the service worker and an extension page.
 nonisolated final class ExtensionInterimNamespacesTests: XCTestCase {
 
     private var tempDirs: [URL] = []
@@ -73,7 +70,7 @@ nonisolated final class ExtensionInterimNamespacesTests: XCTestCase {
         const out = {
             tabGroupsType: typeof tg,
             debuggerType: typeof dbg,
-            state: globalThis.__detourInterimNamespaces,
+            state: { debugger: globalThis.__detourDebuggerInstall },
             contextKind: globalThis.__detourContextKind,
             tabsGroup: typeof chrome.tabs.group,
             tabsUngroup: typeof chrome.tabs.ungroup,
@@ -206,11 +203,10 @@ nonisolated final class ExtensionInterimNamespacesTests: XCTestCase {
 
     // MARK: - Tests
 
-    /// The point of the stand-ins: a worker that reads `chrome.tabGroups.Color`
-    /// and registers `chrome.debugger` listeners while its module is evaluated
-    /// loads, in the shape the Claude extension's does. Since TASK-132.12
-    /// `chrome.tabGroups` is the real API; `chrome.debugger` is still
-    /// never-firing events only, with no method.
+    /// A worker that reads `chrome.tabGroups.Color` and registers
+    /// `chrome.debugger` listeners while its module is evaluated loads, in the
+    /// shape the Claude extension's does. Both are the real APIs
+    /// (TASK-132.12, TASK-132.13).
     @MainActor func testWorkerThatTouchesBothNamespacesAtEvaluationLoads() async throws {
         let world = try await makeWorld(
             try await makeExtension(permissions: ["tabGroups", "debugger", "tabs", "storage"], touchingAtEvaluation: true))
@@ -222,31 +218,29 @@ nonisolated final class ExtensionInterimNamespacesTests: XCTestCase {
         XCTAssertEqual(evaluated["colors"] as? [String],
                        ["blue", "cyan", "green", "orange", "red", "pink", "purple", "grey"])
         XCTAssertEqual(evaluated["none"] as? Int, -1)
-        XCTAssertEqual(worker["debuggerEvents"] as? Int, 0, "the stand-in's events never fire")
+        XCTAssertEqual(worker["debuggerEvents"] as? Int, 0, "nothing is attached, so nothing fires")
 
         for via in Via.allCases {
             let result = try await probe(via, in: world)
-            // chrome.tabGroups is the real API since TASK-132.12; only the
-            // debugger stand-in is interim.
-            XCTAssertEqual(result["state"] as? [String: String], ["debugger": "interim"], "\(via)")
+            XCTAssertEqual(result["state"] as? [String: String], ["debugger": "polyfill"], "\(via)")
             XCTAssertEqual(result["color"] as? [String: String], Self.chromeColors, "\(via)")
             XCTAssertEqual(result["none"] as? Int, -1, "\(via)")
             XCTAssertEqual(result["tabGroupsKeys"] as? [String],
                            ["Color", "TAB_GROUP_ID_NONE", "get", "move", "onCreated", "onMoved", "onRemoved", "onUpdated",
                             "query", "update"], "\(via)")
-            XCTAssertEqual(result["debuggerKeys"] as? [String], ["onDetach", "onEvent"], "\(via)")
+            XCTAssertEqual(result["debuggerKeys"] as? [String],
+                           ["DetachReason", "TargetInfoType", "attach", "detach", "getTargets", "onDetach", "onEvent",
+                            "sendCommand"], "\(via)")
             XCTAssertEqual(result["survivesReread"] as? Bool, true, "\(via)")
             XCTAssertEqual(result["hasListener"] as? Bool, true, "\(via)")
             XCTAssertEqual(result["removed"] as? Bool, true, "\(via)")
             XCTAssertEqual(result["viaBrowserColor"] as? String, "blue", "\(via): browser.tabGroups must be there too")
             XCTAssertEqual(result["viaBrowserDebugger"] as? String, "function", "\(via): browser.debugger must be there too")
 
-            // The tab groups API is whole (TASK-132.12); the debugger's methods
-            // still do not exist, so a feature test for one says "not here"
-            // (TASK-132.13).
             XCTAssertEqual(result["tabGroupsMethods"] as? [String],
                            ["get", "query", "update", "move", "onCreated", "onUpdated", "onRemoved", "onMoved"], "\(via)")
-            XCTAssertEqual(result["debuggerMethods"] as? [String], [], "\(via)")
+            XCTAssertEqual(result["debuggerMethods"] as? [String], ["attach", "detach", "sendCommand", "getTargets"],
+                           "\(via)")
             XCTAssertEqual(result["tabsGroup"] as? String, "function", "\(via)")
             XCTAssertEqual(result["tabsUngroup"] as? String, "function", "\(via)")
 
@@ -280,8 +274,9 @@ nonisolated final class ExtensionInterimNamespacesTests: XCTestCase {
             let result = try await probe(via, in: world)
             XCTAssertEqual(result["tabGroupsType"] as? String, "undefined", "\(via)")
             XCTAssertEqual(result["debuggerType"] as? String, "object", "\(via)")
-            XCTAssertEqual(result["state"] as? [String: String], ["debugger": "interim"], "\(via)")
-            XCTAssertEqual(result["debuggerMethods"] as? [String], [], "\(via)")
+            XCTAssertEqual(result["state"] as? [String: String], ["debugger": "polyfill"], "\(via)")
+            XCTAssertEqual(result["debuggerMethods"] as? [String], ["attach", "detach", "sendCommand", "getTargets"],
+                           "\(via)")
         }
     }
 }

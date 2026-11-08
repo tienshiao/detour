@@ -1,0 +1,171 @@
+TASK-132.13 runtime harness: installs the API Explorer into an isolated profile, attaches chrome.debugger from a page and from the worker, captures, presses Stop with a posted click, closes an attached tab. Temporary, never committed to Detour/.
+
+    git apply docs/harness/task132.13-harness.patch && xcodegen generate && build
+    DETOUR_DATA_DIR=DetourVerify13213-<n> DETOUR_VERIFY_DIR=$OUT DETOUR_API_EXPLORER=$PWD/TestExtensions/api-explorer .derived/.../Detour
+    # "SHOOT <name> <windowNumber>" lines in $OUT/verify.log cue screencapture -l; ends with "done".
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 2f165c2..45fa7a0 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -149,6 +149,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask13213HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task13213Harness.swift b/Detour/App/Task13213Harness.swift
+new file mode 100644
+index 0000000..e55091d
+--- /dev/null
++++ b/Detour/App/Task13213Harness.swift
+@@ -0,0 +1,145 @@
++// TEMP TASK-132.13 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask13213HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"], let explorerPath = env["DETOUR_API_EXPLORER"] else { return }
++        let out = URL(fileURLWithPath: outDir)
++        let logURL = out.appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier)")
++        guard let window = wc.window, let space = wc.activeSpace, let profile = wc.activeSpace?.profile else { return log("no window/space") }
++        let store = TabStore.shared
++
++        func page(_ title: String, _ color: String) -> URL {
++            let html = "<title>\(title)</title><body style='margin:0;font:28px system-ui;background:\(color);height:2400px'>"
++                + "<div style='position:fixed;left:0;top:0;width:100px;height:100px;background:rgb(255,0,0)'></div>"
++                + "<p style='margin:140px 40px 0'>\(title) page</p></body>"
++            return URL(string: "data:text/html," + html.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)!
++        }
++
++        Task { @MainActor in
++            @MainActor func sleep(_ s: Double) async { try? await Task.sleep(for: .milliseconds(Int(s * 1000))) }
++            do {
++                let ext = try ExtensionManager.shared.install(from: URL(fileURLWithPath: explorerPath))
++                log("installed \(ext.id)")
++                await sleep(2)
++                guard let context = profile.extensionContext(for: ext.id) else { return log("no context") }
++                let alpha = store.addTab(in: space, url: page("Alpha", "rgb(0,0,255)"))
++                let bravo = store.addTab(in: space, url: page("Bravo", "rgb(0,160,0)"))
++                let charlie = store.addTab(in: space, url: page("Charlie", "rgb(240,240,240)"))
++                wc.selectTab(id: alpha.id)
++                await sleep(3)
++                let extPage = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300),
++                                        configuration: context.webViewConfiguration!)
++                extPage.load(URLRequest(url: context.baseURL.appendingPathComponent("options.html")))
++                await sleep(3)
++
++                @MainActor func js(_ body: String) async -> Any? {
++                    do {
++                        let raw = try await extPage.callAsyncJavaScript(
++                            "try { return JSON.stringify({ ok: true, value: await (async () => { \(body) })() }); } catch (e) { return JSON.stringify({ ok: false, error: String(e && e.message || e) }); }",
++                            arguments: [:], contentWorld: .page)
++                        let text = raw as? String ?? "nil"
++                        log("JS -> \(text.count > 400 ? String(text.prefix(400)) + "…" : text)")
++                        return (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
++                    } catch { log("JS threw \(error)"); return nil }
++                }
++                @MainActor func state(_ label: String) {
++                    log("STATE \(label): selected=\(wc.selectedTab?.title ?? "nil") firstResponder=\(window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil")")
++                    for tab in [alpha, bravo, charlie] {
++                        let banner = tab.webViewContainer?.automationBanner
++                        log("  \(tab.title): owners=\(tab.automationOwners.map(\.extensionID)) hosting=\(tab.automationHosting) banner=\(tab.webViewContainer?.isShowingAutomationBanner ?? false) text=\"\(banner?.titleLabel.stringValue ?? "-")\" session=\(ExtensionDebugger.shared.session(forTabUUID: tab.id) != nil)")
++                    }
++                    let table = wc.tabSidebar.tableView
++                    for row in 0 ..< table.numberOfRows {
++                        guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView else { continue }
++                        log("  row \"\(cell.titleLabel.stringValue)\" indicator=\(cell.isShowingAutomationIndicator) tooltip=\(cell.automationIndicator.toolTip ?? "-")")
++                    }
++                }
++                @MainActor func shoot(_ name: String) async {
++                    log("SHOOT \(name) \(window.windowNumber)")
++                    await sleep(2.5)
++                }
++
++                // Tab ids as the extension sees them.
++                let ids = await js("const targets = await chrome.debugger.getTargets(); return targets.map(t => [t.tabId, t.title]);")
++                let pairs = ((ids as? [String: Any])?["value"] as? [[Any]]) ?? []
++                @MainActor func id(_ title: String) -> Int { pairs.first { $0[1] as? String == title }?[0] as? Int ?? -1 }
++                let a = id("Alpha"), b = id("Bravo"), c = id("Charlie")
++                log("ids Alpha=\(a) Bravo=\(b) Charlie=\(c)")
++
++                // Bravo (unselected) from the page; Alpha (selected) from the worker.
++                _ = await js("await chrome.debugger.attach({ tabId: \(b) }, '1.3'); return 'ok';")
++                _ = await js("return await chrome.runtime.sendMessage({ type: 'debuggerOp', op: 'attach', target: { tabId: \(a) } });")
++                _ = await js("return await chrome.debugger.getTargets();")
++                state("after attach")
++                await shoot("01-attached")
++
++                for (name, tabId) in [("alpha", a), ("bravo", b)] {
++                    let shot = await js("""
++                        const v = await chrome.debugger.sendCommand({ tabId: \(tabId) }, 'Page.captureScreenshot', { format: 'png' });
++                        const bytes = Uint8Array.from(atob(v.data), (ch) => ch.charCodeAt(0));
++                        const bitmap = await createImageBitmap(new Blob([bytes]));
++                        return { b64: v.data, width: bitmap.width, height: bitmap.height };
++                        """)
++                    if let value = (shot as? [String: Any])?["value"] as? [String: Any], let b64 = value["b64"] as? String, let data = Data(base64Encoded: b64) {
++                        try? data.write(to: out.appendingPathComponent("capture-\(name).png"))
++                        log("capture \(name): \(value["width"] ?? "?")x\(value["height"] ?? "?")")
++                    }
++                }
++                let clip = await js("""
++                    const v = await chrome.debugger.sendCommand({ tabId: \(b) }, 'Page.captureScreenshot', { format: 'jpeg', quality: 60, clip: { x: 0, y: 0, width: 200, height: 200, scale: 0.5 } });
++                    const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(v.data), (ch) => ch.charCodeAt(0))]));
++                    return { b64: v.data, width: bitmap.width, height: bitmap.height };
++                    """)
++                if let value = (clip as? [String: Any])?["value"] as? [String: Any], let b64 = value["b64"] as? String, let data = Data(base64Encoded: b64) {
++                    try? data.write(to: out.appendingPathComponent("capture-bravo-clip.jpg"))
++                    log("clip bravo: \(value["width"] ?? "?")x\(value["height"] ?? "?")")
++                }
++                _ = await js("const r = await new Promise((res) => chrome.debugger.sendCommand({ tabId: \(b) }, 'Nope.nope', {}, () => res(chrome.runtime.lastError && chrome.runtime.lastError.message))); return r;")
++                _ = await js("return await chrome.runtime.sendMessage({ type: 'debuggerEventsClear' });")
++
++                // Stop on Alpha's capsule: a click posted to the app.
++                if let button = alpha.webViewContainer?.automationBanner?.stopButton {
++                    let p = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
++                    log("click Stop at \(p)")
++                    for (n, type) in [NSEvent.EventType.leftMouseDown, .leftMouseUp].enumerated() {
++                        if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
++                                                      timestamp: ProcessInfo.processInfo.systemUptime,
++                                                      windowNumber: window.windowNumber, context: nil,
++                                                      eventNumber: 100 + n, clickCount: 1,
++                                                      pressure: type == .leftMouseDown ? 1 : 0) {
++                            NSApp.postEvent(e, atStart: false)
++                        }
++                    }
++                } else { log("no Stop button on Alpha") }
++                await sleep(1.5)
++                state("after Stop")
++                _ = await js("return await chrome.runtime.sendMessage({ type: 'debuggerEvents' });")
++                await shoot("02-after-stop")
++
++                // Close the attached Bravo.
++                store.closeTab(id: bravo.id, in: space, undoable: false, registersUndo: false)
++                await sleep(1.5)
++                _ = await js("return await chrome.runtime.sendMessage({ type: 'debuggerEvents' });")
++                _ = await js("return await chrome.debugger.getTargets();")
++                log("done")
++                _ = charlie
++            } catch {
++                log("harness error \(error)")
++            }
++        }
++    }
++}
++#endif

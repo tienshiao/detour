@@ -307,6 +307,11 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// `tabGroups.awaitEvent`; see `ExtensionPolyfillHandler+TabGroups.swift`.
     var tabGroupEvents: ExtensionTabGroupEvents?
 
+    /// Where `chrome.debugger` events wait for this profile's contexts
+    /// (TASK-132.13), made at the first debugger request; see
+    /// `ExtensionPolyfillHandler+Debugger.swift`.
+    var debuggerEvents: ExtensionEventParking?
+
     /// Drop the extension's console rate-limit window, for context unload
     /// (`Profile.unloadExtension`). A reloaded context gets a fresh burst.
     func forgetConsoleRateLimit(for extensionID: String) {
@@ -1323,6 +1328,11 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         case _ where type.hasPrefix("tabGroups."):
             handleTabGroupsRequest(type, params: params, extensionID: extensionID,
                                    sender: sender, senderWebView: senderWebView, replyHandler: replyHandler)
+
+        // MARK: - Debugger (TASK-132.13)
+        case _ where type.hasPrefix("debugger."):
+            handleDebuggerRequest(type, params: params, extensionID: extensionID,
+                                  sender: sender, senderWebView: senderWebView, replyHandler: replyHandler)
 
         // MARK: - Side panel (TASK-132.8)
         case _ where type.hasPrefix("sidePanel."):

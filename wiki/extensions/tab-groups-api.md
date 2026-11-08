@@ -95,7 +95,8 @@ twice.
 # Events
 
 `ExtensionTabGroupEvents`, one per profile, made at the first wait, observes
-TabStore and queues:
+TabStore and queues into an `ExtensionEventParking` (the slot machinery,
+shared with the [debugger events](./debugger-api.md) since TASK-132.13):
 
 - `created`, `updated`, `removed`, `moved` for the group events (only for an
   extension whose `tabGroups` permission is active);

@@ -80,7 +80,7 @@ struct ExtensionAPIPolyfill {
             permissionsOriginPortJS,
             tabResolveJS,
             declarativeNetRequestJS,
-            interimNamespacesJS,
+            debuggerJS,
             sidePanelJS,
             tabGroupsJS,
             fontSettingsJS,
@@ -130,11 +130,11 @@ struct ExtensionAPIPolyfill {
         // without the permission, else the install mode, the enums it defined and
         // whether fetch / XMLHttpRequest apply the header rules.
         try { __detourPolyfillDiag.apis.declarativeNetRequest = globalThis.__detourDeclarativeNetRequest.install + ' [enums: ' + globalThis.__detourDeclarativeNetRequest.enums + '; fetch: ' + globalThis.__detourDeclarativeNetRequest.fetch + '; xhr: ' + globalThis.__detourDeclarativeNetRequest.xhr + ']'; } catch(e) { __detourPolyfillDiag.apis.declarativeNetRequest = 'error: ' + e.message; }
-        // INTERIM stand-ins (TASK-132.4, until TASK-132.12 / TASK-132.13): 'absent'
-        // without the permission, 'interim' for Detour's constants-only /
-        // events-only namespace, 'native' once something real is there.
+        // chrome.tabGroups (TASK-132.12) and chrome.debugger (TASK-132.13): 'absent'
+        // without the permission, 'polyfill' for Detour's, 'native' once
+        // something else is there.
         try { __detourPolyfillDiag.apis.tabGroups = globalThis.__detourTabGroupsInstall + ' [tabs: ' + globalThis.__detourTabGroupsTabsPatch + ']'; } catch(e) { __detourPolyfillDiag.apis.tabGroups = 'error: ' + e.message; }
-        try { __detourPolyfillDiag.apis.debugger = globalThis.__detourInterimNamespaces.debugger; } catch(e) { __detourPolyfillDiag.apis.debugger = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.debugger = globalThis.__detourDebuggerInstall; } catch(e) { __detourPolyfillDiag.apis.debugger = 'error: ' + e.message; }
         // chrome.sidePanel (TASK-132.8): 'absent' without the permission, 'polyfill'
         // for Detour's, 'native' if WebKit ever vends one.
         try { __detourPolyfillDiag.apis.sidePanel = globalThis.__detourSidePanelInstall; } catch(e) { __detourPolyfillDiag.apis.sidePanel = 'error: ' + e.message; }
@@ -4059,83 +4059,290 @@ struct ExtensionAPIPolyfill {
     })();
     """
 
-    // MARK: - INTERIM: chrome.tabGroups / chrome.debugger stand-ins
+    // MARK: - chrome.debugger
 
-    /// **Interim stand-ins, to be replaced by TASK-132.12 (`chrome.tabGroups`,
-    /// `tabs.group` / `tabs.ungroup`) and TASK-132.13 (`chrome.debugger`).**
-    /// Neither API is implemented. WebKit vends neither namespace, and the
-    /// Claude extension's service worker dereferences both while its modules
-    /// are still being evaluated —
-    /// `static SESSION_GROUP_COLORS = [chrome.tabGroups.Color.BLUE, …]` and
-    /// `chrome.debugger.onEvent.addListener(…)` in a constructor run at import —
-    /// so without them the worker fails to load at all and nothing else about
-    /// the extension can be tested (TASK-132.4).
+    /// TASK-132.13. WebKit vends no `chrome.debugger` and has no DevTools
+    /// protocol; the native side (`ExtensionDebugger`,
+    /// `ExtensionPolyfillHandler+Debugger.swift`) emulates the CDP methods the
+    /// Claude extension sends, one domain at a time.
     ///
-    /// What is defined, and nothing more:
-    ///  - `chrome.tabGroups`: `Color` (Chrome's nine names) and
-    ///    `TAB_GROUP_ID_NONE` (-1). Constants only.
-    ///  - `chrome.debugger`: `onEvent` and `onDetach`, event emitters that
-    ///    **never fire**.
-    /// No method exists on either — no `tabGroups.get/query/update/move`, no
-    /// `debugger.attach/detach/sendCommand/getTargets`, and no `tabs.group` /
-    /// `tabs.ungroup` — so an extension that feature-tests a method still sees
-    /// it missing, and one that calls it gets the TypeError it got before. An
-    /// extension that feature-tests the *namespace* does now see an object:
-    /// that is the cost of letting the worker load, and why this is interim.
+    /// Installed only when the manifest declares `debugger` (in `permissions`
+    /// or `optional_permissions`), as Chrome leaves an undeclared namespace
+    /// out; the handler checks the live permission on every call. An own
+    /// property on `chrome` — WebKit vends no such namespace, so it is read
+    /// normally (docs/chrome-runtime-patching.md); a distinct `browser` global
+    /// gets the same object. Neither global is replaced (TASK-15).
     ///
-    /// Each namespace is defined only when the manifest declares its permission
-    /// (`tabGroups` / `debugger`), as Chrome leaves an undeclared namespace out,
-    /// and only when nothing is there already: a namespace WebKit (or the real
-    /// implementation) vends is never touched and reads `'native'`. WebKit
-    /// vends neither, so an own property on `chrome` is read normally
-    /// (docs/chrome-runtime-patching.md, as for the `webRequest` stub); a
-    /// distinct `browser` global gets the same object. The stand-in carries a
-    /// non-enumerable `_detourInterim` marker so a second run in the same realm
-    /// keeps reporting it as `'interim'`.
+    /// - `attach(target, version)`: the tab id goes through the tab-id bridge
+    ///   (`__detourResolveTab`) once; the native side keeps the id with the
+    ///   attachment, so `detach`, `sendCommand` and every event name the tab
+    ///   by id alone — no bridge round trip per command, and an event reaches
+    ///   a context that never resolved the tab (the Claude extension attaches
+    ///   from its worker and from its side panel).
+    /// - `getTargets()`: the tabs `tabs.query({})` lists (WebKit's own query,
+    ///   undecorated), each resolved, as `page` targets with
+    ///   `id: 'detour-tab-<handle>'`. No background pages or workers.
+    /// - Targets: `{tabId}`, or a `{targetId}` from `getTargets`; an
+    ///   `{extensionId}` target is refused ("Cannot attach to this target.").
+    ///   A `sessionId` (child sessions) is not emulated.
+    /// - `onEvent` / `onDetach`: while the context has a listener it parks
+    ///   `debugger.awaitEvent` (one context, one wait; acknowledged by `seq`),
+    ///   the channel `ExtensionEventParking` describes.
     ///
-    /// `globalThis.__detourInterimNamespaces` = `{ tabGroups, debugger }`, each
-    /// `'absent'` (permission not declared) | `'interim'` | `'native'` |
-    /// `'define-failed'` | `'error: …'`.
-    private static let interimNamespacesJS = """
+    /// Errors read as Chrome's: API errors as Chrome words them, protocol
+    /// errors as the JSON of CDP's error object. A bad argument rejects (or
+    /// sets `lastError`) where Chrome throws.
+    ///
+    /// `globalThis.__detourDebuggerInstall`: `'absent'` (not declared) |
+    /// `'polyfill'` | `'native'` | `'define-failed'` | `'error: …'`.
+    private static let debuggerJS = """
     (function() {
         const g = globalThis;
+        // A second run in the same realm keeps the first run's object: it holds
+        // the listeners, and a second park loop under the same context
+        // instance would supersede the first one's wait.
+        const previous = g.__detourDebuggerInstall;
+        if (previous === 'polyfill' || previous === 'absent' || previous === 'native') return;
         const chrome = g.chrome;
-
-        const install = function(name, build) {
-            try {
-                const existing = chrome[name];
-                if (existing !== undefined && existing !== null) {
-                    return existing._detourInterim === true ? 'interim' : 'native';
-                }
-                if (__detourManifestPermissions().indexOf(name) === -1) return 'absent';
-                const standIn = build();
-                Object.defineProperty(standIn, '_detourInterim', { value: true, enumerable: false });
-                __detourDefine(chrome, name, standIn);
-                if (chrome[name] !== standIn) return 'define-failed';
-                try {
-                    if (g.browser && g.browser !== chrome && (g.browser[name] === undefined || g.browser[name] === null)) {
-                        __detourDefine(g.browser, name, standIn);
-                    }
-                } catch (e) {}
-                return 'interim';
-            } catch (e) {
-                return 'error: ' + (e && e.message ? e.message : String(e));
+        let install = 'absent';
+        try {
+            if (!chrome) { install = 'no-chrome'; return; }
+            if (typeof g.__detourDeclaresPermission !== 'function' || !g.__detourDeclaresPermission('debugger')) return;
+            const existing = chrome.debugger;
+            if (existing !== undefined && existing !== null && !existing._detourDebugger) {
+                install = 'native';
+                return;
             }
-        };
+            const noop = function() {};
+            const TARGET_PREFIX = 'detour-tab-';
 
-        // chrome.tabGroups was the other stand-in until TASK-132.12 replaced it
-        // with the real API (`tabGroupsJS`).
-        const state = {
-            debugger: install('debugger', function() {
-                // Listeners are kept and never called: nothing attaches, so
-                // there is no event to deliver and no detach to report.
-                return {
-                    onEvent: __detourMakeEventEmitter([]),
-                    onDetach: __detourMakeEventEmitter([])
+            const request = function(type, params) {
+                try {
+                    return Promise.resolve(g.__detourPolyfillRequest(type, params || {}));
+                } catch (e) {
+                    return Promise.reject(e);
+                }
+            };
+            const invalid = function(api, detail) {
+                return new TypeError('Error in invocation of debugger.' + api + ': ' + detail);
+            };
+            const isObject = function(value) {
+                return value !== null && typeof value === 'object' && !Array.isArray(value);
+            };
+
+            // WebKit's own tabs.query, not the tab groups wrapper, which would
+            // resolve every tab a second time just to decorate it.
+            const nativeQuery = function() {
+                const tabs = chrome.tabs;
+                if (!tabs || typeof tabs.query !== 'function') return Promise.resolve([]);
+                const query = typeof tabs.query._detourNative === 'function' ? tabs.query._detourNative : tabs.query;
+                return Promise.resolve(query.call(tabs, {}));
+            };
+
+            // The tab id a debuggee names, or a rejection in Chrome's words.
+            const debuggeeTabId = async function(target, api) {
+                if (!isObject(target)) throw invalid(api, 'target must be a debugger.Debuggee object');
+                if (target.sessionId !== undefined) {
+                    throw new Error(JSON.stringify({ code: -32001, message: 'Session with given id not found.' }));
+                }
+                if (target.tabId !== undefined) {
+                    if (!Number.isInteger(target.tabId)) throw invalid(api, 'tabId must be an integer');
+                    return target.tabId;
+                }
+                if (target.targetId !== undefined) {
+                    if (typeof target.targetId !== 'string') throw invalid(api, 'targetId must be a string');
+                    const match = /^detour-tab-([1-9][0-9]*)$/.exec(target.targetId);
+                    let tabId;
+                    if (match) {
+                        const handle = Number(match[1]);
+                        if (typeof g.__detourTabIdForHandle === 'function') tabId = g.__detourTabIdForHandle(handle);
+                        if (tabId === undefined && typeof g.__detourFindTabIdForHandle === 'function') {
+                            try { tabId = await g.__detourFindTabIdForHandle(handle); } catch (e) {}
+                        }
+                    }
+                    if (tabId === undefined) throw new Error('No target with given id ' + target.targetId + '.');
+                    return tabId;
+                }
+                if (target.extensionId !== undefined) throw new Error('Cannot attach to this target.');
+                throw new Error('Either tab id or extension id must be specified.');
+            };
+
+            // MARK: Events
+
+            const eventListeners = [];
+            const detachListeners = [];
+            let ack = null;
+            let parking = false;
+            let stopped = false;
+            const hasListeners = function() {
+                return eventListeners.length > 0 || detachListeners.length > 0;
+            };
+            const dispatchTo = function(listeners, args) {
+                listeners.slice().forEach(function(listener) {
+                    try { listener.apply(undefined, args); } catch (e) { setTimeout(function() { throw e; }, 0); }
+                });
+            };
+            const dispatch = function(event) {
+                if (!Number.isInteger(event.tabId)) return;
+                const source = { tabId: event.tabId };
+                if (event.kind === 'event' && typeof event.method === 'string') {
+                    dispatchTo(eventListeners, [source, event.method, isObject(event.params) ? event.params : {}]);
+                } else if (event.kind === 'detach' && typeof event.reason === 'string') {
+                    dispatchTo(detachListeners, [source, event.reason]);
+                }
+            };
+            const park = async function() {
+                while (!stopped && hasListeners()) {
+                    let reply;
+                    try {
+                        reply = await request('debugger.awaitEvent', {
+                            instance: g.__detourContextInstance, ack: ack
+                        });
+                    } catch (e) {
+                        // Superseded, unloaded, or refused: this context stops
+                        // listening for good rather than retrying in a loop.
+                        stopped = true;
+                        break;
+                    }
+                    const events = reply && Array.isArray(reply.events) ? reply.events : [];
+                    for (let i = 0; i < events.length; i++) {
+                        const event = events[i];
+                        if (!event || !Number.isInteger(event.seq) || (ack !== null && event.seq <= ack)) continue;
+                        ack = event.seq;
+                        try { dispatch(event); } catch (e) {}
+                    }
+                }
+                parking = false;
+            };
+            const startEvents = function() {
+                if (parking || stopped) return;
+                parking = true;
+                park().then(noop, function() { parking = false; });
+            };
+            const makeEmitter = function(list) {
+                const emitter = __detourMakeEventEmitter(list);
+                const add = emitter.addListener;
+                emitter.addListener = function(listener) {
+                    if (typeof listener !== 'function' || list.indexOf(listener) !== -1) return;
+                    add(listener);
+                    startEvents();
                 };
-            })
-        };
-        g.__detourInterimNamespaces = Object.freeze(state);
+                return emitter;
+            };
+
+            // MARK: The namespace
+
+            const debuggerAPI = {
+                DetachReason: Object.freeze({ CANCELED_BY_USER: 'canceled_by_user', TARGET_CLOSED: 'target_closed' }),
+                TargetInfoType: Object.freeze({
+                    PAGE: 'page', BACKGROUND_PAGE: 'background_page', WORKER: 'worker', OTHER: 'other'
+                }),
+
+                attach: function(target, requiredVersion, callback) {
+                    const promise = (async function() {
+                        const tabId = await debuggeeTabId(target, 'attach');
+                        if (typeof requiredVersion !== 'string') throw invalid('attach', 'requiredVersion must be a string');
+                        let handle;
+                        try {
+                            handle = await g.__detourResolveTab(tabId);
+                        } catch (e) {
+                            throw new Error('No tab with given id ' + tabId + '.');
+                        }
+                        await request('debugger.attach', { tabId: tabId, tabHandle: handle, version: requiredVersion });
+                        return undefined;
+                    })();
+                    return __detourSettle(promise, callback, false);
+                },
+
+                detach: function(target, callback) {
+                    const promise = (async function() {
+                        const tabId = await debuggeeTabId(target, 'detach');
+                        await request('debugger.detach', { tabId: tabId });
+                        return undefined;
+                    })();
+                    return __detourSettle(promise, callback, false);
+                },
+
+                sendCommand: function(target, method, commandParams, callback) {
+                    // Optional arguments may be left out: a function in the
+                    // params position is the callback.
+                    if (typeof commandParams === 'function' && callback === undefined) {
+                        callback = commandParams;
+                        commandParams = undefined;
+                    }
+                    const promise = (async function() {
+                        const tabId = await debuggeeTabId(target, 'sendCommand');
+                        if (typeof method !== 'string' || method.length === 0) throw invalid('sendCommand', 'method must be a string');
+                        if (commandParams !== undefined && commandParams !== null && !isObject(commandParams)) {
+                            throw invalid('sendCommand', 'commandParams must be an object');
+                        }
+                        const result = await request('debugger.sendCommand', {
+                            tabId: tabId, method: method, params: commandParams || {}
+                        });
+                        return isObject(result) ? result : {};
+                    })();
+                    return __detourSettle(promise, callback);
+                },
+
+                getTargets: function(callback) {
+                    const promise = (async function() {
+                        let listed = [];
+                        try { listed = await nativeQuery(); } catch (e) {}
+                        // Resolved together, not one bridge round trip after
+                        // another; a tab closed since the query is left out.
+                        const ids = (Array.isArray(listed) ? listed : [])
+                            .map(function(tab) { return tab ? tab.id : undefined; })
+                            .filter(function(tabId) { return Number.isInteger(tabId); });
+                        const resolved = await Promise.all(ids.map(function(tabId) {
+                            return Promise.resolve().then(function() { return g.__detourResolveTab(tabId); })
+                                .then(function(handle) { return { tabId: tabId, handle: handle }; }, function() { return null; });
+                        }));
+                        const entries = resolved.filter(function(entry) { return entry !== null; });
+                        const reply = await request('debugger.targets', { tabs: entries });
+                        const targets = reply && Array.isArray(reply.targets) ? reply.targets : [];
+                        return targets.map(function(target) {
+                            const info = {
+                                type: 'page',
+                                id: TARGET_PREFIX + target.handle,
+                                tabId: target.tabId,
+                                attached: target.attached === true,
+                                title: typeof target.title === 'string' ? target.title : '',
+                                url: typeof target.url === 'string' ? target.url : ''
+                            };
+                            if (typeof target.faviconUrl === 'string') info.faviconUrl = target.faviconUrl;
+                            return info;
+                        });
+                    })();
+                    return __detourSettle(promise, callback);
+                },
+
+                onEvent: makeEmitter(eventListeners),
+                onDetach: makeEmitter(detachListeners)
+            };
+            Object.defineProperty(debuggerAPI, '_detourDebugger', {
+                value: true, writable: false, configurable: true, enumerable: false
+            });
+
+            __detourDefine(chrome, 'debugger', debuggerAPI);
+            if (chrome.debugger !== debuggerAPI) {
+                install = 'define-failed';
+                return;
+            }
+            install = 'polyfill';
+            try {
+                if (g.browser && g.browser !== chrome && (g.browser.debugger === undefined || g.browser.debugger === null)) {
+                    __detourDefine(g.browser, 'debugger', debuggerAPI);
+                }
+            } catch (e) {}
+        } catch (e) {
+            install = 'error: ' + (e && e.message ? e.message : String(e));
+        } finally {
+            try {
+                Object.defineProperty(g, '__detourDebuggerInstall', {
+                    value: install, writable: true, configurable: true, enumerable: false
+                });
+            } catch (e) {}
+        }
     })();
     """
 

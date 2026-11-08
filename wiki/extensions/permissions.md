@@ -324,8 +324,8 @@ All measured against real contexts and pinned in
 
 ## Permissions the polyfill gates
 
-`notifications`, `history`, `management` and `tabGroups` (TASK-132.12) are
-implemented by Detour's polyfill, which gates them itself
+`notifications`, `history`, `management`, `tabGroups` (TASK-132.12) and
+`debugger` (TASK-132.13) are implemented by Detour's polyfill, which gates them itself
 (`WebExtension.polyfillGatedPermissions`).
 The handler's rule is `ExtensionPolyfillHandler.permissionIsActive`, in
 WebKit's own order for the APIs it implements
@@ -385,7 +385,7 @@ dictionary, so a restored `history` or `management` grant appears in it
 
 The polyfill's `chrome.permissions` / `browser.permissions` wrappers (the
 same ones that strip origin ports, `permissionsOriginPortJS`) take `history`,
-`management` and `tabGroups` (`WebExtension.permissionsOutsideWebKit`; none
+`management`, `tabGroups` and `debugger` (`WebExtension.permissionsOutsideWebKit`; none
 is in WebKit's `supportedPermissions`) out of
 `details.permissions`; the handler answers for them and the rest of the call
 still goes to WebKit.[^task-260]

@@ -234,6 +234,9 @@ enum ExtensionTabLifecycle {
     /// peek close path fires two, by animation completion and by safety net)
     /// sends nothing.
     static func didClose(_ tab: BrowserTab) {
+        // A debugger attachment ends with the tab as extensions know it
+        // (onDetach target_closed), registered or not (TASK-132.13).
+        ExtensionDebugger.shared.tabDidClose(tab)
         guard let profile = tab.extensionRegisteredProfile else { return }
         tab.extensionRegisteredProfile = nil
         tab.extensionPropertyObservers.removeAll()

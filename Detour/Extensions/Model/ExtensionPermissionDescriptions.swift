@@ -10,7 +10,7 @@ enum ExtensionPermissionDescriptions {
         "clipboardWrite": "Write to the clipboard",
         "contextMenus": "Add items to the right-click menu",
         "cookies": "Read and modify cookies",
-        "debugger": "Inspect and control pages through the debugger",
+        "debugger": "Read and change all your data on all websites, and control your tabs through the debugger",
         "declarativeNetRequest": "Block and modify network requests",
         "declarativeNetRequestFeedback": "View info about matched network rules",
         "declarativeNetRequestWithHostAccess": "Block, redirect and modify network requests",

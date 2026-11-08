@@ -940,129 +940,216 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertTrue(handler.sessionHeaderRulesForTesting(extensionID: "test-polyfill-extension").isEmpty)
     }
 
-    // MARK: - INTERIM chrome.tabGroups / chrome.debugger stand-ins (TASK-132.4)
+    // MARK: - chrome.debugger (TASK-132.13)
 
-    private static let interimProbeJS = """
+    private static let debuggerProbeJS = """
     const tg = chrome.tabGroups;
     const dbg = chrome.debugger;
     const out = {
         tabGroupsType: typeof tg,
         debuggerType: typeof dbg,
-        state: globalThis.__detourInterimNamespaces,
+        state: { debugger: globalThis.__detourDebuggerInstall },
         diagTabGroups: __detourPolyfillDiag.apis.tabGroups,
-        diagDebugger: __detourPolyfillDiag.apis.debugger,
-        tabsGroup: typeof (chrome.tabs || {}).group,
-        tabsUngroup: typeof (chrome.tabs || {}).ungroup
+        diagDebugger: __detourPolyfillDiag.apis.debugger
     };
-    if (tg) {
-        out.color = tg.Color;
-        out.colorFrozen = Object.isFrozen(tg.Color);
-        out.none = tg.TAB_GROUP_ID_NONE;
-        out.tabGroupsKeys = Object.keys(tg).sort();
-        out.tabGroupsMethods = ['get', 'query', 'update', 'move', 'onCreated', 'onUpdated', 'onRemoved', 'onMoved']
-            .filter((name) => tg[name] !== undefined);
-    }
     if (dbg) {
         out.debuggerKeys = Object.keys(dbg).sort();
-        out.debuggerMethods = ['attach', 'detach', 'sendCommand', 'getTargets']
-            .filter((name) => dbg[name] !== undefined);
-        let fired = 0;
-        const listener = () => { fired += 1; };
+        out.viaBrowser = !!(globalThis.browser && browser.debugger === dbg);
+        out.detachReason = dbg.DetachReason;
+        const listener = () => {};
         dbg.onEvent.addListener(listener);
         dbg.onDetach.addListener(listener);
         out.hasListener = dbg.onEvent.hasListener(listener) && dbg.onDetach.hasListener(listener);
         dbg.onEvent.removeListener(listener);
         dbg.onDetach.removeListener(listener);
         out.removed = !dbg.onEvent.hasListener(listener) && !dbg.onDetach.hasListener(listener);
-        out.fired = fired;
     }
     return JSON.stringify(out);
     """
 
-    /// With the permission declared, `debugger` is two event emitters only and
-    /// no method of it exists, so a feature test for a method still fails.
-    /// `chrome.tabGroups` is the real API since TASK-132.12 and needs WebKit's
-    /// `chrome.tabs`, which this harness does not have: it installs nothing
-    /// here (`ExtensionTabGroupsTests` runs it in real contexts).
-    @MainActor func testInterimDebuggerWithThePermissionAndNoTabGroupsWithoutChromeTabs() async throws {
+    /// With the permission declared, `chrome.debugger` is the whole API.
+    /// `chrome.tabGroups` needs WebKit's `chrome.tabs`, which this harness does
+    /// not have: it installs nothing here (`ExtensionTabGroupsTests` runs it in
+    /// real contexts, `ExtensionDebuggerTests` the debugger).
+    @MainActor func testDebuggerNamespaceWithThePermission() async throws {
         let view = try await makeWebView(manifestPermissions: ["tabGroups", "debugger"])
-        let result = try await evalDictionary(Self.interimProbeJS, on: view)
+        let result = try await evalDictionary(Self.debuggerProbeJS, on: view)
 
         XCTAssertEqual(result["tabGroupsType"] as? String, "undefined")
         XCTAssertEqual(result["diagTabGroups"] as? String, "no-tabs [tabs: none]")
 
         XCTAssertEqual(result["debuggerType"] as? String, "object")
-        XCTAssertEqual(result["debuggerKeys"] as? [String], ["onDetach", "onEvent"])
-        XCTAssertEqual(result["debuggerMethods"] as? [String], [], "no debugger method may exist yet")
+        XCTAssertEqual(result["debuggerKeys"] as? [String],
+                       ["DetachReason", "TargetInfoType", "attach", "detach", "getTargets", "onDetach", "onEvent",
+                        "sendCommand"])
+        XCTAssertEqual(result["detachReason"] as? [String: String],
+                       ["CANCELED_BY_USER": "canceled_by_user", "TARGET_CLOSED": "target_closed"])
         XCTAssertEqual(result["hasListener"] as? Bool, true)
         XCTAssertEqual(result["removed"] as? Bool, true)
-        XCTAssertEqual(result["fired"] as? Int, 0, "the stand-in's events never fire")
+        XCTAssertEqual(result["state"] as? [String: String], ["debugger": "polyfill"])
+        XCTAssertEqual(result["diagDebugger"] as? String, "polyfill")
+    }
 
-        XCTAssertEqual(result["state"] as? [String: String], ["debugger": "interim"])
-        XCTAssertEqual(result["diagDebugger"] as? String, "interim")
+    /// An optional `debugger` installs the namespace too: the handler decides
+    /// each call from the live grant.
+    @MainActor func testDebuggerNamespaceWithAnOptionalPermission() async throws {
+        let view = try await makeWebView(manifestPermissions: [], optionalPermissions: ["debugger"])
+        let result = try await evalDictionary(Self.debuggerProbeJS, on: view)
+        XCTAssertEqual(result["debuggerType"] as? String, "object")
+        XCTAssertEqual(result["state"] as? [String: String], ["debugger": "polyfill"])
     }
 
     /// NEGATIVE: without the permission the namespace stays `undefined`, each
     /// on its own — declaring one does not bring the other.
-    @MainActor func testInterimNamespacesAreAbsentWithoutTheirPermission() async throws {
-        let neither = try await evalDictionary(Self.interimProbeJS)
+    @MainActor func testDebuggerIsAbsentWithoutItsPermission() async throws {
+        let neither = try await evalDictionary(Self.debuggerProbeJS)
         XCTAssertEqual(neither["tabGroupsType"] as? String, "undefined")
         XCTAssertEqual(neither["debuggerType"] as? String, "undefined")
         XCTAssertEqual(neither["state"] as? [String: String], ["debugger": "absent"])
         XCTAssertEqual(neither["diagDebugger"] as? String, "absent")
 
         let onlyTabGroups = try await makeWebView(manifestPermissions: ["tabGroups", "tabs"])
-        let first = try await evalDictionary(Self.interimProbeJS, on: onlyTabGroups)
+        let first = try await evalDictionary(Self.debuggerProbeJS, on: onlyTabGroups)
         XCTAssertEqual(first["debuggerType"] as? String, "undefined")
         XCTAssertEqual(first["state"] as? [String: String], ["debugger": "absent"])
-
-        let onlyDebugger = try await makeWebView(manifestPermissions: ["debugger"])
-        let second = try await evalDictionary(Self.interimProbeJS, on: onlyDebugger)
-        XCTAssertEqual(second["tabGroupsType"] as? String, "undefined")
-        XCTAssertEqual(second["debuggerType"] as? String, "object")
-        XCTAssertEqual(second["state"] as? [String: String], ["debugger": "interim"])
     }
 
-    /// NEGATIVE: a namespace that is already there — WebKit's one day, or the
-    /// real implementation (TASK-132.12 / 132.13) — is never replaced or added
-    /// to, whatever the manifest declares.
-    @MainActor func testInterimNamespacesLeaveAnExistingNamespaceAlone() async throws {
+    /// NEGATIVE: a `chrome.debugger` that is already there — WebKit's one
+    /// day — is never replaced or added to.
+    @MainActor func testDebuggerLeavesAnExistingNamespaceAlone() async throws {
         let withReal = try await makeWebView(
-            manifestPermissions: ["tabGroups", "debugger"],
-            shimExtras: """
-            globalThis.chrome.tabGroups = { query: function() { return Promise.resolve([]); } };
-            globalThis.chrome.debugger = { attach: function() {} };
-            """)
+            manifestPermissions: ["debugger"],
+            shimExtras: "globalThis.chrome.debugger = { attach: function() {} };")
         let result = try await evalDictionary("""
         return JSON.stringify({
-            tabGroupsKeys: Object.keys(chrome.tabGroups),
             debuggerKeys: Object.keys(chrome.debugger),
-            state: globalThis.__detourInterimNamespaces
+            state: { debugger: globalThis.__detourDebuggerInstall }
         });
         """, on: withReal)
-        XCTAssertEqual(result["tabGroupsKeys"] as? [String], ["query"])
         XCTAssertEqual(result["debuggerKeys"] as? [String], ["attach"])
         XCTAssertEqual(result["state"] as? [String: String], ["debugger": "native"])
     }
 
-    /// Re-running the polyfill in the same realm keeps the first run's objects
-    /// (and any listener on them) and keeps calling them interim.
-    @MainActor func testInterimNamespacesSurviveRerun() async throws {
-        let view = try await makeWebView(manifestPermissions: ["tabGroups", "debugger"])
+    /// Re-running the polyfill in the same realm keeps the first run's object
+    /// and its listeners: a second one would start a second park loop.
+    @MainActor func testDebuggerSurvivesRerun() async throws {
+        let view = try await makeWebView(manifestPermissions: ["debugger"])
         let result = try await evalDictionary("""
-        const tabGroups = chrome.tabGroups;
+        const dbg = chrome.debugger;
         const listener = () => {};
         chrome.debugger.onEvent.addListener(listener);
         \(ExtensionAPIPolyfill.polyfillJS)
         return JSON.stringify({
-            sameTabGroups: chrome.tabGroups === tabGroups,
+            same: chrome.debugger === dbg,
             listenerKept: chrome.debugger.onEvent.hasListener(listener),
-            state: globalThis.__detourInterimNamespaces
+            state: { debugger: globalThis.__detourDebuggerInstall }
         });
         """, on: view)
-        XCTAssertEqual(result["sameTabGroups"] as? Bool, true)
+        XCTAssertEqual(result["same"] as? Bool, true)
         XCTAssertEqual(result["listenerKept"] as? Bool, true)
-        XCTAssertEqual(result["state"] as? [String: String], ["debugger": "interim"])
+        XCTAssertEqual(result["state"] as? [String: String], ["debugger": "polyfill"])
+    }
+
+    /// What the namespace sends for each call shape, against a fake bridge:
+    /// attach resolves the tab once and sends handle and id; later calls send
+    /// the id alone; a function in `sendCommand`'s params position is the
+    /// callback; `{targetId}` maps back through the handle; `{extensionId}`,
+    /// `sessionId`, an empty debuggee and an unknown tab are refused in
+    /// Chrome's words; an event and a detach reach the listeners.
+    @MainActor func testDebuggerCallShapesAgainstAFakeBridge() async throws {
+        let view = try await makeWebView(manifestPermissions: ["debugger"])
+        let result = try await evalDictionary("""
+        const sent = [];
+        const parked = [];
+        globalThis.__detourPolyfillRequest = function(type, params) {
+            sent.push({ type: type, params: JSON.parse(JSON.stringify(params)) });
+            if (type === 'debugger.awaitEvent') return new Promise((resolve) => parked.push(resolve));
+            if (type === 'debugger.sendCommand') return Promise.resolve({ echoed: params.method });
+            if (type === 'debugger.targets') return Promise.resolve({ targets: [
+                { tabId: 7, handle: 70, attached: true, title: 'T', url: 'https://a.test/' } ] });
+            return Promise.resolve(null);
+        };
+        globalThis.__detourResolveTab = function(tabId) {
+            return tabId === 7 ? Promise.resolve(70) : Promise.reject(new Error('No tab with id: ' + tabId + '.'));
+        };
+        globalThis.__detourTabIdForHandle = (handle) => handle === 70 ? 7 : undefined;
+        const failure = async (promise) => { try { await promise; return null; } catch (e) { return e.message; } };
+        const out = {};
+        await chrome.debugger.attach({ tabId: 7 }, '1.3');
+        out.unknownTab = await failure(chrome.debugger.attach({ tabId: 8 }, '1.3'));
+        out.badVersionType = await failure(chrome.debugger.attach({ tabId: 7 }, 13));
+        out.extensionTarget = await failure(chrome.debugger.attach({ extensionId: 'x' }, '1.3'));
+        out.emptyTarget = await failure(chrome.debugger.attach({}, '1.3'));
+        out.session = await failure(chrome.debugger.sendCommand({ tabId: 7, sessionId: 's' }, 'Page.enable'));
+        out.badTargetId = await failure(chrome.debugger.attach({ targetId: 'nope' }, '1.3'));
+        out.result = await chrome.debugger.sendCommand({ tabId: 7 }, 'Page.enable');
+        out.callbackResult = await new Promise((resolve) => {
+            chrome.debugger.sendCommand({ tabId: 7 }, 'Page.disable', (value) => resolve(value));
+        });
+        await chrome.debugger.sendCommand({ targetId: 'detour-tab-70' }, 'X.y', { a: 1 });
+        out.targets = await chrome.debugger.getTargets();
+        await chrome.debugger.detach({ tabId: 7 });
+        const events = [];
+        chrome.debugger.onEvent.addListener((source, method, params) => events.push(['event', source, method, params]));
+        chrome.debugger.onDetach.addListener((source, reason) => events.push(['detach', source, reason]));
+        await new Promise((r) => setTimeout(r, 0));
+        parked.shift()({ events: [
+            { seq: 1, kind: 'event', tabId: 7, method: 'Page.frameNavigated', params: { frame: { id: 'f' } } },
+            { seq: 2, kind: 'detach', tabId: 7, reason: 'target_closed' } ] });
+        await new Promise((r) => setTimeout(r, 0));
+        out.events = events;
+        out.sent = sent;
+        return JSON.stringify(out);
+        """, on: view)
+
+        XCTAssertEqual(result["unknownTab"] as? String, "No tab with given id 8.")
+        XCTAssertEqual(result["badVersionType"] as? String,
+                       "Error in invocation of debugger.attach: requiredVersion must be a string")
+        XCTAssertEqual(result["extensionTarget"] as? String, "Cannot attach to this target.")
+        XCTAssertEqual(result["emptyTarget"] as? String, "Either tab id or extension id must be specified.")
+        XCTAssertEqual(result["session"] as? String, "{\"code\":-32001,\"message\":\"Session with given id not found.\"}")
+        XCTAssertEqual(result["badTargetId"] as? String, "No target with given id nope.")
+        XCTAssertEqual(result["result"] as? [String: String], ["echoed": "Page.enable"])
+        XCTAssertEqual(result["callbackResult"] as? [String: String], ["echoed": "Page.disable"])
+
+        let targets = try XCTUnwrap(result["targets"] as? [[String: Any]])
+        XCTAssertEqual(targets.count, 1)
+        XCTAssertEqual(targets.first?["id"] as? String, "detour-tab-70")
+        XCTAssertEqual(targets.first?["type"] as? String, "page")
+        XCTAssertEqual(targets.first?["tabId"] as? Int, 7)
+        XCTAssertEqual(targets.first?["attached"] as? Bool, true)
+
+        let sent = try XCTUnwrap(result["sent"] as? [[String: Any]])
+        let shapes = sent.map { entry -> String in
+            let params = entry["params"] as? [String: Any] ?? [:]
+            return "\(entry["type"] as? String ?? "?") \(params.keys.sorted().joined(separator: ","))"
+        }
+        XCTAssertEqual(shapes, [
+            "debugger.attach tabHandle,tabId,version",
+            "debugger.sendCommand method,params,tabId",
+            "debugger.sendCommand method,params,tabId",
+            "debugger.sendCommand method,params,tabId",
+            "debugger.targets tabs",
+            "debugger.detach tabId",
+            "debugger.awaitEvent ack,instance",
+            "debugger.awaitEvent ack,instance",
+        ], "only calls that pass validation reach the bridge; attach alone carries the handle")
+        XCTAssertTrue(sent[6]["params"].flatMap { ($0 as? [String: Any])?["ack"] } is NSNull, "the first wait acknowledges nothing")
+        XCTAssertEqual((sent[7]["params"] as? [String: Any])?["ack"] as? Int, 2, "it parks again past what it dispatched")
+        let attach = try XCTUnwrap(sent.first?["params"] as? [String: Any])
+        XCTAssertEqual(attach["tabHandle"] as? Int, 70)
+        XCTAssertEqual(attach["tabId"] as? Int, 7)
+        XCTAssertEqual(attach["version"] as? String, "1.3")
+        let byTarget = try XCTUnwrap(sent[3]["params"] as? [String: Any])
+        XCTAssertEqual(byTarget["tabId"] as? Int, 7, "a targetId names the tab it was listed for")
+        XCTAssertEqual(byTarget["params"] as? [String: Int], ["a": 1])
+
+        let events = try XCTUnwrap(result["events"] as? [[Any]])
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events.first?[0] as? String, "event")
+        XCTAssertEqual(events.first?[1] as? [String: Int], ["tabId": 7])
+        XCTAssertEqual(events.first?[2] as? String, "Page.frameNavigated")
+        XCTAssertEqual(events.last?[2] as? String, "target_closed")
     }
 
     // MARK: - chrome.webNavigation frame enumeration
