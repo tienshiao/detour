@@ -93,10 +93,25 @@ enum LinkRouteDecision: Equatable {
 /// file): a `.typed` or `.clicked` origin is never excluded here.
 func resolveLinkRoute(url: URL, origin: LinkOrigin, routes: [LinkRoute],
                       defaultTarget: LinkRouteTarget, context: LinkRouteContext) -> LinkRouteDecision {
+    resolveLinkRoute(url: url, origin: origin, routes: routes, defaultTarget: defaultTarget, context: context,
+                     senderMightMatchQuarantine: false)
+}
+
+/// `resolveLinkRoute`, and with `senderMightMatchQuarantine` the fail-closed
+/// rule of `resolveExternalLinkRoute`: a Quarantine route naming an app,
+/// whose URL condition holds, is taken as matching the unknown sender when
+/// it is reached. Routes ahead of it still win when they match.
+private func resolveLinkRoute(url: URL, origin: LinkOrigin, routes: [LinkRoute],
+                              defaultTarget: LinkRouteTarget, context: LinkRouteContext,
+                              senderMightMatchQuarantine: Bool) -> LinkRouteDecision {
     let ordered = routes.enumerated()
         .sorted { ($0.element.sortOrder, $0.offset) < ($1.element.sortOrder, $1.offset) }
         .map(\.element)
-    for route in ordered where linkRoute(route, matches: url, origin: origin) {
+    for route in ordered {
+        let matches = linkRoute(route, matches: url, origin: origin)
+            || (senderMightMatchQuarantine && route.target == .quarantine && route.normalizedSourceApp != nil
+                && linkRouteURLCondition(of: route, holdsFor: url))
+        guard matches else { continue }
         if let decision = decision(for: route.target, origin: origin, context: context, isDefault: false) {
             return decision
         }
@@ -113,27 +128,22 @@ func resolveLinkRoute(url: URL, origin: LinkOrigin, routes: [LinkRoute],
 /// `resolveLinkRoute` applies them to `.external(sourceApp:)`, but one rule.
 ///
 /// The link that launched Detour (`launchedDetour`) with no known sender
-/// fails closed (user decision, Nov 8 2026): if any route sends links to
-/// Quarantine, it opens in Quarantine. A route naming an app ("links from
-/// Mail go to Quarantine") cannot match a link whose sender is unknown, and
-/// the launch link is where that used to happen (the sender was never read
-/// at launch), so it must not land in a normal space with the user's
-/// cookies. "Any route", as the user put it: not only routes that name an
-/// app, and whatever comes before them. A link while Detour runs with no
-/// known sender (`open` from a shell) keeps the routes and the Default.
+/// fails closed to Quarantine wherever a Quarantine route could have matched
+/// it: a route naming an app ("links from Mail go to Quarantine") cannot be
+/// decided for a link whose sender is unknown, and the launch link is where
+/// that used to happen (the sender was never read at launch), so it must not
+/// land in a normal space with the user's cookies. A route that is decided
+/// either way is not: its URL condition fails (the route is false whatever
+/// the sender), a route ahead of it matches (it is never reached), or it
+/// names no app (it matches or not as usual). User decisions, Nov 8 2026: at
+/// first any Quarantine route, then only where the route cannot be ruled
+/// out. A link while Detour runs with no known sender (`open` from a shell)
+/// keeps the routes and the Default.
 func resolveExternalLinkRoute(url: URL, sourceApp: String?, launchedDetour: Bool, routes: [LinkRoute],
                               defaultTarget: LinkRouteTarget, context: LinkRouteContext) -> LinkRouteDecision {
-    if launchedDetour, sourceApp == nil, isRoutableURL(url), linkRoutesSendToQuarantine(routes) {
-        return .quarantine
-    }
-    return resolveLinkRoute(url: url, origin: .external(sourceApp: sourceApp), routes: routes,
-                            defaultTarget: defaultTarget, context: context)
-}
-
-/// Whether any route (with a condition, so one the resolver uses) sends
-/// links to Quarantine.
-func linkRoutesSendToQuarantine(_ routes: [LinkRoute]) -> Bool {
-    routes.contains { $0.target == .quarantine && $0.hasCondition }
+    resolveLinkRoute(url: url, origin: .external(sourceApp: sourceApp), routes: routes,
+                     defaultTarget: defaultTarget, context: context,
+                     senderMightMatchQuarantine: launchedDetour && sourceApp == nil)
 }
 
 /// What `target` means for a link from `origin`; nil when it cannot be used
@@ -187,10 +197,15 @@ func linkRoute(_ route: LinkRoute, matches url: URL, origin: LinkOrigin) -> Bool
               sender.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(app) == .orderedSame
         else { return false }
     }
+    return linkRouteURLCondition(of: route, holdsFor: url)
+}
+
+/// Whether `route`'s URL condition holds for `url`, leaving its app aside.
+/// An app-only route's holds for every web URL.
+private func linkRouteURLCondition(of route: LinkRoute, holdsFor url: URL) -> Bool {
     if let match = route.match, !match.isEmpty {
         return linkRouteMatch(match, matches: url)
     }
-    // App-only: any web URL from that app.
     return isRoutableURL(url)
 }
 

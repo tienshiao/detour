@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T08:41:00Z'
-updated_date: '2026-11-08T11:35:00Z'
+updated_date: '2026-11-08T19:42:00Z'
 labels:
   - link-routes
   - ui
@@ -61,6 +61,8 @@ Website AC pending (held for release).
 Website: updated Link Routes, Quarantine and Quick Detour (Any URL workaround removed: choose the app and leave the URL field empty; Link Routes quotes the placeholder and the neither-condition warning) on website branch next-release (128af13), held for the release
 
 Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
+
+Nov 8 2026 (user): re-capture the Link Routes still (it shows v0.4.0's 'Any URL' workaround for TextEdit) when website branch next-release ships with the release.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

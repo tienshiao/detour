@@ -267,13 +267,24 @@ nonisolated final class ExternalLinkRoutingTests: XCTestCase {
     // MARK: - The link that launched Detour (TASK-304)
 
     @MainActor func testALaunchLinkWithNoKnownSenderOpensInQuarantine() throws {
+        route(nil, app: "com.apple.mail", to: .quarantine)
         makeWindow(showing: work)
         let link = url("https://unrouted.test/launch")
         appDelegate.openExternalURLs([link], sourceApp: nil, launchedDetour: true)
-        let quarantine = try XCTUnwrap(newQuickDetours().first, "fail closed: the fixture has a Quarantine route")
+        let quarantine = try XCTUnwrap(newQuickDetours().first, "fail closed: the Mail route cannot be ruled out")
         XCTAssertTrue(quarantine.isQuarantine)
         XCTAssertEqual(quarantine.tab?.url, link)
         XCTAssertNil(tabAnywhere(link), "no tab in a space")
+    }
+
+    @MainActor func testALaunchLinkWithNoKnownSenderSkipsAQuarantineRouteThatCannotMatch() throws {
+        // The fixture's only Quarantine route is URL-only (later.test): it
+        // does not match this link whatever the sender.
+        makeWindow(showing: work)
+        let link = url("https://unrouted.test/launch-unmatched")
+        appDelegate.openExternalURLs([link], sourceApp: nil, launchedDetour: true)
+        XCTAssertNotNil(tab(link, in: work), "the Default: the most recent space")
+        XCTAssertEqual(newQuickDetours().count, 0)
     }
 
     @MainActor func testALaunchLinkFromAKnownAppFollowsItsRoute() throws {

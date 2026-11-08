@@ -432,7 +432,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Opens web links from another app where the routes send them, each URL
     /// on its own. `sourceApp` is the sender's bundle ID, nil when unknown;
     /// `launchedDetour` marks the links that launched Detour, which fail
-    /// closed to Quarantine without a known sender (TASK-304). The decisions
+    /// closed to Quarantine without a known sender wherever a From app route
+    /// to Quarantine cannot be ruled out (TASK-304). The decisions
     /// are the pure `resolveExternalLinkRoute` and `linkPlacement`.
     func openExternalURLs(_ urls: [URL], sourceApp: String?, launchedDetour: Bool = false) {
         let store = TabStore.shared

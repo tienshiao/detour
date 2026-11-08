@@ -236,18 +236,41 @@ nonisolated final class LinkRouteResolverTests: XCTestCase {
     @MainActor func testALaunchLinkWithNoKnownSenderFailsClosedToQuarantine() {
         let mailToQuarantine = route(nil, app: "com.apple.mail", to: .quarantine)
         XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, [mailToQuarantine]), .quarantine)
-        // Any route to Quarantine, as the user put it: a URL route too, even
-        // one this link does not match, and ahead of a route that matches it.
-        let urlToQuarantine = route(.domainIs, "later.test", to: .quarantine, order: 1)
-        let workRoute = route(.domainIs, "work.test", to: .space(work))
-        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, [urlToQuarantine]), .quarantine)
-        XCTAssertEqual(resolveExternal("https://work.test/", sender: nil, launch: true, [workRoute, urlToQuarantine]),
-                       .quarantine)
         XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, [mailToQuarantine],
                                        default: .space(personal)), .quarantine, "ahead of the Default")
-        XCTAssertTrue(linkRoutesSendToQuarantine([workRoute, urlToQuarantine]))
-        XCTAssertFalse(linkRoutesSendToQuarantine([workRoute]))
-        XCTAssertFalse(linkRoutesSendToQuarantine([route(nil, to: .quarantine)]), "a route with no condition is never used")
+        let mailBankToQuarantine = route(.domainIs, "bank.test", app: "com.apple.mail", to: .quarantine)
+        XCTAssertEqual(resolveExternal("https://bank.test/", sender: nil, launch: true, [mailBankToQuarantine]),
+                       .quarantine, "the URL condition holds, the app cannot be ruled out")
+        // Another route naming an app ahead of it cannot be decided either.
+        let slackToWork = route(nil, app: "com.tinyspeck.slackmacgap", to: .space(work))
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true,
+                                       [slackToWork, route(nil, app: "com.apple.mail", to: .quarantine, order: 1)]),
+                       .quarantine)
+    }
+
+    @MainActor func testALaunchLinkWithNoKnownSenderSkipsAQuarantineRouteThatIsDecided() {
+        // The URL condition fails: the route is false whatever the sender.
+        let mailBankToQuarantine = route(.domainIs, "bank.test", app: "com.apple.mail", to: .quarantine)
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, [mailBankToQuarantine]),
+                       .mostRecentSpace)
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, [mailBankToQuarantine],
+                                       default: .space(personal)), .openInSpace(personal))
+        // A route ahead of it matches: it is never reached.
+        let workRoute = route(.domainIs, "work.test", to: .space(work))
+        let mailToQuarantine = route(nil, app: "com.apple.mail", to: .quarantine, order: 1)
+        XCTAssertEqual(resolveExternal("https://work.test/", sender: nil, launch: true, [workRoute, mailToQuarantine]),
+                       .openInSpace(work))
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, [workRoute, mailToQuarantine]),
+                       .quarantine, "a link the earlier route does not match reaches it")
+        // A URL route to Quarantine names no app: it matches or not, as usual.
+        let urlToQuarantine = route(.domainIs, "later.test", to: .quarantine, order: 1)
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, [urlToQuarantine]), .mostRecentSpace)
+        XCTAssertEqual(resolveExternal("https://later.test/", sender: nil, launch: true, [urlToQuarantine]), .quarantine)
+        XCTAssertEqual(resolveExternal("https://work.test/", sender: nil, launch: true, [workRoute, urlToQuarantine]),
+                       .openInSpace(work))
+        // A route with no condition is never used.
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, [route(nil, to: .quarantine)]),
+                       .mostRecentSpace)
     }
 
     @MainActor func testALaunchLinkWithNoKnownSenderAndNoQuarantineRouteGoesWhereItDidBefore() {

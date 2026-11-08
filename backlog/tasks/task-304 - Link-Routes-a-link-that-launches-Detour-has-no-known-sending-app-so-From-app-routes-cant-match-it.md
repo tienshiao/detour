@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T09:35:00Z'
-updated_date: '2026-11-08T11:35:00Z'
+updated_date: '2026-11-08T19:42:00Z'
 labels:
   - link-routes
 dependencies: []
@@ -81,6 +81,8 @@ AC #1 left unchecked: the spike ran on the current macOS (26.7) with simulated s
 Website: updated Link Routes and Quarantine (a From app route also applies to the link that starts Detour; with no known sending app and any route to Quarantine, that link opens in Quarantine) on website branch next-release (86f8ad3), held for the release
 
 Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
+
+Nov 8 2026, user narrowed the fail-closed rule ('if the trigger can be determined to be falsy we do not need to fail closed'): a launch link with no known sender goes to Quarantine only where a From app route to Quarantine is reached (in route order) whose URL condition holds. A route whose URL condition fails, one behind a matching route, and a URL-only route to Quarantine resolve as usual. Supersedes the 'any Quarantine route' rule and linkRoutesSendToQuarantine above (removed); the resolver core takes senderMightMatchQuarantine. Tests: LinkRouteResolverTests (fail-closed and new skip test), ExternalLinkRoutingTests (launch test now adds a Mail→Quarantine route; new test: URL-only Quarantine route that does not match → the Default), 117 tests in the link-routing suites, 0 failures. /code-review medium --fix: 6 findings (doc comment, wiki tests summary, log placement, duplicated decision call, this note), all fixed. Runtime: not run; a pure resolver change whose launch path the wiring tests drive in the test host, and an unknown-sender launch cannot reach a Debug build while the production Detour is the default browser.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

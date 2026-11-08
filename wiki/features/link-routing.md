@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Link Routes
-description: "The Link Routes model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quick Detour external-only, Quarantine for links from other apps and the clicks a route to it matches but never typed URLs, the Default for every origin; Quick Detour a visible target since TASK-193.5, opening a new Quick Detour on the front window's profile, never Private; Quarantine a visible target since TASK-194, opening a quarantine window), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), links from other apps (the pure placement rule, reading the sender from the Get URL Apple Event in Detour's own handler (TASK-304: the link that launches Detour has its sender too; an unknown one at launch fails closed to Quarantine when a route targets it), delivering test links without reaching the production app), and typed URLs and links clicked in a page: the pure eligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Option/Shift-clicks, Peeks, subframes; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, Cmd+L never routing, and the Settings Links pane (TASK-191.3): one row per route (URL, From app, Open in), Any URL and Any App as the 'no condition' choices, drafts and refused edits kept on their rows while the store holds the last valid version, validation in the store (empty or invalid pattern, no condition, a missing or Private space; an unchanged broken target stays editable), broken routes shown, the Default with its caption, live space and store updates, and the blocked-deletion alert's Open Links Settings… button."
+description: "The Link Routes model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quick Detour external-only, Quarantine for links from other apps and the clicks a route to it matches but never typed URLs, the Default for every origin; Quick Detour a visible target since TASK-193.5, opening a new Quick Detour on the front window's profile, never Private; Quarantine a visible target since TASK-194, opening a quarantine window), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), links from other apps (the pure placement rule, reading the sender from the Get URL Apple Event in Detour's own handler (TASK-304: the link that launches Detour has its sender too; an unknown one at launch fails closed to Quarantine where a From app route to it cannot be ruled out), delivering test links without reaching the production app), and typed URLs and links clicked in a page: the pure eligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Option/Shift-clicks, Peeks, subframes; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, Cmd+L never routing, and the Settings Links pane (TASK-191.3): one row per route (URL, From app, Open in), Any URL and Any App as the 'no condition' choices, drafts and refused edits kept on their rows while the store holds the last valid version, validation in the store (empty or invalid pattern, no condition, a missing or Private space; an unchanged broken target stays editable), broken routes shown, the Default with its caption, live space and store updates, and the blocked-deletion alert's Open Links Settings… button."
 tags: [links, spaces, storage, privacy, incognito]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
@@ -435,8 +435,8 @@ later, or from another process, is a link while Detour runs.
 | Link | Sender | Decision |
 |---|---|---|
 | Launched Detour | known | the routes and the Default, as while running: a From app route matches it |
-| Launched Detour | unknown, and **any** route (with a condition) targets Quarantine | `.quarantine` |
-| Launched Detour | unknown, no route to Quarantine | the routes and the Default, as before |
+| Launched Detour | unknown, and a From app route to Quarantine is reached whose URL condition holds | `.quarantine` |
+| Launched Detour | unknown, otherwise | the routes and the Default, as before (a From app route cannot match an unknown sender) |
 | While running | known or unknown | unchanged: the routes and the Default |
 
 **Fail closed (user, 2026-11-08).** Before TASK-304 the launch link never
@@ -446,12 +446,15 @@ user's cookies. With the sender read at launch that hole closes for apps
 that open links themselves through LaunchServices; for a sender Detour
 cannot name at launch (a command-line tool, a helper process
 `NSRunningApplication` does not know, an opener that has exited), the link
-goes to Quarantine whenever any route sends links there. "Any route", as the
-user put it: a URL-only route to Quarantine also triggers it, and it wins
-over a URL route listed before it. A narrower rule (only From app routes to
-Quarantine whose URL condition matches, in route order) was considered and
-not taken without the user; it is a change to `linkRoutesSendToQuarantine`
-and the rule's first line. While Detour runs, an unknown sender (`open` from
+goes to Quarantine wherever a Quarantine route could have matched it. The
+user first chose "any route" (a URL-only route to Quarantine also triggered
+it, and it beat routes listed before it), then the same day narrowed it to
+routes that cannot be ruled out: a route whose URL condition fails is false
+whatever the sender, a route behind one that matches is never reached, and a
+URL-only route matches or not as usual. So in route order, a From app route
+to Quarantine whose URL condition holds is taken as matching
+(`senderMightMatchQuarantine` in the private resolver core); every other
+route resolves as for a known sender no route names. While Detour runs, an unknown sender (`open` from
 a shell) keeps the routes and the Default: those links were never the hole.
 
 **Not verified** (TASK-304): links clicked in Mail, Messages, Notes or Slack
@@ -995,13 +998,17 @@ unshown space switches the most recent normal window, never a Private one,
 Private reuse, source-app routes, the Default, Most Recent Space, a
 Quarantine route and Default opening a quarantine (TASK-194), multi-URL
 opens, non-web URLs ignored; TASK-304: a launch link with no known sender
-opens in a quarantine window, one from a known app follows its route, and
+opens in a quarantine window when a From app route to Quarantine cannot be
+ruled out and in the Default when the only Quarantine route is a URL route
+it does not match, one from a known app follows its route, and
 Get URL events sent to `handleGetURLEvent` while running are routed URL by
 URL and not failed closed).
 `LinkRouteResolverTests` (every rule above, each match kind, `www.`, ports,
 IDN, IP literals, the Default from each origin; TASK-304: a launch link
-with a known sender, with none and a Quarantine route (app or URL, ahead of
-a matching URL route and the Default), with none and no Quarantine route,
+with a known sender, with none and a From app route to Quarantine (its URL
+condition holding, ahead of the Default, behind another From app route),
+with none and a Quarantine route that is decided (its URL condition fails, a
+route ahead of it matches, a URL-only route), with none and no Quarantine route,
 and links while running unchanged), `LinkRouteStoreTests` (store
 operations, unknown rows, notifications, migration v20 on a v19 database,
 one-row Default table, routes surviving a session save, blocked and allowed
