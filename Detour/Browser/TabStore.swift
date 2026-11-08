@@ -1787,7 +1787,7 @@ class TabStore {
         // Never record history for incognito spaces, nor a Private Quick
         // Detour (TASK-193.1), which has no space to say so.
         if let space = space(withID: spaceID), space.isIncognito { return }
-        if tab.quickDetourProfile?.isIncognito == true { return }
+        if (tab.quickDetourProfile ?? tab.peekHost?.quickDetourProfile)?.isIncognito == true { return }
 
         guard let url = tab.url else { return }
         let urlString = url.absoluteString
@@ -1923,10 +1923,10 @@ class TabStore {
     /// `subscribeToTab`.
     func updateHistoryTitle(for tab: BrowserTab, now: Date = Date()) {
         // The space is resolved the way `recordHistoryVisit` resolves it, from
-        // the tab's current `spaceID`: a favourite or peek tab that belongs to
-        // no space never records a visit, so it has nothing to correct either.
-        let space = tab.spaceID.flatMap { self.space(withID: $0) }
-        let isIncognito = space?.isIncognito ?? (tab.quickDetourProfile?.isIncognito ?? false)
+        // the tab's history scope: its own space, or a Peek's host's (TASK-306).
+        let space = tab.historySpaceID.flatMap { self.space(withID: $0) }
+        let isIncognito = space?.isIncognito
+            ?? ((tab.quickDetourProfile ?? tab.peekHost?.quickDetourProfile)?.isIncognito ?? false)
         guard let correction = HistoryTitleUpdatePolicy.correction(
             title: tab.title,
             webViewTitle: tab.webView?.title,
@@ -5352,50 +5352,13 @@ class TabStore {
             .sink { [weak self, weak tab] isLoading in
                 guard let self, let tab else { return }
                 notify(tab)
-                if !isLoading, let spaceID = tab.historySpaceID {
-                    self.recordHistoryVisit(tab: tab, spaceID: spaceID)
-                }
                 // A site's OpenSearch description (TASK-288); the discoverer
                 // refuses Private and quarantined pages itself.
                 if !isLoading { self.siteSearchDiscoverer?.pageDidFinishLoading(in: tab) }
             }
             .store(in: &cancellables)
 
-        // An in-page navigation — `pushState`, or a Back within the document —
-        // moves the tab's URL without ever toggling `isLoading`, so the recorder
-        // above never sees it (TASK-91). Debounced on the same interval as the
-        // title below: the URL has to have stopped moving (a site that pushes
-        // twice in a row records only where it came to rest), and by then the
-        // title has usually settled too.
-        tab.$url
-            .dropFirst()
-            .removeDuplicates()
-            .debounce(for: .seconds(historySettleDebounce), scheduler: RunLoop.main)
-            .sink { [weak self, weak tab] url in
-                guard let self, let tab, tab.url == url else { return }
-                self.recordSameDocumentNavigationIfNeeded(for: tab)
-            }
-            .store(in: &cancellables)
-
-        // A title that settles after the visit was recorded corrects the stored
-        // one (TASK-88). Separate from `observe(\.$title)` above, which only
-        // redraws the sidebar: this one is debounced, and the guards in
-        // `updateHistoryTitle` need the title to have stopped moving.
-        tab.$title
-            .dropFirst()
-            .removeDuplicates()
-            // The URL travels with the title: the debounce fires a second after
-            // the title changed, and by then the tab may have moved — a
-            // pushState to another page and a Back within the same second would
-            // otherwise write the second page's title onto the first URL
-            // (TASK-88).
-            .map { [weak tab] title in (title: title, url: tab?.url) }
-            .debounce(for: .seconds(historySettleDebounce), scheduler: RunLoop.main)
-            .sink { [weak self, weak tab] titled in
-                guard let self, let tab, tab.url == titled.url else { return }
-                self.updateHistoryTitle(for: tab)
-            }
-            .store(in: &cancellables)
+        cancellables.formUnion(historyRecordingSinks(for: tab))
 
         tab.$estimatedProgress
             .dropFirst()
@@ -5417,6 +5380,73 @@ class TabStore {
             .store(in: &cancellables)
 
         tabSubscriptions[tab.id] = cancellables
+    }
+
+    /// The sinks that turn a tab's loads into history visits: a finished
+    /// load, a settled in-page navigation, a settled title correcting the
+    /// visit. Part of every listed tab's subscriptions, and on their own a
+    /// Peek's (`recordHistory(ofPeek:)`, TASK-306), whose visits go to its
+    /// host's scope through `historySpaceID`. Every rule — Private, http(s)
+    /// only, error pages, dedup, title correction — is `recordHistoryVisit`'s.
+    /// The sinks hold the tab and the store weakly.
+    private func historyRecordingSinks(for tab: BrowserTab) -> Set<AnyCancellable> {
+        var cancellables = Set<AnyCancellable>()
+
+        tab.$isLoading
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self, weak tab] isLoading in
+                guard let self, let tab, !isLoading, let spaceID = tab.historySpaceID else { return }
+                self.recordHistoryVisit(tab: tab, spaceID: spaceID)
+            }
+            .store(in: &cancellables)
+
+        // An in-page navigation — `pushState`, or a Back within the document —
+        // moves the tab's URL without ever toggling `isLoading`, so the recorder
+        // above never sees it (TASK-91). Debounced on the same interval as the
+        // title below: the URL has to have stopped moving (a site that pushes
+        // twice in a row records only where it came to rest), and by then the
+        // title has usually settled too.
+        tab.$url
+            .dropFirst()
+            .removeDuplicates()
+            .debounce(for: .seconds(historySettleDebounce), scheduler: RunLoop.main)
+            .sink { [weak self, weak tab] url in
+                guard let self, let tab, tab.url == url else { return }
+                self.recordSameDocumentNavigationIfNeeded(for: tab)
+            }
+            .store(in: &cancellables)
+
+        // A title that settles after the visit was recorded corrects the stored
+        // one (TASK-88). Separate from `subscribeToTab`'s `observe(\.$title)`,
+        // which only redraws the sidebar: this one is debounced, and the guards in
+        // `updateHistoryTitle` need the title to have stopped moving.
+        tab.$title
+            .dropFirst()
+            .removeDuplicates()
+            // The URL travels with the title: the debounce fires a second after
+            // the title changed, and by then the tab may have moved — a
+            // pushState to another page and a Back within the same second would
+            // otherwise write the second page's title onto the first URL
+            // (TASK-88).
+            .map { [weak tab] title in (title: title, url: tab?.url) }
+            .debounce(for: .seconds(historySettleDebounce), scheduler: RunLoop.main)
+            .sink { [weak self, weak tab] titled in
+                guard let self, let tab, tab.url == titled.url else { return }
+                self.updateHistoryTitle(for: tab)
+            }
+            .store(in: &cancellables)
+
+        return cancellables
+    }
+
+    /// Records the visits of a Peek's page under its host's space and profile
+    /// (TASK-306). A Peek is in no list, so `subscribeToTab` never reaches it;
+    /// these sinks live on the Peek (`historyObservers`) and end when it is
+    /// torn down or stops being its host's Peek — closed, replaced, or
+    /// expanded into a tab, which then records for itself.
+    func recordHistory(ofPeek peek: BrowserTab) {
+        peek.historyObservers = historyRecordingSinks(for: peek)
     }
 
     /// Drops what `subscribeToTab` installed for `tab`.

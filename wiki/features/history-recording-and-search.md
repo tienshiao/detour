@@ -6,6 +6,9 @@ tags: [history, tabs, search, privacy, sqlite]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
 sources:
+  - id: task-306
+    resource: backlog:TASK-306
+    title: "History: record pages viewed in a Peek"
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
     title: TabStore.swift (History Recording, subscribeToTab, HistoryTitleUpdatePolicy, SameDocumentVisitPolicy)
@@ -68,12 +71,14 @@ itself is on [history database](../architecture/history-database.md).
 
 ## What records a visit
 
-Two subscriptions in `TabStore.subscribeToTab`, both ending in
-`recordHistoryVisit(tab:spaceID:)`:
+Two subscriptions, both ending in `recordHistoryVisit(tab:spaceID:)`. They
+are built by `TabStore.historyRecordingSinks(for:)` (with the debounced title
+correction below): `subscribeToTab` installs them for every listed tab, and
+`recordHistory(ofPeek:)` installs them on a Peek (TASK-306):
 
 | Trigger | Fires when | Why it exists |
 |---|---|---|
-| `tab.$isLoading` going false | a load ends, for a tab that has a `historySpaceID` (its `spaceID`, or a Quick Detour's scope) | the ordinary case |
+| `tab.$isLoading` going false | a load ends, for a tab that has a `historySpaceID` (its `spaceID`, a Quick Detour's scope, or a Peek's host's) | the ordinary case |
 | `tab.$url`, debounced by `historySettleDebounce` (1 s) | the URL changed and held still | `history.pushState` and popstate traversals never toggle `isLoading`[^task-88], so a single-page app's page views were otherwise recorded only when an unrelated resource load happened to toggle it |
 
 `recordHistoryVisit` then applies, in order:
@@ -84,14 +89,38 @@ Two subscriptions in `TabStore.subscribeToTab`, both ending in
    still names the page the user asked for, so recording here would file a
    visit for a page that never loaded, titled by the
    [error page](./error-pages.md).
-3. Incognito space, or a Private Quick Detour - return.
+3. Incognito space, or a Private Quick Detour (for a Peek: its host's) -
+   return.
 4. Anything but `http`/`https` - return. This is what keeps `detour://`
    [internal pages](./internal-pages.md) and extension pages out.
 5. **30 s dedup** per `"url|spaceID"` in the in-memory `recentHistoryWrites`,
    skipped for typed visits.
 
-A tab with no `historySpaceID` (a favourite's or a Peek's tab that belongs to no
-space) records nothing.
+A tab with no `historySpaceID` (a favourite's backing tab before it has a
+space, a Peek no longer on its host) records nothing.
+
+## Peek visits
+
+A [Peek](../tabs/peek.md) is a `BrowserTab` in no list, so `subscribeToTab`
+never reaches it; until TASK-306 nothing seen in a Peek reached History.
+`showPeekOverlay` now calls `recordHistory(ofPeek:)`, which puts the same
+sinks on the Peek itself (`BrowserTab.historyObservers`, holding the tab and
+the store weakly). The Peek's `historySpaceID` is its host's
+(`BrowserTab.peekHost`, set by the host's `peekTab` didSet), so its visits go
+under the host's space and profile, and every rule above applies unchanged:
+a Private window's Peek records nothing, nor would one on a Private Quick
+Detour or a quarantine (neither has Peeks today). Navigations inside the Peek
+are visits too.
+
+The sinks end with the Peek: `teardown()` drops them, and so does the host's
+`peekTab` changing (`clearPeekState` on close, a replacement, or the
+hand-over when the Peek is expanded into a tab or a split pane). That last
+case matters: the expanded tab is a new `BrowserTab` on the **same web view**,
+and the old Peek object keeps observing it, so without the drop every later
+load in the tab would be recorded twice (the 30 s dedup hides only the first).
+The page on screen at the hand-over is not recorded again: the new tab's
+`$isLoading` subscription skips its first value, and a load still running
+finishes once, in the tab.
 
 ## Quick Detour visits: a scope that is no space
 
@@ -297,6 +326,11 @@ derive every time and count from in-scope `historyVisit` rows
 
 - `HistoryTitleUpdateTests` - the policy matrix, plus real-`WKWebView` cases
   for the SPA sequence.
+- `PeekHistoryTests` - a Peek's page and its inner navigations recorded under
+  the host's space with their titles, nothing for a Private window's or a
+  Private Quick Detour's Peek, a Peek taken off its host recording nothing
+  more, an expanded Peek's page recorded once and later loads only by the
+  tab, and teardown releasing the Peek (TASK-306).
 - `SameDocumentVisitTests` - the policy, and `pushState`/`replaceState`/slow
   loads against a loopback HTTP server. A `loadHTMLString` document has no
   back/forward item, so it cannot be used here.

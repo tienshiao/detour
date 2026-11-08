@@ -3027,6 +3027,8 @@ class BrowserWindowController: NSWindowController {
         // the peek's placement — it is enumerated right after its host — so it
         // reports itself (TASK-52). `teardown()` closes it.
         tab.peekTab = newPeekTab
+        // Its loads are visits under the host's space (TASK-306).
+        store.recordHistory(ofPeek: newPeekTab)
         reloadSelectedTabSidebarCell()
 
         observePeekTab(newPeekTab, for: tab)

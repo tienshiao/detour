@@ -372,11 +372,13 @@ class BrowserTab: NSObject {
     var isQuarantined: Bool { quarantine != nil }
     /// The history scope this tab's visits are filed under (`historyVisit.spaceID`):
     /// its space, or a Quick Detour's per-profile scope
-    /// (`QuickDetour.historySpaceID(forProfileID:)`). Nil for a tab that records
-    /// nothing because it belongs to no scope — a Peek, a favourite's backing tab
-    /// before it has a space.
+    /// (`QuickDetour.historySpaceID(forProfileID:)`), or for a Peek its host's
+    /// (TASK-306). Nil for a tab that records nothing because it belongs to no
+    /// scope — a favourite's backing tab before it has a space, a Peek no
+    /// longer on its host.
     var historySpaceID: UUID? {
         spaceID ?? quickDetourProfile.map { QuickDetour.historySpaceID(forProfileID: $0.id) }
+            ?? peekHost?.historySpaceID
     }
     /// Combine sinks installed by `ExtensionTabLifecycle.didOpen` that forward
     /// url/title/loading changes to the registered profile's contexts; cleared by
@@ -458,8 +460,28 @@ class BrowserTab: NSObject {
     /// A live peek is enumerated right after its host, so pointing at it here is
     /// what reports it open (TASK-52, see `ExtensionTabLifecycle`).
     var peekTab: BrowserTab? {
-        didSet { peekTab.map(ExtensionTabLifecycle.didPlace) }
+        didSet {
+            // A Peek records history under its host's scope for as long as it
+            // is the host's Peek (TASK-306). Closing, replacing or expanding it
+            // (the expanded tab takes over the same web view and records for
+            // itself) ends that: the old object would otherwise keep seeing
+            // the web view's loads and file them a second time.
+            if let old = oldValue, old !== peekTab, old.peekHost === self {
+                old.peekHost = nil
+                old.historyObservers.removeAll()
+            }
+            peekTab?.peekHost = self
+            peekTab.map(ExtensionTabLifecycle.didPlace)
+        }
     }
+    /// The tab this one is the Peek of, while it is (TASK-306). Weak: the host
+    /// owns its Peek, not the other way round.
+    weak var peekHost: BrowserTab?
+    /// The history subscriptions of a tab TabStore does not subscribe to
+    /// itself: a Peek's (`TabStore.recordHistory(ofPeek:)`, TASK-306). Held on
+    /// the tab so they go with it; the sinks hold the tab weakly. Dropped by
+    /// `teardown()` and when the tab stops being its host's Peek.
+    var historyObservers = Set<AnyCancellable>()
     var peekURL: URL?
     var peekInteractionState: Data?
     var peekFaviconURL: URL?
@@ -1022,6 +1044,7 @@ class BrowserTab: NSObject {
     func teardown() {
         peekTab?.teardown()
         peekTab = nil
+        historyObservers.removeAll()
         // The close point for every kind of tab (TASK-50). Teardown is the last
         // moment the web view still exists, and it is what every off-list path
         // calls — deactivateFavorite, removeFavorite, the favourite half of a

@@ -48,6 +48,9 @@ sources:
   - id: task-185
     resource: backlog:TASK-185
     title: "Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section"
+  - id: task-306
+    resource: backlog:TASK-306
+    title: "History: record pages viewed in a Peek"
   - id: harness-185
     resource: ../../docs/harness/task185-harness.patch
     title: TASK-185 runtime harness and its results
@@ -118,7 +121,14 @@ A Peek is a `BrowserTab` held in its host's `peekTab`. It is built from the
 space's configuration, has no `spaceID`, is not in `space.tabs` and is not
 subscribed by `TabStore`. Consequences:
 
-- It records **no history**.
+- `TabStore` does not subscribe to it, so its **history** is recorded by
+  sinks on the Peek itself (`recordHistory(ofPeek:)`, TASK-306): its loads
+  and inner navigations are visits under the **host's** space and profile,
+  with `recordHistoryVisit`'s rules (none in a Private window). They end when
+  the Peek is torn down or leaves its host, including the expand and split
+  hand-overs, so a page is never recorded twice
+  ([history recording](../features/history-recording-and-search.md#peek-visits)).
+  Until TASK-306 a Peek recorded nothing.
 - `selectedTabID` still names the *host*. `displayTab` (`selectedTab?.peekTab
   ?? selectedTab`) is what the address bar and the back/forward/reload buttons
   act on while a Peek is up.
@@ -288,7 +298,12 @@ through save and restore), `FavoriteTileBadgeTests`,
 `ExtensionActiveTabTests` (a real window presenting and closing a Peek),
 `ExtensionTabLifecycleTests` (park closes the registration),
 `SplitOpeningTests` (the store half of Open in Split View: the web view kept,
-the button's rule).
+the button's rule), `PeekHistoryTests` (history under the host's space, the
+Private exclusions, no second recording after expanding, TASK-306).
+
+Checked at runtime (TASK-306, Nov 8 2026): a Shift-clicked link's page and a
+link followed inside the Peek were both on the History page and in
+`history.db` under the host's space.
 
 Checked at runtime only ([harness](../../docs/harness/task185-harness.patch)):
 the button's visibility on each kind of host, the web view and its back list
