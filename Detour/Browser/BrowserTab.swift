@@ -439,8 +439,9 @@ class BrowserTab: NSObject {
     /// In memory only, and per tab: other hidden tabs — the same extension's
     /// tab group included — are untouched. Mutated only through
     /// `attachAutomation(_:)` / `detachAutomation(_:)`; `teardown()` drops
-    /// every owner.
-    private(set) var automationOwners: Set<TabAutomationOwner> = []
+    /// every owner. Published so the window and the sidebar can show that the
+    /// tab is being driven, and offer to stop it (`TabAutomationStop`).
+    @Published private(set) var automationOwners: Set<TabAutomationOwner> = []
     var isAutomationAttached: Bool { !automationOwners.isEmpty }
     /// Set by `teardown()`: a closed tab cannot be attached (attaching wakes).
     private var isTornDown = false

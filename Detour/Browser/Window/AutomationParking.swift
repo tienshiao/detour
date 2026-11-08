@@ -38,6 +38,46 @@ struct TabAutomationOwner: Hashable {
     let reason: String
 }
 
+/// The user's "Stop" for a tab an extension is driving (TASK-132.13 AC #5).
+///
+/// Whatever holds an attachment the user may end registers a handler for its
+/// `TabAutomationOwner.reason` (the debugger: `"debugger"`). The UI that shows
+/// a tab is being driven offers Stop when `isStoppable` says so and calls
+/// `stop(_:on:)` / `stopAll(on:)`; the handler ends the attachment its own way
+/// (the debugger detaches and tells the extension `canceled_by_user`), which
+/// removes the owner from `BrowserTab.automationOwners`.
+enum TabAutomationStop {
+    private static var handlers: [String: (BrowserTab, TabAutomationOwner) -> Void] = [:]
+
+    /// Registers what ending an attachment held for `reason` does. A later
+    /// registration for the same reason replaces the earlier one.
+    static func register(reason: String, _ handler: @escaping (BrowserTab, TabAutomationOwner) -> Void) {
+        handlers[reason] = handler
+    }
+
+    /// Whether the user can end `owner`'s attachment.
+    static func isStoppable(_ owner: TabAutomationOwner) -> Bool {
+        handlers[owner.reason] != nil
+    }
+
+    /// Ends `owner`'s attachment on `tab`, if the user can.
+    static func stop(_ owner: TabAutomationOwner, on tab: BrowserTab) {
+        guard tab.automationOwners.contains(owner), let handler = handlers[owner.reason] else { return }
+        handler(tab, owner)
+    }
+
+    /// Ends every attachment on `tab` the user can end.
+    static func stopAll(on tab: BrowserTab) {
+        for owner in tab.automationOwners.sorted(by: { ($0.extensionID, $0.reason) < ($1.extensionID, $1.reason) }) {
+            stop(owner, on: tab)
+        }
+    }
+
+    #if DEBUG
+    static func removeAllHandlersForTesting() { handlers.removeAll() }
+    #endif
+}
+
 /// Where an automation-attached tab's web view is.
 enum TabAutomationHosting: Equatable {
     /// No owner: an ordinary tab.
