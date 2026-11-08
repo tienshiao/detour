@@ -813,8 +813,6 @@ async function handleMessage(message) {
       }
     }
 
-    // --- tabGroups / debugger interim stand-ins (TASK-132.4) ---
-
     // --- externally_connectable (TASK-132.6) ---
 
     case 'externalReceived': {
@@ -888,20 +886,31 @@ async function handleMessage(message) {
     case 'tabGroupsEvents':
       return { events: tabGroupEvents.slice() };
 
-    case 'interimNamespacesProbe': {
-      const tg = chrome.tabGroups;
-      const dbg = chrome.debugger;
-      const present = (object, names) => object ? names.filter((name) => object[name] !== undefined) : '(no namespace)';
-      return {
-        install: globalThis.__detourInterimNamespaces || '(no Detour polyfill)',
-        tabGroups: tg ? { Color: tg.Color, TAB_GROUP_ID_NONE: tg.TAB_GROUP_ID_NONE } : '(no namespace)',
-        tabGroupsMethodsPresent: present(tg, ['get', 'query', 'update', 'move', 'onCreated', 'onUpdated', 'onRemoved']),
-        tabsGroup: typeof chrome.tabs.group,
-        tabsUngroup: typeof chrome.tabs.ungroup,
-        debuggerEvents: dbg ? { onEvent: typeof dbg.onEvent.addListener, onDetach: typeof dbg.onDetach.addListener } : '(no namespace)',
-        debuggerMethodsPresent: present(dbg, ['attach', 'detach', 'sendCommand', 'getTargets']),
-      };
+    case 'debuggerOp': {
+      // The popup's debugger buttons, run here in the worker (TASK-132.13).
+      // Kept in step with debuggerOpHere in popup.js.
+      const { op, target, args = {} } = message;
+      switch (op) {
+        case 'attach':
+          await chrome.debugger.attach(target, '1.3');
+          return { attached: target };
+        case 'detach':
+          await chrome.debugger.detach(target);
+          return { detached: target };
+        case 'getTargets':
+          return await chrome.debugger.getTargets();
+        case 'sendCommand':
+          return await chrome.debugger.sendCommand(target, args.method, args.params);
+      }
+      throw new Error('unknown debugger op ' + op);
     }
+
+    case 'debuggerEvents':
+      return { events: debuggerEvents.slice() };
+
+    case 'debuggerEventsClear':
+      debuggerEvents.length = 0;
+      return { cleared: true };
 
     case 'storageManagedProbe': {
       return await storageManagedProbe();
@@ -1074,3 +1083,20 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     recordTabGroupEvent({ event: 'tabs.onUpdated', tabId, groupId: changeInfo.groupId, tabGroupId: tab ? tab.groupId : null });
   }
 });
+
+// --- Debugger (TASK-132.13): what the worker hears ---
+// Kept in memory (the last 50): a worker restart starts the list again.
+const debuggerEvents = [];
+const recordDebuggerEvent = (entry) => {
+  debuggerEvents.push({ at: new Date().toISOString(), ...entry });
+  if (debuggerEvents.length > 50) debuggerEvents.shift();
+};
+if (chrome.debugger) {
+  chrome.debugger.onEvent.addListener((source, method, params) => {
+    const text = params === undefined ? undefined : JSON.stringify(params);
+    recordDebuggerEvent({ event: 'onEvent', source, method, params: text && text.length > 300 ? text.slice(0, 300) + '…' : text });
+  });
+  chrome.debugger.onDetach.addListener((source, reason) => {
+    recordDebuggerEvent({ event: 'onDetach', source, reason });
+  });
+}

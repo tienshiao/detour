@@ -5545,6 +5545,8 @@ class TabStore {
         observe(\.$peekFavicon)
         observe(\.$isPlayingAudio)
         observe(\.$isMuted)
+        // The row's "controlled by an extension" indicator (TASK-132.13).
+        observe(\.$automationOwners)
 
         tab.$isLoading
             .dropFirst()

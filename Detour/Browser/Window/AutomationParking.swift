@@ -527,6 +527,9 @@ extension BrowserWindowController {
             host.addSubview(container)
         }
         container.isHidden = hidden
+        // Nobody sees a parked page: its "being driven" capsule (TASK-132.13)
+        // goes with the display, and the next window to show it decides again.
+        container.hideAutomationBanner()
         // A pane kept for a PiP capture arrives pinned (`removeContentViews`).
         container.autoresizingMask = [.width, .height]
         container.frame = host.bounds

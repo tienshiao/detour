@@ -120,6 +120,10 @@ class BrowserWindowController: NSWindowController {
     /// The hosted panes' `$url` sinks that keep each pane's dev toolbar
     /// current (TASK-186.2); rebuilt on every claim, dropped with the content.
     var devToolbarSubscriptions = Set<AnyCancellable>()
+    /// The hosted panes' `$automationOwners` sinks that keep each pane's
+    /// automation capsule current (TASK-132.13); rebuilt on every claim,
+    /// dropped with the content.
+    var automationBannerSubscriptions = Set<AnyCancellable>()
     private let dragHandle = WindowDragView()
     private let linkStatusBar = LinkStatusBar()
     private let emptyStateLabel: NSTextField = {
@@ -1417,6 +1421,7 @@ class BrowserWindowController: NSWindowController {
         // The web view's owner shows its tab's side panel (TASK-132.8).
         settleSidePanels()
         refreshDevToolbars()
+        refreshAutomationBanners()
     }
 
     private func wireOwnedWebView(_ webView: WKWebView) {
@@ -2115,6 +2120,7 @@ class BrowserWindowController: NSWindowController {
         webViewTopConstraint = nil
         linkStatusBar.hide()
         devToolbarSubscriptions.removeAll()
+        automationBannerSubscriptions.removeAll()
         updateFindBarPlacement()
 
         // Clean up the PiP content view after WebKit has captured the animation origin.

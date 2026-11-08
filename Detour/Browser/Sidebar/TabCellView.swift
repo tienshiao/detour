@@ -51,6 +51,11 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     private let sleepBadge = NSImageView()
     private let closeButton: HoverButton
     private let speakerButton: NSButton
+    /// Shown while an extension is driving the row's tab (or either pane of a
+    /// split), after the speaker if both show (TASK-132.13). Its tooltip
+    /// names the extension. Exposed (internal) for `AutomationIndicatorTests`.
+    let automationIndicator = NSImageView()
+    private var automationIndicatorLeadingConstraint: NSLayoutConstraint!
     /// The Peek badge at the row's trailing end: a single tab's, or a split
     /// row's right pane's.
     private let peekFaviconImageView = NSImageView()
@@ -114,6 +119,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         }
     }
     private var audioPlaying = false
+    private var automationShown = false
     private var isHovered = false
     private var hasPeek = false
     private var hasLeftPanePeek = false
@@ -197,6 +203,13 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         speakerButton.action = #selector(speakerTapped)
         speakerButton.translatesAutoresizingMaskIntoConstraints = false
 
+        automationIndicator.image = NSImage(systemSymbolName: "cursorarrow.rays",
+                                            accessibilityDescription: "Controlled by an extension")
+        automationIndicator.imageScaling = .scaleProportionallyUpOrDown
+        automationIndicator.contentTintColor = .controlAccentColor
+        automationIndicator.translatesAutoresizingMaskIntoConstraints = false
+        automationIndicator.isHidden = true
+
         sleepBadge.image = NSImage(systemSymbolName: "moon.fill", accessibilityDescription: "Sleeping")
         sleepBadge.translatesAutoresizingMaskIntoConstraints = false
         sleepBadge.imageScaling = .scaleProportionallyUpOrDown
@@ -223,6 +236,7 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         addSubview(faviconImageView)
         addSubview(sleepBadge)
         addSubview(speakerButton)
+        addSubview(automationIndicator)
         addSubview(titleLabel)
         addSubview(hostLineLabel)
         addSubview(closeButton)
@@ -234,6 +248,8 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         addSubview(leftPanePeekFaviconImageView)
 
         titleLeadingConstraint = titleLabel.leadingAnchor.constraint(equalTo: faviconImageView.trailingAnchor, constant: 8)
+        automationIndicatorLeadingConstraint = automationIndicator.leadingAnchor.constraint(
+            equalTo: faviconImageView.trailingAnchor, constant: 4)
         faviconLeadingConstraint = faviconImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4)
         closeButtonWidthConstraint = closeButton.widthAnchor.constraint(equalToConstant: 0)
         // Trailing chain: title (or split right segment) → closeButton → peekFavicon → trailing
@@ -264,6 +280,11 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             speakerButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             speakerButton.widthAnchor.constraint(equalToConstant: 16),
             speakerButton.heightAnchor.constraint(equalToConstant: 16),
+
+            automationIndicatorLeadingConstraint,
+            automationIndicator.centerYAnchor.constraint(equalTo: centerYAnchor),
+            automationIndicator.widthAnchor.constraint(equalToConstant: 14),
+            automationIndicator.heightAnchor.constraint(equalToConstant: 14),
 
             titleLeadingConstraint,
             titleCenterYConstraint,
@@ -355,6 +376,9 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         onCloseLeft = nil
         updateDevMode(.none)
         updateTabGroupStripe(nil)
+        automationShown = false
+        automationIndicator.isHidden = true
+        automationIndicator.toolTip = nil
         if isEditing { endEditing(commit: false) }
         resetSplitRevealState()
         updateLayoutState()
@@ -510,14 +534,13 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
             speakerButton.alphaValue = 0
         }
 
-        let targetConstant: CGFloat = audioPlaying ? 24 : 8
-
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.2
             ctx.allowsImplicitAnimation = true
             ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
 
-            self.titleLeadingConstraint.animator().constant = targetConstant
+            self.titleLeadingConstraint.animator().constant = self.titleLeadingConstant
+            self.automationIndicatorLeadingConstraint.animator().constant = self.automationIndicatorLeadingConstant
             self.speakerButton.animator().alphaValue = self.audioPlaying ? 1 : 0
         }, onMain: { [weak self] in
             guard let self else { return }
@@ -527,8 +550,54 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
         })
     }
 
+    /// Whether the row shows the "controlled by an extension" indicator.
+    var isShowingAutomationIndicator: Bool { automationShown }
+
+    /// Shows the indicator with `tooltip` (`TabAutomationPresentation.tooltip`)
+    /// while an extension drives the row's tab, or hides it (nil). Slides the
+    /// title the way the speaker does.
+    func updateAutomation(tooltip: String?) {
+        automationIndicator.toolTip = tooltip
+        automationIndicator.setAccessibilityLabel(tooltip)
+        let shown = tooltip != nil
+        guard shown != automationShown else { return }
+        automationShown = shown
+        guard window != nil else {
+            automationIndicator.isHidden = !shown
+            automationIndicator.alphaValue = 1
+            updateLayoutState()
+            return
+        }
+        if shown {
+            automationIndicator.isHidden = false
+            automationIndicator.alphaValue = 0
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.2
+            ctx.allowsImplicitAnimation = true
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self.titleLeadingConstraint.animator().constant = self.titleLeadingConstant
+            self.automationIndicator.animator().alphaValue = shown ? 1 : 0
+        }, onMain: { [weak self] in
+            guard let self, !self.automationShown else { return }
+            self.automationIndicator.isHidden = true
+        })
+    }
+
+    /// The title's gap after the favicon: 8 pt bare, 24 pt after the speaker
+    /// or the automation indicator, 44 pt after both.
+    private var titleLeadingConstant: CGFloat {
+        8 + (audioPlaying ? 16 : 0) + (automationShown ? (audioPlaying ? 20 : 16) : 0)
+    }
+
+    /// The automation indicator follows the speaker when both show.
+    private var automationIndicatorLeadingConstant: CGFloat {
+        audioPlaying ? 24 : 4
+    }
+
     private func updateLayoutState() {
-        titleLeadingConstraint.constant = audioPlaying ? 24 : 8
+        titleLeadingConstraint.constant = titleLeadingConstant
+        automationIndicatorLeadingConstraint.constant = automationIndicatorLeadingConstant
         closeButtonWidthConstraint.constant = (isHovered && (!hasSplit || hoveredSplitSide == 1)) ? 16 : 0
         closeButtonTrailingConstraint.constant = hasPeek ? -Self.peekBadgeLeadingGap : 0
         splitFaviconWidthConstraint.constant = (hasSplit || isCollapsingSplitSegment) ? 16 : 0

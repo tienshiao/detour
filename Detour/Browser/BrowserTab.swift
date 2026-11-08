@@ -27,7 +27,14 @@ final class WebViewContainerView: NSView {
     override func didAddSubview(_ subview: NSView) {
         super.didAddSubview(subview)
         applyContentClipping(subview)
+        keepAutomationBannerOnTop(after: subview)
     }
+
+    /// The capsule laid over the page while an extension drives the tab
+    /// (TASK-132.13), made on first use; shown, hidden and framed by
+    /// `AutomationIndicator.swift`. Not part of the page's layout: the web
+    /// view's frame never depends on it.
+    var automationBanner: AutomationBannerView?
 
     /// The tab's own web view. The docked Web Inspector is a WKWebView too,
     /// and a sibling, so the container is told which subview is the page.
@@ -106,12 +113,14 @@ final class WebViewContainerView: NSView {
     override func resizeSubviews(withOldSize oldSize: NSSize) {
         super.resizeSubviews(withOldSize: oldSize)
         if isShowingDevToolbar { applyDevToolbarLayout() }
+        layoutAutomationBanner()
     }
 
     /// WebKit re-frames the web view when the inspector docks, undocks or is
     /// resized. It keeps the web view's top, so only the toolbar follows: to
     /// the web view's x and width when the inspector is docked on a side.
     @objc private func webViewFrameDidChange() {
+        layoutAutomationBanner()
         guard let devToolbar, !devToolbar.isHidden, let webView = hostedWebView else { return }
         let frame = DevToolbarLayout.toolbarFrame(containerBounds: bounds, webViewFrame: webView.frame)
         guard devToolbar.frame != frame else { return }
@@ -120,6 +129,9 @@ final class WebViewContainerView: NSView {
     }
 
     private func applyContentClipping(_ view: NSView) {
+        // A floating capsule, not page content: clipping it to the pane's
+        // corner radius would cut its own rounded shape and shadow.
+        guard !(view is AutomationBannerView) else { return }
         view.wantsLayer = true
         guard let layer = view.layer else { return }
         layer.cornerRadius = contentCornerRadius

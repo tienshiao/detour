@@ -742,36 +742,6 @@ document.getElementById('btn-dnr-fetch').addEventListener('click', dnrReport(asy
   };
 }));
 
-// --- debugger interim stand-in (TASK-132.4) ---
-//
-// Until TASK-132.13 lands the real API, Detour defines only chrome.debugger's
-// two (never-firing) events, so a worker that reads them while loading does not
-// die; every method must still be missing. chrome.tabGroups is the real API
-// since TASK-132.12 (its methods are listed as present).
-
-function interimProbe() {
-  const tg = chrome.tabGroups;
-  const dbg = chrome.debugger;
-  const present = (object, names) => object ? names.filter((name) => object[name] !== undefined) : '(no namespace)';
-  return {
-    install: globalThis.__detourInterimNamespaces || '(no Detour polyfill)',
-    tabGroups: tg ? { Color: tg.Color, TAB_GROUP_ID_NONE: tg.TAB_GROUP_ID_NONE } : '(no namespace)',
-    tabGroupsMethodsPresent: present(tg, ['get', 'query', 'update', 'move', 'onCreated', 'onUpdated', 'onRemoved']),
-    tabsGroup: typeof chrome.tabs.group,
-    tabsUngroup: typeof chrome.tabs.ungroup,
-    debuggerEvents: dbg ? { onEvent: typeof dbg.onEvent.addListener, onDetach: typeof dbg.onDetach.addListener } : '(no namespace)',
-    debuggerMethodsPresent: present(dbg, ['attach', 'detach', 'sendCommand', 'getTargets']),
-  };
-}
-
-document.getElementById('btn-interim-probe').addEventListener('click', async () => {
-  try {
-    showResult('res-interim', { popup: interimProbe(), worker: await sendBg({ type: 'interimNamespacesProbe' }) });
-  } catch (e) {
-    showResult('res-interim', e.message, true);
-  }
-});
-
 // --- Tab groups (TASK-132.12) ---
 //
 // tabs.group / tabs.ungroup on the popup's tab, chrome.tabGroups from the popup,
@@ -829,6 +799,170 @@ for (const [id, action] of Object.entries(tabGroupActions)) {
     }
   });
 }
+
+// --- Debugger (TASK-132.13) ---
+//
+// Chrome's chrome.debugger, promise form: attach (protocol 1.3), detach,
+// getTargets and sendCommand against one tab — the tabId field, or this
+// window's active tab. With "via worker" ticked each call runs in the worker
+// instead (debuggerOp in background.js, kept in step with debuggerOpHere).
+// onEvent / onDetach are logged here while the popup is open, and by the
+// worker all along.
+
+async function debuggerTarget() {
+  const typed = document.getElementById('dbg-tab-id').value.trim();
+  if (typed) return { tabId: Number(typed) };
+  return { tabId: (await popupTab()).id };
+}
+
+async function debuggerOpHere(op, target, args) {
+  if (!chrome.debugger) throw new Error('no chrome.debugger in this context');
+  switch (op) {
+    case 'attach':
+      await chrome.debugger.attach(target, '1.3');
+      return { attached: target };
+    case 'detach':
+      await chrome.debugger.detach(target);
+      return { detached: target };
+    case 'getTargets':
+      return await chrome.debugger.getTargets();
+    case 'sendCommand':
+      return await chrome.debugger.sendCommand(target, args.method, args.params);
+  }
+  throw new Error('unknown debugger op ' + op);
+}
+
+async function debuggerOp(op, args = {}) {
+  const target = await debuggerTarget();
+  if (!document.getElementById('chk-dbg-worker').checked) {
+    return { from: 'popup', target, result: await debuggerOpHere(op, target, args) };
+  }
+  const response = await sendBg({ type: 'debuggerOp', op, target, args });
+  if (response && response.error) throw new Error(response.error);
+  return { from: 'worker', target, result: response };
+}
+
+// A result fit to print: a screenshot's base64 is replaced by its length.
+function withoutImageData(value) {
+  return JSON.parse(JSON.stringify(value, (key, field) =>
+    key === 'data' && typeof field === 'string' && field.length > 200 ? `(${field.length} base64 chars)` : field));
+}
+
+function screenshotParams() {
+  const format = document.getElementById('dbg-shot-format').value;
+  const params = { format };
+  const quality = document.getElementById('dbg-shot-quality').value.trim();
+  if (quality) params.quality = Number(quality);
+  if (document.getElementById('chk-dbg-clip').checked) {
+    const number = (id) => Number(document.getElementById(id).value);
+    params.clip = {
+      x: number('dbg-clip-x'), y: number('dbg-clip-y'),
+      width: number('dbg-clip-w'), height: number('dbg-clip-h'),
+      scale: number('dbg-clip-scale'),
+    };
+  }
+  return params;
+}
+
+// Shows the returned image and resolves with its decoded pixel size.
+function showScreenshot(format, data) {
+  const img = document.getElementById('dbg-shot-image');
+  return new Promise((resolve) => {
+    img.onload = () => resolve({ decodedWidth: img.naturalWidth, decodedHeight: img.naturalHeight });
+    img.onerror = () => resolve({ decodeError: 'the data did not decode as ' + format });
+    img.src = `data:image/${format};base64,${data}`;
+    img.style.display = 'block';
+  });
+}
+
+const debuggerActions = {
+  'btn-dbg-attach': () => debuggerOp('attach'),
+  'btn-dbg-detach': () => debuggerOp('detach'),
+  'btn-dbg-targets': async () => {
+    const response = await debuggerOp('getTargets');
+    response.result = response.result.map(({ id, tabId, type, attached, extensionId, title, url }) =>
+      ({ id, tabId, type, attached, extensionId, title, url }));
+    return response;
+  },
+  'btn-dbg-page-enable': () => debuggerOp('sendCommand', { method: 'Page.enable', params: {} }),
+  'btn-dbg-shot': async () => {
+    const params = screenshotParams();
+    const started = performance.now();
+    const response = await debuggerOp('sendCommand', { method: 'Page.captureScreenshot', params });
+    const elapsedMs = Math.round(performance.now() - started);
+    const data = response.result && response.result.data;
+    const decoded = typeof data === 'string' ? await showScreenshot(params.format, data) : { decodeError: 'no data' };
+    return { ...withoutImageData(response), params, elapsedMs, ...decoded };
+  },
+  'btn-dbg-send': async () => {
+    const method = document.getElementById('dbg-method').value.trim();
+    const text = document.getElementById('dbg-params').value.trim();
+    let params;
+    try {
+      params = text ? JSON.parse(text) : undefined;
+    } catch (e) {
+      throw new Error('params are not JSON: ' + e.message);
+    }
+    return withoutImageData(await debuggerOp('sendCommand', { method, params }));
+  },
+  // The callback form, which reports failure through chrome.runtime.lastError.
+  'btn-dbg-bad-callback': async () => {
+    const target = await debuggerTarget();
+    return await new Promise((resolve) => {
+      chrome.debugger.sendCommand(target, 'Explorer.noSuchMethod', {}, (result) => {
+        resolve({
+          target,
+          result: result === undefined ? '(undefined)' : result,
+          lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : '(none)',
+        });
+      });
+    });
+  },
+};
+
+for (const [id, action] of Object.entries(debuggerActions)) {
+  document.getElementById(id).addEventListener('click', async () => {
+    try {
+      showResult('res-dbg', await action());
+    } catch (e) {
+      showResult('res-dbg', e.message, true);
+    }
+  });
+}
+
+// What the popup hears while it is open (the last 50).
+const popupDebuggerEvents = [];
+const recordPopupDebuggerEvent = (entry) => {
+  popupDebuggerEvents.push({ at: new Date().toISOString(), ...entry });
+  if (popupDebuggerEvents.length > 50) popupDebuggerEvents.shift();
+};
+if (chrome.debugger) {
+  chrome.debugger.onEvent.addListener((source, method, params) => {
+    const text = params === undefined ? undefined : JSON.stringify(withoutImageData(params));
+    recordPopupDebuggerEvent({ event: 'onEvent', source, method, params: text && text.length > 300 ? text.slice(0, 300) + '…' : text });
+  });
+  chrome.debugger.onDetach.addListener((source, reason) => {
+    recordPopupDebuggerEvent({ event: 'onDetach', source, reason });
+  });
+}
+
+document.getElementById('btn-dbg-events').addEventListener('click', async () => {
+  try {
+    showResult('res-dbg-events', { popup: popupDebuggerEvents, worker: (await sendBg({ type: 'debuggerEvents' })).events });
+  } catch (e) {
+    showResult('res-dbg-events', e.message, true);
+  }
+});
+
+document.getElementById('btn-dbg-events-clear').addEventListener('click', async () => {
+  popupDebuggerEvents.length = 0;
+  try {
+    await sendBg({ type: 'debuggerEventsClear' });
+    showResult('res-dbg-events', 'cleared');
+  } catch (e) {
+    showResult('res-dbg-events', e.message, true);
+  }
+});
 
 // --- Side panel (TASK-132.8) ---
 //

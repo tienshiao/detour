@@ -523,6 +523,7 @@ class TabSidebarViewController: NSViewController {
                                          departingFavicon: departed?.displayFavicon,
                                          departingTitle: departed?.displayTitle)
                     cell.updateDevMode(DevMode.rowMarking(for: entry.devModeURL, profileID: profileID))
+                    cell.updateAutomation(tooltip: Self.automationTooltip(for: [entry.tab].compactMap { $0 }))
                     cell.onClose = { [weak self] in
                         guard let self else { return }
                         let row = self.tableView.row(for: cell)
@@ -2407,6 +2408,7 @@ class TabSidebarViewController: NSViewController {
             cell.updateLoading(tab.isLoading)
             cell.updateProgress(tab.sidebarProgress)
             cell.updateAudio(isPlaying: tab.isPlayingAudio, isMuted: tab.isMuted)
+            cell.updateAutomation(tooltip: Self.automationTooltip(for: [tab]))
             cell.updateTabGroupStripe(stripe)
             return
         }
@@ -2449,6 +2451,7 @@ class TabSidebarViewController: NSViewController {
             cell.updateLoading(tab?.isLoading ?? false)
             cell.updateProgress(tab?.sidebarProgress ?? 0)
             cell.updateAudio(isPlaying: tab?.isPlayingAudio ?? false, isMuted: tab?.isMuted ?? false)
+            cell.updateAutomation(tooltip: Self.automationTooltip(for: [tab].compactMap { $0 }))
             cell.updatePinnedMode(entry: entry)
             cell.onClose = { [weak self] in
                 guard let self else { return }
@@ -2982,6 +2985,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
                 cell.updateLoading(isLoading)
                 cell.updateProgress(progress)
                 cell.updateAudio(isPlaying: isPlayingAudio, isMuted: isMuted)
+                cell.updateAutomation(tooltip: Self.automationTooltip(for: [tab].compactMap { $0 }))
                 cell.updatePinnedMode(entry: entry)
                 cell.indentLevel = depth
                 if isActive {
@@ -3087,6 +3091,8 @@ extension TabSidebarViewController: NSTableViewDelegate {
         let progress: Double
         let audioIsPlaying: Bool
         let audioIsMuted: Bool
+        /// Either member is being driven by an extension (TASK-132.13).
+        let automationTooltip: String?
         let indentLevel: Int
         /// Applies the per-half close glyphs (normal xmark vs pinned live/dormant).
         let applyCloseGlyphs: (TabCellView) -> Void
@@ -3120,6 +3126,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
         cell.updateLoading(descriptor.isLoading)
         cell.updateProgress(descriptor.progress)
         cell.updateAudio(isPlaying: descriptor.audioIsPlaying, isMuted: descriptor.audioIsMuted)
+        cell.updateAutomation(tooltip: descriptor.automationTooltip)
         descriptor.applyCloseGlyphs(cell)
         cell.indentLevel = descriptor.indentLevel
         if isActive {
@@ -3157,6 +3164,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
             progress: members.map(\.sidebarProgress).max() ?? 0,
             audioIsPlaying: audioMember?.isPlayingAudio ?? false,
             audioIsMuted: audioMember?.isMuted ?? false,
+            automationTooltip: Self.automationTooltip(for: members),
             indentLevel: 0,
             applyCloseGlyphs: { $0.updatePinnedMode(entry: nil) },
             closeMember: { [weak self] cell, side in self?.closeSplitMember(of: cell, side: side) },
@@ -3187,6 +3195,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
             progress: entries.compactMap { $0.tab?.sidebarProgress }.max() ?? 0,
             audioIsPlaying: audioTab?.isPlayingAudio ?? false,
             audioIsMuted: audioTab?.isMuted ?? false,
+            automationTooltip: Self.automationTooltip(for: entries.compactMap(\.tab)),
             indentLevel: depth,
             applyCloseGlyphs: { $0.updateSplitPinnedMode(left: left, right: right) },
             closeMember: { [weak self] cell, side in self?.closePinnedSplitMember(of: cell, side: side) },
@@ -3240,6 +3249,12 @@ extension TabSidebarViewController: NSTableViewDelegate {
         delegate?.tabSidebar(self, didRequestCloseTabAt: tabIdx)
     }
 
+    /// The row's "controlled by an extension" tooltip, nil while no extension
+    /// drives any of `tabs` (one tab, or a split's members).
+    static func automationTooltip(for tabs: [BrowserTab]) -> String? {
+        TabAutomationPresentation.forRow(tabs)?.tooltip
+    }
+
     private func configureTabCell(_ cell: TabCellView, tab: BrowserTab, title: String, isActive: Bool, profileID: UUID?, indentLevel: Int = 0, animatedReveal: Bool = false, departingFavicon: NSImage? = nil, departingTitle: String? = nil, onClose: @escaping (Int) -> Void) {
         cell.titleLabel.stringValue = title
         cell.setAccessibilityHelp(tab.title)
@@ -3252,6 +3267,7 @@ extension TabSidebarViewController: NSTableViewDelegate {
         cell.updateLoading(tab.isLoading)
         cell.updateProgress(tab.sidebarProgress)
         cell.updateAudio(isPlaying: tab.isPlayingAudio, isMuted: tab.isMuted)
+        cell.updateAutomation(tooltip: Self.automationTooltip(for: [tab]))
         cell.updatePinnedMode(entry: nil)
         cell.indentLevel = indentLevel
         if isActive {

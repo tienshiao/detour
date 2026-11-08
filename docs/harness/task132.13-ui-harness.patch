@@ -1,0 +1,247 @@
+TASK-132.13 UI runtime harness (AC #5): the sidebar "controlled by an extension"
+indicator and the in-window capsule with Stop. Temporary code, never committed
+to Detour/. Apply, build, run, revert:
+
+    git apply docs/harness/task132.13-ui-harness.patch
+    xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug -derivedDataPath .derived build
+    open -n -g .derived/Build/Products/Debug/Detour.app \
+        --env DETOUR_DATA_DIR=DetourVerify13213UI-<n> --env DETOUR_VERIFY_DIR="$OUT"
+    # Each "SHOOT <name> <windowNumber>" line in $OUT/verify.log is a cue to run
+    # `screencapture -x -o -l<windowNumber>`; the harness pauses ~2.5 s after each.
+    # Ends with "done". Kill the pid it logs; delete the run's
+    # "NSWindow Frame BrowserWindow-<dir>" and "NSSplitView Subview Frames
+    # BrowserSplitView-<dir>" defaults keys afterwards.
+    git apply -R docs/harness/task132.13-ui-harness.patch && xcodegen generate
+
+It seeds five data: tabs (Delta|Echo a split), registers a "debugger" Stop
+handler that detaches, attaches owners "Claude" (Alpha selected, Bravo and Echo
+unselected) and "Helper" (Echo), and logs every tab's owners, hosting, capsule
+state and frame, the web view frame, each row's indicator and tooltip, and the
+page's innerWidth x innerHeight. It shoots light and dark, presses Stop with a
+posted NSEvent click (the pointer does not move), selects the parked Bravo,
+then the split, and stops the unfocused pane.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 2f165c2..1165970 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -149,6 +149,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask13213UIHarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task13213UIHarness.swift b/Detour/App/Task13213UIHarness.swift
+new file mode 100644
+index 0000000..b0a9504
+--- /dev/null
++++ b/Detour/App/Task13213UIHarness.swift
+@@ -0,0 +1,203 @@
++// TEMP TASK-132.13 UI verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask13213UIHarnessIfRequested(_ wc: BrowserWindowController) {
++        guard let outDir = ProcessInfo.processInfo.environment["DETOUR_VERIFY_DIR"] else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        var clock: TimeInterval = 2.0
++        func at(_ dt: TimeInterval, _ block: @escaping @MainActor () -> Void) {
++            clock += dt
++            let timer = Timer(timeInterval: clock, repeats: false) { _ in MainActor.assumeIsolated { block() } }
++            RunLoop.main.add(timer, forMode: .common)
++        }
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier)")
++        guard let window = wc.window else { return log("no window") }
++        let store = TabStore.shared
++        let sidebar = wc.tabSidebar
++        let claude = TabAutomationOwner(extensionID: "Claude", reason: "debugger")
++        let helper = TabAutomationOwner(extensionID: "Helper", reason: "command")
++        var stops: [String] = []
++        TabAutomationStop.register(reason: "debugger") { tab, owner in
++            stops.append("\(tab.title)/\(owner.extensionID)")
++            tab.detachAutomation(owner)
++        }
++        func page(_ title: String, _ color: String) -> URL {
++            let html = "<title>\(title)</title><body style='margin:0;font:28px system-ui;background:\(color);height:2400px'>"
++                + "<p style='margin:60px 40px'>\(title) page</p><p style='margin:0 40px'>"
++                + "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt.</p>"
++                + "<input id=f style='margin:20px 40px;font-size:20px' placeholder='focused field'></body>"
++            return URL(string: "data:text/html," + html.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)!
++        }
++        var tabs: [String: BrowserTab] = [:]
++        func viewport(_ tab: BrowserTab, _ label: String) {
++            guard let webView = tab.webView else { return log("VIEWPORT \(label) \(tab.title): no web view") }
++            webView.evaluateJavaScript("innerWidth + 'x' + innerHeight + ' scrollY=' + scrollY") { value, error in
++                log("VIEWPORT \(label) \(tab.title): \(value ?? "nil") frame=\(webView.frame) err=\(error.map { "\($0)" } ?? "-")")
++            }
++        }
++        func describe(_ label: String) {
++            log("STATE \(label): selected=\(wc.selectedTab?.title ?? "nil") firstResponder=\(window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil") key=\(window.isKeyWindow)")
++            for name in ["Alpha", "Bravo", "Charlie", "Delta", "Echo"] {
++                guard let tab = tabs[name] else { continue }
++                let banner = tab.webViewContainer?.automationBanner
++                log("  \(name): owners=\(tab.automationOwners.map { "\($0.extensionID)/\($0.reason)" }.sorted()) hosting=\(tab.automationHosting) "
++                    + "banner=\(tab.webViewContainer?.isShowingAutomationBanner ?? false) title=\"\(banner?.titleLabel.stringValue ?? "-")\" "
++                    + "stop=\(banner?.showsStopButton ?? false) bannerFrame=\(banner.map { "\($0.frame)" } ?? "-") webViewFrame=\(tab.webView.map { "\($0.frame)" } ?? "-")")
++            }
++            let table = sidebar.tableView
++            for row in 0 ..< table.numberOfRows {
++                guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView else { continue }
++                let title = cell.titleLabel.stringValue + (cell.splitTitleLabel.isHidden ? "" : " | " + cell.splitTitleLabel.stringValue)
++                log("  row \(row) \"\(title)\" indicator=\(cell.isShowingAutomationIndicator) hidden=\(cell.automationIndicator.isHidden) tooltip=\(cell.automationIndicator.toolTip ?? "-") indicatorFrame=\(cell.automationIndicator.frame) titleX=\(cell.titleLabel.frame.minX)")
++            }
++        }
++        func shoot(_ name: String) {
++            let view = sidebar.view
++            if let layer = view.layer,
++               let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width),
++                                          pixelsHigh: Int(view.bounds.height), bitsPerSample: 8,
++                                          samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
++                                          colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
++               let ctx = NSGraphicsContext(bitmapImageRep: rep) {
++                view.effectiveAppearance.performAsCurrentDrawingAppearance { layer.render(in: ctx.cgContext) }
++                try? rep.representation(using: .png, properties: [:])?
++                    .write(to: URL(fileURLWithPath: outDir).appendingPathComponent("\(name)-sidebar-inproc.png"))
++            }
++            log("SHOOT \(name) \(window.windowNumber)")
++        }
++
++        at(0) {
++            guard let space = wc.activeSpace else { return log("no space") }
++            NSApp.appearance = NSAppearance(named: .aqua)
++            for (name, color) in [("Alpha", "#f4efe6"), ("Bravo", "#e6f0f4"), ("Charlie", "#eef4e6"),
++                                  ("Delta", "#f4e6ee"), ("Echo", "#e9e6f4")] {
++                tabs[name] = store.addTab(in: space, url: page(name, color))
++            }
++            store.createSplit(draggedTabID: tabs["Echo"]!.id, targetTabID: tabs["Delta"]!.id, edge: .right, in: space)
++            wc.selectTab(id: tabs["Alpha"]!.id)
++            log("seeded \(space.tabs.map(\.title))")
++        }
++        at(3) {
++            let alpha = tabs["Alpha"]!
++            // Focus the page's field so first-responder changes would show.
++            alpha.webView?.evaluateJavaScript("document.getElementById('f').focus(); document.activeElement.id") { v, _ in
++                log("focused \(v ?? "nil")")
++            }
++            viewport(alpha, "before-attach")
++            viewport(tabs["Bravo"]!, "bravo-before-attach")
++            describe("before")
++        }
++        at(1) {
++            tabs["Alpha"]!.attachAutomation(claude)
++            tabs["Bravo"]!.attachAutomation(claude)
++            tabs["Echo"]!.attachAutomation(claude)
++            tabs["Echo"]!.attachAutomation(TabAutomationOwner(extensionID: "Helper", reason: "debugger"))
++            log("attached")
++        }
++        at(1.5) {
++            viewport(tabs["Alpha"]!, "after-attach")
++            viewport(tabs["Bravo"]!, "bravo-parked")
++            describe("attached")
++            shoot("01-light-attached")
++        }
++        at(2.5) {
++            NSApp.appearance = NSAppearance(named: .darkAqua)
++            log("dark")
++        }
++        at(1.5) {
++            describe("dark")
++            shoot("02-dark-attached")
++        }
++        at(2.5) {
++            // A real click on Stop, posted to the app (the pointer does not move).
++            guard let banner = tabs["Alpha"]!.webViewContainer?.automationBanner else { return log("no banner") }
++            let button = banner.stopButton
++            let p = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
++            log("click Stop at \(p) key=\(window.isKeyWindow) active=\(NSApp.isActive) hit=\(window.contentView.map { root in String(describing: root.hitTest(root.superview?.convert(p, from: nil) ?? p).map { type(of: $0) }) } ?? "-")")
++            for (n, type) in [NSEvent.EventType.leftMouseDown, .leftMouseUp].enumerated() {
++                if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
++                                              timestamp: ProcessInfo.processInfo.systemUptime,
++                                              windowNumber: window.windowNumber, context: nil,
++                                              eventNumber: 100 + n, clickCount: 1,
++                                              pressure: type == .leftMouseDown ? 1 : 0) {
++                    NSApp.postEvent(e, atStart: false)
++                }
++            }
++        }
++        at(1.5) {
++            log("stops after posted click: \(stops)")
++            if tabs["Alpha"]!.isAutomationAttached {
++                log("posted click did not stop (window not key?) — pressing Stop with performClick")
++                tabs["Alpha"]!.webViewContainer?.automationBanner?.stopButton.performClick(nil)
++            }
++            tabs["Alpha"]!.webView?.evaluateJavaScript("document.activeElement && document.activeElement.id") { v, _ in
++                log("page activeElement after Stop: \(v ?? "nil")")
++            }
++            viewport(tabs["Alpha"]!, "after-stop")
++        }
++        at(1.0) {
++            log("stops: \(stops)")
++            describe("after-stop")
++            shoot("03-dark-after-stop")
++        }
++        at(2.5) {
++            NSApp.appearance = NSAppearance(named: .aqua)
++            wc.selectTab(id: tabs["Bravo"]!.id)
++            log("selected Bravo")
++        }
++        at(1.5) {
++            viewport(tabs["Bravo"]!, "bravo-displayed")
++            describe("bravo")
++            shoot("04-light-bravo")
++        }
++        at(2.5) {
++            wc.selectTab(id: tabs["Delta"]!.id)
++            log("selected Delta (split with Echo)")
++        }
++        at(1.5) {
++            describe("split")
++            shoot("05-light-split")
++        }
++        at(2.5) {
++            NSApp.appearance = NSAppearance(named: .darkAqua)
++        }
++        at(1.5) {
++            shoot("06-dark-split")
++        }
++        at(2.5) {
++            // Stop from the unfocused pane: only the debugger owner can be stopped,
++            // so Helper's debugger-reason owner goes too; a command owner would stay.
++            tabs["Echo"]!.attachAutomation(helper)
++            tabs["Echo"]!.webViewContainer?.automationBanner?.stopButton.performClick(nil)
++            log("stopped Echo; stops=\(stops)")
++        }
++        at(1.5) {
++            describe("echo-stopped")
++            shoot("07-dark-split-after-stop")
++        }
++        at(2.5) {
++            tabs["Echo"]!.detachAutomation(helper)
++            tabs["Bravo"]!.detachAutomation(claude)
++            NSApp.appearance = nil
++        }
++        at(1.0) {
++            describe("all-released")
++            shoot("08-released")
++        }
++        at(2) {
++            log("done")
++        }
++    }
++}
++#endif
