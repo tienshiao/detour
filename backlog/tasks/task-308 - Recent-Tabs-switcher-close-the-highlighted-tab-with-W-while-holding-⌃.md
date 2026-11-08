@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T10:00:00Z'
-updated_date: '2026-11-08T10:51:00Z'
+updated_date: '2026-11-08T11:18:00Z'
 labels:
   - tabs
   - recent-tabs
@@ -60,6 +60,8 @@ Runtime (Nov 8, DetourB8-308-1, temp harness posting real NSEvents in a normal w
 Website facts for AC #6 (Recent Tabs page: move from Not in Detour to the how-to steps): while holding Control in the Control+Tab switcher, press W to close the highlighted tab; the card disappears and the next one is highlighted, keep holding Control to close more, release Control to switch to the highlighted tab. A split card closes both tabs. Pinned tabs and favourites are unloaded (as Cmd+W does) and leave the switcher. Edit > Undo (Cmd+Z) or Reopen Closed Tab (Shift+Cmd+T) brings a closed tab back; Undo brings a split back as a split. When nothing is left to switch to, the switcher closes.
 
 Website AC pending (held for release).
+
+Nov 8 2026 (lead review): ⌃W now matches the typed character ('w', charactersIgnoringModifiers), falling back to the ANSI W key position only on non-Latin layouts; covered for AZERTY, Dvorak and Cyrillic in RecentTabSwitcherMonitorTests.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

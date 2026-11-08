@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T09:53:00Z'
-updated_date: '2026-11-08T10:37:00Z'
+updated_date: '2026-11-08T11:18:00Z'
 labels:
   - tabs
   - archiving
@@ -62,6 +62,8 @@ Runtime (AC #1, Nov 8, DetourB8-305-1, temp harness, injected clock instead of a
 Website facts for AC #5 (Tab Archiving page): a tab playing sound you can hear is never archived; once it stops (paused, ended or muted), the 'Archive tabs after' countdown starts again from that moment, not from when you last left the tab. Muted or paused media does not keep a tab from being archived. A Peek playing sound keeps its tab too. Quitting Detour stops playback, so a tab playing at quit counts from the quit.
 
 Website AC pending (held for release).
+
+Nov 8 2026 (lead review): the Delete Space undo snapshot now stores archiveClockStart(now:) like the session save (testUndoDeleteSpaceCarriesTheArchiveClock).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

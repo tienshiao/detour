@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T10:00:00Z'
-updated_date: '2026-11-08T11:06:00Z'
+updated_date: '2026-11-08T11:18:00Z'
 labels:
   - peek
 dependencies: []
@@ -74,6 +74,8 @@ Website facts for AC #6 (Peek guide page; move from Not in Detour to how-to step
 - Reopen a closed Peek: after closing a Peek (close button, Escape, ⌘W or a click outside), Edit > Undo (⌘Z) or File > Reopen Closed Tab (⇧⌘T) brings it back as a Peek on its tab, at the page and scroll position it had. If that tab has been closed, it comes back as a tab. Switching tabs does not close a Peek, and opening it as a tab is not a close. In Private windows ⌘Z works but Reopen Closed Tab does not (Private closes are not kept). Closed Peeks also appear on the Archived Tabs page.
 
 Website AC pending (held for release).
+
+Nov 8 2026 (lead, /code-review high on the integrated branch): fixed in the TASK-307 commit: reopenClosedPeek now treats extension pages like restoredTab (rehost to the live base URL, drop interaction state; disabled/uninstalled → nothing restored and the record kept), with ExtensionPageUndoTests. Known gaps left, not fixed: Undo of Close Peek registers no Redo (a redo would have to close a presented Peek through the window controller); the shared ⌘O item keeps the title 'Open Peek in New Tab' (disabled) when a non-browser window such as Settings becomes key after a browser window with a Peek.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
