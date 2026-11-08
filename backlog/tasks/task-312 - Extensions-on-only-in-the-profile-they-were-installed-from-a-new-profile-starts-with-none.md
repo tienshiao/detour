@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T22:20:00Z'
-updated_date: '2026-11-08T22:52:00Z'
+updated_date: '2026-11-08T23:15:00Z'
 labels:
   - extensions
   - privacy
@@ -63,6 +63,10 @@ Nov 8 2026 implementation (agent-312):
 - WEBSITE FACTS (AC #6 website half, held for release; branch privacy-guide, TASK-292.13): (1) A new profile starts with no extensions. (2) An extension you install is on only in the profile you installed it from: from the Chrome Web Store, the profile of the tab you installed it in; from Extensions › Install Extension… or Settings › Extensions, the profile of the front browser window. It is never turned on in Private by an install; Private stays off until you turn on Allow in Private. (3) To use an extension in other profiles: Settings › Extensions › select it › Turn On in All Profiles (every profile except Private), or turn it on per profile in Settings › Profiles › Extensions. (4) Settings › Extensions shows where it is on ('On in “Work”.'). (5) Updates never change which profiles an extension is on in. (6) Existing setups are unchanged after updating Detour: extensions already installed stay on in every profile that existed. Any page that says installed extensions are on in every profile is now wrong.
 
 Tests (final run, harness removed): 79 suites touching extension enablement, profiles and extension pages (the 10 changed/new + every suite that installs, seeds or loads an extension or creates profiles) = 1553 tests, 0 failures, 13 skipped (pre-existing gated legs), no host restarts. ExtensionProfileScopeTests 13/13. Website AC pending (held for release): facts above; the wiki half of AC #6 is done (new decision page wiki/decisions/extensions-on-per-profile.md + 8 pages updated, lint clean).
+
+Nov 8 2026 (lead): /code-review high on main..task-312: no correctness bugs (migration idempotent via INSERT OR IGNORE, Private excluded case-insensitively, reinstall/update keep rows, rows written before load); fixed: 2 test gaps (profileWasAdded loading a turned-on extension; lowercase Private id in v24) and the duplicated profile-name/confirmation lines (ExtensionInstallTarget.profileName / confirmationLine), folded into the commit. Skipped: per-profile transactions in setEnabled(id:profileIDs:), a duplicated normal-profile filter, and the 'Extension Installed' alert pointing at Turn On in All Profiles when only one normal profile exists. Merged to main as 85872d7 (ff). Website: privacy guide step 2 + FAQ and the Web Extensions install paragraph rewritten on website branch privacy-guide (a21a323), held for the release.
+
+Full DetourTests on main 85872d7: 3908 tests, 18 skipped, 2 failures, both the pre-existing TASK-310 pair (DevToolbarHostingTests.testTheToolbarFollowsNavigationInTheSameTab, ExtensionNotificationEventDeliveryTests.testAPrivateWorkerHearsEventsAcrossSessionBoundaries); no host crashes.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
