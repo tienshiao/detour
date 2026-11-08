@@ -146,7 +146,10 @@ Links pane is TASK-191.3 ([below](#the-links-pane)).[^task-191-3]
 | `LinkRouteTarget` | `.space(UUID)`, `.mostRecentSpace`, `.privateWindow`, `.quarantine` (TASK-194), `.quickDetour` (TASK-193.5) |
 
 - A route needs at least one condition (`hasCondition`): a non-empty pattern
-  or a source app. App-only routes are allowed (user, 2026-10-25). The store
+  or a source app. App-only routes are allowed (user, 2026-10-25): either
+  "Any URL" (`match == nil`) or, since TASK-302, a URL condition whose
+  pattern is empty or blank (the editor's "Domain is" with nothing typed);
+  the resolver already read both as any web URL from that app. The store
   refuses a route with neither (and, since TASK-191.3, any route with a
   problem: [validation](#validation)), and the resolver ignores one.
 - With both conditions, both must hold.
@@ -688,8 +691,12 @@ TASK-211; see [Settings](./settings.md#quick-detour).
 
 - **Match kind pop-up**: Domain is, Contains, Is equal to, then **Any URL**
   (`match == nil`). The pattern carries over when the kind changes; Any URL
-  hides the field. Placeholders: `example.com`, `text in the address`,
-  `https://example.com/page`.
+  hides the field. Placeholders (`linkRoutePatternPlaceholder`):
+  `example.com`, `text in the address`, `https://example.com/page`; with an
+  app chosen they read "Any URL from this app, or a domain such as
+  example.com" (… "or text in the address", … "or
+  https://example.com/page"), since the empty field then means any URL
+  (TASK-302).
 - **From app pop-up**: **Any App** (no source condition), the regular apps
   running now (icon and name; Detour itself left out; rebuilt as the menu
   opens), the route's own app first when it is not running (name and icon
@@ -750,10 +757,19 @@ TASK-211; see [Settings](./settings.md#quick-detour).
 
 ## The two "no condition" choices and incomplete routes
 
-- **App-only routes (user decision): "Any URL" in the match kind pop-up.**
-  Chosen over an empty pattern field meaning "any URL" (which reads as an
-  unfinished field and would make an emptied field silently widen a route)
-  and over a separate checkbox. Symmetrically, **Any App** is the From app
+- **App-only routes: "Any URL" in the match kind pop-up, or an app with an
+  empty pattern.** TASK-191.3 offered only Any URL and refused an empty
+  pattern even with an app (an empty field reads as unfinished, and
+  emptying it would widen a route). In practice a new route starts as
+  "Domain is" with an empty field, so choosing an app (every link from Mail
+  to Quarantine, say) left the row flagged until the user found Any URL
+  (found at runtime for the Quarantine guide, TASK-302). The user decided on
+  2026-11-08 that an app with an empty pattern is app-only, so the store
+  saves it as soon as the app is chosen; the empty field's placeholder says
+  "Any URL from this app, or …", and the row keeps "Domain is" with the empty
+  field (it round-trips as stored: kind, `""`, app). Accepted: emptying the
+  field of a route with both conditions widens it to every link from that
+  app. A rejected alternative was a separate checkbox. Symmetrically, **Any App** is the From app
   pop-up's "no condition", so the From app line is always shown: the
   condition is discoverable without an "add condition" button, and rows
   differ in height only by a warning line. Rejected: a From app line
@@ -761,7 +777,7 @@ TASK-211; see [Settings](./settings.md#quick-detour).
 - **Nothing incomplete is saved; drafts stay on their rows, marked.** New
   Route adds a draft (Domain is, empty, Most Recent Space) after the saved
   routes, with the cursor in its field and the warning "Enter a domain, such
-  as example.com. Not saved yet." The store takes it the moment it is
+  as example.com, or choose an app. Not saved yet." The store takes it the moment it is
   complete (on Return, Tab or a click elsewhere, or a pop-up change). An edit
   the store refuses on a saved route (an emptied pattern, Any URL plus Any
   App) stays on the row with "… Not saved: links follow the saved route.",
@@ -781,8 +797,8 @@ the current spaces):
 | Problem | When |
 |---|---|
 | `noCondition` | Any URL and Any App (`match == nil`, no source app). |
-| `emptyPattern` | A URL condition with an empty or blank pattern, **even with an app**: the URL part of an app-only route is `nil`, never an empty match. |
-| `invalidPattern` | Domain is: whitespace inside, or `linkRouteDomain` finds no host (`*.`, `https://`). Is equal to: not an `http(s)` URL with a host (`example.com`, `ftp://…`, `https:///path`). Contains: any non-blank text is valid. |
+| `emptyPattern` | A URL condition with an empty or blank pattern **and no app** (a blank bundle ID counts as none): "Enter a domain, such as example.com, or choose an app." (per kind). With an app it is no problem: the route is app-only (TASK-302). |
+| `invalidPattern` | A pattern that is there but means nothing, with or without an app. Domain is: whitespace inside, or `linkRouteDomain` finds no host (`*.`, `https://`). Is equal to: not an `http(s)` URL with a host (`example.com`, `ftp://…`, `https:///path`). Contains: any non-blank text is valid. |
 | `missingSpace` | A `.space` target not among the normal spaces. |
 | `privateSpace` | A `.space` target that is a Private window's space: Private Window is its own target. |
 
@@ -867,7 +883,9 @@ drafts saved once complete, an app-only draft, a refused edit kept on its
 row while the store keeps the saved route, previews, a broken saved route
 repaired from the pop-up, removing, moving saved routes with drafts last,
 rows following changes made elsewhere). `LinkRouteStoreTests` also covers
-validation (patterns per kind, the problem list, add/update/Default
+validation (patterns per kind, the problem list, app-only with an empty
+pattern of every kind saved and round-tripping, URL-only, both, neither
+(TASK-302), add/update/Default
 refusals, a broken route edited and repaired, refused changes posting
 nothing, a `TabStore` checking targets against its spaces) and the alert's
 two buttons.

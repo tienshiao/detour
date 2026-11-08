@@ -186,6 +186,35 @@ nonisolated final class LinkRouteResolverTests: XCTestCase {
         XCTAssertEqual(resolve("https://acme.test/", from: .typed(fromSpace: personal, isPrivateWindow: false), [r]), .stay)
     }
 
+    /// TASK-302: the editor's "Domain is" with nothing typed, and an app.
+    @MainActor func testAnAppWithAnEmptyPatternMatchesAnyURLFromThatApp() {
+        for kind: LinkRouteMatchKind in [.domainIs, .contains, .isEqualTo] {
+            let mail = route(kind, " ", app: "com.apple.mail", to: .quarantine)
+            XCTAssertTrue(mail.hasCondition)
+            XCTAssertEqual(resolve("https://any.test/x?y", from: .external(sourceApp: "com.apple.mail"), [mail]),
+                           .quarantine, "\(kind)")
+            XCTAssertEqual(resolve("https://any.test/", from: .external(sourceApp: "com.tinyspeck.slackmacgap"), [mail]),
+                           .mostRecentSpace, "another app")
+            XCTAssertEqual(resolve("https://any.test/", from: .external(sourceApp: nil), [mail]), .mostRecentSpace,
+                           "no known sender")
+            XCTAssertEqual(resolve("https://any.test/", from: .clicked(inSpace: personal, isPrivateWindow: false), [mail]),
+                           .stay, "a source-app route never takes a click")
+            XCTAssertFalse(linkRoute(mail, matches: url("detour://history"), origin: .external(sourceApp: "com.apple.mail")),
+                           "web URLs only")
+        }
+    }
+
+    @MainActor func testURLOnlyAndBothConditions() {
+        let urlOnly = route(.domainIs, "a.test", to: .space(work))
+        XCTAssertEqual(resolve("https://a.test/", from: .external(sourceApp: "com.apple.mail"), [urlOnly]), .openInSpace(work))
+        XCTAssertEqual(resolve("https://a.test/", from: .external(sourceApp: nil), [urlOnly]), .openInSpace(work))
+        XCTAssertEqual(resolve("https://b.test/", from: .external(sourceApp: "com.apple.mail"), [urlOnly]), .mostRecentSpace)
+        let both = route(.domainIs, "a.test", app: "com.apple.mail", to: .space(work))
+        XCTAssertEqual(resolve("https://a.test/", from: .external(sourceApp: "com.apple.mail"), [both]), .openInSpace(work))
+        XCTAssertEqual(resolve("https://b.test/", from: .external(sourceApp: "com.apple.mail"), [both]), .mostRecentSpace)
+        XCTAssertEqual(resolve("https://a.test/", from: .external(sourceApp: "com.apple.notes"), [both]), .mostRecentSpace)
+    }
+
     @MainActor func testARouteWithNoConditionNeverMatches() {
         let r = route(nil, to: .space(work))
         XCTAssertFalse(r.hasCondition)

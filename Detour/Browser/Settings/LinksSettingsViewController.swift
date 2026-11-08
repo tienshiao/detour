@@ -394,7 +394,8 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
         cell.handle.isHidden = !row.isSaved
         cell.matchPopUp.selectItem(withTag: LinkRouteCellView.tag(for: route.match?.kind))
         cell.patternField.isHidden = route.match == nil
-        cell.patternField.placeholderString = LinkRouteCellView.placeholder(for: route.match?.kind)
+        cell.patternField.placeholderString = linkRoutePatternPlaceholder(kind: route.match?.kind,
+                                                                          hasSourceApp: route.normalizedSourceApp != nil)
         if cell.patternField.currentEditor() == nil {
             cell.patternField.stringValue = route.match?.pattern ?? ""
         }
@@ -891,14 +892,6 @@ final class LinkRouteCellView: NSTableCellView {
         case 1: return .contains
         case 2: return .isEqualTo
         default: return nil
-        }
-    }
-
-    static func placeholder(for kind: LinkRouteMatchKind?) -> String {
-        switch kind {
-        case .domainIs, nil: return "example.com"
-        case .contains: return "text in the address"
-        case .isEqualTo: return "https://example.com/page"
         }
     }
 

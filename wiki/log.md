@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-11-08
+* **Update**: TASK-302 — [Link Routes](features/link-routing.md) (model, Links pane, "The two no condition choices", validation, tests): a route with an app and an empty URL pattern is app-only (user, Nov 8 2026), so it saves as soon as the app is chosen; `emptyPattern` now means an empty pattern with no app, worded "…, or choose an app."; with an app the empty field's placeholder reads "Any URL from this app, or …". The TASK-191.3 decision that rejected an empty field meaning any URL is recorded as superseded, with why.
 * **Update**: TASK-298 — [Incognito](architecture/incognito.md) ("The store is per profile…", Private Quick Detour, downloads), [Extensions in the Private profile](extensions/private-profile-extensions.md) and [Quick Detour](features/quick-detour.md): a Private session's end now wipes the Private store's website data in place and resets the Private extension contexts (unload, clear their storage, reload on new origins); before, Private cookies and logins lived until quit and showed up in the next Private window.
 
 ## 2026-11-07

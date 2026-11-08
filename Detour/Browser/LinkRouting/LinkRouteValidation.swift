@@ -8,8 +8,9 @@ import Foundation
 enum LinkRouteProblem: Equatable {
     /// Neither a URL condition nor a source app: the route would match every link.
     case noCondition
-    /// A URL condition with an empty pattern. "Any URL" is no URL condition
-    /// (`match == nil`), not an empty one.
+    /// A URL condition with an empty pattern and no source app: the route has
+    /// no condition yet. With an app chosen, an empty pattern is no URL
+    /// condition (any URL from that app, TASK-302), as "Any URL" (`match == nil`) is.
     case emptyPattern
     /// The pattern means nothing for its kind: a "Domain is" that names no
     /// host, an "Is equal to" that is not an http(s) address.
@@ -51,15 +52,16 @@ func linkRouteTargetProblem(_ target: LinkRouteTarget, context: LinkRouteContext
 /// when the route can be saved.
 func linkRouteProblems(_ route: LinkRoute, context: LinkRouteContext?) -> [LinkRouteProblem] {
     var problems: [LinkRouteProblem] = []
-    if let match = route.match {
-        if match.isEmpty {
-            problems.append(.emptyPattern)
-        } else if !linkRoutePatternIsValid(match) {
-            problems.append(.invalidPattern)
-        }
-    } else if route.normalizedSourceApp == nil {
-        problems.append(.noCondition)
+    let hasApp = route.normalizedSourceApp != nil
+    if let match = route.match, !match.isEmpty {
+        if !linkRoutePatternIsValid(match) { problems.append(.invalidPattern) }
+    } else if !hasApp {
+        // An empty field is reported as the field to fill (or an app to
+        // choose); "Any URL" with no app as a missing condition.
+        problems.append(route.match == nil ? .noCondition : .emptyPattern)
     }
+    // An app with an empty (or "Any URL") pattern is app-only: any web URL
+    // from that app (user, Nov 8 2026; the resolver reads it the same way).
     if let problem = linkRouteTargetProblem(route.target, context: context) { problems.append(problem) }
     return problems
 }

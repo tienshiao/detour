@@ -87,7 +87,10 @@ enum LinkRouteTarget: Equatable, Hashable {
 /// `sortOrder`; the first that applies wins.
 struct LinkRoute: Equatable, Identifiable {
     var id: UUID
-    /// The URL condition; nil for an app-only route.
+    /// The URL condition; nil for an app-only route ("Any URL"). A match with
+    /// an empty pattern is no URL condition either: with a source app it is
+    /// app-only too (TASK-302: the editor's "Domain is" with nothing typed),
+    /// without one the route has no condition.
     var match: LinkRouteMatch?
     /// The sending app's bundle ID; nil for a route that ignores the sender. A
     /// route with one matches only links from other apps.

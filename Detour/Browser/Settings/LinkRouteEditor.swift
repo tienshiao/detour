@@ -81,11 +81,15 @@ func linkRouteProblemMessage(_ problems: [LinkRouteProblem], kind: LinkRouteMatc
     case .noCondition:
         what = "Choose a URL condition or an app."
     case .emptyPattern, .invalidPattern:
+        let enter: String
         switch kind {
-        case .domainIs, nil: what = "Enter a domain, such as example.com."
-        case .contains: what = "Enter the text to look for."
-        case .isEqualTo: what = "Enter a full address starting with https://."
+        case .domainIs, nil: enter = "Enter a domain, such as example.com"
+        case .contains: enter = "Enter the text to look for"
+        case .isEqualTo: enter = "Enter a full address starting with https://"
         }
+        // Empty means no app either (with one, an empty pattern is app-only):
+        // either fills it.
+        what = enter + (problem == .emptyPattern ? ", or choose an app." : ".")
     case .missingSpace:
         what = "Its space was deleted. Choose where these links open."
     case .privateSpace:
@@ -94,6 +98,18 @@ func linkRouteProblemMessage(_ problems: [LinkRouteProblem], kind: LinkRouteMatc
     if !isSaved { return what + " Not saved yet." }
     if hasUnsavedChanges { return what + " Not saved: links follow the saved route." }
     return what
+}
+
+/// The pattern field's placeholder. With an app chosen, an empty pattern
+/// means any URL from that app (TASK-302), so the empty field says so.
+func linkRoutePatternPlaceholder(kind: LinkRouteMatchKind?, hasSourceApp: Bool) -> String {
+    let example: String
+    switch kind {
+    case .domainIs, nil: example = hasSourceApp ? "a domain such as example.com" : "example.com"
+    case .contains: example = "text in the address"
+    case .isEqualTo: example = "https://example.com/page"
+    }
+    return hasSourceApp ? "Any URL from this app, or \(example)" : example
 }
 
 /// The rows of the Links pane over a `LinkRouteStore`.

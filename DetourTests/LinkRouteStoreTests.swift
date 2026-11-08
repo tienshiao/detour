@@ -54,6 +54,59 @@ nonisolated final class LinkRouteStoreTests: XCTestCase {
         XCTAssertEqual(db.loadLinkRoutes(), [])
     }
 
+    // MARK: - App-only, URL-only, both, neither (TASK-302)
+
+    @MainActor func testAnAppWithAnEmptyPatternIsAnAppOnlyRoute() {
+        let context = LinkRouteContext(spaceIDs: [work])
+        for kind: LinkRouteMatchKind? in [nil, .domainIs, .contains, .isEqualTo] {
+            for pattern in ["", "  "] {
+                XCTAssertEqual(linkRouteProblems(route(kind, pattern, app: "com.apple.mail", to: .quarantine),
+                                                 context: context), [],
+                               "app-only: \(String(describing: kind)) \"\(pattern)\"")
+            }
+        }
+        // A pattern that is there still has to be valid, app or not.
+        XCTAssertEqual(linkRouteProblems(route(.domainIs, "https://", app: "com.apple.mail", to: .quarantine),
+                                         context: context), [.invalidPattern])
+    }
+
+    @MainActor func testURLOnlyBothAndNeither() {
+        let context = LinkRouteContext(spaceIDs: [work])
+        XCTAssertEqual(linkRouteProblems(route(.domainIs, "a.test", to: .space(work)), context: context), [], "URL only")
+        XCTAssertEqual(linkRouteProblems(route(.domainIs, "a.test", app: "com.apple.mail", to: .space(work)),
+                                         context: context), [], "both")
+        // Neither: "Any URL" and no app, or an empty pattern and no app (or a blank one).
+        XCTAssertEqual(linkRouteProblems(route(nil, to: .space(work)), context: context), [.noCondition])
+        for kind: LinkRouteMatchKind in [.domainIs, .contains, .isEqualTo] {
+            for app: String? in [nil, "", "  "] {
+                XCTAssertEqual(linkRouteProblems(route(kind, " ", app: app, to: .space(work)), context: context),
+                               [.emptyPattern], "\(kind) app \(String(describing: app))")
+            }
+        }
+    }
+
+    @MainActor func testAnAppOnlyRouteWithAnEmptyPatternIsSavedAndRoundTrips() throws {
+        let db = try makeDatabase()
+        let store = LinkRouteStore(database: db)
+        let saved = try XCTUnwrap(store.add(route(.domainIs, "", app: "com.apple.mail", to: .quarantine)))
+        let reloaded = LinkRouteStore(database: db)
+        XCTAssertEqual(reloaded.routes, [saved], "kind, empty pattern and app all come back")
+        XCTAssertEqual(reloaded.routes.first?.match, LinkRouteMatch(kind: .domainIs, pattern: ""))
+        XCTAssertEqual(reloaded.problems(for: saved), [])
+        // A saved route of both can be widened to app-only by emptying its field.
+        let both = try XCTUnwrap(store.add(route(.domainIs, "a.test", app: "com.apple.mail", to: .space(work))))
+        var emptied = both
+        emptied.match?.pattern = ""
+        XCTAssertTrue(store.update(emptied))
+        XCTAssertEqual(LinkRouteStore(database: db).routes.last, emptied)
+        // Without an app, emptying it is refused.
+        let urlOnly = try XCTUnwrap(store.add(route(.domainIs, "b.test", to: .space(work))))
+        var emptiedURLOnly = urlOnly
+        emptiedURLOnly.match?.pattern = ""
+        XCTAssertFalse(store.update(emptiedURLOnly))
+        XCTAssertEqual(LinkRouteStore(database: db).routes.last, urlOnly)
+    }
+
     @MainActor func testUpdateReplacesTheConditionAndTargetAndKeepsThePlace() throws {
         let db = try makeDatabase()
         let store = LinkRouteStore(database: db)
@@ -202,7 +255,7 @@ nonisolated final class LinkRouteStoreTests: XCTestCase {
         XCTAssertEqual(linkRouteProblems(route(nil, app: "  ", to: .space(work)), context: context), [.noCondition])
         XCTAssertEqual(linkRouteProblems(route(.domainIs, "", to: .space(work)), context: context), [.emptyPattern])
         XCTAssertEqual(linkRouteProblems(route(.contains, " ", app: "com.apple.mail", to: .space(work)), context: context),
-                       [.emptyPattern], "with an app, an empty pattern is still an unfinished URL condition: Any URL is nil")
+                       [], "TASK-302: with an app, an empty pattern is app-only (any URL from that app)")
         XCTAssertEqual(linkRouteProblems(route(.isEqualTo, "example.com", to: .space(work)), context: context),
                        [.invalidPattern])
         XCTAssertEqual(linkRouteProblems(route(.domainIs, "a.test", to: .space(UUID())), context: context), [.missingSpace])
@@ -218,8 +271,10 @@ nonisolated final class LinkRouteStoreTests: XCTestCase {
     @MainActor func testAddRefusesAnEmptyOrInvalidPattern() throws {
         let db = try makeDatabase()
         let store = LinkRouteStore(database: db)
-        XCTAssertNil(store.add(route(.domainIs, "", app: "com.apple.mail", to: .space(work))))
+        XCTAssertNil(store.add(route(.domainIs, "", to: .space(work))))
         XCTAssertNil(store.add(route(.domainIs, "exa mple.com", to: .space(work))))
+        XCTAssertNil(store.add(route(.domainIs, "exa mple.com", app: "com.apple.mail", to: .space(work))),
+                     "an app does not excuse a broken pattern")
         XCTAssertNil(store.add(route(.isEqualTo, "example.com", to: .space(work))))
         XCTAssertEqual(store.routes, [])
         XCTAssertEqual(db.loadLinkRoutes(), [])

@@ -91,6 +91,8 @@ nonisolated final class LinkRouteEditorTests: XCTestCase {
     @MainActor func testTheWarningSaysWhatToDo() {
         XCTAssertNil(linkRouteProblemMessage([], kind: .domainIs, isSaved: true, hasUnsavedChanges: false))
         XCTAssertEqual(linkRouteProblemMessage([.emptyPattern], kind: .domainIs, isSaved: false, hasUnsavedChanges: false),
+                       "Enter a domain, such as example.com, or choose an app. Not saved yet.")
+        XCTAssertEqual(linkRouteProblemMessage([.invalidPattern], kind: .domainIs, isSaved: false, hasUnsavedChanges: false),
                        "Enter a domain, such as example.com. Not saved yet.")
         XCTAssertEqual(linkRouteProblemMessage([.invalidPattern], kind: .isEqualTo, isSaved: true, hasUnsavedChanges: true),
                        "Enter a full address starting with https://. Not saved: links follow the saved route.")
@@ -100,8 +102,20 @@ nonisolated final class LinkRouteEditorTests: XCTestCase {
                        "Its space was deleted. Choose where these links open.")
         XCTAssertEqual(linkRouteProblemMessage([.emptyPattern, .missingSpace], kind: .contains, isSaved: true,
                                                hasUnsavedChanges: true),
-                       "Enter the text to look for. Not saved: links follow the saved route.",
+                       "Enter the text to look for, or choose an app. Not saved: links follow the saved route.",
                        "the first problem is the one to fix")
+    }
+
+    @MainActor func testTheEmptyPatternFieldSaysAnyURLOnceAnAppIsChosen() {
+        XCTAssertEqual(linkRoutePatternPlaceholder(kind: .domainIs, hasSourceApp: false), "example.com")
+        XCTAssertEqual(linkRoutePatternPlaceholder(kind: .contains, hasSourceApp: false), "text in the address")
+        XCTAssertEqual(linkRoutePatternPlaceholder(kind: .isEqualTo, hasSourceApp: false), "https://example.com/page")
+        XCTAssertEqual(linkRoutePatternPlaceholder(kind: .domainIs, hasSourceApp: true),
+                       "Any URL from this app, or a domain such as example.com")
+        XCTAssertEqual(linkRoutePatternPlaceholder(kind: .contains, hasSourceApp: true),
+                       "Any URL from this app, or text in the address")
+        XCTAssertEqual(linkRoutePatternPlaceholder(kind: .isEqualTo, hasSourceApp: true),
+                       "Any URL from this app, or https://example.com/page")
     }
 
     // MARK: - Rows
@@ -154,6 +168,25 @@ nonisolated final class LinkRouteEditorTests: XCTestCase {
         XCTAssertTrue(editor.edit(id) { $0.sourceApp = "com.apple.mail" })
         XCTAssertEqual(store.routes.first?.sourceApp, "com.apple.mail")
         XCTAssertNil(store.routes.first?.match)
+    }
+
+    /// TASK-302: a new route, an app chosen, nothing typed: saved as app-only,
+    /// without switching the URL condition to Any URL.
+    @MainActor func testANewRouteIsSavedAsAppOnlyWhenAnAppIsChosenAndNothingIsTyped() throws {
+        let (editor, store, db) = try makeEditor()
+        let id = editor.addDraft()
+        XCTAssertTrue(editor.edit(id) { $0.sourceApp = "com.apple.mail" }, "the app alone completes it")
+        XCTAssertEqual(store.routes.map(\.id), [id])
+        let row = try firstRow(editor)
+        XCTAssertTrue(row.isSaved)
+        XCTAssertEqual(row.problems, [])
+        XCTAssertEqual(row.route.match, LinkRouteMatch(kind: .domainIs, pattern: ""), "the row keeps Domain is, empty")
+        XCTAssertEqual(LinkRouteStore(database: db).routes, store.routes, "round-trips")
+        // Choosing Any App again leaves it with no condition: refused, marked, the saved version kept.
+        XCTAssertFalse(editor.edit(id) { $0.sourceApp = nil })
+        XCTAssertEqual(try firstRow(editor).problems, [.emptyPattern])
+        XCTAssertTrue(try firstRow(editor).hasUnsavedChanges)
+        XCTAssertEqual(store.routes.first?.sourceApp, "com.apple.mail")
     }
 
     @MainActor func testARefusedEditStaysOnItsRowAndTheStoreKeepsTheSavedRoute() throws {
