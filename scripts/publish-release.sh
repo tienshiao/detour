@@ -22,11 +22,13 @@
 #   4. github      pre-release v<version> with the DMG (the website's download link)
 #   5. updates     DMG, new deltas, then appcast.xml to R2 bucket detour-updates
 #                  (served as https://updates.detourbrowser.com/)
-#   6. website     ../detour-website: version, links and size; commit, push, wrangler deploy
+#   6. website     ../detour-website: src/data/release.json (version, size, date);
+#                  commit, build the commit, push, wrangler deploy
 #
 # Needs: gh (logged in), npx (wrangler logged in to the Cloudflare account that
 # owns detour-updates: `npx wrangler login`), the Sparkle EdDSA key in the
-# keychain, python3. Override wrangler with WRANGLER="..." and the website
+# keychain, python3, and the Node version in the website's .nvmrc installed
+# with nvm.fish. Override wrangler with WRANGLER="..." and the website
 # checkout with WEBSITE_DIR=...
 
 set -euo pipefail
@@ -204,39 +206,43 @@ step "Website (${WEBSITE_DIR})"
 [ -d "$WEBSITE_DIR/.git" ] || fail "website checkout not found at $WEBSITE_DIR (set WEBSITE_DIR)"
 [ -z "$(git -C "$WEBSITE_DIR" status --porcelain --untracked-files=no)" ] || fail "the website checkout has uncommitted changes"
 SIZE_MB=$(python3 -c "print(f'{$DMG_SIZE / 1048576:.2f} MB')")
-# Replaces every occurrence of the previous version and size in index.html
-# (the schema, version pill, three download links and two size lines) and the
-# sitemap's lastmod. Look at the diff it prints if the page has started to
-# mention versions elsewhere.
-python3 - "$WEBSITE_DIR/public" "$VERSION" "$SIZE_MB" "$DRY_RUN" <<'EOF'
-import datetime, json, re, sys
-public, version, size, dry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
-index = open(f"{public}/index.html", encoding="utf-8").read()
-schema = json.loads(re.search(r'<script type="application/ld\+json">(.*?)</script>', index, re.S).group(1))
-old_version, old_size = schema["softwareVersion"], schema["fileSize"]
-if old_version == version:
+# The site (Astro) states the version, DMG link and size only through
+# src/data/release.json; the release date there is the home page's sitemap
+# lastmod.
+python3 - "$WEBSITE_DIR/src/data/release.json" "$VERSION" "$SIZE_MB" "$DRY_RUN" <<'EOF'
+import datetime, json, sys
+path, version, size, dry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
+release = json.load(open(path, encoding="utf-8"))
+if release["version"] == version:
     print(f"    The site already shows {version}")
     sys.exit(0)
-new = index.replace(old_version, version).replace(old_size, size)
-print(f"    {old_version} -> {version}: {index.count(old_version)} places; {old_size} -> {size}: {index.count(old_size)} places")
-sitemap = open(f"{public}/sitemap.xml", encoding="utf-8").read()
-sitemap = re.sub(r"<lastmod>[^<]*</lastmod>", f"<lastmod>{datetime.date.today()}</lastmod>", sitemap)
+print(f"    {release['version']} -> {version}; {release['dmgSize']} -> {size}")
+release.update(version=version, dmgSize=size, date=str(datetime.date.today()))
 if not dry:
-    open(f"{public}/index.html", "w", encoding="utf-8").write(new)
-    open(f"{public}/sitemap.xml", "w", encoding="utf-8").write(sitemap)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(release, indent=2) + "\n")
 EOF
 if [ -n "$(git -C "$WEBSITE_DIR" status --porcelain --untracked-files=no)" ]; then
     git -C "$WEBSITE_DIR" --no-pager diff --stat
     run git -C "$WEBSITE_DIR" commit -am "Update to ${VERSION}"
 fi
-run git -C "$WEBSITE_DIR" push origin HEAD
-
-# Deploy the committed tree, not the working copy (which can hold .DS_Store
-# files and other strays that would be served).
+# Build and deploy the committed tree, not the working copy (which can hold
+# .DS_Store files and other strays that would be served). The build runs
+# before the push, so a commit that does not build is never pushed. A dry run
+# builds too, as a check, from the last commit.
 SITE_EXPORT=$(mktemp -d)
+trap 'rm -rf "$SITE_EXPORT"' EXIT
 git -C "$WEBSITE_DIR" archive HEAD | tar -x -C "$SITE_EXPORT"
+# The site's Node is pinned in its .nvmrc; use nvm.fish's install of it.
+[ -f "$SITE_EXPORT/.nvmrc" ] || fail "the website commit has no .nvmrc"
+SITE_NODE=$(tr -d 'v \r\n' < "$SITE_EXPORT/.nvmrc")
+SITE_NODE_BIN="$HOME/.local/share/nvm/v${SITE_NODE}/bin"
+[ -x "$SITE_NODE_BIN/node" ] && PATH="$SITE_NODE_BIN:$PATH"
+[ "$(node -v 2>/dev/null)" = "v${SITE_NODE}" ] \
+    || fail "the website builds with Node ${SITE_NODE} (its .nvmrc), found $(node -v 2>/dev/null || echo none): nvm install ${SITE_NODE}"
+(cd "$SITE_EXPORT" && npm ci --no-audit --no-fund --loglevel=error && npm run --silent build)
+run git -C "$WEBSITE_DIR" push origin HEAD
 (cd "$SITE_EXPORT" && run $WRANGLER deploy)
-rm -rf "$SITE_EXPORT"
 
 if [ "$DRY_RUN" = 0 ]; then
     curl -fsS "$SITE_URL" | grep -q "v${VERSION} · pre-release" \
