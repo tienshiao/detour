@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08T10:00:00Z'
+updated_date: '2026-11-08T10:20:00Z'
 labels:
   - peek
 dependencies: []
@@ -34,3 +35,9 @@ Three Peek behaviors Arc had (Arc's Peek help article; Arc for macOS 2023 releas
 - [ ] #5 Checked at runtime with /verify
 - [ ] #6 The website's Peek guide page moves these from Not in Detour to how-to steps
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 8 2026, user decision: the Peek setting is app-wide (Settings › General); with Peek off, auto-peek from pinned tabs/favorites opens new tabs, but Shift-click still peeks (explicit request). ⌘O is the key for opening a Peek as a tab.
+<!-- SECTION:NOTES:END -->

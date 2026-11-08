@@ -4,6 +4,7 @@ title: 'Link context menu: Open Link in Quick Detour'
 status: To Do
 assignee: []
 created_date: '2026-11-08T08:40:00Z'
+updated_date: '2026-11-08T10:20:00Z'
 labels:
   - quick-detour
   - menus
@@ -30,3 +31,9 @@ Things to decide while building it: which profile the Quick Detour uses (the win
 - [ ] #4 Checked at runtime with /verify in a normal and a Private window
 - [ ] #5 The website's Quick Detour guide page (when it exists, TASK-292.8) mentions the menu item
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 8 2026, user decision: the item is always offered (independent of the ⌥⌘-click setting, which governs only the gesture), also inside a Peek, and the sidebar tab menu gets a matching 'Open in Quick Detour'.
+<!-- SECTION:NOTES:END -->

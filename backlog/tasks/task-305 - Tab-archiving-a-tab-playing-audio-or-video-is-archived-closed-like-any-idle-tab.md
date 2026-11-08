@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08T09:53:00Z'
+updated_date: '2026-11-08T10:20:00Z'
 labels:
   - tabs
   - archiving
@@ -32,3 +33,9 @@ Found by the TASK-292.6 code read (Nov 8 2026, not yet seen at runtime): the arc
 - [ ] #4 TabStore archive tests cover playing, paused and muted tabs, with an injected clock
 - [ ] #5 The website's Tab Archiving page mentions the rule
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 8 2026, user decision: once playback stops, the 'Archive tabs after' countdown restarts from when it stopped (not from the last deselection).
+<!-- SECTION:NOTES:END -->

@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08T08:41:00Z'
+updated_date: '2026-11-08T10:20:00Z'
 labels:
   - link-routes
   - ui
@@ -29,3 +30,9 @@ Found while checking the Quarantine guide page at runtime (TASK-292.7, v0.4.0): 
 - [ ] #3 LinkRoute validation tests cover app-only, URL-only and both
 - [ ] #4 The website's Quarantine and Link Routes pages drop the Any URL workaround
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 8 2026, user decision: default approach confirmed: a route with an app chosen and an empty URL pattern is app-only (any URL from that app).
+<!-- SECTION:NOTES:END -->

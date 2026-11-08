@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08T06:59:00Z'
+updated_date: '2026-11-08T10:20:00Z'
 labels:
   - menus
 dependencies:
@@ -33,3 +34,9 @@ The app has no Help menu (the menu bar ends at Window in AppDelegate). With guid
 - [ ] #4 The URLs are defined in one place and a test checks they are https URLs on detourbrowser.com (or github.com for issues and releases)
 - [ ] #5 Checked at runtime with /verify: each item opens the right page in the right window
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 8 2026, user decision: TASK-292.9 is done in the same batch so the Keyboard Shortcuts item has a page. Website page changes for unreleased features are committed on a website branch and held for the next release, not deployed.
+<!-- SECTION:NOTES:END -->

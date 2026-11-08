@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08T08:40:00Z'
+updated_date: '2026-11-08T10:20:00Z'
 labels:
   - ui
   - quick-detour
@@ -32,3 +33,9 @@ Options for the agreed order, for example: copy and Site Settings at fixed spots
 - [ ] #3 The copy-link and Site Settings buttons stay in the same place when extensions are pinned or unpinned
 - [ ] #4 Checked at runtime with /verify with zero, one and several pinned extensions, in the sidebar and in Quick Detour
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 8 2026, user decision: order in both bars is host … [extensions] [copy link] [Site Settings]. Copy and Site Settings sit together at the trailing edge, so the right side is identical regardless of pinned extensions (and across profiles); extensions grow leftward from copy.
+<!-- SECTION:NOTES:END -->

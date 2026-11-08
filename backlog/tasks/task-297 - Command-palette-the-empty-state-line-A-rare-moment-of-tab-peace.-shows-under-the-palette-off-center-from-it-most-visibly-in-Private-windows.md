@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08T08:30:00Z'
+updated_date: '2026-11-08T10:20:00Z'
 labels:
   - command-palette
   - ui
@@ -36,3 +37,9 @@ The user's proposed fix: hide the empty-state label while the palette is visible
 - [ ] #4 No visible jump or flash when the palette opens and closes
 - [ ] #5 Checked at runtime with /verify in a normal window and a Private window, with the sidebar shown and hidden
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 8 2026, user decision: default approach confirmed: hide the empty-state label while the palette is open.
+<!-- SECTION:NOTES:END -->

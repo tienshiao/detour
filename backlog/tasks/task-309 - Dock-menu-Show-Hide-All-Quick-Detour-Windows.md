@@ -4,6 +4,7 @@ title: 'Dock menu: Show / Hide All Quick Detour Windows'
 status: To Do
 assignee: []
 created_date: '2026-11-08T10:04:00Z'
+updated_date: '2026-11-08T10:20:00Z'
 labels:
   - quick-detour
   - menus
@@ -29,3 +30,9 @@ To settle while building it: hide means orderOut (windows stay open, idle auto-c
 - [ ] #3 Checked at runtime with /verify with several Quick Detours, including a Private one
 - [ ] #4 The website's Quick Detour page moves it from Not in Detour to the how-to steps
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 8 2026, user decision: hidden Quick Detours keep their idle auto-close timers running (a hidden window is treated like one behind other windows).
+<!-- SECTION:NOTES:END -->

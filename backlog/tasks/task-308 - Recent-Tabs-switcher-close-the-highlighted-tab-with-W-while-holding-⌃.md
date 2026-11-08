@@ -4,6 +4,7 @@ title: 'Recent Tabs switcher: close the highlighted tab with W while holding ⌃
 status: To Do
 assignee: []
 created_date: '2026-11-08T10:00:00Z'
+updated_date: '2026-11-08T10:20:00Z'
 labels:
   - tabs
   - recent-tabs
@@ -31,3 +32,9 @@ Things to settle while building it: a split card (one card for two tabs) closes 
 - [ ] #5 Checked at runtime with /verify
 - [ ] #6 The website's Recent Tabs page moves it from Not in Detour to the how-to steps
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 8 2026, user decision: ⌃W on a split card closes both tabs (Undo brings both back); pinned tabs and favorites do what ⌘W does (dormant) and leave the switcher.
+<!-- SECTION:NOTES:END -->
