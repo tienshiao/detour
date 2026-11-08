@@ -7,3 +7,4 @@ TestExtensions/1Password
 TestExtensions/vimium
 .derived/
 .claude/scratch/
+.wrangler/
