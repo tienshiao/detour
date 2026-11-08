@@ -163,16 +163,23 @@ extension BrowserWindowController: WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable () -> Void) {
+        // A tab an extension's debugger holds answers through it (TASK-132.15).
+        if ExtensionDebuggerDialogs.intercept(.alert, in: webView, frame: frame, message: message, defaultText: nil,
+                                              completion: { _, _ in completionHandler() }) { return }
         showJSAlert(in: webView, from: frame, message: message) { _ in completionHandler() }
     }
 
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable (Bool) -> Void) {
+        if ExtensionDebuggerDialogs.intercept(.confirm, in: webView, frame: frame, message: message, defaultText: nil,
+                                              completion: { accept, _ in completionHandler(accept) }) { return }
         showJSAlert(in: webView, from: frame, message: message, showCancel: true) { response in
             completionHandler(response == .alertFirstButtonReturn)
         }
     }
 
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable (String?) -> Void) {
+        if ExtensionDebuggerDialogs.intercept(.prompt, in: webView, frame: frame, message: prompt, defaultText: defaultText,
+                                              completion: { _, text in completionHandler(text) }) { return }
         let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         textField.stringValue = defaultText ?? ""
         showJSAlert(in: webView, from: frame, message: prompt, showCancel: true, accessoryView: textField) { response in

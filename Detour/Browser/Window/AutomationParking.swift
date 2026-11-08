@@ -673,25 +673,6 @@ enum AutomationInput {
     }
 }
 
-// MARK: - The UI delegate of a never-displayed parked page
-
-/// What a parked web view that no window has wired answers WebKit with
-/// (`BrowserWindowController.wireOwnedWebView` replaces it as soon as a window
-/// displays the tab). It implements only the context-menu SPI, so everything
-/// else — JavaScript dialogs, new windows, file panels — keeps WebKit's
-/// behaviour for a web view with no UI delegate.
-final class AutomationUIDelegate: NSObject, WKUIDelegate {
-    static let shared = AutomationUIDelegate()
-
-    /// See `BrowserWindowController`'s implementation: no menu for an
-    /// extension's synthesized press.
-    @objc(_webView:getContextMenuFromProposedMenu:forElement:userInfo:completionHandler:)
-    func _webView(_ webView: WKWebView, getContextMenuFromProposedMenu menu: NSMenu, forElement element: AnyObject,
-                  userInfo: AnyObject?, completionHandler: @escaping @MainActor @Sendable (NSMenu?) -> Void) {
-        completionHandler(AutomationInput.consumeSynthesizedContextMenu(for: webView) ? nil : menu)
-    }
-}
-
 // MARK: - BrowserWindowController: parking
 
 extension BrowserWindowController {
@@ -706,13 +687,13 @@ extension BrowserWindowController {
     /// the content area's size, following it as it resizes. Idempotent: a
     /// container already parked here is only re-asserted.
     func parkForAutomation(_ tab: BrowserTab) {
-        // Also re-wraps a web view that was hosted bare (a peek).
-        tab.ensureWebViewContainer()
-        // A tab no window has displayed has no UI delegate, so WebKit would
-        // show a synthesized right click's menu without asking (TASK-132.14).
+        // A tab no window has displayed has no UI delegate; a window that
+        // displays it replaces this one (`wireOwnedWebView`).
         if let webView = tab.webView, webView.uiDelegate == nil {
             webView.uiDelegate = AutomationUIDelegate.shared
         }
+        // Also re-wraps a web view that was hosted bare (a peek).
+        tab.ensureWebViewContainer()
         guard let container = tab.webViewContainer else { return }
         let host = automationParkingView
         host.frame = contentContainerView.bounds
@@ -731,5 +712,51 @@ extension BrowserWindowController {
         // A pane kept for a PiP capture arrives pinned (`removeContentViews`).
         container.autoresizingMask = [.width, .height]
         container.frame = host.bounds
+    }
+}
+
+// MARK: - A UI delegate for tabs no window has displayed
+
+/// The UI delegate of an automation-attached tab that no window has displayed
+/// (`parkForAutomation` sets it when the web view has none). Without one,
+/// WebKit answers the page's dialogs itself and never asks: an alert returns,
+/// a confirm is false, a prompt is null. Here a dialog goes to the debugger
+/// when the tab's session has Page enabled (TASK-132.15,
+/// `ExtensionDebuggerDialogs`); anything else gets WebKit's no-delegate answer,
+/// so a tab nobody drives behaves exactly as before. It also withholds the
+/// context menu an extension's synthesized right click would open
+/// (TASK-132.14): without a delegate WebKit would show it without asking.
+final class AutomationUIDelegate: NSObject, WKUIDelegate {
+    static let shared = AutomationUIDelegate()
+
+    /// See `BrowserWindowController`'s implementation: no menu for an
+    /// extension's synthesized press.
+    @objc(_webView:getContextMenuFromProposedMenu:forElement:userInfo:completionHandler:)
+    func _webView(_ webView: WKWebView, getContextMenuFromProposedMenu menu: NSMenu, forElement element: AnyObject,
+                  userInfo: AnyObject?, completionHandler: @escaping @MainActor @Sendable (NSMenu?) -> Void) {
+        completionHandler(AutomationInput.consumeSynthesizedContextMenu(for: webView) ? nil : menu)
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable () -> Void) {
+        if ExtensionDebuggerDialogs.intercept(.alert, in: webView, frame: frame, message: message, defaultText: nil,
+                                              completion: { _, _ in completionHandler() }) { return }
+        completionHandler()
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable (Bool) -> Void) {
+        if ExtensionDebuggerDialogs.intercept(.confirm, in: webView, frame: frame, message: message, defaultText: nil,
+                                              completion: { accept, _ in completionHandler(accept) }) { return }
+        completionHandler(false)
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping @MainActor @Sendable (String?) -> Void) {
+        if ExtensionDebuggerDialogs.intercept(.prompt, in: webView, frame: frame, message: prompt,
+                                              defaultText: defaultText,
+                                              completion: { _, text in completionHandler(text) }) { return }
+        completionHandler(nil)
     }
 }

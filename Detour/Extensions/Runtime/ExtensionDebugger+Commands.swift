@@ -21,6 +21,7 @@ extension ExtensionDebugger {
         switch method.prefix(while: { $0 != "." }) {
         case "Page": handled = ExtensionDebuggerPage.run(method, params: params, in: session, reply: reply)
         case "Input": handled = ExtensionDebuggerInput.run(method, params: params, in: session, reply: reply)
+        case "Runtime": handled = ExtensionDebuggerRuntime.run(method, params: params, in: session, reply: reply)
         default: handled = false
         }
         if !handled {
@@ -43,7 +44,13 @@ enum ExtensionDebuggerPage {
             reply.succeed()
         case "Page.disable":
             session.enabledDomains.remove("Page")
+            // No browser handler to leave a waiting dialog to: dismissed.
+            ExtensionDebuggerDialogs.release(tabUUID: session.tabUUID, emitClosed: false)
             reply.succeed()
+        case "Page.handleJavaScriptDialog":
+            ExtensionDebuggerDialogs.handle(params: params, in: session, reply: reply)
+        case "Page.getFrameTree":
+            ExtensionDebuggerFrames.getFrameTree(in: session, reply: reply)
         case "Page.captureScreenshot":
             captureScreenshot(params: params, in: session, reply: reply)
         default:

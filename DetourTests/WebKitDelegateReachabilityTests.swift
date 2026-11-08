@@ -61,6 +61,13 @@ nonisolated final class WebKitDelegateReachabilityTests: XCTestCase {
     ]
 
     private static let expectations: [Expectation] = [
+        // TASK-132.15: an attached tab no window has displayed.
+        Expectation(cls: AutomationUIDelegate.self, protocolName: "WKUIDelegate", selectors: [
+            "webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:",
+            "webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:",
+            "webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:",
+        ]),
+
         Expectation(cls: BrowserWindowController.self, protocolName: "WKNavigationDelegate",
                     selectors: navigationDelegateShared + [
                         "webView:didFinishNavigation:",

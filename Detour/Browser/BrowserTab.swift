@@ -1629,6 +1629,8 @@ class BrowserTab: NSObject {
     }
 
     func didCommitNavigation() {
+        // A debugger's frame model counts every main-frame commit (TASK-132.15).
+        ExtensionDebuggerFrames.tabDidCommit(self)
         // A session restore that fails falls back to about:blank, and WebKit
         // commits that: it is not a page the tab is showing, so the restored
         // session, title and pending state stay (TASK-45, the URL observer's
