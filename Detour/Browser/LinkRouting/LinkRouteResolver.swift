@@ -109,6 +109,33 @@ func resolveLinkRoute(url: URL, origin: LinkOrigin, routes: [LinkRoute],
         ?? (origin.isExternal ? .mostRecentSpace : .stay)
 }
 
+/// Where a link from another app goes (TASK-191.2, TASK-304): the routes as
+/// `resolveLinkRoute` applies them to `.external(sourceApp:)`, but one rule.
+///
+/// The link that launched Detour (`launchedDetour`) with no known sender
+/// fails closed (user decision, Nov 8 2026): if any route sends links to
+/// Quarantine, it opens in Quarantine. A route naming an app ("links from
+/// Mail go to Quarantine") cannot match a link whose sender is unknown, and
+/// the launch link is where that used to happen (the sender was never read
+/// at launch), so it must not land in a normal space with the user's
+/// cookies. "Any route", as the user put it: not only routes that name an
+/// app, and whatever comes before them. A link while Detour runs with no
+/// known sender (`open` from a shell) keeps the routes and the Default.
+func resolveExternalLinkRoute(url: URL, sourceApp: String?, launchedDetour: Bool, routes: [LinkRoute],
+                              defaultTarget: LinkRouteTarget, context: LinkRouteContext) -> LinkRouteDecision {
+    if launchedDetour, sourceApp == nil, isRoutableURL(url), linkRoutesSendToQuarantine(routes) {
+        return .quarantine
+    }
+    return resolveLinkRoute(url: url, origin: .external(sourceApp: sourceApp), routes: routes,
+                            defaultTarget: defaultTarget, context: context)
+}
+
+/// Whether any route (with a condition, so one the resolver uses) sends
+/// links to Quarantine.
+func linkRoutesSendToQuarantine(_ routes: [LinkRoute]) -> Bool {
+    routes.contains { $0.target == .quarantine && $0.hasCondition }
+}
+
 /// What `target` means for a link from `origin`; nil when it cannot be used
 /// from there, so the next route (or the Default's fallback) is tried. The
 /// same rules hold for a route's target and for the Default, but one:

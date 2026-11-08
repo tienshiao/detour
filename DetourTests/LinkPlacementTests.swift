@@ -151,4 +151,56 @@ nonisolated final class LinkPlacementTests: XCTestCase {
                      "a process without a bundle ID (a command-line tool) matches no source-app route")
         XCTAssertNil(linkSenderBundleID(senderPID: 4242, ownPID: 9, bundleIDForPID: { _ in "  " }))
     }
+
+    // MARK: - The URLs of a Get URL event (TASK-304)
+
+    @MainActor func testAGetURLEventCarriesAStringOrAListOfURLs() {
+        let single = getURLEvent()
+        single.setParam(NSAppleEventDescriptor(string: "https://a.test/x"), forKeyword: keyDirectObject)
+        XCTAssertEqual(linkURLs(in: single), [URL(string: "https://a.test/x")!])
+
+        let list = NSAppleEventDescriptor.list()
+        list.insert(NSAppleEventDescriptor(string: "https://a.test/1"), at: 1)
+        list.insert(NSAppleEventDescriptor(string: " https://b.test/2 "), at: 2)
+        let several = getURLEvent()
+        several.setParam(list, forKeyword: keyDirectObject)
+        XCTAssertEqual(linkURLs(in: several), [URL(string: "https://a.test/1")!, URL(string: "https://b.test/2")!])
+
+        XCTAssertEqual(linkURLs(in: getURLEvent()), [], "no direct object")
+        let empty = getURLEvent()
+        empty.setParam(NSAppleEventDescriptor.list(), forKeyword: keyDirectObject)
+        XCTAssertEqual(linkURLs(in: empty), [])
+    }
+
+    // MARK: - The links that launched Detour (TASK-304)
+
+    @MainActor func testWhileLaunchingEveryEventIsALaunchLink() {
+        var tracker = LaunchLinkTracker()
+        XCTAssertTrue(tracker.isLaunching)
+        XCTAssertTrue(tracker.isLaunchLink(senderPID: 77, now: 1))
+        XCTAssertTrue(tracker.isLaunchLink(senderPID: nil, now: 1.1), "no sender at all")
+        tracker.launchDidFinish(at: 2)
+        XCTAssertFalse(tracker.isLaunching)
+        XCTAssertEqual(tracker.launchSenderPIDs, [77])
+    }
+
+    @MainActor func testTheRestOfTheLaunchingOpenCountsUntilTheWindowCloses() {
+        var tracker = LaunchLinkTracker()
+        _ = tracker.isLaunchLink(senderPID: 77, now: 1)
+        tracker.launchDidFinish(at: 2)
+        tracker.launchDidFinish(at: 50)   // only the first counts
+        XCTAssertTrue(tracker.isLaunchLink(senderPID: 77, now: 2.11), "the next URL of the same open")
+        XCTAssertTrue(tracker.isLaunchLink(senderPID: 77, now: 2 + LaunchLinkTracker.followUpWindow))
+        XCTAssertFalse(tracker.isLaunchLink(senderPID: 77, now: 2.01 + LaunchLinkTracker.followUpWindow),
+                       "later, the same process is a link while Detour runs")
+        XCTAssertFalse(tracker.isLaunchLink(senderPID: 501, now: 2.5), "another process")
+        XCTAssertFalse(tracker.isLaunchLink(senderPID: nil, now: 2.5), "no sender, after launch")
+    }
+
+    @MainActor func testWithoutALaunchLinkEveryEventIsALinkWhileRunning() {
+        var tracker = LaunchLinkTracker()
+        tracker.launchDidFinish(at: 2)   // a plain launch: no Get URL event while launching
+        XCTAssertFalse(tracker.isLaunchLink(senderPID: 77, now: 2.1))
+        XCTAssertFalse(tracker.isLaunchLink(senderPID: nil, now: 2.1))
+    }
 }

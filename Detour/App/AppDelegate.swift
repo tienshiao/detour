@@ -8,6 +8,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let updaterController = SPUStandardUpdaterController(
         startingUpdater: AppDelegate.startsUpdater, updaterDelegate: nil, userDriverDelegate: nil)
     private var windowControllers: [BrowserWindowController] = []
+    /// Which Get URL events carry the links that launched Detour (TASK-304).
+    private var launchLinks = LaunchLinkTracker()
+    /// Links from other apps that arrived while launching, opened once the
+    /// session is restored, with the sender read when each arrived.
+    private var linksAwaitingLaunch: [(urls: [URL], sourceApp: String?)] = []
     /// File > New Quick Detour Window.
     private(set) var quickDetourMenuItem: NSMenuItem?
 
@@ -37,6 +42,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// hand either. Both inputs are process-constant, hence the `let`.
     static let startsUpdater: Bool =
         !AppDelegate.isRunningUnitTests && WebKitStorageScope.currentIsDefaultDataDirectory
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Detour's own Get URL handler (TASK-304), installed before launch
+        // finishes so it also gets the event that launched Detour, while
+        // that event is being handled: its sender names the app the link
+        // came from. AppKit's handler queued the launch URLs and called
+        // `application(_:open:)` after launch, with no event to read a sender
+        // from. Files (Open Documents) still reach `application(_:open:)`.
+        NSAppleEventManager.shared().setEventHandler(
+            self, andSelector: #selector(handleGetURLEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A SIGTERM to Detour ends its native hosts before the app dies
@@ -149,6 +166,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         observeWindowClose(wc)
+
+        // Last: the links that launched Detour, now that the session and
+        // the routes are loaded (TASK-304).
+        launchLinks.launchDidFinish(at: ProcessInfo.processInfo.systemUptime)
+        let awaiting = linksAwaitingLaunch
+        linksAwaitingLaunch = []
+        for links in awaiting {
+            openExternalURLs(links.urls, sourceApp: links.sourceApp, launchedDetour: true)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -367,33 +393,57 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Links opened from another app (Get URL Apple Events). Link Routes
-    /// pick where each goes (TASK-191.2); a route may name the
-    /// sending app, read from the event being handled. LaunchServices sends
-    /// the event from the opening app's process, so its PID names the app; a
-    /// shell's `open` has no bundle ID, and the URL that launches Detour comes
-    /// with no current event at all: both have no sender.
+    /// Links opened from another app: Get URL Apple Events, every one of
+    /// them since Detour handles the event itself (TASK-304), including the
+    /// one that launches Detour. Link Routes pick where each goes
+    /// (TASK-191.2); a route may name the sending app, read from the event:
+    /// LaunchServices sends it from the opening app's process, so its PID
+    /// names the app; a shell's `open` has no bundle ID, so no sender.
+    @objc func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
+        let senderPID = linkSenderPID(of: event)
+        // Read now: the sender may exit before a launch link is opened.
+        let sender = Self.bundleID(ofLinkSender: senderPID)
+        let urls = linkURLs(in: event)
+        let launching = launchLinks.isLaunching
+        let launchedDetour = launchLinks.isLaunchLink(senderPID: senderPID,
+                                                      now: ProcessInfo.processInfo.systemUptime)
+        if launching {
+            linksAwaitingLaunch.append((urls, sender))
+        } else {
+            openExternalURLs(urls, sourceApp: sender, launchedDetour: launchedDetour)
+        }
+    }
+
+    /// Documents opened from Finder or the Dock (Open Documents), and any
+    /// URLs AppKit still hands over this way. Get URL events go to
+    /// `handleGetURLEvent` instead. The sender is read from the event being
+    /// handled; only web URLs are opened (a file URL is ignored, as before).
     func application(_ application: NSApplication, open urls: [URL]) {
-        let sender = linkSenderBundleID(
-            senderPID: linkSenderPID(of: NSAppleEventManager.shared().currentAppleEvent),
-            ownPID: ProcessInfo.processInfo.processIdentifier,
-            bundleIDForPID: { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier })
+        let sender = Self.bundleID(ofLinkSender: linkSenderPID(of: NSAppleEventManager.shared().currentAppleEvent))
         openExternalURLs(urls, sourceApp: sender)
     }
 
+    /// The bundle ID of the running app with `senderPID`, by `linkSenderBundleID`.
+    private static func bundleID(ofLinkSender senderPID: pid_t?) -> String? {
+        linkSenderBundleID(senderPID: senderPID, ownPID: ProcessInfo.processInfo.processIdentifier,
+                           bundleIDForPID: { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier })
+    }
+
     /// Opens web links from another app where the routes send them, each URL
-    /// on its own. `sourceApp` is the sender's bundle ID, nil when unknown.
-    /// The decisions are the pure `resolveLinkRoute` and `linkPlacement`.
-    func openExternalURLs(_ urls: [URL], sourceApp: String?) {
+    /// on its own. `sourceApp` is the sender's bundle ID, nil when unknown;
+    /// `launchedDetour` marks the links that launched Detour, which fail
+    /// closed to Quarantine without a known sender (TASK-304). The decisions
+    /// are the pure `resolveExternalLinkRoute` and `linkPlacement`.
+    func openExternalURLs(_ urls: [URL], sourceApp: String?, launchedDetour: Bool = false) {
         let store = TabStore.shared
         for url in urls {
             // Case-insensitive: LaunchServices hands over "HTTPS://…" as typed.
             guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { continue }
-            let decision = resolveLinkRoute(url: url, origin: .external(sourceApp: sourceApp),
-                                            routes: store.linkRoutes.routes,
-                                            defaultTarget: store.linkRoutes.defaultTarget,
-                                            context: store.linkRouteContext)
-            log.info("External link from \(sourceApp ?? "no known sender", privacy: .public): \(String(describing: decision), privacy: .public)")
+            let decision = resolveExternalLinkRoute(url: url, sourceApp: sourceApp, launchedDetour: launchedDetour,
+                                                    routes: store.linkRoutes.routes,
+                                                    defaultTarget: store.linkRoutes.defaultTarget,
+                                                    context: store.linkRouteContext)
+            log.info("External link from \(sourceApp ?? "no known sender", privacy: .public)\(launchedDetour ? " (launched Detour)" : "", privacy: .public): \(String(describing: decision), privacy: .public)")
             openLink(url, routedTo: decision)
         }
     }

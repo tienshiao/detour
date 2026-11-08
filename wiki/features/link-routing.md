@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Link Routes
-description: "The Link Routes model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quick Detour external-only, Quarantine for links from other apps and the clicks a route to it matches but never typed URLs, the Default for every origin; Quick Detour a visible target since TASK-193.5, opening a new Quick Detour on the front window's profile, never Private; Quarantine a visible target since TASK-194, opening a quarantine window), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), links from other apps (the pure placement rule, reading the sender from the Get URL Apple Event, delivering test links without reaching the production app), and typed URLs and links clicked in a page: the pure eligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Option/Shift-clicks, Peeks, subframes; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, Cmd+L never routing, and the Settings Links pane (TASK-191.3): one row per route (URL, From app, Open in), Any URL and Any App as the 'no condition' choices, drafts and refused edits kept on their rows while the store holds the last valid version, validation in the store (empty or invalid pattern, no condition, a missing or Private space; an unchanged broken target stays editable), broken routes shown, the Default with its caption, live space and store updates, and the blocked-deletion alert's Open Links Settings… button."
+description: "The Link Routes model (routes with a URL condition, a source-app condition or both, a target, a sort order; one Default target), the pure resolver and every rule it applies (first match wins, domainIs on a dot boundary with www, ports, IDN and IP literals defined, source-app routes external-only, one-way into Private, Quick Detour external-only, Quarantine for links from other apps and the clicks a route to it matches but never typed URLs, the Default for every origin; Quick Detour a visible target since TASK-193.5, opening a new Quick Detour on the front window's profile, never Private; Quarantine a visible target since TASK-194, opening a quarantine window), storage in migration v20, why a space a route targets cannot be deleted (also from undo and redo), links from other apps (the pure placement rule, reading the sender from the Get URL Apple Event in Detour's own handler (TASK-304: the link that launches Detour has its sender too; an unknown one at launch fails closed to Quarantine when a route targets it), delivering test links without reaching the production app), and typed URLs and links clicked in a page: the pure eligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Option/Shift-clicks, Peeks, subframes; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, Cmd+L never routing, and the Settings Links pane (TASK-191.3): one row per route (URL, From app, Open in), Any URL and Any App as the 'no condition' choices, drafts and refused edits kept on their rows while the store holds the last valid version, validation in the store (empty or invalid pattern, no condition, a missing or Private space; an unchanged broken target stays editable), broken routes shown, the Default with its caption, live space and store updates, and the blocked-deletion alert's Open Links Settings… button."
 tags: [links, spaces, storage, privacy, incognito]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
@@ -118,6 +118,12 @@ sources:
   - id: task-193-5
     resource: backlog:TASK-193.5
     title: "Quick Detour: Opt-Cmd-click entry points, links from other apps, and auto-archive"
+  - id: task-304
+    resource: backlog:TASK-304
+    title: "Link Routes: a link that launches Detour has no known sending app, so From app routes can't match it"
+  - id: task-302
+    resource: backlog:TASK-302
+    title: "Link Routes: an app-only route is flagged invalid until its URL condition is switched to Any URL"
   - id: task-194
     resource: backlog:TASK-194
     title: "Quarantine: links in a throwaway Quick Detour window, then moved to a profile and space on purpose"
@@ -306,9 +312,13 @@ window (`removeIncognitoSpace`) does not consult the routes.
 
 # Links from other apps
 
-`AppDelegate.application(_:open:)` reads the sender of the Apple Event being
-handled, then `openExternalURLs(_:sourceApp:)` takes each http/https URL on
-its own: `resolveLinkRoute` with `.external(sourceApp:)`, then the pure
+Detour handles Get URL Apple Events itself since TASK-304:
+`AppDelegate.handleGetURLEvent`, installed with
+`NSAppleEventManager.setEventHandler` in `applicationWillFinishLaunching`,
+reads the event's sender and URLs, then `openExternalURLs(_:sourceApp:launchedDetour:)`
+takes each http/https URL on its own: `resolveExternalLinkRoute` (the routes
+as `resolveLinkRoute` applies them to `.external(sourceApp:)`, plus the
+launch rule [below](#the-link-that-launched-detour)), then the pure
 `linkPlacement(for:windows:)` with a snapshot of the browser windows, most
 recently active first (`NSApp.browserWindowControllersFrontToBack`, then any
 registered window missing from the window list, such as a minimized one).
@@ -369,8 +379,11 @@ back.
 `linkSenderPID(of:)` reads `keySenderPIDAttr`, else a `keyAddressAttr` that
 is a process ID; `linkSenderBundleID` names it with
 `NSRunningApplication(processIdentifier:)`, and treats Detour itself, a PID
-of 0 and a process without a bundle ID as no sender. What macOS reported on
-2026-10-25 (macOS 26.7, logged by the harness):
+of 0 and a process without a bundle ID as no sender. The handler reads it
+when the event arrives, since the sender may exit before a launch link is
+opened. What macOS reported on 2026-10-25 (macOS 26.7, logged by the
+harness through `application(_:open:)`), and on 2026-11-08 with Detour's own
+handler (TASK-304 spike, macOS 26.7):
 
 | Sender | `keySenderPIDAttr` | Bundle ID |
 |---|---|---|
@@ -378,11 +391,13 @@ of 0 and a process without a bundle ID as no sender. What macOS reported on
 | `open -a <app> URL` from a shell | the `open` process | none: no sender |
 | A tool sending the event itself (`AESendMessage`) | the tool's PID | none, even when the binary sits inside an `.app` bundle but was not launched by LaunchServices: `NSRunningApplication` knows only LaunchServices-launched processes |
 | A sender that has already exited | its PID | none (`NSRunningApplication` returns nil) |
-| The URL that cold-launches Detour (`open -n`, or `NSWorkspace` with a new instance) | no current Apple Event at all (`currentAppleEvent` is nil) for the first URL; later URLs of the same open arrive as their own events, from the opener | none for the first URL |
+| The URL that cold-launches Detour, under AppKit's own Get URL handling (before TASK-304) | no current Apple Event at all (`currentAppleEvent` is nil) in `application(_:open:)` for the first URL: AppKit queues the launch URLs and calls the delegate after `applicationDidFinishLaunching`; later URLs of the same open arrive as their own events, from the opener | none for the first URL |
+| The URL that cold-launches Detour, with Detour's handler installed in `applicationWillFinishLaunching` (TASK-304) | the event reaches the handler **before** `applicationDidFinishLaunching`, from the opener: `'magn'` PID of the app calling `NSWorkspace.open` (new instance); `keyAddressAttr` and `keyOriginalAddressAttr` type `'psn '` (8 bytes, low word = the PID); `keyEventSourceAttr` 3 (local process); `keySenderAuditTokenAttr` the same PID. The next URL of the same open came 0.11 s after launch as its own event, same sender. `NSApplicationLaunchIsDefaultLaunchKey` is 0 | the app's when it was launched by LaunchServices (`com.detourbrowser.verify.sender304`); none for a bare tool or for `open -n` (the `open` process had already exited) |
 
+Nothing named LaunchServices or Detour as the sender of a Get URL event.
 So a source-app route matches links from running apps that open them
-through LaunchServices (Mail, Slack and the like do), and never the link
-that launches Detour. **Not verified**: Finder (opening a `.webloc` goes to
+through LaunchServices, and since TASK-304 the link that launches Detour as
+well. **Not verified**: Finder (opening a `.webloc` goes to
 the default browser, and scripting Finder at the debug PID would need an
 Automation grant), Mail, Slack and other real apps (not scripted, on
 purpose). The raw-sender `int32Value` trap: a `typeKernelProcessID`
@@ -392,16 +407,59 @@ event built in process (`setAttribute` ignores it), so only the address path
 is unit-tested.
 
 How links arrive: every URL of an `open -a` with several URLs, or of one
-`NSWorkspace.open` with several, came as its own Get URL event, one URL per
-`application(_:open:)` call. One event whose direct object is a list of
-URLs reaches `application(_:open:)` as a single call with all of them; each
-is still routed on its own. At a cold launch the URLs arrived after
-`applicationDidFinishLaunching` (the session was restored and routes
-applied), not in launch order. Activation: `open -a` activated Detour before the event was handled (a key
+`NSWorkspace.open` with several, came as its own Get URL event. One event
+whose direct object is a list of URLs (`linkURLs(in:)`) is still routed URL
+by URL. At a cold launch the handler queues what arrives before
+`applicationDidFinishLaunching` and opens it at the end of that method, once
+the session is restored and the routes are loaded; at that point Detour was
+active with its restored window key in every TASK-304 run, so a Most Recent
+Space link opened a tab there rather than a second window. Open Documents
+events (an `.html` file from Finder or the Dock) still reach
+`application(_:open:)`, which opens only web URLs, so a file is ignored, as
+it was before. Activation: `open -a` activated Detour before the event was handled (a key
 window existed); `NSWorkspace.open` with `activates = false` and a raw Apple
 Event do not, and then the placement only orders the window to the front of
 Detour's own windows. (The default `NSWorkspace.open`, which activates, was
 not observed.)
+
+## The link that launched Detour
+
+`LaunchLinkTracker` (pure, `LinkSender.swift`) tells which Get URL events
+carry the links that launched Detour: every event handled before
+`applicationDidFinishLaunching` finished, and an event from one of those
+events' senders up to 10 s after it (the rest of the same open). Anything
+later, or from another process, is a link while Detour runs.
+
+`resolveExternalLinkRoute(url:sourceApp:launchedDetour:...)`:
+
+| Link | Sender | Decision |
+|---|---|---|
+| Launched Detour | known | the routes and the Default, as while running: a From app route matches it |
+| Launched Detour | unknown, and **any** route (with a condition) targets Quarantine | `.quarantine` |
+| Launched Detour | unknown, no route to Quarantine | the routes and the Default, as before |
+| While running | known or unknown | unchanged: the routes and the Default |
+
+**Fail closed (user, 2026-11-08).** Before TASK-304 the launch link never
+had a sender, so "links from Mail go to Quarantine" was skipped for exactly
+the link that started Detour, which then opened in a normal space with the
+user's cookies. With the sender read at launch that hole closes for apps
+that open links themselves through LaunchServices; for a sender Detour
+cannot name at launch (a command-line tool, a helper process
+`NSRunningApplication` does not know, an opener that has exited), the link
+goes to Quarantine whenever any route sends links there. "Any route", as the
+user put it: a URL-only route to Quarantine also triggers it, and it wins
+over a URL route listed before it. A narrower rule (only From app routes to
+Quarantine whose URL condition matches, in route order) was considered and
+not taken without the user; it is a change to `linkRoutesSendToQuarantine`
+and the rule's first line. While Detour runs, an unknown sender (`open` from
+a shell) keeps the routes and the Default: those links were never the hole.
+
+**Not verified** (TASK-304): links clicked in Mail, Messages, Notes or Slack
+(the user's production Detour is the default browser, so their links cannot
+reach a Debug build), and macOS 15.4 (only macOS 26.7 was available).
+Whether those apps send links from their own process (a known sender) or
+from a helper inside their bundle (unknown, so the fail-closed path) is
+open.
 
 ## Delivering test links safely
 
@@ -672,6 +730,25 @@ the build and routed all three after launch. Captures (window number) for
 phase 1; later LaunchServices steps ran into a screen
 lock and have text logs only.
 
+# Runtime check: the link that launched Detour
+
+TASK-304, 2026-11-08, macOS 26.7, a temporary file-logging patch (not
+committed). Senders: a bare swiftc tool and the same binary as an
+LSUIElement app (`com.detourbrowser.verify.sender304`, started with `open
+-n`) calling `NSWorkspace.open(_:withApplicationAt:)` on the worktree's
+Debug build with `createsNewApplicationInstance` and
+`environment = [DETOUR_DATA_DIR: …]` (the log's first line confirmed the
+data directory), `open -n --env … -a <Debug app> URL`, and, for links while
+running, a copy of the Debug app with its own bundle ID. Routes were seeded
+with `sqlite3` after a first launch made the database. Results: the app
+sender cold-launched Detour with a From app route for it to Private Window
+and the link opened in a new Private window; the bare tool (no bundle ID)
+with "links from Mail go to Quarantine" opened it in a quarantine window;
+the bare tool with a Mail route to Private Window and no Quarantine route
+opened a tab in the restored window (the Default); while running, the app
+sender's link matched its route and the bare tool's went to the Default
+although a Quarantine route existed.
+
 # The Links pane
 
 TASK-191.3.[^task-191-3] Settings has its own **Links** pane (toolbar item
@@ -909,15 +986,23 @@ Cmd+click is not in the unit tests: a script's event carries no modifiers
 into the navigation action, so it is checked at runtime only.
 `LinkPlacementTests` (every placement rule, several windows showing a space,
 recency, Private in front, no windows; the sender's PID from the address,
-Detour itself, no PID or bundle ID), `ExternalLinkRoutingTests` (real
+Detour itself, no PID or bundle ID; a Get URL event's URLs, one or a list;
+`LaunchLinkTracker`: while launching, the rest of the open within the
+window, other processes and later events), `ExternalLinkRoutingTests` (real
 windows in the test host driven through `application(_:open:)` and
 `openExternalURLs(_:sourceApp:)`: the routed window comes forward, an
 unshown space switches the most recent normal window, never a Private one,
 Private reuse, source-app routes, the Default, Most Recent Space, a
 Quarantine route and Default opening a quarantine (TASK-194), multi-URL
-opens, non-web URLs ignored).
+opens, non-web URLs ignored; TASK-304: a launch link with no known sender
+opens in a quarantine window, one from a known app follows its route, and
+Get URL events sent to `handleGetURLEvent` while running are routed URL by
+URL and not failed closed).
 `LinkRouteResolverTests` (every rule above, each match kind, `www.`, ports,
-IDN, IP literals, the Default from each origin), `LinkRouteStoreTests` (store
+IDN, IP literals, the Default from each origin; TASK-304: a launch link
+with a known sender, with none and a Quarantine route (app or URL, ahead of
+a matching URL route and the Default), with none and no Quarantine route,
+and links while running unchanged), `LinkRouteStoreTests` (store
 operations, unknown rows, notifications, migration v20 on a v19 database,
 one-row Default table, routes surviving a session save, blocked and allowed
 deletion, a refused undo of Add Space and redo of Delete Space posting the

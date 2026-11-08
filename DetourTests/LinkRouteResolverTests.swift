@@ -215,6 +215,73 @@ nonisolated final class LinkRouteResolverTests: XCTestCase {
         XCTAssertEqual(resolve("https://a.test/", from: .external(sourceApp: "com.apple.notes"), [both]), .mostRecentSpace)
     }
 
+    // MARK: - The link that launched Detour (TASK-304)
+
+    @MainActor private func resolveExternal(_ s: String, sender: String?, launch: Bool, _ routes: [LinkRoute],
+                                            default defaultTarget: LinkRouteTarget = .mostRecentSpace) -> LinkRouteDecision {
+        resolveExternalLinkRoute(url: url(s), sourceApp: sender, launchedDetour: launch, routes: routes,
+                                 defaultTarget: defaultTarget, context: context)
+    }
+
+    @MainActor func testALaunchLinkWithAKnownSenderFollowsTheRoutes() {
+        let routes = [route(nil, app: "com.apple.mail", to: .quarantine),
+                      route(nil, app: "com.tinyspeck.slackmacgap", to: .space(work), order: 1)]
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: "com.apple.mail", launch: true, routes), .quarantine)
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: "com.tinyspeck.slackmacgap", launch: true, routes),
+                       .openInSpace(work), "a From app route matches the link that launched Detour")
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: "com.apple.notes", launch: true, routes), .mostRecentSpace,
+                       "a known sender no route names: the Default, as while running")
+    }
+
+    @MainActor func testALaunchLinkWithNoKnownSenderFailsClosedToQuarantine() {
+        let mailToQuarantine = route(nil, app: "com.apple.mail", to: .quarantine)
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, [mailToQuarantine]), .quarantine)
+        // Any route to Quarantine, as the user put it: a URL route too, even
+        // one this link does not match, and ahead of a route that matches it.
+        let urlToQuarantine = route(.domainIs, "later.test", to: .quarantine, order: 1)
+        let workRoute = route(.domainIs, "work.test", to: .space(work))
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, [urlToQuarantine]), .quarantine)
+        XCTAssertEqual(resolveExternal("https://work.test/", sender: nil, launch: true, [workRoute, urlToQuarantine]),
+                       .quarantine)
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, [mailToQuarantine],
+                                       default: .space(personal)), .quarantine, "ahead of the Default")
+        XCTAssertTrue(linkRoutesSendToQuarantine([workRoute, urlToQuarantine]))
+        XCTAssertFalse(linkRoutesSendToQuarantine([workRoute]))
+        XCTAssertFalse(linkRoutesSendToQuarantine([route(nil, to: .quarantine)]), "a route with no condition is never used")
+    }
+
+    @MainActor func testALaunchLinkWithNoKnownSenderAndNoQuarantineRouteGoesWhereItDidBefore() {
+        let routes = [route(nil, app: "com.apple.mail", to: .privateWindow),
+                      route(.domainIs, "work.test", to: .space(work), order: 1)]
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, routes), .mostRecentSpace, "the Default")
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, routes, default: .space(personal)),
+                       .openInSpace(personal))
+        XCTAssertEqual(resolveExternal("https://work.test/", sender: nil, launch: true, routes), .openInSpace(work))
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: true, routes, default: .quarantine),
+                       .quarantine, "a Default of Quarantine takes it as it takes any unmatched link")
+    }
+
+    @MainActor func testALinkWhileDetourRunsIsUnchanged() {
+        let routes = [route(nil, app: "com.apple.mail", to: .quarantine),
+                      route(nil, app: "com.tinyspeck.slackmacgap", to: .space(work), order: 1),
+                      route(.domainIs, "work.test", to: .space(personal), order: 2)]
+        for sender: String? in ["com.apple.mail", "com.tinyspeck.slackmacgap", "com.apple.notes", nil] {
+            for link in ["https://a.test/", "https://work.test/"] {
+                XCTAssertEqual(resolveExternal(link, sender: sender, launch: false, routes),
+                               resolve(link, from: .external(sourceApp: sender), routes),
+                               "\(link) from \(String(describing: sender))")
+            }
+        }
+        XCTAssertEqual(resolveExternal("https://a.test/", sender: nil, launch: false, routes), .mostRecentSpace,
+                       "no known sender while running: the Default, not Quarantine")
+    }
+
+    @MainActor func testOnlyWebLinksFailClosed() {
+        let routes = [route(nil, app: "com.apple.mail", to: .quarantine)]
+        XCTAssertEqual(resolveExternal("file:///tmp/a.html", sender: nil, launch: true, routes),
+                       resolve("file:///tmp/a.html", from: .external(sourceApp: nil), routes))
+    }
+
     @MainActor func testARouteWithNoConditionNeverMatches() {
         let r = route(nil, to: .space(work))
         XCTAssertFalse(r.hasCondition)

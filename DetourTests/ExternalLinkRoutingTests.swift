@@ -264,6 +264,55 @@ nonisolated final class ExternalLinkRoutingTests: XCTestCase {
         try expectation.verify(link, in: self)
     }
 
+    // MARK: - The link that launched Detour (TASK-304)
+
+    @MainActor func testALaunchLinkWithNoKnownSenderOpensInQuarantine() throws {
+        makeWindow(showing: work)
+        let link = url("https://unrouted.test/launch")
+        appDelegate.openExternalURLs([link], sourceApp: nil, launchedDetour: true)
+        let quarantine = try XCTUnwrap(newQuickDetours().first, "fail closed: the fixture has a Quarantine route")
+        XCTAssertTrue(quarantine.isQuarantine)
+        XCTAssertEqual(quarantine.tab?.url, link)
+        XCTAssertNil(tabAnywhere(link), "no tab in a space")
+    }
+
+    @MainActor func testALaunchLinkFromAKnownAppFollowsItsRoute() throws {
+        makeWindow(showing: work)
+        let personalWindow = makeWindow(showing: personal)
+        let link = url("https://anything.test/launch-from-slack")
+        appDelegate.openExternalURLs([link], sourceApp: "com.tinyspeck.slackmacgap", launchedDetour: true)
+        let opened = try XCTUnwrap(tab(link, in: personal), "the Slack route matches the link that launched Detour")
+        XCTAssertEqual(personalWindow.selectedTabID, opened.id)
+        XCTAssertEqual(newQuickDetours().count, 0)
+    }
+
+    /// Get URL events reach Detour's own handler; one while Detour runs, with
+    /// no known sender, is routed as before (not failed closed).
+    @MainActor func testAGetURLEventWhileRunningIsRoutedEachURLOnItsOwn() throws {
+        makeWindow(showing: work)
+        makeWindow(showing: personal)
+        let list = NSAppleEventDescriptor.list()
+        let links = [url("https://work.test/event"), url("https://personal.test/event")]
+        for (i, link) in links.enumerated() { list.insert(NSAppleEventDescriptor(string: link.absoluteString), at: i + 1) }
+        let event = NSAppleEventDescriptor(eventClass: AEEventClass(kInternetEventClass), eventID: AEEventID(kAEGetURL),
+                                           targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID),
+                                           transactionID: AETransactionID(kAnyTransactionID))
+        event.setParam(list, forKeyword: keyDirectObject)
+        appDelegate.handleGetURLEvent(event, withReplyEvent: NSAppleEventDescriptor.null())
+        XCTAssertNotNil(tab(links[0], in: work))
+        XCTAssertNotNil(tab(links[1], in: personal))
+
+        let unrouted = url("https://unrouted.test/event")
+        let expectation = todaysBehaviour()
+        let single = NSAppleEventDescriptor(eventClass: AEEventClass(kInternetEventClass), eventID: AEEventID(kAEGetURL),
+                                            targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID),
+                                            transactionID: AETransactionID(kAnyTransactionID))
+        single.setParam(NSAppleEventDescriptor(string: unrouted.absoluteString), forKeyword: keyDirectObject)
+        appDelegate.handleGetURLEvent(single, withReplyEvent: NSAppleEventDescriptor.null())
+        XCTAssertEqual(newQuickDetours().count, 0, "Detour is running: not a launch link")
+        try expectation.verify(unrouted, in: self)
+    }
+
     // MARK: - Unmatched links and Most Recent Space
 
     @MainActor func testAnUnmatchedLinkGoesToTheDefaultSpace() throws {
