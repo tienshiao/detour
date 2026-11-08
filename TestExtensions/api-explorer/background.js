@@ -881,6 +881,13 @@ async function handleMessage(message) {
       return await chrome.runtime.getContexts(message.filter || {});
     }
 
+    case 'tabGroupsQuery':
+      // chrome.tabGroups as the worker sees it (TASK-132.12).
+      return await chrome.tabGroups.query({});
+
+    case 'tabGroupsEvents':
+      return { events: tabGroupEvents.slice() };
+
     case 'interimNamespacesProbe': {
       const tg = chrome.tabGroups;
       const dbg = chrome.debugger;
@@ -1049,3 +1056,21 @@ async function storageManagedProbe() {
   }
   return result;
 }
+
+// --- Tab groups (TASK-132.12): what the worker hears ---
+// Kept in memory (the last 50): a worker restart starts the list again.
+const tabGroupEvents = [];
+const recordTabGroupEvent = (entry) => {
+  tabGroupEvents.push({ at: new Date().toISOString(), ...entry });
+  if (tabGroupEvents.length > 50) tabGroupEvents.shift();
+};
+if (chrome.tabGroups) {
+  for (const name of ['onCreated', 'onUpdated', 'onRemoved', 'onMoved']) {
+    chrome.tabGroups[name].addListener((group) => recordTabGroupEvent({ event: 'tabGroups.' + name, group }));
+  }
+}
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo && 'groupId' in changeInfo) {
+    recordTabGroupEvent({ event: 'tabs.onUpdated', tabId, groupId: changeInfo.groupId, tabGroupId: tab ? tab.groupId : null });
+  }
+});

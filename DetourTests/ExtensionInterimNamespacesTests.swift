@@ -208,8 +208,9 @@ nonisolated final class ExtensionInterimNamespacesTests: XCTestCase {
 
     /// The point of the stand-ins: a worker that reads `chrome.tabGroups.Color`
     /// and registers `chrome.debugger` listeners while its module is evaluated
-    /// loads, in the shape the Claude extension's does. Both contexts see
-    /// constants and never-firing events only — no method of either API.
+    /// loads, in the shape the Claude extension's does. Since TASK-132.12
+    /// `chrome.tabGroups` is the real API; `chrome.debugger` is still
+    /// never-firing events only, with no method.
     @MainActor func testWorkerThatTouchesBothNamespacesAtEvaluationLoads() async throws {
         let world = try await makeWorld(
             try await makeExtension(permissions: ["tabGroups", "debugger", "tabs", "storage"], touchingAtEvaluation: true))
@@ -225,10 +226,14 @@ nonisolated final class ExtensionInterimNamespacesTests: XCTestCase {
 
         for via in Via.allCases {
             let result = try await probe(via, in: world)
-            XCTAssertEqual(result["state"] as? [String: String], ["tabGroups": "interim", "debugger": "interim"], "\(via)")
+            // chrome.tabGroups is the real API since TASK-132.12; only the
+            // debugger stand-in is interim.
+            XCTAssertEqual(result["state"] as? [String: String], ["debugger": "interim"], "\(via)")
             XCTAssertEqual(result["color"] as? [String: String], Self.chromeColors, "\(via)")
             XCTAssertEqual(result["none"] as? Int, -1, "\(via)")
-            XCTAssertEqual(result["tabGroupsKeys"] as? [String], ["Color", "TAB_GROUP_ID_NONE"], "\(via)")
+            XCTAssertEqual(result["tabGroupsKeys"] as? [String],
+                           ["Color", "TAB_GROUP_ID_NONE", "get", "move", "onCreated", "onMoved", "onRemoved", "onUpdated",
+                            "query", "update"], "\(via)")
             XCTAssertEqual(result["debuggerKeys"] as? [String], ["onDetach", "onEvent"], "\(via)")
             XCTAssertEqual(result["survivesReread"] as? Bool, true, "\(via)")
             XCTAssertEqual(result["hasListener"] as? Bool, true, "\(via)")
@@ -236,12 +241,14 @@ nonisolated final class ExtensionInterimNamespacesTests: XCTestCase {
             XCTAssertEqual(result["viaBrowserColor"] as? String, "blue", "\(via): browser.tabGroups must be there too")
             XCTAssertEqual(result["viaBrowserDebugger"] as? String, "function", "\(via): browser.debugger must be there too")
 
-            // NEGATIVE: nothing of the real APIs exists yet, so a feature test
-            // for any method still says "not here" (TASK-132.12 / 132.13).
-            XCTAssertEqual(result["tabGroupsMethods"] as? [String], [], "\(via)")
+            // The tab groups API is whole (TASK-132.12); the debugger's methods
+            // still do not exist, so a feature test for one says "not here"
+            // (TASK-132.13).
+            XCTAssertEqual(result["tabGroupsMethods"] as? [String],
+                           ["get", "query", "update", "move", "onCreated", "onUpdated", "onRemoved", "onMoved"], "\(via)")
             XCTAssertEqual(result["debuggerMethods"] as? [String], [], "\(via)")
-            XCTAssertEqual(result["tabsGroup"] as? String, "undefined", "\(via)")
-            XCTAssertEqual(result["tabsUngroup"] as? String, "undefined", "\(via)")
+            XCTAssertEqual(result["tabsGroup"] as? String, "function", "\(via)")
+            XCTAssertEqual(result["tabsUngroup"] as? String, "function", "\(via)")
 
             // WebKit's own namespaces are untouched.
             XCTAssertEqual(result["tabsQuery"] as? String, "function", "\(via)")
@@ -258,8 +265,9 @@ nonisolated final class ExtensionInterimNamespacesTests: XCTestCase {
             let result = try await probe(via, in: world)
             XCTAssertEqual(result["tabGroupsType"] as? String, "undefined", "\(via)")
             XCTAssertEqual(result["debuggerType"] as? String, "undefined", "\(via)")
-            XCTAssertEqual(result["state"] as? [String: String], ["tabGroups": "absent", "debugger": "absent"], "\(via)")
-            XCTAssertEqual(result["tabsGroup"] as? String, "undefined", "\(via)")
+            XCTAssertEqual(result["state"] as? [String: String], ["debugger": "absent"], "\(via)")
+            // tabs.group needs no permission in Chrome (TASK-132.12).
+            XCTAssertEqual(result["tabsGroup"] as? String, "function", "\(via)")
             XCTAssertEqual(result["tabsQuery"] as? String, "function", "\(via)")
         }
     }
@@ -272,7 +280,7 @@ nonisolated final class ExtensionInterimNamespacesTests: XCTestCase {
             let result = try await probe(via, in: world)
             XCTAssertEqual(result["tabGroupsType"] as? String, "undefined", "\(via)")
             XCTAssertEqual(result["debuggerType"] as? String, "object", "\(via)")
-            XCTAssertEqual(result["state"] as? [String: String], ["tabGroups": "absent", "debugger": "interim"], "\(via)")
+            XCTAssertEqual(result["state"] as? [String: String], ["debugger": "interim"], "\(via)")
             XCTAssertEqual(result["debuggerMethods"] as? [String], [], "\(via)")
         }
     }

@@ -303,6 +303,10 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// per profile; keyed by the *verified* extension id, never a claimed one.
     private var consoleLimiter = ConsoleBridgeLimiter()
 
+    /// The tab group event hub (TASK-132.12), made at the first
+    /// `tabGroups.awaitEvent`; see `ExtensionPolyfillHandler+TabGroups.swift`.
+    var tabGroupEvents: ExtensionTabGroupEvents?
+
     /// Drop the extension's console rate-limit window, for context unload
     /// (`Profile.unloadExtension`). A reloaded context gets a fresh burst.
     func forgetConsoleRateLimit(for extensionID: String) {
@@ -1314,6 +1318,11 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             let changes = rules.changes(for: url, method: params["method"] as? String ?? "GET",
                                         includingAcceptedByWebKit: sender == .nativeMessage)
             replyHandler(["changes": changes.map(\.payload)] as [String: Any], nil)
+
+        // MARK: - Tab groups (TASK-132.12)
+        case _ where type.hasPrefix("tabGroups."):
+            handleTabGroupsRequest(type, params: params, extensionID: extensionID,
+                                   sender: sender, senderWebView: senderWebView, replyHandler: replyHandler)
 
         // MARK: - Side panel (TASK-132.8)
         case _ where type.hasPrefix("sidePanel."):

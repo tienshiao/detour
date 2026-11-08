@@ -590,6 +590,9 @@ class Profile {
         // The console rate-limit window too: a reloaded context starts its own
         // burst, and an extension that never comes back leaves no entry behind.
         polyfillHandler?.forgetConsoleRateLimit(for: id)
+        // And its tab group event waits: they belong to the origin that is
+        // going away (TASK-132.12).
+        polyfillHandler?.tabGroupEvents?.drop(extensionID: id)
         // And the session header rules: WebKit drops its session rules with the
         // context, so Detour's part of them goes too (TASK-132.4).
         polyfillHandler?.forgetSessionHeaderRules(for: id)

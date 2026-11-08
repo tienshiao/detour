@@ -742,12 +742,12 @@ document.getElementById('btn-dnr-fetch').addEventListener('click', dnrReport(asy
   };
 }));
 
-// --- tabGroups / debugger interim stand-ins (TASK-132.4) ---
+// --- debugger interim stand-in (TASK-132.4) ---
 //
-// Until TASK-132.12 / TASK-132.13 land the real APIs, Detour defines only
-// chrome.tabGroups constants and chrome.debugger's two (never-firing) events, so
-// a worker that reads them while loading does not die. Every method must still
-// be missing: the probe lists what is there in the popup and in the worker.
+// Until TASK-132.13 lands the real API, Detour defines only chrome.debugger's
+// two (never-firing) events, so a worker that reads them while loading does not
+// die; every method must still be missing. chrome.tabGroups is the real API
+// since TASK-132.12 (its methods are listed as present).
 
 function interimProbe() {
   const tg = chrome.tabGroups;
@@ -771,6 +771,64 @@ document.getElementById('btn-interim-probe').addEventListener('click', async () 
     showResult('res-interim', e.message, true);
   }
 });
+
+// --- Tab groups (TASK-132.12) ---
+//
+// tabs.group / tabs.ungroup on the popup's tab, chrome.tabGroups from the popup,
+// and what the worker's tabGroups.on* and tabs.onUpdated({groupId}) listeners
+// heard. The tab's groupId is read back after each call.
+
+async function popupTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) throw new Error('no active tab in this window');
+  return tab;
+}
+
+async function firstGroup() {
+  const groups = await chrome.tabGroups.query({});
+  if (!groups.length) throw new Error('no tab group: use Group This Tab first');
+  return groups[0];
+}
+
+const tabGroupColors = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
+
+const tabGroupActions = {
+  'btn-tg-group': async () => {
+    const tab = await popupTab();
+    const groupId = await chrome.tabs.group({ tabIds: tab.id });
+    return { groupId, tab: { id: tab.id, groupId: (await chrome.tabs.get(tab.id)).groupId } };
+  },
+  'btn-tg-query': async () => ({
+    popup: await chrome.tabGroups.query({}),
+    worker: await sendBg({ type: 'tabGroupsQuery' }),
+    membersOfFirst: await (async () => {
+      const groups = await chrome.tabGroups.query({});
+      return groups.length ? (await chrome.tabs.query({ groupId: groups[0].id })).map((t) => t.id) : [];
+    })(),
+  }),
+  'btn-tg-update': async () => {
+    const group = await firstGroup();
+    const color = tabGroupColors[(tabGroupColors.indexOf(group.color) + 1) % tabGroupColors.length];
+    return await chrome.tabGroups.update(group.id, { title: 'Explorer ' + new Date().toLocaleTimeString(), color });
+  },
+  'btn-tg-move': async () => chrome.tabGroups.move((await firstGroup()).id, { index: -1 }),
+  'btn-tg-ungroup': async () => {
+    const tab = await popupTab();
+    await chrome.tabs.ungroup(tab.id);
+    return { tab: { id: tab.id, groupId: (await chrome.tabs.get(tab.id)).groupId } };
+  },
+  'btn-tg-events': async () => sendBg({ type: 'tabGroupsEvents' }),
+};
+
+for (const [id, action] of Object.entries(tabGroupActions)) {
+  document.getElementById(id).addEventListener('click', async () => {
+    try {
+      showResult('res-tg', await action());
+    } catch (e) {
+      showResult('res-tg', e.message, true);
+    }
+  });
+}
 
 // --- Side panel (TASK-132.8) ---
 //

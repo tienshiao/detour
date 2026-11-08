@@ -204,6 +204,7 @@ pages:
 |---|---|---|---|
 | `runtimeGetContextsJS` | `apis.runtimeGetContexts` | `ExtensionPolyfillHandler.openContexts` in `ExtensionOpenContexts.swift` | [runtime.getContexts](./runtime-get-contexts.md) |
 | `sidePanelJS` | `apis.sidePanel` | `handleSidePanelRequest` in `ExtensionPolyfillHandler+SidePanel.swift`, which only forwards to the profile's `ExtensionSidePanelController` | [Side panel](./side-panel.md) |
+| `tabGroupsJS` | `apis.tabGroups` | `handleTabGroupsRequest` in `ExtensionPolyfillHandler+TabGroups.swift`, the event hub `ExtensionTabGroupEvents` | [Tab groups API](./tab-groups-api.md) |
 
 They also show two patterns the older modules did not need:
 

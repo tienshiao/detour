@@ -32,6 +32,7 @@
 * [Extension side panel](side-panel.md) - Detour's chrome.sidePanel — a polyfilled API whose state is kept natively per profile and extension, and a panel web view hosted beside the tab's content; tab panels and window panels, which window shows which panel, how a panel closes, and the keyboard focus rule.
 * [Extension updates](updates.md) - How installed extensions move to newer versions — the update2 poll, the verification gate, the added-permissions hold, deferring an update while the extension is busy, runtime.onUpdateAvailable, and why runtime.reload has to be recognised natively.
 * [runtime.getContexts](runtime-get-contexts.md) - Detour's chrome.runtime.getContexts and runtime.ContextType — what is listed for each context type, how tab handles become WebKit's tab and window ids, why the request leaves in the call itself, and what cannot be reported.
+* [Tab groups API](tab-groups-api.md) - chrome.tabGroups, tabs.group / tabs.ungroup and groupId on tabs, built on TabStore's tab groups; the permission gate, session ids, how a window is named, the groupId cache, the parked event channel that reaches pages too, and what differs from Chrome. *(draft)*
 
 # Investigations
 

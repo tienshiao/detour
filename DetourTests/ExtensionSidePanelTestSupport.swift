@@ -298,6 +298,17 @@ enum SidePanelFixture {
 @MainActor
 final class SidePanelTestWorld {
 
+    /// The op script every context runs (`__detourTestPanelOp`) and the
+    /// worker's own script. Another suite (TASK-132.12's tab groups) brings
+    /// its own ops on the same world.
+    let opJS: String
+    let workerJS: String
+
+    init(opJS: String = SidePanelFixture.opJS, workerJS: String = SidePanelFixture.workerJS) {
+        self.opJS = opJS
+        self.workerJS = workerJS
+    }
+
     struct Loaded {
         let ext: WebExtension
         let profile: Profile
@@ -415,7 +426,7 @@ final class SidePanelTestWorld {
             "tabpanel.html": SidePanelFixture.panelHTML(title: "tab panel"),
             "other.html": SidePanelFixture.panelHTML(title: "other panel"),
             "panel.js": SidePanelFixture.panelJS,
-            "background.js": ExtensionAPIPolyfill.polyfillJS + "\n\n" + SidePanelFixture.opJS + SidePanelFixture.workerJS,
+            "background.js": ExtensionAPIPolyfill.polyfillJS + "\n\n" + opJS + workerJS,
         ]
         for (file, contents) in files {
             try contents.write(to: dir.appendingPathComponent(file), atomically: true, encoding: .utf8)
@@ -512,7 +523,7 @@ final class SidePanelTestWorld {
 
     /// Runs one op in any web view that carries the polyfill (a panel's, say).
     func run(in webView: WKWebView, _ message: [String: Any]) async throws -> Any {
-        let raw = try await webView.callAsyncJavaScript(SidePanelFixture.opJS + """
+        let raw = try await webView.callAsyncJavaScript(opJS + """
 
             try {
                 const value = await __detourTestPanelOp(message);

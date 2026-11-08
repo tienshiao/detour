@@ -37,8 +37,8 @@ one `chrome.tabGroups` group and acts only on the tabs in it
 shared id on tabs: `BrowserTab.tabGroupID` names a `TabGroup` in
 `Space.tabGroups`, which holds the group's own state (title, one of Chrome's
 nine colour names, collapsed). There is no user-facing way to make a group
-yet. The extension API is TASK-132.12, the sidebar stripe TASK-132.11, and
-header rows TASK-132.19.
+yet. The extension API is the [tab groups API](../extensions/tab-groups-api.md)
+(TASK-132.12), the sidebar stripe TASK-132.11, and header rows TASK-132.19.
 
 # Invariants
 

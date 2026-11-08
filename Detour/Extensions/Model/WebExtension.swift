@@ -49,15 +49,16 @@ class WebExtension {
     /// The permissions whose APIs Detour's polyfill implements and gates
     /// itself (`ExtensionPolyfillHandler.permissionIsActive`), rather than
     /// WebKit.
-    static let polyfillGatedPermissions: Set<String> = ["history", "management", "notifications"]
+    static let polyfillGatedPermissions: Set<String> = ["history", "management", "notifications", "tabGroups"]
 
     /// The polyfill-gated permissions WebKit does not know at all. Its
     /// `permissions.request`, `contains` and `remove` refuse these names in the
     /// web process ("'history' is not a valid permission"), so the polyfill's
     /// `chrome.permissions` wrapper takes them out of the call and the handler
     /// answers for them (TASK-260). `notifications` is WebKit's own and stays
-    /// with WebKit's prompt.
-    static let permissionsOutsideWebKit: Set<String> = ["history", "management"]
+    /// with WebKit's prompt. `tabGroups` (TASK-132.12) is outside WebKit's
+    /// `supportedPermissions` too, so an optional one is granted here.
+    static let permissionsOutsideWebKit: Set<String> = ["history", "management", "tabGroups"]
 
     /// The polyfill-gated permissions this manifest lists under `permissions`
     /// or `optional_permissions`. WebKit drops `history` and `management` from

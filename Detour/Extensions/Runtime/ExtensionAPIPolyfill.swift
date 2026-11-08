@@ -82,6 +82,7 @@ struct ExtensionAPIPolyfill {
             declarativeNetRequestJS,
             interimNamespacesJS,
             sidePanelJS,
+            tabGroupsJS,
             fontSettingsJS,
             sessionsJS,
             searchJS,
@@ -132,7 +133,7 @@ struct ExtensionAPIPolyfill {
         // INTERIM stand-ins (TASK-132.4, until TASK-132.12 / TASK-132.13): 'absent'
         // without the permission, 'interim' for Detour's constants-only /
         // events-only namespace, 'native' once something real is there.
-        try { __detourPolyfillDiag.apis.tabGroups = globalThis.__detourInterimNamespaces.tabGroups; } catch(e) { __detourPolyfillDiag.apis.tabGroups = 'error: ' + e.message; }
+        try { __detourPolyfillDiag.apis.tabGroups = globalThis.__detourTabGroupsInstall + ' [tabs: ' + globalThis.__detourTabGroupsTabsPatch + ']'; } catch(e) { __detourPolyfillDiag.apis.tabGroups = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.debugger = globalThis.__detourInterimNamespaces.debugger; } catch(e) { __detourPolyfillDiag.apis.debugger = 'error: ' + e.message; }
         // chrome.sidePanel (TASK-132.8): 'absent' without the permission, 'polyfill'
         // for Detour's, 'native' if WebKit ever vends one.
@@ -3506,7 +3507,7 @@ struct ExtensionAPIPolyfill {
             // taken out of `details.permissions` and answered by Detour's
             // handler; the rest of the call still goes to WebKit. Mirrors
             // `WebExtension.permissionsOutsideWebKit`.
-            const outsideWebKit = ['history', 'management'];
+            const outsideWebKit = ['history', 'management', 'tabGroups'];
 
             // `{ ours, rest, restIsEmpty }` when `details.permissions` names one
             // of them, else null (the call goes to WebKit untouched). `rest` is
@@ -4027,7 +4028,11 @@ struct ExtensionAPIPolyfill {
             const findTabIdForHandle = async function(handle) {
                 if (tabIdByHandle.has(handle)) return tabIdByHandle.get(handle);
                 if (!nativeTabs || typeof nativeTabs.query !== 'function') return undefined;
-                const listed = await nativeTabs.query({});
+                // WebKit's own query: the tab groups wrapper would resolve every
+                // tab just to decorate them (TASK-132.12).
+                const query = typeof nativeTabs.query._detourNative === 'function'
+                    ? nativeTabs.query._detourNative : nativeTabs.query;
+                const listed = await query.call(nativeTabs, {});
                 if (!Array.isArray(listed)) return undefined;
                 for (let i = 0; i < listed.length; i++) {
                     const tabId = listed[i] ? listed[i].id : undefined;
@@ -4118,16 +4123,9 @@ struct ExtensionAPIPolyfill {
             }
         };
 
+        // chrome.tabGroups was the other stand-in until TASK-132.12 replaced it
+        // with the real API (`tabGroupsJS`).
         const state = {
-            tabGroups: install('tabGroups', function() {
-                return {
-                    Color: Object.freeze({
-                        GREY: 'grey', BLUE: 'blue', RED: 'red', YELLOW: 'yellow', GREEN: 'green',
-                        PINK: 'pink', PURPLE: 'purple', CYAN: 'cyan', ORANGE: 'orange'
-                    }),
-                    TAB_GROUP_ID_NONE: -1
-                };
-            }),
             debugger: install('debugger', function() {
                 // Listeners are kept and never called: nothing attaches, so
                 // there is no event to deliver and no detach to report.
@@ -4138,6 +4136,656 @@ struct ExtensionAPIPolyfill {
             })
         };
         g.__detourInterimNamespaces = Object.freeze(state);
+    })();
+    """
+
+    // MARK: - chrome.tabGroups, tabs.group / tabs.ungroup, Tab.groupId
+
+    /// TASK-132.12. WebKit vends none of it; the model is TabStore's
+    /// (TASK-132.10) and the native side `handleTabGroupsRequest`
+    /// (`ExtensionPolyfillHandler+TabGroups.swift`).
+    ///
+    /// What is installed:
+    ///  - `tabs.group` and `tabs.ungroup`, for every extension (Chrome gates
+    ///    neither), patched onto WebKit's `chrome.tabs` in place and rooted
+    ///    (docs/chrome-runtime-patching.md; neither global is replaced, TASK-15).
+    ///  - With `tabGroups` in `permissions` or `optional_permissions` only:
+    ///    `chrome.tabGroups` (`Color`, `TAB_GROUP_ID_NONE`, `get`, `query`,
+    ///    `update`, `move`, `onCreated`, `onUpdated`, `onRemoved`, `onMoved`);
+    ///    `groupId` on the Tab objects of `tabs.get`, `getCurrent`, `query`,
+    ///    `create`, `update`, `duplicate` and `move` (a native lookup per call)
+    ///    and of `tabs.onCreated` / `tabs.onUpdated` (a per-context cache, so an
+    ///    event is never delayed or reordered); `tabs.query({groupId})`; a
+    ///    tab's group changing delivered to `tabs.onUpdated` listeners as
+    ///    `(tabId, {groupId}, tab)`. Chrome decorates every extension's tabs;
+    ///    Detour leaves an extension that cannot use groups alone, because the
+    ///    lookup resolves each tab through the tab id bridge.
+    ///
+    /// Tabs go to Detour as handles (`__detourResolveTab`); a window as its
+    /// active tab's handle (`windows.get(id, {populate: true})`), as for
+    /// `chrome.sidePanel`. A group's `windowId` is read from a member tab.
+    ///
+    /// **Events.** While the context has a `tabs.onCreated`/`onUpdated` or a
+    /// `tabGroups.on*` listener, it parks `tabGroups.awaitEvent` (one context,
+    /// one wait; acknowledged by `seq`), and its cache starts from
+    /// `tabGroups.membershipSnapshot`. A tab placed straight into a group when
+    /// it opens is learnt from an event, so `tabs.onCreated` reports it
+    /// ungrouped and an `onUpdated({groupId})` follows; Chrome reports the
+    /// group in `onCreated`.
+    ///
+    /// `globalThis.__detourTabGroupsInstall`: `'absent'` (no permission:
+    /// `tabs.group`/`ungroup` only) | `'polyfill'` | `'native'` |
+    /// `'define-failed'` | `'error: …'`; `__detourTabGroupsTabsPatch` says
+    /// how `chrome.tabs` was patched.
+    private static let tabGroupsJS = """
+    (function() {
+        const g = globalThis;
+        // A second run in the same realm keeps the first run's objects: its
+        // wrappers hold the listener registries and the groupId cache, and a
+        // second park loop under the same context instance would supersede
+        // the first one's wait (and so stop it for good).
+        const previous = g.__detourTabGroupsInstall;
+        if (previous === 'polyfill' || previous === 'absent' || previous === 'native') return;
+        const chrome = g.chrome;
+        let install = 'absent';
+        let tabsPatch = 'none';
+        try {
+            if (!chrome || !chrome.tabs) {
+                install = 'no-tabs';
+                return;
+            }
+            const NONE = -1;
+            const WINDOW_NONE = -1;
+            const noop = function() {};
+
+            const request = function(type, params) {
+                try {
+                    return Promise.resolve(g.__detourPolyfillRequest(type, params || {}));
+                } catch (e) {
+                    return Promise.reject(e);
+                }
+            };
+            const resolveTab = function(tabId) {
+                if (typeof g.__detourResolveTab !== 'function') {
+                    return Promise.reject(new Error('tab ids cannot be resolved in this context'));
+                }
+                return g.__detourResolveTab(tabId);
+            };
+            const invalid = function(api, detail) {
+                return new TypeError('Error in invocation of ' + api + ': ' + detail);
+            };
+            const declares = typeof g.__detourDeclaresPermission === 'function'
+                && g.__detourDeclaresPermission('tabGroups');
+
+            // WebKit's tabs namespaces, by identity (chrome.tabs and
+            // browser.tabs are one object in some realms, two in others).
+            const targets = [];
+            const addTarget = function(key, holder) {
+                if (!holder) return;
+                let tabs = null;
+                try { tabs = holder.tabs; } catch (e) { return; }
+                if (!tabs || typeof tabs !== 'object') return;
+                for (let i = 0; i < targets.length; i++) {
+                    if (targets[i].tabs === tabs) return;
+                }
+                targets.push({ key: key, tabs: tabs, read: function() { return holder.tabs; } });
+            };
+            addTarget('tabs', chrome);
+            addTarget('browserTabs', g.browser);
+            const nativeTabs = targets[0].tabs;
+            const nativeOf = function(name) {
+                const fn = nativeTabs[name];
+                if (typeof fn !== 'function') return null;
+                return typeof fn._detourNative === 'function' ? fn._detourNative : fn;
+            };
+
+            // MARK: groupId cache and lookups
+
+            const groupIdByTabId = new Map();
+            // The group each tab's listeners were last told (or the snapshot
+            // said), which decides whether a membership event is news.
+            const announcedGroupId = new Map();
+            // Tabs whose announced group came from the snapshot and no event yet.
+            const snapshotTabIds = new Set();
+            const cachedGroupId = function(tabId) {
+                return groupIdByTabId.has(tabId) ? groupIdByTabId.get(tabId) : NONE;
+            };
+            const setTab = function(tab, groupId) {
+                if (tab && typeof tab === 'object') {
+                    try { tab.groupId = groupId; } catch (e) {}
+                }
+                return tab;
+            };
+            // The group of each tab, asked of Detour; a tab it cannot place is
+            // ungrouped.
+            const lookup = async function(tabIds) {
+                const handles = [];
+                for (let i = 0; i < tabIds.length; i++) {
+                    let handle = 0;
+                    if (Number.isInteger(tabIds[i])) {
+                        try { handle = await resolveTab(tabIds[i]); } catch (e) {}
+                    }
+                    handles.push(handle);
+                }
+                const reply = await request('tabGroups.membership', { tabHandles: handles });
+                const ids = reply && Array.isArray(reply.groupIds) ? reply.groupIds : [];
+                return tabIds.map(function(tabId, i) {
+                    const groupId = Number.isInteger(ids[i]) ? ids[i] : NONE;
+                    if (Number.isInteger(tabId)) groupIdByTabId.set(tabId, groupId);
+                    return groupId;
+                });
+            };
+            const decorateOne = async function(tab) {
+                if (!tab || typeof tab !== 'object' || !Number.isInteger(tab.id)) return tab;
+                const ids = await lookup([tab.id]);
+                return setTab(tab, ids[0]);
+            };
+            const decorateList = async function(list) {
+                if (!Array.isArray(list) || list.length === 0) return list;
+                const ids = await lookup(list.map(function(tab) { return tab ? tab.id : undefined; }));
+                list.forEach(function(tab, i) { setTab(tab, ids[i]); });
+                return list;
+            };
+            const decorateAny = function(value) {
+                return Array.isArray(value) ? decorateList(value) : decorateOne(value);
+            };
+
+            // MARK: windows
+
+            // What Detour is told about a window: the handle of its active tab.
+            const windowAnchor = async function(windowId) {
+                let win = null;
+                try {
+                    win = await g.chrome.windows.get(windowId, { populate: true });
+                } catch (e) {}
+                if (!win) throw new Error('No window with id: ' + windowId + '.');
+                const tabs = Array.isArray(win.tabs) ? win.tabs : [];
+                let anchor = null;
+                for (let i = 0; i < tabs.length; i++) {
+                    if (tabs[i] && tabs[i].active && Number.isInteger(tabs[i].id)) { anchor = tabs[i]; break; }
+                }
+                if (!anchor && tabs.length > 0 && tabs[0] && Number.isInteger(tabs[0].id)) anchor = tabs[0];
+                const anchored = { hasWindow: true };
+                if (anchor) anchored.windowTabHandle = await resolveTab(anchor.id);
+                return anchored;
+            };
+
+            const windowIdByGroup = new Map();
+            // Detour's group as Chrome's TabGroup.
+            const toGroup = async function(wire) {
+                const group = {
+                    id: wire.id, title: typeof wire.title === 'string' ? wire.title : '',
+                    color: wire.color, collapsed: !!wire.collapsed, shared: false,
+                    windowId: windowIdByGroup.has(wire.id) ? windowIdByGroup.get(wire.id) : WINDOW_NONE
+                };
+                if (Number.isInteger(wire.memberTabHandle) && typeof g.__detourFindTabIdForHandle === 'function') {
+                    try {
+                        const tabId = await g.__detourFindTabIdForHandle(wire.memberTabHandle);
+                        const get = nativeOf('get');
+                        if (tabId !== undefined && get) {
+                            const tab = await get.call(nativeTabs, tabId);
+                            if (tab && Number.isInteger(tab.windowId)) {
+                                group.windowId = tab.windowId;
+                                windowIdByGroup.set(wire.id, tab.windowId);
+                            }
+                        }
+                    } catch (e) {}
+                }
+                return group;
+            };
+
+            // MARK: tabs.group / tabs.ungroup
+
+            const tabIdList = function(value, api) {
+                const list = Array.isArray(value) ? value : [value];
+                if (list.length === 0) throw new Error('You must specify at least one tab.');
+                for (let i = 0; i < list.length; i++) {
+                    if (!Number.isInteger(list[i])) throw invalid(api, 'tabIds must be an integer or an array of integers');
+                }
+                return list;
+            };
+
+            const group = function(options, callback) {
+                const promise = (async function() {
+                    if (!options || typeof options !== 'object') throw invalid('tabs.group', 'options must be an object');
+                    const tabIds = tabIdList(options.tabIds, 'tabs.group');
+                    const params = { tabHandles: [] };
+                    if (options.groupId !== undefined && options.groupId !== null) {
+                        if (!Number.isInteger(options.groupId)) throw invalid('tabs.group', 'groupId must be an integer');
+                        if (options.createProperties !== undefined && options.createProperties !== null) {
+                            throw new Error("Cannot specify 'createProperties' along with a 'groupId'.");
+                        }
+                        params.groupId = options.groupId;
+                    }
+                    const create = options.createProperties;
+                    if (create !== undefined && create !== null) {
+                        if (typeof create !== 'object') throw invalid('tabs.group', 'createProperties must be an object');
+                        if (create.windowId !== undefined && create.windowId !== null) {
+                            if (!Number.isInteger(create.windowId)) throw invalid('tabs.group', 'windowId must be an integer');
+                            const anchored = await windowAnchor(create.windowId);
+                            // A window with no tab is not the tabs' window.
+                            if (anchored.windowTabHandle === undefined) throw new Error("The tabs must be in the group's window.");
+                            params.windowTabHandle = anchored.windowTabHandle;
+                        }
+                    }
+                    for (let i = 0; i < tabIds.length; i++) params.tabHandles.push(await resolveTab(tabIds[i]));
+                    const groupId = await request('tabGroups.group', params);
+                    tabIds.forEach(function(tabId) { groupIdByTabId.set(tabId, groupId); });
+                    return groupId;
+                })();
+                return __detourSettle(promise, callback);
+            };
+
+            const ungroup = function(tabIds, callback) {
+                const promise = (async function() {
+                    const list = tabIdList(tabIds, 'tabs.ungroup');
+                    const handles = [];
+                    for (let i = 0; i < list.length; i++) handles.push(await resolveTab(list[i]));
+                    await request('tabGroups.ungroup', { tabHandles: handles });
+                    list.forEach(function(tabId) { groupIdByTabId.set(tabId, NONE); });
+                })();
+                return __detourSettle(promise, callback, false);
+            };
+            group._detourTabGroups = true;
+            ungroup._detourTabGroups = true;
+
+            // MARK: Tab objects carry groupId
+
+            // `transform` turns WebKit's result into what the extension gets;
+            // `prepare` may rewrite the arguments first. WebKit's failures pass
+            // through untouched, in its own callback so runtime.lastError is
+            // what WebKit set.
+            const wrapResult = function(tabs, native, transform, prepare) {
+                const wrapper = function() {
+                    let args = Array.prototype.slice.call(arguments);
+                    const receiver = (this === undefined || this === null || this === g) ? tabs : this;
+                    const last = args.length > 0 ? args[args.length - 1] : undefined;
+                    const callback = typeof last === 'function' ? last : null;
+                    if (callback) args = args.slice(0, -1);
+                    let prepared;
+                    try {
+                        prepared = prepare ? prepare(args) : { args: args, context: null };
+                    } catch (error) {
+                        if (callback) return __detourSettle(Promise.reject(error), callback);
+                        return Promise.reject(error);
+                    }
+                    const finish = function(result) {
+                        return transform(result, prepared.context).then(null, function() { return result; });
+                    };
+                    if (callback) {
+                        return native.apply(receiver, prepared.args.concat([function() {
+                            // A failing WebKit callback gets no arguments.
+                            if (arguments.length === 0) { callback.apply(undefined, arguments); return; }
+                            const result = arguments[0];
+                            finish(result).then(function(value) {
+                                try { callback(value); } catch (e) { setTimeout(function() { throw e; }, 0); }
+                            });
+                        }]));
+                    }
+                    const returned = native.apply(receiver, prepared.args);
+                    if (!returned || typeof returned.then !== 'function') return returned;
+                    return returned.then(finish);
+                };
+                wrapper._detourTabGroupsWrapper = true;
+                wrapper._detourNative = native;
+                return wrapper;
+            };
+
+            // tabs.query({groupId}): WebKit does not know the key, so it is
+            // taken out and applied to the decorated result.
+            const prepareQuery = function(args) {
+                const info = args[0];
+                if (!info || typeof info !== 'object' || !('groupId' in info)) return { args: args, context: null };
+                const wanted = info.groupId;
+                if (wanted !== undefined && wanted !== null && !Number.isInteger(wanted)) {
+                    throw invalid('tabs.query', 'groupId must be an integer');
+                }
+                const rest = {};
+                Object.keys(info).forEach(function(key) { if (key !== 'groupId') rest[key] = info[key]; });
+                return { args: [rest].concat(args.slice(1)), context: wanted === null ? undefined : wanted };
+            };
+            const transformQuery = async function(result, wanted) {
+                const list = await decorateList(result);
+                if (wanted === undefined || wanted === null || !Array.isArray(list)) return list;
+                return list.filter(function(tab) { return tab && tab.groupId === wanted; });
+            };
+
+            // MARK: tabs.onCreated / tabs.onUpdated
+
+            const onUpdatedListeners = new Map();
+            const onCreatedListeners = new Map();
+            const groupListeners = { onCreated: [], onUpdated: [], onRemoved: [], onMoved: [] };
+            const hasListeners = function() {
+                return onUpdatedListeners.size > 0 || onCreatedListeners.size > 0
+                    || groupListeners.onCreated.length > 0 || groupListeners.onUpdated.length > 0
+                    || groupListeners.onRemoved.length > 0 || groupListeners.onMoved.length > 0;
+            };
+
+            const wrapEvent = function(event, registry, decorate, key) {
+                if (!event || typeof event.addListener !== 'function' || event.addListener._detourTabGroupsEvent) return 'skipped';
+                const nativeAdd = event.addListener;
+                const nativeRemove = event.removeListener;
+                const nativeHas = event.hasListener;
+                const add = function(listener) {
+                    if (typeof listener !== 'function') return nativeAdd.apply(event, arguments);
+                    if (registry.has(listener)) return undefined;
+                    const wrapped = function() {
+                        try { decorate(arguments); } catch (e) {}
+                        return listener.apply(this, arguments);
+                    };
+                    registry.set(listener, wrapped);
+                    const result = nativeAdd.call(event, wrapped);
+                    startEvents();
+                    return result;
+                };
+                add._detourTabGroupsEvent = true;
+                const remove = function(listener) {
+                    const wrapped = registry.get(listener);
+                    if (!wrapped) return typeof nativeRemove === 'function' ? nativeRemove.apply(event, arguments) : undefined;
+                    registry.delete(listener);
+                    return nativeRemove.call(event, wrapped);
+                };
+                const has = function(listener) {
+                    if (registry.has(listener)) return true;
+                    return typeof nativeHas === 'function' ? nativeHas.apply(event, arguments) : false;
+                };
+                __detourDefine(event, 'addListener', add);
+                __detourDefine(event, 'removeListener', remove);
+                __detourDefine(event, 'hasListener', has);
+                if (event.addListener !== add) return 'define-failed';
+                __detourHoldWrapper(key, event);
+                return 'wrapped';
+            };
+
+            // MARK: Events from Detour
+
+            let parking = false;
+            let stopped = false;
+            let ack = null;
+
+            const dispatchTo = function(listeners, args) {
+                listeners.slice().forEach(function(listener) {
+                    try { listener.apply(undefined, args); } catch (e) { setTimeout(function() { throw e; }, 0); }
+                });
+            };
+
+            const dispatch = async function(event) {
+                if (event.kind === 'membership') {
+                    if (typeof g.__detourFindTabIdForHandle !== 'function') return;
+                    let tabId;
+                    try { tabId = await g.__detourFindTabIdForHandle(event.tabHandle); } catch (e) {}
+                    if (tabId === undefined) return;
+                    const groupId = Number.isInteger(event.groupId) ? event.groupId : NONE;
+                    // Whether to tell the listeners is decided by what they
+                    // were last told, not by the decoration cache: the
+                    // extension's own tabs.group / lookups fill that cache
+                    // before this event arrives, and Chrome reports its own
+                    // changes too. The same change reported twice (an
+                    // insertion and a membership change) is told once.
+                    const previous = announcedGroupId.get(tabId);
+                    announcedGroupId.set(tabId, groupId);
+                    groupIdByTabId.set(tabId, groupId);
+                    // A value the snapshot set may already show this change
+                    // (it landed between the wait and the snapshot), so it
+                    // never hides one.
+                    const fromSnapshot = snapshotTabIds.delete(tabId);
+                    if ((previous === groupId && !fromSnapshot) || onUpdatedListeners.size === 0) return;
+                    let tab;
+                    try {
+                        const get = nativeOf('get');
+                        if (get) tab = setTab(await get.call(nativeTabs, tabId), groupId);
+                    } catch (e) {}
+                    // Gone since (closed, or no longer listed): Chrome's onUpdated
+                    // always carries a Tab, so there is nothing to report.
+                    if (!tab || typeof tab !== 'object') return;
+                    dispatchTo(Array.from(onUpdatedListeners.keys()), [tabId, { groupId: groupId }, tab]);
+                    return;
+                }
+                const name = { created: 'onCreated', updated: 'onUpdated', removed: 'onRemoved', moved: 'onMoved' }[event.kind];
+                if (!name || !event.group || groupListeners[name].length === 0) return;
+                dispatchTo(groupListeners[name], [await toGroup(event.group)]);
+            };
+
+            const loadSnapshot = async function() {
+                const reply = await request('tabGroups.membershipSnapshot', {});
+                const entries = reply && Array.isArray(reply.tabs) ? reply.tabs : [];
+                for (let i = 0; i < entries.length; i++) {
+                    if (typeof g.__detourFindTabIdForHandle !== 'function') return;
+                    let tabId;
+                    try { tabId = await g.__detourFindTabIdForHandle(entries[i].tabHandle); } catch (e) {}
+                    // An event that arrived first is newer.
+                    if (tabId !== undefined && !announcedGroupId.has(tabId)) {
+                        announcedGroupId.set(tabId, entries[i].groupId);
+                        snapshotTabIds.add(tabId);
+                        if (!groupIdByTabId.has(tabId)) groupIdByTabId.set(tabId, entries[i].groupId);
+                    }
+                }
+            };
+
+            const park = async function() {
+                let first = true;
+                while (!stopped && hasListeners()) {
+                    const waiting = request('tabGroups.awaitEvent', {
+                        instance: g.__detourContextInstance, ack: ack
+                    });
+                    if (first) {
+                        first = false;
+                        // After the wait is registered, so nothing falls between.
+                        try { await loadSnapshot(); } catch (e) {}
+                    }
+                    let reply;
+                    try {
+                        reply = await waiting;
+                    } catch (e) {
+                        // Superseded, unloaded, or refused: this context stops
+                        // listening for good rather than retrying in a loop.
+                        stopped = true;
+                        break;
+                    }
+                    const events = reply && Array.isArray(reply.events) ? reply.events : [];
+                    for (let i = 0; i < events.length; i++) {
+                        const event = events[i];
+                        if (!event || !Number.isInteger(event.seq) || (ack !== null && event.seq <= ack)) continue;
+                        ack = event.seq;
+                        try { await dispatch(event); } catch (e) {}
+                    }
+                }
+                parking = false;
+            };
+
+            const startEvents = function() {
+                if (parking || stopped || !declares) return;
+                parking = true;
+                park().then(noop, function() { parking = false; });
+            };
+
+            // MARK: Patch chrome.tabs
+
+            const patchTabs = function(target) {
+                const tabs = target.tabs;
+                if (typeof tabs.group === 'function' && !tabs.group._detourTabGroups) return 'native';
+                __detourDefine(tabs, 'group', group);
+                __detourDefine(tabs, 'ungroup', ungroup);
+                if (tabs.group !== group) return 'define-failed';
+                if (declares) {
+                    const singles = ['get', 'getCurrent', 'create', 'update', 'duplicate', 'move'];
+                    singles.forEach(function(name) {
+                        const native = tabs[name];
+                        if (typeof native !== 'function' || native._detourTabGroupsWrapper) return;
+                        __detourDefine(tabs, name, wrapResult(tabs, native, function(result) { return decorateAny(result); }));
+                    });
+                    const query = tabs.query;
+                    if (typeof query === 'function' && !query._detourTabGroupsWrapper) {
+                        __detourDefine(tabs, 'query', wrapResult(tabs, query, transformQuery, prepareQuery));
+                    }
+                    wrapEvent(tabs.onUpdated, onUpdatedListeners, function(args) {
+                        setTab(args[2], cachedGroupId(args[0]));
+                    }, target.key + 'OnUpdated');
+                    wrapEvent(tabs.onCreated, onCreatedListeners, function(args) {
+                        if (args[0]) setTab(args[0], cachedGroupId(args[0].id));
+                    }, target.key + 'OnCreated');
+                }
+                __detourHoldWrapper(target.key, tabs);
+                const again = target.read();
+                return again && again.group === group ? 'polyfill' : 'polyfill-not-visible';
+            };
+            // A tabs patch that throws must not keep chrome.tabGroups away: the
+            // Claude worker reads chrome.tabGroups.Color while it loads.
+            tabsPatch = targets.map(function(target) {
+                try {
+                    return target.key + ':' + patchTabs(target);
+                } catch (e) {
+                    return target.key + ':error: ' + (e && e.message ? e.message : String(e));
+                }
+            }).join(',');
+
+            // MARK: chrome.tabGroups
+
+            if (!declares) return;
+            if (chrome.tabGroups !== undefined && chrome.tabGroups !== null && !chrome.tabGroups._detourInterim
+                && !chrome.tabGroups._detourPolyfill) {
+                install = 'native';
+                return;
+            }
+
+            const groupIdArgument = function(value, api) {
+                if (!Number.isInteger(value)) throw invalid(api, 'groupId must be an integer');
+                return value;
+            };
+            const COLORS = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
+            const makeEmitter = function(list) {
+                const emitter = __detourMakeEventEmitter(list);
+                const add = emitter.addListener;
+                emitter.addListener = function(listener) {
+                    if (typeof listener !== 'function' || list.indexOf(listener) !== -1) return;
+                    add(listener);
+                    startEvents();
+                };
+                return emitter;
+            };
+
+            const tabGroups = {
+                Color: Object.freeze({
+                    GREY: 'grey', BLUE: 'blue', RED: 'red', YELLOW: 'yellow', GREEN: 'green',
+                    PINK: 'pink', PURPLE: 'purple', CYAN: 'cyan', ORANGE: 'orange'
+                }),
+                TAB_GROUP_ID_NONE: NONE,
+
+                get: function(groupId, callback) {
+                    const promise = (async function() {
+                        const wire = await request('tabGroups.get', { groupId: groupIdArgument(groupId, 'tabGroups.get') });
+                        return await toGroup(wire);
+                    })();
+                    return __detourSettle(promise, callback);
+                },
+
+                query: function(queryInfo, callback) {
+                    const promise = (async function() {
+                        const info = queryInfo === undefined || queryInfo === null ? {} : queryInfo;
+                        if (typeof info !== 'object') throw invalid('tabGroups.query', 'queryInfo must be an object');
+                        const params = {};
+                        if (info.title !== undefined) {
+                            if (typeof info.title !== 'string') throw invalid('tabGroups.query', 'title must be a string');
+                            params.title = info.title;
+                        }
+                        if (info.color !== undefined) {
+                            if (COLORS.indexOf(info.color) === -1) throw invalid('tabGroups.query', 'color must be a tabGroups.Color');
+                            params.color = info.color;
+                        }
+                        if (info.collapsed !== undefined) {
+                            if (typeof info.collapsed !== 'boolean') throw invalid('tabGroups.query', 'collapsed must be a boolean');
+                            params.collapsed = info.collapsed;
+                        }
+                        if (info.shared === true) return [];
+                        if (info.windowId !== undefined) {
+                            if (!Number.isInteger(info.windowId)) throw invalid('tabGroups.query', 'windowId must be an integer');
+                            const anchored = await windowAnchor(info.windowId);
+                            // A window with no tab has no group.
+                            if (anchored.windowTabHandle === undefined) return [];
+                            params.windowTabHandle = anchored.windowTabHandle;
+                        }
+                        const wires = await request('tabGroups.query', params);
+                        const groups = [];
+                        for (let i = 0; i < (Array.isArray(wires) ? wires.length : 0); i++) groups.push(await toGroup(wires[i]));
+                        return groups;
+                    })();
+                    return __detourSettle(promise, callback);
+                },
+
+                update: function(groupId, updateProperties, callback) {
+                    const promise = (async function() {
+                        const params = { groupId: groupIdArgument(groupId, 'tabGroups.update') };
+                        const props = updateProperties;
+                        if (!props || typeof props !== 'object') throw invalid('tabGroups.update', 'updateProperties must be an object');
+                        if (props.title !== undefined) {
+                            if (typeof props.title !== 'string') throw invalid('tabGroups.update', 'title must be a string');
+                            params.title = props.title;
+                        }
+                        if (props.color !== undefined) {
+                            if (COLORS.indexOf(props.color) === -1) throw invalid('tabGroups.update', 'color must be a tabGroups.Color');
+                            params.color = props.color;
+                        }
+                        if (props.collapsed !== undefined) {
+                            if (typeof props.collapsed !== 'boolean') throw invalid('tabGroups.update', 'collapsed must be a boolean');
+                            params.collapsed = props.collapsed;
+                        }
+                        return await toGroup(await request('tabGroups.update', params));
+                    })();
+                    return __detourSettle(promise, callback);
+                },
+
+                move: function(groupId, moveProperties, callback) {
+                    const promise = (async function() {
+                        const params = { groupId: groupIdArgument(groupId, 'tabGroups.move') };
+                        const props = moveProperties;
+                        if (!props || typeof props !== 'object') throw invalid('tabGroups.move', 'moveProperties must be an object');
+                        if (!Number.isInteger(props.index) || props.index < -1) throw invalid('tabGroups.move', 'index must be an integer of at least -1');
+                        params.index = props.index;
+                        if (props.windowId !== undefined && props.windowId !== null) {
+                            if (!Number.isInteger(props.windowId)) throw invalid('tabGroups.move', 'windowId must be an integer');
+                            const anchored = await windowAnchor(props.windowId);
+                            // A window with no tab is another window than the group's.
+                            if (anchored.windowTabHandle === undefined) throw new Error('Cannot move the group to another window.');
+                            params.windowTabHandle = anchored.windowTabHandle;
+                        }
+                        return await toGroup(await request('tabGroups.move', params));
+                    })();
+                    return __detourSettle(promise, callback);
+                },
+
+                onCreated: makeEmitter(groupListeners.onCreated),
+                onUpdated: makeEmitter(groupListeners.onUpdated),
+                onRemoved: makeEmitter(groupListeners.onRemoved),
+                onMoved: makeEmitter(groupListeners.onMoved)
+            };
+            Object.defineProperty(tabGroups, '_detourPolyfill', {
+                value: true, writable: false, configurable: true, enumerable: false
+            });
+
+            __detourDefine(chrome, 'tabGroups', tabGroups);
+            if (chrome.tabGroups !== tabGroups) {
+                install = 'define-failed';
+                return;
+            }
+            install = 'polyfill';
+            try {
+                if (g.browser && g.browser !== chrome
+                    && (g.browser.tabGroups === undefined || g.browser.tabGroups === null || g.browser.tabGroups._detourInterim)) {
+                    __detourDefine(g.browser, 'tabGroups', tabGroups);
+                }
+            } catch (e) {}
+        } catch (e) {
+            install = 'error: ' + (e && e.message ? e.message : String(e));
+        } finally {
+            try {
+                Object.defineProperty(g, '__detourTabGroupsInstall', {
+                    value: install, writable: true, configurable: true, enumerable: false
+                });
+                Object.defineProperty(g, '__detourTabGroupsTabsPatch', {
+                    value: tabsPatch, writable: true, configurable: true, enumerable: false
+                });
+            } catch (e) {}
+        }
     })();
     """
 

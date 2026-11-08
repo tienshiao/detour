@@ -979,24 +979,17 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
     return JSON.stringify(out);
     """
 
-    /// With the permissions declared: `tabGroups` is constants only, `debugger`
-    /// is two event emitters only, and no method of either API exists, so a
-    /// feature test for a method still fails.
-    @MainActor func testInterimTabGroupsAndDebuggerWithThePermissions() async throws {
+    /// With the permission declared, `debugger` is two event emitters only and
+    /// no method of it exists, so a feature test for a method still fails.
+    /// `chrome.tabGroups` is the real API since TASK-132.12 and needs WebKit's
+    /// `chrome.tabs`, which this harness does not have: it installs nothing
+    /// here (`ExtensionTabGroupsTests` runs it in real contexts).
+    @MainActor func testInterimDebuggerWithThePermissionAndNoTabGroupsWithoutChromeTabs() async throws {
         let view = try await makeWebView(manifestPermissions: ["tabGroups", "debugger"])
         let result = try await evalDictionary(Self.interimProbeJS, on: view)
 
-        XCTAssertEqual(result["tabGroupsType"] as? String, "object")
-        XCTAssertEqual(result["color"] as? [String: String],
-                       ["GREY": "grey", "BLUE": "blue", "RED": "red", "YELLOW": "yellow", "GREEN": "green",
-                        "PINK": "pink", "PURPLE": "purple", "CYAN": "cyan", "ORANGE": "orange"])
-        XCTAssertEqual(result["colorFrozen"] as? Bool, true)
-        XCTAssertEqual(result["none"] as? Int, -1)
-        XCTAssertEqual(result["tabGroupsKeys"] as? [String], ["Color", "TAB_GROUP_ID_NONE"],
-                       "the stand-in is constants only (its marker is not enumerable)")
-        XCTAssertEqual(result["tabGroupsMethods"] as? [String], [], "no tabGroups method or event may exist yet")
-        XCTAssertEqual(result["tabsGroup"] as? String, "undefined")
-        XCTAssertEqual(result["tabsUngroup"] as? String, "undefined")
+        XCTAssertEqual(result["tabGroupsType"] as? String, "undefined")
+        XCTAssertEqual(result["diagTabGroups"] as? String, "no-tabs [tabs: none]")
 
         XCTAssertEqual(result["debuggerType"] as? String, "object")
         XCTAssertEqual(result["debuggerKeys"] as? [String], ["onDetach", "onEvent"])
@@ -1005,8 +998,7 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["removed"] as? Bool, true)
         XCTAssertEqual(result["fired"] as? Int, 0, "the stand-in's events never fire")
 
-        XCTAssertEqual(result["state"] as? [String: String], ["tabGroups": "interim", "debugger": "interim"])
-        XCTAssertEqual(result["diagTabGroups"] as? String, "interim")
+        XCTAssertEqual(result["state"] as? [String: String], ["debugger": "interim"])
         XCTAssertEqual(result["diagDebugger"] as? String, "interim")
     }
 
@@ -1016,21 +1008,19 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         let neither = try await evalDictionary(Self.interimProbeJS)
         XCTAssertEqual(neither["tabGroupsType"] as? String, "undefined")
         XCTAssertEqual(neither["debuggerType"] as? String, "undefined")
-        XCTAssertEqual(neither["state"] as? [String: String], ["tabGroups": "absent", "debugger": "absent"])
-        XCTAssertEqual(neither["diagTabGroups"] as? String, "absent")
+        XCTAssertEqual(neither["state"] as? [String: String], ["debugger": "absent"])
         XCTAssertEqual(neither["diagDebugger"] as? String, "absent")
 
         let onlyTabGroups = try await makeWebView(manifestPermissions: ["tabGroups", "tabs"])
         let first = try await evalDictionary(Self.interimProbeJS, on: onlyTabGroups)
-        XCTAssertEqual(first["tabGroupsType"] as? String, "object")
         XCTAssertEqual(first["debuggerType"] as? String, "undefined")
-        XCTAssertEqual(first["state"] as? [String: String], ["tabGroups": "interim", "debugger": "absent"])
+        XCTAssertEqual(first["state"] as? [String: String], ["debugger": "absent"])
 
         let onlyDebugger = try await makeWebView(manifestPermissions: ["debugger"])
         let second = try await evalDictionary(Self.interimProbeJS, on: onlyDebugger)
         XCTAssertEqual(second["tabGroupsType"] as? String, "undefined")
         XCTAssertEqual(second["debuggerType"] as? String, "object")
-        XCTAssertEqual(second["state"] as? [String: String], ["tabGroups": "absent", "debugger": "interim"])
+        XCTAssertEqual(second["state"] as? [String: String], ["debugger": "interim"])
     }
 
     /// NEGATIVE: a namespace that is already there — WebKit's one day, or the
@@ -1052,7 +1042,7 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         """, on: withReal)
         XCTAssertEqual(result["tabGroupsKeys"] as? [String], ["query"])
         XCTAssertEqual(result["debuggerKeys"] as? [String], ["attach"])
-        XCTAssertEqual(result["state"] as? [String: String], ["tabGroups": "native", "debugger": "native"])
+        XCTAssertEqual(result["state"] as? [String: String], ["debugger": "native"])
     }
 
     /// Re-running the polyfill in the same realm keeps the first run's objects
@@ -1072,7 +1062,7 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         """, on: view)
         XCTAssertEqual(result["sameTabGroups"] as? Bool, true)
         XCTAssertEqual(result["listenerKept"] as? Bool, true)
-        XCTAssertEqual(result["state"] as? [String: String], ["tabGroups": "interim", "debugger": "interim"])
+        XCTAssertEqual(result["state"] as? [String: String], ["debugger": "interim"])
     }
 
     // MARK: - chrome.webNavigation frame enumeration

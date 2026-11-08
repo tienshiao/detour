@@ -1446,6 +1446,36 @@ nonisolated final class ExtensionPermissionRestoreTests: XCTestCase {
                       "no context, no denial to read")
     }
 
+    /// `tabGroups` is outside WebKit's permission set as `history` is
+    /// (TASK-132.12): a required one switched off in Settings stays off after
+    /// a relaunch, an optional one granted stays granted, and it is answered
+    /// by Detour's `permissions.*` handler rather than refused by WebKit.
+    /// NEGATIVE: a manifest without it restores nothing for it.
+    @MainActor func testSavedTabGroupsDecisionsAreRestoredAndRefusedOrGranted() async throws {
+        let tabGroups = WKWebExtension.Permission(rawValue: "tabGroups")
+        XCTAssertTrue(WebExtension.permissionsOutsideWebKit.contains("tabGroups"))
+
+        let required = try await makeTestExtension(permissions: ["tabGroups"])
+        XCTAssertFalse(required.askablePermissions.contains(tabGroups), "WebKit does not parse tabGroups")
+        XCTAssertTrue(required.restorablePermissions.contains(tabGroups))
+        savePermission(required, key: "tabGroups", type: .apiPermission, status: .denied)
+        let requiredContext = try loadContext(makeProfile("Required Tab Groups Denial Profile"), required)
+        XCTAssertNotNil(requiredContext.deniedPermissions[tabGroups])
+        XCTAssertFalse(ExtensionPolyfillHandler.permissionIsActive("tabGroups", manifest: required.manifest,
+                                                                   context: requiredContext))
+
+        let optional = try await makeTestExtension(optionalPermissions: ["tabGroups"])
+        XCTAssertTrue(optional.restorablePermissions.contains(tabGroups))
+        savePermission(optional, key: "tabGroups", type: .apiPermission, status: .granted)
+        let optionalContext = try loadContext(makeProfile("Optional Tab Groups Grant Profile"), optional)
+        XCTAssertNotNil(optionalContext.grantedPermissions[tabGroups])
+        XCTAssertTrue(ExtensionPolyfillHandler.permissionIsActive("tabGroups", manifest: optional.manifest,
+                                                                  context: optionalContext))
+
+        let without = try await makeTestExtension(permissions: ["tabs"])
+        XCTAssertFalse(without.restorablePermissions.contains(tabGroups))
+    }
+
     /// TASK-258's rule still never deletes the saved row of a required
     /// permission, now that required polyfill-gated names are restorable.
     @MainActor func testRemovalRuleKeepsARequiredPolyfillGatedRow() async throws {
