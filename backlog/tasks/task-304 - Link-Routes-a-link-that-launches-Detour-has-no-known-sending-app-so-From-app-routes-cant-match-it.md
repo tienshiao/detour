@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08T09:35:00Z'
+updated_date: '2026-11-08T09:37:00Z'
 labels:
   - link-routes
 dependencies: []
@@ -26,6 +27,12 @@ Likely possible, needs a spike first: register Detour's own handler for kInterne
 <!-- AC:BEGIN -->
 - [ ] #1 A spike on macOS 15.4 and the current macOS records what the launch URL's event carries (sender PID, address) with a custom Get URL handler, for links from Mail, Messages, Notes and Slack while Detour is not running
 - [ ] #2 When the sending app can be known at launch, a From app route matches the link that launched Detour, as it does for links while Detour runs
-- [ ] #3 When it can't, the behavior is decided with the user (for example never sending an unattributed launch link to a less private target than a matching From app route would have)
-- [ ] #4 LinkSender tests cover the launch case; checked at runtime with /verify by launching Detour from a link in another app
+- [ ] #3 When it can't, Detour fails closed (user, Nov 8 2026): if any route sends links to Quarantine, the link that launched Detour with no known sender opens in Quarantine
+- [ ] #4 LinkSender/route resolver tests cover the launch case, both with a known sender and the fail-closed fallback; checked at runtime with /verify by launching Detour from a link in another app
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 8 2026, user decision on the fallback: fail closed. When the launch link's sender can't be known, open it in Quarantine if any Quarantine route is configured.
+<!-- SECTION:NOTES:END -->
