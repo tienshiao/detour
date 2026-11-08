@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: 2026-10-03 23:09
-updated_date: '2026-11-08T05:28:00Z'
+updated_date: '2026-11-08T07:53:00Z'
 labels: []
 dependencies:
   - TASK-132.13
@@ -91,6 +91,8 @@ Runtime check of the merged build (harness task132.15, profile DetourVerify13215
 - the sheet is back after detach;
 - detach released a pending confirm, and the in-flight evaluate failed 'Detached while handling command.'
 Cleaned up. Window captures did not save; the attachedSheet checks stand instead.
+
+Correction (2026-11-07, found in TASK-132.16): the 'could not create image from window' screenshot failures here came from the harness wait loop reading the space-padded SHOOT line with 'read -r _ _ name win', which passed '<name> <win>' to screencapture -l as the window id — not a capture or permission problem. The harness patch header now says to take the last two fields. The sheet checks in the log stand; the screenshots themselves were never taken.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

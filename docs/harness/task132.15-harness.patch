@@ -5,6 +5,10 @@ TASK-132.15 runtime harness: installs the API Explorer into an isolated profile;
     DETOUR_DATA_DIR=DetourVerify13215-<n> DETOUR_VERIFY_DIR=$OUT DETOUR_API_EXPLORER=$PWD/TestExtensions/api-explorer .derived/.../Detour
 
     # "SHOOT <name> <windowNumber>" lines in $OUT/verify.log cue screencapture -l; "SHEET" lines report window.attachedSheet; ends with "done".
+    # "SHOOT <name> <windowNumber>" lines cue `screencapture -x -o -l <windowNumber>` (Screen Recording granted to the
+    # shell host, sandbox off). The timestamp is space-padded ("[  16.129] SHOOT …"), so take the LAST two fields
+    # (awk '{print $(NF-1), $NF}'): `read -r _ _ name win` puts the name into `win` and screencapture then fails with
+    # "could not create image from window".
 
 diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
 index 2f165c2..c50c122 100644

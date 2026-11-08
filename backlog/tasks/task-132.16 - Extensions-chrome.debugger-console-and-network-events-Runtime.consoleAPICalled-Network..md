@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: 2026-10-03 23:09
-updated_date: '2026-11-08T07:08:00Z'
+updated_date: '2026-11-08T07:53:00Z'
 labels: []
 dependencies:
   - TASK-132.13
@@ -51,6 +51,8 @@ Review (/code-review --fix): 10 findings, 8 fixed (instrumentation follows a rep
 AC #5 note: wrappers keep the originals' name/length and print as native code; still detectable via a user-script:N frame in a stack taken inside a wrapper and Function.prototype.toString's own frame when it throws — documented as the practical limit.
 Tests: ExtensionDebuggerEventsTests + ExtensionDebuggerEventsUnitTests 16/16; with ExtensionDebugger{,Unit,Input,InputUnit,Runtime,RuntimeExtension,RuntimeUnit}Tests, WebKitDelegateReachabilityTests, ExtensionPolyfillTests, BrowserTabWakeTests, NavigationFailureURLTests: 334/334. Full suite not run.
 Runtime (/verify, docs/harness/task132.16-harness.patch, isolated profile DetourVerify13216-1, local site): parked tab from the page context and selected tab from the worker; reload while attached then Runtime.enable replayed the early log and warning with the page as caller; console, uncaught TypeError with V8 stack, fetch 200 / POST 501 (python's server) / failure, XHR 200 + loadingFinished, the document under its loader id (200 + loadingFinished), pixel.gif finished and the unreachable image failed; the worker got the selected tab's events; the unattached tab stayed unwrapped; detach restored console/fetch, left 0 scripts and 0 installs, and no events followed. Window screenshots failed ('could not create image from window', as in 132.15), so nothing visual was checked — the change has no UI. Not checked: the real Claude extension (TASK-132.20).
+
+Correction (2026-11-07): the screenshot failures were not a capture problem. The wait loop read the padded log line '[  16.129] SHOOT <name> <win>' with 'read -r _ _ name win', so screencapture -l got '<name> <win>' as the window id. With the last two fields taken, both captures succeed (window on screen, sharing allowed); a rerun of the harness (DetourVerify13216-2) captured the selected tab's window after detach, normal. The harness patch header now says how to parse SHOOT lines.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
