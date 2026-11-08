@@ -1,10 +1,10 @@
 ---
 id: TASK-311
 title: 'Website: ship branch next-release with the app release'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-08T19:54:00Z'
-updated_date: '2026-11-08T23:48:00Z'
+updated_date: '2026-11-08T23:52:00Z'
 labels:
   - website
 dependencies: []
@@ -22,7 +22,7 @@ The website page updates for app changes merged after v0.4.0 are written on webs
 <!-- AC:BEGIN -->
 - [x] #1 next-release is rebased onto the website main and builds
 - [x] #2 Every page change is checked against the release build before it goes live (menu titles, shortcuts, settings paths)
-- [ ] #3 The Link Routes still is re-captured without the v0.4.0 Any URL workaround (TASK-302), and the Peek page gets a capture showing the new behavior if useful
+- [x] #3 The Link Routes still is re-captured without the v0.4.0 Any URL workaround (TASK-302), and the Peek page gets a capture showing the new behavior if useful
 - [x] #4 Merged and pushed to the website main together with the release (publish-release.sh), and checked live
 <!-- AC:END -->
 
@@ -34,4 +34,6 @@ Nov 8 2026, released with Detour 0.4.1 (build 9, app commit 71240af, tag v0.4.1)
 Nov 8 2026: schedule the Link Routes still re-capture (#3) in one capture session with TASK-292.13's media (privacy setup guide).
 
 Nov 8 2026: Link Routes still re-captured from 0.4.2: link-routes.webp 1760×1662, 78,940 B: github.com → Work, wikipedia.org → Reading, From app Mail with the URL empty → Quarantine, Default Most Recent Space; displayWidth cap (680) removed so it shows at 880. Website branch capture-privacy-links (8a8ede7, b36409b), not pushed. Note: docs/task-110/appdelegate-hook.patch no longer applies on main (hook now goes after observeWindowClose(wc), before launchLinks.launchDidFinish); updated patch kept in the session scratchpad only.
+
+Deployed Nov 8 2026: website main b36409b, checked live (privacy.webp on /features/privacy/, new link-routes.webp 78,940 B without the 680 px cap).
 <!-- SECTION:NOTES:END -->

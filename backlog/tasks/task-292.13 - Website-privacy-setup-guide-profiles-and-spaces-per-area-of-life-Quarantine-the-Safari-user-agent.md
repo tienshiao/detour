@@ -3,10 +3,10 @@ id: TASK-292.13
 title: >-
   Website: privacy setup guide (profiles and spaces per area of life,
   Quarantine, the Safari user agent)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-08T21:35:00Z'
-updated_date: '2026-11-08T23:48:00Z'
+updated_date: '2026-11-08T23:52:00Z'
 labels:
   - website
 dependencies:
@@ -26,7 +26,7 @@ A guide page for privacy-conscious users on setting up Detour (user request, Nov
 <!-- AC:BEGIN -->
 - [x] #1 /features/privacy/ (or a fitting path) follows the guide template: H1 + lede, media, step-by-step setup, what Detour does and does not protect, FAQ, related features, download
 - [x] #2 Every setting name, menu path and default is checked against the release build that ships TASK-216
-- [ ] #3 Media captured in an isolated DETOUR_DATA_DIR with seeded profiles, spaces and routes (no personal data), meeting the TASK-110 size and reduced-motion rules, at most 1800 px wide
+- [x] #3 Media captured in an isolated DETOUR_DATA_DIR with seeded profiles, spaces and routes (no personal data), meeting the TASK-110 size and reduced-motion rules, at most 1800 px wide
 - [x] #4 Linked from the features index, the Quarantine, Private Browsing and Profiles pages, and the home page if it fits; in the sitemap
 <!-- AC:END -->
 
@@ -38,4 +38,12 @@ Nov 8 2026: draft written on website branch privacy-guide (worktree ../dw-privac
 Released with Detour 0.4.2 (build 10, tag v0.4.2, app 5fbad23) on Nov 8 2026; website main 7b78e8c deployed and checked live. /features/privacy/ live (200), linked from the features index, Quarantine, Private Browsing and Profiles. Facts checked against the released code (agent report + lead edits for TASK-216/312). Open: #3 media (shot list in the description; schedule with TASK-311's Link Routes re-capture) and a look at desktop and 390 px widths.
 
 Nov 8 2026: media captured from 0.4.2 (capture session 2): public/assets/features/privacy.webp 1760×1468 (880×734 CSS), 58,724 B: Settings › Profiles, Banking selected, content blocking on, Dark Reader off, Identify as Safari with its UA line. Website branch capture-privacy-links (8a8ede7, b36409b), not pushed. Checked at desktop (900 CSS px) and 390 px (350 px, no horizontal scroll).
+
+Deployed Nov 8 2026: website main b36409b, checked live (privacy.webp on /features/privacy/, new link-routes.webp 78,940 B without the 680 px cap).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Privacy setup guide at /features/privacy/: profiles and spaces per area of life, extensions kept out of Banking (TASK-312's per-profile default), Link Routes, Quarantine, Identify as Safari (TASK-216), tracker lists, Private windows, search suggestions, and what Detour does not hide; linked from the features index, Quarantine, Private Browsing and Profiles; a 0.4.2 still of Settings › Profiles (Banking). Shipped with 0.4.2.
+<!-- SECTION:FINAL_SUMMARY:END -->
