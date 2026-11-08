@@ -3,11 +3,11 @@ id: TASK-292.1
 title: >-
   Website: move the site to a static generator, with the version in one data
   file and https URLs
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T07:12:00Z'
+updated_date: '2026-11-08T07:14:00Z'
 labels:
   - website
 dependencies: []
@@ -32,9 +32,9 @@ The canonical link, og:url, og:image, sitemap and robots.txt all use http://deto
 - [x] #1 The home page builds from the generator and renders the same as the current index.html (checked side by side at desktop and phone widths)
 - [x] #2 Version, DMG URL and size live in one data file that every page reads
 - [x] #3 publish-release.sh updates that data file instead of regex-editing index.html, and a dry run of its website step shows the expected diff
-- [ ] #4 Canonical, og:url, og:image, the sitemap and robots.txt use https; http requests redirect to https
+- [x] #4 Canonical, og:url, og:image, the sitemap and robots.txt use https; http requests redirect to https
 - [x] #5 The sitemap is generated from the pages that exist
-- [ ] #6 wrangler deploys the built output; the README says how to build and preview locally
+- [x] #6 wrangler deploys the built output; the README says how to build and preview locally
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -64,4 +64,16 @@ Open: http://detourbrowser.com answers 200 instead of redirecting (Cloudflare zo
 Review (/code-review medium --fix, 8 findings): fixed in publish-release.sh: build before push (a commit that does not build is never pushed), trap removes the export on any exit, missing/CRLF .nvmrc fails clearly. Folded into the website commit (amended, now 0c266e2, local): dropped the unused releaseDate export; the sitemap treats "" or "/" as the home page. Left: exact-Node pin is intended; same-version re-run keeps the old early exit; npm ci per release is acceptable. Harness dry run repeated after the fixes: build, then [dry run] push, then [dry run] deploy; export removed; checkout clean.
 
 Not done yet: criterion 4 (http -> https redirect: Cloudflare Always Use HTTPS, user's dashboard) and criterion 6 (a real wrangler deploy of dist/; only dry-run so far). Website commit not pushed or deployed (needs the user's go-ahead).
+
+Nov 7 2026: user turned on Always Use HTTPS. http://detourbrowser.com/, /sitemap.xml and /assets/favicon.svg now answer 301 to the same https path. Criterion 4 waits only on the deploy (the live page still has the old http canonical/OG URLs).
+
+Nov 7 2026: pushed website 0c266e2 (9389482..0c266e2) and deployed from a clean git-archive export (npm ci + astro build, Node 24.22.1, wrangler@4 deploy; version 7dfa69f4-872c-40f4-a7e0-f1f86fcb8808). Live https://detourbrowser.com: canonical, og:url, og:image https; v0.4.0 pill; sitemap.xml lists https://detourbrowser.com/ with lastmod; robots.txt ends with the https Sitemap line; styles.css, script.js, spaces.mp4, split.webp, the dark screenshot and favicon answer 200. Noticed: Cloudflare's managed robots.txt is prepended to ours (Content-Signal search=yes, ai-train=no; blocks ClaudeBot, GPTBot, Google-Extended, Baiduspider and other crawlers). That is a zone setting predating this task; relevant to TASK-292.12.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The website (../detour-website) now builds with Astro 7.4.7 (Node 24.22.1 pinned in .nvmrc for nvm.fish) on a shared layout with nav and footer components, so feature pages can follow. The version, DMG link and size come only from src/data/release.json; the sitemap is generated from the built pages; canonical, Open Graph, sitemap and robots URLs are https, and http now 301s to https (the user turned on Always Use HTTPS). scripts/publish-release.sh rewrites release.json and builds a clean export of the website commit before pushing and deploying it.
+
+Verification: the new home page matched the old one element by element in Chrome at 1902 px and 390 px (rects, fonts, colors); hero toggle and loops work; a build with 0.4.1 data left no 0.4.0 or old size; the release script's website step dry-ran in a harness before and after the review fixes; /code-review medium --fix (5 of 8 findings applied). Deployed (website 0c266e2) and checked live. Not run: a full publish-release.sh release. Risks: a real release's npm ci may hit root-owned files in ~/.npm (sudo chown -R 501:20 ~/.npm); Cloudflare's managed robots.txt blocks several AI crawlers ahead of our rules.
+<!-- SECTION:FINAL_SUMMARY:END -->
