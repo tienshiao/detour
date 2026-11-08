@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T09:08:00Z'
+updated_date: '2026-11-08T09:10:00Z'
 labels:
   - website
 dependencies:
@@ -45,4 +45,6 @@ Cleanup: removed both NSWindow Frame / NSSplitView keys and the com.detourbrowse
 Follow-up (coordinator, Nov 8): website commit 6c7a23c rewords the home grid's Private Browsing line ('A throwaway Space with no history and nothing written to disk. Logins and cookies are cleared when you quit Detour.') and the page's opening (drops the 'someone else's account' example; says nothing is written to disk). The page already said Private cookies last until quit (runtime-confirmed here too) and contrasts Quarantine's per-window store; Quarantine's wipe on close is code-only (QuarantineSession deinit), its separate store was confirmed at runtime. The pages don't use the File menu's 'Pin/Unpin Tab' title.
 
 Nov 8 2026: merged into the website (6d89c71), reviewed with the TASK-292.5 batch (a0a35d5: Private downloads do reach disk, Private site settings last until the last Private and Quarantine window closes, Quarantine fingerprinting protections apply where the Mac's WebKit offers them, target=_blank links share the Quarantine window's store), pushed with the user's approval and live: /features/quarantine/, /features/private-browsing/, /features/content-blocker/ answer 200, in the sitemap, linked from the home grid; the Arc hub links Quarantine. Open: criterion 5 waits for the captures (Quarantine loop, Private window still, Content Blocker popover still), to be made in one capture session per docs/feature-pages.md. The Private Browsing page describes v0.4.0's Private data lifetime; TASK-298 (fixed on main) changes it at the next release.
+
+Nov 8 2026, user: the Content Blocker page's level is right (no promises about YouTube or specific ad types). The two WebKit data stores the agent's runs left in ~/Library/WebKit/com.detourbrowser.mac/WebsiteDataStore (752d233c…, 80bcf68f…, created 00:23/00:26 during its runs) were deleted with the user's OK.
 <!-- SECTION:NOTES:END -->
