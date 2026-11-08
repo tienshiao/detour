@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T10:00:00Z'
-updated_date: '2026-11-08T11:18:00Z'
+updated_date: '2026-11-08T11:35:00Z'
 labels:
   - tabs
   - recent-tabs
@@ -62,6 +62,10 @@ Website facts for AC #6 (Recent Tabs page: move from Not in Detour to the how-to
 Website AC pending (held for release).
 
 Nov 8 2026 (lead review): ⌃W now matches the typed character ('w', charactersIgnoringModifiers), falling back to the ANSI W key position only on non-Latin layouts; covered for AZERTY, Dvorak and Cyrillic in RecentTabSwitcherMonitorTests.
+
+Website: updated Recent Tabs (new 'Close tabs from the switcher' section: hold ⌃ and press W; split closes both; pinned/favorites unloaded; Undo / Reopen Closed Tab; Arc box moved to Same) and Keyboard Shortcuts (switcher row) on website branch next-release (1fe0664), held for the release
+
+Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

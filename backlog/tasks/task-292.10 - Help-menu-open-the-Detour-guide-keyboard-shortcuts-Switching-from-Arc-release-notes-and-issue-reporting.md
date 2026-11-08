@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T10:53:00Z'
+updated_date: '2026-11-08T11:35:00Z'
 labels:
   - menus
 dependencies:
@@ -60,6 +60,8 @@ Implemented (Nov 8 2026, @claude):
 - Runtime (/verify, DETOUR_DATA_DIR=DetourB8-29210-1 and -2, temporary DEBUG harness performing the real Help menu items): NSApp.helpMenu is the last menu, items as above. With the normal window in front, each of the five items opened a new selected tab in its active space with the right URL (tabs 1..5: features/, shortcuts/, arc/, github releases, github issues/new). With a Quick Detour key (activated by a real HID click; key=QuickDetourWindowController): Detour Help opened in the normal window, which became key; the Quick Detour kept its own page. With a quarantine window in front: Switching from Arc went to the normal window. With only a Private window (normal window closed; Private key after a real click): Keyboard Shortcuts and Release Notes each opened a new NORMAL window with the page; the Private window got no tab. Not verified: the macOS Help search field on screen (Shift-Cmd-/ was posted with Detour active, but the captures of this multi-display setup did not include the menu bar); it rests on NSApp.helpMenu being set, which the test checks. Pages were not loaded over the network (URLs checked). Defaults keys and data dirs removed; WebKit store directories under ~/Library/WebKit/com.detourbrowser.mac/ left.
 
 Final clean-tree run (harness removed): AddressBarIconOrderTests 5, HelpMenuTests 8, MenuKeyEquivalentMatcherTests 15, OpenInQuickDetourMenuTests 11, QuickDetourDockMenuTests 7: 46 tests, 0 failures.
+
+Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

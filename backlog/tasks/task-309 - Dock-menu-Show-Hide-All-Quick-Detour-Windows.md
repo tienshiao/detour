@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T10:04:00Z'
-updated_date: '2026-11-08T11:18:00Z'
+updated_date: '2026-11-08T11:35:00Z'
 labels:
   - quick-detour
   - menus
@@ -61,6 +61,8 @@ Implemented (Nov 8 2026, @claude):
 Website AC pending (held for release).
 
 Website: updated Quick Detour (/features/quick-detour/: new 'Hide them all at once' how-to for Hide All / Show All Quick Detour Windows; Arc box moved from Not in Detour to Same) on website branch next-release (3e3a2cb), held for the release
+
+Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

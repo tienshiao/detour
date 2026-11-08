@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T08:30:00Z'
-updated_date: '2026-11-08T10:32:00Z'
+updated_date: '2026-11-08T11:35:00Z'
 labels:
   - command-palette
   - ui
@@ -58,6 +58,8 @@ Implemented: BrowserWindowController derives the empty-state label's visibility 
 Tests: EmptyStatePaletteTests (5: Cmd+T + Esc, Cmd+L + Cmd+T-closes, anchored, commit leaves it hidden, deselect under an open palette) + CommandPaletteFocusTests (4): 9/9 pass.
 
 Runtime (Nov 8, isolated DETOUR_DATA_DIR DetourB8-297-2, temporary harness, screencapture per state): normal window with sidebar shown (Cmd+T, Cmd+L, anchored from the faux address bar) and hidden (Cmd+T, Cmd+L), then a Private window (its initial Cmd+T palette, then the same passes with sidebar shown and hidden): labelVisible=false in every palette state, true after each dismiss, false after a commit opened a page. Captures checked: palette alone over the empty content, label back after dismiss. Not checked: frame-by-frame recording of the transition (no animation exists to flash). WebKit store dirs for DetourB8-297-1/-2 left under ~/Library/WebKit/com.detourbrowser.mac (per rules).
+
+Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

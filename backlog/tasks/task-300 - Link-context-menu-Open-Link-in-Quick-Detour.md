@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T08:40:00Z'
-updated_date: '2026-11-08T11:18:00Z'
+updated_date: '2026-11-08T11:35:00Z'
 labels:
   - quick-detour
   - menus
@@ -57,6 +57,8 @@ Implemented (Nov 8 2026, @claude):
 Website AC pending (held for release).
 
 Website: updated Quick Detour (/features/quick-detour/: Open Link in Quick Detour in the link menu, also in a Peek; Open in Quick Detour in the sidebar tab menu; both offered with the ⌥⌘-click setting off; Arc box Same) on website branch next-release (ef26356), held for the release
+
+Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

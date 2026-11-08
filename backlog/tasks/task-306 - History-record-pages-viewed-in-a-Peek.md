@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T09:55:00Z'
-updated_date: '2026-11-08T10:43:00Z'
+updated_date: '2026-11-08T11:35:00Z'
 labels:
   - history
   - peek
@@ -59,6 +59,10 @@ Runtime (Nov 8, DetourB8-306-1, temp harness, local python http.server on 127.0.
 Website facts for AC #6 (Peek and History guide pages): pages you open in a Peek are now saved in History like pages in a tab, under the space of the tab the Peek opened from, including links you follow inside the Peek. Peeks in Private windows are not recorded. Opening a Peek as a tab (or in Split View) does not add a second visit. Remove 'Peek pages are not recorded' wherever the pages say it.
 
 Website AC pending (held for release).
+
+Website: updated History and Peek (Peek pages and links followed inside them are recorded under the host tab's Space, no second visit on expand; 'not recorded' lines removed) on website branch next-release (e41442e), held for the release
+
+Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

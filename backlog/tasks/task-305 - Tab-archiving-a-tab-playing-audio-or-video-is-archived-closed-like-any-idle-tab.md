@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T09:53:00Z'
-updated_date: '2026-11-08T11:18:00Z'
+updated_date: '2026-11-08T11:35:00Z'
 labels:
   - tabs
   - archiving
@@ -64,6 +64,10 @@ Website facts for AC #5 (Tab Archiving page): a tab playing sound you can hear i
 Website AC pending (held for release).
 
 Nov 8 2026 (lead review): the Delete Space undo snapshot now stores archiveClockStart(now:) like the session save (testUndoDeleteSpaceCarriesTheArchiveClock).
+
+Website: updated Tab Archiving (/features/tab-archiving/: a tab playing audible sound, or with an audible Peek, is never archived; the countdown restarts when the sound stops; muted/paused tabs archive as usual; FAQ too) on website branch next-release (65b076e), held for the release
+
+Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

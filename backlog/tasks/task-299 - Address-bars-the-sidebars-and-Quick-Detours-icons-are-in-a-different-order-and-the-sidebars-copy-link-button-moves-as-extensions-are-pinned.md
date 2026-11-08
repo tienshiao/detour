@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T08:40:00Z'
-updated_date: '2026-11-08T11:02:00Z'
+updated_date: '2026-11-08T11:35:00Z'
 labels:
   - ui
   - quick-detour
@@ -60,6 +60,8 @@ Implemented (Nov 8 2026, @claude):
 - Runtime (/verify, DETOUR_DATA_DIR=DetourB8-299-1, temporary DEBUG harness, three seeded copies of TestExtensions/hello-world): pinned 0, 1, 3, then 0 again at runtime through ExtensionManager.toggleExtensionPinned, with the sidebar bar hovered and a Quick Detour open on example.com. Sidebar bar (200 pt): Copy x=158, Site Settings x=177 in every state; extensions at 134 / 86,110,134. Quick Detour bar: Copy x=647, Site Settings x=673 in every state; extensions at 621 / 569,595,621; Open in unchanged. Tooltips 'Copy Link', 'Site Settings', 'Hello World 1..3'. Layer captures of both bars in each state confirmed the order visually. Not checked: a Private window's sidebar bar or a second profile (the code path is the same view). Defaults keys and the data dir removed; the run's WebKit store directories under ~/Library/WebKit/com.detourbrowser.mac/ were left in place.
 
 Nov 8 2026 (lead review): /code-review medium found Copy's 6 pt padded hit area overlapping the neighbouring extension button and Site Settings (2 pt gaps), so clicks on their edges copied the link. FauxAddressBar now resolves the trailing button exactly first, then with 4 pt padding, then Copy's 6 pt (trailingHit(at:)). Built and AddressBarIconOrderTests/HelpMenuTests/QuickDetourDockMenuTests pass (47); the edge click itself was not exercised at runtime.
+
+Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

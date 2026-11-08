@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T09:35:00Z'
-updated_date: '2026-11-08T11:18:00Z'
+updated_date: '2026-11-08T11:35:00Z'
 labels:
   - link-routes
 dependencies: []
@@ -79,6 +79,8 @@ Final test run on the committed tree (harness removed): LinkPlacementTests 24, L
 AC #1 left unchecked: the spike ran on the current macOS (26.7) with simulated senders only; Mail/Messages/Notes/Slack and macOS 15.4 need the user (production Detour is the default browser, and 15.4 is not installed). AC #4's runtime part was done by launching Detour from another (test) app, not from those apps.
 
 Website: updated Link Routes and Quarantine (a From app route also applies to the link that starts Detour; with no known sending app and any route to Quarantine, that link opens in Quarantine) on website branch next-release (86f8ad3), held for the release
+
+Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

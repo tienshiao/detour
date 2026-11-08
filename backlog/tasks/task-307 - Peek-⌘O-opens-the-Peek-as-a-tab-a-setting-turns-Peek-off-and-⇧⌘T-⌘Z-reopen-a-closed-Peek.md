@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T10:00:00Z'
-updated_date: '2026-11-08T11:18:00Z'
+updated_date: '2026-11-08T11:35:00Z'
 labels:
   - peek
 dependencies: []
@@ -76,6 +76,10 @@ Website facts for AC #6 (Peek guide page; move from Not in Detour to how-to step
 Website AC pending (held for release).
 
 Nov 8 2026 (lead, /code-review high on the integrated branch): fixed in the TASK-307 commit: reopenClosedPeek now treats extension pages like restoredTab (rehost to the live base URL, drop interaction state; disabled/uninstalled → nothing restored and the record kept), with ExtensionPageUndoTests. Known gaps left, not fixed: Undo of Close Peek registers no Redo (a redo would have to close a presented Peek through the window controller); the shared ⌘O item keeps the title 'Open Peek in New Tab' (disabled) when a non-browser window such as Settings becomes key after a browser window with a Peek.
+
+Website: updated Peek (File › Open Peek in New Tab ⌘O; new sections 'Bring back a closed Peek' (⌘Z / ⇧⌘T, as a tab when the host is gone, Private: ⌘Z only, Archived Tabs) and 'Turn Peek off for pinned tabs and favorites' (Settings › General › Peek; Shift-click still peeks); new FAQ; Arc box items moved from Not in Detour to Same) and Keyboard Shortcuts (File-menu ⌘O row, Peek table) on website branch next-release (909c9ba), held for the release
+
+Nov 8 2026 (lead): landed on main with the batch; /code-review on its branch (fixes folded in); full DetourTests on the integrated code: 3882 tests, 18 skipped, 2 failures, both pre-existing on main before the batch (TASK-310).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
