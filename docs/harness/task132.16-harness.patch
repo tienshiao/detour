@@ -1,0 +1,164 @@
+TASK-132.16 runtime harness: installs the API Explorer into an isolated profile over a local site (scratchpad: alpha/bravo/charlie.html with early console lines, an image and an unreachable image; python3 -m http.server 8767); attaches a parked tab (page) and the selected tab (worker); reloads while attached and checks Runtime.enable replays the early messages; console, exception, fetch/XHR (200, 501 for POST on python's server, failure), the document under its loader id and both images; the worker receives the selected tab's events; an unattached tab is not wrapped; detach restores console/fetch and leaves no scripts. Temporary, never committed to Detour/.
+
+    git apply docs/harness/task132.16-harness.patch && xcodegen generate && build
+
+    DETOUR_DATA_DIR=DetourVerify13216-<n> DETOUR_VERIFY_DIR=$OUT DETOUR_API_EXPLORER=$PWD/TestExtensions/api-explorer DETOUR_VERIFY_SITE=http://127.0.0.1:8767 .derived/.../Detour
+
+    # results in $OUT/verify.log; ends with "done".
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 2f165c2..894b893 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -149,6 +149,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask13216HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+diff --git a/Detour/App/Task13216Harness.swift b/Detour/App/Task13216Harness.swift
+new file mode 100644
+index 0000000..f8fba6e
+--- /dev/null
++++ b/Detour/App/Task13216Harness.swift
+@@ -0,0 +1,136 @@
++// TEMP TASK-132.16 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask13216HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"], let explorerPath = env["DETOUR_API_EXPLORER"],
++              let site = env["DETOUR_VERIFY_SITE"] else { return }
++        let out = URL(fileURLWithPath: outDir)
++        let logURL = out.appendingPathComponent("verify.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        log("harness armed pid=\(ProcessInfo.processInfo.processIdentifier)")
++        guard let window = wc.window, let space = wc.activeSpace, let profile = wc.activeSpace?.profile else { return log("no window/space") }
++        let store = TabStore.shared
++        func page(_ name: String) -> URL { URL(string: "\(site)/\(name).html")! }
++
++        Task { @MainActor in
++            @MainActor func sleep(_ s: Double) async { try? await Task.sleep(for: .milliseconds(Int(s * 1000))) }
++            do {
++                let ext = try ExtensionManager.shared.install(from: URL(fileURLWithPath: explorerPath))
++                log("installed \(ext.id)")
++                await sleep(2)
++                guard let context = profile.extensionContext(for: ext.id) else { return log("no context") }
++                let alpha = store.addTab(in: space, url: page("alpha"))
++                let bravo = store.addTab(in: space, url: page("bravo"))
++                let charlie = store.addTab(in: space, url: page("charlie"))
++                wc.selectTab(id: alpha.id)
++                await sleep(3)
++                let extPage = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300),
++                                        configuration: context.webViewConfiguration!)
++                extPage.load(URLRequest(url: context.baseURL.appendingPathComponent("options.html")))
++                await sleep(3)
++
++                @MainActor func js(_ label: String, _ body: String) async -> Any? {
++                    do {
++                        let raw = try await extPage.callAsyncJavaScript(
++                            "try { return JSON.stringify({ ok: true, value: await (async () => { \(body) })() }); } catch (e) { return JSON.stringify({ ok: false, error: String(e && e.message || e) }); }",
++                            arguments: [:], contentWorld: .page)
++                        let text = raw as? String ?? "nil"
++                        log("\(label) -> \(text.count > 1500 ? String(text.prefix(1500)) + "…" : text)")
++                        return ((try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any])?["value"]
++                    } catch { log("\(label) threw \(error)"); return nil }
++                }
++                @MainActor func inPage(_ tab: BrowserTab, _ body: String) async -> Any? {
++                    try? await tab.webView?.callAsyncJavaScript(body, arguments: [:], contentWorld: .page)
++                }
++                @MainActor func shoot(_ name: String) async {
++                    log("SHOOT \(name) \(window.windowNumber)")
++                    await sleep(2.5)
++                }
++
++                let ids = await js("targets", "const targets = await chrome.debugger.getTargets(); return targets.map(t => [t.tabId, t.title]);")
++                let pairs = (ids as? [[Any]]) ?? []
++                @MainActor func id(_ title: String) -> Int { pairs.first { $0[1] as? String == title }?[0] as? Int ?? -1 }
++                let a = id("Alpha"), b = id("Bravo")
++                log("ids Alpha=\(a) Bravo=\(b)")
++                for tab in [alpha, bravo, charlie] {
++                    _ = await inPage(tab, "window.__nativeLog = console.log; window.__nativeFetch = fetch; return true;")
++                }
++
++                _ = await js("listen", "globalThis.__ev = []; chrome.debugger.onEvent.addListener((s, m, p) => __ev.push([s.tabId, m, p])); return 'listening';")
++                // Bravo (parked) from the page, Alpha (selected) from the worker.
++                _ = await js("attach Bravo", "await chrome.debugger.attach({ tabId: \(b) }, '1.3'); return 'ok';")
++                _ = await js("attach Alpha", "return await chrome.runtime.sendMessage({ type: 'debuggerOp', op: 'attach', target: { tabId: \(a) } });")
++                log("hosting Alpha=\(alpha.automationHosting) Bravo=\(bravo.automationHosting)")
++                log("wrapped Alpha=\(String(describing: await inPage(alpha, "return console.log !== window.__nativeLog;"))) Bravo=\(String(describing: await inPage(bravo, "return console.log !== window.__nativeLog;"))) Charlie=\(String(describing: await inPage(charlie, "return console.log !== window.__nativeLog;")))")
++
++                // Bravo: navigate while attached (early messages), then Runtime.enable replays them.
++                bravo.reload()
++                await sleep(2)
++                _ = await js("Bravo Runtime+Network enable", """
++                    await chrome.debugger.sendCommand({ tabId: \(b) }, 'Runtime.enable');
++                    await chrome.debugger.sendCommand({ tabId: \(b) }, 'Network.enable', { maxPostDataSize: 65536 });
++                    await new Promise(r => setTimeout(r, 300));
++                    return __ev.filter(e => e[0] === \(b)).map(e => [e[1], e[1] === 'Runtime.consoleAPICalled' ? [e[2].type, e[2].args.map(x => x.value !== undefined ? x.value : x.description), e[2].stackTrace && e[2].stackTrace.callFrames[0].url] : null]);
++                    """)
++                _ = await js("Bravo page activity", """
++                    __ev.length = 0;
++                    await chrome.debugger.sendCommand({ tabId: \(b) }, 'Runtime.evaluate', { expression: `
++                        console.log('from evaluate', 7, [1,2,3]); later();
++                        fetch('/data.json').then(r => r.json()); fetch('/missing', { method: 'POST', body: 'q=1' });
++                        fetch('http://127.0.0.1:1/').catch(() => {});
++                        const x = new XMLHttpRequest(); x.open('GET', '/data.json'); x.send(); 'started'`, returnByValue: true });
++                    await new Promise(r => setTimeout(r, 1500));
++                    return __ev.filter(e => e[0] === \(b)).map(e => [e[1], e[2].type || null, e[2].request ? [e[2].request.method, e[2].request.url, e[2].request.postData || null] : null, e[2].response ? e[2].response.status : null, e[2].errorText || null, e[2].exceptionDetails ? e[2].exceptionDetails.exception.description : null]);
++                    """)
++                // Bravo: a navigation with Network on — the document and its subresources.
++                _ = await js("clear", "__ev.length = 0; return true;")
++                bravo.load(page("charlie"))
++                await sleep(2.5)
++                _ = await js("Bravo navigation network", """
++                    return __ev.filter(e => e[0] === \(b) && e[1].startsWith('Network.')).map(e => [e[1], e[2].type || null, e[2].requestId, e[2].request ? e[2].request.url : null, e[2].response ? e[2].response.status : null, e[2].errorText || null]);
++                    """)
++
++                // Alpha (selected, shown) from the worker.
++                _ = await js("Alpha worker", """
++                    const op = (method, params) => chrome.runtime.sendMessage({ type: 'debuggerOp', op: 'sendCommand', target: { tabId: \(a) }, args: { method, params: params || {} } });
++                    await chrome.runtime.sendMessage({ type: 'debuggerEventsClear' });
++                    await op('Runtime.enable'); await op('Network.enable');
++                    await op('Runtime.evaluate', { expression: "console.error('alpha error', new Error('x')); fetch('/data.json'); 'ok'", returnByValue: true });
++                    await new Promise(r => setTimeout(r, 1200));
++                    const events = (await chrome.runtime.sendMessage({ type: 'debuggerEvents' })).events;
++                    return events.map(e => [e.event, e.method]);
++                    """)
++                await shoot("01-alpha-attached")
++                log("Alpha console.log native text: \(String(describing: await inPage(alpha, "return String(console.log) + ' | ' + String(fetch);")))")
++
++                // Detach both: originals back, no scripts left.
++                _ = await js("detach Alpha", "return await chrome.runtime.sendMessage({ type: 'debuggerOp', op: 'detach', target: { tabId: \(a) } });")
++                _ = await js("detach Bravo", "await chrome.debugger.detach({ tabId: \(b) }); return 'detached';")
++                await sleep(1)
++                log("restored Alpha=\(String(describing: await inPage(alpha, "return console.log === window.__nativeLog && fetch === window.__nativeFetch;")))")
++                let scripts = { (tab: BrowserTab) -> Int in
++                    tab.webView?.configuration.userContentController.userScripts.filter { $0.source.contains("__detourDebuggerInstrumentation") }.count ?? -1
++                }
++                log("instrumentation scripts left Alpha=\(scripts(alpha)) Bravo=\(scripts(bravo)) Charlie=\(scripts(charlie))")
++                log("handler installs left=\(ExtensionDebuggerInstrumentation.installs.count)")
++                _ = await js("after detach", "__ev.length = 0; await new Promise(r => setTimeout(r, 200)); return __ev.length;")
++                await shoot("02-detached")
++                log("done")
++            } catch {
++                log("harness error \(error)")
++            }
++        }
++    }
++}
++#endif

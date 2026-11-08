@@ -1,8 +1,8 @@
 ---
 type: Feature
 title: Debugger API
-description: chrome.debugger over an emulated subset of the Chrome DevTools Protocol — attachments and Chrome's rules for them, how an attachment ends, tab ids kept natively, the shared parked event channel, Page.captureScreenshot geometry, synthesized input and what keeps it in the tab, Runtime.evaluate under CSP with V8-shaped results, JavaScript dialogs and the frame model, the user's Stop, and what differs from Chrome.
-tags: [extensions, debugger, cdp, polyfill, events, claude-extension, csp, dialogs, input]
+description: chrome.debugger over an emulated subset of the Chrome DevTools Protocol — attachments and Chrome's rules for them, how an attachment ends, tab ids kept natively, the shared parked event channel, Page.captureScreenshot geometry, synthesized input and what keeps it in the tab, Runtime.evaluate under CSP with V8-shaped results, JavaScript dialogs and the frame model, console and network events from per-session page instrumentation, the user's Stop, and what differs from Chrome.
+tags: [extensions, debugger, cdp, polyfill, events, claude-extension, csp, dialogs, input, console, network]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T02:30:00Z }
 sources:
@@ -69,6 +69,18 @@ sources:
   - id: task15
     resource: backlog:TASK-132.15
     title: "Extensions: chrome.debugger Runtime.evaluate and JavaScript dialog handling"
+  - id: instrumentation
+    resource: ../../Detour/Extensions/Runtime/ExtensionDebuggerInstrumentationSource.swift
+    title: ExtensionDebuggerInstrumentationSource.swift (the page and isolated scripts)
+  - id: network
+    resource: ../../Detour/Extensions/Runtime/ExtensionDebugger+Network.swift
+    title: ExtensionDebugger+Network.swift
+  - id: events-tests
+    resource: ../../DetourTests/ExtensionDebuggerEventsTests.swift
+    title: ExtensionDebuggerEventsTests.swift
+  - id: task16
+    resource: backlog:TASK-132.16
+    title: "Extensions: chrome.debugger console and network events (Runtime.consoleAPICalled, Network.*)"
 ---
 
 # Summary
@@ -418,6 +430,124 @@ Only a tab's main frame is modelled (`ExtensionDebugger+Frames.swift`).[^dialogs
 - `domainAndRegistry` is the last two host labels, because Detour has no public suffix list.
 - A dialog names the main frame's id even when a child frame opened it.
 
+# Console and network events
+
+WebKit tells the app about neither console messages nor requests. An attached
+tab is therefore instrumented for the length of the session, and no other tab
+is.[^task16] Two document-start scripts, main frame only, are added to the tab's own
+user content controller. Both also run in the document already there:
+
+- **Page world** (`pageSource`): wraps the console methods, `fetch`, and
+  `XMLHttpRequest.prototype.open` / `setRequestHeader` / `send`. It listens
+  (capture, on `window`) for `error` and `unhandledrejection` /
+  `rejectionhandled`. Arguments are described in the page with the same
+  V8-shaped describer `Runtime.evaluate` uses (`describerSource`, shared since
+  this task), captured at document start.
+- **`DetourDebugger` world** (`isolatedSource`):
+  - It hears the page half through a DOM `CustomEvent` with a string `detail`,
+    named by the session's random token. A string crosses worlds, and the page
+    cannot listen for a name it cannot guess.
+  - It keeps the document's last 1,000 console reports, reads resource timing
+    and element `error` events, and batches per microtask.
+  - It posts to `detourDebuggerEvents`, a handler registered in that world only.
+  - At start it says hello. Native answers with which of Runtime and Network
+    are on, and says so again on every enable or disable.
+
+On detach both scripts are removed: `_removeUserScript:` (SPI, checked with
+`responds(to:)`), or else everything is removed and the rest put back. The
+current document's halves also stop: the page half puts each original back,
+unless the page has since replaced it. A tab showing an extension's own page
+shares the extension's controller with its other pages, so it is not
+instrumented. `Space.isTabUserContentController` tells which controllers were
+made for one tab.
+
+## Measured in WebKit (2026-11-07, a standalone WKWebView spike)
+
+- A `Proxy` around a native function prints as `function ProxyObject() {
+  [native code] }`, so proxies would give the wrappers away. Instead the
+  wrappers are methods named as the originals, with the originals' `name` and
+  `length`. A replaced `Function.prototype.toString`, itself disguised, prints
+  the original for each.
+- `new Error().stack` inside a wrapper gives `log@user-script:1:2:51`, then the
+  caller (`global code@http://…/:1:51`). User-script frames are named
+  `user-script:N`. Mind the colon: a `url:line:column` split reads the URL as
+  `user-script:1`. These frames are dropped from the call frames, as are native
+  ones.
+- `PerformanceResourceTiming` and `PerformanceNavigationTiming` have no
+  `responseStatus`. A subresource seen only through timing therefore has no
+  status, and the document's status comes from the navigation response.
+- A load that got no response (an unreachable host) makes no timing entry,
+  only the element's `error` event. A 404 image makes both.
+- An error thrown by a user script reaches `error` listeners as "Script error."
+  with no error object, like a cross-origin script's.
+- The isolated world sees the page's resource timing (`getEntriesByType`, a
+  `PerformanceObserver`), since the timeline belongs to the document.
+
+## Decisions
+
+- **Instrument on attach, not on enable.** V8 keeps console messages whether
+  or not anyone listens, and replays them on `Runtime.enable`. The Claude
+  extension enables Runtime only when asked for console messages, so messages
+  from before that call would otherwise be lost. Network is not replayed
+  (Chrome does not):
+  - reports wait in the document until it knows the state, then flow only
+    while Network is on;
+  - resource timing entries from before the enable are skipped;
+  - a response whose request was never reported is dropped natively.
+- **`fetch` returns a derived promise**, settled with the original's value or
+  error. Attaching a rejection handler to the original instead would mark it
+  handled, and the page would lose `unhandledrejection` for a failed request
+  nobody awaited. The cost is settling one microtask later.
+- **The document's request is native**, from three navigation callbacks:
+  - `didStartProvisionalNavigation`: `requestWillBeSent`, with the method and
+    headers the last policy request had for that URL.
+  - The main-frame navigation response: `responseReceived` with the HTTP
+    status. The three navigation delegates call
+    `BrowserTab.didReceiveMainFrameResponse`.
+  - `didFailProvisionalNavigation`: `loadingFailed`, with a `net::` text from
+    the NSError.
+
+  Its request id is the loader id, as in Chrome:
+  `ExtensionDebuggerFrames.startProvisionalLoad` hands the commit the id the
+  request already used.
+- **A token per session.** A document kept in the back/forward cache from an
+  earlier session posts with an old token and is ignored. On `pageshow` with
+  `persisted` the isolated half says hello again: with the handler gone (no
+  session) it takes its halves out; native answers a hello with an unknown
+  token, from a web view a later session instruments, by stopping those halves
+  and running the current session's; the same session's hello gets the
+  current state, which may have changed while the document was cached.
+- **A new web view is instrumented again.** A forced sleep keeps the
+  attachment and wakes the tab with a new web view and controller;
+  `BrowserTab.webView`'s `didSet` calls
+  `ExtensionDebuggerInstrumentation.tabWebViewDidChange`.
+- **The document request lives from its provisional start to its commit or
+  failure**, not to its response: a response that becomes a download fails
+  the provisional load (WebKit error 102), reported as `net::ERR_ABORTED`. Its
+  `loadingFinished` comes from the isolated half at `DOMContentLoaded`, when
+  the parser has the whole body.
+- Rejected:
+  - WebKit's Web Inspector protocol is close to CDP and has `Console` and
+    `Network` domains, but there is no in-process client API the app can use.
+  - A `WKURLSchemeHandler` sees only its own scheme.
+  - A content rule list reports nothing back.
+
+`docs/extensions.md` ("Console and network events") lists what is and is not
+reported, field by field.
+
+What the Claude extension reads:
+- `consoleAPICalled`: `type`, each arg's `value` or `description`,
+  `timestamp`, and the first call frame's place.
+- `exceptionThrown`: `exceptionDetails` (`exception.description`, `text`,
+  `url`, line, column, frames).
+- `requestWillBeSent`: `requestId`, `request.url`, `request.method` and
+  `documentURL`.
+- `responseReceived`: `response.status`. A failed request it marks 503.
+
+It keys each tab's lists by a host: the first frame's URL for console
+messages, `documentURL` for requests. It empties a list when that host
+changes.
+
 # The indicator
 
 A driven tab shows a small indicator in its sidebar row (tooltip
@@ -455,7 +585,10 @@ Things learnt building it:
   text system's bindings; `undo` / `redo` only on a parked page; no touch,
   gesture or IME composition methods (`Input.dispatchTouchEvent`,
   `imeSetComposition`).
-- Runtime, dialogs and frames: their own lists above.
+- Runtime, dialogs and frames: their own lists above. Console and network:
+  `docs/extensions.md` lists what is reported. In short: the main frame only,
+  no subresource status, no bodies, no redirects, and no messages from before
+  the attach.
 - `captureBeyondViewport` is not emulated: a clip past the viewport shows
   nothing there.
 - The user's indicator is Detour's own (a sidebar row indicator and a
@@ -520,6 +653,24 @@ TASK-132.15: `ExtensionDebuggerRuntimeTests` runs evaluations in a bare web view
 `ExtensionDebuggerRuntimeUnitTests` covers the tokeniser, the rewrite candidates, the position mapping, the messages and
 the frame fields.
 
+TASK-132.16: `ExtensionDebuggerEventsTests` (worker and page) covers:
+- console methods with V8's types and argument shapes;
+- an uncaught error and an unhandled rejection from the page's own script, with V8's stack text and frames;
+- wrappers printing as native code;
+- messages from a page's first script replayed on `Runtime.enable` after a navigation;
+- nothing while disabled or after detach, and the originals back;
+- fetch and XHR, including methods, bodies, headers, 200/404 statuses, failures, and an unhandled failed fetch still
+  reaching the page;
+- the document's request under its loader id, with its status (200, 404);
+- images from resource timing, and an unreachable one failing;
+- another tab of the space left untouched.
+
+`ExtensionDebuggerEventsUnitTests` covers:
+- `Network.enable`'s parameters;
+- `net::` texts and resource types;
+- the event shapes and the script templates;
+- a second run in one document, and taking the wrappers out.
+
 [^task]: TASK-132.13 in Backlog.
 [^task-input]: TASK-132.14 in Backlog; the measurements come from a temporary spike test on a parked and a displayed tab, 2026-11-07.
 [^task15]: TASK-132.15 in Backlog; the Claude extension 1.0.105 bundle (`mcpPermissions` chunk), read 2026-11-07.
@@ -529,3 +680,4 @@ the frame fields.
 [^pagehandler]: chromium content/browser/devtools/protocol/page_handler.cc and components/javascript_dialogs/tab_modal_dialog_manager.cc, read 2026-11-07.
 [^webkit]: WebKit Source/WebKit/UIProcess/Cocoa/UIDelegate.mm, WebPageProxy.cpp, Source/WebCore/loader/FrameLoader.cpp, read 2026-11-07.
 [^chromium]: chrome/browser/extensions/api/debugger/debugger_api.cc, read 2026-11-07.
+[^task16]: TASK-132.16 in Backlog; ExtensionDebuggerInstrumentationSource.swift, ExtensionDebugger+Instrumentation.swift, ExtensionDebugger+Network.swift; the Claude extension 1.0.105 bundle's debugger event handler, read 2026-11-07.
