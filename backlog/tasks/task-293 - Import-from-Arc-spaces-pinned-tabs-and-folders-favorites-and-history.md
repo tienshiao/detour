@@ -4,7 +4,7 @@ title: 'Import from Arc: spaces, pinned tabs and folders, favorites, and history
 status: To Do
 assignee: []
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T07:54:00Z'
+updated_date: '2026-11-08T07:59:00Z'
 labels:
   - import
 dependencies: []
@@ -33,6 +33,7 @@ What to verify before scoping (from memory during planning, not checked): Arc ke
 - [ ] #7 Importing twice does not duplicate spaces, pinned entries or favorites
 - [ ] #8 A missing or unreadable Arc install fails with a clear message and changes nothing
 - [ ] #9 Parsing and mapping are unit-tested against fixture files covering nested folders, multiple profiles and an empty sidebar
+- [ ] #10 The Switching from Arc hub (website src/pages/arc/) gets a migration section built around the importer, replacing the held-back manual guide in src/pages/arc/_move.md (user, Nov 7 2026: the hub leaves migration off until an import exists)
 <!-- AC:END -->
 
 ## Implementation Notes
