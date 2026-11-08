@@ -92,4 +92,76 @@ nonisolated final class RecentTabOrderTests: XCTestCase {
         XCTAssertEqual(RecentTabSwitcherState(count: 3, backward: true, hasCurrent: false)?.index, 2)
         XCTAssertNil(RecentTabSwitcherState(count: 0, backward: false, hasCurrent: false))
     }
+
+    // MARK: - Control+W (TASK-308)
+
+    @MainActor func testClosingTheHighlightMovesToTheNextCard() {
+        var state = RecentTabSwitcherState(count: 4, backward: false)!   // index 1
+        XCTAssertTrue(state.removeHighlighted(hasCurrent: true))
+        XCTAssertEqual(state.count, 3)
+        XCTAssertEqual(state.index, 1, "the card after the closed one slides into its place")
+    }
+
+    @MainActor func testClosingTheLastCardWrapsToTheFirst() {
+        var state = RecentTabSwitcherState(count: 3, backward: true)!    // index 2
+        XCTAssertTrue(state.removeHighlighted(hasCurrent: false))
+        XCTAssertEqual(state.index, 0)
+    }
+
+    @MainActor func testTheSwitcherEndsWhenNothingIsLeftToSwitchTo() {
+        var withCurrent = RecentTabSwitcherState(count: 2, backward: false)!
+        XCTAssertFalse(withCurrent.removeHighlighted(hasCurrent: true),
+                       "only the current card is left")
+        var current = RecentTabSwitcherState(count: 2, backward: false)!
+        current.highlight(0)
+        XCTAssertTrue(current.removeHighlighted(hasCurrent: false),
+                      "the current card closed: the other one can still be chosen")
+        var last = RecentTabSwitcherState(count: 1, backward: false, hasCurrent: false)!
+        XCTAssertFalse(last.removeHighlighted(hasCurrent: false), "the last card closed")
+    }
+
+    @MainActor func testALoneNormalTabCloses() {
+        let id = UUID()
+        XCTAssertEqual(recentTabCloseAction(card: [id], members: [id: .normal(splitGroupID: nil)]), .closeTab(id))
+    }
+
+    @MainActor func testASplitCardClosesItsWholeGroup() {
+        let (left, right, group) = (UUID(), UUID(), UUID())
+        XCTAssertEqual(recentTabCloseAction(card: [left, right],
+                                            members: [left: .normal(splitGroupID: group),
+                                                      right: .normal(splitGroupID: group)]),
+                       .closeSplitGroup(group))
+    }
+
+    @MainActor func testAPinnedCardGoesDormant() {
+        let (tab, entry) = (UUID(), UUID())
+        XCTAssertEqual(recentTabCloseAction(card: [tab], members: [tab: .pinned(entryID: entry)]),
+                       .makePinnedDormant(entryIDs: [entry]))
+    }
+
+    @MainActor func testAPinnedSplitCardPutsBothEntriesToSleep() {
+        let (left, right, leftEntry, rightEntry) = (UUID(), UUID(), UUID(), UUID())
+        XCTAssertEqual(recentTabCloseAction(card: [left, right],
+                                            members: [left: .pinned(entryID: leftEntry),
+                                                      right: .pinned(entryID: rightEntry)]),
+                       .makePinnedDormant(entryIDs: [leftEntry, rightEntry]))
+    }
+
+    @MainActor func testAFavoriteIsDeactivated() {
+        let (tab, favorite) = (UUID(), UUID())
+        XCTAssertEqual(recentTabCloseAction(card: [tab], members: [tab: .favorite(favoriteID: favorite)]),
+                       .deactivateFavorite(favorite))
+    }
+
+    @MainActor func testACardWithAGoneOrMismatchedTabClosesNothing() {
+        let (a, b, group) = (UUID(), UUID(), UUID())
+        XCTAssertNil(recentTabCloseAction(card: [a], members: [:]), "closed since it was listed")
+        XCTAssertNil(recentTabCloseAction(card: [a, b], members: [a: .normal(splitGroupID: group)]))
+        XCTAssertNil(recentTabCloseAction(card: [a, b], members: [a: .normal(splitGroupID: group),
+                                                                b: .normal(splitGroupID: UUID())]))
+        XCTAssertNil(recentTabCloseAction(card: [a, b], members: [a: .normal(splitGroupID: nil),
+                                                                b: .normal(splitGroupID: nil)]))
+        XCTAssertNil(recentTabCloseAction(card: [a, b], members: [a: .pinned(entryID: UUID()),
+                                                                b: .normal(splitGroupID: group)]))
+    }
 }

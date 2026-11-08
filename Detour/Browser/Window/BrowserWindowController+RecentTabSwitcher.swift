@@ -19,7 +19,56 @@ extension BrowserWindowController {
             self.selectTab(id: entry.focusTabID)
             self.tabSidebar.scrollSelectedRowToVisible()
         }
+        switcher.closeEntry = { [weak self] entry in self?.closeSwitcherEntry(entry) ?? false }
+        switcher.currentTabID = { [weak self] in self?.selectedTabID }
         recentTabSwitcher = switcher
+    }
+
+    /// Control+W in the switcher (TASK-308): closes the card's tabs through the
+    /// paths Cmd+W takes, so Undo and Reopen Closed Tab bring them back. The
+    /// rule per card is `recentTabCloseAction`: a split closes whole, pinned
+    /// tabs and favourites go dormant. Unlike Cmd+W, a presented Peek on the
+    /// card's tab does not take the key: the card stands for the tab, and
+    /// closing the tab closes its Peek with it. Returns whether it closed
+    /// anything.
+    func closeSwitcherEntry(_ entry: RecentTabSwitcher.Entry) -> Bool {
+        guard let space = activeSpace else { return false }
+        let ids = entry.tabs.map(\.id)
+        var members: [UUID: RecentTabCardMember] = [:]
+        for id in ids {
+            if let pinned = space.pinnedEntries.first(where: { $0.tab?.id == id }) {
+                members[id] = .pinned(entryID: pinned.id)
+            } else if let favorite = space.profile?.favorites.first(where: { $0.tab?.id == id }) {
+                members[id] = .favorite(favoriteID: favorite.id)
+            } else if let tab = space.tabs.first(where: { $0.id == id }) {
+                members[id] = .normal(splitGroupID: tab.splitGroupID)
+            }
+        }
+        guard let action = recentTabCloseAction(card: ids, members: members) else { return false }
+        let closesSelection = selectedTabID.map(ids.contains) ?? false
+
+        switch action {
+        case .closeTab(let id):
+            guard let index = space.tabs.firstIndex(where: { $0.id == id }) else { return false }
+            closeTab(at: index, wasSelected: closesSelection)
+        case .closeSplitGroup(let groupID):
+            closeSplitGroup(groupID)
+        case .makePinnedDormant(let entryIDs):
+            if entryIDs.count == 1, closesSelection,
+               let index = space.pinnedEntries.firstIndex(where: { $0.id == entryIDs[0] }) {
+                closePinnedTab(at: index)
+            } else {
+                // Both entries of a pinned split go dormant: nothing of the
+                // card is left to select.
+                if closesSelection { settlingSelectionForClose { deselectAllTabs() } }
+                for entryID in entryIDs { store.closePinnedTab(id: entryID, in: space) }
+            }
+        case .deactivateFavorite(let favoriteID):
+            guard let profile = space.profile else { return false }
+            store.deactivateFavorite(id: favoriteID, profileID: profile.id)
+            if closesSelection { deselectAllTabs() }
+        }
+        return true
     }
 
     /// The active space's live tabs — pinned, favourite and normal, a split as

@@ -30,6 +30,11 @@ final class RecentTabSwitcher {
     /// Refreshes the visible tab's preview before the overlay shows it.
     var willBegin: () -> Void = {}
     var didChoose: (Entry) -> Void = { _ in }
+    /// Closes an entry's tabs as Cmd+W would (Control+W, TASK-308); false
+    /// when nothing was closed.
+    var closeEntry: (Entry) -> Bool = { _ in false }
+    /// The window's selected tab, asked after a close moved it.
+    var currentTabID: () -> UUID? = { nil }
 
     /// How long Control+Tab must be held before the overlay appears.
     static let revealDelay: TimeInterval = 0.15
@@ -104,6 +109,10 @@ final class RecentTabSwitcher {
         }
 
         guard isActive else { return event }
+        if modifiers == .control, Self.isCloseKey(event) {
+            closeHighlighted()
+            return nil
+        }
         switch Int(event.keyCode) {
         case kVK_Escape: cancel()
         case kVK_Return, kVK_ANSI_KeypadEnter: commit()
@@ -113,6 +122,19 @@ final class RecentTabSwitcher {
         }
         // Nothing typed while switching reaches the page.
         return nil
+    }
+
+    /// The W of Control+W by the character it types, as Cmd+W's menu item
+    /// is matched, so it is the key labelled W on any Latin layout (AZERTY,
+    /// Dvorak); by the ANSI key position only on a non-Latin layout (Cyrillic,
+    /// Greek), which types no W at all.
+    private static func isCloseKey(_ event: NSEvent) -> Bool {
+        guard let characters = event.charactersIgnoringModifiers?.lowercased(), !characters.isEmpty else {
+            return Int(event.keyCode) == kVK_ANSI_W
+        }
+        if characters == "w" { return true }
+        let typesNonLatinLetter = characters.unicodeScalars.contains { !$0.isASCII && CharacterSet.letters.contains($0) }
+        return typesNonLatinLetter && Int(event.keyCode) == kVK_ANSI_W
     }
 
     // MARK: - Switching
@@ -147,6 +169,34 @@ final class RecentTabSwitcher {
         end()
         didChoose(entry)
     }
+
+    /// Control+W: closes the highlighted card's tabs and takes the card out;
+    /// the highlight moves to the next card and the switcher stays open while
+    /// there is something left to switch to (TASK-308).
+    private func closeHighlighted() {
+        guard var next = state, next.index < list.count else { return }
+        let entry = list[next.index]
+        guard closeEntry(entry) else { return }
+        // The close may have ended the switcher (the window resigning key).
+        guard isActive else { return }
+        list.remove(at: next.index)
+        let current = currentTabID()
+        let hasCurrent = current.map { id in
+            list.contains { $0.focusTabID == id || $0.tabs.contains { $0.id == id } }
+        } ?? false
+        guard next.removeHighlighted(hasCurrent: hasCurrent) else { return end() }
+        state = next
+        if overlay != nil {
+            overlay?.removeFromSuperview()
+            overlay = nil
+            showOverlay()
+        }
+    }
+
+    /// The entries listed now, for tests.
+    var listedEntries: [Entry] { list }
+    /// The highlighted index, for tests.
+    var highlightedIndex: Int? { state?.index }
 
     /// A preview arrived (captures are asynchronous): refresh the open overlay.
     func previewDidChange() {

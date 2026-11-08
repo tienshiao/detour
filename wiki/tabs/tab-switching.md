@@ -6,6 +6,9 @@ tags: [tabs, keyboard, switcher, mru, sidebar]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T11:31:06Z }
 sources:
+  - id: task-308
+    resource: backlog:TASK-308
+    title: "Recent Tabs switcher: close the highlighted tab with W while holding Control"
   - id: navigation
     resource: ../../Detour/Browser/Sidebar/TabNavigation.swift
     title: TabNavigation.swift
@@ -115,7 +118,8 @@ enough.
 - Control+Tab begins or advances; with Shift it goes backward. Key repeat
   advances.
 - Releasing Control (seen as `flagsChanged`) commits.
-- While active: Escape cancels, Return commits, Left/Right move.
+- While active: Escape cancels, Return commits, Left/Right move, and
+  Control+W closes the highlighted card (below).
 - The window resigning key cancels.
 - The overlay appears only after `revealDelay` (0.15 s), so a quick tap flips
   to the previous tab without flashing it.
@@ -126,6 +130,29 @@ split members into one entry, and orders them. Dormant tiles have no tab and
 are never offered; Peeks are not tabs. Choosing a split focuses the currently
 selected member, else this window's remembered pane, else the member left most
 recently.
+
+**Control+W closes the highlighted card** (TASK-308, as Arc's switcher
+did). The decisions are pure: `recentTabCloseAction(card:members:)` maps the
+card to what Cmd+W does to its tab, and
+`RecentTabSwitcherState.removeHighlighted(hasCurrent:)` moves the highlight.
+
+| Card | Control+W | Comes back with |
+|---|---|---|
+| A lone normal tab | `closeTab(at:wasSelected:)`, Cmd+W's path | Undo ("Close Tab"), Reopen Closed Tab |
+| A split | both tabs, `closeSplitGroup(_:)` (the sidebar row's close), one undo | Undo ("Close Both Splits") brings the split back |
+| A pinned tab | made dormant, as Cmd+W does (`closePinnedTab`); a pinned split's two entries both | Undo |
+| A favourite | deactivated, as Cmd+W does | |
+
+The card leaves the list (a dormant tile is never offered), the highlight
+moves to the card after it (wrapping to the first), and the switcher stays
+open while Control is held and something is left to switch to: the same
+rule as at the start, so it ends when no card is left or only the window's
+current card is. Releasing Control then selects the highlighted card as
+usual. Closing the current card moves the window's selection the way Cmd+W
+does, behind the overlay. Unlike Cmd+W, a Peek presented on the card's tab
+does not take the key: the card stands for the tab, and closing the tab
+closes its Peek. The overlay is rebuilt without animation. W with any other
+modifier does nothing while switching.
 
 **A tab that comes back with a Peek shows it.** Selecting a tab that has a
 [Peek](./peek.md) presents the Peek again, so a card that showed only the
@@ -206,14 +233,21 @@ Cmd+Option+Up/Down no manual pass was recorded.[^task-107]
 
 # Tests
 
-`TabNavigationTests` (11) and `RecentTabOrderTests` (10) cover the pure order
-and state; `RecentTabSwitcherMonitorTests` (10) covers which keys the monitor
-swallows and which it passes on; `RecentTabSwitcherPeekTests` (7) covers which
+`TabNavigationTests` (11) and `RecentTabOrderTests` (19) cover the pure order
+and state, and the Control+W rules for normal, split, pinned, pinned-split,
+favourite and stale cards; `RecentTabSwitcherMonitorTests` (14) covers which
+keys the monitor swallows and which it passes on, and Control+W's effect on
+the list and the highlight; `RecentTabSwitcherCloseTests` (5) runs the
+closes in a real window; `RecentTabSwitcherPeekTests` (7) covers which
 entries carry a Peek (left, current, closed, parked, the focused pane of a
 split) and that the Peek is pictured when its tab is left and when the
 switcher opens. The switcher's event handling was checked with an in-process harness
 posting real key and mouse events (quick tap, hold and advance, Shift start,
-Escape, card click);[^task-108] see
+Escape, card click);[^task-108] Control+W was checked the same way
+(TASK-308, Nov 8 2026): posted Control+Tab, Control+W on a lone tab, a split
+and a pinned tab, Control released, then three Undos (the pinned tab live
+again, the split back as a split, the tab back), a Control+W then Shift+Cmd+T,
+and Control+W until the switcher ended; see
 [in-process UI automation](../playbooks/in-process-ui-automation.md). A click
 test fails by design when another application has focus: resigning key cancels
 the switcher.

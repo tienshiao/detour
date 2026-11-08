@@ -360,6 +360,13 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebar(_ sidebar: TabSidebarViewController, didRequestCloseSplitGroup groupID: UUID) {
+        closeSplitGroup(groupID)
+    }
+
+    /// Closes both tabs of a normal split under one undo that brings the split
+    /// back: the sidebar row's Close, and Control+W on a split card in the
+    /// Control+Tab switcher (TASK-308).
+    func closeSplitGroup(_ groupID: UUID) {
         guard let space = activeSpace else { return }
         let memberIDs = space.tabs.filter { $0.splitGroupID == groupID }.map(\.id)
         guard !memberIDs.isEmpty else { return }
