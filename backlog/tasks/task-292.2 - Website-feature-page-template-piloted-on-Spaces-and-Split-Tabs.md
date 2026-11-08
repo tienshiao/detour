@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T07:47:00Z'
+updated_date: '2026-11-08T08:38:00Z'
 labels:
   - website
 dependencies:
@@ -63,6 +63,8 @@ Review (/code-review medium --fix, 7 findings): fixed the inline-Markdown helper
 Arc comparisons re-checked against Arc's help center via the Wayback Machine (website 2nd commit): dropped the unsupported 'swap panes' item, added Arc's add-split shortcut gap and Space sharing.
 
 Nov 7 2026: user approved; pushed website 9a32167 + 1139c7d (8893dd2..1139c7d), Cloudflare's Git build deployed them. Live: /features/spaces/ and /features/split-tabs/ 200, in sitemap.xml, linked from the home page. Rich Results Test (live URLs, Google smartphone crawler): both 'Crawled successfully', Breadcrumbs: 1 valid item detected. The no-slash URLs redirect with 307 (Cloudflare assets default); links and canonicals all use the slash.
+
+Correction (Nov 8 2026, found by the TASK-292.5 runtime check): the File menu item's static title is 'Pin/Unpin Tab', but validateMenuItem retitles it 'Pin Tab' or 'Unpin Tab' whenever the menu shows, so users never see 'Pin/Unpin Tab'. The pilot harness dumped menus without validation and read the static title. split-tabs.md and docs/feature-pages.md were corrected in the TASK-292.5 branch (website 12e9b1c). Harnesses that dump menus should run menu validation (or read the menu while open) before trusting titles.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

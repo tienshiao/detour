@@ -1,9 +1,11 @@
 ---
 id: TASK-292.7
 title: 'Website: guide pages for Quarantine, Private Browsing and Content Blocker'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-08T06:59:00Z'
+updated_date: '2026-11-08T08:36:00Z'
 labels:
   - website
 dependencies:
@@ -28,3 +30,17 @@ The privacy pages, written to the pilot template (TASK-292). Quarantine and Priv
 - [ ] #5 Images and loops have alt text or aria-labels describing what is on screen, fixed dimensions, and loops meet the TASK-110 size and reduced-motion rules
 - [ ] #6 Pages are in the sitemap and linked from the home page entry for the feature
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 8 2026 (agent, website worktree branch task-292.7, commit b351d21, not pushed): pages /features/quarantine/, /features/private-browsing/, /features/content-blocker/ (no media yet; captures listed for the lead), home grid entries 06/08/22 link to them (CSS at the end of styles.css), Arc hub Quarantine item links to its page. Private Browsing has an Arc box from Arc's 'Open Incognito Window' article (Wayback capture 20250515005439: Cmd+Shift+N, File > New Incognito Window, no history/cookies/site data saved); Quarantine and Content Blocker have none.
+
+Runtime check (v0.4.0 tag, Debug build in the scratchpad app worktree, temporary harness Detour/App/DocsHarness.swift + one-line AppDelegate hook, not committed; DETOUR_DATA_DIR DetourDocs2927 and DetourDocs2927b): File menu New Private Window Shift-Cmd-N, Open Quick Detour in Space Cmd-O; Dock menu New Window / New Private Window. Private window: title 'Private Browsing', dark appearance, space '🔒 Private' on profile 'Private', non-persistent store; validated by its controller: Pin/Unpin Tab, Next/Previous Space, the space list, Manage Spaces…, Show/Clear Archived Tabs disabled. A cookie set in one Private window's store was still there in a second Private window opened after closing the first (same store object): Private windows share cookies until quit (page says so). Settings > Links: Default 'Open other links in' and a route's 'Open in' offer Most Recent Space, Private Window, Quick Detour, Quarantine (with its tooltip); URL condition Domain is/Contains/Is equal to/Any URL; From app. Resolver with a Domain is example.org -> Quarantine route: external -> quarantine, typed -> stay, clicked in normal -> quarantine, clicked in Private -> stay; Default = Quarantine: external -> quarantine, clicked/typed -> stay. A link from 'Mail' (openExternalURLs) with utm_source, utm_medium, gclid, id=7 opened a quarantine window on the Private profile with its own non-persistent store (neither the Private nor the profile store), loaded https://example.com/?id=7 (tracking parameters stripped: the home grid text is correct), no cookies, Safari's UA (10_15_7, no Detour token); badge menu 'Cookies and site data of its own, gone when it closes' / 'Not in history; extensions allowed in Private run' / 'Opened from example.com'; bar button 'Open in 🏠 Home ⌘O'; File menu item retitled 'Open in 🏠 Home'. A cookie and localStorage set in the quarantine did not reach the Home tab Open in created (only the profile's own cookie), window closed. history.db afterwards: only the Open in visit; the quarantine's example.org and the Private window's example.net were absent. Settings > Profiles: Content Blocking 'Block content' + EasyList (ads), EasyPrivacy (trackers), Cookie notices, Malicious URLs, all on for Default and Private; Private shows 'This profile is used for Private Windows.' and no Archive tabs/External Apps rows. Settings > Content Blocking: columns Filter List/In List/Active/Status/Last Updated, Update All Now, Clear Cache & Redownload, '24 hours' caption. Site Settings popover (address bar sliders button, a11y 'Site Settings') on www.theguardian.com: '30 resources blocked on this page'; turning off 'Block content on this site' whitelisted the host, reloaded, 0 blocked, 'No resources blocked yet'.
+Code only (not run): quarantine downloads question, Cmd-click/popups sharing the store, fingerprinting SPI, Open in losing form text and back list, Cmd-W closing the quarantine window, Allow in Private (no extension installed in the isolated profile), Private download cancel prompt, Private per-site settings dropped with the last Private window, palette scope in Private windows.
+
+Browser check: Chrome at 1462 px (pages, home grid underline, Arc box) and 390 px iframes of the three pages, home and /arc/: scrollWidth 386 everywhere; related cards render; all three in dist/sitemap.xml.
+Cleanup: removed both NSWindow Frame / NSSplitView keys and the com.detourbrowser.mac.DetourDocs2927(b) defaults suites, and ~/Library/Application Support/DetourDocs2927(b). Left for the lead (outside the allowed deletions): WebKit stores ~/Library/WebKit/com.detourbrowser.mac/WebsiteDataStore/752d233c-948d-5bb5-81a4-55b3c0b87081 (14 MB) and 80bcf68f-fcf5-5f8c-89c1-4c83f22f46aa (536 KB), created by the two runs; empty prefs plists may linger until cfprefsd flushes.
+
+Follow-up (coordinator, Nov 8): website commit 6c7a23c rewords the home grid's Private Browsing line ('A throwaway Space with no history and nothing written to disk. Logins and cookies are cleared when you quit Detour.') and the page's opening (drops the 'someone else's account' example; says nothing is written to disk). The page already said Private cookies last until quit (runtime-confirmed here too) and contrasts Quarantine's per-window store; Quarantine's wipe on close is code-only (QuarantineSession deinit), its separate store was confirmed at runtime. The pages don't use the File menu's 'Pin/Unpin Tab' title.
+<!-- SECTION:NOTES:END -->
