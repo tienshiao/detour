@@ -920,6 +920,66 @@ const debuggerActions = {
   },
 };
 
+// --- Debugger: Runtime, dialogs and frames (TASK-132.15) ---
+//
+// Runtime.evaluate with the Claude extension's parameters, and its two-step
+// call: the code as a block in REPL mode, retried as an async function when
+// the answer is a compile-time "Illegal return statement". Dialogs are opened
+// through Runtime.evaluate itself (a timer, so the evaluation answers first);
+// with Page enabled they arrive as Page.javascriptDialogOpening in the events
+// list and wait for Page.handleJavaScriptDialog.
+
+function evaluateParams(expression, replMode) {
+  return { expression, returnByValue: true, awaitPromise: true, replMode, timeout: 10000 };
+}
+
+async function evaluateHere(expression, replMode) {
+  return (await debuggerOp('sendCommand', { method: 'Runtime.evaluate', params: evaluateParams(expression, replMode) })).result;
+}
+
+async function openPageDialog(call) {
+  const expression = `setTimeout(() => { (window.__explorerAnswers = window.__explorerAnswers || []).push(${call}); }, 0); 'opened'`;
+  return evaluateHere(expression, false);
+}
+
+const debuggerRuntimeActions = {
+  'btn-dbg-rt-eval': async () => {
+    const code = document.getElementById('dbg-rt-code').value;
+    const repl = document.getElementById('chk-dbg-rt-repl').checked;
+    return await evaluateHere(repl ? `{${code}\n}` : code, repl);
+  },
+  'btn-dbg-rt-claude': async () => {
+    const code = document.getElementById('dbg-rt-code').value;
+    const first = await evaluateHere(`{${code}\n}`, true);
+    const details = first.exceptionDetails;
+    const retry = details && details.exception && details.exception.className === 'SyntaxError' && !details.stackTrace
+      && details.scriptId !== undefined && /Illegal return statement/.test(details.exception.description || '');
+    if (!retry) return { retried: false, answer: first };
+    return { retried: true, first, answer: await evaluateHere(`(async()=>{\n${code}\n})()`, false) };
+  },
+  'btn-dbg-rt-alert': () => openPageDialog("alert('Hello from the API Explorer')"),
+  'btn-dbg-rt-confirm': () => openPageDialog("confirm('Confirm from the API Explorer?')"),
+  'btn-dbg-rt-prompt': () => openPageDialog("prompt('Prompt from the API Explorer', 'default text')"),
+  'btn-dbg-rt-answers': () => evaluateHere('window.__explorerAnswers || []', false),
+  'btn-dbg-rt-answer': async () => {
+    const params = { accept: document.getElementById('chk-dbg-rt-accept').checked };
+    const text = document.getElementById('dbg-rt-prompt-text').value;
+    if (text) params.promptText = text;
+    return await debuggerOp('sendCommand', { method: 'Page.handleJavaScriptDialog', params });
+  },
+  'btn-dbg-rt-frames': () => debuggerOp('sendCommand', { method: 'Page.getFrameTree', params: {} }),
+};
+
+for (const [id, action] of Object.entries(debuggerRuntimeActions)) {
+  document.getElementById(id).addEventListener('click', async () => {
+    try {
+      showResult('res-dbg-rt', await action());
+    } catch (e) {
+      showResult('res-dbg-rt', e.message, true);
+    }
+  });
+}
+
 for (const [id, action] of Object.entries(debuggerActions)) {
   document.getElementById(id).addEventListener('click', async () => {
     try {

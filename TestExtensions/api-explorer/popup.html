@@ -433,6 +433,34 @@
       <button id="btn-dbg-events-clear" class="secondary">Clear events</button>
     </div>
     <div class="result" id="res-dbg-events"></div>
+    <!-- Runtime, dialogs and frames (TASK-132.15) -->
+    <div class="row" style="font-size:11px;color:#555">
+      Runtime.evaluate as the Claude extension sends it (returnByValue, awaitPromise, timeout 10 s); dialogs are
+      reported once Page.enable is on.
+    </div>
+    <div class="row">
+      <textarea id="dbg-rt-code" rows="3" style="width:100%;font-family:'SF Mono',Menlo,monospace;font-size:11px">const links = document.querySelectorAll('a').length;
+await new Promise((r) => setTimeout(r, 50));
+`${document.title}: ${links} links`</textarea>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="chk-dbg-rt-repl" checked/> replMode (as a block)</label>
+      <button id="btn-dbg-rt-eval">Runtime.evaluate</button>
+      <button id="btn-dbg-rt-claude" class="secondary">Evaluate with Claude's return retry</button>
+    </div>
+    <div class="row">
+      <button id="btn-dbg-rt-alert" class="secondary">Open alert</button>
+      <button id="btn-dbg-rt-confirm" class="secondary">Open confirm</button>
+      <button id="btn-dbg-rt-prompt" class="secondary">Open prompt</button>
+      <button id="btn-dbg-rt-answers" class="secondary">Page's answers</button>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="chk-dbg-rt-accept" checked/> accept</label>
+      <input type="text" id="dbg-rt-prompt-text" placeholder="promptText" style="width:110px"/>
+      <button id="btn-dbg-rt-answer">Page.handleJavaScriptDialog</button>
+      <button id="btn-dbg-rt-frames" class="secondary">Page.getFrameTree</button>
+    </div>
+    <div class="result" id="res-dbg-rt"></div>
   </section>
 
   <!-- Side panel (TASK-132.8) and runtime.getContexts (TASK-132.9) -->
