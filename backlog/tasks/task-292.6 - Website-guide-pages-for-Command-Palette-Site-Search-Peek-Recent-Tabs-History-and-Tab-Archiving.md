@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08T06:59:00Z'
+updated_date: '2026-11-08T07:42:00Z'
 labels:
   - website
 dependencies:
@@ -29,3 +30,9 @@ Getting around and finding things again, written to the pilot template (TASK-292
 - [ ] #4 Pages are in the sitemap and linked from the home page entry for the feature
 - [ ] #5 A Coming from Arc box appears only on pages whose feature Arc had in comparable form
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Nov 7 2026 (user): Control-Tab tab switching gets its own guide page; that is the Recent Tabs page in this task, and it leads with ⌃Tab (switch to the tab you used last, the recent-tabs overlay with previews, holding ⌃ and pressing Tab again to go further back; see Browser/Window/RecentTabSwitcher + RecentTabOrder). Search phrasing for its title tag and FAQ: switching to the last used tab / most-recently-used tab order with Ctrl-Tab on Mac. The sidebar-order walk (Navigate › Previous Tab / Next Tab, ⌥⌘↑/↓) goes on the same page as the in-order alternative, and splits count as one tab in both. Check against the code and the running release whether Arc had a comparable switcher before adding a Coming from Arc box (Arc's help center is readable through the Wayback Machine, see TASK-292.3 notes).
+<!-- SECTION:NOTES:END -->
