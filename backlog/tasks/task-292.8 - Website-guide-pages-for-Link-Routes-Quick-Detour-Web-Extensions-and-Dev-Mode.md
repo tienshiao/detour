@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T09:30:00Z'
+updated_date: '2026-11-08T10:07:00Z'
 labels:
   - website
 dependencies:
@@ -25,12 +25,12 @@ Links from other apps and power-user features, written to the pilot template (TA
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each page follows the template from the pilot (H1 + lede, media, what/why, how-to steps, FAQ, related features, download) with its own title tag and meta description pairing the feature name with the generic search phrase
-- [ ] #2 Steps, menu paths and shortcuts on each page were checked against the current release build
+- [x] #1 Each page follows the template from the pilot (H1 + lede, media, what/why, how-to steps, FAQ, related features, download) with its own title tag and meta description pairing the feature name with the generic search phrase
+- [x] #2 Steps, menu paths and shortcuts on each page were checked against the current release build
 - [ ] #3 Images and loops have alt text or aria-labels describing what is on screen, fixed dimensions, and loops meet the TASK-110 size and reduced-motion rules
-- [ ] #4 Pages are in the sitemap and linked from the home page entry for the feature
-- [ ] #5 The Web Extensions page says how to install a CRX and lists known working and known broken extensions as of its date
-- [ ] #6 A Coming from Arc box appears only on pages whose feature Arc had in comparable form
+- [x] #4 Pages are in the sitemap and linked from the home page entry for the feature
+- [x] #5 The Web Extensions page says how to install a CRX and lists known working and known broken extensions as of its date
+- [x] #6 A Coming from Arc box appears only on pages whose feature Arc had in comparable form
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -43,4 +43,6 @@ Code only: global hotkey from another app, ⌥⌘-click on links and sidebar tab
 
 Browser check: Chrome at 1462 px (pages, extension lists, Arc box, FAQ) and 390 px iframes of the four pages, home and /arc/: scrollWidth 386 everywhere; home grid links 16/20/21/24 present; /arc/ links all four; all four in dist/sitemap.xml. A two-column status table on the Web Extensions page squeezed at desktop width and became two lists.
 Cleanup: removed WebsiteDataStore 33ec675e-5977-5cc1-9d5f-691d3ca51c7e and 4d4b55ee-d5cf-57a9-a5ad-a402c17b57ac (created 01:23:14 by the run), the NSWindow Frame / NSSplitView keys for DetourDocs2928, the com.detourbrowser.mac.DetourDocs2928 suite and ~/Library/Application Support/DetourDocs2928. Left for the lead (outside the allowed deletions): ~/Library/WebKit/com.detourbrowser.mac/WebExtensions/33EC675E-…/ and 4D4B55EE-…/ (same run, hold the test extension's CC00F5C2-… folder).
+
+Nov 8 2026: merged into the website with TASK-292.6/292.8 (607c9f1, 3674acd), reviewed (/code-review medium --fix on a0a35d5..HEAD: 7 overstatements corrected in 6aa5b3e; the two disputed Arc claims are backed by Arc's 2023 release notes), plus user corrections (Archived Tabs: swipe right on the first Space, checked on a trackpad; home grid 'Peek'; Arc also kept archived tabs on a sidebar page; Quick Detour's Arc box drops the link-menu item, TASK-300) and a YAML quoting fix the review's edit needed (29a930b). Pushed with the user's approval (a0a35d5..57dd0d1); all pages answer 200, are in the sitemap and linked from the home grid; the Arc hub links them. Open: the media criterion waits for the capture session (capture list in the agent notes above). Follow-ups filed from this batch: TASK-305 (tabs playing media get archived), TASK-306 (record Peek pages in History), TASK-307 (Peek ⌘O, off setting, reopen), TASK-308 (close from the switcher with ⌃W), TASK-309 (Dock: show/hide all Quick Detours), TASK-303 (1Password without Chrome), TASK-304 (launch link has no sender).
 <!-- SECTION:NOTES:END -->
