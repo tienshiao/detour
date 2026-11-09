@@ -931,13 +931,16 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
         }
     }
 
-    /// A Private session starting or ending takes the Private profile's
-    /// notifications, but its contexts stay loaded across it, and so does the
-    /// worker's park (TASK-264): before, the boundary answered it "unloaded",
-    /// the polyfill stopped parking for good, and every later click and close
-    /// waited unheard. A click after the start reaches `onClicked`, a
-    /// dismissal after the end reaches `onClosed`, in the same incarnation.
-    @MainActor func testAPrivateWorkerHearsEventsAcrossSessionBoundaries() async throws {
+    /// A Private session starting takes the Private profile's notifications,
+    /// but its contexts stay loaded across it, and so does the worker's park
+    /// (TASK-264): before, the boundary answered it "unloaded", the polyfill
+    /// stopped parking for good, and every later click waited unheard. The
+    /// session ending resets the Private profile (TASK-298): its extensions
+    /// are unloaded, their data cleared, and the ones still allowed in
+    /// Private loaded again on a fresh origin, so a dismissal after the end
+    /// reaches `onClosed` in the reloaded worker (TASK-310: this test still
+    /// expected one incarnation across the end, which TASK-298 changed).
+    @MainActor func testAPrivateWorkerHearsEventsAfterTheSessionStartsAndInItsReloadAfterItEnds() async throws {
         let ext = try await makeExtension()
         let profile = try privateProfile(allowing: ext)
         let page = try await start(ext, in: profile).page
@@ -962,17 +965,24 @@ nonisolated final class ExtensionNotificationEventDeliveryTests: XCTestCase {
         TabStore.shared.removeIncognitoSpace(id: window.id)
         incognitoSpaceIDs.removeAll()
         XCTAssertFalse(TabStore.shared.hasLivePrivateSession)
-        XCTAssertNotNil(manager.eventChannelForTesting(owner(ext, profile)).parkedInstance ?? nil,
-                        "the end leaves the park standing")
-        _ = try await ask(page, ["type": "create", "id": "after-end"])
+        let reset = try XCTUnwrap(profile.privateSessionReset, "the session's end resets the Private profile")
+        await reset.value
+        let reloaded = try XCTUnwrap(profile.extensionContext(for: ext.id),
+                                     "an extension still allowed in Private is loaded again after the reset")
+        let newPage = try await openPage(reloaded)
+        reloaded.loadBackgroundContent { _ in }
+        let newInstance = try await waitForPark(ext, in: profile, otherThan: instance, nudging: reloaded)
+        XCTAssertNotEqual(newInstance, instance, "the reset restarts the worker")
+
+        _ = try await ask(newPage, ["type": "create", "id": "after-end"])
         manager.handleResponse(identifier: identifier("after-end", of: ext, in: profile),
                                action: UNNotificationDismissActionIdentifier)
-        try await waitUntil("the dismissal after the end to reach onClosed", timeout: 20) {
-            try await self.events(page) == ["clicked:in-session", "closed:in-session:true", "closed:after-end:true"]
+        try await waitUntil("the dismissal after the end to reach the reloaded worker's onClosed", timeout: 20) {
+            try await self.events(newPage) == ["closed:after-end:true"]
         }
-        let reply = try await ask(page, ["type": "events"])
+        let reply = try await ask(newPage, ["type": "events"])
         let instances = (reply["events"] as? [[String: Any]] ?? []).compactMap { $0["instance"] as? String }
-        XCTAssertEqual(Set(instances), [instance], "one incarnation heard both: no restart was needed")
+        XCTAssertEqual(Set(instances), [newInstance], "the reloaded worker heard it")
     }
 
     // MARK: - The permission revoked (TASK-270)

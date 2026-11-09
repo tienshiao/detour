@@ -653,11 +653,16 @@ them in order and parks again with `ack` = the last `seq`.
   context. A refusal for the permission (an optional `notifications` not yet
   granted) is retried at the next `create`/`update`/`clear`/`getAll` while a
   listener exists, so the grant does not leave the worker deaf until restart.
-- **A Private session boundary leaves the park standing.** The Private
-  profile's contexts stay loaded between sessions, so a session starting or
-  ending (`removeSession(profileID:)`) takes the notifications and the
-  events queued for them but keeps each owner's park, incarnation history
-  and "listens" flag. Only unloading the extension (`removeAll(for:)`) and
+- **A Private session starting leaves the park standing.** The Private
+  profile's contexts stay loaded when a session starts, so the start
+  (`removeSession(profileID:)`) takes the notifications and the events
+  queued for them but keeps each owner's park, incarnation history and
+  "listens" flag. A session *ending* does that too, then (since TASK-298)
+  resets the Private profile: its contexts are unloaded, their data
+  cleared, and those still allowed in Private loaded again on a fresh
+  origin, so later events reach the reloaded worker, a new incarnation
+  (`ExtensionNotificationEventDeliveryTests.testAPrivateWorkerHearsEventsAfterTheSessionStartsAndInItsReloadAfterItEnds`;
+  TASK-310 found the test still expecting one incarnation across the end). Only unloading the extension (`removeAll(for:)`) and
   deleting the profile (`removeAll(profileID:)`) answer the park "unloaded"
   and forget the channel. Before TASK-264 the boundary used `removeAll(profileID:)`
   too: the live worker took "unloaded" as final, never parked again, and

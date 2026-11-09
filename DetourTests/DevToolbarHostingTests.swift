@@ -49,6 +49,20 @@ nonisolated final class DevToolbarHostingTests: XCTestCase {
         return tab
     }
 
+    /// Waits until the tab's web view has stopped loading, so WebKit's own
+    /// URL reports can't overwrite a `tab.url` the test sets afterwards.
+    @MainActor private func waitForTheWebViewToSettle(_ tab: BrowserTab, file: StaticString = #filePath,
+                                                      line: UInt = #line) throws {
+        let webView = try XCTUnwrap(tab.webView, file: file, line: line)
+        let deadline = Date().addingTimeInterval(10)
+        while webView.isLoading, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        XCTAssertFalse(webView.isLoading, "the web view's own load must end before the test moves tab.url",
+                       file: file, line: line)
+        spinRunLoop()
+    }
+
     /// Lets the `$url` sinks (delivered on the main run loop) run.
     @MainActor private func spinRunLoop() {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
@@ -113,6 +127,11 @@ nonisolated final class DevToolbarHostingTests: XCTestCase {
         let tab = addTab(localURL, to: wc, in: space)
         wc.selectTab(id: tab.id)
         try assertShowsToolbar(tab, url: localURL)
+        // The tab's real web view is still loading localURL (which never
+        // resolves); its URL observer writes `tab.url` when WebKit reports,
+        // which raced the assignments below and put localURL back
+        // (TASK-310). Let that load end first.
+        try waitForTheWebViewToSettle(tab)
 
         tab.url = remoteURL
         spinRunLoop()
