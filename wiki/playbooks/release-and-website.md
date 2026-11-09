@@ -81,11 +81,16 @@ From the script's header:
    xcrun notarytool store-credentials "detour-notary" --apple-id <id> --team-id <team> --password <app-specific password>
    ```
 
-3. Sparkle's EdDSA key pair. `generate_keys` is in the Sparkle package
+3. The Developer ID provisioning profile for the explicit App ID
+   `com.detourbrowser.mac`, at `signing/Detour_Developer_ID.provisionprofile`
+   (committed; `DETOUR_PROVISIONING_PROFILE` overrides the path). It lists the
+   Developer ID Application certificate it was made with: after renewing that
+   certificate, regenerate the profile, or `sign-app.sh` refuses to sign.
+4. Sparkle's EdDSA key pair. `generate_keys` is in the Sparkle package
    artifacts under DerivedData (`…/SourcePackages/artifacts/sparkle/Sparkle/bin/`);
    the public key is `SUPublicEDKey` in `Info.plist`. The private key
    stays in the keychain of the machine that signs updates.
-4. `gh` logged in to the `tienshiao` account, and wrangler logged in to the
+5. `gh` logged in to the `tienshiao` account, and wrangler logged in to the
    Cloudflare account that owns the R2 bucket `detour-updates` and the
    `detour-website` Worker (`npx wrangler login`; `npx wrangler whoami`
    checks it). The OAuth token expires; wrangler refreshes it, which needs
@@ -122,7 +127,7 @@ What it does, in order:
 | Project | `xcodegen generate` |
 | Build | `xcodebuild -scheme Detour -configuration Release clean build` |
 | Locate | `Detour.app` in the `BUILT_PRODUCTS_DIR` that `xcodebuild -showBuildSettings` reports for this checkout, checked for bundle id `com.detourbrowser.mac` |
-| Sign | `codesign --force --deep --timestamp -o runtime` with the entitlements file, then `codesign --verify --deep --strict` |
+| Sign | `scripts/sign-app.sh` (since TASK-313): checks the Developer ID profile in `signing/` (App ID, team, all devices, expiry, the signing certificate in it), signs Sparkle's helpers without Detour's entitlements, embeds the profile and signs the app with an application identifier, then `codesign --verify --deep --strict`. Why: [WebAuthn goes through AuthenticationServices](../platform/webauthn-authentication-services.md) |
 | Package | a DMG with the app and an `/Applications` symlink, at `build/Detour-<version>.dmg` |
 | Notarize | `xcrun notarytool submit … --wait`, then `xcrun stapler staple` |
 

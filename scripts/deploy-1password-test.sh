@@ -10,8 +10,6 @@ cd "$(dirname "$0")/.."
 SCHEME="Detour"
 CONFIG="Release"
 BUNDLE_ID="com.detourbrowser.mac"
-SIGN_IDENTITY="Developer ID Application: Tienshiao Ma (58MN2R524R)"
-ENTITLEMENTS="Detour/Resources/Detour.entitlements"
 DEST="/Applications/Detour.app"
 
 # The products directory of the build that just ran, asked of xcodebuild itself.
@@ -47,8 +45,9 @@ if [ -z "$APP_PATH" ]; then
 fi
 
 echo "==> Signing: $APP_PATH"
-codesign --force --deep --sign "$SIGN_IDENTITY" --timestamp -o runtime --entitlements "$ENTITLEMENTS" "$APP_PATH"
-codesign -v "$APP_PATH" && echo "    Signature: VALID" || { echo "    Signature: FAILED"; exit 1; }
+# The same signing as a release (profile embedded, Sparkle signed inside out),
+# so a signed-build check tests what ships.
+./scripts/sign-app.sh "$APP_PATH"
 
 echo "==> Deploying to $DEST"
 killall Detour 2>/dev/null || true

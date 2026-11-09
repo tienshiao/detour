@@ -18,6 +18,13 @@
 #      # After resolving SPM packages, run:
 #      ~/Library/Developer/Xcode/DerivedData/Detour-*/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_keys
 #      # Copy the public key into Info.plist as SUPublicEDKey
+#
+#   3. Developer ID provisioning profile (gives the app an application
+#      identifier; WebAuthn needs one, TASK-313). At developer.apple.com >
+#      Certificates, Identifiers & Profiles: register the explicit App ID
+#      com.detourbrowser.mac, then Profiles > + > Developer ID with that App ID
+#      and the Developer ID Application certificate. Save the download as
+#      signing/Detour_Developer_ID.provisionprofile. scripts/sign-app.sh checks it.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -25,11 +32,14 @@ cd "$(dirname "$0")/.."
 SCHEME="Detour"
 CONFIG="Release"
 BUNDLE_ID="com.detourbrowser.mac"
-SIGN_IDENTITY="Developer ID Application: Tienshiao Ma (58MN2R524R)"
-ENTITLEMENTS="Detour/Resources/Detour.entitlements"
 NOTARY_PROFILE="detour-notary"
 PLIST="Detour/Resources/Info.plist"
 BUILD_DIR="build"
+
+# Fail before bumping the version or building: check the provisioning profile
+# (prerequisite 3), the signing identity and the entitlements the way signing will.
+echo "==> Checking signing prerequisites..."
+./scripts/sign-app.sh --check
 
 # --- Parse version ---
 
@@ -91,10 +101,7 @@ echo "    Found: $APP_PATH"
 # --- Code sign ---
 
 echo "==> Signing..."
-codesign --force --deep --sign "$SIGN_IDENTITY" \
-    --timestamp -o runtime \
-    --entitlements "$ENTITLEMENTS" "$APP_PATH"
-codesign --verify --deep --strict "$APP_PATH" && echo "    Signature: VALID" || { echo "    Signature: FAILED"; exit 1; }
+./scripts/sign-app.sh "$APP_PATH"
 
 # --- Create DMG ---
 

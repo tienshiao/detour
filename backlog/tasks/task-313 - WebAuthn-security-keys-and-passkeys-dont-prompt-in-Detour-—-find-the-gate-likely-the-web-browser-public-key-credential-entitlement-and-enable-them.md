@@ -3,11 +3,11 @@ id: TASK-313
 title: >-
   WebAuthn: security keys and passkeys don't prompt in Detour — find the gate
   (likely the web-browser public-key-credential entitlement) and enable them
-status: In Progress
+status: To Do
 assignee:
   - '@claude'
 created_date: '2026-11-09T09:11:00Z'
-updated_date: '2026-11-09T09:18:00Z'
+updated_date: '2026-11-09T09:38:00Z'
 labels:
   - webauthn
   - signing
@@ -67,4 +67,21 @@ WebKit maps 1004 to NotAllowedError with an empty message, so the page fails at 
 **No way around it in WebKit.** The legacy path (WebAuthenticationASEnabled off, HAVE(UNIFIED_ASC_AUTH_UI)) also goes through ASCAgentProxy, so the same agent checks apply. WebKit's own CTAP-over-HID stack is reachable only through the private _WKWebAuthenticationPanel SPI, with Detour intercepting navigator.credentials in page JS. That would cover USB keys only, rest on SPI, and was not tried; rejected unless Apple refuses the entitlement.
 
 **Could not test gate 2 locally.** The only Mac profile on disk (wildcard F392Y686HF.*, team 58MN2R524R) lists only expired development certificates, so the spike signed with the current Apple Development certificate was refused at launch.
+
+## Gate 1 fixed (2026-11-09)
+
+The user has an individual developer account (the entitlement form asks for an organization's Account Holder), so gate 2 is on hold; the user asked to fix gate 1.
+
+- User registered the explicit App ID com.detourbrowser.mac and made a Developer ID profile ('Detour Developer ID', expires 2044-11-04, lists the Developer ID Application certificate A7A97209…, which itself expires 2027-02-01: renewing it means regenerating the profile). Committed at signing/Detour_Developer_ID.provisionprofile.
+- New scripts/sign-app.sh, used by build-release.sh and deploy-1password-test.sh. It checks the profile (explicit App ID, team, ProvisionsAllDevices, expiry, the signing certificate listed, every entitlement granted), signs Sparkle's helpers first by Sparkle's recipe, embeds the profile, and signs the app with com.apple.application-identifier and team-identifier plus the expanded keychain group. --check mode runs before build-release.sh bumps the version. It replaces codesign --deep --entitlements, which had stamped Detour's keychain entitlement on Autoupdate, Updater.app, Downloader.xpc and Installer.xpc in every release.
+- /code-review --fix: 8 findings, 6 fixed. The identifier post-check was vacuous because the keychain group is the same string; identity choice when two certificates share a name; the early check now validates the profile, not just that the file exists; relative app path; locale-dependent expiry parse; pipefail/SIGPIPE in the checks; find on a missing Frameworks folder. Skipped: Downloader.xpc keeps the entitlements of an already --deep-signed input (a release always builds clean, and the post-check stops loudly).
+
+**Verified:**
+- Refusals: missing profile, the wildcard dev profile, an iOS profile.
+- A clean Release build (private DerivedData) signed with sign-app.sh: application identifier and team ID in the signature; Sparkle's helpers have no Detour entitlements; Autoupdate keeps the identifier 0.4.0 shipped; Gatekeeper (spctl, unnotarized) accepts; the app launches with DETOUR_DATA_DIR and runs (twice, before and after the review fixes). Defaults keys and data dir removed after.
+- The spike, signed as com.detourbrowser.mac with the profile: gate 1 passes; the agent now logs 'Client tried to use web-browser-only options.', 'Application with identifier 58MN2R524R.com.detourbrowser.mac is not associated with domain webauthn.io', 'Client is not properly entitled for this request. Rejecting.' Gate 2 is measured.
+
+**Not verified:** a notarized DMG and a Sparkle update from a profile-signed build. The next release is the first; check that 0.4.2 updates to it and that the updated app can update again.
+
+**Remaining:** gate 2. Options: the request form (the docs ask for an organization account, so an individual account may be refused or may need enrolling as an organization, which needs a D-U-N-S number), or the _WKWebAuthenticationPanel SPI fallback for USB keys only.
 <!-- SECTION:NOTES:END -->

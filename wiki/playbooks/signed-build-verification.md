@@ -58,8 +58,9 @@ replaces their installed browser.
 ## 1. Agree the session with the person
 
 [scripts/deploy-1password-test.sh](../../scripts/deploy-1password-test.sh)
-does this, in order: `xcodegen generate`, a Release build, a Developer ID
-`codesign` with the hardened runtime, **`killall Detour`**, **delete and
+does this, in order: `xcodegen generate`, a Release build, the release's
+own signing (`scripts/sign-app.sh`: Developer ID profile embedded, hardened
+runtime), **`killall Detour`**, **delete and
 replace `/Applications/Detour.app`**, launch it. It quits every running
 Detour and overwrites the installed app. It needs the signing identity in
 the keychain. An agent does not run it on its own initiative: the person
