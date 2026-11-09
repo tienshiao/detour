@@ -136,19 +136,23 @@ fi
 
 # --- Sign, inside out ---
 
-# Sparkle's documented recipe for signing outside Xcode: no entitlements on its
-# helpers except Downloader.xpc, which keeps its own. (The Sparkle artifact's
-# Autoupdate carries an application identifier of its own, which a Developer ID
-# signature without a profile must not keep.)
+# Sparkle's helpers are signed with no entitlements at all. Sparkle's own recipe
+# keeps Downloader.xpc's, but in the Sparkle artifact they are empty (they
+# matter only to a sandboxed app, and Detour is not sandboxed), and keeping
+# them would carry over whatever an earlier signing left: an incremental build
+# re-signs the previous release's app, whose helpers the old --deep signing gave
+# Detour's entitlements. (The artifact's Autoupdate carries an application
+# identifier of its own, which a Developer ID signature without a profile must
+# not keep either.)
 sign_nested() {
     codesign --force --sign "$SIGN_SHA1" --timestamp -o runtime "$1"
 }
 
 SPARKLE="$APP_PATH/Contents/Frameworks/Sparkle.framework"
 if [ -d "$SPARKLE" ]; then
-    [ -e "$SPARKLE/Versions/B/XPCServices/Installer.xpc" ] && sign_nested "$SPARKLE/Versions/B/XPCServices/Installer.xpc"
-    [ -e "$SPARKLE/Versions/B/XPCServices/Downloader.xpc" ] && codesign --force --sign "$SIGN_SHA1" --timestamp -o runtime \
-        --preserve-metadata=entitlements "$SPARKLE/Versions/B/XPCServices/Downloader.xpc"
+    for xpc in "$SPARKLE"/Versions/B/XPCServices/*.xpc; do
+        [ -e "$xpc" ] && sign_nested "$xpc"
+    done
     sign_nested "$SPARKLE/Versions/B/Autoupdate"
     sign_nested "$SPARKLE/Versions/B/Updater.app"
     sign_nested "$SPARKLE"

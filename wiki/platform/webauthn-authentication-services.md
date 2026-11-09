@@ -74,10 +74,13 @@ from it.[^sign-app] The profile lives in `signing/`. Rules that came out of it:
   stamps them on every nested binary; with an application identifier in them,
   Sparkle's Autoupdate, Updater.app and XPC services would claim Detour's
   identity without a profile and macOS would refuse to launch them. Nested
-  code is signed first, by Sparkle's own recipe: no entitlements, except
-  Downloader.xpc, which keeps its own. (Sparkle's artifact signs Autoupdate
-  ad hoc with an application identifier of its own; that must not survive a
-  Developer ID signature either.)
+  code is signed first, with no entitlements at all. Sparkle's recipe keeps
+  Downloader.xpc's, but they are empty in the artifact (they matter only to a
+  sandboxed app), and preserving them carried the old `--deep` entitlements
+  over when an incremental build re-signed the previous release's app
+  (`deploy-1password-test.sh` builds without `clean`). (Sparkle's artifact
+  signs Autoupdate ad hoc with an application identifier of its own; that must
+  not survive a Developer ID signature either.)
 * **The profile lists the signing certificate.** A profile names the
   certificates it accepts. When the Developer ID Application certificate is
   renewed, the profile has to be regenerated with the new one, or the signed
