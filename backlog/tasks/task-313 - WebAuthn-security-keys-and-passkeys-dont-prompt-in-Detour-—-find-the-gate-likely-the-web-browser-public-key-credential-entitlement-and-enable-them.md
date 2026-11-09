@@ -7,7 +7,7 @@ status: To Do
 assignee:
   - '@claude'
 created_date: '2026-11-09T09:11:00Z'
-updated_date: '2026-11-09T09:42:00Z'
+updated_date: '2026-11-09T09:50:00Z'
 labels:
   - webauthn
   - signing
@@ -86,4 +86,6 @@ The user has an individual developer account (the entitlement form asks for an o
 **Remaining:** gate 2. Options: the request form (the docs ask for an organization account, so an individual account may be refused or may need enrolling as an organization, which needs a D-U-N-S number), or the _WKWebAuthenticationPanel SPI fallback for USB keys only.
 
 2026-11-09: the user's deploy-1password-test.sh run (incremental Release build, so the 0.4.2 app's --deep-signed helpers) stopped at the post-check: Downloader.xpc carried Detour's entitlements via --preserve-metadata=entitlements (the review's skipped finding 8). Fix: every Sparkle helper is now signed with no entitlements (the artifact's Downloader.xpc has an empty set; Detour is not sandboxed). A copy of that exact build now signs cleanly, with empty entitlements on all four helpers.
+
+2026-11-09 01:48-01:49: the user deployed the profile-signed build (deploy-1password-test.sh, /Applications/Detour.app pid 7900) and tried a security-key registration on webauthn.io with 1Password off (1Password's MAIN-world script otherwise takes navigator.credentials first). Still no sheet, but the log now shows gate 2 only: 'Client tried to use web-browser-only options.' / 'Application with identifier 58MN2R524R.com.detourbrowser.mac is not associated with domain webauthn.io' / 'Client is not properly entitled for this request.' The 'without application identifier' line is gone. Gate 1 confirmed fixed in a signed build.
 <!-- SECTION:NOTES:END -->
