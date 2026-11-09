@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09T10:46:00Z'
-updated_date: '2026-11-09T18:10:00Z'
+updated_date: '2026-11-09T19:56:00Z'
 labels:
   - sidebar
   - window
@@ -100,6 +100,16 @@ Fixed:
 - Comments: removed wording claiming WebKit had been told a browser window closed. It hasn't been.
 - testAClosedWindowIsListedNowhere: added the AppKit precondition and a positive check for extensionListedWindows.
 Deferred: Detour never calls didCloseWindow for a browser window, so WebKit keeps it in windows.getAll and windows.onRemoved never fires. That is already TASK-132.22 (on the epic branch), so no new task.
+
+Follow-up (user review, 2026-11-09): one source of truth for 'is this window open'. hasClosed answers it. AppDelegate.windowControllers is ownership only (now private(set), documented as such). browserWindowsByRecency filters its registry additions on hasClosed too, so it can no longer append a closed window, and it asserts (Debug) that no registered controller has hasClosed set, so drift between ownership and state fails in development. The assertion sits where windows are listed, not in the willClose observer: the registry removal and the delegate's windowWillClose both run during the close notification, in no guaranteed order. New test: ExternalLinkRoutingTests.testClosingAWindowLeavesTheRegistryAndTheFlagInAgreement. 8 placement suites: 157 tests, 0 failures; the assertion ran on every placement without firing.
+
+/code-review --fix on the follow-up: 6 findings. Fixed by the reviewer:
+- The launch window now registers through registerWindowController, so it is registered and watched for close in one step (before, it was appended and only watched about 35 lines later).
+- applicationShouldTerminate counts windows with !hasClosed.
+Fixed by me: the reviewer correctly pointed out that a window's windowWillClose sets hasClosed before AppDelegate's willClose observer removes it from the registry, so during every close the two briefly disagree. The drift assertion moved from browserWindowsByRecency into that observer, right after the removal; browserWindowsByRecency keeps only the filter (the Release safety net).
+Left as they are: the registration test exercises the invariant, not a placement (testALinkNeverShowsAClosedWindowAgain covers the placement after a close).
+Moved to TASK-315: observeWindowClose discards its observer token.
+8 placement suites: 157 tests, 0 failures. Every window close in them ran the assertion without it firing.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

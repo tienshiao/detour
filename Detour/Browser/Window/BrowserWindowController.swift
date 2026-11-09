@@ -135,13 +135,16 @@ class BrowserWindowController: NSWindowController {
     private(set) var commandPaletteView: CommandPaletteView?
     var commandPaletteNavigatesInPlace = false
 
-    /// The window has closed (`windowWillClose`). Closing takes the controller
-    /// off the store's observers and the notification center, but anything
-    /// still holding it keeps the closed window in `NSApp.orderedWindows`, and
-    /// `makeKeyAndOrderFront` would show it again, deaf to every tab change
-    /// (TASK-314). Every list of open windows skips these:
-    /// `browserWindowControllersFrontToBack`, the extension window lists
-    /// (`isOpenForExtensions`) and the few direct `orderedWindows` reads.
+    /// The window has closed (`windowWillClose`): the single answer to whether
+    /// this window is open. Neither AppKit's window lists nor AppDelegate's
+    /// `windowControllers` registry are asked that question (TASK-314).
+    /// Closing takes the controller off the store's observers and the
+    /// notification center, but anything still holding it keeps the closed
+    /// window in `NSApp.orderedWindows`, and `makeKeyAndOrderFront` would show
+    /// it again, deaf to every tab change. Every list of open windows skips
+    /// these: `browserWindowControllersFrontToBack`, `browserWindowsByRecency`,
+    /// the extension window lists (`isOpenForExtensions`) and the few direct
+    /// `orderedWindows` reads.
     private(set) var hasClosed = false
     private var splitScrimView: NSView?
     private var contentScrimView: NSView?

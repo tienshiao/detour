@@ -4,6 +4,7 @@ title: 'Windows: find what keeps a closed browser window''s controller in memory
 status: To Do
 assignee: []
 created_date: '2026-11-09T17:50:00Z'
+updated_date: '2026-11-09T19:56:00Z'
 labels:
   - window
   - memory
@@ -37,3 +38,9 @@ Candidates to replay, each followed by close + weak-ref check + leaks --traceTre
 - [ ] #1 The holder is found by replaying a history in the Debug build where a closed window stays alive; leaks --traceTree names the retain path
 - [ ] #2 Fixed so that every replayed history frees the window after close, with a test that closes a window after that history and asserts a weak reference to its controller becomes nil
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Also found in review (2026-11-09): AppDelegate.observeWindowClose discards the token from addMainObserver (`_ =`), so each browser window leaves a NotificationCenter block observer registered for the life of the app (filtered on its window object). The block captures AppDelegate weakly, so it doesn't retain the window controller, but it is a small per-window leak. Keep the token and remove it in the block.
+<!-- SECTION:NOTES:END -->

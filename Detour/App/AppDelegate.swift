@@ -7,7 +7,12 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "app")
 class AppDelegate: NSObject, NSApplicationDelegate {
     private let updaterController = SPUStandardUpdaterController(
         startingUpdater: AppDelegate.startsUpdater, updaterDelegate: nil, userDriverDelegate: nil)
-    private var windowControllers: [BrowserWindowController] = []
+    /// Owns the browser window controllers: nothing else keeps an
+    /// `NSWindowController` alive. Ownership only. Whether a window is open is
+    /// its controller's `hasClosed` and nothing else (TASK-314). A window
+    /// leaves this list when it closes, so a closed controller found here
+    /// means the two have drifted apart (asserted in `observeWindowClose`).
+    private(set) var windowControllers: [BrowserWindowController] = []
     /// Which Get URL events carry the links that launched Detour (TASK-304).
     private var launchLinks = LaunchLinkTracker()
     /// Links from other apps that arrived while launching, opened once the
@@ -131,7 +136,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let wc = BrowserWindowController(incognito: false)
-        windowControllers.append(wc)
+        // Registered and observed together, as every other window is, so the
+        // registry can never hold a closed controller (TASK-314).
+        registerWindowController(wc)
         wc.showWindow(nil)
 
         let restored = TabStore.shared.restoreSession()
@@ -165,8 +172,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        observeWindowClose(wc)
-
         // Last: the links that launched Detour, now that the session and
         // the routes are loaded (TASK-304).
         launchLinks.launchDidFinish(at: ProcessInfo.processInfo.systemUptime)
@@ -199,7 +204,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let windowCount = windowControllers.count
+        // Open windows by `hasClosed`, not the registry's size (TASK-314).
+        let windowCount = windowControllers.count(where: { !$0.hasClosed })
         guard windowCount > 0 else {
             // No browser window to ask from, but a Private Quick Detour
             // (TASK-193.1) may still be downloading: its partial files go as a
@@ -566,9 +572,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Browser windows, the most recently active first: front to back, then
     /// any registered window not in the window list (minimized, or the app
     /// hidden) last.
+    ///
+    /// Open windows only, by `hasClosed`: the registry adds windows AppKit does
+    /// not list, never a closed one (TASK-314). During a close the two can
+    /// briefly disagree, so this filters rather than asserts.
     private var browserWindowsByRecency: [BrowserWindowController] {
         var ordered = NSApp.browserWindowControllersFrontToBack
-        for wc in windowControllers where !ordered.contains(where: { $0 === wc }) {
+        for wc in windowControllers where !wc.hasClosed && !ordered.contains(where: { $0 === wc }) {
             ordered.append(wc)
         }
         return ordered
@@ -718,6 +728,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] notification in
             guard let self else { return }
             self.windowControllers.removeAll { $0.window === notification.object as? NSWindow }
+            // The closing window has just left. Any other registered window
+            // must be open: a closed one left behind means ownership and
+            // `hasClosed` drifted apart (TASK-314). Checked here, not where
+            // windows are listed: between a window's own windowWillClose and
+            // this removal, the two legitimately disagree.
+            assert(self.windowControllers.allSatisfy { !$0.hasClosed },
+                   "A closed window is still registered: the registry and hasClosed disagree (TASK-314)")
         }
     }
 

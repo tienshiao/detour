@@ -211,6 +211,24 @@ nonisolated final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertTrue(extensionListedWindows().contains { $0 === open })
     }
 
+    /// AppDelegate's registry owns the window controllers and `hasClosed` says
+    /// which windows are open. Closing must leave the two in agreement: the
+    /// closed controller is flagged and no longer registered, which
+    /// `observeWindowClose` asserts once the registry has dropped it.
+    @MainActor func testClosingAWindowLeavesTheRegistryAndTheFlagInAgreement() throws {
+        let open = makeWindow(showing: personal)
+        let closed = makeWindow(showing: work)
+        XCTAssertTrue(appDelegate.windowControllers.contains { $0 === closed }, "precondition: registered")
+
+        closed.window?.close()
+
+        XCTAssertTrue(closed.hasClosed)
+        XCTAssertFalse(appDelegate.windowControllers.contains { $0 === closed }, "a closed window leaves the registry")
+        XCTAssertTrue(appDelegate.windowControllers.allSatisfy { !$0.hasClosed }, "no closed window is still registered")
+        XCTAssertFalse(open.hasClosed)
+        XCTAssertTrue(appDelegate.windowControllers.contains { $0 === open })
+    }
+
     // MARK: - A space no window shows
 
     @MainActor func testASpaceShownByNoWindowSwitchesTheMostRecentNormalWindow() throws {
