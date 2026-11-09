@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08T06:59:00Z'
+updated_date: '2026-11-09T09:09:00Z'
 labels:
   - website
 dependencies:
@@ -23,7 +24,13 @@ The FAQ and title-tag phrasing starts from guesses. Search Console's query repor
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 detourbrowser.com is verified in Google Search Console and Bing Webmaster Tools with the sitemap submitted
+- [x] #1 detourbrowser.com is verified in Google Search Console and Bing Webmaster Tools with the sitemap submitted
 - [ ] #2 A first review 4-6 weeks after the pilot pages launch lists top queries per page and the title, lede and FAQ changes made from them
 - [ ] #3 Pages with impressions but almost no clicks have their title tags and meta descriptions revised
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-09: the user verified detourbrowser.com in Google Search Console and Bing Webmaster Tools and submitted https://detourbrowser.com/sitemap.xml (23 URLs) to both. robots.txt lists the sitemap; Cloudflare's managed robots.txt blocks AI-training crawlers (Google-Extended, GoogleOther, GPTBot, ClaudeBot...) but not Googlebot or Bingbot. The first query review (AC #2, #3) is due 4-6 weeks after the guide pages went live on Nov 7-8 2026, so between Dec 6 and Dec 20 2026.
+<!-- SECTION:NOTES:END -->
