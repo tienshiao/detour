@@ -1,6 +1,8 @@
 # Detour
 
-A native macOS web browser built with Swift and WebKit.
+A native macOS web browser built with Swift and WebKit, for people who keep a lot of the web open at once.
+
+**[Download for macOS](https://detourbrowser.com)** · [Feature guide](https://detourbrowser.com/features/) · [Keyboard shortcuts](https://detourbrowser.com/shortcuts/) · [Releases](https://github.com/tienshiao/detour/releases)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/detour-split-dark.png">
@@ -9,53 +11,87 @@ A native macOS web browser built with Swift and WebKit.
 
 ## Features
 
-- **Spaces** — Organize tabs into color-coded workspaces, each with isolated cookies and storage. Each space has a name, emoji, and color.
-- **Profiles** — Create and manage multiple browser profiles, each with their own settings and extensions.
-- **Tab Pinning** — Pin frequently used tabs to the top of the sidebar. Pinned tabs reset to their home URL instead of closing.
-- **Pinned Folders** — Organize pinned tabs into folders for better grouping.
-- **Tab Archiving** — Automatically archive inactive tabs to keep the sidebar tidy.
-- **Split Tabs** — View two tabs side by side as a single sidebar row. Create by dragging a tab onto the edge of another tab or of the content area, or by Option-clicking a link. Resizable panes, animated formation/separation, and splits survive pinning.
-- **Favorites** — Bookmark pages for quick access.
-- **Command Palette** — Cmd+T for new tab, Cmd+L to navigate. Searches open tabs, browsing history (FTS5), and web suggestions in one unified input, with frecency-based autocomplete and a top-hit row.
-- **Downloads** — Built-in download manager with progress tracking, cancel, reveal in Finder, and persistence across sessions.
-- **Content Blocker** — Built-in ad and tracker blocking with EasyList support and per-site whitelist management.
-- **Peek Preview** — Shift-click links to preview them in an overlay without leaving the current page. Expand to open in a new tab.
-- **Audio Controls** — Detects tabs playing audio and shows a mute toggle per tab.
-- **Link Status Bar** — Hovering over a link shows the destination URL at the bottom of the window.
-- **Find in Page** — Cmd+F with match counting and prev/next navigation.
-- **Multi-Window** — Each window tracks its own active space. WebView ownership transfers automatically on window focus; inactive windows show tab snapshots.
-- **Incognito** — Private browsing with non-persistent data stores. No history recorded. Cleaned up on window close.
-- **Session Restore** — Tabs persist across launches with full scroll position and form state via WebKit interaction state archiving.
-- **Tab Management** — Drag-and-drop reordering, close tabs, reopen recently closed tabs (Cmd+Shift+T).
-- **Tab Switching** — Cmd+Option+Up/Down steps through the space's tabs in sidebar order. Control+Tab switches between recently used tabs like Cmd+Tab, with a preview overlay (Control+Shift+Tab goes backwards).
-- **Sidebar Auto-Hide** — Toggle sidebar visibility with Cmd+S; auto-hide mode reopens on edge hover.
-- **Context Menus** — Right-click links to open in a new tab or new window.
-- **Web Inspector** — Cmd+Option+I to open developer tools.
-- **Auto-Updates** — Automatic update checking and installation via Sparkle.
-- **Web Extensions** *(WIP)* — Browser extension support including CRX installation, permissions, popups, and native messaging.
+Each feature has a guide on [detourbrowser.com](https://detourbrowser.com/features/).
 
-## Requirements
+### Organize
 
-- macOS 15.4+
-- Xcode with Swift 5.10
+- **[Spaces](https://detourbrowser.com/features/spaces/)**: workspaces in the sidebar, each with its own tabs, pinned tabs, emoji and color. Swipe between them.
+- **[Profiles](https://detourbrowser.com/features/profiles/)**: separate logins, cookies, history and extensions, so you can be signed in to work and personal accounts on the same site at once. Each Space uses one Profile.
+- **[Pinned tabs and folders](https://detourbrowser.com/features/pinned-tabs/)**: everyday sites at the top of each Space, in folders if you like. Closing a pinned tab keeps it; clicking it reopens the page you pinned.
+- **[Favorites](https://detourbrowser.com/features/favorites/)**: the web apps you use all day at the top of the sidebar, shared by every Space on a Profile.
+- **[Split Tabs](https://detourbrowser.com/features/split-tabs/)**: two pages side by side as one sidebar row. Drag a tab onto another or Option-click a link.
+- **[Tab Archiving](https://detourbrowser.com/features/tab-archiving/)**: tabs you haven't looked at in 12 hours (or a time you choose per Profile) are archived and wait on the Archived Tabs page. A tab playing sound is never archived.
+
+### Navigate
+
+- **[Command Palette](https://detourbrowser.com/features/command-palette/)**: the address bar. ⌘T opens a page or search in a new tab, ⌘L changes this one. Open tabs, history and web suggestions in one list.
+- **[Site Search](https://detourbrowser.com/features/site-search/)**: type a site's keyword, press Tab, and search that site.
+- **[Peek](https://detourbrowser.com/features/peek/)**: preview a link in a panel over the page. Shift-click any link, or click a link to another site in a pinned tab. Close it, or keep it as a tab with ⌘O.
+- **[Recent Tabs](https://detourbrowser.com/features/recent-tabs/)**: ⌃Tab flips between tabs in the order you used them, with previews; ⌥⌘↑/↓ follow the sidebar.
+- **[Quick Detour](https://detourbrowser.com/features/quick-detour/)**: ⌥⌘N opens a small one-page browser window from any app. Move the page into a Space or close it.
+- **[Link Routes](https://detourbrowser.com/features/link-routes/)**: send links to the right Space by site, address or the app they came from.
+- **[History](https://detourbrowser.com/features/history/)**: a page per Profile, by day, with search and clearing.
+
+### Privacy
+
+- **[Quarantine](https://detourbrowser.com/features/quarantine/)**: open links from mail, chat and unknown senders in a throwaway window with none of your cookies and no history.
+- **[Private Browsing](https://detourbrowser.com/features/private-browsing/)**: ⇧⌘N. No history; cookies and logins are kept in memory and cleared when the last Private window closes. Extensions stay off unless you allow them.
+- **[Content Blocker](https://detourbrowser.com/features/content-blocker/)**: built-in ad, tracker and cookie-notice blocking with EasyList. Switch it off per site, or choose lists per Profile.
+- **User agent**: each Profile can identify as Safari exactly; neither built-in setting sends your exact macOS version. See the [privacy setup guide](https://detourbrowser.com/features/privacy/).
+
+### For developers
+
+- **[Dev Mode](https://detourbrowser.com/features/dev-mode/)**: turns on by itself for localhost and `.test` sites, with a toolbar for the full URL, Console, Network, an element picker and full-page screenshots.
+- **Web Inspector**: ⌥⌘I.
+
+### Extensions
+
+- **[Web Extensions](https://detourbrowser.com/features/web-extensions/)**: install extensions from the Chrome Web Store on WebKit. Each one is on per Profile, with toolbar popups, options pages and native messaging (1Password works). Some Chrome APIs are still missing; the guide lists what works.
+
+### Everything else
+
+- **Multiple windows**, each with its own active Space.
+- **Session restore**: tabs come back after a relaunch with their scroll position and form state.
+- **Downloads** with progress, reveal in Finder, and history across launches.
+- **Audio**: tabs playing sound show a mute button.
+- **Find in page** (⌘F), a link status bar, and a sidebar you can hide (⌘S).
+- **Automatic updates** through Sparkle.
+
+## Building
+
+Requirements:
+
+- macOS 15.4 or later to run; a current Xcode to build (releases are built with Xcode 27)
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen)
 
-## Getting Started
-
 ```bash
-# Generate the Xcode project
+# Generate the Xcode project (again whenever files are added or removed)
 xcodegen generate
 
 # Build
 xcodebuild -scheme Detour -configuration Debug build
 
-# Run tests
+# Run the tests
 xcodebuild -scheme DetourTests -configuration Debug test
 ```
 
 Or open `Detour.xcodeproj` in Xcode after running `xcodegen generate`.
 
+The project signs with the maintainer's Developer ID team. To build without it, sign ad hoc:
+
+```bash
+xcodebuild -scheme Detour -configuration Debug CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build
+```
+
+A development build uses the same data folder as an installed Detour. To keep it separate, set `DETOUR_DATA_DIR` to another folder name when you launch it:
+
+```bash
+DETOUR_DATA_DIR=DetourDev path/to/Detour.app/Contents/MacOS/Detour
+```
+
+Architecture notes for contributors are in [CLAUDE.md](CLAUDE.md), and the project's accumulated knowledge (how subsystems work, WebKit quirks, decisions) is in [`wiki/`](wiki/index.md).
+
 ## Dependencies
 
-- [GRDB.swift](https://github.com/groue/GRDB.swift) — SQLite database for session and history storage
-- [Sparkle](https://github.com/sparkle-project/Sparkle) — Framework for automatic app updates
+- [GRDB.swift](https://github.com/groue/GRDB.swift): SQLite for the session and history databases
+- [Sparkle](https://github.com/sparkle-project/Sparkle): automatic updates
