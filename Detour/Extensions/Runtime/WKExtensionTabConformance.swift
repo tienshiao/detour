@@ -4,9 +4,12 @@ import WebKit
 /// Every browser window's controller, in `NSApp.windows` order — the single
 /// enumeration `BrowserTab.window(for:)` and the move seam's window hooks
 /// (`ExtensionTabLifecycle.windowShowingTab` / `windowListing`) both resolve
-/// through, so they can never disagree about which windows exist.
+/// through, so they can never disagree about which windows exist. A closed
+/// window is not one of them (`isOpenForExtensions`): `NSApp.windows` keeps it
+/// for as long as anything holds it, and it no longer hears the store
+/// (TASK-314).
 func extensionBrowserWindows() -> [BrowserWindowController] {
-    NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }
+    NSApp.windows.compactMap { $0.windowController as? BrowserWindowController }.filter(\.isOpenForExtensions)
 }
 
 // MARK: - BrowserTab + WKWebExtensionTab

@@ -170,6 +170,47 @@ nonisolated final class ExternalLinkRoutingTests: XCTestCase {
         XCTAssertTrue(frontBrowserWindow() === recent)
     }
 
+    // MARK: - A closed window (TASK-314)
+
+    /// A closed window something still holds (here the test) stays in
+    /// `NSApp.orderedWindows`. A link to the space it last showed used to pick
+    /// it and show it again, off the store's observers, so its sidebar never
+    /// heard of a title change or a close again.
+    @MainActor func testALinkNeverShowsAClosedWindowAgain() throws {
+        let closed = makeWindow(showing: work)
+        let open = makeWindow(showing: personal)
+        closed.window?.close()
+        XCTAssertTrue(NSApp.orderedWindows.contains { $0 === closed.window },
+                      "precondition: AppKit still lists the closed window")
+
+        let link = url("https://work.test/after-close")
+        appDelegate.application(NSApp, open: [link])
+
+        let opened = try XCTUnwrap(tab(link, in: work), "the link opens in Work")
+        XCTAssertEqual(closed.window?.isVisible, false, "the closed window stays closed")
+        XCTAssertEqual(open.activeSpaceID, work.id, "the open window switches to Work instead")
+        XCTAssertEqual(open.selectedTabID, opened.id)
+        XCTAssertTrue(frontBrowserWindow() === open)
+    }
+
+    /// Every list of browser windows leaves a closed one out: the placement's
+    /// and the extensions'.
+    @MainActor func testAClosedWindowIsListedNowhere() throws {
+        let open = makeWindow(showing: personal)
+        let closed = makeWindow(showing: work)   // in front, then closed
+        closed.window?.close()
+        XCTAssertTrue(NSApp.windows.contains { $0 === closed.window },
+                      "precondition: AppKit still lists the closed window")
+
+        let frontToBack = NSApp.browserWindowControllersFrontToBack
+        XCTAssertFalse(frontToBack.contains { $0 === closed })
+        XCTAssertTrue(frontToBack.contains { $0 === open })
+        XCTAssertFalse(extensionBrowserWindows().contains { $0 === closed })
+        XCTAssertTrue(extensionBrowserWindows().contains { $0 === open })
+        XCTAssertFalse(extensionListedWindows().contains { $0 === closed })
+        XCTAssertTrue(extensionListedWindows().contains { $0 === open })
+    }
+
     // MARK: - A space no window shows
 
     @MainActor func testASpaceShownByNoWindowSwitchesTheMostRecentNormalWindow() throws {

@@ -85,6 +85,9 @@ sources:
   - id: task-220
     resource: backlog:TASK-220
     title: A popup whose content is wider than its first size stays at 126x126 and is cut off
+  - id: task-314
+    resource: backlog:TASK-314
+    title: "Window: a closed browser window can be re-shown by a link placement, with its sidebar deaf to the store"
   - id: notes-keyloop
     resource: "Agent session notes, 2026-10-02 (not in the repository)"
     title: Key-view loop probe findings
@@ -190,6 +193,12 @@ Related.
 | A `CGColor` assigned to a layer is resolved once and does not follow light / dark changes. | Dividers, hover backgrounds, drop hints, split pane borders | Re-resolve in `viewDidChangeEffectiveAppearance` or `updateLayer`, inside `performAsCurrentDrawingAppearance` |
 | `contentView.cacheDisplay(in:to:)` renders web content but leaves the sidebar blank.[^notes-harness] | Capturing the sidebar for verification | Render the sidebar's layer instead; see [in-process UI automation](../playbooks/in-process-ui-automation.md) |
 
+# Windows
+
+| Behavior | Where it bit | Do instead |
+|---|---|---|
+| A closed window that something still holds stays in `NSApp.orderedWindows` and `NSApp.windows` (ordered out, same window number, listed as off-screen by `CGWindowListCopyWindowInfo`), and `makeKeyAndOrderFront` shows it again. Its controller has already run `windowWillClose`.[^task-314] | `browserWindowControllersFrontToBack` returned a closed window that was still in memory, and a routed link re-showed it. It no longer heard the store, so its sidebar kept stale titles and left a closed tab's row behind (TASK-314) | Never derive "the open windows" from AppKit's lists alone. `BrowserWindowController.hasClosed` (set in `windowWillClose`) filters the placement list and the extension window lists. Don't filter on `isVisible` instead: a miniaturized window, or any window while the app is hidden, is not visible but still open |
+
 # Why it matters here
 
 Detour's chrome is hand-built AppKit: a source-list table inside a custom
@@ -242,3 +251,4 @@ from a probe or a measurement.
 [^task-186-2]: Dev mode: an under-construction toolbar above the page with the URL
 [^task-186-3]: Dev mode: capture buttons in the dev toolbar
 [^task-189]: Settings: fix the window's spacing and clipping
+[^task-314]: Window: a closed browser window can be re-shown by a link placement, with its sidebar deaf to the store

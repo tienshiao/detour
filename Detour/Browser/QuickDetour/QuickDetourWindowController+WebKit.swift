@@ -372,6 +372,9 @@ extension QuickDetourWindowController: ExtensionListedWindow {
 
     var extensionProfileID: UUID? { profile.id }
 
+    /// Open from `init` until `tearDown` takes it out of `openControllers`.
+    var isOpenForExtensions: Bool { Self.openControllers.contains { $0 === self } }
+
     func tabs(for context: WKWebExtensionContext) -> [any WKWebExtensionTab] {
         extensionTabs
     }

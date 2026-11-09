@@ -635,7 +635,8 @@ extension BrowserWindowController: TabSidebarDelegate {
     @objc func handleSpaceDeletionBlocked(_ notification: Notification) {
         guard let block = TabStore.spaceDeletionBlock(from: notification),
               let window,
-              NSApp.orderedWindows.first(where: { $0.windowController is BrowserWindowController }) === window
+              NSApp.orderedWindows.first(where: { ($0.windowController as? BrowserWindowController)?.hasClosed == false })
+                === window
         else { return }
         // From the run loop, not the main dispatch queue: a modal alert run
         // inside a main-queue block holds that queue, and every main-queue

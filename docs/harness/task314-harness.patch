@@ -1,0 +1,269 @@
+TASK-314 runtime harness, second version (2026-11-09). It replaces the first
+(a quarantine Open-in harness that did not reproduce the bug). Temporary code,
+never committed to Detour/. Gated on DETOUR_VERIFY_DIR, DETOUR_DATA_DIR and
+DETOUR_VERIFY_URL (the link to open); DETOUR_VERIFY_MODE picks the scenario:
+
+  same    window on the first space; openLink(url, .openInSpace(first space));
+          log the tab against its row every change for 20 s, then close it
+  other   the same, with the window on a second space first
+  bg      the same, with Detour hidden first (a link from another app)
+  zombie  window A on Work; window B on Home, closed while the harness still
+          holds it (stands in for whatever kept the user's window alive); then
+          the link into Home. Before the fix: B was re-shown, its row kept the
+          address, and closing left a ghost row. After the fix: the link goes
+          to A, the row follows the title, and the close removes it.
+  leak    B opened and closed with only a weak reference: B is freed within
+          1 s (no leak in the plain case); logs B's address for
+          `leaks --traceTree=<addr> <pid>`
+
+    git apply docs/harness/task314-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug -derivedDataPath .derived build
+    printf 'https://example.com/' > $H/url.txt; run.sh zombie DetourVerifyNNN
+    git apply -R docs/harness/task314-harness.patch && xcodegen generate
+
+Live diagnosis of a running production app without a debugger, also used
+here: the Accessibility API (AXIsProcessTrusted was already true) reads each
+sidebar table's rows, visible rows and selection (axdump/axwatch/axvis below,
+compiled with swiftc), and CGWindowListCopyWindowInfo(.optionAll) lists
+closed-but-alive windows as off-screen windows.
+
+--- run.sh ---
+    #!/bin/zsh
+    H=/private/tmp/claude-501/-Users-tma-Projects-browser-MyBrowser/4c02c093-62fa-4604-852f-8d16dbdb08e3/scratchpad/task314b
+    MODE=$1; DD=$2
+    [ -n "$DD" ] || { echo "no data dir"; exit 1; }
+    APP=/Users/tma/Projects/browser/MyBrowser/.derived/Build/Products/Debug/Detour.app
+    LOG=$H/out/verify-$MODE.log
+    rm -f -- $LOG
+    DETOUR_DATA_DIR=$DD DETOUR_VERIFY_DIR=$H/out DETOUR_VERIFY_MODE=$MODE DETOUR_VERIFY_URL="$(cat $H/url.txt)" \
+      "$APP/Contents/MacOS/Detour" > $H/out/stderr-$MODE.log 2>&1 &
+    PID=$!
+    echo "launched $PID"
+    seen=0
+    for i in $(seq 1 240); do
+      sleep 0.25
+      [ -f $LOG ] || continue
+      total=$(wc -l < $LOG)
+      if [ $total -gt $seen ]; then
+        sed -n "$((seen+1)),${total}p" $LOG | while read -r line; do
+          case "$line" in
+            *"SHOOT "*) set -- ${=line#*SHOOT }; screencapture -x -o -l $2 $H/out/$1.png && echo "shot $1";;
+          esac
+        done
+        seen=$total
+      fi
+      if grep -q "\] done" $LOG; then break; fi
+      kill -0 $PID 2>/dev/null || { echo "app exited"; break; }
+    done
+    sleep 1
+    kill $PID 2>/dev/null; echo "killed $PID"
+
+--- axwatch.swift (usage: axwatch <pid> <seconds> <log> <windowNumber>) ---
+    import ApplicationServices
+    import Foundation
+    let pid = pid_t(CommandLine.arguments[1])!
+    let seconds = Double(CommandLine.arguments[2])!
+    let out = CommandLine.arguments[3]
+    let app = AXUIElementCreateApplication(pid)
+    func attr(_ e: AXUIElement, _ a: String) -> AnyObject? { var v: AnyObject?; return AXUIElementCopyAttributeValue(e, a as CFString, &v) == .success ? v : nil }
+    func str(_ e: AXUIElement, _ a: String) -> String? { attr(e, a) as? String }
+    func children(_ e: AXUIElement) -> [AXUIElement] { (attr(e, kAXChildrenAttribute) as? [AXUIElement]) ?? [] }
+    func pos(_ e: AXUIElement) -> CGPoint { var p = CGPoint.zero; if let v = attr(e, kAXPositionAttribute) { AXValueGetValue(v as! AXValue, .cgPoint, &p) }; return p }
+    func texts(_ e: AXUIElement, depth: Int = 0) -> [String] {
+        var out: [String] = []
+        if str(e, kAXRoleAttribute) == kAXStaticTextRole, let v = str(e, kAXValueAttribute), !v.isEmpty { out.append(v) }
+        if depth < 6 { for c in children(e) { out += texts(c, depth: depth + 1) } }
+        return out
+    }
+    func tables(_ e: AXUIElement, depth: Int, into: inout [AXUIElement]) {
+        let role = str(e, kAXRoleAttribute)
+        if role == kAXTableRole { into.append(e); return }
+        if depth < 25 { for c in children(e) { tables(c, depth: depth + 1, into: &into) } }
+    }
+    func snapshot() -> String {
+        var s = ""
+        for w in (attr(app, kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
+            let title = str(w, kAXTitleAttribute) ?? ""
+            let wx = pos(w).x
+            s += "WINDOW \(title)\n"
+            var ts: [AXUIElement] = []; tables(w, depth: 0, into: &ts)
+            for t in ts {
+                let rows = (attr(t, kAXRowsAttribute) as? [AXUIElement]) ?? []
+                if rows.count > 60 { continue }   // the archive page
+                let selected = ((attr(t, kAXSelectedRowsAttribute) as? [AXUIElement]) ?? []).map { pos($0).y }
+                let visible = abs(pos(t).x - wx) < 40 ? " ON-SCREEN" : ""
+                s += "  table x+\(Int(pos(t).x - wx))\(visible)\n"
+                for r in rows {
+                    let label = texts(r).joined(separator: " | ")
+                    if label.isEmpty { continue }
+                    s += "    \(selected.contains(pos(r).y) ? "*" : " ") \(label.prefix(90))\n"
+                }
+            }
+        }
+        return s
+    }
+    let start = Date()
+    var last = ""
+    let fmt = DateFormatter(); fmt.dateFormat = "HH:mm:ss.SSS"
+    while Date().timeIntervalSince(start) < seconds {
+        let s = snapshot()
+        if s != last {
+            let stamp = fmt.string(from: Date())
+            let line = "=== \(stamp)\n\(s)"
+            if let h = FileHandle(forWritingAtPath: out) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close() }
+            else { try? line.write(toFile: out, atomically: true, encoding: .utf8) }
+            let shot = Process(); shot.launchPath = "/usr/sbin/screencapture"
+            shot.arguments = ["-x", "-o", "-l", CommandLine.arguments[4], (out as NSString).deletingLastPathComponent + "/watch-\(stamp.replacingOccurrences(of: ":", with: "")).png"]
+            try? shot.run(); shot.waitUntilExit()
+            last = s
+        }
+        Thread.sleep(forTimeInterval: 0.5)
+    }
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 138fa29..4a91622 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -166,6 +166,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+         }
+ 
+         observeWindowClose(wc)
++        runTask314HarnessIfRequested(wc)
+ 
+         // Last: the links that launched Detour, now that the session and
+         // the routes are loaded (TASK-304).
+diff --git a/Detour/App/Task314Harness.swift b/Detour/App/Task314Harness.swift
+new file mode 100644
+index 0000000..98035eb
+--- /dev/null
++++ b/Detour/App/Task314Harness.swift
+@@ -0,0 +1,129 @@
++// TEMP TASK-314 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    func runTask314HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"], env["DETOUR_DATA_DIR"] != nil,
++              let link = env["DETOUR_VERIFY_URL"].flatMap(URL.init(string:)) else { return }
++        let mode = env["DETOUR_VERIFY_MODE"] ?? "same"   // same | other (window on another space first)
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(mode).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        let store = TabStore.shared
++        var target = wc
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func shoot(_ name: String) async {
++            guard let window = target.window else { return }
++            await sleep(0.2)
++            log("SHOOT \(mode)-\(name) \(window.windowNumber)")
++            await sleep(1.0)
++        }
++        func short(_ s: String?) -> String { String((s ?? "nil").prefix(70)) }
++        func state(_ space: Space) -> String {
++            let table = target.tabSidebar.tableView
++            let cells = (0..<table.numberOfRows).map { row -> String in
++                (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCellView).map { short($0.titleLabel.stringValue) } ?? "·"
++            }
++            return "active=\(target.activeSpace?.name ?? "nil") store=\(space.tabs.map { short($0.title) }) "
++                + "sidebar.tabs=\(target.tabSidebar.tabs.map { short($0.title) }) rows=\(table.numberOfRows) cells=\(cells) "
++                + "selRows=\(Array(table.selectedRowIndexes)) sel=\(short(target.selectedTab?.title))"
++        }
++
++        Task { @MainActor in
++            await sleep(2.5)
++            NSApp.appearance = NSAppearance(named: .aqua)
++            guard let home = store.nonIncognitoSpaces.first else { return log("no space") }
++            if mode == "other" {
++                let other = store.nonIncognitoSpaces.first { $0.id != home.id && $0.profileID == home.profileID }
++                    ?? store.addSpace(name: "Other", emoji: "💾", colorHex: "8E8E93", profileID: home.profileID)
++                wc.setActiveSpace(id: other.id)
++            } else {
++                wc.setActiveSpace(id: home.id)
++            }
++            await sleep(0.5)
++            var zombieBefore: Set<UUID>? = nil
++            if mode == "leak" {
++                // Only a weak reference here, so nothing of the harness keeps B alive.
++                weak var weakB: BrowserWindowController?
++                var address = ""
++                do {
++                    let b = self.createNewWindow(showing: home)
++                    weakB = b
++                    address = String(format: "0x%lx", UInt(bitPattern: Unmanaged.passUnretained(b).toOpaque()))
++                }
++                await sleep(1.0)
++                weakB?.window?.performClose(nil)
++                for i in 0..<6 {
++                    await sleep(1.0)
++                    log("leak check \(i): B alive=\(weakB != nil) listed=\(NSApp.browserWindowControllersFrontToBack.contains { $0 === weakB })")
++                }
++                log("LEAK B=\(address) pid=\(ProcessInfo.processInfo.processIdentifier) alive=\(weakB != nil)")
++                await sleep(90)
++                log("done")
++                return
++            }
++            if mode == "zombie" {
++                // Window A (wc) on Work; window B on Home, then closed the way a person closes it.
++                let work = store.nonIncognitoSpaces.first { $0.id != home.id && $0.profileID == home.profileID }
++                    ?? store.addSpace(name: "Work", emoji: "💾", colorHex: "8E8E93", profileID: home.profileID)
++                wc.setActiveSpace(id: work.id)
++                let b = self.createNewWindow(showing: home)
++                b.window?.setFrameOrigin(NSPoint(x: (wc.window?.frame.minX ?? 0) + 60, y: (wc.window?.frame.minY ?? 0) - 40))
++                await sleep(1.0)
++                weak var weakB = b
++                let bNumber = b.window?.windowNumber ?? 0
++                b.window?.performClose(nil)
++                await sleep(1.5)
++                let listed = NSApp.browserWindowControllersFrontToBack
++                log("closed B (#\(bNumber)): B alive=\(weakB != nil) B visible=\(weakB?.window?.isVisible ?? false) "
++                    + "frontToBack=\(listed.map { "\($0.window?.windowNumber ?? 0)@\($0.activeSpace?.name ?? "-")\($0.window?.isVisible == true ? "" : "(closed)")" }) A=#\(wc.window?.windowNumber ?? 0)")
++                wc.window?.makeKeyAndOrderFront(nil)
++                await sleep(0.5)
++                zombieBefore = Set(home.tabs.map(\.id))
++                log("start mode=zombie A active=\(wc.activeSpace?.name ?? "nil")")
++                self.openLink(link, routedTo: .openInSpace(home.id))
++                await sleep(0.3)
++                let placedIn = NSApp.browserWindowControllersFrontToBack.first
++                log("placed in #\(placedIn?.window?.windowNumber ?? 0) revivedB=\(placedIn === weakB) visible=\(placedIn?.window?.isVisible ?? false) "
++                    + "key=\(NSApp.keyWindow?.windowNumber ?? 0)")
++                if let placedIn { target = placedIn }
++            }
++            let before = zombieBefore ?? Set(home.tabs.map(\.id))
++            if mode == "bg" { NSApp.hide(nil); await sleep(1.5); log("hidden: active=\(NSApp.isActive) visible=\(wc.window?.isVisible ?? false) occl=\(wc.window?.occlusionState.contains(.visible) ?? false)") }
++            log("start mode=\(mode) \(state(home))")
++            if mode != "zombie" { self.openLink(link, routedTo: .openInSpace(home.id)) }
++            guard let tab = home.tabs.first(where: { !before.contains($0.id) }) else { return log("no new tab") }
++            var lastURL = "", lastTitle = "", lastCells = ""
++            // Every change of the tab, and of the sidebar's cells, for 20 s.
++            for i in 0..<400 {
++                let u = tab.url?.absoluteString ?? "nil", t = tab.title
++                let cells = state(home)
++                if u != lastURL || t != lastTitle || cells != lastCells {
++                    log("tab url=\(short(u)) title=\(short(t)) loading=\(tab.isLoading) fav=\(tab.favicon != nil) | \(cells)")
++                    lastURL = u; lastTitle = t; lastCells = cells
++                }
++                if i == 40 { await shoot("01-2s") }
++                await sleep(0.05)
++            }
++            log("final: \(state(home))")
++            await shoot("02-final")
++            target.selectTab(id: tab.id)
++            await sleep(0.3)
++            target.closeCurrentTab(nil)
++            await sleep(1.0)
++            log("after close: \(state(home))")
++            await shoot("03-after-close")
++            log("done")
++        }
++    }
++}
++#endif

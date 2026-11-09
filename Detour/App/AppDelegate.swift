@@ -369,8 +369,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func showQuickDetourLauncher() {
         // A quarantine names no profile to browse with (TASK-194): the window
         // behind it decides.
+        // Never a closed browser window AppKit still lists (TASK-314).
         let frontmost = NSApp.orderedWindows.lazy.compactMap { $0.windowController }.first {
-            $0 is BrowserWindowController || ($0 as? QuickDetourWindowController)?.isQuarantine == false
+            ($0 as? BrowserWindowController)?.hasClosed == false
+                || ($0 as? QuickDetourWindowController)?.isQuarantine == false
         }
         let sourceSpace = (frontmost as? BrowserWindowController)?.activeSpace
         let frontmostProfile = sourceSpace?.profile ?? (frontmost as? QuickDetourWindowController)?.profile
@@ -652,7 +654,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let store = TabStore.shared
         var windowProfiles: [Profile] = NSApp.orderedWindows.compactMap { window in
             switch window.windowController {
-            case let browser as BrowserWindowController: return browser.activeSpace?.profile
+            // Never a closed one AppKit still lists (TASK-314).
+            case let browser as BrowserWindowController: return browser.hasClosed ? nil : browser.activeSpace?.profile
             case let quick as QuickDetourWindowController: return quick.isQuarantine ? nil : quick.profile
             default: return nil
             }
@@ -1313,11 +1316,17 @@ extension NSApplication {
     /// once. Windows that are not browser windows (Settings, panels) are
     /// skipped, so with Settings key and main this still starts at the browser
     /// window right behind it.
+    ///
+    /// Closed windows are skipped too. `orderedWindows` keeps listing a closed
+    /// window for as long as anything holds it, and a link placed in one would
+    /// show it again, cut off from the store (TASK-314). The test is the
+    /// controller's own `hasClosed`, not `isVisible`: a miniaturized window, or
+    /// any window while the app is hidden, is not visible but still counts.
     var browserWindowControllersFrontToBack: [BrowserWindowController] {
         var seen = Set<ObjectIdentifier>()
         return ([keyWindow, mainWindow].compactMap { $0 } + orderedWindows)
             .compactMap { $0.windowController as? BrowserWindowController }
-            .filter { seen.insert(ObjectIdentifier($0)).inserted }
+            .filter { !$0.hasClosed && seen.insert(ObjectIdentifier($0)).inserted }
     }
 
     /// The browser window the user is looking at (or was, when a non-browser

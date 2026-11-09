@@ -13,17 +13,23 @@ protocol ExtensionListedWindow: WKWebExtensionWindow {
     /// The profile whose contexts see this window; nil for none (a window
     /// with no space yet). A window is listed only to its profile's contexts.
     var extensionProfileID: UUID? { get }
+    /// False once the window has closed. `NSApp.windows` keeps a closed
+    /// window for as long as anything holds it (TASK-314), so the AppKit list
+    /// alone does not say which windows are open.
+    var isOpenForExtensions: Bool { get }
     var window: NSWindow? { get }
 }
 
 /// Every window the extension contexts may be told about, front to back: the
 /// browser windows and the Quick Detour windows in `NSApp.windows` order, then
 /// any open Quick Detour whose window AppKit does not list yet (one being
-/// built: its tab is reported open before it is ordered in).
+/// built: its tab is reported open before it is ordered in). Never a closed
+/// one (`isOpenForExtensions`): `NSApp.windows` keeps a closed window for as
+/// long as anything holds it (TASK-314).
 func extensionListedWindows() -> [any ExtensionListedWindow] {
     var listed: [any ExtensionListedWindow] = NSApp.windows.compactMap {
         $0.windowController as? (any ExtensionListedWindow)
-    }
+    }.filter(\.isOpenForExtensions)
     for quick in QuickDetourWindowController.openControllers where !listed.contains(where: { $0 === quick }) {
         listed.append(quick)
     }
@@ -34,6 +40,7 @@ func extensionListedWindows() -> [any ExtensionListedWindow] {
 
 extension BrowserWindowController: ExtensionListedWindow {
     var extensionProfileID: UUID? { activeSpace?.profileID }
+    var isOpenForExtensions: Bool { !hasClosed }
 
     /// The tabs this window reports to extensions — see `extensionWindowTabs`:
     /// pinned, normal, then the live favourite backing tabs of the profile the

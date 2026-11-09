@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-11-09
+* **Update**: TASK-314 — [AppKit gotchas](platform/appkit-gotchas.md) (new section "Windows"): a closed window that is still in memory stays in `NSApp.orderedWindows` / `NSApp.windows` and `makeKeyAndOrderFront` re-shows it; the window lists now filter on `BrowserWindowController.hasClosed`, not `isVisible`. Found in the user's production app with the Accessibility API and the system window list; the retainer is TASK-315.
 * **Creation**: TASK-313 — [WebAuthn goes through AuthenticationServices](platform/webauthn-authentication-services.md): WebKit hands navigator.credentials to AuthenticationServicesAgent; gate 1 (no application identifier) measured in production Detour and a spike, fixed by a Developer ID profile embedded by the new `scripts/sign-app.sh`; gate 2 (`com.apple.developer.web-browser.public-key-credential`) measured with the profile in place; `--deep` signing gave Sparkle's helpers Detour's entitlements. Updated the [release playbook](playbooks/release-and-website.md) (prerequisite 3, the Sign step).
 
 ## 2026-11-08

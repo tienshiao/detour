@@ -134,6 +134,15 @@ class BrowserWindowController: NSWindowController {
 
     private(set) var commandPaletteView: CommandPaletteView?
     var commandPaletteNavigatesInPlace = false
+
+    /// The window has closed (`windowWillClose`). Closing takes the controller
+    /// off the store's observers and the notification center, but anything
+    /// still holding it keeps the closed window in `NSApp.orderedWindows`, and
+    /// `makeKeyAndOrderFront` would show it again, deaf to every tab change
+    /// (TASK-314). Every list of open windows skips these:
+    /// `browserWindowControllersFrontToBack`, the extension window lists
+    /// (`isOpenForExtensions`) and the few direct `orderedWindows` reads.
+    private(set) var hasClosed = false
     private var splitScrimView: NSView?
     private var contentScrimView: NSView?
     /// Transparent content-area overlay for split edge drops, present only while a
@@ -3614,6 +3623,7 @@ extension BrowserWindowController: NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        hasClosed = true
         hoverCard.dismiss()
         selectedTab?.savePeekStateForPersistence()
         recentTabSwitcher?.invalidate()
