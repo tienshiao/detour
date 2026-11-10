@@ -4,10 +4,14 @@ title: 'Automation: an MCP server so agents can drive and inspect Detour'
 status: To Do
 assignee: []
 created_date: '2026-10-29T04:10:00Z'
+updated_date: '2026-11-10T09:38:00Z'
 labels:
   - tooling
   - automation
 dependencies: []
+references:
+  - TASK-320
+  - TASK-319
 priority: low
 ordinal: 264000
 ---
@@ -44,3 +48,9 @@ This is likely an epic. Split it into subtasks (transport and auth, tab and navi
 - [ ] #5 The /verify skill (or a wiki playbook) shows how to verify a Detour change through the MCP server against an isolated DETOUR_DATA_DIR
 - [ ] #6 Tests cover the authorisation gate (refused without access, refused for a Private window) and each tool's happy path and error cases (unknown tab, closed tab, sleeping tab)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-10: related new tasks. TASK-319 (AppleScript / JXA dictionary and Shortcuts actions) and TASK-320 (browser commands in the Command Palette) want the same command layer as this one's Detour-specific tools: one registry of commands (identifier, title, typed parameters, availability rule, action through the menu item's code) that menus, palette, AppleScript, App Intents and MCP tools all read. Decide the relationship when planning.
+<!-- SECTION:NOTES:END -->

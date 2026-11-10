@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-10T09:35:00Z'
+updated_date: '2026-11-10T09:38:00Z'
 labels:
   - automation
   - tooling
@@ -15,6 +16,7 @@ references:
   - TASK-89
   - TASK-132
   - Detour/Browser/TabStore.swift
+  - TASK-320
 priority: low
 type: feature
 ordinal: 381000
@@ -52,3 +54,9 @@ Likely an epic once the questions are answered (dictionary and object model, com
 - [ ] #4 Tests cover the object model and each command's happy path and error cases (unknown space or tab, closed tab, sleeping tab), plus the JavaScript gate
 - [ ] #5 A wiki playbook shows how to script Detour against an isolated DETOUR_DATA_DIR for runtime verification
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-10: the command layer this needs is shared with TASK-320 (browser commands in the Command Palette): one registry of commands (identifier, title, typed parameters, availability rule, action through the menu item's code) that the menus, the palette, the AppleScript/JXA dictionary, App Intents and TASK-228's MCP tools all read. Settle its shape there or here, not twice.
+<!-- SECTION:NOTES:END -->
