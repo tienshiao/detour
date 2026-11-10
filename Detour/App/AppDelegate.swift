@@ -13,6 +13,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// leaves this list when it closes, so a closed controller found here
     /// means the two have drifted apart (asserted in `observeWindowClose`).
     private(set) var windowControllers: [BrowserWindowController] = []
+    /// Each registered window's will-close observer, removed when it fires.
+    private var windowCloseObservers: [ObjectIdentifier: any NSObjectProtocol] = [:]
     /// Which Get URL events carry the links that launched Detour (TASK-304).
     private var launchLinks = LaunchLinkTracker()
     /// Links from other apps that arrived while launching, opened once the
@@ -722,11 +724,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func observeWindowClose(_ wc: BrowserWindowController) {
-        _ = NotificationCenter.default.addMainObserver(
+        guard let window = wc.window else { return }
+        windowCloseObservers[ObjectIdentifier(window)] = NotificationCenter.default.addMainObserver(
             forName: NSWindow.willCloseNotification,
-            object: wc.window
+            object: window
         ) { [weak self] notification in
             guard let self else { return }
+            // One close per window: the observer goes with it (TASK-315).
+            if let window = notification.object as? NSWindow,
+               let token = self.windowCloseObservers.removeValue(forKey: ObjectIdentifier(window)) {
+                NotificationCenter.default.removeObserver(token)
+            }
             self.windowControllers.removeAll { $0.window === notification.object as? NSWindow }
             // The closing window has just left. Any other registered window
             // must be open: a closed one left behind means ownership and

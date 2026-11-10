@@ -1404,8 +1404,20 @@ class BrowserWindowController: NSWindowController {
         let ucc = webView.configuration.userContentController
         for name in Self.ownedScriptHandlerNames {
             ucc.removeScriptMessageHandler(forName: name)
-            ucc.add(self, name: name)
+            // Weakly: a handler left on a page this window no longer hosts must
+            // not keep the window alive after it closes (TASK-315).
+            ucc.add(WeakScriptMessageHandler(self), name: name)
         }
+    }
+
+    /// Detach this window's script message handlers from `webView`, which it
+    /// stops hosting.
+    private func releaseScriptHandlers(of webView: WKWebView) {
+        let ucc = webView.configuration.userContentController
+        for name in Self.ownedScriptHandlerNames {
+            ucc.removeScriptMessageHandler(forName: name)
+        }
+        (webView as? BrowserWebView)?.isEditingWebContent = false
     }
 
     private func postOwnershipChanged(tabIDs: [UUID], focusedID: UUID, snapshot: NSImage?) {
@@ -1487,6 +1499,12 @@ class BrowserWindowController: NSWindowController {
             // The container may arrive here still pinned from the PiP capture
             // hold (a split pane re-selected within the cleanup delay).
             container.autoresizingMask = [.width, .height]
+            // A page re-selected within that hold never left the window, but
+            // `removeContentViews` took its handlers when it entered PiP
+            // (TASK-315): give them back.
+            if container === pipContentView {
+                wireOwnedWebView(webView)
+            }
             anchorLinkStatusBar(to: webView)
             return
         }
@@ -2047,17 +2065,20 @@ class BrowserWindowController: NSWindowController {
         }
         flushPendingSplitFractionCommit()
         let currentPeekWebView = selectedTab?.peekTab?.webView
+        // The page entering picture in picture stays parented for WebKit's
+        // animation (the loop below skips it), but this window stops hosting
+        // it now: its handlers go like any other outgoing page's (TASK-315).
+        // Only while it is still here: within the hold another window may
+        // have claimed the container, and the handlers are then that window's.
+        if let pipping = pipContentView, pipping.isDescendant(of: contentContainerView) {
+            webViews(in: pipping).forEach(releaseScriptHandlers(of:))
+        }
         // The split-reveal veneer is NOT removed here: the claim that follows a
         // split drop re-runs within a tick (deferred sidebar selection restore
         // → selectTab) and must not cut the animation short. The claim paths
         // remove it themselves when hosting moves to different content.
         for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipContentView && subview !== splitDropZoneView && subview !== splitRevealOverlay {
-            for webView in webViews(in: subview) {
-                for name in Self.ownedScriptHandlerNames {
-                    webView.configuration.userContentController.removeScriptMessageHandler(forName: name)
-                }
-                (webView as? BrowserWebView)?.isEditingWebContent = false
-            }
+            webViews(in: subview).forEach(releaseScriptHandlers(of:))
             // Dismantle a split view before removing it so pane containers end
             // up superview-less, like a single tab's container after handoff —
             // downstream checks treat "has a superview" as "hosted somewhere".
@@ -2110,17 +2131,26 @@ class BrowserWindowController: NSWindowController {
 
     /// Returns the tab WKWebViews under a direct subview of `contentContainerView`.
     /// Subviews may be raw webviews (peek, PiP), a `BrowserTab.webViewContainer`
-    /// wrapping the tab's webview as its first subview, or a hosted split view
-    /// holding two such containers. Deliberately shallow — never recurses into
-    /// webview or inspector internals.
+    /// wrapping the tab's webview, or a hosted split view holding two such
+    /// containers. Deliberately shallow — never recurses into webview or
+    /// inspector internals.
     private func webViews(in subview: NSView) -> [WKWebView] {
         if let webView = subview as? WKWebView { return [webView] }
         if let split = subview as? NSSplitView {
-            return split.arrangedSubviews.compactMap { pane in
-                pane.subviews.first { $0 is WKWebView } as? WKWebView
-            }
+            return split.arrangedSubviews.compactMap(pageWebView(in:))
         }
-        return (subview.subviews.first { $0 is WKWebView } as? WKWebView).map { [$0] } ?? []
+        return pageWebView(in: subview).map { [$0] } ?? []
+    }
+
+    /// The page in a tab's container: its hosted web view, not just the first
+    /// WKWebView child. A docked Web Inspector's frontend (a
+    /// `WKInspectorWKWebView`) sits in the same container *before* the page,
+    /// so the first child would be the inspector (TASK-315). Nil when the page
+    /// has left the container: its handlers are then another host's.
+    private func pageWebView(in container: NSView) -> WKWebView? {
+        guard let hosted = (container as? WebViewContainerView)?.hostedWebView as? WKWebView,
+              hosted.superview === container else { return nil }
+        return hosted
     }
 
     /// Rebinds all selected-tab chrome (display bindings + window title) to the
@@ -3637,9 +3667,9 @@ extension BrowserWindowController: NSWindowDelegate {
         }
         hidePeekUI()
         // Detach the script message handlers we added to the owned web view's
-        // userContentController. add(self, name:) retains this controller, so
-        // without this the controller (and its notification observers) leak and
-        // a zombie window can keep reacting to tab notifications after close.
+        // userContentController, so the page stops reporting to a closed window.
+        // They hold this controller weakly (TASK-315), so this is not what
+        // frees it.
         releaseOwnedWebViewHandlers()
         // Not behind that method's ownership guard: this window is still the
         // delegate of tabs it selected earlier even when another window has
@@ -3656,17 +3686,13 @@ extension BrowserWindowController: NSWindowDelegate {
     }
 
     /// Remove the script message handlers this controller registered on the
-    /// currently-owned tab's web view, breaking the userContentController's
-    /// strong reference to `self`.
+    /// currently-owned tab's web view, so its page stops reporting to this
+    /// window. The handlers hold the window weakly (TASK-315).
     private func releaseOwnedWebViewHandlers() {
         guard ownsWebView, let tab = selectedTab else { return }
         for member in splitMembers(of: tab) {
             guard let webView = member.webView else { continue }
-            let ucc = webView.configuration.userContentController
-            for name in Self.ownedScriptHandlerNames {
-                ucc.removeScriptMessageHandler(forName: name)
-            }
-            (webView as? BrowserWebView)?.isEditingWebContent = false
+            releaseScriptHandlers(of: webView)
         }
     }
 
@@ -3790,6 +3816,9 @@ extension BrowserWindowController: FindBarDelegate {
 extension BrowserWindowController: WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "linkHover", let urlString = message.body as? String {
+            // Only a page this window shows: one it left handlers on by a path
+            // `removeContentViews` missed must not drive this status bar.
+            guard message.webView?.isDescendant(of: contentContainerView) == true else { return }
             if urlString.isEmpty {
                 linkStatusBar.hide()
             } else {

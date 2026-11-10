@@ -5,7 +5,7 @@ description: The per-window controller — what each of its extension files hand
 resource: ../../Detour/Browser/Window/BrowserWindowController.swift
 tags: [architecture, window, selection, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-10T09:30:00Z }
 sources:
   - id: window-controller
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
@@ -25,6 +25,12 @@ sources:
   - id: task-76
     resource: backlog:TASK-76
     title: Keys declined by web content no longer beep
+  - id: task-315
+    resource: backlog:TASK-315
+    title: "Windows: find what keeps a closed browser window's controller in memory"
+  - id: release-tests
+    resource: ../../DetourTests/WindowCloseReleaseTests.swift
+    title: WindowCloseReleaseTests.swift
 ---
 
 # Role
@@ -147,9 +153,25 @@ safety net for a web view with no content. The single-owner mechanics are on
 of a web view it hosts and registers itself for the `linkHover` and
 `editableFieldFocus` script messages. Two consequences:
 
-- `userContentController.add(self, name:)` **retains** the controller.
-  `removeContentViews()` and `windowWillClose` remove the handlers; without
-  that a closed window stays alive and keeps reacting to notifications.
+- The handlers go through `WeakScriptMessageHandler`.
+  `userContentController.add(_:name:)` retains what it is given, and until
+  TASK-315 that was the controller itself: any page left with the handlers
+  kept a closed window (controller, window, sidebar) alive for as long as the
+  page lived. Two paths left them behind. Leaving a tab that plays audio puts
+  it in picture in picture, whose container stays parented
+  (`pipContentView`) and was skipped by `removeContentViews()`. And
+  `webViews(in:)` took a container's *first* WKWebView child, which with a
+  docked Web Inspector is the inspector, so the page kept its handlers. Both
+  are fixed (the PiP container's handlers are removed with the outgoing
+  page's; `pageWebView(in:)` reads the container's `hostedWebView`), and the
+  weak handler means any path still missed leaks nothing; `linkHover` from a
+  page outside the window's content view is ignored.[^task-315]
+- `removeContentViews()` and `windowWillClose` still remove the handlers, so a
+  page the window no longer hosts stops reporting to it. Removing a PiP
+  page's handlers means re-selecting it within the capture hold (the
+  refresh branch of `claimSingleWebView`) must wire them again, and only
+  while the container is still in this window: within the hold another
+  window may have claimed it.
 - The window stays navigation delegate of every web view it ever hosted;
   nothing clears it on tab switch. Delegate callbacks therefore act on
   `tab(owning: webView)`, never on `selectedTab` — a load still in flight
@@ -235,11 +257,39 @@ Window behaviour that matters is tested without driving the UI:
 `ProductionDefaultsIsolationTests`. Layout, hosting and animation are checked
 at runtime; see [runtime verification](../playbooks/runtime-verification.md).
 
+`WindowCloseReleaseTests` replays histories in real windows (tab switches,
+spaces, two windows sharing a tab, palette, find bar, Peek, split, Quick
+Detour and quarantine Open in, picture in picture, a docked inspector),
+closes the window and asserts a weak reference to the controller goes nil.
+On a leak it runs `leaks --traceTree=<address>` on the test host itself and
+prints the tree.[^release-tests] Two things to know when reading such
+output:
+
+- `--traceTree` lists every pointer to the object, owning or not. A
+  window's views point back at it (`_viewRoot`, `_window`), the window at its
+  controller (`_windowController`), WebKit at its UI delegate: none of these
+  keeps it alive. Look for the path that ends in a real owner, such as
+  `WKUserContentController` → `WebScriptMessageHandler` →
+  `ScriptMessageHandlerDelegate` → the controller, or an entry marked
+  `__strong`.
+- A closed window's `NSWindow` can outlive its freed controller for the
+  rest of the test: AppKit autoreleases it, and XCTest drains the pool it
+  wraps each test in only after the test returns. An `@autoreleasepool
+  content __strong` entry is that. The suite fails only on the controller;
+  windows still alive after the poll are printed again from the class
+  `tearDown` (`STILL ALIVE` or `freed`), which does not fail the run, so
+  read that output when changing the suite. On 2026-11-10 every one was
+  freed there.[^task-315]
+
 # Related
 
 - [Web view ownership](./webview-ownership.md) — claim, snapshot, transfer.
+- [Driving the Web Inspector](../platform/web-inspector-control.md) — the docked inspector shares the page's container.
 - [BrowserTab](./browser-tab.md) — the object it hosts.
 - [Sidebar overview](../sidebar/overview.md) — the other half of the window.
 - [Split tabs hosting](../tabs/split-tabs-hosting.md) — the two-pane case.
 - [Peek](../tabs/peek.md) — the overlay it presents.
 - [Tab and window bridge](../extensions/tab-and-window-bridge.md) — the window as seen by extensions.
+
+[^task-315]: Windows: find what keeps a closed browser window's controller in memory
+[^release-tests]: WindowCloseReleaseTests.swift

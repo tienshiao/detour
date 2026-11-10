@@ -1190,20 +1190,6 @@ extension QuickDetourWindowController: WKScriptMessageHandler {
     }
 }
 
-/// Holds a script message handler weakly: `WKUserContentController` retains
-/// the handler it is given, which would keep a closed window alive.
-final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
-    private weak var target: WKScriptMessageHandler?
-
-    init(_ target: WKScriptMessageHandler) {
-        self.target = target
-    }
-
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        target?.userContentController(userContentController, didReceive: message)
-    }
-}
-
 // MARK: - NSMenuItemValidation
 
 extension QuickDetourWindowController: NSMenuItemValidation {

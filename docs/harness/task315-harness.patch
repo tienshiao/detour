@@ -1,0 +1,193 @@
+TASK-315 runtime harness (2026-11-10). Temporary code, never committed to
+Detour/. Gated on DETOUR_VERIFY_DIR, DETOUR_DATA_DIR and DETOUR_VERIFY_BASE (a
+local server serving audio.html, an <audio autoplay loop> of a 440 Hz WAV,
+and links.html, a link plus an <input>). In a second window it runs three
+histories, each ending in performClose with only weak references held:
+
+  plain      one page, then close (control)
+  pip        a tab really playing audio is left for another tab (the auto
+             picture-in-picture path keeps its container as pipContentView)
+  inspector  the page's Web Inspector docked (forced with _inspector.attach),
+             then another tab
+
+and logs: the link-hover status bar and isEditingWebContent after a scripted
+mouseover / focus (the messages still reach the window), which handlers the
+left page still has (typeof window.webkit.messageHandlers.*), whether the
+controller and the NSWindow are freed, and whether the closed window's number
+is still listed off-screen by CGWindowListCopyWindowInfo(.optionAll).
+
+Results: unfixed BrowserWindowController.swift -> pip and inspector LEAKED
+(handlers left on the page, window listed off-screen for good); fixed -> all
+three FREED. Note: even a freed controller's NSWindow lives until the next
+event goes through the queue (AppKit's event-loop autorelease pool; an idle
+harness run gets none), so the harness posts an application-defined event 4 s
+after the close.
+
+    git apply docs/harness/task315-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug -derivedDataPath .derived build
+    (serve the two pages and the WAV on 127.0.0.1:8765, then)
+    DETOUR_DATA_DIR=DetourVerify315x DETOUR_VERIFY_DIR=$OUT DETOUR_VERIFY_BASE=http://127.0.0.1:8765/ \
+      .derived/Build/Products/Debug/Detour.app/Contents/MacOS/Detour
+    (wait for "] done" in $OUT/verify-315.log, kill that PID only)
+    git apply -R docs/harness/task315-harness.patch && xcodegen generate
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -143,6 +143,7 @@
+         registerWindowController(wc)
+         wc.showWindow(nil)
+ 
++        runTask315HarnessIfRequested(wc)
+         let restored = TabStore.shared.restoreSession()
+ 
+         // Ensure at least one space exists
+diff --git a/Detour/App/Task315Harness.swift b/Detour/App/Task315Harness.swift
+new file mode 100644
+index 0000000..c84a7e2
+--- /dev/null
++++ b/Detour/App/Task315Harness.swift
+@@ -0,0 +1,143 @@
++// TEMP TASK-315 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    /// DETOUR_VERIFY_DIR (log dir), DETOUR_DATA_DIR (isolated profile) and
++    /// DETOUR_VERIFY_BASE (the fixture server, serving audio.html and
++    /// links.html) must be set. Runs two histories in a second window, each
++    /// ending in a close: picture in picture (a tab playing real audio is
++    /// left) and a docked inspector. Logs whether the link-hover and
++    /// editable-focus messages still reach the window, and whether the closed
++    /// window is freed and gone from the system window list.
++    func runTask315HarnessIfRequested(_ main: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"], env["DETOUR_DATA_DIR"] != nil,
++              let base = env["DETOUR_VERIFY_BASE"].flatMap(URL.init(string:)) else { return }
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-315.log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        @MainActor func waitFor(_ what: String, _ timeout: Double = 15, _ condition: () -> Bool) async -> Bool {
++            let deadline = Date().addingTimeInterval(timeout)
++            while !condition() {
++                if Date() > deadline { log("TIMEOUT \(what)"); return false }
++                await sleep(0.1)
++            }
++            return true
++        }
++        func descendants(of view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap(descendants(of:)) }
++        func statusBarText(_ wc: BrowserWindowController) -> String {
++            guard let root = wc.window?.contentView,
++                  let bar = descendants(of: root).first(where: { $0 is LinkStatusBar }) else { return "no bar" }
++            let text = descendants(of: bar).compactMap { ($0 as? NSTextField)?.stringValue }.first ?? ""
++            return bar.isHidden ? "hidden" : "shown '\(text)'"
++        }
++        /// Off-screen, layer-0 windows of this process big enough to be a
++        /// browser window: closed windows that are still in memory.
++        func offscreenWindows() -> [Int] {
++            let pid = Int(ProcessInfo.processInfo.processIdentifier)
++            let info = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
++            return info.compactMap { w in
++                guard (w[kCGWindowOwnerPID as String] as? Int) == pid,
++                      (w[kCGWindowLayer as String] as? Int) == 0,
++                      (w[kCGWindowIsOnscreen as String] as? Bool) != true,
++                      let b = w[kCGWindowBounds as String] as? [String: Any],
++                      (b["Width"] as? Double ?? 0) >= 600, (b["Height"] as? Double ?? 0) >= 400 else { return nil }
++                return w[kCGWindowNumber as String] as? Int
++            }
++        }
++
++        Task { @MainActor in
++            let store = TabStore.shared
++            await sleep(2.5)
++            guard let home = store.nonIncognitoSpaces.first else { return log("no space") }
++            let space = store.addSpace(name: "Verify 315", emoji: "🧪", colorHex: "34C759", profileID: home.profileID)
++            log("offscreen browser-size windows at start: \(offscreenWindows())")
++
++            for history in ["plain", "pip", "inspector"] {
++                weak var weakWC: BrowserWindowController?
++                weak var weakWindow: NSWindow?
++                var windowNumber = 0
++                var address = ""
++                do {
++                    let first = store.addTab(in: space, url: base.appendingPathComponent(history == "pip" ? "audio.html" : "links.html"))
++                    if history == "plain" {
++                        let wc = self.createNewWindow(showing: space)
++                        weakWC = wc
++                        weakWindow = wc.window
++                        windowNumber = wc.window?.windowNumber ?? 0
++                        wc.selectTab(id: first.id)
++                        _ = await waitFor("plain: page") { !first.isLoading && first.title == "Links" }
++                        wc.window?.performClose(nil)
++                    }
++                    if history != "plain" {
++                    let second = store.addTab(in: space, url: base.appendingPathComponent("links.html"))
++                    let wc = self.createNewWindow(showing: space)
++                    weakWC = wc
++                    weakWindow = wc.window
++                    windowNumber = wc.window?.windowNumber ?? 0
++                    address = String(format: "0x%lx", UInt(bitPattern: Unmanaged.passUnretained(wc).toOpaque()))
++                    wc.selectTab(id: first.id)
++                    wc.window?.makeKeyAndOrderFront(nil)
++                    _ = await waitFor("\(history): first page") { !first.isLoading && first.title != nil && first.title != "" }
++                    log("\(history): window \(windowNumber) at \(address), first tab '\(first.title ?? "")'")
++
++                    if history == "pip" {
++                        let playing = await waitFor("pip: audible") { first.isPlayingAudio }
++                        log("pip: isPlayingAudio=\(first.isPlayingAudio) (real playback: \(playing)) muted=\(first.isMuted)")
++                    } else if let webView = first.webView, let control = WebInspectorControl(webView: webView) {
++                        control.show()
++                        _ = await waitFor("inspector: frontend") { control.frontendWebView != nil }
++                        if !control.isAttached, let inspector = webView.perform(NSSelectorFromString("_inspector"))?.takeUnretainedValue() as? NSObject {
++                            inspector.perform(NSSelectorFromString("attach"))
++                            _ = await waitFor("inspector: docked", 5) { control.isAttached }
++                        }
++                        log("inspector: docked=\(control.isAttached) container=\(webView.superview?.subviews.map { String(describing: type(of: $0)) } ?? [])")
++                    }
++
++                    wc.selectTab(id: second.id)
++                    _ = await waitFor("\(history): second page") { !second.isLoading && second.title == "Links" }
++                    await sleep(1.0)
++
++                    // The messages still reach the window through the weak handler.
++                    _ = try? await second.webView?.evaluateJavaScript(
++                        "document.getElementById('l').dispatchEvent(new MouseEvent('mouseover', {bubbles: true})); 1")
++                    await sleep(0.6)
++                    log("\(history): after hovering the link: status bar \(statusBarText(wc))")
++                    _ = try? await second.webView?.evaluateJavaScript("document.getElementById('q').focus(); 1")
++                    await sleep(0.4)
++                    log("\(history): after focusing the field: isEditingWebContent=\((second.webView as? BrowserWebView)?.isEditingWebContent ?? false)")
++                    let leftHandlers = (try? await first.webView?.evaluateJavaScript(
++                        "['linkHover','editableFieldFocus'].filter(n => !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[n]))")) as? [String]
++                    log("\(history): handlers left on the page the window left: \(leftHandlers ?? ["?"])")
++                    if history == "inspector", let webView = first.webView { WebInspectorControl(webView: webView)?.close() }
++
++                    wc.window?.performClose(nil)
++                    }
++                }
++                for i in 0..<8 {
++                    await sleep(1.0)
++                    if i == 3 {
++                        // An event through the queue ends AppKit's current event-loop pool.
++                        NSApp.postEvent(NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [], timestamp: 0,
++                                                           windowNumber: 0, context: nil, subtype: 0, data1: 0, data2: 0)!, atStart: false)
++                        log("\(history): posted an application-defined event")
++                    }
++                    log("\(history): \(i + 1) s after close: controller alive=\(weakWC != nil) NSWindow alive=\(weakWindow != nil) window \(windowNumber) offscreen=\(offscreenWindows().contains(windowNumber)) offscreen browser-size windows=\(offscreenWindows())")
++                }
++                log("RESULT \(history): controller \(weakWC == nil ? "FREED" : "LEAKED \(address)") NSWindow \(weakWindow == nil ? "freed" : "alive") listed offscreen=\(offscreenWindows().contains(windowNumber))")
++            }
++            log("pid=\(ProcessInfo.processInfo.processIdentifier)")
++            log("done")
++        }
++    }
++}
++#endif

@@ -34,6 +34,9 @@ sources:
   - id: task-186-4
     resource: backlog:TASK-186.4
     title: "Dev mode: toolbar buttons that toggle the Web Inspector's Console and Network tabs"
+  - id: task-315
+    resource: backlog:TASK-315
+    title: "Windows: find what keeps a closed browser window's controller in memory"
 ---
 
 # Behavior
@@ -110,6 +113,14 @@ WebKit's selection overlay appears to need real input.
   `inspectorStartsAttached` is set (the default) *and* the page can host it;
   on the side in `inspectorAttachmentSide`. Undocking it once makes WebKit
   remember "starts detached".[^ui-proxy]
+- **Docked, the inspector sits in the page's container, before the page.**
+  Measured on macOS 26 (TASK-315): the container's subviews are
+  `[WKInspectorWKWebView, BrowserWebView, DevToolbarView]`, and
+  `WKInspectorWKWebView` is a `WKWebView`. Code that wants the container's
+  page must use `WebViewContainerView.hostedWebView`, never "the first
+  WKWebView child": that once removed the window's script message handlers
+  from the inspector instead of the page, and the page kept the closed window
+  alive.[^task-315]
 - **A page under 500 pt wide (or under ~334 pt tall) cannot dock**
   (`platformCanAttach`: width ≥ 500 and 0.75 × height ≥ 250). In a split
   pane narrower than that, the inspector opens in its own window.[^ui-proxy-mac]
@@ -169,3 +180,4 @@ delete only the new ones and restore any whose value changed.
 [^ui-proxy-mac]: WebInspectorUIProxyMac.mm (platformCanAttach, platformHide)
 [^main-js]: WebInspectorUI Main.js (WI.showConsoleTab, WI.showNetworkTab, WI.tabBrowser)
 [^task-186-4]: Dev mode: toolbar buttons that toggle the Web Inspector's Console and Network tabs
+[^task-315]: Windows: find what keeps a closed browser window's controller in memory

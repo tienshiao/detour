@@ -100,6 +100,9 @@ sources:
   - id: notes-inprocess
     resource: "Agent session notes, 2026-09-19 (not in the repository)"
     title: In-process UI verification notes
+  - id: task-315
+    resource: backlog:TASK-315
+    title: "Windows: find what keeps a closed browser window's controller in memory"
 ---
 
 # Behavior
@@ -197,7 +200,7 @@ Related.
 
 | Behavior | Where it bit | Do instead |
 |---|---|---|
-| A closed window that something still holds stays in `NSApp.orderedWindows` and `NSApp.windows` (ordered out, same window number, listed as off-screen by `CGWindowListCopyWindowInfo`), and `makeKeyAndOrderFront` shows it again. Its controller has already run `windowWillClose`.[^task-314] | `browserWindowControllersFrontToBack` returned a closed window that was still in memory, and a routed link re-showed it. It no longer heard the store, so its sidebar kept stale titles and left a closed tab's row behind (TASK-314) | Never derive "the open windows" from AppKit's lists alone. `BrowserWindowController.hasClosed` (set in `windowWillClose`) filters the placement list and the extension window lists. Don't filter on `isVisible` instead: a miniaturized window, or any window while the app is hidden, is not visible but still open |
+| A closed window that something still holds stays in `NSApp.orderedWindows` and `NSApp.windows` (ordered out, same window number, listed as off-screen by `CGWindowListCopyWindowInfo`), and `makeKeyAndOrderFront` shows it again. Its controller has already run `windowWillClose`.[^task-314] | `browserWindowControllersFrontToBack` returned a closed window that was still in memory, and a routed link re-showed it. It no longer heard the store, so its sidebar kept stale titles and left a closed tab's row behind (TASK-314) | Never derive "the open windows" from AppKit's lists alone. `BrowserWindowController.hasClosed` (set in `windowWillClose`) filters the placement list and the extension window lists. Don't filter on `isVisible` instead: a miniaturized window, or any window while the app is hidden, is not visible but still open. What held the user's closed window was a page's script message handlers (TASK-315, see [BrowserWindowController](../architecture/browser-window-controller.md)) |
 
 # Why it matters here
 
