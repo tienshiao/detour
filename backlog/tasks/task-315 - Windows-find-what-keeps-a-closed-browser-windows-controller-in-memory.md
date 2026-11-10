@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09T17:50:00Z'
-updated_date: '2026-11-10T09:29:00Z'
+updated_date: '2026-11-10T09:32:00Z'
 labels:
   - window
   - memory
@@ -88,6 +88,8 @@ Skipped: failing the suite from the class tearDown when an NSWindow outlives its
 Follow-up for the one-off test host crash: TASK-317.
 
 Full suite (2026-11-10, after the review fixes): 3931 tests, 0 failures, 18 skipped by their own gating, no host restart.
+
+Follow-up filed 2026-11-10 at the user's request: TASK-318 (OffscreenDocumentHost's strong audio bridge handler).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
