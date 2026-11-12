@@ -1,10 +1,11 @@
 ---
 id: TASK-293
 title: 'Import from Arc: spaces, pinned tabs and folders, favorites, and history'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-08T07:59:00Z'
+updated_date: '2026-11-12T09:20:00Z'
 labels:
   - import
 dependencies: []
@@ -43,4 +44,12 @@ Nov 7 2026 (found while building the Arc hub, TASK-292.3; Arc's help center via 
 - Arc is being sunset on December 22, 2026 (announced Oct 22): Arc for macOS stops working that day, sign-in ends, accounts are deactivated and their data deleted within 30 days. The Browser Company points users to Dia, which imports Spaces, Favorites, pinned tabs, folders, bookmarks, history, passwords and extensions straight from Arc ("Arc Sunset: Key Dates and What to Expect", "Move from Arc to Dia"; Dia "finds your Arc data through the Arc app, so keep Arc installed until your import finishes").
 - Arc now has an export: Arc › Settings › Advanced › Export Data saves "Arc Data Export.md", a section per Space listing Favorites, pinned tabs, folders and other sidebar tabs as links ("How Do I Export My Data from Arc?"). Folders also have Copy All Links (and, holding Option, Copy All Links as Markdown).
 - Implications to weigh before scoping: importing Arc Data Export.md is a documented, stable format that survives the shutdown (a user can export now and import later), while reading Arc's own files works only as long as their format holds and people still have them; after Dec 22 nobody can open Arc to export, so the value of an importer is front-loaded into the next six weeks.
+
+Nov 12 2026, format survey on this Mac (Arc 1.172.1 build 90370, running; structure only, no page content read):
+- ~/Library/Application Support/Arc/StorableSidebar.json, top-level version 1. The live state is sidebar.containers[1] = {spaces, items, topAppsContainerIDs}; containers[0] is {global:{}}. spaces/items/topAppsContainerIDs are Swift-encoded ordered maps: alternating [key, value, key, value]. firebaseSyncState and sidebarSyncState are sync shadows: here sidebarSyncState.lastSuccessfulSyncDate is Nov 2024 and holds 57 items vs 24 live, only 12 shared; ignore both.
+- Space: id, title (absent on Arc's built-in personal space thebrowser.company.defaultPersonalSpaceID), profile = {default:true} | {custom:{_0:{directoryBasename:'Profile 1', machineID}}}, containerIDs ['unpinned', id, 'pinned', id] (newContainerIDs is the same as tagged enums), customInfo.iconType = {emoji_v2:'🏠', emoji:<codepoint>} or {icon:<symbol>}, customInfo.windowTheme {semanticColorPalette, background, primaryColorPalette{midTone, shaded, tintedLight, shadedDark}} with colours as {colorSpace, red, green, blue, alpha}.
+- Item: id, parentID, childrenIds (order), title (user-renamed title or null), createdAt (seconds since 2001), data = {tab:{savedURL, savedTitle, timeLastActiveAt, savedMuteStatus, referrerID?, activeTabBeforeCreationID?}} | {list:{}} (folder, nests) | {itemContainer:{containerType:{spaceItems:{_0:spaceID}} | {topApps:{_0:<profile>}}}}. Binary also has splitView, easel and arcDocument cells (not present in this sidebar). Favourites = children of the topApps container for a profile (one per Arc profile, listed in topAppsContainerIDs as profile/containerID pairs).
+- Profiles: names from User Data/Local State profile.info_cache[<dir>].name (Default, Profile 1..3 here); StorableProfiles.json lists the profile ids only.
+- History: User Data/<profile dir>/History, Chromium history schema version 70 (urls, visits; visit_time in microseconds since 1601-01-01). Copying the file while Arc runs works; read the copy (immutable). Here: Default 142k visits, Profile 1 22k, Profile 2 0, Profile 3 31.
+- Detour side: history.db visits are per space and expire after 90 days (AppDelegate expireOldVisits), so only the last 90 days are worth importing; favourites are per profile; pinned folders nest via parentFolderID; there is no first-run flow yet.
 <!-- SECTION:NOTES:END -->
