@@ -302,6 +302,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc func showAboutPanel(_ sender: Any?) {
+        BuildInfo.showAboutPanel()
+    }
+
     @objc func openSettings() {
         SettingsWindowController.shared.showWindow(nil)
     }
@@ -753,7 +757,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenuItem = NSMenuItem()
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About Detour", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About Detour", action: #selector(showAboutPanel(_:)), keyEquivalent: "")
         // Not added at all when the updater did not start (TASK-41), so nothing
         // can reach it — and no separator is left standing where it would have been.
         if Self.startsUpdater {

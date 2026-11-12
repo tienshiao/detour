@@ -15,6 +15,9 @@ sources:
   - id: release-notes
     resource: ../../docs/releases/
     title: Release notes, one Markdown file per version
+  - id: task-321
+    resource: backlog:TASK-321
+    title: About — show the git commit the app was built from
   - id: task-179
     resource: backlog:TASK-179
     title: Release 0.3.1 from main, and script the publish steps
@@ -126,6 +129,7 @@ What it does, in order:
 | Version | with an argument: sets `CFBundleShortVersionString` and increments `CFBundleVersion` in `Detour/Resources/Info.plist` (an edit you then commit) |
 | Project | `xcodegen generate` |
 | Build | `xcodebuild -scheme Detour -configuration Release clean build` |
+| Stamp | the target's "Stamp git commit" build phase (TASK-321) writes `DetourGitCommit` (10-character short hash, `-dirty` when tracked files other than `Info.plist` and `backlog/` differ from HEAD, or untracked files exist under `Detour/`) into the built app's `Info.plist`; About Detour shows it as `Version X (build · hash)`. The version bump alone keeps a release build clean, so a release's stamp is the commit before publish-release.sh's `Release X` commit |
 | Locate | `Detour.app` in the `BUILT_PRODUCTS_DIR` that `xcodebuild -showBuildSettings` reports for this checkout, checked for bundle id `com.detourbrowser.mac` |
 | Sign | `scripts/sign-app.sh` (since TASK-313): checks the Developer ID profile in `signing/` (App ID, team, all devices, expiry, the signing certificate in it), signs Sparkle's helpers without Detour's entitlements, embeds the profile and signs the app with an application identifier, then `codesign --verify --deep --strict`. Why: [WebAuthn goes through AuthenticationServices](../platform/webauthn-authentication-services.md) |
 | Package | a DMG with the app and an `/Applications` symlink, at `build/Detour-<version>.dmg` |

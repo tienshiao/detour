@@ -34,6 +34,36 @@ targets:
         SWIFT_STRICT_CONCURRENCY: complete
         MACOSX_DEPLOYMENT_TARGET: "15.4"
         ASSETCATALOG_COMPILER_APPICON_NAME: Detour
+    postBuildScripts:
+      # TASK-321: write the commit into the BUILT Info.plist (not the source
+      # one) so About shows which source the app came from. Runs every build
+      # (no dependency analysis) and before Xcode's code signing step.
+      # "-dirty": tracked changes other than build-release.sh's version bump
+      # and Backlog files, or untracked (not ignored) files under Detour/.
+      # --no-optional-locks: git never takes index.lock to refresh the index,
+      # so a build cannot make a concurrent git command fail.
+      # The plist is only rewritten when the stamp changes (a rewrite makes
+      # Xcode re-sign the app); with no commit, a stale stamp is removed.
+      - name: Stamp git commit
+        basedOnDependencyAnalysis: false
+        shell: /bin/sh
+        script: |
+          plist="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
+          key=DetourGitCommit
+          commit=""
+          if cd "${SRCROOT}" && head=$(git --no-optional-locks rev-parse --short=10 HEAD 2>/dev/null); then
+            commit="$head"
+            if ! git --no-optional-locks diff --quiet HEAD -- . ':(exclude)Detour/Resources/Info.plist' ':(exclude)backlog' 2>/dev/null \
+              || [ -n "$(git --no-optional-locks ls-files --others --exclude-standard -- Detour 2>/dev/null)" ]; then
+              commit="${commit}-dirty"
+            fi
+          fi
+          old=$(/usr/libexec/PlistBuddy -c "Print :$key" "$plist" 2>/dev/null) || old=""
+          [ "$old" = "$commit" ] && exit 0
+          /usr/libexec/PlistBuddy -c "Delete :$key" "$plist" >/dev/null 2>&1 || true
+          if [ -n "$commit" ]; then
+            /usr/libexec/PlistBuddy -c "Add :$key string ${commit}" "$plist"
+          fi
   DetourTests:
     type: bundle.unit-test
     platform: macOS

@@ -1,5 +1,8 @@
 # Wiki Update Log
 
+## 2026-11-11
+* **Update**: TASK-321 — [Release and website](playbooks/release-and-website.md) (Build table, new "Stamp" row): the "Stamp git commit" build phase writes `DetourGitCommit` into the built Info.plist (never the source one), with `-dirty` rules that keep build-release.sh's version bump clean; About shows `Version X (build · hash)`. The phase uses `git --no-optional-locks` so a build never takes index.lock from a concurrent git command, and rewrites the plist only when the stamp changes.
+
 ## 2026-11-10
 * **Update**: TASK-315 — [BrowserWindowController](architecture/browser-window-controller.md) ("Claiming content", Tests): a closed window was kept alive by a page's `linkHover`/`editableFieldFocus` handlers (`add(self, name:)` retains); two paths left them behind, auto picture in picture (`pipContentView` skipped by `removeContentViews`) and a docked Web Inspector (`webViews(in:)` took the inspector, the container's first WKWebView child); handlers now go through `WeakScriptMessageHandler` and `pageWebView(in:)` reads `hostedWebView`; `WindowCloseReleaseTests` and how to read `leaks --traceTree` (back-pointers, XCTest's per-test autorelease pool). [Driving the Web Inspector](platform/web-inspector-control.md): the docked inspector's place in the container. [AppKit gotchas](platform/appkit-gotchas.md) (Windows): what held the user's window. Review: re-selecting the PiP page within the capture hold re-wires its handlers (refresh branch of `claimSingleWebView`), the PiP release skips a container another window claimed, `linkHover` from a page outside the window is ignored.
 
