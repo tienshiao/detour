@@ -1,5 +1,8 @@
 # Wiki Update Log
 
+## 2026-11-12
+* **Creation**: TASK-293.1 — [Import from Arc](features/arc-import.md): Arc 1.172.1's on-disk formats (StorableSidebar.json's live `sidebar.containers` vs its stale sync shadows, ordered-map arrays, space/item/split/favourite shapes, Local State names, Chromium History v70 read from a copy) and the Export Data Markdown file (measured against the live sidebar: `## Favorites` = profile favourites + top-level pinned tabs + Today tabs with no boundary; folders `##`/`###`); the shared-lead rule for export favourites (user decision); source keys for re-imports.
+
 ## 2026-11-11
 * **Update**: TASK-321 — [Release and website](playbooks/release-and-website.md) (Build table, new "Stamp" row): the "Stamp git commit" build phase writes `DetourGitCommit` into the built Info.plist (never the source one), with `-dirty` rules that keep build-release.sh's version bump clean; About shows `Version X (build · hash)`. The phase uses `git --no-optional-locks` so a build never takes index.lock from a concurrent git command, and rewrites the plist only when the stamp changes.
 

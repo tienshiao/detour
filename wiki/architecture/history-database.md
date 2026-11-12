@@ -484,6 +484,7 @@ test against the windowed select and the step-count test described above;
 
 - [History recording and search](../features/history-recording-and-search.md) — when a visit is recorded and corrected.
 - [History page](../features/history-page.md) — the profile-scoped reader.
+- [Import from Arc](../features/arc-import.md) — the Chromium History format Arc visits are imported from.
 - [Suggestion pipeline](../features/suggestion-pipeline.md) — the palette's reader, profile-scoped since TASK-209.
 - [History own-title matching](../decisions/history-own-title-matching.md) — the isolation decision.
 - [Two databases](../decisions/two-databases.md) — why this is a separate file.
