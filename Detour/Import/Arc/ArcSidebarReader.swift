@@ -19,6 +19,16 @@ nonisolated enum ArcSidebarReader {
             .appending(path: "Library/Application Support/Arc", directoryHint: .isDirectory)
     }
 
+    /// Arc's sidebar file, the one file an import cannot do without.
+    static func sidebarFile(in dataDirectory: URL = defaultDataDirectory) -> URL {
+        dataDirectory.appending(path: "StorableSidebar.json", directoryHint: .notDirectory)
+    }
+
+    /// Whether Arc's data is on this Mac.
+    static func isArcDataPresent(in dataDirectory: URL = defaultDataDirectory) -> Bool {
+        FileManager.default.fileExists(atPath: sidebarFile(in: dataDirectory).path)
+    }
+
     /// The id of the space Arc creates for every new user. It has no title.
     static let builtInPersonalSpaceID = "thebrowser.company.defaultPersonalSpaceID"
 
@@ -31,7 +41,7 @@ nonisolated enum ArcSidebarReader {
     static let maximumDepth = 64
 
     static func read(dataDirectory: URL = defaultDataDirectory) throws(ArcImportError) -> ArcImportSnapshot {
-        let sidebarFile = dataDirectory.appending(path: "StorableSidebar.json", directoryHint: .notDirectory)
+        let sidebarFile = sidebarFile(in: dataDirectory)
         guard FileManager.default.fileExists(atPath: sidebarFile.path) else {
             throw .arcNotFound
         }
@@ -104,6 +114,7 @@ nonisolated enum ArcSidebarReader {
         }, uniquingKeysWith: { first, _ in first })
 
         let profileNames = parseProfileNames(localStateJSON)
+        let internalProfiles = parseInternalProfileDirectories(localStateJSON)
         var builder = TreeBuilder(items: items)
 
         // Favourites: topAppsContainerIDs pairs a profile with the container
@@ -141,6 +152,9 @@ nonisolated enum ArcSidebarReader {
         if profileNames["Default"] != nil, !profileOrder.contains(.default) {
             profileOrder.append(.default)
         }
+        // Arc's own system profile is never listed, wherever it shows up.
+        profileOrder.removeAll { internalProfiles.contains(profileDirectoryName($0)) }
+        spaces.removeAll { internalProfiles.contains(profileDirectoryName($0.profileID)) }
         let profiles = sortedProfiles(profileOrder).map { id in
             ArcProfile(id: id, name: profileName(id, names: profileNames),
                        favorites: favoritesByProfile[id] ?? [], historyFile: nil)
@@ -318,17 +332,36 @@ nonisolated enum ArcSidebarReader {
     /// A profile still on Chromium's placeholder name ("Person 1") is left out,
     /// so `profileName` falls back to Arc's own wording.
     static func parseProfileNames(_ localStateJSON: Data?) -> [String: String] {
-        guard let localStateJSON,
-              let root = try? JSONSerialization.jsonObject(with: localStateJSON) as? [String: Any],
-              let profile = root["profile"] as? [String: Any],
-              let cache = profile["info_cache"] as? [String: Any] else { return [:] }
         var names: [String: String] = [:]
-        for (directory, value) in cache {
-            guard let info = value as? [String: Any] else { continue }
+        for (directory, value) in profileInfoCache(localStateJSON) {
+            guard let info = value as? [String: Any],
+                  !isInternalProfileName(info["name"] as? String) else { continue }
             let usesPlaceholder = (info["is_using_default_name"] as? Bool) ?? false
             names[directory] = usesPlaceholder ? "" : (nonEmpty(info["name"] as? String) ?? "")
         }
         return names
+    }
+
+    /// The profile folders `isInternalProfileName` hides.
+    static func parseInternalProfileDirectories(_ localStateJSON: Data?) -> Set<String> {
+        Set(profileInfoCache(localStateJSON).compactMap { directory, value in
+            isInternalProfileName((value as? [String: Any])?["name"] as? String) ? directory : nil
+        })
+    }
+
+    private static func profileInfoCache(_ localStateJSON: Data?) -> [String: Any] {
+        guard let localStateJSON,
+              let root = try? JSONSerialization.jsonObject(with: localStateJSON) as? [String: Any],
+              let profile = root["profile"] as? [String: Any],
+              let cache = profile["info_cache"] as? [String: Any] else { return [:] }
+        return cache
+    }
+
+    /// Arc keeps a profile of its own (`__ARC_SYSTEM_PROFILE`, seen in
+    /// Arc 1.172.1) that the user never sees; such profiles are not listed.
+    static func isInternalProfileName(_ name: String?) -> Bool {
+        guard let name else { return false }
+        return name.count > 2 && name.hasPrefix("__")
     }
 
     private static func profileName(_ id: ArcProfile.ID, names: [String: String]) -> String {

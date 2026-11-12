@@ -205,15 +205,25 @@ nonisolated final class ArcSidebarReaderTests: XCTestCase {
             "Default": ("Person 1", true),
             "Profile 1": ("Home", false),
             "Profile 3": ("Side project", false),
+            "Profile 2": ("__ARC_SYSTEM_PROFILE", false),
         ])
         let snapshot = try parse(Self.richSidebar(), localState: localState)
         XCTAssertEqual(snapshot.profiles.map(\.id), [.default, .directory("Profile 1"), .directory("Profile 3")],
-                       "a profile with no space or favourite is still listed: its history can come over")
+                       "a profile with no space or favourite is still listed: its history can come over; "
+                       + "Arc's own system profile is not")
         XCTAssertEqual(snapshot.profiles.map(\.name), ["Default", "Home", "Side project"],
                        "Chromium's placeholder name is not shown")
         XCTAssertEqual(snapshot.profile(.default)?.favorites.map(\.title), ["Calendar", "Chat"])
         XCTAssertEqual(snapshot.profile(.directory("Profile 1"))?.favorites.map(\.title), ["Music"])
         XCTAssertEqual(snapshot.profile(.directory("Profile 3"))?.favorites, [])
+    }
+
+    @MainActor func testArcsSystemProfileIsHiddenEvenWithSpacesAndFavourites() throws {
+        // Profile 1 owns a space and a favourites container in the fixture.
+        let localState = Self.localState(["Default": ("Me", false), "Profile 1": ("__ARC_SYSTEM_PROFILE", false)])
+        let snapshot = try parse(Self.richSidebar(), localState: localState)
+        XCTAssertEqual(snapshot.profiles.map(\.id), [.default])
+        XCTAssertFalse(snapshot.spaces.contains { $0.profileID == .directory("Profile 1") })
     }
 
     @MainActor func testProfilesSortDefaultFirstThenInFinderOrder() throws {

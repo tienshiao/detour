@@ -277,6 +277,8 @@ nonisolated enum ArcImportPlanner {
         var tabURLs: [UUID: Set<String>] = [:]
         var favoriteURLs: [UUID: Set<String>] = [:]
         var loadedSpaces: Set<UUID> = []
+        /// Per existing space, the URLs pinned in it before this import.
+        var preexistingPinnedURLs: [UUID: Set<String>] = [:]
 
         struct FolderKey: Hashable {
             var parentID: UUID?
@@ -338,6 +340,7 @@ nonisolated enum ArcImportPlanner {
 
         private mutating func load(_ space: ArcImportExistingState.Space) {
             guard loadedSpaces.insert(space.id).inserted else { return }
+            preexistingPinnedURLs[space.id] = Set(space.entries.map(\.url))
             var folders: [FolderKey: UUID] = [:]
             var orders: [UUID?: Int] = [:]
             var urls: [UUID?: Set<String>] = [:]
@@ -415,12 +418,24 @@ nonisolated enum ArcImportPlanner {
 
         /// Today tabs: each item is one tab, or the first two panes of a split.
         mutating func addTabs(_ items: [ArcTabListItem], to spaceID: UUID) {
+            // A URL pinned anywhere in the space is not brought in again as a
+            // Today tab: an export lists top-level pinned tabs among them, so
+            // an export imported after a direct import would duplicate them.
+            let pinned = entryURLs[spaceID]?.values.reduce(into: Set<String>()) { $0.formUnion($1) } ?? []
             for item in items {
                 var fresh: [ArcTab] = []
-                for tab in item.tabs where tabURLs[spaceID, default: []].insert(tab.url.absoluteString).inserted {
-                    fresh.append(tab)
+                for tab in item.tabs {
+                    let url = tab.url.absoluteString
+                    if pinned.contains(url) {
+                        // Counted as "already in Detour" only when it was
+                        // pinned there before this import.
+                        if preexistingPinnedURLs[spaceID]?.contains(url) == true { plan.alreadyPresent += 1 }
+                    } else if tabURLs[spaceID, default: []].insert(url).inserted {
+                        fresh.append(tab)
+                    } else {
+                        plan.alreadyPresent += 1
+                    }
                 }
-                plan.alreadyPresent += item.tabs.count - fresh.count
                 // A split only when both panes are new; otherwise what is new
                 // comes over as plain tabs.
                 let isSplit = item.tabs.count == 2 && fresh.count == 2

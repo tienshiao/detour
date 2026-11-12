@@ -15,7 +15,7 @@ extension TabStore {
     }
 
     /// What one Arc profile's history import did.
-    struct ArcHistoryImportResult: Sendable, Equatable {
+    nonisolated struct ArcHistoryImportResult: Sendable, Equatable {
         var arcProfile: ArcProfile.ID
         /// Visits added, or nil when the history could not be read or written.
         var added: Int?

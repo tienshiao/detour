@@ -182,6 +182,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         for links in awaiting {
             openExternalURLs(links.urls, sourceApp: links.sourceApp, launchedDetour: true)
         }
+
+        // Once the first window has settled: the one-time Arc import offer.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.offerArcImportIfNeeded(over: wc)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -308,6 +313,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openSettings() {
         SettingsWindowController.shared.showWindow(nil)
+    }
+
+    /// File › Import from Arc… (TASK-293.3).
+    @objc func importFromArc(_ sender: Any?) {
+        ArcImportWindowController.shared.present()
+    }
+
+    /// The one-time offer to import from Arc (TASK-293.3): once, to anyone
+    /// whose Mac has Arc's data, whatever they answer.
+    private func offerArcImportIfNeeded(over windowController: BrowserWindowController) {
+        guard ArcImportOffer.live.takeOffer(isTestHost: Self.isRunningUnitTests) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Bring your Arc setup to Detour?"
+        alert.informativeText = """
+            Detour found Arc on this Mac. It can bring over your spaces, pinned tabs and folders, \
+            favorites and the last 90 days of history. Arc stops working on December 22, 2026.
+
+            You can also do this later from File › Import from Arc…
+            """
+        alert.addButton(withTitle: "Import from Arc…")
+        alert.addButton(withTitle: "Not Now")
+        let handle: (NSApplication.ModalResponse) -> Void = { response in
+            if response == .alertFirstButtonReturn { ArcImportWindowController.shared.present() }
+        }
+        if let window = windowController.window, window.isVisible, !windowController.hasClosed {
+            alert.beginSheetModal(for: window, completionHandler: handle)
+        } else {
+            handle(alert.runModal())
+        }
     }
 
     @objc func showExtensionsSettings() {
@@ -806,6 +840,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // controller answers it and names its target in the title.
         fileMenu.addItem(withTitle: QuickDetourWindowController.openInMenuItemTitle,
                          action: #selector(QuickDetourWindowController.openInDefaultSpace(_:)), keyEquivalent: "o")
+        fileMenu.addItem(.separator())
+        fileMenu.addItem(withTitle: "Import from Arc…", action: #selector(importFromArc(_:)), keyEquivalent: "")
         fileMenuItem.submenu = fileMenu
 
         // Edit menu

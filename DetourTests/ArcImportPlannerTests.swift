@@ -250,6 +250,35 @@ nonisolated final class ArcImportPlannerTests: XCTestCase {
         XCTAssertNil(tabs[3].splitGroupID)
     }
 
+    @MainActor func testATodayTabAlreadyPinnedInTheSpaceIsLeftOut() {
+        // An export lists top-level pinned tabs among the Today tabs; after a
+        // direct import they are already pinned in the space.
+        let spaceID = UUID(), profileID = UUID()
+        let existing = ArcImportExistingState(
+            profiles: [.init(id: profileID, name: "D", favoriteURLs: [])],
+            spaces: [.init(id: spaceID, name: "Work", profileID: profileID, folders: [],
+                           entries: [.init(url: "https://news.invalid/", folderID: UUID(), sortOrder: 0)],
+                           tabURLs: [])],
+            links: ["profile:default": profileID, "space:W": spaceID])
+        var options = ArcImportOptions.everything(in: Self.richSnapshot())
+        options.spaces = ["space:W"]
+        options.includePinned = false
+        let result = plan(Self.richSnapshot(), options: options, existing: existing)
+        XCTAssertEqual(result.tabs.map(\.title), ["u2", "u3", "u4"], "news is pinned there, in a folder")
+    }
+
+    @MainActor func testATodayTabPinnedInTheSameImportIsDroppedButNotCountedAsPresent() {
+        let snapshot = Self.snapshot(profiles: [Self.profile(.default, "D")], spaces: [
+            Self.space("space:S", "S", pinned: [.tab(Self.tab("p", "https://both.invalid/"))],
+                       unpinned: [.tab(Self.tab("t", "https://both.invalid/")),
+                                  .tab(Self.tab("u", "https://only.invalid/"))]),
+        ])
+        let result = plan(snapshot)
+        XCTAssertEqual(result.pinnedEntries.map(\.title), ["p"])
+        XCTAssertEqual(result.tabs.map(\.title), ["u"])
+        XCTAssertEqual(result.alreadyPresent, 0, "Detour had nothing before this import")
+    }
+
     @MainActor func testFavouritesGoToTheirProfile() {
         let result = plan(Self.richSnapshot())
         XCTAssertEqual(result.favorites.map(\.title), ["f1", "f2"])

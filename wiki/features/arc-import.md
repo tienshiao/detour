@@ -31,6 +31,12 @@ sources:
   - id: task-293-2
     resource: backlog:TASK-293.2
     title: "Import from Arc: turn a snapshot into Detour profiles, spaces, pinned entries, favourites and history"
+  - id: window
+    resource: ../../Detour/Import/Arc/ArcImportWindowController.swift
+    title: ArcImportWindowController.swift
+  - id: task-293-3
+    resource: backlog:TASK-293.3
+    title: "Import from Arc: File menu import window, first-run offer, and what is not imported"
   - id: task-293-1
     resource: backlog:TASK-293.1
     title: "Import from Arc: read Arc's files and the Arc Data Export file"
@@ -69,7 +75,7 @@ with four Arc profiles, a split view and two real exports.[^task-293-1]
 | File | What the importer takes from it |
 |---|---|
 | `StorableSidebar.json` | Spaces, items, favourites. |
-| `User Data/Local State` | `profile.info_cache[<folder>].name`. A profile with `is_using_default_name: true` has Chromium's placeholder ("Person 1"), which is not shown: the default profile is called "Default", others by folder name. |
+| `User Data/Local State` | `profile.info_cache[<folder>].name`. A profile with `is_using_default_name: true` has Chromium's placeholder ("Person 1"), which is not shown: the default profile is called "Default", others by folder name. Arc's own hidden profile (`__ARC_SYSTEM_PROFILE`, "Profile 2" on the Mac checked; any name starting with `__`) is not listed. |
 | `User Data/<Default \| Profile N>/History` | Browsing history (Chromium). |
 | `StorableArchive*.json`, `StorableArchiveItems.json` | Not read: archived tabs. |
 | `StorableSidebar.<date>.json` | Not read: Arc's own dated backups. |
@@ -209,7 +215,7 @@ plan out; `TabStore.importArcHistory` then writes the history.
 | Folder | A same-named folder under the same parent in that space, else a new one; nesting kept to any depth. |
 | Pinned tab | A dormant `PinnedEntry`, appended after the level's highest `sortOrder` (folders and entries share one order per level). |
 | Split (pinned) | The first two panes become a pinned split (both entries consecutive, one `splitGroupID`), with Arc's width share for a two-pane split; further panes plain entries after it. If either of the first two is already pinned there, every pane comes in plain. |
-| Today tab | A sleeping normal tab appended to the space's list, `lastDeselectedAt` = import time, so the profile's archive threshold counts from the import. A Today split's first two panes become a normal split when both are new, with Arc's width share for a two-pane split. Today tabs are not deduplicated against the space's pinned entries: Arc allows a URL in both. |
+| Today tab | A sleeping normal tab appended to the space's list, `lastDeselectedAt` = import time, so the profile's archive threshold counts from the import. A Today split's first two panes become a normal split when both are new, with Arc's width share for a two-pane split. A Today tab whose URL is pinned anywhere in the space is left out: an export lists top-level pinned tabs among the Today tabs, so without this an export imported after a direct import duplicated them (seen in the TASK-293.3 runtime check). |
 | Favourite | A dormant `Favorite` on the target profile, after its existing ones. |
 | History | The visits of the last `HistoryDatabase.visitRetention` (90 days), filed under the first imported space of that Arc profile, else the first space of its Detour profile, else not imported (`historyWithoutSpace`). |
 
@@ -241,6 +247,52 @@ visits in a single background transaction; `historyURL.title` changes only
 when an imported visit is newer than the URL's last visit, so an old import
 never renames a page Detour has seen since.
 
+## The window and the offer
+
+`ArcImportWindowController` (File › Import from Arc…) is view code over the
+rules above: a source radio (Arc on this Mac, disabled and labelled "not
+found" without Arc's data; an export file through an open panel), one row per
+Arc profile with a checkbox and an "into" popup (a new profile named as the
+planner will name it, or an existing profile; preselected to where an earlier
+import went), its spaces as checkboxes with counts (`ArcImportText`), the
+Bring switches (History disabled for an export, which has none), and the
+not-imported note, the skipped-items note, and for an export the best-guess
+note. Import plans against a fresh `arcImportExistingState()`; a profile
+picked in a popup that was deleted since rebuilds the list instead of
+importing elsewhere; `.staleTarget` says so and imports nothing. The result
+view lists `ArcImportText.summary(of:)` and then each profile's history
+result; the window cannot be closed while history is being written.
+
+`ArcImportOffer` shows an alert once, 1.5 s after launch, to anyone whose
+Mac has `StorableSidebar.json` (user, 2026-11-12: new and current users),
+never in the test host; the flag is set before the alert, so any answer
+ends it. It lives in the data directory's defaults suite
+(`UserDefaultsScope.defaults`), so an isolated run never uses up the
+production offer.
+
+## Runtime check (TASK-293.3)
+
+Driven through System Events in an isolated profile (`DETOUR_DATA_DIR`),
+against this Mac's Arc 1.172.1 data and a real export: the offer appeared,
+its button opened the window, Import created 2 profiles, 2 spaces, 4 pinned
+tabs in 2 folders (one nested), 3 favourites, 6 Today tabs (a split kept as a
+split, width 0.5) and wrote 1,225 + 251 visits; the imported space rendered
+in the sidebar with its tint, favourite tile, folder tree and split row. The
+export, pointed at the profile the direct import made, added only what was
+new. A second pass after the review fixes: declining the offer, then two
+relaunches with no offer; Arc's system profile no longer listed (its real
+name is `__ARC_SYSTEM_PROFILE`, no trailing `__`, so a "wrapped in `__`" rule
+missed it); a Markdown file that is not an export shows "isn't in a format
+Detour understands" with Import disabled; History disabled for an export; a
+re-opened window preselects where the earlier import went. The window swaps
+its content view between the form and the result (two stacks pinned to the
+same container fought over the height), and the Bring label is the first
+column of its grid so it keeps the first row's baseline. Traps met: a popup inside the window's scroll view is `pop up button 1
+of scroll area 1 of window 1`, and while its menu is open System Events
+cannot reach the window, so pick an item by typing its name and Return. The open panel is
+out of process: after Choose…, wait about 3 s before Cmd-Shift-G and again
+before typing the path, or the keystrokes go nowhere and the panel stays open.
+
 # Edge cases
 
 - No `StorableSidebar.json` → `ArcImportError.arcNotFound`; unreadable →
@@ -257,7 +309,8 @@ never renames a page Detour has seen since.
 GRDB-built History) and `ArcExportReaderTests` (fixtures in the shape of the
 real exports) cover reading; `ArcImportPlannerTests` the mapping rules;
 `ArcImportTabStoreTests` the apply step in a real TabStore (relaunch,
-re-import, a stale plan, the history write and its readers). Real Arc data
+re-import, a stale plan, the history write and its readers);
+`ArcImportTextTests` the window's words and the offer rule. Real Arc data
 is never committed.
 
 # Related
