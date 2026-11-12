@@ -547,6 +547,71 @@ nonisolated struct HistoryDatabase: Sendable {
         })
     }
 
+    /// One visit brought in from another browser (`importVisits`).
+    struct ImportedVisit: Sendable, Equatable {
+        var url: String
+        var title: String?
+        /// Seconds since 1970.
+        var visitTime: Double
+        var isTyped: Bool
+    }
+
+    /// Writes visits imported from another browser (TASK-293.2) under one
+    /// history scope, in a single background transaction: all of them or,
+    /// on failure, none.
+    ///
+    /// A visit already present — same URL, scope and time — is skipped, so
+    /// importing the same history twice adds nothing. `historyURL` rows are
+    /// upserted: the visit count grows, `lastVisitTime` only moves forward,
+    /// and the URL's latest title changes only when the imported visit is the
+    /// newest one, so an old import never renames a page Detour has seen since.
+    ///
+    /// `completion` runs on GRDB's writer queue with the number of visits
+    /// added; hop to main yourself.
+    func importVisits(_ visits: [ImportedVisit], spaceID: String,
+                      completion: (@Sendable (Result<Int, Error>) -> Void)? = nil) {
+        guard !visits.isEmpty else {
+            completion?(.success(0))
+            return
+        }
+        dbQueue.asyncWrite({ db -> Int in
+            var added = 0
+            for visit in visits {
+                let urlID: Int64
+                if let id = try Int64.fetchOne(db, sql: "SELECT id FROM historyURL WHERE url = ?",
+                                               arguments: [visit.url]) {
+                    let duplicate = try Bool.fetchOne(db, sql: """
+                        SELECT 1 FROM historyVisit WHERE urlID = ? AND spaceID = ? AND visitTime = ? LIMIT 1
+                        """, arguments: [id, spaceID, visit.visitTime]) ?? false
+                    if duplicate { continue }
+                    try db.execute(sql: """
+                        UPDATE historyURL SET
+                            visitCount = visitCount + 1,
+                            title = CASE WHEN ? >= lastVisitTime AND ? IS NOT NULL THEN ? ELSE title END,
+                            lastVisitTime = MAX(lastVisitTime, ?)
+                        WHERE id = ?
+                        """, arguments: [visit.visitTime, visit.title, visit.title, visit.visitTime, id])
+                    urlID = id
+                } else {
+                    try db.execute(sql: """
+                        INSERT INTO historyURL (url, title, faviconURL, visitCount, lastVisitTime)
+                        VALUES (?, ?, NULL, 1, ?)
+                        """, arguments: [visit.url, visit.title ?? "", visit.visitTime])
+                    urlID = db.lastInsertedRowID
+                }
+                try HistoryVisit(urlID: urlID, spaceID: spaceID, visitTime: visit.visitTime,
+                                 isTyped: visit.isTyped, title: visit.title).insert(db)
+                added += 1
+            }
+            return added
+        }, completion: { _, result in
+            if case .failure(let error) = result {
+                log.error("Failed to import history visits: \(error.localizedDescription)")
+            }
+            completion?(result)
+        })
+    }
+
     /// Corrects the title of one recorded visit. A single-page app changes
     /// `document.title` after the navigation has finished, so the title stored
     /// with the visit is the previous page's (TASK-88).
@@ -2131,7 +2196,10 @@ nonisolated struct HistoryDatabase: Sendable {
     /// Runs as a fire-and-forget async write so it never blocks the caller
     /// (e.g. launch, before first paint). Serialized on the writer queue, so a
     /// subsequent read on the same DatabaseQueue observes the pruning.
-    func expireOldVisits(olderThan maxAge: TimeInterval = 90 * 24 * 3600) {
+    /// How long visits are kept; also how far back an import reaches (TASK-293.2).
+    static let visitRetention: TimeInterval = 90 * 24 * 3600
+
+    func expireOldVisits(olderThan maxAge: TimeInterval = visitRetention) {
         dbQueue.asyncWrite({ db in
             let cutoff = Date().timeIntervalSince1970 - maxAge
             // Delete old visits

@@ -127,6 +127,20 @@ nonisolated enum ArcImportError: Error, Equatable, Sendable {
     case unrecognizedFormat(path: String, reason: String)
 }
 
+extension ArcImportError: LocalizedError {
+    /// A sentence the import window can show as it is.
+    nonisolated var errorDescription: String? {
+        switch self {
+        case .arcNotFound:
+            "Arc's data wasn't found on this Mac."
+        case .unreadable(let path, let reason):
+            "“\((path as NSString).lastPathComponent)” couldn't be read: \(reason)"
+        case .unrecognizedFormat(let path, let reason):
+            "“\((path as NSString).lastPathComponent)” isn't in a format Detour understands (\(reason))."
+        }
+    }
+}
+
 extension ArcSidebarNode {
     /// Every tab in this node, depth first, in Arc's order.
     nonisolated var allTabs: [ArcTab] {

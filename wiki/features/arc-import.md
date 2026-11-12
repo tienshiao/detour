@@ -22,6 +22,15 @@ sources:
   - id: task-293
     resource: backlog:TASK-293
     title: Import from Arc (epic, with the format survey and Arc's sunset dates)
+  - id: planner
+    resource: ../../Detour/Import/Arc/ArcImportPlanner.swift
+    title: ArcImportPlanner.swift
+  - id: apply
+    resource: ../../Detour/Browser/TabStore+ArcImport.swift
+    title: TabStore+ArcImport.swift
+  - id: task-293-2
+    resource: backlog:TASK-293.2
+    title: "Import from Arc: turn a snapshot into Detour profiles, spaces, pinned entries, favourites and history"
   - id: task-293-1
     resource: backlog:TASK-293.1
     title: "Import from Arc: read Arc's files and the Arc Data Export file"
@@ -185,6 +194,53 @@ over before:
 Export keys change when a space or folder is renamed in Arc; direct keys
 never do.
 
+## Into Detour
+
+`ArcImportPlanner.plan(_:options:existing:)` is pure: it sees Detour only as
+`ArcImportExistingState` (normal profiles with their favourite URLs, normal
+spaces with their folders, pinned URLs and tab URLs, and the `importLink`
+rows) and returns an `ArcImportPlan`. `TabStore.applyArcImport` carries the
+plan out; `TabStore.importArcHistory` then writes the history.
+
+| Arc | Detour |
+|---|---|
+| Profile | A **new** profile named after it (user, 2026-11-12), `"<name> (Arc)"` when the name is taken, unless the window points it at an existing profile, or an earlier import's link names a profile that still exists. A new profile is made only when it receives a space or a favourite. |
+| Space | The space an earlier import's link names (even renamed) **when it is in this import's target profile**, else a same-named space (case-insensitive) in the target profile, else a new space: Arc's title, emoji (`⭐️` for a symbol icon), colour (else a preset by position). |
+| Folder | A same-named folder under the same parent in that space, else a new one; nesting kept to any depth. |
+| Pinned tab | A dormant `PinnedEntry`, appended after the level's highest `sortOrder` (folders and entries share one order per level). |
+| Split (pinned) | The first two panes become a pinned split (both entries consecutive, one `splitGroupID`), with Arc's width share for a two-pane split; further panes plain entries after it. If either of the first two is already pinned there, every pane comes in plain. |
+| Today tab | A sleeping normal tab appended to the space's list, `lastDeselectedAt` = import time, so the profile's archive threshold counts from the import. A Today split's first two panes become a normal split when both are new, with Arc's width share for a two-pane split. Today tabs are not deduplicated against the space's pinned entries: Arc allows a URL in both. |
+| Favourite | A dormant `Favorite` on the target profile, after its existing ones. |
+| History | The visits of the last `HistoryDatabase.visitRetention` (90 days), filed under the first imported space of that Arc profile, else the first space of its Detour profile, else not imported (`historyWithoutSpace`). |
+
+Every new tile and tab shows the site's `/favicon.ico` guess until a page
+reports its own icon.
+
+### Re-importing
+
+Dedupe is **by content only** (user, 2026-11-12): a pinned URL already in
+the same folder of the matched space, a tab URL already in the space's list,
+a favourite URL already on the profile, or a visit with the same URL, space
+and time is left out; everything else comes in, including what the user
+deleted since the last import. The only memory kept is the `importLink`
+table (session database, migration v25): source (`arc`) + source key →
+Detour profile or space id, written after the save, and only for spaces the save wrote (a space unit the database refused gets its link at a later import). A link to
+something that no longer exists is ignored and replaced.
+
+### Applying
+
+`applyArcImport` first checks that every id the plan names is in the store
+or in the plan (`.staleTarget` otherwise, nothing changed), then adds
+profiles (each profile row is written as `addProfile` writes it: profiles are
+not in the session snapshot), spaces, folders, entries, tabs and favourites
+in one main-actor pass, assigning each space's `pinnedEntries` and `tabs`
+once (each assignment reports to the extension contexts), notifies the
+observers once per touched space, and calls `saveNow()` once. There is no
+undo (user, 2026-11-12). `HistoryDatabase.importVisits` writes one profile's
+visits in a single background transaction; `historyURL.title` changes only
+when an imported visit is newer than the URL's last visit, so an old import
+never renames a page Detour has seen since.
+
 # Edge cases
 
 - No `StorableSidebar.json` → `ArcImportError.arcNotFound`; unreadable →
@@ -199,12 +255,16 @@ never do.
 
 `ArcSidebarReaderTests` (synthetic `StorableSidebar.json`, Local State and a
 GRDB-built History) and `ArcExportReaderTests` (fixtures in the shape of the
-real exports). Real Arc data is never committed.
+real exports) cover reading; `ArcImportPlannerTests` the mapping rules;
+`ArcImportTabStoreTests` the apply step in a real TabStore (relaunch,
+re-import, a stale plan, the history write and its readers). Real Arc data
+is never committed.
 
 # Related
 
 - [Profiles and spaces](../architecture/profiles-and-spaces.md) — what an Arc profile and space map onto.
 - [History database](../architecture/history-database.md) — where imported visits go, per space.
+- [Session database](../architecture/session-database.md) — the `importLink` table (v25).
 
 [^task-293]: TASK-293
 [^task-293-1]: TASK-293.1

@@ -400,7 +400,7 @@ class Space {
     })();
     """
 
-    static let presetColors: [String] = [
+    nonisolated static let presetColors: [String] = [
         "007AFF", // Blue
         "FF3B30", // Red
         "34C759", // Green
@@ -433,8 +433,9 @@ class TabStore {
     }()
     nonisolated static let incognitoProfileID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
 
-    private let appDB: AppDatabase
-    private let historyDB: HistoryDatabase
+    /// Internal for the store's extensions in other files (Arc import).
+    let appDB: AppDatabase
+    let historyDB: HistoryDatabase
     /// Told when a tab's load ends, to find the site's OpenSearch description
     /// (TASK-288). The shared store has the app's; a test store has none
     /// unless the test gives it one.
@@ -675,6 +676,25 @@ class TabStore {
         scheduleSave()
         notifyObservers { $0.tabStoreDidAddProfile(profile) }
         return profile
+    }
+
+    /// Adds a profile built elsewhere (an import), without an undo.
+    /// `addProfile(name:)` is the user-facing path. Profiles are not part of
+    /// the session snapshot, so the row is written here, as `addProfile`
+    /// does; the spaces that use it reach the database with the caller's save.
+    func adoptImportedProfile(_ profile: Profile) {
+        precondition(!profiles.contains { $0.id == profile.id }, "profile \(profile.id) is already in the store")
+        profiles.append(profile)
+        appDB.saveProfile(profile.toRecord())
+        notifyObservers { $0.tabStoreDidAddProfile(profile) }
+    }
+
+    /// Adds a space built elsewhere (an import), without an undo; the
+    /// caller notifies `tabStoreDidUpdateSpaces` and saves the session.
+    func adoptImportedSpace(_ space: Space) {
+        precondition(!spaces.contains { $0.id == space.id }, "space \(space.id) is already in the store")
+        space.profile = profile(withID: space.profileID)
+        spaces.append(space)
     }
 
     func updateProfile(_ profile: Profile) {

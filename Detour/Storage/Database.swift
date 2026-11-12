@@ -1483,7 +1483,53 @@ nonisolated struct AppDatabase: Sendable {
                 """)
         }
 
+        migrator.registerMigration("v25") { db in
+            // TASK-293.2: where an import put each source profile and space
+            // (an Arc profile or space by its source key → a Detour profile or
+            // space id), so a later import goes back there even after a
+            // rename. Nothing else about an import is remembered: dedupe is by
+            // content (user, 2026-11-12). Ids are not foreign keys: a row whose
+            // profile or space is gone is ignored, and replaced at the next import.
+            try db.create(table: "importLink") { t in
+                t.column("source", .text).notNull()
+                t.column("sourceKey", .text).notNull()
+                t.column("kind", .text).notNull()
+                t.column("detourID", .text).notNull()
+                t.column("importedAt", .double).notNull()
+                t.primaryKey(["source", "sourceKey"])
+            }
+        }
+
         return migrator
+    }
+
+    // MARK: - Import links
+
+    /// Source key → Detour id for one import source ("arc").
+    func loadImportLinks(source: String) -> [String: UUID] {
+        performRead("load import links", default: [:]) { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT sourceKey, detourID FROM importLink WHERE source = ?",
+                                        arguments: [source])
+            var links: [String: UUID] = [:]
+            for row in rows {
+                if let id = UUID(uuidString: row["detourID"]) { links[row["sourceKey"]] = id }
+            }
+            return links
+        }
+    }
+
+    /// Records (or replaces) where an import put each source key, in one transaction.
+    func saveImportLinks(source: String, _ links: [(sourceKey: String, kind: String, detourID: UUID)],
+                         at date: Date = Date()) {
+        performWrite("save import links") { db in
+            for link in links {
+                try db.execute(sql: """
+                    INSERT OR REPLACE INTO importLink (source, sourceKey, kind, detourID, importedAt)
+                    VALUES (?, ?, ?, ?, ?)
+                    """, arguments: [source, link.sourceKey, link.kind, link.detourID.uuidString,
+                                       date.timeIntervalSince1970])
+            }
+        }
     }
 
     // MARK: - Favorites

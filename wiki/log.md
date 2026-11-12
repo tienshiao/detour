@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-11-12
+* **Update**: TASK-293.2 — [Import from Arc](features/arc-import.md) (new section "Into Detour"): the pure planner and its mapping table (new profile per Arc profile, `(Arc)` on a taken name, link → same-named → new space, folders by name per parent, shared per-level sort order, two-pane splits, Today tabs asleep with the archive clock at import, history under the first imported space), content-only dedupe and the `importLink` table (user decisions), and how `applyArcImport` applies (stale check, profile rows written apart from the snapshot, one save, no undo); `importVisits` never renames a page seen since. [Session database](architecture/session-database.md): `importLink`, v25.
 * **Creation**: TASK-293.1 — [Import from Arc](features/arc-import.md): Arc 1.172.1's on-disk formats (StorableSidebar.json's live `sidebar.containers` vs its stale sync shadows, ordered-map arrays, space/item/split/favourite shapes, Local State names, Chromium History v70 read from a copy) and the Export Data Markdown file (measured against the live sidebar: `## Favorites` = profile favourites + top-level pinned tabs + Today tabs with no boundary; folders `##`/`###`); the shared-lead rule for export favourites (user decision); source keys for re-imports.
 
 ## 2026-11-11

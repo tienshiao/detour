@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: Session database
-description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v24, and the GRDB record types.
+description: The tables of browser.db, what each is for, the foreign keys that shape the save order, the migration history through v25, and the GRDB record types.
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
@@ -70,6 +70,7 @@ GRDB `DatabaseQueue`, opened at
 | `profileExtension` | (`profileID`, `extensionID`) | Per-profile enabled and pinned flags. | A **missing row** means the profile's default: off, in every profile since v24 / TASK-312 (before: on, except in the Private profile). An install writes its target profile's ON row ([extensions on per profile](../decisions/extensions-on-per-profile.md)). |
 | `extensionPermission` | (`extensionID`, `permissionKey`, `permissionType`) | Saved permission decisions. | Status 0 is granted; any other value reads as denied. |
 | `extensionInstalledEvent` | (`extensionID`, `profileID`) | Ledger for `runtime.onInstalled`. | No FK; deleted explicitly. |
+| `importLink` | (`source`, `sourceKey`) | Where an import put each source profile and space (v25, [Import from Arc](../features/arc-import.md)). | No FK; a row naming something gone is ignored. |
 | `pendingProfileDataRemoval` | `profileID` | Deleted profiles whose on-disk WebKit data is not removed yet. | No FK: the profile row is already gone. |
 | `webKitStorageIdentifier` | `identifier` | WebKit storage identifiers an isolated data directory created. | The default data directory records nothing. |
 | `appState` | `key` | Key-value app state. | Keys in use: `lastActiveSpaceID`, `extensionUpdateLastCheckAt`. |
@@ -151,6 +152,7 @@ migration.
 | v22 | `siteSearch.isDiscovered` (default false) and `siteSearchRemovedHost` (TASK-288, OpenSearch discovery). Tested against a database migrated to v21. |
 | v23 | `closedTab.peekHostTabID` (TASK-307): a closed Peek's host tab, nil for closed tabs ([closed tabs](../tabs/closed-tabs-and-archive.md#closed-peeks)). Tested against a database migrated to v22. |
 | v24 | Data only (TASK-312): an ON `profileExtension` row for every normal profile × installed extension that has none, the old implicit default written down before a missing row became off everywhere; existing rows and the Private profile untouched ([extensions on per profile](../decisions/extensions-on-per-profile.md)). Tested against a database migrated to v23. |
+| v25 | `importLink` (TASK-293.2): where an import put each source profile and space — (`source`, `sourceKey`) → `kind`, `detourID`, `importedAt`. Not foreign keys: a row naming something gone is ignored and replaced at the next import ([Import from Arc](../features/arc-import.md)). |
 
 Patterns worth copying from the existing migrations:
 
