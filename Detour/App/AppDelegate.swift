@@ -320,27 +320,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ArcImportWindowController.shared.present()
     }
 
-    /// The one-time offer to import from Arc (TASK-293.3): once, to anyone
-    /// whose Mac has Arc's data, whatever they answer.
+    /// The one-time offer to import from Arc (TASK-293.3, TASK-293.5): once,
+    /// to anyone whose Mac has Arc's data with something in it, whatever they
+    /// answer. Arc's sidebar is read first so the sheet shows their spaces.
     private func offerArcImportIfNeeded(over windowController: BrowserWindowController) {
-        guard ArcImportOffer.live.takeOffer(isTestHost: Self.isRunningUnitTests) else { return }
-        let alert = NSAlert()
-        alert.messageText = "Bring your Arc setup to Detour?"
-        alert.informativeText = """
-            Detour found Arc on this Mac. It can bring over your spaces, pinned tabs and folders, \
-            favorites and the last 90 days of history. Arc stops working on December 22, 2026.
-
-            You can also do this later from File › Import from Arc…
-            """
-        alert.addButton(withTitle: "Import from Arc…")
-        alert.addButton(withTitle: "Not Now")
-        let handle: (NSApplication.ModalResponse) -> Void = { response in
-            if response == .alertFirstButtonReturn { ArcImportWindowController.shared.present() }
-        }
-        if let window = windowController.window, window.isVisible, !windowController.hasClosed {
-            alert.beginSheetModal(for: window, completionHandler: handle)
-        } else {
-            handle(alert.runModal())
+        let offer = ArcImportOffer.live
+        guard offer.isDue(isTestHost: Self.isRunningUnitTests) else { return }
+        Task {
+            let snapshot = await Task.detached(priority: .userInitiated) { () -> ArcImportSnapshot? in
+                try? ArcSidebarReader.read()
+            }.value
+            // Unreadable this time: the offer waits for a later launch.
+            guard let snapshot, offer.isDue(isTestHost: Self.isRunningUnitTests) else { return }
+            guard ArcImportOffer.isWorthOffering(snapshot) else {
+                offer.markShown()
+                return
+            }
+            // The launch window, else any open normal window; with none, a later launch.
+            let target = [windowController] + windowControllers
+            guard let host = target.first(where: { !$0.hasClosed && !$0.isIncognito && $0.window?.isVisible == true }),
+                  ArcImportOfferSheetController.present(snapshot, over: host) else { return }
+            offer.markShown()
         }
     }
 

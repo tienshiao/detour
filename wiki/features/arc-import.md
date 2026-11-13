@@ -37,6 +37,12 @@ sources:
   - id: task-293-3
     resource: backlog:TASK-293.3
     title: "Import from Arc: File menu import window, first-run offer, and what is not imported"
+  - id: offer-sheet
+    resource: ../../Detour/Import/Arc/ArcImportOfferSheetController.swift
+    title: ArcImportOfferSheetController.swift
+  - id: task-293-5
+    resource: backlog:TASK-293.5
+    title: "Import from Arc: a launch offer that shows the user's own Arc setup"
   - id: task-293-1
     resource: backlog:TASK-293.1
     title: "Import from Arc: read Arc's files and the Arc Data Export file"
@@ -263,12 +269,47 @@ importing elsewhere; `.staleTarget` says so and imports nothing. The result
 view lists `ArcImportText.summary(of:)` and then each profile's history
 result; the window cannot be closed while history is being written.
 
-`ArcImportOffer` shows an alert once, 1.5 s after launch, to anyone whose
-Mac has `StorableSidebar.json` (user, 2026-11-12: new and current users),
-never in the test host; the flag is set before the alert, so any answer
-ends it. It lives in the data directory's defaults suite
+`ArcImportOffer` is due once, 1.5 s after launch, to anyone whose Mac has
+`StorableSidebar.json` (user, 2026-11-12: new and current users), never in
+the test host. It lives in the data directory's defaults suite
 (`UserDefaultsScope.defaults`), so an isolated run never uses up the
 production offer.
+
+Since TASK-293.5 the offer is a custom sheet, `ArcImportOfferSheetController`,
+not an `NSAlert` (user, 2026-11-13: for many people it is one of the first
+things Detour shows). The launch reads Arc's sidebar first, in the
+background, and then:
+
+- unreadable: nothing is shown or marked; a later launch tries again;
+- nothing worth offering (`ArcImportOffer.isWorthOffering`: no space with a
+  tab and no favourite, e.g. an Arc installed and never set up): marked
+  shown, nothing on screen;
+- otherwise the sheet goes on the launch window (else any open normal
+  window) and the offer is marked shown once it is up. Whatever the answer,
+  it never comes back.
+
+The sheet shows Arc's app icon (from its bundle id,
+`company.thebrowser.Browser`; left out when the app is gone) → Detour's, the
+user's spaces as chips in Arc's colours (`ArcImportOfferChipLayout`: two rows
+at most, then "+N more"), totals (`ArcImportText.offerTotals`; Today tabs
+not counted) and what stays in Arc, with the shutdown date until it passes.
+**Import Everything** (the user's choice over opening the window) plans
+`ArcImportOptions.everything` against a fresh state, so each Arc profile goes
+where an earlier import sent it, else to a new profile; the sheet then shows
+`ArcImportText.summary` with the history lines in a card and
+`resultNotes` (left out, history with nowhere to go, a failed save) in small
+print below, and Done waits for the history write. The window behind moves
+to the first imported space **without selecting a tab**: the first runtime
+pass selected a Today tab, which woke SoundCloud behind the sheet.
+**Choose…** opens the import window; **Not Now** closes the sheet.
+
+**Words.** What the code and this page call Today tabs, the window and the
+sheet call **unpinned tabs** (user, 2026-11-13): Arc's own help centre
+says Pinned Tabs and Unpinned Tabs ("the Unpinned Section", below the
+sidebar's line), and "Today" was early Arc's label, now mostly in 2022–23
+reviews; the user, an Arc user, did not know it. Links Arc's reader cannot
+use say why they are left out ("aren't web pages, like arc:// pages"), not
+"only Arc can open", which read as a Detour limitation.
 
 ## Runtime check (TASK-293.3)
 
@@ -310,7 +351,7 @@ GRDB-built History) and `ArcExportReaderTests` (fixtures in the shape of the
 real exports) cover reading; `ArcImportPlannerTests` the mapping rules;
 `ArcImportTabStoreTests` the apply step in a real TabStore (relaunch,
 re-import, a stale plan, the history write and its readers);
-`ArcImportTextTests` the window's words and the offer rule. Real Arc data
+`ArcImportTextTests` the window's words, the offer rule, and the launch sheet's words, worth-offering rule and chip packing. Real Arc data
 is never committed.
 
 # Related

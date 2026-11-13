@@ -45,7 +45,7 @@ final class ArcImportWindowController: NSWindowController, NSWindowDelegate {
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private let pinnedCheck = NSButton(checkboxWithTitle: "Pinned tabs and folders", target: nil, action: nil)
     private let favoritesCheck = NSButton(checkboxWithTitle: "Favorites", target: nil, action: nil)
-    private let todayCheck = NSButton(checkboxWithTitle: "Today tabs", target: nil, action: nil)
+    private let todayCheck = NSButton(checkboxWithTitle: "Unpinned tabs", target: nil, action: nil)
     private let historyCheck = NSButton(checkboxWithTitle: "History (last 90 days)", target: nil, action: nil)
     private let notesLabel = NSTextField(wrappingLabelWithString: "")
     private let importButton = NSButton(title: "Import", target: nil, action: nil)
@@ -484,14 +484,10 @@ final class ArcImportWindowController: NSWindowController, NSWindowDelegate {
         window?.contentView = resultView
         resultLines.arrangedSubviews.forEach { $0.removeFromSuperview() }
         historyLines.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        var lines = ArcImportText.summary(of: plan)
-        if case .failed(let reason) = outcome {
-            lines.append("Detour couldn’t save this yet (\(reason)); it tries again with the next change.")
-        }
-        if let skipped = snapshot.flatMap({ ArcImportText.skippedNote($0.skipped) }) { lines.append(skipped) }
-        if let missing = ArcImportText.historyWithoutSpaceLine(plan.historyWithoutSpace, names: arcProfileNames) {
-            lines.append(missing)
-        }
+        var saveFailure: String?
+        if case .failed(let reason) = outcome { saveFailure = reason }
+        let lines = ArcImportText.resultLines(of: plan, saveFailure: saveFailure, skipped: snapshot?.skipped ?? [],
+                                              names: arcProfileNames)
         for line in lines { resultLines.addArrangedSubview(wrapping("• " + line)) }
 
         guard !plan.history.isEmpty else { return }
