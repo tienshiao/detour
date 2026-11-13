@@ -60,7 +60,7 @@ a dispatcher.
 | Part | File | What it is |
 |---|---|---|
 | `TabSidebarViewController` | [TabSidebarViewController.swift](../../Detour/Browser/Sidebar/TabSidebarViewController.swift) | The controller. Data source, delegate and menu delegate for every page's table |
-| Title-bar row | same | Sidebar toggle, Back / Forward / Reload (`HoverButton`). Reload becomes Stop while loading |
+| Title-bar row | same | Sidebar toggle, Back / Forward / Reload (`HoverButton`). Reload becomes Stop while loading. A disabled `HoverButton` shows no hover background (TASK-323, the user's call after TASK-322: AppKit's controls show no rollover while disabled). It follows the pointer and `isEnabled` together, and forgets the pointer when hidden or moved to another window, which send no `mouseExited` |
 | `FauxAddressBar` | [FauxAddressBar.swift](../../Detour/Browser/Sidebar/FauxAddressBar.swift) | Read-only host display; click opens the [command palette](../features/command-palette.md) in place; on hover shows, left to right, the pinned extension buttons, Copy Link and Site Settings — a Quick Detour bar's order and labels (TASK-299). Copy and Site Settings are fixed at the trailing edge and extensions grow leftward from Copy, so nothing moves as extensions are pinned; all the trailing icons stay hover-only and appear together |
 | `SpacePageView` | [SpacePageView.swift](../../Detour/Browser/Sidebar/SpacePageView.swift) | One per space: `FavoritesBarView`, `SpaceHeaderView`, `FavoriteDropHintView`, a scroll view with the tab table, fade shadows |
 | `ArchivePageView` | [ArchivePageView.swift](../../Detour/Browser/Sidebar/ArchivePageView.swift) | The Archived Tabs page, left of the first space; see [closed tabs and archive](../tabs/closed-tabs-and-archive.md) |

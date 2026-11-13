@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-11-13
+* **Update**: TASK-323 — [Sidebar overview](sidebar/overview.md) (title-bar row) and [Quick Detour](features/quick-detour.md) (Back): a disabled `HoverButton` shows no hover background, as AppKit's controls show no rollover; the background follows the pointer and `isEnabled` together.
 * **Update**: TASK-322 — [Quick Detour](features/quick-detour.md) (what it does, new section "Back, the whole capsule, and load progress"): a back button past the traffic lights, the whole address capsule opening the palette and dragging the window (its hit test hands everything but its own buttons to the host), and the capsule filling with load progress (`displayedProgress`, a 0.1 floor, a fade with a generation guard). [AppKit gotchas](platform/appkit-gotchas.md): a `HoverButton`'s hover background is what a hit lands on under the pointer (sent a Copy Link click to the palette, found at runtime), and a tinted button does not dim when disabled.
 
 ## 2026-11-12

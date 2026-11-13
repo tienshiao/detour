@@ -578,7 +578,8 @@ TASK-322, the user's feedback of 2026-11-13.[^task-322]
 the zoom button (which ends at 72), and the capsule starts 6 points after
 it. It follows the tab's `canGoBack` and calls `goBack`. It is dimmed by
 hand: a tinted template image draws the same disabled as enabled, so
-`setCanGoBack` sets the tint too. No forward button (Cmd+] and the mouse
+`setCanGoBack` sets the tint too. Disabled, it shows no hover background
+(`HoverButton`, TASK-323). No forward button (Cmd+] and the mouse
 button go forward) and no back-history menu: not asked for.
 
 **The whole capsule.** `QuickDetourAddressCapsule.hitTest` hands every hit
