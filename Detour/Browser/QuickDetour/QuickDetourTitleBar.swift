@@ -1,9 +1,10 @@
 import AppKit
 
 /// The title bar of a Quick Detour window (TASK-193.1), after Arc's Little
-/// Arc (docs/little-window/arc-little-arc.png): past the traffic lights an
-/// address capsule holding the profile pill, the page's host in the centre
-/// (click: the palette, navigating in place), the pinned extensions' buttons,
+/// Arc (docs/little-window/arc-little-arc.png): past the traffic lights a
+/// back button (TASK-322), then an address capsule holding the profile pill,
+/// the page's host in the centre (click: the palette, navigating in place),
+/// the pinned extensions' buttons,
 /// the copy-link button and the page settings button (the main window's site
 /// settings popover, TASK-210) at the capsule's trailing edge, in the sidebar
 /// address bar's order (TASK-299); then Open in <Space> at the trailing
@@ -14,8 +15,12 @@ import AppKit
 /// which switches the page to another (TASK-193.4).
 ///
 /// The host and Open in's main part are handles as well as buttons: a press
-/// that moves drags the window (TASK-210).
+/// that moves drags the window (TASK-210). The host's press covers the whole
+/// capsule apart from its own controls, and the capsule fills with the page's
+/// load progress (TASK-322).
 final class QuickDetourTitleBar: NSView {
+    /// The back button was clicked.
+    var onBack: (() -> Void)?
     /// The profile pill was pressed: its menu, anchored on the pill.
     var onProfileClick: ((NSView) -> Void)?
     var onHostClick: (() -> Void)?
@@ -29,10 +34,11 @@ final class QuickDetourTitleBar: NSView {
     /// The page settings button was clicked: the popover, anchored on it.
     var onPageSettingsClick: ((NSView) -> Void)?
 
-    /// Where the capsule starts: clear of the traffic lights.
-    static let leadingInset: CGFloat = 78
+    /// Where the back button starts: clear of the traffic lights.
+    static let leadingInset: CGFloat = 76
 
-    private let capsule = NSView()
+    let backButton = HoverButton()
+    let capsule = QuickDetourAddressCapsule()
     let pill = QuickDetourProfilePill()
     private let pillIcon = NSImageView()
     private let pillLabel = NSTextField(labelWithString: "")
@@ -63,9 +69,18 @@ final class QuickDetourTitleBar: NSView {
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
 
+        configureIconButton(backButton, symbol: "chevron.left", label: "Back", action: #selector(backClicked))
+        backButton.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Back")?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
+        backButton.fixedHoverSize = 22
+        setCanGoBack(false)
+        addSubview(backButton)
+
         capsule.wantsLayer = true
         capsule.layer?.cornerRadius = 8
+        capsule.layer?.masksToBounds = true
         capsule.translatesAutoresizingMaskIntoConstraints = false
+        capsule.onHoverChange = { [weak self] in self?.updateColors() }
         addSubview(capsule)
 
         pill.wantsLayer = true
@@ -101,7 +116,12 @@ final class QuickDetourTitleBar: NSView {
         hostButton.translatesAutoresizingMaskIntoConstraints = false
         hostButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         hostButton.toolTip = "Go somewhere else"
+        // A release anywhere on the capsule clicks it: the capsule hands it
+        // every press its own controls do not take.
+        hostButton.clickArea = capsule
         capsule.addSubview(hostButton)
+        capsule.pressTarget = hostButton
+        capsule.ownPressViews = [pill]
 
         lockIcon.translatesAutoresizingMaskIntoConstraints = false
         lockIcon.contentTintColor = .tertiaryLabelColor
@@ -161,7 +181,10 @@ final class QuickDetourTitleBar: NSView {
         hostCentred.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
-            capsule.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.leadingInset),
+            backButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.leadingInset),
+            backButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            capsule.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 6),
             capsule.trailingAnchor.constraint(equalTo: openInControl.leadingAnchor, constant: -8),
             capsule.centerYAnchor.constraint(equalTo: centerYAnchor),
             capsule.heightAnchor.constraint(equalToConstant: 28),
@@ -274,6 +297,28 @@ final class QuickDetourTitleBar: NSView {
         NSImage(systemSymbolName: isPrivate ? "eyeglasses" : "person.crop.circle", accessibilityDescription: nil)
     }
 
+    /// Whether the back button is enabled: the page has somewhere to go back to.
+    func setCanGoBack(_ canGoBack: Bool) {
+        backButton.isEnabled = canGoBack
+        // A tinted template image draws the same disabled as enabled.
+        backButton.contentTintColor = canGoBack ? .secondaryLabelColor : .quaternaryLabelColor
+    }
+
+    /// The load's progress the capsule shows, nil for none: while a load is
+    /// in flight, at least a sliver so it shows from the start (WebKit's
+    /// first estimate can lag the load starting); nothing once it ends.
+    static func displayedProgress(isLoading: Bool, estimatedProgress: Double) -> Double? {
+        guard isLoading, estimatedProgress < 1 else { return nil }
+        return max(estimatedProgress, minimumDisplayedProgress)
+    }
+
+    static let minimumDisplayedProgress = 0.1
+
+    /// Fills the capsule with the page's load progress (`displayedProgress`).
+    func setLoadProgress(isLoading: Bool, estimatedProgress: Double) {
+        capsule.setProgress(Self.displayedProgress(isLoading: isLoading, estimatedProgress: estimatedProgress))
+    }
+
     /// The page's host, or the prompt when nothing is loaded.
     func setHost(_ host: String?, isSecure: Bool) {
         let text = host ?? ""
@@ -359,7 +404,9 @@ final class QuickDetourTitleBar: NSView {
 
     private func updateColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            capsule.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
+            capsule.layer?.backgroundColor = NSColor.labelColor
+                .withAlphaComponent(capsule.isHovered ? 0.09 : 0.06).cgColor
+            capsule.progressView.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor
             openInControl.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
             openInDivider.layer?.backgroundColor = NSColor.separatorColor.cgColor
             if isQuarantine {
@@ -380,6 +427,7 @@ final class QuickDetourTitleBar: NSView {
 
     // MARK: - Actions
 
+    @objc private func backClicked() { onBack?() }
     @objc private func hostClicked() { onHostClick?() }
     @objc private func copyClicked() { onCopyLink?() }
     @objc private func pageSettingsClicked() { onPageSettingsClick?(pageSettingsButton) }
@@ -407,6 +455,9 @@ final class QuickDetourBarButton: NSButton {
     var beginWindowDrag: (NSWindow, NSEvent) -> Void = { window, press in window.performDrag(with: press) }
     /// The press's next drag or release; a test hands its own.
     var nextPressEvent: (NSWindow) -> NSEvent? = { $0.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) }
+    /// Where a release counts as a click: the button, or a view around it
+    /// that hands it its presses (the host's capsule, TASK-322).
+    weak var clickArea: NSView?
 
     /// When the last press on a window in the background happened: the one
     /// `mouseDown` gets with that timestamp is that press.
@@ -428,7 +479,8 @@ final class QuickDetourBarButton: NSButton {
         while let next = nextPressEvent(window) {
             let point = next.locationInWindow
             if next.type == .leftMouseUp {
-                if !activates, bounds.contains(convert(point, from: nil)) { sendAction(action, to: target) }
+                let area = clickArea ?? self
+                if !activates, area.bounds.contains(area.convert(point, from: nil)) { sendAction(action, to: target) }
                 return
             }
             if hypot(point.x - start.x, point.y - start.y) >= Self.dragThreshold {
@@ -437,6 +489,112 @@ final class QuickDetourBarButton: NSButton {
                 return
             }
         }
+    }
+}
+
+/// The address capsule (TASK-322): a press anywhere on it that its own
+/// controls do not take — the empty space, the lock, the gaps between the
+/// icon buttons — goes to `pressTarget` (the host), so the whole capsule opens
+/// the palette, or drags the window once the press moves. It lightens under
+/// the pointer, and its background fills with the page's load progress, as a
+/// sidebar row does.
+final class QuickDetourAddressCapsule: NSView {
+    /// Takes the presses the capsule's own controls do not.
+    weak var pressTarget: NSView?
+    /// Views whose subtree keeps its own presses, as buttons do.
+    var ownPressViews: [NSView] = []
+    /// The hover look changed: the title bar repaints the capsule.
+    var onHoverChange: (() -> Void)?
+    private(set) var isHovered = false {
+        didSet { if isHovered != oldValue { onHoverChange?() } }
+    }
+
+    /// The progress fill, behind everything else; framed in `layout()`.
+    let progressView = NSView()
+    /// The progress shown, nil while none is.
+    private(set) var progress: Double?
+    /// Bumped on every change, so a fade-out finishing late does not undo a
+    /// load that started meanwhile.
+    private var progressGeneration = 0
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        progressView.wantsLayer = true
+        progressView.alphaValue = 0
+        addSubview(progressView, positioned: .below, relativeTo: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point) else { return nil }
+        // A button's own subviews are the button's: a `HoverButton` under the
+        // pointer shows a hover background, which is what the hit lands on.
+        var view: NSView? = hit
+        while let candidate = view, candidate !== self {
+            if candidate is NSButton || ownPressViews.contains(where: { $0 === candidate }) { return hit }
+            view = candidate.superview
+        }
+        return pressTarget ?? hit
+    }
+
+    // MARK: Hover
+
+    /// Follows the visible rect by itself (`.inVisibleRect`), so it is added
+    /// once and never rebuilt.
+    private lazy var hoverTrackingArea = NSTrackingArea(
+        rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if !trackingAreas.contains(hoverTrackingArea) { addTrackingArea(hoverTrackingArea) }
+    }
+
+    override func mouseEntered(with event: NSEvent) { isHovered = true }
+    override func mouseExited(with event: NSEvent) { isHovered = false }
+
+    // MARK: Progress
+
+    func setProgress(_ value: Double?) {
+        guard value != progress else { return }
+        let starting = progress == nil
+        progressGeneration += 1
+        progress = value
+        guard let value else {
+            guard progressView.alphaValue > 0 else { return }
+            let generation = progressGeneration
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.3
+                progressView.animator().alphaValue = 0
+            }, onMain: { [weak self] in
+                guard let self, self.progressGeneration == generation else { return }
+                self.progressView.frame.size.width = 0
+            })
+            return
+        }
+        if starting {
+            // A new load: drop a fade-out still running from the last one, and
+            // grow from the leading edge rather than shrink from where it ended.
+            progressView.layer?.removeAllAnimations()
+            progressView.frame.size.width = 0
+        }
+        progressView.alphaValue = 1
+        guard bounds.width > 0 else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.25
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            progressView.animator().frame = progressFrame(value)
+        }
+    }
+
+    private func progressFrame(_ value: Double) -> NSRect {
+        NSRect(x: 0, y: 0, width: (bounds.width * min(max(value, 0), 1)).rounded(), height: bounds.height)
+    }
+
+    override func layout() {
+        super.layout()
+        if let progress { progressView.frame = progressFrame(progress) }
+        else { progressView.frame.size.height = bounds.height }  // fading out, or empty
     }
 }
 

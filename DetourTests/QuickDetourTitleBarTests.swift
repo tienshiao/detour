@@ -5,7 +5,9 @@ import WebKit
 /// The Quick Detour bar after TASK-210: its page settings are the main
 /// window's site settings acting on the Quick Detour's page and profile; the
 /// host and Open in's main part drag the window once a press moves, and are
-/// buttons otherwise; the palette asks for a search or a URL.
+/// buttons otherwise; the palette asks for a search or a URL. TASK-322: the
+/// back button, the capsule's empty space opening the palette, and its load
+/// progress.
 ///
 /// The shared store with profiles of the test's own; pages from a loopback
 /// server. The bar button gets its events from the application's queue, as
@@ -49,6 +51,7 @@ nonisolated final class QuickDetourTitleBarTests: XCTestCase {
     @MainActor private func serve() async throws -> URL {
         let server = try LoopbackHTTPServer(routes: [
             "/": "<html><head><title>Looked Up</title></head><body>a quick lookup</body></html>",
+            "/next": "<html><head><title>Next Page</title></head><body>a second page</body></html>",
         ])
         servers.append(server)
         let port = try await server.start()
@@ -149,6 +152,145 @@ nonisolated final class QuickDetourTitleBarTests: XCTestCase {
         XCTAssertEqual(controller.commandPaletteView?.placeholder, "Search or enter a URL")
         XCTAssertEqual(CommandPaletteView().placeholder, "Where do you want to go?",
                        "the main window's palette keeps its prompt")
+    }
+
+    // MARK: - Back (TASK-322)
+
+    @MainActor func testTheBackButtonGoesBackAndOnlyWhenThereIsAPageToGoBackTo() async throws {
+        let profile = makeProfile("Title Bar Back")
+        let url = try await serve()
+        let controller = try await openQuickDetour(on: profile, loading: url)
+        let tab = try XCTUnwrap(controller.tab)
+        let back = controller.titleBar.backButton
+        XCTAssertFalse(back.isEnabled, "the first page has nothing to go back to")
+
+        let next = URL(string: "next", relativeTo: url)!.absoluteURL
+        controller.load(next, typed: true)
+        try await waitUntil("the second page to load and the button to enable") {
+            tab.url == next && !tab.isLoading && back.isEnabled
+        }
+
+        back.performClick(nil)
+        try await waitUntil("the first page again, with the button disabled") {
+            tab.url == url && !tab.isLoading && !back.isEnabled
+        }
+    }
+
+    @MainActor func testTheBackButtonSitsBetweenTheTrafficLightsAndTheCapsule() async throws {
+        let profile = makeProfile("Title Bar Back Place")
+        let url = try await serve()
+        let controller = try await openQuickDetour(on: profile, loading: url)
+        let bar = controller.titleBar
+        bar.layoutSubtreeIfNeeded()
+        let zoom = try XCTUnwrap(controller.window?.standardWindowButton(.zoomButton))
+        let zoomMaxX = bar.convert(zoom.bounds, from: zoom).maxX
+
+        XCTAssertGreaterThan(bar.backButton.frame.minX, zoomMaxX, "clear of the traffic lights")
+        XCTAssertLessThan(bar.backButton.frame.maxX, bar.capsule.frame.minX, "before the capsule")
+        XCTAssertEqual(bar.backButton.frame.midY, bar.capsule.frame.midY, accuracy: 1)
+    }
+
+    // MARK: - The capsule opens the palette (TASK-322)
+
+    @MainActor func testTheCapsuleHandsPressesItsControlsDoNotTakeToTheHost() async throws {
+        let profile = makeProfile("Title Bar Capsule")
+        let url = try await serve()
+        let controller = try await openQuickDetour(on: profile, loading: url)
+        let bar = controller.titleBar
+        bar.layoutSubtreeIfNeeded()
+        let capsule = bar.capsule
+        /// What a press at `x` (capsule coordinates), halfway down, lands on.
+        func hit(_ x: CGFloat) -> NSView? {
+            capsule.hitTest(capsule.convert(NSPoint(x: x, y: capsule.bounds.midY), to: bar))
+        }
+        func midX(_ view: NSView) -> CGFloat { capsule.convert(view.bounds, from: view).midX }
+
+        let pillEnd = capsule.convert(bar.pill.bounds, from: bar.pill).maxX
+        let hostStart = capsule.convert(bar.hostButton.bounds, from: bar.hostButton).minX
+        XCTAssertGreaterThan(hostStart - pillEnd, 4, "there is empty space between the pill and the host")
+        XCTAssertTrue(hit((pillEnd + hostStart) / 2) === bar.hostButton, "the empty space is the host's")
+        XCTAssertTrue(hit(midX(bar.hostButton)) === bar.hostButton)
+        XCTAssertTrue(hit(capsule.bounds.maxX - 1) === bar.hostButton, "so is the capsule's very edge")
+
+        let onPill = try XCTUnwrap(hit(midX(bar.pill)))
+        XCTAssertTrue(onPill.isDescendant(of: bar.pill), "the pill keeps its own press")
+        XCTAssertTrue(hit(midX(bar.copyButton)) === bar.copyButton)
+        XCTAssertTrue(hit(midX(bar.pageSettingsButton)) === bar.pageSettingsButton)
+
+        // Under the pointer a button shows its hover background, a subview the
+        // press lands on: still the button's, not the host's.
+        bar.copyButton.subviews.forEach { $0.isHidden = false }
+        let onHoveredCopy = try XCTUnwrap(hit(midX(bar.copyButton)))
+        XCTAssertTrue(onHoveredCopy.isDescendant(of: bar.copyButton), "the hovered button keeps its press")
+    }
+
+    @MainActor func testAClickOnTheCapsulesEmptySpaceOpensThePalette() async throws {
+        let profile = makeProfile("Title Bar Capsule Click")
+        let url = try await serve()
+        let controller = try await openQuickDetour(on: profile, loading: url)
+        let bar = controller.titleBar
+        let window = try XCTUnwrap(controller.window)
+        bar.layoutSubtreeIfNeeded()
+        let capsule = bar.capsule
+        let pillEnd = capsule.convert(bar.pill.bounds, from: bar.pill).maxX
+        let hostStart = capsule.convert(bar.hostButton.bounds, from: bar.hostButton).minX
+        let point = capsule.convert(NSPoint(x: (pillEnd + hostStart) / 2, y: capsule.bounds.midY), to: nil)
+        let host = try XCTUnwrap(capsule.hitTest(bar.convert(point, from: nil)) as? QuickDetourBarButton)
+        XCTAssertTrue(host === bar.hostButton)
+        var queue = [mouse(.leftMouseUp, at: point, in: window)]
+        host.nextPressEvent = { _ in queue.isEmpty ? nil : queue.removeFirst() }
+
+        host.mouseDown(with: mouse(.leftMouseDown, at: point, in: window))
+
+        XCTAssertNotNil(controller.commandPaletteView, "released beside the host, on the capsule: the palette")
+    }
+
+    @MainActor func testAReleaseInTheClickAreaOutsideTheButtonIsAClick() {
+        let clicks = Clicks()
+        let (button, window) = makeButton(clicks)
+        let area = NSView(frame: NSRect(x: 10, y: 10, width: 180, height: 44))
+        window.contentView?.addSubview(area, positioned: .below, relativeTo: button)
+        button.clickArea = area
+        button.beginWindowDrag = { _, _ in XCTFail("under the threshold") }
+
+        _ = press(button, in: window, at: NSPoint(x: 150, y: 30), then: [(.leftMouseUp, NSPoint(x: 151, y: 30))])
+        XCTAssertEqual(clicks.count, 1, "released in the area, beside the button")
+
+        _ = press(button, in: window, at: NSPoint(x: 11, y: 30), then: [(.leftMouseUp, NSPoint(x: 9, y: 30))])
+        XCTAssertEqual(clicks.count, 1, "released outside the area")
+    }
+
+    // MARK: - Load progress (TASK-322)
+
+    @MainActor func testTheCapsuleShowsProgressOnlyWhileALoadIsInFlight() {
+        typealias Bar = QuickDetourTitleBar
+        XCTAssertNil(Bar.displayedProgress(isLoading: false, estimatedProgress: 0))
+        XCTAssertNil(Bar.displayedProgress(isLoading: false, estimatedProgress: 0.6), "stopped part way")
+        XCTAssertNil(Bar.displayedProgress(isLoading: true, estimatedProgress: 1), "done, the flag not yet down")
+        XCTAssertEqual(Bar.displayedProgress(isLoading: true, estimatedProgress: 0.6), 0.6)
+        XCTAssertEqual(Bar.displayedProgress(isLoading: true, estimatedProgress: 0),
+                       Bar.minimumDisplayedProgress, "a sliver from the start")
+
+        let bar = Bar(frame: NSRect(x: 0, y: 0, width: 600, height: 40))
+        bar.setLoadProgress(isLoading: true, estimatedProgress: 0.5)
+        XCTAssertEqual(bar.capsule.progress, 0.5)
+        XCTAssertEqual(bar.capsule.progressView.alphaValue, 1)
+        bar.setLoadProgress(isLoading: false, estimatedProgress: 1)
+        XCTAssertNil(bar.capsule.progress)
+    }
+
+    @MainActor func testTheCapsuleFollowsThePagesLoad() async throws {
+        let profile = makeProfile("Title Bar Progress")
+        let url = try await serve()
+        let controller = try await openQuickDetour(on: profile, loading: url)
+        let tab = try XCTUnwrap(controller.tab)
+        try await waitUntil("the capsule to clear after the load") { controller.titleBar.capsule.progress == nil }
+
+        tab.estimatedProgress = 0.4
+        tab.isLoading = true
+        try await waitUntil("the capsule to show the load") { controller.titleBar.capsule.progress == 0.4 }
+        tab.isLoading = false
+        try await waitUntil("the capsule to clear") { controller.titleBar.capsule.progress == nil }
     }
 
     // MARK: - The bar's buttons drag the window

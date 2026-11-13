@@ -7,6 +7,9 @@ status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T02:30:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
+  - id: task-322
+    resource: backlog:TASK-322
+    title: "Quick Detour: back button, the whole address capsule opens the palette, and a loading indicator"
   - id: task-189
     resource: backlog:TASK-189
     title: "Settings: fix the window's spacing and clipping"
@@ -163,6 +166,7 @@ Related.
 | `mouseMoved` events posted with `NSApp.postEvent` do not produce `mouseEntered` or `mouseExited`, even for an `.activeAlways` tracking area.[^task-169] | Trying to drive hover from a harness | Call the code the tracking area would call; say that the pointer never moved |
 | A view's `bounds` are not what is on screen while it slides in: the sidebar's bounds reached past the window's edge during the reveal animation, and a pointer outside the window tested as inside them. `visibleRect` was empty then, and equal to the bounds once settled.[^task-169] | "Is the pointer over the sidebar" during a hover reveal | Test against `visibleRect` |
 | A `Timer` scheduled in the default run loop mode does not fire while AppKit tracks a context menu; a `DispatchQueue.main.asyncAfter` block does (it ran in `NSEventTrackingRunLoopMode`). `NSMenu.didBeginTrackingNotification` and `didEndTrackingNotification` are posted for a context menu too.[^task-169] | The sidebar's hide delay collapsed it under an open context menu | Use a default-mode `Timer` for anything that must wait for a menu or drag to finish |
+| `hitTest` returns the deepest view under the point, and a `HoverButton` under the pointer has shown its hover background, a plain `NSView` subview. A parent that routes hits by the hit view's class (`hit is NSButton`) then sees a non-button.[^task-322] | The Quick Detour capsule sent a real click on Copy Link to the host, opening the palette; a unit test without hover passed | Walk up from the hit view to the routing view and keep the hit if any ancestor is a button (`QuickDetourAddressCapsule.hitTest`); in a test, unhide the button's subviews to stand in for hover |
 | On macOS 26 the sidebar is inset 8 pt from the window edge, and the window's resize region is only the bottom 3 pt plus the rounded-corner cutout.[^task-126][^notes-hittest] | Suspected, wrongly, of eating the Downloads button's clicks | Probe rather than assume |
 
 # Table views and drag sessions
@@ -194,6 +198,7 @@ Related.
 | Behavior | Where it bit | Do instead |
 |---|---|---|
 | A `CGColor` assigned to a layer is resolved once and does not follow light / dark changes. | Dividers, hover backgrounds, drop hints, split pane borders | Re-resolve in `viewDidChangeEffectiveAppearance` or `updateLayer`, inside `performAsCurrentDrawingAppearance` |
+| An `NSButton` with a `contentTintColor` draws its template image the same when disabled as when enabled.[^task-322] | The Quick Detour back button looked clickable on the first page | Set the tint from the enabled state (`QuickDetourTitleBar.setCanGoBack`: secondary vs quaternary label colour) |
 | `contentView.cacheDisplay(in:to:)` renders web content but leaves the sidebar blank.[^notes-harness] | Capturing the sidebar for verification | Render the sidebar's layer instead; see [in-process UI automation](../playbooks/in-process-ui-automation.md) |
 
 # Windows
@@ -238,6 +243,7 @@ from a probe or a measurement.
 [^task-77]: Keys the extension popup page declines still play the unhandled-key beep
 [^task-113]: Check for and install extension updates
 [^task-126]: The Downloads button's left and bottom edges do not respond to clicks
+[^task-322]: Quick Detour: back button, the whole address capsule opens the palette, and a loading indicator
 [^task-127]: With auto-hide on, the downloads popover disappears when the sidebar hides
 [^task-128]: On launch the sidebar's hidden Search Archive field holds keyboard focus instead of the page
 [^task-129]: Favorite drop hint without a layout shift, and drops that land from the release point

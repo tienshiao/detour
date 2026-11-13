@@ -296,6 +296,7 @@ final class QuickDetourWindowController: NSWindowController {
         updateOpenIn()
         titleBar.setHost(nil, isSecure: false)
         titleBar.onHostClick = { [weak self] in self?.showPalette(prefill: self?.tab?.url?.absoluteString) }
+        titleBar.onBack = { [weak self] in self?.goBack(nil) }
         titleBar.onCopyLink = { [weak self] in self?.copyCurrentURL(nil) }
         titleBar.onExtensionClick = { [weak self] id, anchor in self?.performExtensionAction(id, anchor: anchor) }
         titleBar.onPageSettingsClick = { [weak self] anchor in self?.showPageSettings(from: anchor) }
@@ -375,6 +376,17 @@ final class QuickDetourWindowController: NSWindowController {
             .receive(on: RunLoop.main)
             .sink { [weak self] url in
                 self?.titleBar.setHost(Self.displayHost(of: url), isSecure: url?.scheme == "https")
+            }
+            .store(in: &tabSubscriptions)
+        tab.$canGoBack
+            .receive(on: RunLoop.main)
+            .sink { [weak self] canGoBack in self?.titleBar.setCanGoBack(canGoBack) }
+            .store(in: &tabSubscriptions)
+        tab.$isLoading
+            .combineLatest(tab.$estimatedProgress)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isLoading, progress in
+                self?.titleBar.setLoadProgress(isLoading: isLoading, estimatedProgress: progress)
             }
             .store(in: &tabSubscriptions)
         tab.$title

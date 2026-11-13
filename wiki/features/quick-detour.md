@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Quick Detour
-description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, what is not restored, and Open in <Space> (Cmd+O): the default space, the dropdown grouped by profile, the same tab and web view handed to a space of the same profile, a reload in another profile's, Private into a Private window, and the teardown order; and the profile pill (TASK-193.4): its menu, switching reloading the address in a new page on the other profile in the same window (a close and an open for extensions, the new profile's history scope, into and out of Private with the download question), and Open in following; and TASK-193.5's other entry points and archive: Opt-Cmd-click on a link (any frame, in a Peek, a Private page's into Private; never routed) or on a sidebar tab (a copy of its address: normal, sleeping, a split row's clicked pane, pinned, favourite), links from other apps through the Link Routes Quick Detour target (the frontmost window's profile, never Private), the archive (closed-tab rows under the profile's Quick Detour scope, no migration; closed, at quit, and auto-closed; restore reopens a window with the back/forward list; Private never; profile deletion), the idle auto-close (a pure wall-clock rule, what counts as use, a periodic and wake check, a Debug override) and the Settings controls; and TASK-210's bar: the main window's site settings popover in place of the extensions list, the host and Open in dragging the window once a press moves (a first press on a background window only brings it forward), no subtitle on the dropdown, and the palette's own prompt; and TASK-213's popover layout: the host as its header, picture in picture and dev mode in a section of their own, left out of a Quick Detour's."
+description: "A small window with one page for a quick lookup, opened from a Spotlight-like palette panel (File > New Quick Detour Window, or a system-wide hotkey, Opt-Cmd-N by default, from any app): the panel, the global hotkey (Carbon, no permission; what conflicts it can and cannot detect; activating with only the new window forward; the Settings control), the tab in no space, history under a per-profile scope labelled on the History page, Private, extensions seeing a popup window, what is not restored, and Open in <Space> (Cmd+O): the default space, the dropdown grouped by profile, the same tab and web view handed to a space of the same profile, a reload in another profile's, Private into a Private window, and the teardown order; and the profile pill (TASK-193.4): its menu, switching reloading the address in a new page on the other profile in the same window (a close and an open for extensions, the new profile's history scope, into and out of Private with the download question), and Open in following; and TASK-193.5's other entry points and archive: Opt-Cmd-click on a link (any frame, in a Peek, a Private page's into Private; never routed) or on a sidebar tab (a copy of its address: normal, sleeping, a split row's clicked pane, pinned, favourite), links from other apps through the Link Routes Quick Detour target (the frontmost window's profile, never Private), the archive (closed-tab rows under the profile's Quick Detour scope, no migration; closed, at quit, and auto-closed; restore reopens a window with the back/forward list; Private never; profile deletion), the idle auto-close (a pure wall-clock rule, what counts as use, a periodic and wake check, a Debug override) and the Settings controls; and TASK-210's bar: the main window's site settings popover in place of the extensions list, the host and Open in dragging the window once a press moves (a first press on a background window only brings it forward), no subtitle on the dropdown, and the palette's own prompt; and TASK-213's popover layout: the host as its header, picture in picture and dev mode in a section of their own, left out of a Quick Detour's; and TASK-322's back button, the whole address capsule opening the palette, and the capsule's load progress."
 tags: [window, tabs, history, privacy, extensions, palette]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T09:00:00Z }
@@ -97,6 +97,12 @@ sources:
   - id: task-309
     resource: backlog:TASK-309
     title: "Dock menu: Show / Hide All Quick Detour Windows"
+  - id: task-322
+    resource: backlog:TASK-322
+    title: "Quick Detour: back button, the whole address capsule opens the palette, and a loading indicator"
+  - id: harness-322
+    resource: ../../docs/harness/task322-harness.patch
+    title: TASK-322 runtime harness and its results
   - id: task-299
     resource: backlog:TASK-299
     title: "Address bars: the sidebar's and Quick Detour's icons in one order"
@@ -127,8 +133,9 @@ opens the Quick Detour window loading that page. Escape on the empty field,
 or clicking away (the panel resigning key), closes the panel and opens
 nothing. So no Quick Detour window ever has an empty page (the user's change
 of 2026-10-25; the first build opened the window showing the palette).
-Clicking the host in the window's title bar reopens the palette over the
-page, navigating it in place. Several windows can be open at once. Cmd+W,
+Clicking anywhere on the address capsule that is not one of its buttons
+reopens the palette over the page, navigating it in place (TASK-322; the
+host text alone before). Several windows can be open at once. Cmd+W,
 Cmd+F (Escape closes the find bar), zoom, Back/Forward (Cmd+[ / Cmd+], the
 mouse back button), Reload, Copy URL and the Web Inspector work as in a
 browser window. Cmd+Z in a page is the page's: the browser undo stack is the
@@ -136,8 +143,8 @@ browser windows' (`BrowserWebView.performKeyEquivalent`).
 
 The window is a normal-level window, 900 × 640 points by default (minimum
 480 × 320), centred, each later one cascading 22 points down and right of the
-last. Its title bar, after the reference image, holds the traffic lights, an
-address capsule with the **profile pill**, the page's host in the centre, the
+last. Its title bar, after the reference image, holds the traffic lights, a
+**back button** (TASK-322), an address capsule with the **profile pill**, the page's host in the centre, the
 pinned extensions' buttons, Copy Link and the **site settings** button (the
 main window's popover, [below](#the-bar-site-settings-and-handles)) at the
 capsule's trailing edge, then **Open in <Space> ⌘O** at the right. The
@@ -147,7 +154,8 @@ tooltips and accessibility labels ("Copy Link", "Site Settings", an
 extension's display name). Copy and Site Settings sit together at the
 trailing edge, so they never move as extensions are pinned or unpinned;
 extensions grow leftward from Copy. The bar's background, the host and
-Open in's main part all drag the window. There is no sidebar.
+Open in's main part all drag the window. While a page loads, the capsule
+fills with the load's progress. There is no sidebar.
 
 **Open in <Space> ⌘O** moves the page into a tab of a space and closes
 the window ([below](#open-in-space), TASK-193.3). The **profile pill** names
@@ -561,6 +569,45 @@ their own clicks.
 subtitle (the tooltip stays). The palette's prompt is "Search or enter a
 URL" (`CommandPaletteView.placeholder`): there is no browser around it; the
 main window keeps "Where do you want to go?".
+
+## Back, the whole capsule, and load progress
+
+TASK-322, the user's feedback of 2026-11-13.[^task-322]
+
+**Back.** A `HoverButton` with `chevron.left` sits 76 points in, clear of
+the zoom button (which ends at 72), and the capsule starts 6 points after
+it. It follows the tab's `canGoBack` and calls `goBack`. It is dimmed by
+hand: a tinted template image draws the same disabled as enabled, so
+`setCanGoBack` sets the tint too. No forward button (Cmd+] and the mouse
+button go forward) and no back-history menu: not asked for.
+
+**The whole capsule.** `QuickDetourAddressCapsule.hitTest` hands every hit
+its own controls do not take (the empty space, the lock, the gaps between
+icons, the progress fill) to the host button, and the host's
+`clickArea` is the capsule, so a release anywhere on it is a click. The host
+was already a drag handle (TASK-210), so the capsule's empty space now drags
+the window the same way: past 3 points it moves the window, released before
+that it opens the palette. The pill and the icon buttons keep their presses.
+The capsule keeps a hit if any view between it and the hit view is a button:
+a `HoverButton` under the pointer shows a hover background, and that plain
+subview is what the hit lands on; matching only the hit view's class sent a
+real click on Copy Link to the palette (found at runtime, see
+[AppKit gotchas](../platform/appkit-gotchas.md#hit-testing-and-mouse-events)).
+The capsule lightens under the pointer (labelColor 0.06 → 0.09) to say it
+is clickable.
+
+**Load progress.** The capsule's background fills from the left with
+`controlAccentColor` at 0.16, the width following the page's
+`estimatedProgress`, as a sidebar row's progress bar does (Safari's
+address bar does the same); the capsule clips it to its corners. The pure
+rule is `QuickDetourTitleBar.displayedProgress(isLoading:estimatedProgress:)`:
+nothing unless a load is in flight and below 1, and at least 0.1 while one
+is, because WebKit's first estimate can lag the load starting. When the load
+ends the fill fades out over 0.3 s; a generation counter stops a late fade
+completion from emptying a load that began meanwhile. The window is shown,
+so the sidebar's stalled-hidden-load rule (`isLoadProgressStalled`) does not
+apply. On the fixture's trickling script WebKit's estimate sat at 0.5 for
+the whole 10 s, so a slow page can hold half full.[^harness-322]
 
 ## Open in <Space>
 
@@ -1343,6 +1390,8 @@ Quick Detour's downloads, HTTP sign-in, the external-app prompt, a signed
 [^harness-210]: TASK-210 runtime harness and its results
 [^task-213]: Site settings popover: host header, separate site switches, none in Quick Detour
 [^harness-213]: TASK-213 runtime harness and its results
+[^task-322]: Quick Detour: back button, the whole address capsule opens the palette, and a loading indicator
+[^harness-322]: TASK-322 runtime harness and its results
 [^harness-2]: TASK-193.2 runtime harness, its scratch tools and results
 [^harness-3]: TASK-193.3 runtime harness and its results
 [^harness-4]: TASK-193.4 runtime harness and its results

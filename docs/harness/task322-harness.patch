@@ -1,0 +1,218 @@
+TASK-322 runtime harness: the Quick Detour bar's back button, the address
+capsule's empty space opening the palette, and the capsule's load progress.
+Temporary code, never committed to Detour/. Gated on DETOUR_VERIFY_DIR;
+DETOUR_VERIFY_APPEARANCE light or dark; DETOUR_VERIFY_FIXTURE a loopback
+server whose / is fast and whose /slow.html loads a script that trickles in
+over ~10 s (a 30-line python3 ThreadingHTTPServer on 8937). Data dir
+DetourVerify3220. Real HID moves and clicks (CGEvent .cghidEventTap); the
+run script screencaptures -l on "SHOOT <name> <window>" log lines and kills
+only the PID it launched after "done". The harness's own HID move counts as
+input to its 1 s idle guard: leave a pause after a hover before the next
+click, or that click is skipped (ABORT in the log).
+
+    git apply docs/harness/task322-harness.patch && xcodegen generate
+    xcodebuild -scheme Detour -configuration Debug build -derivedDataPath .derived
+    run.sh light; run.sh dark
+    git apply -R docs/harness/task322-harness.patch && xcodegen generate
+
+Results (2026-11-13, light and dark): back button at x 76-100, clear of the
+zoom button (ends at 72), the capsule from 106; disabled on the first page
+(dimmed: a tinted template image draws the same disabled), enabled after
+loading /slow.html, and a HID click on it went back (disabled again). Mid
+load the capsule filled to WebKit's estimate (0.5, 299 of 597 pt) and
+cleared (alpha 0) when the load ended. Hovering the capsule lightened it; a
+HID click on the empty space between the pill and the host, and one just
+left of the host (the lock), opened the palette prefilled with the URL. The
+first dark run found a HID click on Copy Link opening the palette: under
+the pointer a HoverButton shows its hover background, the hit landed on
+that plain subview and went to the host; fixed (the capsule keeps any hit
+inside a button), after which Copy Link copied and left the palette shut.
+Not checked: a drag from the capsule's empty space by hand (the host's drag
+path, covered by the unit tests), VoiceOver, several displays.
+
+diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
+index 30142ee..17cb1b5 100644
+--- a/Detour/App/AppDelegate.swift
++++ b/Detour/App/AppDelegate.swift
+@@ -759,6 +759,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+     func registerWindowController(_ wc: BrowserWindowController) {
+         windowControllers.append(wc)
+         observeWindowClose(wc)
++        #if DEBUG
++        runTask322HarnessIfRequested(wc)   // TEMP — DO NOT COMMIT
++        #endif
+     }
+ 
+     private func observeWindowClose(_ wc: BrowserWindowController) {
+diff --git a/Detour/App/Task322Harness.swift b/Detour/App/Task322Harness.swift
+new file mode 100644
+index 0000000..099974f
+--- /dev/null
++++ b/Detour/App/Task322Harness.swift
+@@ -0,0 +1,166 @@
++// TEMP TASK-322 verify harness — DO NOT COMMIT
++#if DEBUG
++import AppKit
++import WebKit
++
++extension AppDelegate {
++    private static var task322Ran = false
++
++    func runTask322HarnessIfRequested(_ wc: BrowserWindowController) {
++        let env = ProcessInfo.processInfo.environment
++        guard let outDir = env["DETOUR_VERIFY_DIR"], !Self.task322Ran else { return }
++        Self.task322Ran = true
++        let base = env["DETOUR_VERIFY_FIXTURE"] ?? "http://127.0.0.1:8937/"
++        let ap = env["DETOUR_VERIFY_APPEARANCE"] ?? "light"
++        let logURL = URL(fileURLWithPath: outDir).appendingPathComponent("verify-\(ap).log")
++        let start = ProcessInfo.processInfo.systemUptime
++        func log(_ line: String) {
++            let stamped = String(format: "[%7.3f] %@\n", ProcessInfo.processInfo.systemUptime - start, line)
++            let data = Data(stamped.utf8)
++            if let h = try? FileHandle(forWritingTo: logURL) {
++                h.seekToEndOfFile(); h.write(data); try? h.close()
++            } else { try? data.write(to: logURL) }
++        }
++        NSApp.appearance = NSAppearance(named: ap == "dark" ? .darkAqua : .aqua)
++        let store = TabStore.shared
++
++        @MainActor func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
++        func humanIdle() -> Double {
++            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
++        }
++        func awaitIdle(_ seconds: Double = 8) async {
++            var waited = 0.0
++            while humanIdle() < seconds {
++                if waited == 0 { log("waiting for the machine to be idle (idle \(Int(humanIdle())) s)") }
++                await sleep(2); waited += 2
++            }
++        }
++        func ensureFront(_ window: NSWindow?) async {
++            await awaitIdle()
++            for _ in 0..<6 {
++                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
++                if let window, NSApp.keyWindow !== window { window.makeKeyAndOrderFront(nil) }
++                if NSApp.isActive && (window == nil || NSApp.keyWindow === window) { return }
++                await sleep(0.5)
++            }
++            log("WARN not frontmost: active=\(NSApp.isActive)")
++        }
++        func shoot(_ name: String, _ window: NSWindow?) async {
++            guard let window else { return log("no window for \(name)") }
++            await sleep(0.6)
++            log("SHOOT \(ap)-\(name) \(window.windowNumber)")
++            await sleep(1.5)
++        }
++        func waitFor(_ what: String, timeout: Double = 15, _ cond: () -> Bool) async -> Bool {
++            let deadline = Date().addingTimeInterval(timeout)
++            while Date() < deadline {
++                if cond() { return true }
++                await sleep(0.1)
++            }
++            log("TIMEOUT waiting for \(what)")
++            return false
++        }
++        /// A real HID click (or move only) at a point in Cocoa global coordinates.
++        func hid(at from: NSPoint, click: Bool = true, restore: Bool = true) async -> Bool {
++            let screenTop = NSScreen.screens.first?.frame.maxY ?? 0
++            let p = CGPoint(x: from.x, y: screenTop - from.y)
++            let saved = CGEvent(source: nil)?.location
++            let src = CGEventSource(stateID: .hidSystemState)
++            func post(_ type: CGEventType) {
++                CGEvent(mouseEventSource: src, mouseType: type, mouseCursorPosition: p, mouseButton: .left)?
++                    .post(tap: .cghidEventTap)
++            }
++            if humanIdle() < 1 { log("ABORT human input before a HID event"); return false }
++            post(.mouseMoved); await sleep(0.2)
++            if click { post(.leftMouseDown); await sleep(0.08); post(.leftMouseUp); await sleep(0.4) }
++            if restore, let saved { CGWarpMouseCursorPosition(saved) }
++            return true
++        }
++        func key(_ chars: String, code: UInt16, window: NSWindow) {
++            for type in [NSEvent.EventType.keyDown, .keyUp] {
++                if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [],
++                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
++                                            context: nil, characters: chars, charactersIgnoringModifiers: chars,
++                                            isARepeat: false, keyCode: code) {
++                    NSApp.postEvent(e, atStart: false)
++                }
++            }
++        }
++
++        Task { @MainActor in
++            await sleep(2.5)
++            let home = wc.activeSpace ?? store.nonIncognitoSpaces.first!
++            let profile = home.profile!
++            let q = QuickDetourWindowController.open(profile: profile, sourceSpace: home, url: URL(string: base)!)
++            guard let qw = q.window else { return log("no Quick Detour window") }
++            let bar = q.titleBar
++            _ = await waitFor("the first page") { q.tab?.title == "Lookup Page" && q.tab?.isLoading == false }
++            await ensureFront(qw)
++            bar.layoutSubtreeIfNeeded()
++            let zoom = qw.standardWindowButton(.zoomButton)
++            log("1 loaded: back enabled=\(bar.backButton.isEnabled) progress=\(String(describing: bar.capsule.progress)) backFrame=\(bar.backButton.frame) capsuleFrame=\(bar.capsule.frame) zoomMaxX=\(zoom.map { bar.convert($0.bounds, from: $0).maxX } ?? -1)")
++            await shoot("01-first-page", qw)
++
++            // 2. The slow page: mid-load.
++            q.load(URL(string: base + "slow.html")!, typed: true)
++            _ = await waitFor("the load to show") { (bar.capsule.progress ?? 0) > 0 }
++            await sleep(2.0)
++            log("2 mid-load: isLoading=\(q.tab?.isLoading ?? false) estimated=\(q.tab?.estimatedProgress ?? -1) progress=\(String(describing: bar.capsule.progress)) fillWidth=\(bar.capsule.progressView.frame.width)/\(bar.capsule.bounds.width) alpha=\(bar.capsule.progressView.alphaValue)")
++            await shoot("02-mid-load", qw)
++            await sleep(2.0)
++            log("2b mid-load later: estimated=\(q.tab?.estimatedProgress ?? -1) fillWidth=\(bar.capsule.progressView.frame.width)")
++            await shoot("02b-mid-load-later", qw)
++            _ = await waitFor("the slow page to finish", timeout: 20) { q.tab?.isLoading == false }
++            await sleep(0.6)
++            log("3 loaded: back enabled=\(bar.backButton.isEnabled) progress=\(String(describing: bar.capsule.progress)) alpha=\(bar.capsule.progressView.alphaValue) title=\(q.tab?.title ?? "")")
++            await shoot("03-second-page", qw)
++
++            // 4. Hover on the capsule, then a real click on its empty space.
++            await ensureFront(qw)
++            let pillEnd = bar.capsule.convert(bar.pill.bounds, from: bar.pill).maxX
++            let hostStart = bar.capsule.convert(bar.hostButton.bounds, from: bar.hostButton).minX
++            let emptyInCapsule = NSPoint(x: (pillEnd + hostStart) / 2, y: bar.capsule.bounds.midY)
++            let emptyOnScreen = qw.convertPoint(toScreen: bar.capsule.convert(emptyInCapsule, to: nil))
++            log("4 empty point: capsule x=\(emptyInCapsule.x) (pill ends \(pillEnd), host starts \(hostStart))")
++            _ = await hid(at: emptyOnScreen, click: false, restore: false)
++            await sleep(0.3)
++            log("4 hover: isHovered=\(bar.capsule.isHovered)")
++            await shoot("04-hover", qw)
++            _ = await hid(at: emptyOnScreen)
++            let opened = await waitFor("the palette", timeout: 5) { q.commandPaletteView != nil }
++            log("4 click on empty capsule space: palette open=\(opened)")
++            await shoot("05-palette", qw)
++            key("\u{1b}", code: 53, window: qw)
++            _ = await waitFor("the palette to close", timeout: 3) { q.commandPaletteView == nil }
++            await sleep(0.3)
++
++            // 5. A real click on the lock.
++            let lockPoint = NSPoint(x: hostStart - 8, y: bar.capsule.bounds.midY)
++            _ = await hid(at: qw.convertPoint(toScreen: bar.capsule.convert(lockPoint, to: nil)))
++            let openedFromLeftOfHost = await waitFor("the palette from left of the host", timeout: 5) { q.commandPaletteView != nil }
++            log("5 click just left of the host: palette open=\(openedFromLeftOfHost)")
++            key("\u{1b}", code: 53, window: qw)
++            _ = await waitFor("the palette to close", timeout: 3) { q.commandPaletteView == nil }
++            await sleep(0.3)
++
++            await sleep(1.5)
++            // 6. A real click on Copy Link does not open the palette.
++            _ = await hid(at: qw.convertPoint(toScreen: bar.copyButton.convert(
++                NSPoint(x: bar.copyButton.bounds.midX, y: bar.copyButton.bounds.midY), to: nil)))
++            await sleep(0.8)
++            log("6 copy click: palette open=\(q.commandPaletteView != nil) pasteboard=\(NSPasteboard.general.string(forType: .string) ?? "nil")")
++
++            // 7. A real click on the back button.
++            await ensureFront(qw)
++            _ = await hid(at: qw.convertPoint(toScreen: bar.backButton.convert(
++                NSPoint(x: bar.backButton.bounds.midX, y: bar.backButton.bounds.midY), to: nil)))
++            let wentBack = await waitFor("back to the first page") { q.tab?.title == "Lookup Page" && q.tab?.isLoading == false }
++            await sleep(0.5)
++            log("7 back click: wentBack=\(wentBack) url=\(q.tab?.url?.absoluteString ?? "") back enabled=\(bar.backButton.isEnabled)")
++            await shoot("06-after-back", qw)
++
++            log("done")
++        }
++    }
++}
++#endif
