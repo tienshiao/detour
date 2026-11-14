@@ -4,7 +4,8 @@ import AppKit
 /// connected through the automation endpoint, every browser window shows a
 /// capsule at the bottom right of its content naming the client, whether
 /// the sidebar is shown or not. Clicking it lists the clients, each with
-/// Disconnect, and offers Turn Off Automation.
+/// Disconnect (which revokes an approved client's token, TASK-228.5), and
+/// offers Turn Off Automation.
 extension BrowserWindowController {
 
     func setupAutomationIndicator() {
@@ -48,13 +49,19 @@ extension BrowserWindowController {
                                   action: #selector(disconnectAutomationClient(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = session.id
-            // Blocks the name the client reports, until allowed again (user
-            // decision, 2026-11-14): a "please stop", not a revocation. A
-            // client could come back under another name; Turn Off stops all.
-            item.toolTip = "Connected \(AutomationIndicator.age(of: session.startedAt, now: now)), "
-                + "last request \(AutomationIndicator.age(of: session.lastSeen, now: now)). Disconnecting "
-                + "refuses \(session.clientName) until you allow it again; to stop every agent for sure, "
-                + "Turn Off Automation."
+            let age = "Connected \(AutomationIndicator.age(of: session.startedAt, now: now)), "
+                + "last request \(AutomationIndicator.age(of: session.lastSeen, now: now))."
+            if session.clientID != nil {
+                // An approved client (TASK-228.5): its token is revoked.
+                item.toolTip = age + " Disconnecting revokes \(session.clientName)'s access; it has to ask you "
+                    + "again to reconnect."
+            } else {
+                // A test run's shared token cannot be revoked: the name the
+                // client reports is blocked until allowed again, a "please
+                // stop"; Turn Off stops every client.
+                item.toolTip = age + " Disconnecting refuses \(session.clientName) until you allow it again; to "
+                    + "stop every agent for sure, Turn Off Automation."
+            }
             menu.addItem(item)
         }
         for name in controller.blockedClientNames {

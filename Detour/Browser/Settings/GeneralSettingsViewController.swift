@@ -7,7 +7,15 @@ class GeneralSettingsViewController: SettingsPaneViewController {
     private var automationCheckbox: NSButton!
     private var automationStatus: NSTextField!
     private var automationButtons: NSStackView!
+    private var tokenButtons: [NSButton] = []
     private var allowAgainButton: NSButton!
+    private var privateCheckbox: NSButton!
+    private var privateHelp: NSTextField!
+    private var clientsTitle: NSTextField!
+    private var clientsList: NSStackView!
+    /// What the client rows show now, so a change rebuilds them only when
+    /// something changed (the window resizes with them).
+    private var shownClients: [AutomationClientRecord]?
     private var automationObserver: (any NSObjectProtocol)?
     private static let textWidth = SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin
 
@@ -58,12 +66,25 @@ class GeneralSettingsViewController: SettingsPaneViewController {
                                       target: self, action: #selector(automationCheckboxChanged))
         automationCheckbox.setAccessibilityIdentifier("automationEnabled")
         let automationHelp = SettingsWrappingLabel(
-            wrapping: "While this is on, an MCP client given this Mac's token, such as Claude Code, can read your "
-                + "pages and act in them as you, signed in to your sites. Private windows are never reachable. "
-                + "Each window shows which agent is connected, with a way to disconnect it. Set clients up with "
-                + "the commands below: they run Detour's helper, which finds the address and token itself. The "
-                + "address changes each time Detour starts.",
+            wrapping: "While this is on, an MCP client you allow, such as Claude Code, can read your pages and act "
+                + "in them as you, signed in to your sites. The first time a client connects, Detour asks you to "
+                + "allow it. Each window shows which agent is connected; disconnecting it revokes its access. Set "
+                + "clients up with the commands below: they run Detour's helper, which finds Detour and keeps the "
+                + "client's access itself.",
             estimatedWidth: Self.textWidth)
+        privateCheckbox = NSButton(checkboxWithTitle: "Allow agents to use Private windows", target: self,
+                                   action: #selector(privateCheckboxChanged))
+        privateCheckbox.setAccessibilityIdentifier("automationAllowPrivate")
+        privateHelp = SettingsWrappingLabel(
+            wrapping: "Off, agents cannot see or use Private windows, their tabs or menus, or the Private "
+                + "profile's extensions. Turning it off takes effect at once.",
+            estimatedWidth: Self.textWidth)
+        clientsTitle = NSTextField(labelWithString: "Allowed clients")
+        clientsTitle.font = .systemFont(ofSize: 12, weight: .semibold)
+        clientsList = NSStackView()
+        clientsList.orientation = .vertical
+        clientsList.alignment = .leading
+        clientsList.spacing = 4
         automationStatus = NSTextField(labelWithString: "")
         automationStatus.font = .systemFont(ofSize: 12)
         automationStatus.textColor = .secondaryLabelColor
@@ -80,11 +101,15 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         allowAgainButton = NSButton(title: "Allow Disconnected Agents Again", target: self,
                                     action: #selector(allowDisconnectedAgents))
         for button in [copyCommand, copyConfig, copyToken, resetToken, allowAgainButton!] { button.bezelStyle = .rounded }
+        // A test run's shared token only (TASK-228.5): the user's endpoint
+        // has none, each client getting its own through the helper.
+        tokenButtons = [copyToken, resetToken]
         automationButtons = NSStackView(views: [copyCommand, copyConfig, copyToken, resetToken])
         automationButtons.orientation = .horizontal
         automationButtons.spacing = SettingsMetrics.labelToControl
-        let automationRows = NSStackView(views: [automationCheckbox, automationHelp, automationStatus,
-                                                 automationButtons, allowAgainButton])
+        let automationRows = NSStackView(views: [automationCheckbox, automationHelp, privateCheckbox, privateHelp,
+                                                 automationStatus, automationButtons, allowAgainButton,
+                                                 clientsTitle, clientsList])
         automationRows.orientation = .vertical
         automationRows.alignment = .leading
         automationRows.spacing = SettingsMetrics.controlToHelp
@@ -109,6 +134,8 @@ class GeneralSettingsViewController: SettingsPaneViewController {
             stack.trailingAnchor.constraint(equalTo: body.trailingAnchor),
             peekHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
             automationHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            privateHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            clientsList.widthAnchor.constraint(equalTo: stack.widthAnchor),
             automationStatus.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: body.bottomAnchor),
             bottomHug(stack.bottomAnchor, body.bottomAnchor),
@@ -150,14 +177,81 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         case .failed(let reason):
             automationStatus.stringValue = "Could not start: \(reason)"
         }
+        privateCheckbox.state = controller.allowsPrivateInSettings ? .on : .off
         let buttonsHidden = !controller.status.isOn
         let allowHidden = controller.blockedClientNames.isEmpty
-        if automationButtons.isHidden != buttonsHidden || allowAgainButton.isHidden != allowHidden {
-            automationButtons.isHidden = buttonsHidden
-            allowAgainButton.isHidden = allowHidden
-            // Rows came or went: the window fits the pane again.
-            contentHeightDidChange()
+        let tokenButtonsHidden = controller.usesClientApproval
+        let clientsHidden = !controller.usesClientApproval
+        var changed = automationButtons.isHidden != buttonsHidden || allowAgainButton.isHidden != allowHidden
+            || clientsTitle.isHidden != clientsHidden
+        automationButtons.isHidden = buttonsHidden
+        allowAgainButton.isHidden = allowHidden
+        for button in tokenButtons { button.isHidden = tokenButtonsHidden }
+        clientsTitle.isHidden = clientsHidden
+        clientsList.isHidden = clientsHidden
+        let clients = clientsHidden ? [] : controller.approvedClients
+        if clients != shownClients {
+            changed = changed || clients.count != (shownClients?.count ?? -1)
+            shownClients = clients
+            rebuildClientRows(clients)
         }
+        // Rows came or went: the window fits the pane again.
+        if changed { contentHeightDidChange() }
+    }
+
+    /// One row per allowed client: its name, when it was allowed and last
+    /// used, and Revoke.
+    private func rebuildClientRows(_ clients: [AutomationClientRecord]) {
+        for row in clientsList.arrangedSubviews {
+            clientsList.removeArrangedSubview(row)
+            row.removeFromSuperview()
+        }
+        guard !clients.isEmpty else {
+            let empty = NSTextField(labelWithString: "None yet. A client asks the first time it connects.")
+            empty.font = .systemFont(ofSize: 12)
+            empty.textColor = .secondaryLabelColor
+            clientsList.addArrangedSubview(empty)
+            return
+        }
+        let dates = DateFormatter()
+        dates.dateStyle = .medium
+        dates.timeStyle = .short
+        let now = Date()
+        for client in clients {
+            let name = NSTextField(labelWithString: client.displayName)
+            name.font = .systemFont(ofSize: 12)
+            name.lineBreakMode = .byTruncatingTail
+            name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            var detail = "allowed \(dates.string(from: client.created))"
+            if let used = client.lastUsed { detail += ", last used \(AutomationIndicator.age(of: used, now: now))" }
+            if client.title != nil { detail = "\(client.name), " + detail }
+            let info = NSTextField(labelWithString: detail)
+            info.font = .systemFont(ofSize: 11)
+            info.textColor = .secondaryLabelColor
+            info.lineBreakMode = .byTruncatingTail
+            info.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let revoke = NSButton(title: "Revoke", target: self, action: #selector(revokeClient(_:)))
+            revoke.bezelStyle = .rounded
+            revoke.controlSize = .small
+            revoke.identifier = NSUserInterfaceItemIdentifier(client.clientID.uuidString)
+            revoke.setAccessibilityLabel("Revoke \(client.displayName)")
+            revoke.toolTip = "\(client.displayName) loses access at once; it has to ask you again to reconnect."
+            let row = NSStackView(views: [name, info, revoke])
+            row.orientation = .horizontal
+            row.alignment = .firstBaseline
+            row.spacing = SettingsMetrics.labelToControl
+            row.setHuggingPriority(.defaultLow, for: .horizontal)
+            clientsList.addArrangedSubview(row)
+        }
+    }
+
+    @objc private func revokeClient(_ sender: NSButton) {
+        guard let raw = sender.identifier?.rawValue, let id = UUID(uuidString: raw) else { return }
+        AutomationController.shared.revoke(clientID: id)
+    }
+
+    @objc private func privateCheckboxChanged() {
+        AutomationController.shared.setAllowsPrivate(privateCheckbox.state == .on)
     }
 
     @objc private func automationCheckboxChanged() {
