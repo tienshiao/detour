@@ -73,4 +73,6 @@ Every run: wallpaper restored (backup gone), vdisplay gone, data dirs/WebKit sto
 Not done: folder toggling, Quick Detour placement, private windows, CRX installs from DemoStage are not ported (README lists them); a clean full-script capture on an idle Mac; real-site capture (rules: local pages only).
 
 Commits: 379ee11 (app + tests), b767ea6 (capture kit), 13f8688 (wiki).
+
+Correction: AutomationStagingTests has 17 tests (not 19), all passing in the full run.
 <!-- SECTION:NOTES:END -->
