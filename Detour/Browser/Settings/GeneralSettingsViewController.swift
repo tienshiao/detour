@@ -176,8 +176,11 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         case .listening(let port):
             let count = controller.sessions.count
             let agents = count == 0 ? "no agent connected" : count == 1 ? "1 agent connected" : "\(count) agents connected"
-            automationStatus.stringValue = "On at \(AutomationCredentials.endpointURL(port: port)) "
-                + "(until Detour quits), \(agents)."
+            // The address only for a test run, whose clients may connect to
+            // it with the shared token; the user's clients use the helper.
+            automationStatus.stringValue = controller.usesClientApproval
+                ? "On, \(agents)."
+                : "On at \(AutomationCredentials.endpointURL(port: port)) (until Detour quits), \(agents)."
         case .failed(let reason):
             automationStatus.stringValue = "Could not start: \(reason)"
         }
