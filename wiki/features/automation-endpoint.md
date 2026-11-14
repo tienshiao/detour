@@ -885,7 +885,8 @@ and posts `didChangeNotification` for the UI:[^controller]
 
 Settings > General > Automation copies what a client needs, lists the
 allowed clients (name, client name, when allowed, last used) with Revoke,
-and has the Private checkbox:
+and has the Private checkbox; its status line shows the address only in a
+test run:
 
 - **The bundled helper**, `Detour.app/Contents/MacOS/detour-mcp`, for any
   client that launches a command (Claude Desktop, Cursor, Claude Code). It
@@ -897,10 +898,14 @@ and has the Private checkbox:
   reads `<data dir>/mcp-clients/<SHA-256 of clientInfo.name>.token` (0600 in
   a 0700 folder, opened without following links) or asks for one (see
   "Approving a client", with a 330 s timeout, longer than the prompt's 5
-  minutes) and saves it. A denial, or a 401 with its token (revoked: the
-  file is deleted), is answered with a JSON-RPC error for the rest of the
-  run ("Detour revoked this client's access; restart the client to ask
-  again"), never a new prompt. When the session ended, the token was reset
+  minutes) and saves it. A denial, or a 401 with a token Detour already
+  accepted in this run (revoked: the file is deleted), is answered with a
+  JSON-RPC error for the rest of the run ("Detour revoked this client's
+  access; restart the client to ask again"), never a new prompt. A saved
+  token refused before Detour accepted it in this run (revoked while the
+  client was not running) is deleted and asked for again, once; a closing
+  DELETE refused with 401 (disconnected, then the client quit) deletes the
+  file too, so the next start asks. When the session ended, the token was reset
   (test run) or Detour restarted on another port, it reads the file again,
   replays the client's `initialize` and retries once, but after a failed connection only when it
   was refused: a timed-out or dropped request may already have acted, so it
@@ -1093,7 +1098,11 @@ In a test run, Claude Code can also connect directly:
   The panel was on screen per `CGWindowListCopyWindowInfo` (layer 3,
   onscreen). The runtime check approved the client by writing its record
   and the helper's token file beforehand instead; the click itself is
-  covered by tests with a fake prompter.
+  covered by tests with a fake prompter. `docs/harness/task2285-approval-check.py
+  <Detour.app>` runs the whole check, AXPress included, on an unlocked
+  screen (`--preapprove` for a locked one); find the panel with a compiled
+  `CGWindowListCopyWindowInfo` lister, not `swift -e` in a loop, which took
+  seconds per try and let the 5-minute prompt time out.
 - **SIGTERM runs no quit path.** The SIGTERM source ends native hosts and
   re-raises the signal, so `applicationWillTerminate` never runs. It removes
   the endpoint file too, and only if the file's `pid` is this process. A
