@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-10T09:38:00Z'
-updated_date: '2026-11-14T22:28:00Z'
+updated_date: '2026-11-14T22:32:00Z'
 labels:
   - command-palette
   - automation
@@ -49,11 +49,11 @@ Constraints from the codebase: the palette is scoped to its window's profile (TA
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The registry's shape (command, parameters, availability, action) and how menus, palette, AppleScript/Shortcuts (TASK-319) and MCP (TASK-228) use it are recorded in the task, with rejected alternatives
-- [ ] #2 Typing part of a command's title or alias in the palette lists it with its key equivalent, and Return runs it through the same code as its menu item
+- [x] #1 The registry's shape (command, parameters, availability, action) and how menus, palette, AppleScript/Shortcuts (TASK-319) and MCP (TASK-228) use it are recorded in the task, with rejected alternatives
+- [x] #2 Typing part of a command's title or alias in the palette lists it with its key equivalent, and Return runs it through the same code as its menu item
 - [ ] #3 A command that needs a space, tab or profile asks for it in the palette and runs on the choice
-- [ ] #4 A command unavailable in the context (window kind, selection, tab state) is not offered, by the same rule that disables its menu item
-- [ ] #5 Tests cover the availability rules and the palette's ranking of commands against URL and history rows; the runtime check exercises the palette in a normal and a Private window
+- [x] #4 A command unavailable in the context (window kind, selection, tab state) is not offered, by the same rule that disables its menu item
+- [x] #5 Tests cover the availability rules and the palette's ranking of commands against URL and history rows; the runtime check exercises the palette in a normal and a Private window
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -121,4 +121,38 @@ The three commits (0b52c8c, b10ab60, 1bea240) were made as checkpoints before th
 - Done after the review: Back and Forward are offered in the palette again (the exclusion I had added was for the responder-chain problem the fix removes). Correction to the PROVISIONAL "not offered" list above: Back/Forward are no longer in it. Consequence, recorded in the wiki: the palette's Back on a child tab with no history closes it to its opener (TASK-325), which Cmd+[ with the page focused does not (WKWebView takes it; known since TASK-325). New test testBackFromThePaletteClosesAChildTabToItsOpener.
 - Done after the review: a command refused when Return runs it (its state changed after the row was offered) beeps, as a disabled menu key equivalent does.
 - Left as is: rows are resolved once per showing (cleared on show and when the window rescopes the palette), so a ">" list can go stale while the palette stays open; Return then re-validates and beeps. Each resolve walks the main menu twice (~45 commands × ~80 items on ">", negligible). Command rows in mixed mode take slots before history rows, so they can push the last history or tab match past the 12-row cap.
+
+## Tests (final HEAD 5d64fca)
+
+One run of every affected suite (34 suites, 424 tests): 412 passed, 12 failed. The 12 are page-load/paint waits in Quick Detour windows ("timed out after 10.0 s waiting for the page titled …"): QuickDetourWindowTests 6, QuarantineWindowTests 4, QuickDetourOpenInWindowTests 2. The screen locked at 14:06 (CGSSessionScreenIsLocked). The same three suites passed at b10ab60 before the lock (225-test run: QuickDetourWindowTests 16/16, QuarantineWindowTests 22/22, QuickDetourOpenInWindowTests 4/4), and QuarantineWindowTests also passed two minutes into the lock. The failing tests never open a palette, and nothing after b10ab60 is on their path. OWED: rerun these three suites on an unlocked screen.
+Passing suites: MainMenuCharacterizationTests 9, BrowserCommandRegistryTests 23, PaletteCommandsTests 18, PaletteCommandRowsTests 14, PaletteCommandWindowTests 9, MenuKeyEquivalentMatcherTests 15, HelpMenuTests 8, AutomationToolsTests, AutomationPrivateAccessTests, MCPServerTests (run_menu_item), HotKeyShortcutTests, PeekWindowCommandsTests, CopyURLTests, BuildInfoTests, OpenInQuickDetourMenuTests, QuickDetourHotKeyTests, PaletteRowsTests, PaletteSelectionTests, PaletteReturnKeyTests, SiteSearchPaletteTests, CommandPaletteFocusTests, EmptyStatePaletteTests, PaletteTabScopeTests, PaletteHistoryScopeTests, PaletteTabScopeWiringTests, PaletteEntryPointScopeTests, SuggestionProviderTests, QuickDetourLauncherTests, SiteColorTests, SiteSearchChipColorTests, FaviconLinkBridgeTests.
+MainMenuCharacterizationTests' structure and enablement tests were written and passed on the untouched menu (0b52c8c) and pass unchanged after the move (b10ab60 onwards).
+
+## Runtime (/verify, Debug build 14:29, DETOUR_DATA_DIR=DetourVerify-320, endpoint; screen LOCKED throughout)
+
+- Menus by key equivalent: cmd+d pinned the selected tab; cmd+option+up (Previous Tab) moved the selection; cmd+w closed a tab; cmd+t opened the palette; cmd+shift+n opened a Private window.
+- Menus by path: Navigate › Show All History opened the History tab. (File › Unpin Tab by path was refused because the shared item still read "Pin Tab", having not been validated since. run_menu_item matches the item's current title, as before.)
+- Palette, normal window: `>pin` + Return unpinned the selected pinned tab; `reopen`, Down, Return (the command ranked in after the verbatim row) reopened the tab closed just before.
+- Private window: File › Pin (cmd+d), Navigate › Show Archived Tabs, Spaces › Next Space and Manage Spaces… were disabled. In its palette, `>pin` + Return did nothing (the tab stayed unpinned) and `>close tab` + Return closed the Private tab.
+- Not verified at runtime:
+  - the rows' appearance (key-equivalent labels, symbols): the screen was locked, and app-source screenshots do not draw the palette's glass anyway (the tests check the rows' contents);
+  - Quick Detour and quarantine windows: the endpoint addresses browser windows only (covered by MainMenuCharacterizationTests, PaletteCommandWindowTests);
+  - Check for Updates… (only a production run starts Sparkle);
+  - the effect of `toggle side` in the Private window (not observable through the endpoint).
+- Cleaned up: the app was stopped by pid; its `NSWindow Frame`/`NSSplitView` defaults keys and the DetourVerify-320 suite were deleted.
+
+Correction to the counts above (from the logs): BrowserCommandRegistryTests 22, PaletteCommandRowsTests 13, PaletteCommandWindowTests 9; pre-lock run at b10ab60 (finished 14:02): QuickDetourWindowTests 16/16, QuarantineWindowTests 22/22, QuickDetourOpenInWindowTests 17/17. Failing at HEAD with the screen locked: QuickDetourWindowTests 6 of 16, QuarantineWindowTests 4 of 22, QuickDetourOpenInWindowTests 2 of 17 (all page-load or paint waits).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Built the shared command registry and moved the main menu onto it; the palette now offers browser commands. The task stays In Progress: how commands show up is provisional, and AC #3 (parameterised commands in the palette) is the user's call. The options and a recommendation are in the notes.
+
+- Registry (Detour/Commands): every main-menu command has a stable hand-written ID (API for TASK-327), title, aliases, symbol, default key equivalent, typed parameters, the window kinds whose controller answers it, and an availability rule and contextual title over a lazy CommandContext that the browser and Quick Detour controllers implement. Both validateMenuItem implementations now answer the registry's rule.
+- Menus: every item is built from its command (identifier = command ID); titles, keys, actions, targets, tags and enablement are unchanged. MainMenuCharacterizationTests were written on the old menu and pass unchanged. Dynamic items keep their builders.
+- CommandDispatch: responder resolution in a given window plus AppKit's tiered enable decision, now shared by the TASK-56 fast path, run_menu_item and the palette.
+- Palette: commands rank in after the verbatim row (3+ characters, at most 2 rows), or are listed alone after ">". Rows show the window's title for the command and the live item's shortcut. Return dismisses the palette and runs the command through its live menu item, sent to the window's controller. Unavailable commands are not offered, by the menu's rule, in normal, Private, Quick Detour and quarantine windows.
+- Verification: tests (412 of 424 passed; the 12 failures are Quick Detour page-load waits under a locked screen, and those suites passed before the lock; rerun owed on an unlocked screen). Runtime through the endpoint with the screen locked: menus by key and path; palette commands in a normal and a Private window; Private menu enablement. Not run at runtime: Quick Detour (the endpoint cannot address it) and the rows' visual appearance.
+- Follow-ups for the lead: TASK-319/228 can use CommandDispatch + isAvailable per command ID. Context menus, the Dock menu and non-menu keys are not on the registry yet.
+<!-- SECTION:FINAL_SUMMARY:END -->
