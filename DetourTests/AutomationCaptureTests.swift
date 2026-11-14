@@ -18,6 +18,7 @@ nonisolated final class AutomationCaptureTests: XCTestCase {
         NSApp.appearance = nil
         #if DEBUG
         MotionPreference.reduceMotionOverride = nil
+        AutomationIndicator.isHiddenForCapture = false
         UserDefaultsScope.defaults.removeObject(forKey: AutomationTools.spaceTossHopKey)
         UserDefaultsScope.defaults.removeObject(forKey: AutomationTools.spaceTossGravityKey)
         #endif
@@ -252,6 +253,29 @@ nonisolated final class AutomationCaptureTests: XCTestCase {
             let code = try await errorCode(f, "set_debug_override", ["name": .string(name), "value": .string(value)])
             XCTAssertEqual(code, "invalid_arguments", "\(name)=\(value)")
         }
+    }
+
+    /// TASK-228.3: a capture hides the connected-agent capsule, which would
+    /// otherwise be in every take; Debug builds only.
+    @MainActor func testTheAutomationIndicatorCanBeHiddenForACapture() async throws {
+        let f = try await makeFixture()
+        let now = Date()
+        let connected = [MCPSessionStore.Session(id: "s", clientName: "capture.py", clientVersion: nil,
+                                                 protocolVersion: "2025-06-18", startedAt: now, lastSeen: now,
+                                                 initialized: true)]
+        f.window.updateAutomationIndicator(sessions: connected)
+        XCTAssertFalse(f.window.automationIndicator.isHidden)
+
+        let off = try await result(f, "set_debug_override", ["name": "automation_indicator", "value": "off"])
+        XCTAssertEqual(off["structuredContent"]?["overrides"]?["automation_indicator"], false)
+        f.window.updateAutomationIndicator(sessions: connected)
+        XCTAssertTrue(f.window.automationIndicator.isHidden, "hidden while a client is connected")
+
+        _ = try await result(f, "set_debug_override", ["name": "automation_indicator", "value": "default"])
+        f.window.updateAutomationIndicator(sessions: connected)
+        XCTAssertFalse(f.window.automationIndicator.isHidden, "shown again")
+        let bad = try await errorCode(f, "set_debug_override", ["name": "automation_indicator", "value": "2"])
+        XCTAssertEqual(bad, "invalid_arguments")
     }
     #endif
 

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Reads Arc's own files on this Mac into an `ArcImportSnapshot`.
 ///
@@ -13,11 +14,24 @@ import Foundation
 ///
 /// Pure apart from reading the two files, and safe off the main thread.
 nonisolated enum ArcSidebarReader {
-    /// Arc's data folder for the current user.
+    /// Arc's data folder: the user's own, unless an automation test run
+    /// replaced it (`dataDirectoryOverride`).
     static var defaultDataDirectory: URL {
+        dataDirectoryOverride.withLock { $0 } ?? userDataDirectory
+    }
+
+    /// Arc's data folder for the current user.
+    static var userDataDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appending(path: "Library/Application Support/Arc", directoryHint: .isDirectory)
     }
+
+    /// Set at launch for an automation test run (TASK-228.3) to a folder in
+    /// its data directory, so a scripted run never reads the real Arc folder
+    /// (the launch offer, File › Import from Arc); the endpoint's `open_ui`
+    /// points it at a fixture folder. Read from the reader's background
+    /// tasks, hence the lock.
+    static let dataDirectoryOverride = Mutex<URL?>(nil)
 
     /// Arc's sidebar file, the one file an import cannot do without.
     static func sidebarFile(in dataDirectory: URL = defaultDataDirectory) -> URL {

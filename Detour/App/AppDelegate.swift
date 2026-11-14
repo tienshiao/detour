@@ -29,6 +29,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("XCTest") }
     }
 
+    /// An automation test run (`DETOUR_MCP=1` with an isolated data
+    /// directory), whether or not its endpoint started (TASK-228.3).
+    static var isAutomationTestRun: Bool {
+        AutomationGate.isTestRunRequested(environment: ProcessInfo.processInfo.environment)
+    }
+
     /// Whether another process with Detour's bundle id is running now.
     static var anotherInstanceIsRunning: Bool {
         guard let bundleID = Bundle.main.bundleIdentifier else { return false }
@@ -183,6 +189,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             openExternalURLs(links.urls, sourceApp: links.sourceApp, launchedDetour: true)
         }
 
+        // A test run never reads the user's Arc folder (TASK-228.3): Arc's
+        // data is looked for in the run's own data directory instead, where
+        // only a fixture is (the endpoint's open_ui shows the offer on demand).
+        if Self.isAutomationTestRun {
+            ArcSidebarReader.dataDirectoryOverride.withLock {
+                $0 = detourDataDirectory().appending(path: "Arc", directoryHint: .isDirectory)
+            }
+        }
+
         // The automation endpoint (TASK-228.1): off unless the user turned it
         // on, or a test run asked for it with an isolated data directory.
         AutomationController.shared.startIfEnabled(isRunningUnitTests: Self.isRunningUnitTests)
@@ -329,6 +344,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// to anyone whose Mac has Arc's data with something in it, whatever they
     /// answer. Arc's sidebar is read first so the sheet shows their spaces.
     private func offerArcImportIfNeeded(over windowController: BrowserWindowController) {
+        // Never at the launch of a test run (TASK-228.3): a capture asks for
+        // it with open_ui, from a fixture folder.
+        guard !Self.isAutomationTestRun else { return }
         let offer = ArcImportOffer.live
         guard offer.isDue(isTestHost: Self.isRunningUnitTests) else { return }
         Task {

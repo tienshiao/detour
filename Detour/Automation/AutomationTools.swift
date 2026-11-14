@@ -143,14 +143,14 @@ final class AutomationTools {
 
     var all: [MCPTool] {
         [listWindows, listSpaces, listTabs, selectTab, openURL, runMenuItem] + inputTools + captureTools + pageTools
-            + extensionTools + compatReportTools
+            + extensionTools + compatReportTools + stagingTools
     }
 
     // MARK: Lookup
 
-    private var store: TabStore { environment.store }
+    var store: TabStore { environment.store }
 
-    private var openWindows: [BrowserWindowController] {
+    var openWindows: [BrowserWindowController] {
         environment.windowControllers().filter { !$0.hasClosed }
     }
 
@@ -186,8 +186,10 @@ final class AutomationTools {
         MCPTool(
             name: "list_windows",
             title: "List windows",
-            description: "Lists Detour's browser windows (Private windows are left out): each one's window_id, frame, "
-                + "key/main state, active space and selected tab. window_id is what the other tools take.",
+            description: "Lists Detour's browser windows (Private windows are left out): each one's window_id, "
+                + "window_number (its CGWindowID), frame (AppKit's, bottom-left origin), screen_bounds (the window "
+                + "server's, top-left origin, as screencapture takes it), display_id, key/main state, active space "
+                + "and selected tab. window_id is what the other tools take.",
             inputSchema: MCPSchema.input([]),
             outputSchema: MCPSchema.output([
                 "app_active": MCPSchema.booleanType,
@@ -214,6 +216,10 @@ final class AutomationTools {
             "window_number": .int(window?.windowNumber ?? 0),
             "frame": ["x": .double(frame.origin.x), "y": .double(frame.origin.y),
                       "width": .double(frame.width), "height": .double(frame.height)],
+            // Global top-left points, as screencapture takes them (TASK-228.3):
+            // the window server's bounds, null while the window is off screen.
+            "screen_bounds": window.flatMap { Self.screenBounds(ofWindowNumber: $0.windowNumber) }.map(Self.json) ?? .null,
+            "display_id": window?.screen.flatMap(Self.displayID).map { .int(Int($0)) } ?? .null,
             "is_key": .bool(window?.isKeyWindow ?? false),
             "is_main": .bool(window?.isMainWindow ?? false),
             "is_visible": .bool(window?.isVisible ?? false),

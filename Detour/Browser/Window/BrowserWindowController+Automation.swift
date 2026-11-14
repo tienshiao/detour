@@ -30,6 +30,9 @@ extension BrowserWindowController {
         let title = AutomationIndicator.title(for: sessions)
         automationIndicator.title = title ?? ""
         automationIndicator.isHidden = title == nil
+        #if DEBUG
+        if AutomationIndicator.isHiddenForCapture { automationIndicator.isHidden = true }
+        #endif
     }
 
     private func automationMenu() -> NSMenu {

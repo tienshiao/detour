@@ -56,6 +56,14 @@ nonisolated enum AutomationErrorCode: String, Sendable, CaseIterable {
     /// The folder or CRX could not be installed (no or invalid manifest, a
     /// CRX that fails verification or unpacking).
     case installFailed = "install_failed"
+    /// The fixture file is not a world seed_world can build: the message and
+    /// `error.details.path` name the field (TASK-228.3).
+    case invalidFixture = "invalid_fixture"
+    /// seed_world needs an empty data directory; this one has content
+    /// (listed in `error.details`).
+    case notEmpty = "not_empty"
+    /// No display has that id (list_displays names them).
+    case unknownDisplay = "unknown_display"
 }
 
 /// A tool call that failed in a way the caller can act on.

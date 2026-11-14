@@ -67,7 +67,7 @@ extension TabStore {
         for folder in plan.folders {
             space(withID: folder.spaceID)?.pinnedFolders.append(
                 PinnedFolder(id: folder.id, name: folder.name, parentFolderID: folder.parentID,
-                             sortOrder: folder.sortOrder))
+                             isCollapsed: folder.isCollapsed, sortOrder: folder.sortOrder))
             touch(folder.spaceID)
         }
 
@@ -77,7 +77,7 @@ extension TabStore {
             guard let space = space(withID: spaceID) else { continue }
             space.pinnedEntries += entries.map { planned in
                 let entry = PinnedEntry(id: planned.id, pinnedURL: planned.url, pinnedTitle: planned.title,
-                                        faviconURL: faviconFallbackURL(for: planned.url),
+                                        faviconURL: planned.faviconURL ?? faviconFallbackURL(for: planned.url),
                                         folderID: planned.folderID, sortOrder: planned.sortOrder)
                 entry.splitGroupID = planned.splitGroupID
                 entry.splitFraction = planned.splitFraction
@@ -90,7 +90,7 @@ extension TabStore {
             guard let space = space(withID: spaceID) else { continue }
             let tabs = planned.map { planned in
                 let tab = BrowserTab(id: planned.id, title: planned.title, url: planned.url,
-                                     faviconURL: faviconFallbackURL(for: planned.url),
+                                     faviconURL: planned.faviconURL ?? faviconFallbackURL(for: planned.url),
                                      cachedInteractionState: nil, spaceID: spaceID)
                 tab.lastDeselectedAt = now
                 tab.splitGroupID = planned.splitGroupID
@@ -108,7 +108,8 @@ extension TabStore {
             let start = (profile.favorites.map(\.sortOrder).max() ?? -1) + 1
             profile.favorites += planned.enumerated().map { offset, favorite in
                 Favorite(id: favorite.id, url: favorite.url, title: favorite.title,
-                         faviconURL: faviconFallbackURL(for: favorite.url), sortOrder: start + offset)
+                         faviconURL: favorite.faviconURL ?? faviconFallbackURL(for: favorite.url),
+                         sortOrder: start + offset)
             }
             favoriteProfiles.append(profile)
         }

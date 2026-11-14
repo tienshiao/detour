@@ -274,6 +274,13 @@ final class AutomationController {
 /// What the window's automation indicator says (TASK-228.1, AC #10, #17).
 enum AutomationIndicator {
 
+    #if DEBUG
+    /// Debug builds only: hides the capsule while a capture records the
+    /// window (set_debug_override automation_indicator, TASK-228.3). Release
+    /// builds always show who is connected.
+    static var isHiddenForCapture = false
+    #endif
+
     /// The capsule's title: the first client's name, and how many more. Nil
     /// hides the indicator (nothing connected).
     static func title(for sessions: [MCPSessionStore.Session]) -> String? {

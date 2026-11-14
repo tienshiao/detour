@@ -206,6 +206,30 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         switchToPane(vc, identifier: Self.extensionsID)
     }
 
+    /// The panes' names, as the toolbar identifies them: general, spaces,
+    /// links, quickdetour, profiles, search, extensions, contentblocker.
+    static var paneNames: [String] { paneOrder.map(\.rawValue) }
+
+    /// Shows the pane called `name` (one of `paneNames`). False for a name
+    /// that is none of them (the automation endpoint's staging, TASK-228.3).
+    @discardableResult
+    func showPane(named name: String) -> Bool {
+        let identifier = NSToolbarItem.Identifier(name)
+        guard let vc = panes[identifier] else { return false }
+        showWindow(nil)
+        switchToPane(vc, identifier: identifier)
+        return true
+    }
+
+    /// The table views of the pane on screen, in view order: the first is
+    /// the pane's list (spaces, profiles, routes, extensions).
+    var visiblePaneTables: [NSTableView] {
+        func tables(in view: NSView) -> [NSTableView] {
+            (view as? NSTableView).map { [$0] } ?? view.subviews.flatMap(tables)
+        }
+        return window?.contentViewController.map { tables(in: $0.view) } ?? []
+    }
+
     private func switchToPane(_ vc: SettingsPaneViewController, identifier: NSToolbarItem.Identifier) {
         guard let window else { return }
         window.toolbar?.selectedItemIdentifier = identifier

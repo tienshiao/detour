@@ -93,6 +93,17 @@ nonisolated enum AutomationGate {
         return (.off, refusal)
     }
 
+    /// Whether this launch asks for a test run with an isolated data
+    /// directory, whether or not the endpoint then starts (a bad port still
+    /// counts). What keeps a scripted run off the user's real data outside
+    /// Detour's own directory (Arc's folder, TASK-228.3).
+    static func isTestRunRequested(environment: [String: String]) -> Bool {
+        guard environment[testRunEnvironmentKey] == "1", let dataDirectory = environment["DETOUR_DATA_DIR"] else {
+            return false
+        }
+        return isIsolatedDataDirectoryName(dataDirectory)
+    }
+
     /// The port a user-enabled endpoint listens on: the fixed port setting,
     /// when it is a valid non-zero port, else 0 (the system picks one).
     static func userPort(settingPort: Int?) -> UInt16 {

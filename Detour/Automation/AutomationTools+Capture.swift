@@ -190,6 +190,7 @@ extension AutomationTools {
             "reduce_motion": MotionPreference.reduceMotionOverride.map(JSONValue.bool) ?? .null,
             "space_toss_hop": (defaults.object(forKey: spaceTossHopKey) as? Double).map(JSONValue.double) ?? .null,
             "space_toss_gravity": (defaults.object(forKey: spaceTossGravityKey) as? Double).map(JSONValue.double) ?? .null,
+            "automation_indicator": .bool(!AutomationIndicator.isHiddenForCapture),
         ]
     }
 
@@ -200,9 +201,12 @@ extension AutomationTools {
             description: "Debug builds only. Overrides a setting for testing Detour itself: reduce_motion (on or "
                 + "off, for this process, without touching the protected system setting), space_toss_hop and "
                 + "space_toss_gravity (points and points/s², the space editor's toss, kept in the data "
-                + "directory's defaults). value default clears the override. Returns every override.",
+                + "directory's defaults), automation_indicator (off hides the connected-agent capsule in every "
+                + "window while a capture records, for this process). value default clears the override. "
+                + "Returns every override.",
             inputSchema: MCPSchema.input([
-                ("name", .enumeration(["reduce_motion", "space_toss_hop", "space_toss_gravity"], "The override")),
+                ("name", .enumeration(["reduce_motion", "space_toss_hop", "space_toss_gravity", "automation_indicator"],
+                                      "The override")),
                 ("value", .string("on, off or a number; default clears it")),
             ], required: ["name", "value"]),
             outputSchema: MCPSchema.output(["overrides": MCPSchema.objectType]),
@@ -226,6 +230,14 @@ extension AutomationTools {
                     case "default": MotionPreference.reduceMotionOverride = nil
                     default: throw AutomationToolError(.invalidArguments, "reduce_motion is on, off or default")
                     }
+                case "automation_indicator":
+                    switch value {
+                    case "on", "true", "default": AutomationIndicator.isHiddenForCapture = false
+                    case "off", "false": AutomationIndicator.isHiddenForCapture = true
+                    default: throw AutomationToolError(.invalidArguments, "automation_indicator is on, off or default")
+                    }
+                    NotificationCenter.default.post(name: AutomationController.didChangeNotification,
+                                                    object: AutomationController.shared)
                 case "space_toss_hop", "space_toss_gravity":
                     let key = name == "space_toss_hop" ? Self.spaceTossHopKey : Self.spaceTossGravityKey
                     if clear {

@@ -162,23 +162,30 @@ extension BrowserWindowController: TabSidebarDelegate {
 
     /// Opens the space editor in this window's sidebar for a new space
     /// (TASK-289): the first curated colour and emoji no space has yet, on
-    /// this window's profile. Nothing exists until Create Space.
-    func beginCreatingSpace() {
-        guard !isIncognito else { return }
-        let profiles = spaceEditorProfiles
-        guard let profileID = activeSpace?.profileID ?? profiles.first?.id else { return }
-        let spaces = store.nonIncognitoSpaces
-        let draft = SpaceDraft.forNewSpace(usedColorHexes: spaces.map(\.colorHex),
-                                           usedEmoji: spaces.map(\.emoji),
-                                           profileID: profileID)
+    /// this window's profile. Nothing exists until Create Space. `draft`
+    /// replaces those defaults (the automation endpoint's staging, TASK-228.3).
+    func beginCreatingSpace(draft: SpaceDraft? = nil) {
+        guard !isIncognito, let draft = draft ?? newSpaceDraft() else { return }
         revealSidebarForSpaceEditor()
-        tabSidebar.beginSpaceEditor(.creating(draft), profiles: profiles)
+        tabSidebar.beginSpaceEditor(.creating(draft), profiles: spaceEditorProfiles)
     }
 
-    /// Opens the space editor in this window's sidebar on `id` (TASK-289).
-    func beginEditingSpace(id: UUID) {
+    /// The editor's defaults for a new space in this window, or nil when
+    /// there is no profile to put it on.
+    func newSpaceDraft() -> SpaceDraft? {
+        guard let profileID = activeSpace?.profileID ?? spaceEditorProfiles.first?.id else { return nil }
+        let spaces = store.nonIncognitoSpaces
+        return SpaceDraft.forNewSpace(usedColorHexes: spaces.map(\.colorHex),
+                                      usedEmoji: spaces.map(\.emoji),
+                                      profileID: profileID)
+    }
+
+    /// Opens the space editor in this window's sidebar on `id` (TASK-289),
+    /// showing the space as it is or, for staging, `draft` (TASK-228.3).
+    func beginEditingSpace(id: UUID, draft: SpaceDraft? = nil) {
         guard !isIncognito, let space = store.space(withID: id), !space.isIncognito else { return }
-        let draft = SpaceDraft(name: space.name, emoji: space.emoji, colorHex: space.colorHex, profileID: space.profileID)
+        let draft = draft ?? SpaceDraft(name: space.name, emoji: space.emoji, colorHex: space.colorHex,
+                                        profileID: space.profileID)
         revealSidebarForSpaceEditor()
         tabSidebar.beginSpaceEditor(.editing(spaceID: id, draft), profiles: spaceEditorProfiles)
     }

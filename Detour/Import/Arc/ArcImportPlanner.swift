@@ -105,6 +105,8 @@ nonisolated struct ArcImportPlan: Sendable, Equatable {
         var name: String
         var parentID: UUID?
         var sortOrder: Int
+        /// Arc's import leaves every folder open; a seeded world may not (TASK-228.3).
+        var isCollapsed = false
     }
 
     nonisolated struct NewPinnedEntry: Sendable, Equatable {
@@ -116,6 +118,8 @@ nonisolated struct ArcImportPlan: Sendable, Equatable {
         var sortOrder: Int
         var splitGroupID: UUID?
         var splitFraction: Double?
+        /// Where the icon comes from; nil for the site's /favicon.ico (TASK-228.3).
+        var faviconURL: URL? = nil
     }
 
     nonisolated struct NewFavorite: Sendable, Equatable {
@@ -123,6 +127,8 @@ nonisolated struct ArcImportPlan: Sendable, Equatable {
         var profileID: UUID
         var url: URL
         var title: String
+        /// Where the icon comes from; nil for the site's /favicon.ico (TASK-228.3).
+        var faviconURL: URL? = nil
     }
 
     /// A sleeping normal tab, appended to its space's tab list in plan order.
@@ -133,6 +139,8 @@ nonisolated struct ArcImportPlan: Sendable, Equatable {
         var title: String
         var splitGroupID: UUID?
         var splitFraction: Double?
+        /// Where the icon comes from; nil for the site's /favicon.ico (TASK-228.3).
+        var faviconURL: URL? = nil
     }
 
     /// One Arc profile's history and the space its visits are filed under.
