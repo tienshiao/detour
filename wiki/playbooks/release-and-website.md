@@ -193,6 +193,22 @@ be run again:
   built from a dirty tree cannot be reproduced; publish-release.sh commits
   the bump with the notes and tags that commit, and refuses any other
   uncommitted change.
+- **Notarization 403: "A required agreement is missing or has
+  expired".** Apple has published an updated developer agreement that the
+  account holder must accept at developer.apple.com/account. Nothing is
+  published at that point: the DMG is built and signed, and `Info.plist`
+  holds the bumped version. After acceptance the notary service took a few
+  minutes to see it; `notarytool history` works throughout, so only a
+  submit proves it. A rebuild is not needed: run
+  `xcrun notarytool submit build/Detour-<version>.dmg --keychain-profile detour-notary --wait`
+  and `xcrun stapler staple` on the DMG already built, which is what the
+  script's last two steps do. Rerunning `build-release.sh` with a version
+  argument would bump the build number again; without one it rebuilds the
+  same version (0.4.4, 2026-11-14).
+- **The website check can beat the CDN.** publish-release.sh's last step
+  failed with "does not show v<version> yet (CDN cache?)" right after a
+  successful deploy; a `curl` a minute later showed the new version. Every
+  step before it had finished, so there was nothing to rerun (0.4.4).
 - **`--timestamp` needs the network.** The local-test workaround
   (`--timestamp=none`) must never be used for a release: notarization
   requires a secure timestamp.
