@@ -83,13 +83,17 @@ final class AutomationTools {
     /// is still running (an action that opens a modal alert does not return
     /// until the alert closes).
     var menuActionWait: Duration = .milliseconds(1500)
+    /// How long an input tool waits for one mouse or key event to be handled
+    /// before saying it is still running (it opened a menu or an alert).
+    var inputWait: Duration = .milliseconds(1500)
 
     init(environment: AutomationEnvironment) {
         self.environment = environment
+        AutomationMenuTracker.shared.start()
     }
 
     var all: [MCPTool] {
-        [listWindows, listSpaces, listTabs, selectTab, openURL, runMenuItem]
+        [listWindows, listSpaces, listTabs, selectTab, openURL, runMenuItem] + inputTools
     }
 
     // MARK: Lookup
@@ -474,50 +478,17 @@ final class AutomationTools {
                     throw AutomationToolError(.unknownWindow, "The window has no NSWindow")
                 }
                 let (action, target) = try AutomationMenus.resolve(found.item, in: window)
-                let completed = await perform(action, target: target, sender: found.item)
+                // From the run loop: see `AutomationInput.runFromRunLoop`.
+                let item = found.item
+                let completed = await AutomationInput.runFromRunLoop(wait: menuActionWait) {
+                    NSApp.sendAction(action, to: target, from: item)
+                }
                 return [
                     "title": .string(found.item.title),
                     "path": .array(found.path.map(JSONValue.string)),
                     "completed": .bool(completed),
                 ]
             })
-    }
-
-    /// Sends the action from the main run loop and waits for it up to
-    /// `menuActionWait`. True when it returned within the wait.
-    ///
-    /// From the run loop (`RunLoop.perform`), not from a main-queue block: an
-    /// action that runs a modal session spins a nested run loop, and GCD never
-    /// drains the main queue inside one of its own blocks. Sent from a block,
-    /// such an action would stall the wait below and every main-actor job,
-    /// so the endpoint could answer nothing until the alert closed.
-    private func perform(_ action: Selector, target: AnyObject, sender: NSMenuItem) async -> Bool {
-        final class Once {
-            var continuation: CheckedContinuation<Bool, Never>?
-            func finish(_ value: Bool) {
-                continuation?.resume(returning: value)
-                continuation = nil
-            }
-        }
-        let once = Once()
-        // Not crossings: both blocks run on the main queue, as this method does.
-        nonisolated(unsafe) let target = target
-        nonisolated(unsafe) let sender = sender
-        let wait = menuActionWait
-        return await withCheckedContinuation { continuation in
-            once.continuation = continuation
-            RunLoop.main.perform(inModes: [.common]) {
-                // Not a crossing: the main run loop runs this on the main thread.
-                MainActor.assumeIsolated {
-                    NSApp.sendAction(action, to: target, from: sender)
-                    once.finish(true)
-                }
-            }
-            let seconds = Double(wait.components.seconds) + Double(wait.components.attoseconds) / 1e18
-            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
-                MainActor.assumeIsolated { once.finish(false) }
-            }
-        }
     }
 }
 
@@ -654,16 +625,7 @@ enum AutomationMenus {
         guard let keyName = parts.last, !keyName.isEmpty else {
             throw AutomationToolError(.invalidArguments, "A key equivalent needs a key, got \"\(value)\"")
         }
-        var modifiers: NSEvent.ModifierFlags = []
-        for name in parts.dropLast() {
-            switch name {
-            case "cmd", "command": modifiers.insert(.command)
-            case "shift": modifiers.insert(.shift)
-            case "option", "opt", "alt": modifiers.insert(.option)
-            case "control", "ctrl": modifiers.insert(.control)
-            default: throw AutomationToolError(.invalidArguments, "Unknown modifier \"\(name)\"")
-            }
-        }
+        let modifiers = try AutomationInput.modifiers(Array(parts.dropLast()))
         let named: [String: String] = [
             "up": "\u{F700}", "down": "\u{F701}", "left": "\u{F702}", "right": "\u{F703}",
             "return": "\r", "enter": "\r", "tab": "\t", "escape": "\u{1B}", "esc": "\u{1B}",

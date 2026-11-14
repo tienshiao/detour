@@ -18,6 +18,10 @@ nonisolated enum AutomationErrorCode: String, Sendable, CaseIterable {
     case timeout = "timeout"
     case gateClosed = "gate_closed"
     case internalError = "internal_error"
+    /// The tab is asleep or not shown in any window, so input cannot reach it.
+    case notDisplayed = "not_displayed"
+    /// The selector matched an element with no visible box.
+    case elementNotVisible = "element_not_visible"
 }
 
 /// A tool call that failed in a way the caller can act on.
@@ -93,6 +97,14 @@ struct ToolArguments {
     func requiredInt(_ name: String) throws -> Int {
         guard let value = try int(name) else { throw missing(name) }
         return value
+    }
+
+    func number(_ name: String) throws -> Double? {
+        guard let value = values[name] else { return nil }
+        // Not "nan" or "inf", which `Double(_:)` reads from a string.
+        if let string = value.stringValue, let parsed = Double(string), parsed.isFinite { return parsed }
+        guard let number = value.doubleValue, number.isFinite else { throw typeError(name, "a number") }
+        return number
     }
 
     func bool(_ name: String) throws -> Bool? {

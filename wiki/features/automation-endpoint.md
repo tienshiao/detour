@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Automation endpoint (MCP)
-description: "Detour's local MCP server for agents and scripts (TASK-228.1): how it is turned on, who may connect (Host, Origin, bearer token), the HTTP and MCP layers, the tools and their stable error codes, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, SIGTERM)."
+description: "Detour's local MCP server for agents and scripts (TASK-228.1): how it is turned on, who may connect (Host, Origin, bearer token), the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, SIGTERM)."
 tags: [automation, mcp, testing, security]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T03:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T05:00:00Z }
 sources:
   - id: automation-dir
     resource: ../../Detour/Automation
@@ -18,6 +18,9 @@ sources:
   - id: task-228-1
     resource: backlog:TASK-228.1
     title: "Automation: an MCP endpoint in Detour, first slice for testing"
+  - id: input
+    resource: ../../Detour/Automation/AutomationInput.swift
+    title: AutomationInput.swift (delivery, keys, elements, the menu tracker)
   - id: tests
     resource: ../../DetourTests/MCPServerTests.swift
     title: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests
@@ -28,11 +31,12 @@ sources:
 A local [MCP](https://modelcontextprotocol.io) server inside Detour, so an
 agent (Claude Code, another MCP client) or a plain script can read the
 browser's state and act on it: list windows, spaces and tabs, select a tab,
-open a URL, run a menu command. Built first for testing Detour itself
+open a URL, run a menu command, click, type, and choose from the menu that is
+open. Built first for testing Detour itself
 (replacing harness patches pasted into AppDelegate), and shipped in Release
 too, off until turned on.[^task-228-1] Later phases of TASK-228.1 add
-in-app input, menus, screenshots, a connected indicator and a bundled
-stdin/stdout helper; TASK-228.2 adds extension contexts.
+screenshots, a connected indicator and a bundled stdin/stdout helper;
+TASK-228.2 adds extension contexts.
 
 # How it is turned on
 
@@ -106,7 +110,7 @@ string-array properties, with no `$ref`, `oneOf`, `anyOf`, `allOf` or
 formats: OpenAI and Gemini models reject those. `MCPServerTests` walks every
 tool's schema to hold it.
 
-## The tools (phase 1)
+## The tools
 
 | Tool | Does | Notes |
 |---|---|---|
@@ -116,11 +120,43 @@ tool's schema to hold it.
 | `select_tab` | Selects an item as a row click does | Switches the window's space first; wakes a dormant pinned entry or favourite; `dormant_refused` when its extension keeps it dormant. |
 | `open_url` | The palette's typed-URL path (`openTypedURL`): a new tab, or `in_place` | Link Routes apply as for a typed URL; `routed` says the URL went elsewhere. |
 | `run_menu_item` | A main-menu command by path or key equivalent, sent to that window's responder chain and validated there | Works with Detour in the background, where there is no key window. |
+| `click` | A click by element (`context` + CSS `selector`), by page point (`context` + CSS-pixel `x`, `y`) or by window point (`window_id` + `x`, `y`, the content's top-left origin); `button` left/right, `modifiers`, `count` 2 for a double click | Closes an open menu first. `completed` false: the click opened a menu or an alert that is still open. |
+| `type_text` | Key presses for `text` into a tab's page (after clicking `selector`, if given) or a window's focused control; `interval_ms` paces them | US key codes; other characters as key presses with no physical key. |
+| `press_key` | One key with modifiers (`return`, `shift+tab`, `cmd+a`) | A Cmd key goes through the target's key equivalents (`handled`); menu commands are `run_menu_item`. |
+| `hit_test` | What a click at a window point would reach: view class, accessibility role and label, frame | Read-only; aims `click` without a screenshot. |
+| `list_menu` | The open menu's items (index, title, enabled, checked, submenu, identifier); waits `timeout_ms` for one to open; `path` for a submenu | A page's context menu shows WebKit's `WKMenuItemIdentifier…` identifiers. |
+| `choose_menu_item` | Chooses an item by title, index or identifier, then closes the menu | WebKit's own items run for real (Download Linked File downloaded at runtime). |
+| `close_menu` | Closes the open menu without choosing | |
 
 Tools that act on page content take a `context` (`tab:<uuid>`, or a bare
 tab id). `popup:`, `options:`, `sidepanel:` and `worker:` already parse and
 answer `unknown_context`, so TASK-228.2 adds extension contexts without
 changing signatures.
+
+## How input is delivered
+
+Nothing is posted at the HID level, so Detour never comes to the front and
+the person's pointer never moves (`AutomationInput`):[^input]
+
+- **A page** gets the events handed to its web view: `mouseDown(with:)`, a
+  60 ms pause (WebKit takes a down and an up in the same turn as no click),
+  `mouseUp(with:)`; keys through `keyDown(with:)` and `keyUp(with:)`, after
+  the web view is made its window's first responder (which does not activate
+  the app). The page sees trusted events (`isTrusted`) with the modifiers
+  and US `event.code`s, while Detour is in the background.
+- **A native view** under a window point gets `mouseDown(with:)` directly,
+  with the mouse-up posted to the app's queue first, where a control's
+  tracking loop finds it. Checked at runtime with Detour in the background:
+  the sidebar's Add Space button opened the space editor.
+- **Every event goes out from `RunLoop.main.perform`**, as `run_menu_item`'s
+  actions do (see Traps): a native context menu runs its whole tracking loop
+  inside `rightMouseDown`, so the click answers `completed: false` after
+  the wait while the menu stays open and the endpoint keeps answering.
+- **Menus**: `AutomationMenuTracker` follows
+  `NSMenu.didBeginTrackingNotification` and `didEndTrackingNotification` for
+  every menu in the app; the newest one open is what `list_menu` shows.
+  Choosing calls `performActionForItem(at:)` while the menu is still
+  tracking (WebKit's items need their live menu), then `cancelTracking()`.
 
 # The client
 
@@ -165,6 +201,22 @@ Claude Code connects directly:
   modal's nested run loop then drains the main queue, and `run_menu_item`
   answers `completed: false` after 1.5 s while other calls keep working. This
   was checked in the running app with Cmd+Q.
+- **A direct text insert overtakes queued keys.** WebKit holds key events
+  until the page has handled the previous ones, and
+  `insertText(_:)` does not wait: "Ab!é" arrived as "Abé!". A character
+  with no US key is sent as a key press carrying it (key code 0xFF, which
+  the page reports as `code` "Unidentified"), so it stays in order. Also,
+  WKWebView's `NSTextInputClient` conformance is not one a Swift `as?`
+  cast sees.
+- **Hit tests behind an open menu are wrong.** With a context menu open, a
+  hit test in the window found `NSMenuHighlightView`, and Escape sent to the
+  window's first responder does not reach a tracking menu. Input tools close
+  open menus first; `close_menu` closes one on its own.
+- **The test host moves posted events.** A native control's tracking loop
+  reads the queued mouse-up, which in the XCTest host comes back with its
+  location moved, so a button's action never fires there.
+  `AutomationInputTests` checks that the view gets the mouse-down; the
+  action is checked in the running app.
 - **SIGTERM runs no quit path.** The SIGTERM source ends native hosts and
   re-raises the signal, so `applicationWillTerminate` never runs. It removes
   the endpoint file too, and only if the file's `pid` is this process. A
@@ -179,7 +231,11 @@ shapes, schema flatness, stable codes, context ids), `AutomationToolsTests`
 (the tools against real windows on `TabStore.shared`, including a Private
 window, a dormant pinned entry, another space, validation through the
 window, and a slow command), `AutomationEndpointTests` (refusals, a whole
-session and a split, kept-alive request over a real socket).[^tests]
+session and a split, kept-alive request over a real socket),
+`AutomationInputTests` (trusted clicks by selector, by page and by window
+point, modifier and double clicks, typing in order with US codes, Return,
+a page's context menu listed and closed, a native view's mouse-down and a
+native context menu chosen from, and the input errors).[^tests]
 
 # Related
 
@@ -192,4 +248,5 @@ session and a split, kept-alive request over a real socket).[^tests]
 [^automation-dir]: Detour/Automation (gate, credentials, HTTP, authorisation, MCP server, tools, endpoint)
 [^client]: scripts/detour-mcp (stdlib Python client)
 [^task-228-1]: Automation: an MCP endpoint in Detour, first slice for testing
-[^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests
+[^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests, AutomationInputTests
+[^input]: Detour/Automation/AutomationInput.swift
