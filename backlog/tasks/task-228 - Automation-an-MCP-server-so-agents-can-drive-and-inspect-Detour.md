@@ -1,10 +1,10 @@
 ---
 id: TASK-228
 title: 'Automation: an MCP server so agents can drive and inspect Detour'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-29T04:10:00Z'
-updated_date: '2026-11-14T12:04:00Z'
+updated_date: '2026-11-14T12:07:00Z'
 labels:
   - tooling
   - automation
