@@ -5,8 +5,17 @@ description: "AppDelegate and main.swift — launch and termination, window crea
 resource: ../../Detour/App/AppDelegate.swift
 tags: [architecture, app, menus, sparkle, startup]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T05:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T22:30:00Z }
 sources:
+  - id: task-320
+    resource: backlog:TASK-320
+    title: "Command palette: browser commands (a shared command registry, also for AppleScript, Shortcuts and MCP)"
+  - id: registry
+    resource: ../../Detour/Commands/BrowserCommands.swift
+    title: BrowserCommands.swift
+  - id: dispatch
+    resource: ../../Detour/Commands/CommandDispatch.swift
+    title: CommandDispatch.swift
   - id: task-292-10
     resource: backlog:TASK-292.10
     title: "Help menu: open the Detour guide, keyboard shortcuts, Switching from Arc, release notes and issue reporting"
@@ -113,10 +122,19 @@ responder chain and the rest are disabled.
 
 ## The menu bar
 
-`setupMainMenu()` builds every menu in code. Items whose action is a
-`BrowserWindowController` selector have a nil target, so they resolve through
-the responder chain to the key window's controller, which validates them in
-`validateMenuItem`.
+`setupMainMenu()` builds every menu in code, and since TASK-320 every item
+is a view of a command of the [command registry](../features/browser-commands.md)
+(`BrowserCommands`): `add(_:to:)` builds the item from the command (title,
+key equivalent, action, tag, and the command's ID as the item's
+`identifier`) and sets the target its responder calls for. The layout
+(order, separators, which menus have a delegate) stays in `setupMainMenu`.
+Items whose action is a window controller's have a nil target, so they
+resolve through the responder chain to the key window's controller, whose
+`validateMenuItem` answers the registry's rule for the command
+(`BrowserCommands.validate`). Before the registry each controller answered
+item by item; `MainMenuCharacterizationTests` pinned every item's title, key
+equivalent, action, target, tag and enablement before the move and still
+pass unchanged.
 
 | Menu | Contents | Dynamic? |
 |---|---|---|
@@ -132,7 +150,12 @@ the responder chain to the key window's controller, which validates them in
 | Help | Detour Help, Keyboard Shortcuts, Switching from Arc, Release Notes, Report an Issue (TASK-292.10) | No |
 
 Dynamic items are tagged (`spacesMenuTag`, `extensionMenuTag`,
-`extensionInspectorTag`) so a rebuild removes exactly what it added.
+`extensionInspectorTag`) so a rebuild removes exactly what it added. They
+are still built by their own builders, with the actions of the registry's
+parameterised commands (`space.switch`, `extension.show-popup`,
+`extension.options`, `extension.inspect-offscreen`,
+`extension.reload-unpacked`) and no identifier. The Dock menu's two items
+are not built from the registry.
 
 The **Help menu** is last and is registered as `NSApp.helpMenu`, which is
 what makes macOS add its menu search field (Shift-Cmd-/). It is built in
@@ -186,8 +209,10 @@ assumed:[^task-56]
 | `true` | Performs the returned action on the returned target with **no validation of its own**. |
 
 So the matcher is a fast path that errs towards `false`, and the `true` path
-re-implements AppKit's enable decision (`menuItemIsEnabled`:
-`validateMenuItem`, else `validateUserInterfaceItem`, else `isEnabled`).
+re-implements AppKit's enable decision (`CommandDispatch.isEnabled`:
+`validateMenuItem`, else `validateUserInterfaceItem`, else `isEnabled`; the
+automation endpoint's `run_menu_item` and the command palette use the same
+helper).
 Without that, Next Space would fire with no browser window key.
 
 Whether macOS 14 and 15 also fall back after a `false` is not
@@ -270,7 +295,9 @@ harnesses are applied as patches; see
 # Tests
 
 `MenuKeyEquivalentMatcherTests` (including the tests against the real
-`NSApp.mainMenu`), `ExtensionMenuPopupDecisionTests`,
+`NSApp.mainMenu`), `MainMenuCharacterizationTests` (the menu's items and
+their enablement in every kind of window, and the registry's rule agreeing
+with them), `BrowserCommandRegistryTests`, `ExtensionMenuPopupDecisionTests`,
 `ExtensionOptionsPageEntryTests`, `ProductionDefaultsIsolationTests`,
 `UserDefaultsScopeTests`.
 

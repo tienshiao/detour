@@ -4,6 +4,7 @@
 
 # Components
 
+* [Browser commands](browser-commands.md) - The command registry (TASK-320): every main-menu command defined once with a stable ID, key equivalent, parameters, availability rule and action; the main menu is built from it, and the command palette, AppleScript/Shortcuts and MCP read it.
 * [Favicons](favicons.md) - How a tab finds its icon (an optimistic /favicon.ico guess, an early link report from a private content world, an end-of-load lookup), and the two shared loaders that hand icons to AppKit and to web views.
 * [Internal pages (detour://)](internal-pages.md) - How Detour serves its own privileged pages into ordinary tabs: single-use arming, a scheme handler that serves only internal main documents, and a bridge in a private content world that re-verifies every sender.
 * [Settings window](settings.md) - The Settings window and its eight panes (General, Spaces, Links, Quick Detour, Profiles, Search, Extensions, Content Blocking): what each one edits, how changes reach TabStore, the shared metrics and pane container (one scrolling body, or since TASK-211 a list and detail column fixed to the pane and scrolling on their own), the height rule (natural height, capped to the screen, resizable in height only) and the layout traps met on the way.

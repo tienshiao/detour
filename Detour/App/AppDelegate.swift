@@ -808,120 +808,124 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Adds `command`'s menu item to `menu` (TASK-320): the item is a view
+    /// of the registry's command, with the target its responder calls for.
+    @discardableResult
+    private func add(_ command: BrowserCommand, to menu: NSMenu) -> NSMenuItem {
+        let item = command.makeMenuItem()
+        switch command.responder {
+        case .appDelegate(explicitTarget: true): item.target = self
+        case .updater: item.target = updaterController
+        case .appDelegate(explicitTarget: false), .windowController, .appKit: break
+        }
+        menu.addItem(item)
+        return item
+    }
+
+    /// The menu bar, every item from the command registry (`BrowserCommands`,
+    /// TASK-320): its title, key equivalent, action and target. Enablement is
+    /// the registry's rule, which the window controllers' `validateMenuItem`
+    /// answers. The layout (order, separators, which menus have a delegate)
+    /// stays here.
     private func setupMainMenu() {
         let mainMenu = NSMenu()
+        let commands = BrowserCommands.self
 
         // App menu
         let appMenuItem = NSMenuItem()
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About Detour", action: #selector(showAboutPanel(_:)), keyEquivalent: "")
+        add(commands.about, to: appMenu)
         // Not added at all when the updater did not start (TASK-41), so nothing
         // can reach it — and no separator is left standing where it would have been.
         if Self.startsUpdater {
             appMenu.addItem(.separator())
-            let checkForUpdatesItem = NSMenuItem(
-                title: "Check for Updates…",
-                action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
-                keyEquivalent: "")
-            checkForUpdatesItem.target = updaterController
-            appMenu.addItem(checkForUpdatesItem)
+            add(commands.checkForUpdates, to: appMenu)
         }
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        add(commands.settings, to: appMenu)
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide Detour", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        let hideOthersItem = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
-        hideOthersItem.keyEquivalentModifierMask = [.command, .option]
-        appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        add(commands.hide, to: appMenu)
+        add(commands.hideOthers, to: appMenu)
+        add(commands.showAll, to: appMenu)
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit Detour", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        add(commands.quit, to: appMenu)
         appMenuItem.submenu = appMenu
 
         // File menu
         let fileMenuItem = NSMenuItem()
         mainMenu.addItem(fileMenuItem)
         let fileMenu = NSMenu(title: "File")
-        fileMenu.addItem(withTitle: "New Tab", action: #selector(BrowserWindowController.newTab(_:)), keyEquivalent: "t")
-        fileMenu.addItem(withTitle: "Open Location…", action: #selector(BrowserWindowController.focusAddressBar(_:)), keyEquivalent: "l")
-        fileMenu.addItem(withTitle: "Close Tab", action: #selector(BrowserWindowController.closeCurrentTab(_:)), keyEquivalent: "w")
-        let reopenItem = fileMenu.addItem(withTitle: "Reopen Closed Tab", action: #selector(BrowserWindowController.reopenClosedTab(_:)), keyEquivalent: "t")
-        reopenItem.keyEquivalentModifierMask = [.command, .shift]
-        fileMenu.addItem(withTitle: "Pin/Unpin Tab", action: #selector(BrowserWindowController.togglePinTab(_:)), keyEquivalent: "d")
+        add(commands.newTab, to: fileMenu)
+        add(commands.openLocation, to: fileMenu)
+        add(commands.closeTab, to: fileMenu)
+        add(commands.reopenClosedTab, to: fileMenu)
+        add(commands.togglePin, to: fileMenu)
         fileMenu.addItem(.separator())
-        fileMenu.addItem(withTitle: "New Window", action: #selector(createNewWindow as () -> Void), keyEquivalent: "n")
-        let privateWindowItem = fileMenu.addItem(withTitle: "New Private Window", action: #selector(createNewIncognitoWindow), keyEquivalent: "n")
-        privateWindowItem.keyEquivalentModifierMask = [.command, .shift]
+        add(commands.newWindow, to: fileMenu)
+        add(commands.newPrivateWindow, to: fileMenu)
         // Opt-Cmd-N by default (TASK-193.1), or the shortcut set for the
         // system-wide hotkey (TASK-193.2). The File menu is not
         // delegate-driven, so AppKit matches it natively.
-        let quickDetourItem = fileMenu.addItem(withTitle: "New \(QuickDetour.displayName) Window",
-                                               action: #selector(newQuickDetourWindow(_:)), keyEquivalent: "n")
-        quickDetourItem.keyEquivalentModifierMask = [.command, .option]
         // Its key equivalent follows the hotkey's setting (QuickDetourHotKey).
-        quickDetourMenuItem = quickDetourItem
+        quickDetourMenuItem = add(commands.newQuickDetourWindow, to: fileMenu)
         // Cmd+O (TASK-193.3): enabled only while a Quick Detour is key, whose
-        // controller answers it and names its target in the title.
-        fileMenu.addItem(withTitle: QuickDetourWindowController.openInMenuItemTitle,
-                         action: #selector(QuickDetourWindowController.openInDefaultSpace(_:)), keyEquivalent: "o")
+        // controller answers it and names its target in the title, or a Peek
+        // is up in a browser window (TASK-307).
+        add(commands.openInSpace, to: fileMenu)
         fileMenu.addItem(.separator())
-        fileMenu.addItem(withTitle: "Import from Arc…", action: #selector(importFromArc(_:)), keyEquivalent: "")
+        add(commands.importFromArc, to: fileMenu)
         fileMenuItem.submenu = fileMenu
 
         // Edit menu
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
         let editMenu = NSMenu(title: "Edit")
-        editMenu.addItem(withTitle: "Undo", action: #selector(BrowserWindowController.browserUndo(_:)), keyEquivalent: "z")
-        editMenu.addItem(withTitle: "Redo", action: #selector(BrowserWindowController.browserRedo(_:)), keyEquivalent: "Z")
+        add(commands.undo, to: editMenu)
+        add(commands.redo, to: editMenu)
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        let copyURLItem = editMenu.addItem(withTitle: "Copy URL", action: #selector(BrowserWindowController.copyCurrentURL(_:)), keyEquivalent: "c")
-        copyURLItem.keyEquivalentModifierMask = [.command, .shift]
-        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        add(commands.cut, to: editMenu)
+        add(commands.copy, to: editMenu)
+        add(commands.copyURL, to: editMenu)
+        add(commands.paste, to: editMenu)
+        add(commands.selectAll, to: editMenu)
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Find...", action: #selector(BrowserWindowController.showFindBar(_:)), keyEquivalent: "f")
-        editMenu.addItem(withTitle: "Find Next", action: #selector(BrowserWindowController.findNext(_:)), keyEquivalent: "g")
-        let findPrevItem = editMenu.addItem(withTitle: "Find Previous", action: #selector(BrowserWindowController.findPrevious(_:)), keyEquivalent: "g")
-        findPrevItem.keyEquivalentModifierMask = [.command, .shift]
+        add(commands.find, to: editMenu)
+        add(commands.findNext, to: editMenu)
+        add(commands.findPrevious, to: editMenu)
         editMenuItem.submenu = editMenu
 
         // View menu
         let viewMenuItem = NSMenuItem()
         mainMenu.addItem(viewMenuItem)
         let viewMenu = NSMenu(title: "View")
-        let toggleSidebarItem = viewMenu.addItem(withTitle: "Toggle Sidebar", action: #selector(BrowserWindowController.toggleSidebarMode(_:)), keyEquivalent: "s")
-        toggleSidebarItem.keyEquivalentModifierMask = [.command]
-        viewMenu.addItem(withTitle: "Reload Page", action: #selector(BrowserWindowController.reloadPage(_:)), keyEquivalent: "r")
+        add(commands.toggleSidebar, to: viewMenu)
+        add(commands.reload, to: viewMenu)
         viewMenu.addItem(.separator())
-        viewMenu.addItem(withTitle: "Actual Size", action: #selector(BrowserWindowController.zoomActualSize(_:)), keyEquivalent: "0")
-        viewMenu.addItem(withTitle: "Zoom In", action: #selector(BrowserWindowController.zoomIn(_:)), keyEquivalent: "+")
-        viewMenu.addItem(withTitle: "Zoom Out", action: #selector(BrowserWindowController.zoomOut(_:)), keyEquivalent: "-")
+        add(commands.actualSize, to: viewMenu)
+        add(commands.zoomIn, to: viewMenu)
+        add(commands.zoomOut, to: viewMenu)
         viewMenuItem.submenu = viewMenu
 
         // Navigate menu
         let navigateMenuItem = NSMenuItem()
         mainMenu.addItem(navigateMenuItem)
         let navigateMenu = NSMenu(title: "Navigate")
-        navigateMenu.addItem(withTitle: "Back", action: #selector(BrowserWindowController.goBack(_:)), keyEquivalent: "[")
-        navigateMenu.addItem(withTitle: "Forward", action: #selector(BrowserWindowController.goForward(_:)), keyEquivalent: "]")
+        add(commands.back, to: navigateMenu)
+        add(commands.forward, to: navigateMenu)
         navigateMenu.addItem(.separator())
-        let previousTabItem = navigateMenu.addItem(withTitle: "Previous Tab", action: #selector(BrowserWindowController.selectPreviousTab(_:)), keyEquivalent: "\u{F700}")
-        previousTabItem.keyEquivalentModifierMask = [.command, .option]
-        let nextTabItem = navigateMenu.addItem(withTitle: "Next Tab", action: #selector(BrowserWindowController.selectNextTab(_:)), keyEquivalent: "\u{F701}")
-        nextTabItem.keyEquivalentModifierMask = [.command, .option]
+        add(commands.previousTab, to: navigateMenu)
+        add(commands.nextTab, to: navigateMenu)
         navigateMenu.addItem(.separator())
         // Safari's History menu, in the menu that already holds Back and
         // Forward rather than a second one beside it (TASK-86). Cmd+Y is free:
         // the Navigate menu is not delegate-driven, so AppKit matches it
         // natively and `MenuKeyEquivalentMatcher` never sees it.
-        navigateMenu.addItem(withTitle: "Show All History", action: #selector(BrowserWindowController.showHistory(_:)), keyEquivalent: "y")
+        add(commands.showHistory, to: navigateMenu)
         // The sidebar's Archived Tabs page (TASK-119), also reached by swiping
         // right past the first space.
-        navigateMenu.addItem(withTitle: "Show Archived Tabs", action: #selector(BrowserWindowController.showArchivedTabs(_:)), keyEquivalent: "")
-        navigateMenu.addItem(withTitle: "Clear Archived Tabs…", action: #selector(BrowserWindowController.clearArchivedTabs(_:)), keyEquivalent: "")
+        add(commands.showArchivedTabs, to: navigateMenu)
+        add(commands.clearArchivedTabs, to: navigateMenu)
         navigateMenuItem.submenu = navigateMenu
 
         // Spaces menu
@@ -929,12 +933,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(spacesMenuItem)
         let spacesMenu = NSMenu(title: "Spaces")
         spacesMenu.delegate = self
-        let nextSpaceItem = spacesMenu.addItem(withTitle: "Next Space", action: #selector(BrowserWindowController.nextSpace(_:)), keyEquivalent: "\u{F703}")
-        nextSpaceItem.keyEquivalentModifierMask = [.command, .option]
-        let prevSpaceItem = spacesMenu.addItem(withTitle: "Previous Space", action: #selector(BrowserWindowController.previousSpace(_:)), keyEquivalent: "\u{F702}")
-        prevSpaceItem.keyEquivalentModifierMask = [.command, .option]
+        add(commands.nextSpace, to: spacesMenu)
+        add(commands.previousSpace, to: spacesMenu)
         spacesMenu.addItem(.separator())
-        spacesMenu.addItem(withTitle: "Manage Spaces…", action: #selector(BrowserWindowController.openSpacesSettings(_:)), keyEquivalent: "")
+        add(commands.manageSpaces, to: spacesMenu)
         spacesMenuItem.submenu = spacesMenu
 
         // Extensions menu
@@ -942,9 +944,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(extensionsMenuItem)
         let extensionsMenu = NSMenu(title: "Extensions")
         extensionsMenu.delegate = self
-        extensionsMenu.addItem(withTitle: "Add Extensions…", action: #selector(openChromeWebStore), keyEquivalent: "")
-        extensionsMenu.addItem(withTitle: "Manage Extensions…", action: #selector(showExtensionsSettings), keyEquivalent: "")
-        extensionsMenu.addItem(withTitle: "Check for Extension Updates", action: #selector(checkForExtensionUpdates), keyEquivalent: "")
+        add(commands.addExtensions, to: extensionsMenu)
+        add(commands.manageExtensions, to: extensionsMenu)
+        add(commands.checkForExtensionUpdates, to: extensionsMenu)
         extensionsMenuItem.submenu = extensionsMenu
 
         // Develop menu. Deliberately not delegate-driven: its dynamic items
@@ -956,10 +958,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let developMenuItem = NSMenuItem()
         mainMenu.addItem(developMenuItem)
         let developMenu = NSMenu(title: "Develop")
-        let inspectorItem = developMenu.addItem(withTitle: "Web Inspector", action: #selector(BrowserWindowController.showWebInspector(_:)), keyEquivalent: "i")
-        inspectorItem.keyEquivalentModifierMask = [.command, .option]
+        add(commands.webInspector, to: developMenu)
         developMenu.addItem(.separator())
-        developMenu.addItem(withTitle: "Load Unpacked Extension…", action: #selector(loadUnpackedExtension), keyEquivalent: "")
+        add(commands.loadUnpackedExtension, to: developMenu)
         developMenuItem.submenu = developMenu
         self.developMenu = developMenu
         updateDevelopMenu(developMenu)
@@ -974,13 +975,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let windowMenuItem = NSMenuItem()
         mainMenu.addItem(windowMenuItem)
         let windowMenu = NSMenu(title: "Window")
-        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        add(commands.minimize, to: windowMenu)
+        add(commands.zoomWindow, to: windowMenu)
         windowMenuItem.submenu = windowMenu
         NSApp.windowsMenu = windowMenu
 
         // Help menu, last (TASK-292.10): registered, so macOS adds its search field.
-        let helpMenuItem = makeHelpMenuItem()
+        let helpMenuItem = makeHelpMenuItem(adding: { self.add($0, to: $1) })
         mainMenu.addItem(helpMenuItem)
         NSApp.helpMenu = helpMenuItem.submenu
 
@@ -1132,9 +1133,10 @@ extension AppDelegate: NSMenuDelegate {
     ///
     /// `true`, by contrast, *is* trusted: AppKit performs the returned action
     /// on the returned target with no validation of its own. So this path must
-    /// validate the way AppKit would have — `validateMenuItem` is what keeps
-    /// Next/Previous Space inert when no browser window is key — and, when in
-    /// doubt, answer `false` and let AppKit decide.
+    /// validate the way AppKit would have (`CommandDispatch.isEnabled`, AppKit's
+    /// tiered decision) — `validateMenuItem` is what keeps Next/Previous Space
+    /// inert when no browser window is key — and, when in doubt, answer
+    /// `false` and let AppKit decide.
     func menuHasKeyEquivalent(_ menu: NSMenu,
                               for event: NSEvent,
                               target: AutoreleasingUnsafeMutablePointer<AnyObject?>,
@@ -1147,26 +1149,10 @@ extension AppDelegate: NSMenuDelegate {
         guard let resolved = NSApp.target(forAction: itemAction, to: item.target, from: item) else {
             return false
         }
-        guard Self.menuItemIsEnabled(item, in: menu, target: resolved) else { return false }
+        guard CommandDispatch.isEnabled(item, autoenables: menu.autoenablesItems, target: resolved) else { return false }
 
         target.pointee = resolved as AnyObject
         action.pointee = itemAction
-        return true
-    }
-
-    /// AppKit's tiered enable decision for a key-equivalent hit, so the `true`
-    /// path of `menuHasKeyEquivalent` fires exactly what a click could: with
-    /// automatic enabling, the target's `validateMenuItem`, else its
-    /// `validateUserInterfaceItem`, else enabled; without it, the item's own
-    /// `isEnabled`.
-    private static func menuItemIsEnabled(_ item: NSMenuItem, in menu: NSMenu, target: Any) -> Bool {
-        guard menu.autoenablesItems else { return item.isEnabled }
-        if let validator = target as? NSMenuItemValidation {
-            return validator.validateMenuItem(item)
-        }
-        if let validator = target as? NSUserInterfaceValidations {
-            return validator.validateUserInterfaceItem(item)
-        }
         return true
     }
 
@@ -1183,12 +1169,13 @@ extension AppDelegate: NSMenuDelegate {
 
         // Static layout is: [Next, Previous, separator, "Manage Spaces…"].
         // Insert the dynamic space items + a trailing separator before "Manage Spaces…".
-        let manageIndex = menu.items.firstIndex(where: { $0.action == #selector(BrowserWindowController.openSpacesSettings(_:)) }) ?? menu.items.count
+        let manageIndex = menu.items.firstIndex(where: { $0.action == BrowserCommands.manageSpaces.action }) ?? menu.items.count
         var insertAt = manageIndex
 
         for space in spaces {
             let title = "\(space.emoji) \(space.name)"
-            let item = NSMenuItem(title: title, action: #selector(BrowserWindowController.selectSpaceFromMenu(_:)), keyEquivalent: "")
+            // The parameterised `space.switch` command, one item per space.
+            let item = NSMenuItem(title: title, action: BrowserCommands.switchToSpace.action, keyEquivalent: "")
             item.representedObject = space.id
             item.tag = AppDelegate.spacesMenuTag
             item.state = (space.id == activeID) ? .on : .off
@@ -1241,14 +1228,16 @@ extension AppDelegate: NSMenuDelegate {
                 && keyProfile?.extensionContext(for: ext.id) != nil
 
             // The menu autoenables, so a nil action is what disables an item.
+            // The parameterised `extension.show-popup` and `extension.options`
+            // commands, for this extension.
             let popupItem = NSMenuItem(
-                title: "Show Popup",
-                action: hasPopup ? #selector(extensionMenuClicked(_:)) : nil,
+                title: BrowserCommands.showExtensionPopup.title,
+                action: hasPopup ? BrowserCommands.showExtensionPopup.action : nil,
                 keyEquivalent: ""
             )
             let optionsItem = NSMenuItem(
-                title: "Options…",
-                action: hasOptions ? #selector(extensionOptionsMenuClicked(_:)) : nil,
+                title: BrowserCommands.extensionOptions.title,
+                action: hasOptions ? BrowserCommands.extensionOptions.action : nil,
                 keyEquivalent: ""
             )
             let submenu = NSMenu(title: displayName)
@@ -1302,9 +1291,10 @@ extension AppDelegate: NSMenuDelegate {
 
         for ext in extensions {
             let displayName = ExtensionManager.shared.displayName(for: ext.id)
+            // The parameterised `extension.inspect-offscreen` command.
             let item = NSMenuItem(
                 title: "Inspect \"\(displayName)\" Offscreen",
-                action: #selector(inspectExtensionOffscreen(_:)),
+                action: BrowserCommands.inspectExtensionOffscreen.action,
                 keyEquivalent: ""
             )
             item.target = self
@@ -1329,9 +1319,10 @@ extension AppDelegate: NSMenuDelegate {
         for ext in unpacked {
             let displayName = ExtensionManager.shared.displayName(for: ext.id)
             let unavailableReason = ext.unpackedReloadUnavailableReason
+            // The parameterised `extension.reload-unpacked` command.
             let item = NSMenuItem(
                 title: "Reload \"\(displayName)\"",
-                action: unavailableReason == nil ? #selector(reloadUnpackedExtension(_:)) : nil,
+                action: unavailableReason == nil ? BrowserCommands.reloadUnpackedExtension.action : nil,
                 keyEquivalent: ""
             )
             item.target = self

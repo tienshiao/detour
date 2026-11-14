@@ -675,6 +675,8 @@ enum AutomationMenus {
     /// The action and target the item would be sent to in `window`, checked
     /// with the target's own validation: what AppKit does for the key window,
     /// done for a window that need not be key (Detour need not be active).
+    /// The resolution and the enable decision are `CommandDispatch`'s, which
+    /// the command palette runs its commands through too (TASK-320).
     static func resolve(_ item: NSMenuItem, in window: NSWindow, allowPrivate: Bool) throws -> (Selector, AnyObject) {
         // Before the action: AppKit gives an item with a submenu the action
         // `submenuAction:`, which only its own menu tracking may send.
@@ -690,40 +692,13 @@ enum AutomationMenus {
         guard allowPrivate || !namesPrivateWindow(item) else {
             throw AutomationToolError(.privateUnreachable, "The item acts on a Private window" + AutomationTools.privateHint)
         }
-        guard let target = item.target ?? responderTarget(for: action, in: window) else {
+        guard let target = item.target ?? CommandDispatch.responderTarget(for: action, in: window) else {
             throw AutomationToolError(.menuItemDisabled, "Nothing in the window handles \"\(item.title)\"")
         }
-        let enabled: Bool
-        if item.menu?.autoenablesItems ?? true {
-            if let validator = target as? NSMenuItemValidation {
-                enabled = validator.validateMenuItem(item)
-            } else if let validator = target as? NSUserInterfaceValidations {
-                enabled = validator.validateUserInterfaceItem(item)
-            } else {
-                enabled = true
-            }
-        } else {
-            enabled = item.isEnabled
-        }
-        guard enabled else {
+        guard CommandDispatch.isEnabled(item, autoenables: item.menu?.autoenablesItems ?? true, target: target) else {
             throw AutomationToolError(.menuItemDisabled, "\"\(item.title)\" is disabled")
         }
         return (action, target)
-    }
-
-    /// The first object along `window`'s responder chain that implements
-    /// `action`: the first responder up to the window, then the window's
-    /// delegate, the application and its delegate.
-    static func responderTarget(for action: Selector, in window: NSWindow) -> AnyObject? {
-        var responder: NSResponder? = window.firstResponder
-        while let current = responder {
-            if current.responds(to: action) { return current }
-            responder = current.nextResponder
-        }
-        if let delegate = window.delegate, delegate.responds(to: action) { return delegate }
-        if NSApp.responds(to: action) { return NSApp }
-        if let delegate = NSApp.delegate, delegate.responds(to: action) { return delegate }
-        return nil
     }
 
     /// Reads "cmd+shift+t", "cmd+[", "cmd+option+down": modifiers and one key,

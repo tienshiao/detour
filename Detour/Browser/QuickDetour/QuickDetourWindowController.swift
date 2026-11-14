@@ -1209,22 +1209,35 @@ extension QuickDetourWindowController: WKScriptMessageHandler {
 // MARK: - NSMenuItemValidation
 
 extension QuickDetourWindowController: NSMenuItemValidation {
+    /// The registry's rule for the item's command, in this window, after
+    /// retitling it (TASK-320). Items that are no command (the title bar's
+    /// own menus) are enabled.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        switch menuItem.action {
-        case #selector(goBack(_:)): return tab?.canGoBack ?? false
-        case #selector(goForward(_:)): return tab?.canGoForward ?? false
-        case #selector(openInDefaultSpace(_:)):
-            let menu = openInMenu
-            menuItem.title = menu.destinationName.map { "Open in \($0)" } ?? Self.openInMenuItemTitle
-            // Another profile's space reopens the address, so it needs one.
-            return menu.defaultTarget != nil && tab?.webView != nil && (!menu.defaultReloads || tab?.url != nil)
-                && window?.attachedSheet == nil
-        case #selector(copyCurrentURL(_:)), #selector(reloadPage(_:)), #selector(showFindBar(_:)),
-             #selector(findNext(_:)), #selector(findPrevious(_:)), #selector(zoomIn(_:)), #selector(zoomOut(_:)),
-             #selector(zoomActualSize(_:)), #selector(showWebInspector(_:)):
-            return tab?.url != nil
-        default: return true
-        }
+        BrowserCommands.validate(menuItem, in: self)
+    }
+}
+
+// MARK: - CommandContext
+
+/// The facts the registry's rules read, about this window (TASK-320). A Quick
+/// Detour has one page, no spaces and no browser undo; those facts keep the
+/// protocol's false.
+extension QuickDetourWindowController: CommandContext {
+    var commandWindowKind: CommandWindowKind { isQuarantine ? .quarantine : .quickDetour }
+    var hasSelectedTab: Bool { tab != nil }
+    var selectedTabHasURL: Bool { tab?.url != nil }
+    var pageCanGoBack: Bool { tab?.canGoBack ?? false }
+    var pageCanGoForward: Bool { tab?.canGoForward ?? false }
+
+    var openInSpaceTitle: String {
+        openInMenu.destinationName.map { "Open in \($0)" } ?? Self.openInMenuItemTitle
+    }
+
+    /// Another profile's space reopens the address, so it needs one.
+    var canOpenInSpace: Bool {
+        let menu = openInMenu
+        return menu.defaultTarget != nil && tab?.webView != nil && (!menu.defaultReloads || tab?.url != nil)
+            && window?.attachedSheet == nil
     }
 }
 

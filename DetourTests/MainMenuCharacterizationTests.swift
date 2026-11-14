@@ -51,6 +51,8 @@ nonisolated final class MainMenuCharacterizationTests: XCTestCase {
         windows.removeAll()
         for space in [space, emptySpace].compactMap({ $0 }) {
             for tab in space.tabs { tab.teardown() }
+            for entry in space.pinnedEntries { entry.tab?.teardown() }
+            store.clearClosedTabRecords(spaceIDs: [space.id])
             store.forceRemoveSpace(id: space.id)
         }
         store.forceRemoveProfile(id: profile.id)
@@ -435,5 +437,82 @@ nonisolated final class MainMenuCharacterizationTests: XCTestCase {
         spin(0.2)
         XCTAssertEqual(Self.enablement(in: try XCTUnwrap(controller.window)), expected(
             off: Self.quickDetourOff, retitled: ["File › openInDefaultSpace:": "Open in 📌 Menu Pin"]))
+    }
+
+    // MARK: - The registry's rule is the menu's (TASK-320 AC #4)
+
+    /// For every command with an item in the live menu: the registry's
+    /// availability in `context` is the item's resolution in `window`, and,
+    /// where the window answers it, the title the registry gives it is the
+    /// one validation left on the item. The palette offers a command by the
+    /// same `isAvailable(in:)`, so this is also what it offers.
+    @MainActor private func assertRegistryAgrees(in window: NSWindow, context: any CommandContext, _ label: String,
+                                                 file: StaticString = #filePath, line: UInt = #line) throws {
+        window.makeFirstResponder(nil)
+        let menu = try XCTUnwrap(NSApp.mainMenu)
+        for command in BrowserCommands.all where command.parameters.isEmpty {
+            switch command.responder {
+            case .appKit, .updater: continue
+            case .windowController, .appDelegate: break
+            }
+            guard let item = CommandDispatch.menuItem(for: command.id, in: menu) else {
+                XCTFail("\(command.id) has no item in the main menu", file: file, line: line)
+                continue
+            }
+            let resolved = (try? AutomationMenus.resolve(item, in: window, allowPrivate: true)) != nil
+            XCTAssertEqual(command.isAvailable(in: context), resolved, "\(label): \(command.id)", file: file, line: line)
+            if command.windowKinds.contains(context.commandWindowKind), let title = command.contextualTitle?(context) {
+                XCTAssertEqual(item.title, title, "\(label): \(command.id)", file: file, line: line)
+            }
+        }
+    }
+
+    @MainActor func testTheRegistrysRuleIsWhatTheMenuResolvesInEveryKindOfWindow() throws {
+        let normal = windowWithPage()
+        spin()
+        try assertRegistryAgrees(in: try XCTUnwrap(normal.window), context: normal, "a page")
+
+        let empty = makeWindow(showing: emptySpace)
+        spin()
+        try assertRegistryAgrees(in: try XCTUnwrap(empty.window), context: empty, "nothing selected")
+
+        let privateWindow = try privateWindowWithPage()
+        spin()
+        try assertRegistryAgrees(in: try XCTUnwrap(privateWindow.window), context: privateWindow, "Private")
+
+        let quick = quickDetour()
+        spin(0.2)
+        try assertRegistryAgrees(in: try XCTUnwrap(quick.window), context: quick, "Quick Detour")
+
+        let quarantined = quarantine()
+        spin(0.2)
+        try assertRegistryAgrees(in: try XCTUnwrap(quarantined.window), context: quarantined, "quarantine")
+    }
+
+    @MainActor func testTheRegistrysRuleIsWhatTheMenuResolvesForAPinnedTabAndAnUndoableClose() throws {
+        let wc = windowWithPage()
+        let pinned = try XCTUnwrap(space.tabs.first)
+        store.pinTab(id: pinned.id, in: space)
+        wc.selectTab(id: pinned.id)
+        if let other = space.tabs.first { store.closeTab(id: other.id, in: space) }
+        spin()
+        XCTAssertTrue(wc.selectedTabIsPinned, "precondition")
+        try assertRegistryAgrees(in: try XCTUnwrap(wc.window), context: wc, "pinned, after a close")
+        XCTAssertEqual(CommandDispatch.menuItem(for: "tab.toggle-pin", in: NSApp.mainMenu)?.title, "Unpin Tab")
+    }
+
+    /// Every item the menu builds is a view of a registry command and says
+    /// which by its identifier, which is how the palette finds the live item.
+    @MainActor func testEveryOwnItemCarriesItsCommandsIdentifier() throws {
+        let menu = try XCTUnwrap(NSApp.mainMenu)
+        for barItem in menu.items {
+            guard let submenu = barItem.submenu else { continue }
+            for item in Self.ownItems(of: submenu) where !item.isSeparatorItem {
+                let id = try XCTUnwrap(item.identifier?.rawValue, "\(item.title)")
+                let command = try XCTUnwrap(BrowserCommands.command(withID: CommandID(rawValue: id)), id)
+                XCTAssertEqual(command.action, item.action, id)
+                XCTAssertEqual(command.tag, item.tag, id)
+            }
+        }
     }
 }

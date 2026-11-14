@@ -3501,63 +3501,54 @@ extension BrowserWindowController: NSMenuItemValidation {
         store.undoManager.redo()
     }
 
+    /// The registry's rule for the item's command, in this window, after
+    /// retitling it (TASK-320): `BrowserCommands` holds what this method
+    /// used to answer item by item. Items that are no command are enabled.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(browserUndo(_:)) {
-            if let webView = selectedTab?.webView as? BrowserWebView, webView.isEditingWebContent {
-                menuItem.title = "Undo"
-                return true
-            }
-            menuItem.title = store.undoManager.undoMenuItemTitle
-            return store.undoManager.canUndo
-        }
-        if menuItem.action == #selector(browserRedo(_:)) {
-            if let webView = selectedTab?.webView as? BrowserWebView, webView.isEditingWebContent {
-                menuItem.title = "Redo"
-                return true
-            }
-            menuItem.title = store.undoManager.redoMenuItemTitle
-            return store.undoManager.canRedo
-        }
-        if menuItem.action == #selector(openInDefaultSpace(_:)) {
-            // One Cmd+O item for two windows (TASK-307): with no Peek up it
-            // keeps the Quick Detour title, disabled, as before.
-            let hasPeek = peekOverlayView != nil
-            menuItem.title = hasPeek ? Self.openPeekInNewTabMenuItemTitle : QuickDetourWindowController.openInMenuItemTitle
-            return hasPeek
-        }
-        if menuItem.action == #selector(showArchivedTabs(_:)) {
-            return !isIncognito
-        }
-        if menuItem.action == #selector(clearArchivedTabs(_:)) {
-            return !isIncognito && store.hasClosedTabRecords()
-        }
-        if menuItem.action == #selector(reopenClosedTab(_:)) {
-            guard let space = activeSpace else { return false }
-            return store.canReopenClosedTab(in: space)
-        }
-        if menuItem.action == #selector(togglePinTab(_:)) {
-            guard let tab = selectedTab else { return false }
-            if isIncognito { return false }
-            let isPinned = activeSpace?.pinnedEntries.contains(where: { $0.tab?.id == tab.id }) ?? false
-            menuItem.title = isPinned ? "Unpin Tab" : "Pin Tab"
-            if !isPinned && tab.url == nil { return false }
-            return true
-        }
-        if menuItem.action == #selector(nextSpace(_:)) {
-            return !isIncognito && canNavigateSpace(offset: 1)
-        }
-        if menuItem.action == #selector(previousSpace(_:)) {
-            return !isIncognito && canNavigateSpace(offset: -1)
-        }
-        if menuItem.action == #selector(selectNextTab(_:))
-            || menuItem.action == #selector(selectPreviousTab(_:)) {
-            return tabNavigationTarget(in: tabNavigationStops(), selectedTabID: selectedTabID, offset: 1) != nil
-        }
-        if menuItem.action == #selector(selectSpaceFromMenu(_:))
-            || menuItem.action == #selector(openSpacesSettings(_:)) {
-            return !isIncognito
-        }
-        return true
+        BrowserCommands.validate(menuItem, in: self)
+    }
+}
+
+// MARK: - CommandContext
+
+/// The facts the registry's rules read, about this window (TASK-320). Each
+/// is computed when a rule asks for it: menu validation runs per item, and
+/// on the key-equivalent path, and some facts read the session database.
+extension BrowserWindowController: CommandContext {
+    var commandWindowKind: CommandWindowKind { isIncognito ? .private : .normal }
+    var hasSelectedTab: Bool { selectedTab != nil }
+    var selectedTabHasURL: Bool { selectedTab?.url != nil }
+
+    var selectedTabIsPinned: Bool {
+        guard let tab = selectedTab else { return false }
+        return activeSpace?.pinnedEntries.contains(where: { $0.tab?.id == tab.id }) ?? false
+    }
+
+    var isPeekShowing: Bool { peekOverlayView != nil }
+
+    var isEditingPageText: Bool {
+        (selectedTab?.webView as? BrowserWebView)?.isEditingWebContent ?? false
+    }
+
+    var canUndoBrowserAction: Bool { store.undoManager.canUndo }
+    var canRedoBrowserAction: Bool { store.undoManager.canRedo }
+    var browserUndoTitle: String { store.undoManager.undoMenuItemTitle }
+    var browserRedoTitle: String { store.undoManager.redoMenuItemTitle }
+
+    var hasClosedTabToReopen: Bool {
+        guard let space = activeSpace else { return false }
+        return store.canReopenClosedTab(in: space)
+    }
+
+    var hasArchivedTabs: Bool { store.hasClosedTabRecords() }
+    var hasNextSpace: Bool { canNavigateSpace(offset: 1) }
+    var hasPreviousSpace: Bool { canNavigateSpace(offset: -1) }
+
+    /// Next Tab and Previous Tab are both enabled by whether there is a row
+    /// after this one: the stops wrap around, so that is whether there is
+    /// another row at all.
+    var hasTabToStepTo: Bool {
+        tabNavigationTarget(in: tabNavigationStops(), selectedTabID: selectedTabID, offset: 1) != nil
     }
 }
 

@@ -98,15 +98,15 @@ extension HelpLinks {
 }
 
 extension AppDelegate {
-    /// The Help menu's item for the main menu.
-    func makeHelpMenuItem() -> NSMenuItem {
+    /// The Help menu's item for the main menu: one registry command per page
+    /// (`BrowserCommands.help`, TASK-320), added by `add`, which targets them
+    /// at the app delegate. Each item's tag is its page's index.
+    func makeHelpMenuItem(adding add: (BrowserCommand, NSMenu) -> NSMenuItem) -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Help")
-        for (index, link) in HelpLinks.allCases.enumerated() {
+        for (link, command) in zip(HelpLinks.allCases, BrowserCommands.help) {
             if link == .releaseNotes { menu.addItem(.separator()) }
-            let linkItem = menu.addItem(withTitle: link.title, action: #selector(openHelpLink(_:)), keyEquivalent: "")
-            linkItem.target = self
-            linkItem.tag = index
+            _ = add(command, menu)
         }
         item.submenu = menu
         return item
