@@ -3,11 +3,11 @@ id: TASK-293.4
 title: >-
   Website: migration section of the Switching from Arc hub built around the
   importer
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-12T09:23:00Z'
-updated_date: '2026-11-14T01:36:00Z'
+updated_date: '2026-11-14T02:36:00Z'
 labels:
   - import
   - website
@@ -37,3 +37,9 @@ The Arc hub (detour-website src/pages/arc/) leaves migration out until an import
 
 2026-11-14: also on arc-import: the hub's Spaces row now says Spaces are made from the sidebar's + (TASK-289, same release). Still outdated for that release, outside this task: features/spaces.md (Make a Space via Settings, the Settings › Spaces still) and profiles.md (choose a Space's Profile in Settings › Spaces).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The Switching from Arc page (detourbrowser.com/arc/) now has a "Bring your Arc setup over" section built around the importer. Before December 22, in Arc: save an export file (it can be imported after Arc stops working), export passwords, note Air Traffic Control routes. Then the launch offer and File › Import from Arc… step by step in the app's own words, what an export file lacks, what does not come across, and what to do after. Two new FAQ entries, the meta description and lede mention importing, and the held-back manual guide (_move.md) was removed. Shipped with 0.4.4 on Nov 14 2026 (website bceeca8, deployed); the live /arc/ page was checked with curl. Stills of the offer and its result were added by TASK-293.6.
+<!-- SECTION:FINAL_SUMMARY:END -->

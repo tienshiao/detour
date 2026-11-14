@@ -1,11 +1,11 @@
 ---
 id: TASK-293
 title: 'Import from Arc: spaces, pinned tabs and folders, favorites, and history'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-14T01:36:00Z'
+updated_date: '2026-11-14T02:36:00Z'
 labels:
   - import
 dependencies: []
@@ -34,7 +34,7 @@ What to verify before scoping (from memory during planning, not checked): Arc ke
 - [x] #7 Importing twice does not duplicate spaces, pinned entries or favorites
 - [x] #8 A missing or unreadable Arc install fails with a clear message and changes nothing
 - [x] #9 Parsing and mapping are unit-tested against fixture files covering nested folders, multiple profiles and an empty sidebar
-- [ ] #10 The Switching from Arc hub (website src/pages/arc/) gets a migration section built around the importer, replacing the held-back manual guide in src/pages/arc/_move.md (user, Nov 7 2026: the hub leaves migration off until an import exists)
+- [x] #10 The Switching from Arc hub (website src/pages/arc/) gets a migration section built around the importer, replacing the held-back manual guide in src/pages/arc/_move.md (user, Nov 7 2026: the hub leaves migration off until an import exists)
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -65,3 +65,9 @@ Nov 12 2026, format survey on this Mac (Arc 1.172.1 build 90370, running; struct
 #9 Synthetic fixtures cover nested folders (testPinnedTreeKeepsOrderNestingAndTitles, export testDeeperHeadingsAndIndentedBulletsNest), several profiles (testProfilesAreNamedFromLocalStateAndCarryTheirFavourites) and an empty sidebar (testEmptySidebarGivesNoSpaces, testAnEmptySpaceAndAFileWithoutSpaces, testAnEmptySnapshotPlansNothing).
 #10 waits on TASK-293.4: the website branch arc-import merges with the next release. Then 293 can be closed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Import from Arc shipped in Detour 0.4.4 (Nov 14 2026): readers for Arc on this Mac and the Export Data file (293.1), planner and apply step (293.2), the File menu window (293.3), the launch offer sheet (293.5), and the website migration section with media (293.4, 293.6). All ten ACs are checked; the evidence is in the notes. Arc stops working on Dec 22 2026.
+<!-- SECTION:FINAL_SUMMARY:END -->

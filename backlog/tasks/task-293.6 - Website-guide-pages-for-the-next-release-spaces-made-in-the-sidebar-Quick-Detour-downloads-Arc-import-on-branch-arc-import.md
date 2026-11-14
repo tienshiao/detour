@@ -3,11 +3,11 @@ id: TASK-293.6
 title: >-
   Website: guide pages for the next release (spaces made in the sidebar, Quick
   Detour, downloads, Arc import), on branch arc-import
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T01:38:00Z'
-updated_date: '2026-11-14T02:12:00Z'
+updated_date: '2026-11-14T02:36:00Z'
 labels:
   - website
 dependencies:
@@ -56,3 +56,9 @@ Still valid: spaces.mp4 (switching unchanged), profiles-spaces.webp (the Setting
 
 2026-11-14, user decision: use the Arc offer stills on the Arc hub, even though the sheet shows the Arc app icon. Website arc-import e37752a adds arc-import-offer.webp (under Import into Detour) and arc-import-result.webp (after the steps), and a line in step 3 about "(Arc)" on a taken profile name (ArcImportPlanner.uniqueProfileName). docs/feature-pages.md records the exception to the no-Arc-logos rule. Build passes. Not checked in a browser: how the two 2280 px landscape stills sit in the hub's body column.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Website updated for 0.4.4. Spaces and Profiles pages describe the sidebar space editor (TASK-289); Quick Detour describes the Back button, the clickable address capsule and load progress (TASK-322); the features index mentions the download toss (TASK-324) and Arc import. Every user-facing change since v0.4.3 was checked against the site; the rest needed no change (listed in the notes). Media from a Debug build of main 06a0d22 with the docs/task-110 kit: a re-taken quick-detour.mp4 and poster, spaces-editor.webp, and arc-import-offer.webp / arc-import-result.webp on the Arc hub (user decision: allowed although the sheet shows the Arc icon; docs/feature-pages.md records the exception). Deployed with the 0.4.4 release (website bceeca8); live pages checked with curl. Not checked in a browser after deploy: layout of the two wide Arc stills in the hub column (they rendered in the local preview the user looked at).
+<!-- SECTION:FINAL_SUMMARY:END -->
