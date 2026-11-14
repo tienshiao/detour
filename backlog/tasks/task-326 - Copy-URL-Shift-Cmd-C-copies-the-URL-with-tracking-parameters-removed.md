@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T09:35:00Z'
-updated_date: '2026-11-14T20:10:00Z'
+updated_date: '2026-11-14T20:11:00Z'
 labels:
   - feature
   - links
@@ -59,6 +59,8 @@ Tests (xcodebuild DetourTests, final run after the review): TrackingParametersTe
 Runtime (/verify, docs/harness/task326-copy-url-checks.py through the automation endpoint, isolated DETOUR_DATA_DIR, Debug build of this branch): loopback page at ...?id=42&utm_source=news&utm_medium=email&fbclid=abc&gclid=def&_ga=1.2.3&ref=home#comments. Edit > Copy URL (menu path), Shift-Cmd-C (key equivalent cmd+shift+c), the faux address bar's Copy Link button (clicked at its hit-tested point) and the sidebar row's context menu Copy URL each put ...?id=42&ref=home#comments on the real clipboard (pbpaste; the user's clipboard text saved and restored). list_tabs before and after, history.db (historyURL) and browser.db (tab) kept the tracked URL. Runtime run was on the build before the review's behavior-preserving refactor of removing(from:) (same results in unit tests). Not checked at runtime: Quick Detour's Shift-Cmd-C and title-bar button (covered by QuickDetourWindowTests on a loopback page), the dev toolbar button (DevToolbarHostingTests).
 
 Code review (/code-review medium --fix): no correctness bugs; fixed: double evaluation per pair in removing(from:). Also done after it: the harness docstring now says only plain clipboard text is restored; QuarantineTests covers _ga and empty pieces in quarantine navigations. Skipped: merging the three clipboard writers into one helper (small gain across three files).
+
+Runtime check rerun on the final build (dylib built 12:08:58, after the review's edit) with the committed docs/harness/task326-copy-url-checks.py: all 12 checks passed (menu, Shift-Cmd-C, address bar button, sidebar Copy URL clean; tab URL, history and session kept the tracked address). Defaults keys and data directory of every run removed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
