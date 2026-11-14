@@ -50,6 +50,8 @@ class BrowserWindowController: NSWindowController {
     }
     /// The now-playing bar's per-window state (TASK-192).
     let nowPlaying = NowPlayingWindowState()
+    /// Detour's own back swipe (TASK-325).
+    let navigationSwipe = NavigationSwipeWindowState()
     private var activeTabSubscriptions = Set<AnyCancellable>()
     private var snapshotImageView: NSImageView?
     /// Whether this window currently displays the selected tab's live web view.
@@ -108,7 +110,7 @@ class BrowserWindowController: NSWindowController {
     /// The hosted panes' `$url` sinks that keep each pane's dev toolbar
     /// current (TASK-186.2); rebuilt on every claim, dropped with the content.
     var devToolbarSubscriptions = Set<AnyCancellable>()
-    private let dragHandle = WindowDragView()
+    let dragHandle = WindowDragView()
     private let linkStatusBar = LinkStatusBar()
     private let emptyStateLabel: NSTextField = {
         let label = NSTextField(labelWithString: "A rare moment of tab peace.")
@@ -587,6 +589,7 @@ class BrowserWindowController: NSWindowController {
 
     @objc private func contentContainerFrameDidChange() {
         removeSplitRevealOverlay()
+        navigationSwipeContentWillChange()
     }
 
     /// Isolated: it tears down main-actor state; the object is released on
@@ -1241,6 +1244,7 @@ class BrowserWindowController: NSWindowController {
 
     func selectTab(id: UUID) {
         guard let tab = activeSpace?.displayableTab(id: id) else { return }
+        navigationSwipeWillSelect(id: id)
 
         // Not the outgoing page: focusing it here would leave keys on it when
         // it stays parented for PiP. The incoming one gets focus at the end.
@@ -1321,6 +1325,8 @@ class BrowserWindowController: NSWindowController {
         } else {
             showSnapshot(for: tab)
         }
+        // On screen again: pictured when they leave next (TASK-325).
+        dropOpenerUnderlays(for: members)
 
         tab.exitPictureInPicture()
         tab.peekTab?.exitPictureInPicture()
@@ -1373,6 +1379,8 @@ class BrowserWindowController: NSWindowController {
             // pictured while the pane is still on screen.
             captureSwitcherPreview(of: member)
             member.switcherPreviewAt = now
+            // What shows under a back swipe that closes a tab it opened (TASK-325).
+            captureOpenerUnderlayIfNeeded(of: member)
         }
         // The Peek over the tab is part of what its card shows (TASK-173).
         tab.peekTab.map(captureSwitcherPreview(of:))
@@ -1448,12 +1456,17 @@ class BrowserWindowController: NSWindowController {
             member.loadIfStalled()
         }
         refreshDevToolbars()
+        // Whether each hosted pane gets Detour's own back swipe (TASK-325).
+        refreshNavigationSwipeModes()
+        bindNavigationSwipePanes()
     }
 
     private func wireOwnedWebView(_ webView: WKWebView) {
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        webView.allowsBackForwardNavigationGestures = true
+        // WebKit's gesture on, and any own-swipe mode undone; the claim
+        // applies the mode this window gives the tab (TASK-325).
+        resetNavigationSwipeMode(of: webView)
         let ucc = webView.configuration.userContentController
         for name in Self.ownedScriptHandlerNames {
             ucc.removeScriptMessageHandler(forName: name)
@@ -2039,7 +2052,7 @@ class BrowserWindowController: NSWindowController {
         claimWebView(for: tab)
     }
 
-    private func snapshotImage(of view: NSView) -> NSImage? {
+    func snapshotImage(of view: NSView) -> NSImage? {
         guard view.bounds.width > 0, view.bounds.height > 0,
               let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
             return nil
@@ -2112,6 +2125,9 @@ class BrowserWindowController: NSWindowController {
 
     private func removeContentViews() {
         isShowingEmptyState = false
+        // A swipe being tracked ends with the content it was over; a finished
+        // one's veneer stays for its fade over the result (TASK-325).
+        cancelNavigationSwipe(reason: "content replaced")
         // Reparent before the container teardown below removes its subtree.
         if linkStatusBar.superview !== contentContainerView {
             anchorLinkStatusBar(to: contentContainerView)
@@ -2125,13 +2141,16 @@ class BrowserWindowController: NSWindowController {
         // have claimed the container, and the handlers are then that window's.
         if let pipping = pipContentView, pipping.isDescendant(of: contentContainerView) {
             webViews(in: pipping).forEach(releaseScriptHandlers(of:))
+            webViews(in: pipping).forEach(resetNavigationSwipeMode(of:))
         }
         // The split-reveal veneer is NOT removed here: the claim that follows a
         // split drop re-runs within a tick (deferred sidebar selection restore
         // → selectTab) and must not cut the animation short. The claim paths
         // remove it themselves when hosting moves to different content.
-        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipContentView && subview !== splitDropZoneView && subview !== splitRevealOverlay && subview !== automationIndicator {
+        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipContentView && subview !== splitDropZoneView && subview !== splitRevealOverlay && subview !== automationIndicator && subview !== navigationSwipe.finishingOverlay {
             webViews(in: subview).forEach(releaseScriptHandlers(of:))
+            // The own swipe exists only while a window hosts the view (TASK-325).
+            webViews(in: subview).forEach(resetNavigationSwipeMode(of:))
             // Dismantle a split view before removing it so pane containers end
             // up superview-less, like a single tab's container after handoff —
             // downstream checks treat "has a superview" as "hosted somewhere".
@@ -2481,7 +2500,7 @@ class BrowserWindowController: NSWindowController {
         navigateBackOrCloseChildTab()
     }
 
-    private func parentTab(for tab: BrowserTab) -> BrowserTab? {
+    func parentTab(for tab: BrowserTab) -> BrowserTab? {
         guard let parentID = tab.parentID else { return nil }
         return currentTabs.first { $0.id == parentID }
             ?? activeSpace?.pinnedEntries.compactMap(\.tab).first { $0.id == parentID }
@@ -2493,13 +2512,33 @@ class BrowserWindowController: NSWindowController {
             return
         }
         guard let tab = selectedTab else { return }
+        navigateBackOrCloseChildTab(tab)
+    }
+
+    /// The Back button's rule for `tab`: back in its history, or, with none,
+    /// close it and select the tab it was opened from. The selected tab for
+    /// the button and Cmd+[; for a back swipe, the pane whose web view received
+    /// it, which in a split need not be the focused one (TASK-325).
+    ///
+    /// The opener is selected before the tab closes, so the close does not
+    /// first move the selection to a neighbour (and wake it) on the way.
+    func navigateBackOrCloseChildTab(_ tab: BrowserTab) {
         if tab.canGoBack {
             ensureOwnsWebView()
             tab.webView?.goBack()
         } else if let parent = parentTab(for: tab) {
             guard let space = activeSpace else { return }
+            // `closeTab` closes normal tabs only; a pinned tab stays. Leaving a
+            // selected tab that closes starts no picture in picture.
+            let closesSelection = tab.id == selectedTabID && space.tabs.contains { $0.id == tab.id }
+            if parent.id != selectedTabID {
+                if closesSelection {
+                    settlingSelectionForClose { selectTab(id: parent.id) }
+                } else {
+                    selectTab(id: parent.id)
+                }
+            }
             store.closeTab(id: tab.id, in: space)
-            selectTab(id: parent.id)
         }
     }
 
@@ -3719,6 +3758,7 @@ extension BrowserWindowController: NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         hasClosed = true
+        navigationSwipeContentWillChange()
         if let automationObserver {
             NotificationCenter.default.removeObserver(automationObserver)
             self.automationObserver = nil
@@ -3767,6 +3807,8 @@ extension BrowserWindowController: NSWindowDelegate {
         for member in splitMembers(of: tab) {
             guard let webView = member.webView else { continue }
             releaseScriptHandlers(of: webView)
+            // No window hosts it now: WebKit's own gesture back (TASK-325).
+            resetNavigationSwipeMode(of: webView)
         }
     }
 

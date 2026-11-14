@@ -4,7 +4,7 @@ title: WebKit's back swipe and unhandled scrolls
 description: WKWebView's two-finger back swipe starts only when the back list has an item, no SPI makes it target anything else, and the one signal that a scroll went unused by the page (the private _webView:didNotHandleWheelEvent:) arrives only while the view's own back/forward gesture is off and left-edge rubber-banding is excluded — measured with a spike on macOS 26.7 for TASK-325.
 tags: [webkit, gestures, navigation, scrolling, spi]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T06:55:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T21:00:00Z }
 stale_after: 2027-05-01T00:00:00Z
 sources:
   - id: spike
@@ -31,6 +31,9 @@ sources:
   - id: back-or-close
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
     title: BrowserWindowController.navigateBackOrCloseChildTab
+  - id: feature
+    resource: ../tabs/back-swipe-to-opener.md
+    title: Back swipe to the opener
 ---
 
 A browser that wants a back swipe to do something other than go back in
@@ -129,14 +132,20 @@ gesture off and exclude the left edge from rubber-banding. Then start the
 app's own swipe from the `_webView:didNotHandleWheelEvent:` events, and put
 both back when the tab gains history, after WebKit's own swipe has ended,
 so that a trailing event from that swipe cannot start a second one. The
-alternatives weighed are in TASK-325's notes.[^task-325]
+alternatives weighed are in TASK-325's notes.[^task-325] Detour does this
+now: [Back swipe to the opener](../tabs/back-swipe-to-opener.md).
+
+In the app (macOS 26.7) a tab web view's `_rubberBandingEnabled` reads 15
+(all edges) by default, and the mode's 14 and 10 read back as set.
 
 Untested: whether `NSEvent.trackSwipeEvent` started from that callback in
 Detour tracks a real trackpad gesture. Synthetic events cannot drive it, so
 that needs a person at a trackpad. Three-finger "swipe between pages"
-arrives as `swipe(with:)`, not scroll events, and WebKit ignores it without a
-back item. Scroll-based tracking applies only when
-`NSEvent.isSwipeTrackingFromScrollEventsEnabled` is true.
+arrives as `swipe(with:)`, not scroll events, and WebKit ignores it while
+its gesture is off (and does nothing with it without a back item). Scroll-based
+tracking applies only when `NSEvent.isSwipeTrackingFromScrollEventsEnabled`
+is true, and `trackSwipeEvent` raises an Objective-C exception for anything
+but a scroll event in its began or changed phase.
 
 [^spike]: docs/harness/task325-wheel-spike.swift, run 2026-11-14 on macOS 26.7 with synthetic CGEvent scrolls sent through `window.sendEvent`.
 [^task-325]: TASK-325

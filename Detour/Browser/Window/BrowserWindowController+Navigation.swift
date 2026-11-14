@@ -396,6 +396,7 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        navigationSwipeMainFrameNavigationDidEnd(in: webView)
         let committingTab = tab(owning: webView)
         // Even an error page: the old page's Media Session is gone (TASK-192).
         committingTab?.nowPlayingDocumentDidCommit()
@@ -415,6 +416,7 @@ extension BrowserWindowController: WKNavigationDelegate {
     // commit (`didFail`) is deliberately not implemented; see there.
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        navigationSwipeMainFrameNavigationDidEnd(in: webView)
         tab(owning: webView)?.didFailProvisionalNavigation(error: error)
     }
 
@@ -439,6 +441,8 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        // Before the commit: WebKit's gesture back on (TASK-325).
+        navigationSwipeMainFrameNavigationDidStart(in: webView)
         tab(owning: webView)?.didStartProvisionalNavigation()
     }
 

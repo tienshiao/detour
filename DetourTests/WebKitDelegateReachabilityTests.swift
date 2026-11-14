@@ -149,6 +149,19 @@ nonisolated final class WebKitDelegateReachabilityTests: XCTestCase {
         }
     }
 
+    /// TASK-325's back swipe: the unhandled-scroll report it starts from
+    /// (`WKUIDelegatePrivate`), and WebKit's own swipe's begin and snapshot
+    /// removal (`WKNavigationDelegatePrivate`), which hold the own mode off
+    /// while WebKit's swipe runs. Without them the swipe never starts, or a
+    /// swipe back to the first page could also close the tab.
+    @MainActor func testTheBrowserWindowTakesTheBackSwipeCallbacks() {
+        for name in ["_webView:didNotHandleWheelEvent:", "_webViewDidBeginNavigationGesture:",
+                     "_webViewDidRemoveNavigationGestureSnapshot:"] {
+            XCTAssertTrue(BrowserWindowController.instancesRespond(to: NSSelectorFromString(name)),
+                          "BrowserWindowController does not answer \(name)")
+        }
+    }
+
     @MainActor func testEveryImplementedOptionalDelegateMethodIsReachableFromObjectiveC() {
         for expectation in Self.expectations {
             let className = NSStringFromClass(expectation.cls)

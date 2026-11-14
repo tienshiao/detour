@@ -147,7 +147,7 @@ final class AutomationTools {
 
     var all: [MCPTool] {
         [listWindows, listSpaces, listTabs, selectTab, openURL, runMenuItem] + inputTools + captureTools + pageTools
-            + extensionTools + compatReportTools + stagingTools
+            + extensionTools + compatReportTools + stagingTools + navigationSwipeTools
     }
 
     // MARK: Lookup

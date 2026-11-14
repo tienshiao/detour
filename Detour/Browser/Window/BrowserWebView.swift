@@ -18,6 +18,32 @@ class BrowserWebView: WKWebView {
         return accepted
     }
 
+    // MARK: - Navigation swipe (TASK-325)
+
+    /// Detour's own back swipe on this web view; the window that hosts it
+    /// keeps it (`BrowserWindowController+NavigationSwipe`).
+    var navigationSwipe = NavigationSwipeViewState()
+
+    /// A three-finger "swipe between pages" arrives here as one discrete
+    /// event, and WebKit ignores it while its own gesture is off: in the own
+    /// mode the window does what the swipe asks.
+    override func swipe(with event: NSEvent) {
+        if (window?.windowController as? BrowserWindowController)?.handleDiscreteNavigationSwipe(event, on: self) == true {
+            return
+        }
+        super.swipe(with: event)
+    }
+
+    /// The rest of a gesture that completed Detour's own swipe (its momentum)
+    /// must not scroll the page now under the pointer: after a close, the
+    /// opener's.
+    override func scrollWheel(with event: NSEvent) {
+        if (window?.windowController as? BrowserWindowController)?.swallowsScrollAfterNavigationSwipe(event) == true {
+            return
+        }
+        super.scrollWheel(with: event)
+    }
+
     // MARK: - Undo/Redo
 
     /// True when the user is focused on an editable element (input, textarea, contentEditable).

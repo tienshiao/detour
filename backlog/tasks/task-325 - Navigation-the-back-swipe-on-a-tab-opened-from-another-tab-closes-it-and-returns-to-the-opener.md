@@ -3,10 +3,11 @@ id: TASK-325
 title: >-
   Navigation: the back swipe on a tab opened from another tab closes it and
   returns to the opener
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-14T06:21:00Z'
-updated_date: '2026-11-14T06:44:00Z'
+updated_date: '2026-11-14T20:54:00Z'
 labels:
   - feature
 dependencies: []
@@ -34,11 +35,23 @@ The swipe should do what the Back button does. Once the child tab has its own hi
 - [ ] #1 On a tab opened from another tab with no back history, a two-finger back swipe closes the tab and selects the tab that opened it, the same result as the Back button
 - [ ] #2 A tab with back history still navigates back on the swipe; it closes to its opener only once it is on its first page
 - [ ] #3 The swipe follows the fingers and can be cancelled: releasing it without completing it leaves the tab open and selected
-- [ ] #4 With no opener to return to (no parentID, or the opener has been closed), the swipe on a tab with no back history does nothing, as today
-- [ ] #5 A child tab in a split, a Peek, and Quick Detour behave as the Back button already does for them, and the decision for each is recorded in the task
-- [ ] #6 The closed child tab can be reopened with Reopen Closed Tab like any closed tab
+- [x] #4 With no opener to return to (no parentID, or the opener has been closed), the swipe on a tab with no back history does nothing, as today
+- [x] #5 A child tab in a split, a Peek, and Quick Detour behave as the Back button already does for them, and the decision for each is recorded in the task
+- [x] #6 The closed child tab can be reopened with Reopen Closed Tab like any closed tab
 - [ ] #7 The rule for when a back swipe closes to the opener is covered by unit tests; the gesture itself is checked in the running app with /verify
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Pure rules (Browser/Window/NavigationSwipe.swift): when a tab is in the own-swipe mode (normal tab, opener resolves as the Back button resolves it, no back item; held off while a main-frame navigation is provisional, and switched on only after WebKit's own swipe has ended), the rubber-band mask (14, or 10 with a forward item), what a completed swipe does to the tab that received it (close to opener / go forward / nothing; nothing while a Peek is over it), WebKit's pending-swipe threshold (began phase after the mode came on, mostly horizontal, 15 pt), the momentum filter, and the opener-underlay LRU. Unit tests for all of it.
+2. Window integration (BrowserWindowController+NavigationSwipe.swift): apply the mode on every claim (in place of wireOwnedWebView's gesture line) and on canGoBack/canGoForward/isLoading of every hosted pane, store changes, provisional start/commit/failure, WebKit's navigation-gesture callbacks; reset it when a web view leaves the window. SPI behind responds(to:), original mask restored.
+3. Own swipe: private WKUIDelegate _webView:didNotHandleWheelEvent: feeds the pending tracker; over the threshold, NSEvent.trackSwipeEvent behind a small tracker seam. A veneer (snapshot card over an underlay) in the content area, kept through the completing selectTab. Completion re-runs the rule for the same tab and calls the Back button's core (navigateBackOrCloseChildTab split into a variant that takes the tab), or goForward. Cancel on navigation start, tab removal, ownership loss, resize.
+4. BrowserWebView: swipe(with:) for three-finger swipes; scrollWheel swallows momentum after a completed own swipe.
+5. Underlay: full-size 1x snapshot of an opener with an open child, taken in stampDeselected, LRU 4, dropped on reselect / last child closed; fallback the switcher preview, else a plain background. Forward and split panes: plain background (PROVISIONAL).
+6. WebKitDelegateReachabilityTests rows for the private selectors; window-level tests for mode switching and the completion path; DEBUG-only automation tool to read the mode and run the completion for /verify.
+7. Wiki (back-swipe page, ownership/split notes), notes for the hand swipe the user owes.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -81,4 +94,50 @@ Forward (decision 1), measured 2026-11-14 with the wheel spike: with the gesture
 Forward underlay: the opener's snapshot does not apply. The forward page's snapshot is in WebKit's own store, which Detour cannot read. Options: (a) capture the page yourself as the user leaves it going back to page 1, while it is still on screen: at _webViewDidBeginNavigationGesture: for WebKit's own swipe, or at the back/forward navigation's policy decision for the Back button and Cmd+[. One image per child tab in the mode, dropped when the tab leaves the mode. (b) A plain background that the forward page loads into. (a) matches the back side; (b) is the simplest.
 
 Underlay sizing: a snapshot is content width x height x 4 bytes x scale squared. On a 1x ultrawide with a content area of about 3100 x 1350 pt that is about 17 MB; at 2x a 1500 x 950 pt area is 22 MB, or 5.4 MB if captured at 1x points. Further cases: an opener in a split shows the whole split after the close, so the per-member captures must be laid out as the split (with a dev toolbar if shown). After a relaunch parentID survives but in-memory snapshots do not, so the first swipe falls back to the hover card's disk thumbnail (TASK-190) or a plain background.
+
+Implementation 2026-11-14 (branch task-325), option A as decided.
+
+What was built:
+- Pure rules in Detour/Browser/Window/NavigationSwipe.swift: the mode (own swipe for a normal tab whose opener resolves as the Back button resolves it, with no back item; held off while a main-frame load is provisional; entered only after WebKit's own swipe has ended), rubber-band edges (view's own mask minus left, minus right too with a forward item: 14 / 10 from the default 15), the outcome of a completed swipe for the tab that received it (back: go back / close to opener / nothing; forward: go forward / nothing; nothing under a Peek), WebKit's pending-swipe rules (began after the mode came on, |dy| < |dx|/2, 15 pt), the momentum filter, the opener-picture LRU (4), and the tracker seam (SystemNavigationSwipeTracker = NSEvent.trackSwipeEvent with WebKit's bounds and consume-mouse-events bit; ScriptedNavigationSwipeTracker for tests and the Debug tool).
+- Window wiring in BrowserWindowController+NavigationSwipe.swift: mode applied after every claim (wireOwnedWebView now resets WebKit's gesture instead of only setting it), reset when a view leaves the window (removeContentViews, window close); re-evaluated on canGoBack/canGoForward/isLoading of every hosted pane, store changes, didStartProvisionalNavigation (gesture back on before commit), commit/failure, _webViewDidBeginNavigationGesture: / _webViewDidRemoveNavigationGestureSnapshot: (5 s watchdog). _webView:didNotHandleWheelEvent: feeds the pending tracker. A swipe is cancelled by a navigation start, a history change, the tab closing, content replacement or a resize; completion re-decides for the same tab id.
+- navigateBackOrCloseChildTab split into a core taking the tab (the Back button passes the selected tab, the swipe the pane that received it). The core now selects the opener before closing (settlingSelectionForClose), so the close no longer selects a neighbour (and wakes it) first; same end result.
+- BrowserWebView: swipe(with:) (three-finger, discrete, same outcome) and scrollWheel (momentum swallowed for up to 2 s after a completed swipe).
+- Veneer (NavigationSwipeOverlayView): never moves live views. Back: cacheDisplay picture of the pane sliding right over the opener's picture (dimmed, shadowed). Kept through the completing selectTab, lifted over the opener, faded 0.15 s; selecting any other tab removes it at once. Opener picture: takeSnapshot at 1 px per point in stampDeselected, only when a normal tab opened from it is open, with its frame; split openers come back as their panes; fallback switcher preview, else plain background. An opener that was asleep: veneer held until its load commits (or 1 s).
+- WebKitDelegateReachabilityTests: test for the three private selectors.
+- Debug-only automation tool navigation_swipe (state / begin at a progress / finish complete or cancel), runs the trackpad swipe's completion code with a scripted tracker. docs/harness/task325-swipe-checks.py drives it.
+
+Decisions per case (AC #5):
+- Child in a split: the pane that received the swipe closes and its opener is selected (user decision 2 with the pane-focus correction). When the opener is the partner it stays selected and goes back to single hosting. Underlay: plain background (the close re-tiles the window).
+- Peek: the Peek's own web view keeps WebKit's gesture (its history only), as Back acts on the Peek; the tab under an open Peek starts nothing (the overlay also swallows scrolls). Checked at runtime.
+- Quick Detour: unchanged. Its Back is goBack only (QuickDetourWindowController.goBack), its window has no unhandled-wheel hook, its tab has no opener.
+- PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): a pinned tab or favourite that still carries a parentID keeps WebKit's gesture and is never swiped closed (TabStore.closeTab closes normal tabs only, so the Back button on a pinned child selects the opener without closing it; mirroring that by swipe looked wrong); alternative: allow it and select the opener as Back does (flip isNormalTab out of NavigationSwipeRules.wantsOwnSwipe/outcome).
+- PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): forward underlay is option (b), a plain card that slides in from the right and stays until the forward page commits (or 1 s); alternative: (a) picture the page as the user leaves it going back to page 1 (at _webViewDidBeginNavigationGesture: and at the Back button's back/forward policy decision).
+- PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): a split pane's underlay is a plain background; alternative: the opener's picture laid out as the post-close layout.
+
+Not verified / owed by the user (hand swipe on a real trackpad; synthetic events cannot drive trackSwipeEvent). Build: task-325 branch, Debug. With System Settings > Trackpad > More Gestures > Swipe between pages = "Scroll left or right with two fingers":
+1. On a page, Cmd+click or click a target=_blank link, select the new tab. Two-finger swipe right slowly: the page should follow the fingers, the opener's picture underneath; release past halfway: the tab closes, the opener is selected; Shift+Cmd+T reopens it. (AC #1, #6)
+2. Same, release before halfway: the page springs back, the tab stays open and selected. (AC #3)
+3. In the child, follow a link to page 2, swipe back: WebKit's own swipe goes to page 1 (not a close). Then, in a new gesture, swipe back again: it closes to the opener. Check that the first swipe (and its momentum) never closes the tab. (AC #2, the one-gesture-two-actions hazard)
+4. On page 1 after coming back, swipe left (forward): a white card comes in from the right, page 2 loads.
+5. A page with a horizontal carousel or a map on the child's first page: swiping inside it scrolls it, not the tab; at its left end a fresh swipe closes the tab.
+6. Fast flick (short, quick swipe) and a swipe that starts vertical then turns horizontal: neither should close by mistake.
+7. After a close, the momentum must not scroll the opener.
+8. Option-click a link to open a split, focus the left pane, swipe back over the right (child) pane: the right pane closes, the left stays.
+9. Three-finger swipe (Swipe between pages = three fingers): on the child's first page it closes to the opener at once.
+10. A tab with no opener, and a pinned tab: swiping on the first page does nothing; left edge bounce is unchanged on such tabs.
+Watch for: the left edge of a child's first page no longer rubber-bands (by design); any lag at the start of the swipe (a cacheDisplay of the pane is taken when tracking starts).
+
+Out-of-scope findings (not changed):
+- Navigate > Back (Cmd+[) with the page focused reaches WKWebView's own goBack: action first, which is disabled on a page with no back item, so Cmd+[ does not close a child while the page has the keyboard (the sidebar's button and mouse button 4 do).
+- The Back button on a pinned tab that still has a parentID selects the opener without closing it (closeTab ignores pinned tabs).
+- Reopen Closed Tab restores a child without its parentID, so the reopened tab no longer closes back to its opener.
+- Review finding left: an opener leaving the screen now gets two snapshots (480 px switcher preview + full size); merging them touches the switcher pipeline.
+
+Review (/code-review medium --fix): 9 findings, 7 fixed (WebKit-gesture flag no longer cleared on a re-claim; watchdog refreshes the window hosting the view; selecting another tab removes a finishing veneer (finishingSelectionID); pinned-entry insert re-evaluates the mode; underlayRequests pruned; Debug tool begin after a cancelled held swipe; one hostedPane(showing:) helper). Left: two snapshots per opener leave (switcher pipeline, out of scope); the closing child gets a switcher preview when the opener is selected first (matches the other close paths).
+
+Tests (Debug, -derivedDataPath .derived):
+- NavigationSwipeTests 37 + WebKitDelegateReachabilityTests 3: 40 passed, 0 failed (after the review fixes).
+- 28 affected suites (window, split, Peek, switcher, automation, MCP schema, link routing, ownership/focus, release): 363 passed, 49 failed. All 49 are "timed out waiting for the page to load" in InPageLinkRoutingTests (17), PageOpenedWindowTests (11), WindowCloseReleaseTests (19), QuickDetourOpenInWindowTests (2): new web views loading a loopback page. The screen was locked during that run (CGSSessionScreenIsLocked true, checked right after), the known cluster where the GPU process stops taking new web processes. Not rerun on an unlocked screen: owed (those four suites, or the full suite).
+
+Runtime (/verify via docs/harness/task325-swipe-checks.py, Debug build, isolated DetourVerify325-* data dirs, Detour in the background): all 15 checks passed (on the build before the review fixes; the screen was locked afterwards, so not rerun): no opener = WebKit's gesture, edges 15; target=_blank child = own mode, gesture off, edges 14, opener pictured; cancelled swipe leaves it open and selected; page 2 gives WebKit the gesture (edges 15); Back to page 1 = own mode with forward (edges 10); forward swipe goes forward; completed back swipe closes the child and selects the opener; Reopen Closed Tab brings it back; the sidebar's Back button still closes a child; Open Link in Split View child closes from its own pane (back to one pane); nothing starts under a Peek. Screenshots of the veneer half-way (back over the opener's picture, forward card, split pane) looked right. Not verified: the real trackpad gesture (trackSwipeEvent cannot be driven by synthetic events) — see the hand checks above.
 <!-- SECTION:NOTES:END -->

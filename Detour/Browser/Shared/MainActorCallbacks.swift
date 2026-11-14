@@ -41,3 +41,21 @@ extension NotificationCenter {
         }
     }
 }
+
+extension NSEvent {
+    /// `trackSwipeEvent(options:dampenAmountThresholdMin:max:usingHandler:)`
+    /// with the handler on the main actor: AppKit calls the tracking handler
+    /// on the main thread. The handler returns true to stop tracking.
+    func trackSwipeEvent(options: SwipeTrackingOptions, dampenAmountThresholdMin minDampenThreshold: CGFloat,
+                         max maxDampenThreshold: CGFloat,
+                         onMain handler: @escaping @MainActor (CGFloat, Phase, Bool) -> Bool) {
+        // Not a crossing: the handler runs on the main thread.
+        nonisolated(unsafe) let handler = handler
+        trackSwipeEvent(options: options, dampenAmountThresholdMin: minDampenThreshold,
+                        max: maxDampenThreshold) { amount, phase, isComplete, stop in
+            if MainActor.assumeIsolated({ handler(amount, phase, isComplete) }) {
+                stop.pointee = true
+            }
+        }
+    }
+}
