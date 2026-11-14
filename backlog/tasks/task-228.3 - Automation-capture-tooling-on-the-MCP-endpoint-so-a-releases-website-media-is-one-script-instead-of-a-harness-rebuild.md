@@ -3,11 +3,11 @@ id: TASK-228.3
 title: >-
   Automation: capture tooling on the MCP endpoint, so a release's website media
   is one script instead of a harness rebuild
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T01:49:00Z'
-updated_date: '2026-11-14T10:49:00Z'
+updated_date: '2026-11-14T17:48:00Z'
 labels:
   - tooling
   - automation
@@ -41,7 +41,7 @@ Same gate as TASK-228.1: these tools exist only in the isolated DETOUR_DATA_DIR 
 - [x] #2 A client can set a window's size and position in points, move it to a given display (including a virtual display), and read back its on-screen frame and CGWindowID for screencapture
 - [x] #3 A client can type text into the focused field at a given per-character pace, so recorded typing reads naturally
 - [x] #4 Debug builds can open specific UI on demand for staging: the space editor with a draft (name, colour, emoji, profile), the Arc import offer and window fed from a fixture Arc folder (never the real one), and a given Settings pane and row
-- [ ] #5 A fixture-driven capture script for the next release's media replaces DemoStage in docs/task-110 (README updated, the harness and AppDelegate hook patch retired), demonstrated by re-taking at least one existing loop and one still with no app patching
+- [x] #5 A fixture-driven capture script for the next release's media replaces DemoStage in docs/task-110 (README updated, the harness and AppDelegate hook patch retired), demonstrated by re-taking at least one existing loop and one still with no app patching
 - [x] #6 Tests cover the seeding (round trip through a relaunch, a malformed fixture refused with a clear error, refusal outside the isolated test-run mode) and the window placement tool's errors (unknown window or display)
 <!-- AC:END -->
 
@@ -95,4 +95,12 @@ The lead's runs after the fixes:
 - Staging, HTTP, Capture, MCPServer, Tools and Controller: 91 tests, 3 failures, all in testAWindowIsPlacedOnADisplayAndReadBack. The window server's bounds were still at AppKit's open animation (686×471 for 700×480), so settled was false.
 - The test's window now has animationBehavior .none. The staging suite then passed twice, 17/0 each.
 AC #5 stays open: the final capture.py has not completed a spaces loop. Two takes were stopped when another app came to the front while the Mac was in use. One run of capture.py on an idle Mac (it takes focus for about a minute and swaps the wallpaper, then restores it) closes it.
+
+Nov 14 2026, AC #5 shown on an idle unlocked Mac: docs/capture/capture.py with a fresh Debug build (online, default shots) exited 0. It re-took the spaces loop (spaces.mp4 + poster) and the split and space-editor stills, with no app patching: seed_world, a 2x virtual display, set_window_frame, open_ui. Cleanup restored the wallpaper, removed the virtual display, stopped Detour and removed its data directory. Stills checked by eye. The split still shows Wikipedia's live donation banner; use --offline for website takes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Capture staging tools on the automation endpoint: seed_world (a fixture world through TabStore.applyArcImport into an isolated data directory), list_displays, set_window_frame (points, display, CGWindowID read back) and the Debug/test-run open_ui (space editor draft, Arc import offer from a fixture Arc folder behind a mutex-guarded override, Settings pane/row). docs/capture/ (capture.py, demo-world.json, vdisplay, wallpaper and encode helpers) replaces the docs/task-110 DemoStage harness and AppDelegate patch. Verified by AutomationStagingTests and by a clean capture.py run on Nov 14 2026, which re-took the spaces loop and the split and space-editor stills with no app patching and restored the wallpaper and display afterwards.
+<!-- SECTION:FINAL_SUMMARY:END -->

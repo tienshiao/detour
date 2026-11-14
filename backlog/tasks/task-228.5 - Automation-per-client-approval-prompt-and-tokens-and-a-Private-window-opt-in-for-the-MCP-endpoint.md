@@ -3,11 +3,11 @@ id: TASK-228.5
 title: >-
   Automation: per-client approval prompt and tokens, and a Private-window
   opt-in, for the MCP endpoint
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T06:26:00Z'
-updated_date: '2026-11-14T12:12:00Z'
+updated_date: '2026-11-14T17:48:00Z'
 labels:
   - tooling
   - automation
@@ -37,7 +37,7 @@ Two parts:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 With automation on, a new client's first connection shows Detour's own Allow / Deny prompt naming the client; Deny refuses it, Allow gives it a token of its own
+- [x] #1 With automation on, a new client's first connection shows Detour's own Allow / Deny prompt naming the client; Deny refuses it, Allow gives it a token of its own
 - [x] #2 Disconnect (indicator) and Revoke (Settings, which lists approved clients) invalidate that client's token at once; other clients keep working
 - [x] #3 Test runs (DETOUR_MCP=1 with an isolated DETOUR_DATA_DIR) and scripts/detour-mcp keep working without a prompt
 - [x] #4 Private windows and spaces stay unreachable unless the user turns on a setting that allows them; turning it off refuses them again at once
@@ -149,4 +149,14 @@ Still owed for Done, both on an unlocked screen:
 - The Release build succeeds. Sidebar, space and Arc suites: 192/0.
 - /code-review medium on the lead's rate limits, fixed in 5b18d7f: hang-ups now count per name and per title, and old entries are pruned. AutomationClientApprovalTests 28/0.
 Open for the user, a trade-off: a local process can lock a real client out for 10 minutes by asking under its title and hanging up twice, or can use up the 5-prompts-per-10-minutes budget, so other clients get 429. That is a denial of service, not access. The alternative is unbounded prompt spam. The user can relax or keep the limits.
+
+Nov 14 2026, AC #1 shown on an unlocked screen: docs/harness/task2285-approval-check.py <fresh Debug build> PASSED without --preapprove. The real panel appeared ('Claude Code (check)' wants to control Detour, client name and version line, buttons disabled before arming) and Allow was pressed through Accessibility (AXPress). Detour stayed in the background. The helper got its own token (0600 in 0700, only its hash in mcp-clients.json). The Private opt-in followed at once. Indicator Disconnect revoked the client: the next request was refused, the helper deleted its token, and the old token and the leftover shared token got 401.
+
+Nov 14 2026 full suite on an unlocked screen with a fresh build: 4259 tests, 19 skipped, 1 failure (2 assertions): BrowserWindowSidebarModeTests.testToggleSidebarPinsAHoverRevealedSidebar (edge-hover timing while the user was at the Mac). It passed alone, BrowserWindowSidebarModeTests 8/0. Unrelated to automation. All Automation*/MCP suites passed in the run. Still owed across the batch: a signed-build 1Password check (the polyfill loads the channel and stub-counting modules in every extension context).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Per-client approval for the user's automation endpoint. The bundled helper asks POST /mcp/authorize for a token of its own. Detour shows a non-activating Allow/Deny panel: Allow is not the default, the buttons arm after 1 s, Escape denies. Allow stores only the token's SHA-256 in mcp-clients.json (0600); the helper keeps the token 0600 in a 0700 folder. Disconnect (indicator) and Revoke (Settings) end that client's sessions and refuse its token at once. The shared token works only in isolated DETOUR_MCP=1 test runs, and Settings drops Copy Token. Private windows are reachable only with the 'Allow agents to use Private windows' opt-in, read per call. Rate limits: one prompt per name, at most 3 at once, a 10-minute denial window keyed on name and title, a second hang-up counts as a denial, at most 5 prompts per 10 minutes. Verified by AutomationClientApprovalTests, AutomationApprovalPanelTests and AutomationPrivateAccessTests, by a live task2285-approval-check.py with a real Allow press, and by a full suite (one unrelated hover-timing failure that passes alone). Open: the rate-limit trade-off (a local process can deny a real client prompts for 10 minutes: denial of service, not access), and the signed-build 1Password check.
+<!-- SECTION:FINAL_SUMMARY:END -->
