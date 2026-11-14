@@ -3,10 +3,11 @@ id: TASK-228.5
 title: >-
   Automation: per-client approval prompt and tokens, and a Private-window
   opt-in, for the MCP endpoint
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-14T06:26:00Z'
-updated_date: '2026-11-14T09:27:00Z'
+updated_date: '2026-11-14T11:42:00Z'
 labels:
   - tooling
   - automation
@@ -87,4 +88,38 @@ Tests:
 (a) The bundled stdio helper requests the token. It asks the endpoint for a token under the client's name, Detour shows its native Allow / Deny prompt, and the helper keeps the per-client token. Local OAuth (discovery, dynamic client registration, PKCE) is not built: a URL-configured client breaks whenever the per-launch port changes, and it adds code and attack surface.
 (b) The shared mcp-token stays for test runs only: DETOUR_MCP=1 with an isolated DETOUR_DATA_DIR, plus scripts/detour-mcp against such a run. Without a prompt there. With the user's setting, every client goes through approval, and Settings no longer offers Copy Token.
 (c) Private windows: an opt-in setting under Automation, off by default ('Allow agents to use Private windows'). Turning it off refuses them again at once. While it is on, the page capture script also runs in Private pages.
+
+2026-11-14 implementation (claude):
+Commits: 59ad26e (per-client approval and tokens, helper, scripts/detour-mcp), b7ac612 (Private opt-in), 00a2a03 + 9947a99 (Settings and indicator), b16d82e + f7409ae (wiki).
+
+Design as planned, with these decisions:
+- Test runs unchanged: shared mcp-token in mcp-endpoint.json, no prompt, Reset Token / Copy Token, Disconnect = name blocking (kept only there: the shared token cannot be revoked without cutting off every client). Approved clients are never name-blocked.
+- User mode: AutomationAuthorization.Credentials.perClient; only approved tokens (SHA-256 in mcp-clients.json, constant-time compare against every record); shared token never accepted; endpoint file has no token; leftover mcp-token deleted at start; token()/resetToken() refuse instead of recreating mcp-token. /mcp/authorize (exact path) is the only unauthenticated route, after Host and Origin; head checked before the body (POST, application/json, Content-Length <= 4096, no chunked).
+- Rate limits exactly as planned: one prompt per name (a waiter gets its OWN prompt after the first ends, never the first answer, so a second process cannot ride on an expected prompt; one waiter per name, then 429), 3 names at once (429), a name denied or unanswered (timeout counts as a denial) within 10 min refused without a prompt (403 + Retry-After). Known limit, recorded in the wiki: a local program can vary its name.
+- Held connections: exempt from the 10 s deadline but never 'authorized'; endpoint cap of 8 held; the answer always closes the connection; a client that hangs up withdraws (EOF watcher) and the panel closes; an Allow whose response could not be delivered is revoked (undo).
+- Revocation: record removed and file written before returning; MCPServer re-checks the client on the main actor (isClientApproved), so a request authorised just before Revoke is refused; sessions bound to client_id (other token -> 404).
+- Panel: non-activating floating NSPanel on all Spaces, orderFrontRegardless, one Dock bounce, Allow not default, Escape denies, buttons armed after 1 s; no tool reaches it (set_window_frame refuses it explicitly).
+- Helper: token at <data dir>/mcp-clients/<sha256(clientInfo.name)>.token, 0600 in 0700 (O_NOFOLLOW, lstat owner check); authorize timeout 330 s; denial / 401 sticky for the run, token file deleted on 401, no prompt loop; 404 still replays initialize.
+- Private opt-in: AutomationAllowPrivate read per call (tools via AutomationEnvironment.allowsPrivate, capture/channel/console/stubs via AutomationPrivateAccess). Private profile stays out of install/enable/permission targets; its extension contexts follow the setting but only when named (@<id>), so turning it on changes nothing for clients that name no profile (safer than a new ambiguous_profile). Quarantine routes stay refused; Private Quick Detour / quarantine pages never get capture (inSpace: false).
+
+Follow-up commits: 0385570 (helper: a saved token revoked while the client was not running is deleted and asked for again once; an accepted token's 401 stays final; a closing DELETE 401 deletes the file), c39d6c4 (Settings status line has no address in user mode), b4fc7a3 (docs/harness/task2285-approval-check.py + wiki).
+
+Tests:
+- Targeted runs, all passing: AutomationClientApprovalTests 21, AutomationControllerTests 12, AutomationHelperTests 8, AutomationExtensionChannelTests 12, AutomationPrivateAccessTests 5, AutomationEndpointTests 5, AutomationHTTPTests 22, MCPServerTests 14, AutomationToolsTests 20, AutomationPageTests 14, AutomationInputTests 9, plus PeekHistory/Quarantine/QuarantineWindow/QuickDetourArchive/QuickDetourProfileSwitch/OpenInQuickDetourMenu (125 with MCPServerTests, 0 failures).
+- Full run (one, on a LOCKED screen): 571 passed, 17 failed before it hung. Every Automation* suite passed in it (14 suites). The failures were ~10 s WebKit page-load timeouts in CommittedLoadFailureTests (1), ContentBlockerExceptionTests (9), ContentBlockerWhitelistTests (2) and ContentRuleListChunkTests (5): the known locked-screen GPU stall. Then it hung in ContentRuleStoreThreadingTests: all 64 global-queue threads were stuck in -[NSAnimation _runBlocking] (an animation that never finishes on a locked screen), so a DispatchQueue.global() block never ran. I stopped it. The full run predates the follow-up commits. It is owed on an unlocked screen.
+- Not tested, and why: the three ExtensionPolyfillHandler guards and AutomationExtensionChannel.loadBackground read AutomationPrivateAccess for the Private profile. A real-extension test needs a worker in the Private profile, and that worker stalls on the ephemeral store (WebKit's private-data gate, TASK-74/75 notes). The console's forget(profileID:) and popups' close(profileID:) are one-line filters. closeParks and the stubs' forget are tested.
+
+Runtime checks (isolated data directories, Detour in the background, app_active false throughout):
+- Test run (DETOUR_MCP=1): scripts/detour-mcp list_windows and the real helper (initialize, tools/call) worked with the shared token, with no prompt. mcp-token and the token are in mcp-endpoint.json, and no mcp-clients folder was created. All harnesses (task324, task2282, capture.py) still read endpoint['token'], which is unchanged.
+- User mode (AutomationEndpointEnabled in the data directory's suite):
+  - The endpoint file has no token, and a leftover mcp-token was deleted.
+  - The real helper asked for a token. The panel was on screen per CGWindowList: window 'Detour Automation', layer 3, onscreen, on the main display at x≈2381 while Detour's window was on another display.
+  - Allow was never clicked. The screen was locked: Accessibility returned the app element for every window, AXPress was impossible, and screencapture -l failed. That request ran end to end into the 5-minute timeout: 403 after 300 s, through the real helper.
+  - The rest ran with the client approved beforehand (record + helper token file written as Allow would):
+    - helper session working, token folder 0700, token file 0600, mcp-clients.json with only the hash;
+    - Private window hidden, then listed (is_private) once AutomationAllowPrivate was written from outside, then hidden again at once;
+    - the indicator found with hit_test (AutomationIndicatorView), opened with click, and its menu read 'Disconnect Claude Code (check)';
+    - choose_menu_item Disconnect revoked: the next helper call answered 'Detour revoked this client's access…', the token file was deleted, the record was gone, and the old token and the leftover shared token both got 401.
+  - The panel and Settings pane were rendered in the test host (light/dark): panel text, disarmed buttons, Settings rows with Allowed clients + Revoke.
+- Owed on an unlocked screen: docs/harness/task2285-approval-check.py <Detour.app> (the AXPress on Allow, the panel picture and where it lands), and the full suite.
 <!-- SECTION:NOTES:END -->
