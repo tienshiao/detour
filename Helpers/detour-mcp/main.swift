@@ -23,7 +23,11 @@ struct Endpoint {
 }
 
 enum RelayError: Error {
+    /// Nothing reached Detour: no endpoint, or nothing listening.
     case notRunning(String)
+    /// The request was sent but no answer came (a timeout, a dropped
+    /// connection): Detour may have acted on it.
+    case noAnswer(String)
     case refused(Int, String)
 }
 
@@ -86,8 +90,11 @@ func readEndpoint() throws -> Endpoint {
             return (http.statusCode, data, http.value(forHTTPHeaderField: sessionHeader))
         } catch {
             self.endpoint = nil
-            throw RelayError.notRunning("Detour did not answer at \(endpoint.url.absoluteString) "
-                + "(\(error.localizedDescription)). Is it still running with automation on?")
+            let reason = "Detour did not answer at \(endpoint.url.absoluteString) "
+                + "(\(error.localizedDescription)). Is it still running with automation on?"
+            // Refused outright: the request never arrived, so it can be sent again.
+            if (error as? URLError)?.code == .cannotConnectToHost { throw RelayError.notRunning(reason) }
+            throw RelayError.noAnswer(reason)
         }
     }
 
@@ -113,6 +120,9 @@ func readEndpoint() throws -> Endpoint {
         let object = message as? [String: Any]
         let id = object?["id"]
         let isInitialize = object?["method"] as? String == "initialize"
+        // A tool call that went unanswered may have run (a click, typed text):
+        // never sent twice. Anything else is safe to send again.
+        let isToolCall = object?["method"] as? String == "tools/call"
         if isInitialize {
             initializeParams = object?["params"]
             session = nil
@@ -121,7 +131,9 @@ func readEndpoint() throws -> Endpoint {
             var status: Int, data: Data, newSession: String?
             do {
                 (status, data, newSession) = try await post(line, includeSession: !isInitialize)
-            } catch RelayError.notRunning {
+            } catch RelayError.noAnswer(let reason) where isToolCall {
+                throw RelayError.noAnswer(reason + " The call was not sent again: it may have run.")
+            } catch RelayError.notRunning, RelayError.noAnswer {
                 // Detour may have restarted on another port: `post` dropped the
                 // endpoint it had, so the file is read again; one more try.
                 if !isInitialize { try await reinitialize() }
@@ -147,6 +159,8 @@ func readEndpoint() throws -> Endpoint {
             if (try? JSONSerialization.jsonObject(with: data)) is [String: Any] { return id == nil ? nil : data }
             throw RelayError.refused(status, String(decoding: data, as: UTF8.self))
         } catch RelayError.notRunning(let reason) {
+            return errorLine(id: id, message: reason)
+        } catch RelayError.noAnswer(let reason) {
             return errorLine(id: id, message: reason)
         } catch RelayError.refused(let status, let body) {
             return errorLine(id: id, message: "Detour refused the request (HTTP \(status)): "

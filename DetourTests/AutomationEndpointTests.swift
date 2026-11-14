@@ -1,5 +1,6 @@
 import XCTest
 import Network
+import Synchronization
 @testable import Detour
 
 /// The automation endpoint over a real loopback socket (TASK-228.1, AC #9,
@@ -16,14 +17,16 @@ nonisolated final class AutomationEndpointTests: XCTestCase {
         try await super.tearDown()
     }
 
-    @MainActor private func start() async throws -> (URL, MCPServer) {
+    @MainActor private func start(maximumConnections: Int = 64, headTimeout: TimeInterval = 10) async throws
+        -> (URL, MCPServer) {
         let tool = MCPTool(
             name: "echo", title: "Echo", description: "Returns its text.",
             inputSchema: MCPSchema.input([("text", .string("Text"))], required: ["text"]),
             outputSchema: MCPSchema.output(["text": MCPSchema.stringType]), annotations: ["readOnlyHint": true],
             handler: { ["text": .string(try $0.requiredString("text"))] })
         let server = MCPServer(tools: [tool], serverVersion: "test", instructions: "")
-        let endpoint = try AutomationEndpoint(port: 0, token: token) { request in
+        let endpoint = try AutomationEndpoint(port: 0, token: token, maximumConnections: maximumConnections,
+                                              headTimeout: headTimeout) { request in
             await server.handle(request)
         }
         self.endpoint = endpoint
@@ -142,5 +145,51 @@ nonisolated final class AutomationEndpointTests: XCTestCase {
         XCTAssertEqual(text.components(separatedBy: "HTTP/1.1 ").count - 1, 2, "both requests were answered: \(text)")
         XCTAssertTrue(text.contains("HTTP/1.1 400 Bad Request"), "the second has no session")
         XCTAssertTrue(text.contains("Connection: close"))
+    }
+
+    /// Reads from `connection` until the server closes it or `seconds` pass.
+    /// True when it closed. Cancels the connection either way.
+    private func closesWithin(_ connection: NWConnection, seconds: Double) async -> Bool {
+        let closed = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let finished = Mutex(false)
+            let finish: @Sendable (Bool) -> Void = { value in
+                let first = finished.withLock { done in
+                    defer { done = true }
+                    return !done
+                }
+                if first { continuation.resume(returning: value) }
+            }
+            @Sendable func receive() {
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
+                    if error != nil || isComplete || data == nil { finish(true) } else { receive() }
+                }
+            }
+            receive()
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { finish(false) }
+        }
+        connection.cancel()
+        return closed
+    }
+
+    private func connect(_ port: Int, queue: DispatchQueue) -> NWConnection {
+        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+        connection.start(queue: queue)
+        return connection
+    }
+
+    /// Any local process can connect before it shows a token: one that sends
+    /// nothing is closed after the head timeout, and connections beyond the
+    /// limit are closed at once.
+    @MainActor func testConnectionsWithoutATokenAreBoundedInNumberAndTime() async throws {
+        let (url, _) = try await start(maximumConnections: 1, headTimeout: 0.3)
+        let port = try XCTUnwrap(url.port)
+        let queue = DispatchQueue(label: "automation-endpoint-limits")
+        let idle = connect(port, queue: queue)
+        try await Task.sleep(for: .milliseconds(100))
+        let extra = connect(port, queue: queue)
+        let extraClosed = await closesWithin(extra, seconds: 0.25)
+        XCTAssertTrue(extraClosed, "a connection beyond the limit is closed before the head timeout")
+        let idleClosed = await closesWithin(idle, seconds: 3)
+        XCTAssertTrue(idleClosed, "a connection that sends no request is closed")
     }
 }

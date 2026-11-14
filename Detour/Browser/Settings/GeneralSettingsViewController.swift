@@ -201,19 +201,28 @@ class GeneralSettingsViewController: SettingsPaneViewController {
 
     @objc private func copyToken() {
         guard let token = try? AutomationController.shared.token() else { return }
-        copy(token)
+        copy(token, concealed: true)
     }
 
-    private func copy(_ string: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(string, forType: .string)
+    /// A concealed copy (the token) stays on this Mac (no Universal
+    /// Clipboard) and carries the marker clipboard managers skip.
+    private func copy(_ string: String, concealed: Bool = false) {
+        let pasteboard = NSPasteboard.general
+        if concealed {
+            pasteboard.prepareForNewContents(with: .currentHostOnly)
+        } else {
+            pasteboard.clearContents()
+        }
+        pasteboard.setString(string, forType: .string)
+        if concealed { pasteboard.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")) }
     }
 
     @objc private func resetToken() {
         let alert = NSAlert()
         alert.messageText = "Reset the automation token?"
-        alert.informativeText = "Every connected agent is disconnected, and each one has to be set up again with "
-            + "the new token."
+        alert.informativeText = "Every connected agent is disconnected. An agent set up with the token itself has "
+            + "to be set up again with the new one; one set up with Detour's helper (Copy Claude Code Command, Copy "
+            + "MCP Config) reads the new token and reconnects on its own."
         alert.addButton(withTitle: "Reset Token")
         alert.addButton(withTitle: "Cancel")
         let reset = { try? AutomationController.shared.resetToken() }

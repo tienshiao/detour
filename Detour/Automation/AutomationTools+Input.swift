@@ -387,7 +387,12 @@ extension AutomationTools {
     func openMenu(timeout milliseconds: Int) async throws -> NSMenu {
         let deadline = ContinuousClock.now + .milliseconds(max(0, min(milliseconds, 30_000)))
         while true {
-            if let menu = AutomationMenuTracker.shared.topMenu { return menu }
+            if let menu = AutomationMenuTracker.shared.topMenu {
+                guard !AutomationMenuTracker.shared.isOverPrivateWindow(menu) else {
+                    throw AutomationToolError(.privateUnreachable, "The open menu is over a Private window")
+                }
+                return menu
+            }
             if ContinuousClock.now >= deadline { break }
             try? await Task.sleep(for: .milliseconds(25))
         }
@@ -455,7 +460,10 @@ extension AutomationTools {
                 let menu = try submenu(of: root, path: try arguments.stringArray("path") ?? [])
                 let index: Int
                 if let title = try arguments.string("title") {
-                    guard let found = menu.items.firstIndex(where: { !$0.isSeparatorItem && AutomationMenus.titlesMatch(AutomationMenus.displayTitle($0), title) }) else {
+                    guard let found = menu.items.firstIndex(where: {
+                        !$0.isSeparatorItem && !AutomationMenus.namesPrivateWindow($0)
+                            && AutomationMenus.titlesMatch(AutomationMenus.displayTitle($0), title)
+                    }) else {
                         throw AutomationToolError(.unknownMenuItem, "No \"\(title)\" in the menu")
                     }
                     index = found
@@ -472,6 +480,9 @@ extension AutomationTools {
                     index = wanted
                 }
                 let item = menu.items[index]
+                guard !AutomationMenus.namesPrivateWindow(item) else {
+                    throw AutomationToolError(.privateUnreachable, "The item acts on a Private window")
+                }
                 guard !item.isSeparatorItem, item.submenu == nil else {
                     throw AutomationToolError(.unknownMenuItem, "\"\(AutomationMenus.displayTitle(item))\" is not an item that can be chosen")
                 }

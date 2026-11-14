@@ -284,6 +284,20 @@ nonisolated final class AutomationToolsTests: XCTestCase {
         XCTAssertEqual(inPlace.content["routed"], false)
     }
 
+    /// Routes take web URLs only: a Default of Private Window does not make
+    /// open_url refuse a URL the palette would never route.
+    @MainActor func testOpenURLDoesNotRefuseAURLNoRouteTakes() async throws {
+        let f = try makeFixture()
+        let routes = TabStore.shared.linkRoutes
+        let previous = routes.defaultTarget
+        XCTAssertTrue(routes.setDefaultTarget(.privateWindow))
+        defer { routes.setDefaultTarget(previous) }
+        let (content, isError) = try await call(f, "open_url", ["window_id": .int(f.windowID), "url": "detour://history"])
+        XCTAssertFalse(isError, content.jsonString)
+        XCTAssertEqual(content["routed"], false)
+        if let opened = f.window.selectedTab { tabs.append(opened) }
+    }
+
     @MainActor func testOpenURLReportsARouteToAnotherSpace() async throws {
         let f = try makeFixture()
         route("automation-b.test", to: .space(f.b.id))
@@ -372,6 +386,41 @@ nonisolated final class AutomationToolsTests: XCTestCase {
             let code = try await errorCode(f, "run_menu_item", arguments)
             XCTAssertEqual(code, expected, arguments.jsonString)
         }
+    }
+
+    /// The Window menu names a Private window by its page's title and
+    /// targets it: run_menu_item neither lists, matches nor runs such an item,
+    /// and list_menu leaves it out.
+    @MainActor func testAPrivateWindowsWindowMenuEntryIsUnreachable() async throws {
+        let privateWindow = BrowserWindowController(incognito: true)
+        privateWindow.sidebarSplitView.autosaveName = nil
+        windows.append(privateWindow)
+        let bar = NSMenu(title: "Main")
+        let barItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: ""))
+        let entry = NSMenuItem(title: "Secret Page", action: #selector(NSWindow.makeKeyAndOrderFront(_:)), keyEquivalent: "")
+        entry.target = privateWindow.window
+        windowMenu.addItem(entry)
+        barItem.submenu = windowMenu
+        bar.addItem(barItem)
+        let f = try makeFixture(menu: bar, extraWindows: [privateWindow])
+
+        let (content, isError) = try await call(f, "run_menu_item", ["window_id": .int(f.windowID),
+                                                                     "path": ["Window", "Secret Page"]])
+        XCTAssertTrue(isError)
+        XCTAssertEqual(content["error"]?["code"], "unknown_menu_item")
+        let message = content["error"]?["message"]?.stringValue ?? ""
+        // The message repeats the title asked for; what it lists is the menu's.
+        let listed = message.components(separatedBy: "it has:").last ?? ""
+        XCTAssertTrue(listed.contains("Minimize"), message)
+        XCTAssertFalse(listed.contains("Secret Page"), "the Private page's title is not listed: \(message)")
+        let window = try XCTUnwrap(f.window.window)
+        XCTAssertThrowsError(try AutomationMenus.resolve(entry, in: window)) { error in
+            XCTAssertEqual((error as? AutomationToolError)?.code, .privateUnreachable)
+        }
+        let described = AutomationMenuTracker.describe(windowMenu)
+        XCTAssertEqual(described.compactMap { $0["title"]?.stringValue }, ["Minimize"])
     }
 
     @MainActor func testACommandStillRunningAfterTheWaitIsReportedNotCompleted() async throws {

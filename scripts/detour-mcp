@@ -34,6 +34,10 @@ import urllib.request
 
 PROTOCOL_VERSION = "2025-06-18"
 
+# Straight to 127.0.0.1, never through a proxy: urllib otherwise takes
+# HTTP_PROXY (or the system's proxy) and would hand the proxy the bearer token.
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 class ProtocolError(Exception):
     pass
@@ -65,7 +69,7 @@ class Session:
             headers["MCP-Protocol-Version"] = PROTOCOL_VERSION
         request = urllib.request.Request(self.url, data=json.dumps(message).encode(), headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with OPENER.open(request, timeout=120) as response:
                 body = response.read()
                 session = response.headers.get("Mcp-Session-Id")
                 return response.status, body, session
@@ -109,7 +113,7 @@ class Session:
             "Mcp-Session-Id": self.session_id,
         })
         try:
-            urllib.request.urlopen(request, timeout=10).read()
+            OPENER.open(request, timeout=10).read()
         except (urllib.error.URLError, urllib.error.HTTPError):
             pass
         self.session_id = None

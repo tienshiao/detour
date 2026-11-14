@@ -419,8 +419,8 @@ final class AutomationTools {
                 let inPlace = try arguments.bool("in_place") ?? false
                 // A route into a Private window would make one reachable from
                 // automation, which it never is: refused, not followed. Only
-                // where the palette would route (a new tab, or no tab to load in).
-                if !(inPlace && controller.selectedTab != nil),
+                // where `openTypedURL` would route (the same rule it asks).
+                if typedURLIsRoutable(url, isSearch: false, navigatesInPlace: inPlace && controller.selectedTab != nil),
                    let decision = controller.routedTypedDecision(for: url),
                    decision == .privateWindow || decision == .quarantine {
                     throw AutomationToolError(.privateUnreachable,
@@ -503,8 +503,13 @@ enum AutomationMenus {
         var titles: [String] = []
         for (index, title) in path.enumerated() {
             refresh(current)
-            guard let item = current.items.first(where: { !$0.isSeparatorItem && titlesMatch(displayTitle($0), title) }) else {
-                let available = current.items.filter { !$0.isSeparatorItem && !$0.isHidden }.map(displayTitle)
+            // The Window menu's entry for a Private window bears its page's
+            // title: neither matched nor listed.
+            guard let item = current.items.first(where: {
+                !$0.isSeparatorItem && !namesPrivateWindow($0) && titlesMatch(displayTitle($0), title)
+            }) else {
+                let available = current.items.filter { !$0.isSeparatorItem && !$0.isHidden && !namesPrivateWindow($0) }
+                    .map(displayTitle)
                 throw AutomationToolError(.unknownMenuItem,
                                           "No \"\(title)\" in \(titles.isEmpty ? "the menu bar" : titles.joined(separator: " > ")); "
                                             + "it has: \(available.joined(separator: ", "))")
@@ -540,6 +545,18 @@ enum AutomationMenus {
             }
         }
         return nil
+    }
+
+    /// Whether `window` is a Private browser window, which automation never
+    /// reaches.
+    static func isPrivate(_ window: NSWindow?) -> Bool {
+        (window?.windowController as? BrowserWindowController)?.isIncognito == true
+    }
+
+    /// Whether `item` acts on a Private window: the Window menu's entry for
+    /// one targets it, and is titled with its selected page's title.
+    static func namesPrivateWindow(_ item: NSMenuItem) -> Bool {
+        isPrivate(item.target as? NSWindow)
     }
 
     /// Lets a delegate-built menu (Spaces, Extensions) fill itself in, as it
@@ -578,6 +595,9 @@ enum AutomationMenus {
         }
         guard !item.isHidden else {
             throw AutomationToolError(.menuItemDisabled, "\"\(item.title)\" is hidden")
+        }
+        guard !namesPrivateWindow(item) else {
+            throw AutomationToolError(.privateUnreachable, "The item acts on a Private window")
         }
         guard let target = item.target ?? responderTarget(for: action, in: window) else {
             throw AutomationToolError(.menuItemDisabled, "Nothing in the window handles \"\(item.title)\"")

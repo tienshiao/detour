@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T01:08:00Z'
-updated_date: '2026-11-14T05:47:00Z'
+updated_date: '2026-11-14T06:12:00Z'
 labels:
   - tooling
   - automation
@@ -148,6 +148,9 @@ Cleanup of this session's runs: DetourMCP1/2/3/Rel and DetourCheck324-* data dir
 Tests after the review: AutomationInputTests 9, AutomationHelperTests 3, AutomationControllerTests 7, AutomationCaptureTests 10, AutomationToolsTests 18, MCPServerTests 14, AutomationHTTPTests 22, AutomationEndpointTests 4, DownloadFlightStartTests 5: 92, 0 failures. Earlier in phase 5: plus DownloadManagerTests 35 and TossPathTests 11 (138, 0).
 
 2026-11-14: full suite after phase 5: 4141 tests, 19 skipped, 0 failures (screen unlocked, load ~35-50).
+
+2026-11-14, user-run /code-review --fix (security/auth and architecture), 10 findings, 8 fixed: menus open over a Private window (the person's context menu there, the menu bar while one is in front) are refused by list_menu/choose_menu_item (private_unreachable, errs towards refusing); the Window menu's entries for Private windows are neither listed nor run; scripts/detour-mcp ignores HTTP proxies (the token went to them); the helper resends only after a refused connection, not after a timeout or dropped connection (a call could run twice); the endpoint takes at most 64 connections and closes one with no authorised request within 10 s (unauthenticated fd exhaustion); Copy Token returns the running endpoint's token; open_url uses typedURLIsRoutable; the copied token is marked transient/concealed and local-only; the Reset Token alert says helper clients reconnect. Open, for the user: Disconnect blocks a client-chosen name (not a real revocation); the fixed port 47823 lets another account squat it when Detour is not running and collect a token from an HTTP-configured client.
+Checked after: 121 tests across the automation, Link Routes and palette suites, 0 failures; task324-endpoint-checks.py all passed; runtime: with a Private window open (app inactive) an agent's context menu in a normal window is still listed, and the Window menu lists only the normal window. Not checked: a person's own context menu in a Private window being refused (needs real input).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

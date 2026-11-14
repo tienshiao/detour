@@ -391,21 +391,38 @@ final class AutomationMenuTracker {
     static let shared = AutomationMenuTracker()
 
     private(set) var openMenus: [NSMenu] = []
+    /// The open menus that opened over a Private window (a person's context
+    /// menu in one, the menu bar while one is in front), and their submenus:
+    /// `list_menu` and `choose_menu_item` refuse them.
+    private var privateMenus: Set<ObjectIdentifier> = []
     private var observers: [any NSObjectProtocol] = []
 
     var topMenu: NSMenu? { openMenus.last }
+
+    func isOverPrivateWindow(_ menu: NSMenu) -> Bool {
+        privateMenus.contains(ObjectIdentifier(menu))
+    }
 
     func start() {
         guard observers.isEmpty else { return }
         let center = NotificationCenter.default
         observers.append(center.addMainObserver(forName: NSMenu.didBeginTrackingNotification, object: nil) { [weak self] note in
-            guard let menu = note.object as? NSMenu else { return }
-            self?.openMenus.removeAll { $0 === menu }
-            self?.openMenus.append(menu)
+            guard let self, let menu = note.object as? NSMenu else { return }
+            // Input tools never deliver to a Private window, so a menu that
+            // opens with one under the person's last event, or in front while
+            // Detour is active, is the person's own there. Errs towards
+            // refusing: an agent's menu opened meanwhile is refused too.
+            let overPrivate = openMenus.contains { privateMenus.contains(ObjectIdentifier($0)) }
+                || AutomationMenus.isPrivate(NSApp.currentEvent?.window)
+                || (NSApp.isActive && AutomationMenus.isPrivate(NSApp.keyWindow))
+            openMenus.removeAll { $0 === menu }
+            openMenus.append(menu)
+            if overPrivate { privateMenus.insert(ObjectIdentifier(menu)) } else { privateMenus.remove(ObjectIdentifier(menu)) }
         })
         observers.append(center.addMainObserver(forName: NSMenu.didEndTrackingNotification, object: nil) { [weak self] note in
             guard let menu = note.object as? NSMenu else { return }
             self?.openMenus.removeAll { $0 === menu }
+            self?.privateMenus.remove(ObjectIdentifier(menu))
         })
     }
 
@@ -423,8 +440,10 @@ final class AutomationMenuTracker {
     }
 
     /// A menu's items as `list_menu` reports them.
+    /// A Private window's Window-menu entry is left out (its index skipped).
     static func describe(_ menu: NSMenu) -> [JSONValue] {
-        menu.items.enumerated().map { index, item in
+        menu.items.enumerated().compactMap { index, item in
+            if AutomationMenus.namesPrivateWindow(item) { return nil }
             if item.isSeparatorItem {
                 return ["index": .int(index), "separator": true, "title": ""]
             }

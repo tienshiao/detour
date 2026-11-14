@@ -90,9 +90,12 @@ final class AutomationController {
         return nil
     }
 
-    /// The token clients present (created on first use).
+    /// The token clients present (created on first use). While listening,
+    /// the endpoint's own: a token file removed or damaged since the start
+    /// would otherwise be replaced here by one the endpoint refuses.
     func token() throws -> String {
-        try AutomationCredentials.loadOrCreateToken(in: directory())
+        if let endpoint { return endpoint.currentToken }
+        return try AutomationCredentials.loadOrCreateToken(in: directory())
     }
 
     private func changed() {

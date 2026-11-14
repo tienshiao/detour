@@ -20,8 +20,18 @@ nonisolated final class AutomationEndpoint: Sendable {
     private struct State {
         var port: UInt16 = 0
         var connections: [ObjectIdentifier: NWConnection] = [:]
+        /// Connections that have sent at least one authorised request. The
+        /// others are closed after `headTimeout`.
+        var authorized: Set<ObjectIdentifier> = []
         var stopped = false
     }
+
+    /// Connections open at once. Any local process, another account's
+    /// included, can connect before it shows a token: without a bound, idle
+    /// connections would use up Detour's file descriptors.
+    let maximumConnections: Int
+    /// How long a connection may stay open without an authorised request.
+    let headTimeout: TimeInterval
 
     private let listener: NWListener
     private let queue = DispatchQueue(label: "com.detourbrowser.automation-endpoint")
@@ -34,9 +44,12 @@ nonisolated final class AutomationEndpoint: Sendable {
     }
 
     /// - Parameter port: 0 lets the system pick one; `start()` returns it.
-    init(port: UInt16, token: String, handler: @escaping Handler) throws {
+    init(port: UInt16, token: String, maximumConnections: Int = 64, headTimeout: TimeInterval = 10,
+         handler: @escaping Handler) throws {
         self.token = Mutex(token)
         self.handler = handler
+        self.maximumConnections = maximumConnections
+        self.headTimeout = headTimeout
         let parameters = NWParameters.tcp
         parameters.requiredInterfaceType = .loopback
         parameters.acceptLocalOnly = true
@@ -51,6 +64,9 @@ nonisolated final class AutomationEndpoint: Sendable {
     func setToken(_ newToken: String) {
         token.withLock { $0 = newToken }
     }
+
+    /// The token requests must carry now.
+    var currentToken: String { token.withLock { $0 } }
 
     /// Starts listening; returns the port once the listener is ready.
     func start(timeout: TimeInterval = 5) async throws -> UInt16 {
@@ -87,7 +103,10 @@ nonisolated final class AutomationEndpoint: Sendable {
     func stop() {
         let connections = state.withLock { state in
             state.stopped = true
-            defer { state.connections.removeAll() }
+            defer {
+                state.connections.removeAll()
+                state.authorized.removeAll()
+            }
             return Array(state.connections.values)
         }
         for connection in connections { connection.cancel() }
@@ -97,21 +116,36 @@ nonisolated final class AutomationEndpoint: Sendable {
     // MARK: Connections
 
     private func accept(_ connection: NWConnection) {
+        let id = ObjectIdentifier(connection)
+        let maximum = maximumConnections
         let accepted = state.withLock { state in
-            guard !state.stopped else { return false }
-            state.connections[ObjectIdentifier(connection)] = connection
+            guard !state.stopped, state.connections.count < maximum else { return false }
+            state.connections[id] = connection
             return true
         }
-        guard accepted else { connection.cancel(); return }
+        guard accepted else {
+            log.notice("Automation connection refused: \(maximum, privacy: .public) already open")
+            connection.cancel()
+            return
+        }
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .cancelled, .failed:
-                self?.state.withLock { _ = $0.connections.removeValue(forKey: ObjectIdentifier(connection)) }
+                self?.state.withLock { state in
+                    state.connections.removeValue(forKey: id)
+                    state.authorized.remove(id)
+                }
             default:
                 break
             }
         }
         connection.start(queue: queue)
+        // A connection that shows no token in time is closed, so one that
+        // trickles a head (or sends nothing) cannot hold its place forever.
+        queue.asyncAfter(deadline: .now() + headTimeout) { [weak self] in
+            let idle = self?.state.withLock { $0.connections[id] != nil && !$0.authorized.contains(id) } ?? false
+            if idle { connection.cancel() }
+        }
         read(connection, buffer: Data())
     }
 
@@ -166,6 +200,7 @@ nonisolated final class AutomationEndpoint: Sendable {
         case .refused(let status, let reason):
             refuse(status: status, reason: reason, on: connection, closing: closing, rest: rest)
         case .allowed:
+            _ = state.withLock { $0.authorized.insert(ObjectIdentifier(connection)) }
             let handler = self.handler
             Task {
                 let response = await handler(request)
