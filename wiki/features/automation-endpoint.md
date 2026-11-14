@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Automation endpoint (MCP)
-description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2, TASK-228.3): how it is turned on, who may connect (Host, Origin, bearer token), the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the per-extension compatibility report (static scan of chrome.* references checked in the live worker and a probe page, the stub registry and its call counts, API-naming runtime errors, unsupported manifest keys and permissions, worker failures) and the stable output for diffing against a baseline, capture staging (a demo world seeded from a fixture file and its format, displays and exact window placement read back from the window server, paced typing, Debug UI on demand, the test-run guard on Arc's folder, who takes the focus), the connected-agent indicator and disconnecting, the bundled stdio helper and client setup, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host, a window's open animation, focus during captures)."
+description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2, TASK-228.3, TASK-228.5): how it is turned on, who may connect (Host, Origin, a test run's shared token, per-client tokens the user approves in Detour's own prompt, and the rejected alternatives), the Private-window opt-in, the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the per-extension compatibility report (static scan of chrome.* references checked in the live worker and a probe page, the stub registry and its call counts, API-naming runtime errors, unsupported manifest keys and permissions, worker failures) and the stable output for diffing against a baseline, capture staging (a demo world seeded from a fixture file and its format, displays and exact window placement read back from the window server, paced typing, Debug UI on demand, the test-run guard on Arc's folder, who takes the focus), the connected-agent indicator and disconnecting (revoking an approved client), the bundled stdio helper and where it keeps each client's token, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host, a window's open animation, focus during captures)."
 tags: [automation, mcp, testing, security]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T09:20:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T12:00:00Z }
 sources:
   - id: automation-dir
     resource: ../../Detour/Automation
@@ -66,6 +66,15 @@ sources:
   - id: capture-kit
     resource: ../../docs/capture/README.md
     title: docs/capture (the website capture kit, capture.py, demo-world.json)
+  - id: task-228-5
+    resource: backlog:TASK-228.5
+    title: "Automation: per-client approval prompt and tokens, and a Private-window opt-in, for the MCP endpoint"
+  - id: approvals
+    resource: ../../Detour/Automation/AutomationApprovals.swift
+    title: AutomationApprovals.swift, AutomationClients.swift and AutomationApprovalPanel.swift (the authorize route, the client store, the prompt)
+  - id: approval-tests
+    resource: ../../DetourTests/AutomationClientApprovalTests.swift
+    title: AutomationClientApprovalTests and AutomationPrivateAccessTests
   - id: webkit-manifest
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
     title: "WebKit, WebExtension.cpp (the manifest keys it reads, supportedPermissions)"
@@ -96,11 +105,18 @@ contexts").[^task-228-2]
 | `DETOUR_MCP=1` for a test run | an ephemeral port, or `DETOUR_MCP_PORT` | Only with `DETOUR_DATA_DIR` set, not `Detour` in any spelling, and inside Application Support (a name with `..` that climbs out, such as `../Application Support/Detour`, is refused): a scripted run can never open the user's real profile. A refused request is logged, never silent. |
 | The XCTest host | never | Tests start their own endpoint. |
 
-When listening, the data directory holds two files, both created 0600:
-`mcp-token` (the bearer token, kept across launches) and
-`mcp-endpoint.json` (`url`, `port`, `pid`, `token`, `test_run`), written once
-the listener is ready and removed at quit, and on SIGTERM (see Traps). The
-published URL is `http://127.0.0.1:<port>/mcp`, never `localhost`: Node
+When listening, the data directory holds `mcp-endpoint.json` (0600: `url`,
+`port`, `pid`, `test_run`, and in a test run only `token`), written once the
+listener is ready and removed at quit, and on SIGTERM (see Traps). The other
+files depend on the mode (TASK-228.5):[^task-228-5]
+
+| File (in the data directory) | Mode | What it holds |
+|---|---|---|
+| `mcp-token` (0600) | test run | The shared bearer token, kept across launches. The user's endpoint deletes a leftover one at start and never creates one. |
+| `mcp-clients.json` (0600) | the user's setting | The approved clients: `client_id`, `name`, `title`, `version`, `created`, `last_used`, `token_sha256`. Never a token. |
+| `mcp-clients/<SHA-256 of the client's name>.token` (0600, folder 0700) | the user's setting | Written by the bundled helper: the token Detour gave that client. |
+
+The published URL is `http://127.0.0.1:<port>/mcp`, never `localhost`: Node
 resolves `localhost` to `::1` first, where nothing listens.
 
 # Who may connect
@@ -115,33 +131,155 @@ request before its body is looked at, in this order:
 2. `Origin`, when present, must be an `http://` loopback origin. Browsers send
    one on every cross-origin POST; MCP clients outside a browser send none
    (403).
-3. `Authorization: Bearer <token>`, compared in constant time (401).
+3. `Authorization: Bearer <token>` (401). Which tokens count depends on the
+   mode (`AutomationAuthorization.Credentials`):
+   - a test run takes its one shared token, compared in constant time;
+   - the user's setting takes only approved clients' tokens: the
+     presented token's SHA-256 is compared in constant time with every
+     record's (`AutomationClientStore.client(presenting:)`), and the shared
+     token is never accepted. Its one route without a token is
+     `POST /mcp/authorize` (exactly that path), where a client asks for
+     one (see "Approving a client").
 
 The 401 carries `WWW-Authenticate: Bearer realm="Detour"` and no OAuth
 `resource_metadata`, so an OAuth-only client fails at once instead of
-starting a discovery flow Detour does not offer. Threat model: the token
+starting a discovery flow Detour does not offer. Threat model: a token
 stops web pages and local programs that cannot read the user's files
 (sandboxed apps, other accounts); malware running as the user can read the
-token file, and could drive the browser in other ways anyway. Private
-windows and spaces are never listed and are refused by ID
-(`private_unreachable`).
+token files, and could drive the browser in other ways anyway. The
+approved client rides on the request into `MCPServer` as a field the
+endpoint sets after the match (`AutomationHTTP.Request.client`), never as
+anything the client sent.
 
 Before any token is shown, a connection costs little: the endpoint holds
 at most 64 and closes one that has not sent an authorised request within
-10 s, so a local process without the token cannot exhaust Detour's file
-descriptors (which SQLite and WebKit's IPC need).
+10 s, so a local process without a token cannot exhaust Detour's file
+descriptors (which SQLite and WebKit's IPC need). An authorize request
+waiting for the user's answer is spared by that deadline but is never
+counted as authorised; at most 8 are held at once, and the answer always
+closes the connection (see below).
 
-Private windows stay out of menus too: a menu that opened over a Private
-window (the person's context menu there, or the menu bar while one is in
-front and Detour is active) is refused by `list_menu` and
-`choose_menu_item`, and the Window menu's entries for Private windows (titled
-with their page) are neither listed nor run. This errs towards refusing: an
-agent's own menu opened while a Private window is in front is refused too.
+Clients must not leak a token: `scripts/detour-mcp` and the helper bypass
+HTTP proxies (urllib sent the `Authorization` header to a configured proxy
+even for 127.0.0.1), and Copy Token (test runs only) marks the pasteboard
+item transient, concealed and local-only, so clipboard managers and
+Universal Clipboard skip it.
 
-Clients must not leak the token: `scripts/detour-mcp` bypasses HTTP proxies
-(urllib sent the `Authorization` header to a configured proxy even for
-127.0.0.1), and Copy Token marks the pasteboard item transient, concealed
-and local-only, so clipboard managers and Universal Clipboard skip it.
+## Approving a client
+
+With the user's setting, every client goes through Detour's own Allow /
+Deny prompt once, and gets a token of its own (user decisions,
+2026-11-13).[^task-228-5][^approvals]
+
+1. The bundled helper, on the client's `initialize`, looks for the token it
+   saved under the client's `clientInfo.name`. With none it sends
+   `POST /mcp/authorize` with `{client_name, client_title?, client_version?}`
+   and no bearer. The endpoint checks the head before reading the body:
+   POST, `application/json`, a `Content-Length` of at most 4 KB, no chunked
+   body (405, 415, 411, 413). Names are cleaned before anything shows or
+   keys on them: control, format (bidirectional overrides, zero-width),
+   separator, private-use and unassigned characters removed, white space
+   collapsed, 64 characters at most.
+2. Detour shows `AutomationApprovalPanel`: '"<name>" wants to control
+   Detour', what that allows, and that the name is the client's own claim
+   (with the raw name and version when a title was given). A non-activating
+   floating panel on every Space, ordered front without activating Detour,
+   with one Dock bounce (`requestUserAttention(.informationalRequest)`).
+   Allow is not the default button, Escape denies, and both buttons are
+   enabled only 1 s after the panel appears, so a click or Return meant for
+   the app in front cannot approve anything. No automation tool reaches the
+   panel: input goes only to browser windows, and `set_window_frame`
+   refuses it, so an approved agent cannot approve another.
+3. The HTTP request is held until the answer (`AutomationApprovals`):
+   Allow stores a record and answers 200 `{token, client_id, name}`; Deny
+   answers 403; no answer within 5 minutes is a denial. One prompt per
+   name at a time: a second request for that name waits (one waiter at most;
+   a third is 429), then gets a prompt of its own, never the first one's
+   answer, so a second process cannot ride on a prompt the user expected.
+   At most 3 names are asked about at once (429 beyond). A name denied or
+   unanswered in the last 10 minutes is refused without a prompt (403 with
+   `Retry-After`). A client that closes its connection withdraws its
+   request and the panel closes; turning automation off closes every panel
+   and answers every held request 503. An Allow whose answer could not be
+   sent (the client went away) is revoked at once, so no approval exists
+   whose token nobody holds.
+4. Every later request is checked on the endpoint's queue, and again on
+   the main actor (`MCPServer.isClientApproved`), so a request authorised
+   just before a revocation is refused all the same. Sessions are bound to
+   their client: another client's token (or the shared one) with that
+   session id gets 404. The session and the indicator use the approved
+   name, not what `clientInfo` says later. `last_used` is kept in memory
+   on every request and written at most once a minute per client; every
+   write serialises the current records under one lock, so a late write
+   cannot bring back a revoked client. A malformed `mcp-clients.json`
+   approves nobody.
+
+What the rate limits do not stop: a local program can vary the name it
+asks under, so each denial is followed by a new prompt (at most three at
+a time); the user can turn automation off. The name is self-reported, so
+the prompt says so.
+
+Rejected (recorded with the user's decisions, 2026-11-13/14):
+
+- **Local OAuth** (metadata discovery, dynamic client registration, PKCE,
+  an `/authorize` page redirecting back): a client configured with a URL
+  breaks whenever the per-launch port changes, so the helper is needed
+  anyway, and it adds code and attack surface.
+- **The Keychain for the helper's token**: ad-hoc-signed Debug helpers
+  change their keychain ACL identity at every build, so every build would
+  prompt, and test runs would too. The 0600 file in a 0700 folder has the
+  threat model the shared token already had.
+- **One shared token for the user's setting too**: Disconnect could only
+  block a name the client chose (TASK-228.1's "please stop"); revocation
+  needs a token per client.
+- **Giving every waiter the first prompt's answer**: one Allow would hand
+  tokens to processes the user never saw.
+- **An app-modal alert for the prompt**: run from a main-queue block it
+  froze the whole endpoint (Traps), and in an app that is not active it
+  goes unseen.
+
+## Private windows
+
+Private windows, spaces and tabs are reachable only while the user turns on
+"Allow agents to use Private windows" (Settings > General > Automation;
+`AutomationAllowPrivate` in the data directory's defaults suite, off by
+default; a test run turns it on only through the same key, never through a
+tool).[^task-228-5] It is read at every check, never cached: the tools
+through `AutomationEnvironment.allowsPrivate` (the controller points it at
+its defaults), page capture and the extension channel, console and stub
+counts through `AutomationPrivateAccess.isAllowed`. Turning it off refuses
+again from the next call.
+
+- **Off**: Private windows and spaces are left out of `list_windows`
+  (`hidden_private_windows` counts them) and `list_spaces`, and refused by
+  id (`private_unreachable`, whose message says the user can allow it).
+  Menus stay out too: a menu that opened over a Private window (the
+  person's context menu there, or the menu bar while one is in front and
+  Detour is active) is refused by `list_menu` and `choose_menu_item`, and
+  the Window menu's entries for Private windows (titled with their page)
+  are neither listed nor run. This errs towards refusing: an agent's own
+  menu opened while a Private window is in front is refused too. Whether a
+  menu opened over a Private window is noted when it opens; whether that
+  matters is asked at the call.
+- **On**: every tool reaches them; windows and spaces carry
+  `is_private: true`. Page capture is installed in the live pages of
+  Private spaces and in new ones. A route into a Private window is followed
+  by `open_url`.
+- **Turned off again**: refused at once; capture is removed from Private
+  pages and their records forgotten; the Private profile's worker parks are
+  stopped (waiting commands fail), its endpoint-opened popups closed, its
+  extension console and stub counts forgotten. Changing the key from
+  outside (`defaults write`) changes what the tools allow at once (checked
+  at runtime), but only the Settings checkbox installs or removes capture.
+- **Never, whatever the setting**: the Private profile as a target of
+  `install_extension`, `set_extension_enabled` or a permission (those skip
+  the user's prompts); a route into a quarantine; the Private profile's
+  Quick Detour and quarantine pages (no tool reaches Quick Detour windows,
+  and capture never goes into them). Its extension contexts follow the
+  setting but only when named (`popup:<ext>@<Private profile id>`): a
+  client that names no profile resolves exactly as before. Its workers that
+  were answered `stop` while the setting was off park only at their next
+  start, as with turning the endpoint on.
 
 # How it works
 
@@ -179,7 +317,7 @@ tool's schema to hold it.
 
 | Tool | Does | Notes |
 |---|---|---|
-| `list_windows` | Windows with `window_id`, `window_number` (the CGWindowID), frame (AppKit's), `screen_bounds` (the window server's, top-left points) and `display_id`, key/main, active space, selected tab | `window_id` is a small stable number per window, not `windowNumber`, which is only assigned once a window is on screen. |
+| `list_windows` | Windows with `window_id`, `window_number` (the CGWindowID), frame (AppKit's), `screen_bounds` (the window server's, top-left points) and `display_id`, key/main, `is_private`, active space, selected tab | `window_id` is a small stable number per window, not `windowNumber`, which is only assigned once a window is on screen. |
 | `list_spaces` | Spaces with profile, counts, the windows showing each | |
 | `list_tabs` | A space's favourites, pinned entries (live or dormant) and tabs, in sidebar order, plus its pinned folders | `id` is what `select_tab` takes; `tab_id` and `context` are null for a dormant item. |
 | `select_tab` | Selects an item as a row click does | Switches the window's space first; wakes a dormant pinned entry or favourite; `dormant_refused` when its extension keeps it dormant. |
@@ -212,12 +350,13 @@ tool's schema to hold it.
 | `read_extension_global` | Reads the value at a dotted path (`self.cache.size`) | How a worker's own globals are read. |
 | `seed_world` | Test runs only. Builds a world from a fixture file into an empty data directory: profiles, favourites, spaces, pinned entries in nested folders, splits, tabs, history visits, Link Routes, the active space | See "Seeding a world". `invalid_fixture` (with `details.path`), `not_empty` (with what is there). |
 | `list_displays` | Displays with `display_id` (CGDirectDisplayID), `frame` and `visible_frame` in global top-left points, `scale`, `main`, `name`, pixel size | Virtual displays included. Read-only, whenever the endpoint is on. |
-| `set_window_frame` | Test runs only. Moves and sizes a browser window (`window_id`) or another Detour window (`window_number`: Settings, the Arc import window) in top-left points, global or relative to `display_id`; `activate` brings Detour to the front with the window key | Returns `frame`, `screen_bounds` (the window server's), `settled`, `is_key`, `app_active`, `window_number`. `unknown_window`, `unknown_display`; a sheet or a Private window is refused. |
+| `set_window_frame` | Test runs only. Moves and sizes a browser window (`window_id`) or another Detour window (`window_number`: Settings, the Arc import window) in top-left points, global or relative to `display_id`; `activate` brings Detour to the front with the window key | Returns `frame`, `screen_bounds` (the window server's), `settled`, `is_key`, `app_active`, `window_number`. `unknown_window`, `unknown_display`; a sheet, the approval panel, and a Private window unless allowed, are refused. |
 | `open_ui` | Debug builds and test runs only. `space_editor` (a draft: name, emoji, color, profile_id; new or `space_id`), `arc_offer` and `arc_import` (from `arc_folder`, a fake Arc folder in the data directory or a temporary folder: never in or under Arc's own, in any case spelling, and with no symbolic or hard links inside, which the reader would follow to Arc's files), `settings` (`pane`, `row`) | Returns the window the UI is in (`window_number`, `frame`, `screen_bounds`). Absent from Release (its tool list was checked on a Release test run). |
 | `extension_compat_report` | What an extension uses that Detour lacks: its `chrome.*`/`browser.*` references checked in the worker and a page, the stubs it references or called, API-naming TypeErrors, unsupported manifest keys and permissions, worker failures | Whenever the endpoint is on (not gated: it installs nothing). `probe: false` skips the runtime checks. See "The compatibility report". |
 
 Tools that act on page content take a `context` (`tab:<uuid>`, or a bare
-tab id): a tab of a non-Private space, normal or pinned, or a live favorite.
+tab id): a tab of a non-Private space (or of a Private one while allowed),
+normal or pinned, or a live favorite.
 The page tools (`evaluate_js`, `read_page`, `console_messages`,
 `network_requests`, `wait_for`, `wake_tab`, and `screenshot` with a context)
 take it whether or not a window shows the tab (`resolvePage`); the input
@@ -289,8 +428,9 @@ What `console_messages` and `network_requests` read (`AutomationPageCapture`):[^
   handler to every reachable tab's user content controller and runs the
   script once in pages already loaded (main frame only: their subframes are
   recorded from their next load). New web views get it from
-  `Space.makeUserContentController(for:)`, never for a Private profile (nor a
-  quarantine, which uses the Private profile). Stopping removes both (there
+  `Space.makeUserContentController(for:)`; a Private space's only while
+  Private access is allowed (see "Private windows"), and never a Private
+  Quick Detour or quarantine page (`inSpace: false`). Stopping removes both (there
   is no public way to remove one user script: all are removed and the others
   added back) and forgets every record. A page that already ran the script
   keeps its wrappers until it reloads, posting to a handler that is gone,
@@ -328,8 +468,10 @@ A context is `<kind>:<extension>`, with `@<profile uuid>` appended when the
 extension is on in more than one normal profile (else
 `ambiguous_profile`); only a UUID after the last `@` counts, so a name with
 an `@` still reads as a name. Off in every profile is
-`extension_disabled`. The Private profile is never a target: not listed,
-not installable into, `private_unreachable` by id.
+`extension_disabled`. The Private profile is never an install, turn-on or
+permission target (`private_unreachable`); its contexts are listed and
+reached only while Private access is allowed, and only when named with
+`@<its id>` (see "Private windows").
 
 | Context | What it is | Tools |
 |---|---|---|
@@ -405,7 +547,8 @@ What follows from parking:
   (`worker_not_running`, whose message says so). Stopping the endpoint
   stops every park and fails what waits.
 - **Who may park.** Only the verified extension's background context
-  (`senderIsBackgroundContext`), never in the Private profile; a page that
+  (`senderIsBackgroundContext`), in the Private profile only while Private
+  access is allowed; a page that
   tries is refused (tested from an options page). The extension's own code
   in its worker could still call the request itself and answer its own
   commands; a test of that extension accepts that. The channel's requests
@@ -534,8 +677,8 @@ task go in one batch, `automation.stubCalls`, from any extension context
 (not content scripts, which run no bundle). The handler keeps registry
 paths only, per extension, profile, path and context kind
 (`AutomationExtensionStubCalls`), and answers `stop` while automation is
-off or in the Private profile: the context then stops sending for its
-lifetime, so with the endpoint off the cost is one request per context
+off or in the Private profile while Private access is not allowed: the
+context then stops sending for its lifetime, so with the endpoint off the cost is one request per context
 that calls a stub. The request is an `automation.` one and is not the
 worker's activity. Counts start in the same turn as the channel opens, so
 a worker's start-up calls count; the report waits 300 ms after its probes
@@ -710,40 +853,56 @@ and posts `didChangeNotification` for the UI:[^controller]
 
 - **The indicator.** While a client is connected, every browser window
   (Private ones too) shows an orange capsule at the bottom right of its
-  content naming the client ("Claude Code + 1"), whether the sidebar is shown
-  or not. The sidebar's title row had no room, and a sidebar placement would
+  content naming the client ("Claude Code + 1"; an approved client by the
+  name it was approved under), whether the sidebar is shown or not. The sidebar's title row had no room, and a sidebar placement would
   have needed a second home when it is hidden. Its menu lists Disconnect for
-  each client, Allow … Again for disconnected ones, Turn Off Automation and
-  Automation Settings…. It lives in `contentContainerView` above the page
+  each client, Allow … Again for names blocked in a test run, Turn Off
+  Automation and Automation Settings…. It lives in `contentContainerView` above the page
   (pages go in below the drag handle), so `removeContentViews()` must skip it,
   or the first tab switch removes it.
-- **Disconnect** ends the session and blocks the client's name: a
-  Streamable HTTP client whose session ends simply starts a new one, so
-  ending the session alone does nothing. The blocked client's `initialize`
-  gets 403 until the user allows it again or turns automation off and on.
-  It is a "please stop", not a revocation: the name is the client's own, so
-  a client could come back under another (its menu item says so; Turn Off
-  stops every client). Kept that way by user decision (2026-11-14); real
-  per-client revocation belongs to TASK-228's remaining authorisation work,
-  an approval prompt that gives each client its own token.
+- **Disconnect** of an approved client (the user's setting) revokes its
+  token (`AutomationController.revoke`): the record goes, every session of
+  that client ends, its next request is 401 (checked at runtime: the
+  indicator's Disconnect chosen through the endpoint's own `click` and
+  `choose_menu_item`, then the helper's next call), and other clients keep
+  working. Asking again shows the prompt again. Settings' Revoke does the
+  same, with the endpoint on or off.
+- **Disconnect in a test run** keeps TASK-228.1's name blocking, because the
+  shared token cannot be revoked without cutting off every client: it ends
+  the sessions and blocks the client's name, whose `initialize` gets 403
+  until the user allows it again or turns automation off and on. A "please
+  stop", not a revocation (the name is the client's own). Approved clients
+  are never name-blocked.
 - **Idle sessions end** after 10 minutes without a request, since most
   clients never send DELETE. A client that comes back gets 404 and starts a
   new session, as the transport expects.
-- **Reset Token** (Settings) writes a new token, swaps it into the running
-  endpoint and ends every session.
+- **Reset Token** (Settings, test runs only) writes a new shared token,
+  swaps it into the running endpoint and ends every session. The user's
+  endpoint has no shared token: `token()` and `resetToken()` refuse there
+  rather than create `mcp-token` again.
 
 # Setting up a client
 
-Settings > General > Automation copies what a client needs:
+Settings > General > Automation copies what a client needs, lists the
+allowed clients (name, client name, when allowed, last used) with Revoke,
+and has the Private checkbox:
 
 - **The bundled helper**, `Detour.app/Contents/MacOS/detour-mcp`, for any
   client that launches a command (Claude Desktop, Cursor, Claude Code). It
   relays MCP's stdio transport, one JSON-RPC message per line, to the
-  endpoint, finding the URL and token in `mcp-endpoint.json` itself (with
+  endpoint, finding the URL in `mcp-endpoint.json` itself (with
   `DETOUR_DATA_DIR` for a test run), so the client's configuration holds no
-  secret. When the session ended, the token was reset or Detour restarted
-  on another port, it reads the file again, replays the client's
-  `initialize` and retries once, but after a failed connection only when it
+  secret. In a test run it uses the file's shared token. With the user's
+  setting it keeps a token per client: on the client's `initialize` it
+  reads `<data dir>/mcp-clients/<SHA-256 of clientInfo.name>.token` (0600 in
+  a 0700 folder, opened without following links) or asks for one (see
+  "Approving a client", with a 330 s timeout, longer than the prompt's 5
+  minutes) and saves it. A denial, or a 401 with its token (revoked: the
+  file is deleted), is answered with a JSON-RPC error for the rest of the
+  run ("Detour revoked this client's access; restart the client to ask
+  again"), never a new prompt. When the session ended, the token was reset
+  (test run) or Detour restarted on another port, it reads the file again,
+  replays the client's `initialize` and retries once, but after a failed connection only when it
   was refused: a timed-out or dropped request may already have acted, so it
   gets an error instead of running twice. With Detour not running, each request gets
   a JSON-RPC error saying so. At the end of stdin it ends its session, so the
@@ -751,7 +910,9 @@ Settings > General > Automation copies what a client needs:
   Detour's entitlements.
   - Claude Code: `claude mcp add detour -- "/Applications/Detour.app/Contents/MacOS/detour-mcp"`
   - Other clients: `{"mcpServers":{"detour":{"command":"…/detour-mcp"}}}`
-- **The URL and the token**, for clients that speak HTTP with a header.
+- **The URL and the token**, test runs only, for clients that speak HTTP
+  with a header. The user's endpoint offers neither: clients go through
+  the helper.
 
 # A worked check
 
@@ -770,7 +931,8 @@ directory, so deleting the directory alone orphans them).
 
 # The scripting client
 
-`scripts/detour-mcp` (Python 3, standard library only) reads
+`scripts/detour-mcp` (Python 3, standard library only, test runs only: an
+endpoint file with no token gets a message pointing at the helper) reads
 `mcp-endpoint.json` from `$DETOUR_DATA_DIR` (or `--data-dir`), runs the
 handshake, calls, and deletes its session.[^client] `tools` lists the
 tools; `call TOOL key=value …` prints the structured result; `batch` runs
@@ -786,7 +948,7 @@ scripts/detour-mcp call open_url window_id=1 url=https://example.com
 scripts/detour-mcp call run_menu_item window_id=1 'path=["File","New Tab"]'
 ```
 
-Claude Code connects directly:
+In a test run, Claude Code can also connect directly:
 `claude mcp add --transport http detour <url> --header "Authorization: Bearer <token>"`.
 
 # Traps
@@ -923,6 +1085,15 @@ Claude Code connects directly:
 - **Local pages are dev-mode pages.** A fixture rewritten to a 127.0.0.1
   server (`capture.py --offline`) gets dev mode's host line, hazard border
   and toolbar: good for a dry run, not for the site's media.
+- **Accessibility sees no windows on a locked screen.** With the session
+  locked, `AXWindows` of the running build returned the application element
+  itself for every window (and `AXUIElementCopyElementAtPosition` failed),
+  so an external AXPress on the approval panel's Allow could not be made,
+  and `screencapture -l` of the panel failed ("could not create image").
+  The panel was on screen per `CGWindowListCopyWindowInfo` (layer 3,
+  onscreen). The runtime check approved the client by writing its record
+  and the helper's token file beforehand instead; the click itself is
+  covered by tests with a fake prompter.
 - **SIGTERM runs no quit path.** The SIGTERM source ends native hosts and
   re-raises the signal, so `applicationWillTerminate` never runs. It removes
   the endpoint file too, and only if the file's `pid` is this process. A
@@ -985,11 +1156,33 @@ window_number, and the placement errors; open_ui only in Debug, the space
 editor with a draft and paced typing into its name field, the Arc offer from
 a fixture folder and its refusals, a Settings pane with a row, open_ui's
 errors and its refusal outside a test run), `AutomationControllerTests` (on and off with the endpoint file, a
-stop during a start, Reset Token, disconnect and allow, idle sessions, the
-indicator's text and its place above the page through tab switches) and
-`AutomationHelperTests` (the built helper relaying a session, starting a new
-one, its error without Detour, ending its session at the end of stdin, and
-the setup strings Settings copies).[^tests]
+stop during a start, a test run's shared token and Reset Token, its
+disconnect and allow; the user's endpoint publishing no token and deleting
+a leftover one, refusing it, Disconnect and Revoke revoking and keeping
+other clients, turning off with a prompt up; the Private setting read by
+running tools; idle sessions, the indicator's text and its place above the
+page through tab switches), `AutomationHelperTests` (the built helper
+relaying a session, starting a new one, its error without Detour, ending
+its session at the end of stdin, the setup strings Settings copies; with
+per-client tokens: asking, saving 0600 in a 0700 folder and reusing with no
+prompt, a revoked client told so with its token deleted and no new prompt,
+a denied client getting no second prompt), `AutomationClientApprovalTests`
+(TASK-228.5: the store's hashes, file mode, reload, revocation not undone
+by a late write, coalesced `last_used`, a malformed file; per-client
+authorisation and the shared token refused, the authorize route only after
+Host and Origin and only at its exact path, its head checks, name
+cleaning; the approval flow with a fake prompt: allow, deny and the
+10-minute window, timeout, one prompt per name with its own answer, a
+waiter refused after a denial, three names at once, a withdrawn request,
+stop, a bad body; sessions bound to their client and refused once revoked
+on the main actor; over a real socket: a token working until revoked and the
+next request 401, bad heads refused before the body, a held request
+outliving the 10 s deadline while an idle connection does not and the held
+limit, a client hanging up) and `AutomationPrivateAccessTests` (listing, a
+page tool, an input tool and a menu tool with the setting off, on and off
+again; capture installed in and removed from Private pages, never in a
+Private Quick Detour page; the Private profile never an install target,
+its contexts following the setting).[^tests][^approval-tests]
 
 # Related
 
@@ -1016,3 +1209,6 @@ the setup strings Settings copies).[^tests]
 [^task-228-2]: Automation: extension testing tools on the MCP endpoint
 [^extension-tools]: AutomationTools+Extensions.swift (addressing, the extension tools)
 [^channel]: AutomationExtensionChannel.swift (the channel into an extension's background, the command runner)
+[^task-228-5]: Automation: per-client approval prompt and tokens, and a Private-window opt-in, for the MCP endpoint
+[^approvals]: AutomationApprovals.swift, AutomationClients.swift and AutomationApprovalPanel.swift (the authorize route, the client store, the prompt)
+[^approval-tests]: AutomationClientApprovalTests and AutomationPrivateAccessTests
