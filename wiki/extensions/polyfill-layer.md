@@ -5,7 +5,7 @@ description: The JavaScript bundle Detour evaluates in every extension context a
 resource: ../../Detour/Extensions/Runtime/ExtensionAPIPolyfill.swift
 tags: [extensions, polyfill, security, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:42:23Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T09:30:00Z }
 sources:
   - id: polyfill
     resource: ../../Detour/Extensions/Runtime/ExtensionAPIPolyfill.swift
@@ -200,6 +200,20 @@ never in the Private profile, and they do not count as the background's
 activity. With the endpoint off a park is answered `stop` at once, so the
 cost is one round trip per worker start. Why a park and not a port or a
 listener: [automation endpoint](../features/automation-endpoint.md#the-worker-channel).
+
+Just before it, `ExtensionPolyfillStubs.countingModuleJS` (TASK-228.2 part 2)
+wraps the polyfill's own stand-ins (the registry in
+`ExtensionPolyfillStubs`: privacy settings, webRequest events,
+`storage.managed`, `sessions.getRecentlyClosed`, the never-fired idle,
+history and management events, …) to count their calls for the automation
+endpoint's compatibility report. It never wraps a function WebKit vends (the
+`[native code]` test), keeps `this`, the arguments, the result and the
+`_detourPolyfill` marker, and sends one `automation.stubCalls` batch per
+task, which the handler answers `stop` while automation is off (the context
+then stops sending). `__detourPolyfillDiag.apis.stubCounting` says how many
+members it wrapped. The automation runner also answers a `probe` command
+(presence, `typeof`, nativeness per path) for the same report; see
+[automation endpoint](../features/automation-endpoint.md#the-compatibility-report).
 
 Preamble helpers every module uses:
 
