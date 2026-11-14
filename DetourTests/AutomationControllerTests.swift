@@ -94,8 +94,10 @@ nonisolated final class AutomationControllerTests: XCTestCase {
         let file = try JSONValue.parse(Data(contentsOf: endpointFile(directory)))
         XCTAssertEqual(file["port"], .int(Int(port)))
         XCTAssertGreaterThan(changes, 0, "the UI hears about it")
+        XCTAssertTrue(AutomationPageCapture.shared.isActive, "pages are recorded while it listens (TASK-228.4)")
 
         controller.setEnabled(false)
+        XCTAssertFalse(AutomationPageCapture.shared.isActive, "and no longer once it stops")
         XCTAssertEqual(controller.status, .off)
         XCTAssertFalse(defaults.bool(forKey: AutomationGate.enabledDefaultsKey))
         XCTAssertFalse(FileManager.default.fileExists(atPath: endpointFile(directory).path), "the file goes with it")

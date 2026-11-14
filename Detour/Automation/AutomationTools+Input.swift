@@ -21,30 +21,16 @@ extension AutomationTools {
     }
 
     /// The live tab a `context` names and the browser window showing it.
+    /// Input needs a window: a tab no window shows is `not_displayed`
+    /// (TASK-228.6 reaches those), a sleeping one `tab_asleep`.
     func resolve(context value: String) throws -> InputTarget {
-        guard case .tab(let id) = try AutomationContextID.parse(value) else {
-            throw AutomationToolError(.unknownContext, "Unknown context \(value)")
-        }
-        let store = environment.store
-        let spaces = store.spaces
-        let isPrivate = spaces.contains { space in
-            space.isIncognito && (space.tabs.contains { $0.id == id } || space.pinnedTabs.contains { $0.id == id })
-        }
-        if isPrivate { throw AutomationToolError(.privateUnreachable, "Tab \(id.uuidString) is in a Private space") }
-        let tabs = spaces.filter { !$0.isIncognito }.flatMap { $0.tabs + $0.pinnedTabs }
-            + store.profiles.filter { !$0.isIncognito }.flatMap(\.favoriteTabs)
-        guard let tab = tabs.first(where: { $0.id == id }) else {
-            throw AutomationToolError(.unknownContext, "No open tab \(id.uuidString)")
-        }
-        guard let webView = tab.webView else {
-            throw AutomationToolError(.notDisplayed, "Tab \(id.uuidString) is asleep; select it first")
-        }
+        let (tab, webView) = try resolvePage(context: value)
         guard let window = webView.window,
               let controller = environment.windowControllers().first(where: { $0.window === window }) else {
-            throw AutomationToolError(.notDisplayed, "Tab \(id.uuidString) is not shown in a window; select it first")
+            throw AutomationToolError(.notDisplayed, "Tab \(tab.id.uuidString) is not shown in a window; select it first")
         }
         guard !controller.isIncognito else {
-            throw AutomationToolError(.privateUnreachable, "Tab \(id.uuidString) is in a Private window")
+            throw AutomationToolError(.privateUnreachable, "Tab \(tab.id.uuidString) is in a Private window")
         }
         return InputTarget(controller: controller, window: window, webView: webView)
     }

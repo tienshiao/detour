@@ -259,6 +259,12 @@ class Space {
         )
         controller.addUserScript(cwsScript)
 
+        // Console and network capture while the automation endpoint is on
+        // (TASK-228.4), never in a Private profile.
+        if let profile = usableProfile, !profile.isIncognito {
+            AutomationPageCapture.shared.installIfActive(on: controller)
+        }
+
         return controller
     }
 

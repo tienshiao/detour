@@ -69,7 +69,8 @@ final class AutomationController {
         Detour browser automation. list_windows gives each window a window_id; list_spaces and list_tabs \
         describe spaces and their sidebar items; a tab's tab_id is the context the page tools take. \
         select_tab, open_url, run_menu_item, click, type_text, press_key and screenshot act on a window or a \
-        tab. Private windows and spaces are never reachable. Failed calls return isError with \
+        tab. evaluate_js, read_page, console_messages, network_requests, wait_for and wake_tab read a tab's \
+        page, whether or not a window shows it. Private windows and spaces are never reachable. Failed calls return isError with \
         structuredContent.error.code, a stable code such as unknown_window or selector_no_match.
         """
 
@@ -174,6 +175,7 @@ final class AutomationController {
             self.server = server
             self.endpoint = endpoint
             startExpiryTimer()
+            AutomationPageCapture.shared.start(store: environment().store)
             status = .listening(port: listening)
             log.notice("Automation endpoint listening on \(AutomationCredentials.endpointURL(port: listening), privacy: .public)")
         } catch {
@@ -194,6 +196,7 @@ final class AutomationController {
         server?.sessions.onChange = nil
         server = nil
         tools = nil
+        AutomationPageCapture.shared.stop()
         AutomationCredentials.removeEndpointFile(in: directory(), pid: ProcessInfo.processInfo.processIdentifier)
         status = .off
     }

@@ -18,22 +18,41 @@ nonisolated enum AutomationErrorCode: String, Sendable, CaseIterable {
     case timeout = "timeout"
     case gateClosed = "gate_closed"
     case internalError = "internal_error"
-    /// The tab is asleep or not shown in any window, so input cannot reach it.
+    /// The tab is not shown in any window, so input cannot reach it, or (for
+    /// a page screenshot) it has never been shown and has no size. A sleeping
+    /// tab answers `tab_asleep` instead (TASK-228.4).
     case notDisplayed = "not_displayed"
     /// The selector matched an element with no visible box.
     case elementNotVisible = "element_not_visible"
     /// A system permission the call needs is not granted (Screen Recording).
     case permissionDenied = "permission_denied"
+    /// The tab is asleep (its page was unloaded to save memory): wake_tab or
+    /// select_tab brings it back (TASK-228.4).
+    case tabAsleep = "tab_asleep"
+    /// A script run in the page threw, or did not compile; the error's name,
+    /// message and stack are in the message and in `structuredContent.error`.
+    case scriptError = "script_error"
 }
 
 /// A tool call that failed in a way the caller can act on.
 nonisolated struct AutomationToolError: Error, Equatable, Sendable {
     var code: AutomationErrorCode
     var message: String
+    /// More about the failure, sent as `structuredContent.error.details`: a
+    /// page script's exception (name, message, stack, line, column).
+    var details: JSONValue?
 
-    init(_ code: AutomationErrorCode, _ message: String) {
+    init(_ code: AutomationErrorCode, _ message: String, details: JSONValue? = nil) {
         self.code = code
         self.message = message
+        self.details = details
+    }
+
+    /// The `error` object a failed tool result carries.
+    var structured: JSONValue {
+        var fields: [String: JSONValue] = ["code": .string(code.rawValue), "message": .string(message)]
+        if let details { fields["details"] = details }
+        return .object(fields)
     }
 }
 
@@ -221,7 +240,8 @@ nonisolated enum MCPSchema {
         all["error"] = [
             "type": "object",
             "description": "Present only when the call failed (isError is true).",
-            "properties": ["code": ["type": "string"], "message": ["type": "string"]],
+            "properties": ["code": ["type": "string"], "message": ["type": "string"],
+                           "details": ["type": "object", "description": "More about some failures (a script's exception)"]],
         ]
         return ["type": "object", "properties": .object(all)]
     }
@@ -524,8 +544,7 @@ final class MCPServer {
             let output = try await tool.run(parsed)
             return Self.toolResult(output.structured, isError: false, images: output.images)
         } catch let error as AutomationToolError {
-            return Self.toolResult(["error": ["code": .string(error.code.rawValue), "message": .string(error.message)]],
-                                   isError: true)
+            return Self.toolResult(["error": error.structured], isError: true)
         } catch {
             return Self.toolResult(["error": ["code": .string(AutomationErrorCode.internalError.rawValue),
                                               "message": .string(String(describing: error))]],

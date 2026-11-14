@@ -279,6 +279,7 @@ nonisolated final class MCPServerTests: XCTestCase {
             "invalid_arguments", "unknown_window", "unknown_space", "unknown_tab", "unknown_context",
             "private_unreachable", "dormant_refused", "unknown_menu_item", "menu_item_disabled", "no_open_menu",
             "selector_no_match", "timeout", "gate_closed", "internal_error", "not_displayed", "element_not_visible", "permission_denied",
+            "tab_asleep", "script_error",
         ], "codes are part of the contract: add new ones, never rename")
     }
 

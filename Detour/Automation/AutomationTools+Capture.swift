@@ -21,7 +21,8 @@ extension AutomationTools {
             name: "screenshot",
             title: "Take a screenshot",
             description: "A PNG of a window's content (window_id), its sidebar (window_id with part sidebar) or a "
-                + "tab's page (context), drawn inside Detour: no Screen Recording grant, no window shadow, works "
+                + "tab's page (context; also a tab no window shows now, once it has been shown: one never shown has "
+                + "no size and is not_displayed), drawn inside Detour: no Screen Recording grant, no window shadow, works "
                 + "with Detour in the background. Returned as image content unless include_image is false, and "
                 + "written to save_to (an absolute .png path; an existing file is replaced only with overwrite) if "
                 + "given. scale 1 (default) or 2 pixels per point; 2 is never more than the display has (the "
@@ -78,8 +79,14 @@ extension AutomationTools {
                     guard !arguments.has("window_id"), !arguments.has("part"), source == "app" else {
                         throw AutomationToolError(.invalidArguments, "Give context, or window_id with part, not both")
                     }
-                    let target = try resolve(context: context)
-                    guard let webView = target.webView else { throw AutomationToolError(.notDisplayed, "No web view") }
+                    // Any live tab's page, shown in a window or not (TASK-228.4).
+                    let (_, webView) = try resolvePage(context: context)
+                    guard webView.bounds.width >= 1, webView.bounds.height >= 1 else {
+                        // A tab opened in the background and never shown:
+                        // WebKit draws no picture of a page with no size.
+                        throw AutomationToolError(.notDisplayed,
+                                                  "The tab has never been shown, so its page has no size; select it once")
+                    }
                     rep = try await AutomationCapture.page(webView)
                 } else if let windowID = try arguments.int("window_id") {
                     let controller = try self.window(id: windowID)
