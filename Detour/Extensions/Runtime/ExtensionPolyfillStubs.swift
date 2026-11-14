@@ -11,8 +11,9 @@ import Foundation
 ///
 /// Read from `ExtensionAPIPolyfill` (November 2026). A module that starts
 /// delivering an event or answering for real leaves this list in the same
-/// change; `ExtensionPolyfillStubsTests` checks every counted path exists in
-/// a page with the polyfill and the permissions it needs.
+/// change; `ExtensionPolyfillTests` checks every counted path the polyfill
+/// defines without WebKit's own namespaces (all but `storage.managed` and
+/// `action`) exists and is counted in a page with the permissions it needs.
 nonisolated enum ExtensionPolyfillStubs {
 
     enum Kind: String, Sendable {
@@ -105,14 +106,15 @@ nonisolated enum ExtensionPolyfillStubs {
     /// polyfill's objects or on a native wrapper the polyfill already patched
     /// and rooted (`chrome.action`), so nothing on `chrome` or `browser`
     /// changes shape and `typeof` answers as before. The wrapper keeps `this`,
-    /// the arguments and the result, and the `_detourPolyfill` marker the
-    /// modules' second-run checks read.
+    /// the arguments and the result, the original's `length` and `name`, and
+    /// the `_detourPolyfill` marker the modules' second-run checks read.
     ///
-    /// Counts are sent in one batch per task (`automation.stubCalls`). The
-    /// handler answers `stop` when automation is off (or the context is the
-    /// Private profile's), and the context then stops sending for its lifetime:
-    /// with the endpoint off the cost is one request per context that calls a
-    /// stub. A context started before automation was turned on, and told
+    /// Counts are sent in one batch per task (`automation.stubCalls`), and
+    /// never while an earlier batch waits for its reply (calls made meanwhile
+    /// go in the next one). The handler answers `stop` when automation is off
+    /// (or the context is the Private profile's), and the context then stops
+    /// sending for its lifetime: with the endpoint off the cost is one request
+    /// per context that calls a stub. A context started before automation was turned on, and told
     /// `stop`, is counted from its next start. The request is an `automation.`
     /// one, so it is not the background's activity (TASK-123).
     static let countingModuleJS: String = {
@@ -127,10 +129,21 @@ nonisolated enum ExtensionPolyfillStubs {
             const paths = \(pathsJSON);
             const counts = {};
             let pending = false;
+            let inFlight = false;
             let reporting = true;
+            const stopReporting = function() {
+                reporting = false;
+                const keys = Object.keys(counts);
+                for (let i = 0; i < keys.length; i++) delete counts[keys[i]];
+            };
+            const schedule = function() {
+                if (pending || inFlight || !reporting) return;
+                pending = true;
+                setTimeout(flush, 0);
+            };
             const flush = function() {
                 pending = false;
-                if (!reporting) return;
+                if (!reporting || inFlight) return;
                 const batch = {};
                 let any = false;
                 const keys = Object.keys(counts);
@@ -144,21 +157,24 @@ nonisolated enum ExtensionPolyfillStubs {
                 try {
                     request = g.__detourPolyfillRequest('\(reportRequestType)', { counts: batch });
                 } catch (e) {
-                    reporting = false;
+                    stopReporting();
                     return;
                 }
                 if (!request || typeof request.then !== 'function') return;
+                inFlight = true;
                 request.then(function(reply) {
-                    if (reply && reply.stop === true) reporting = false;
-                }, function() { reporting = false; });
+                    inFlight = false;
+                    if (reply && reply.stop === true) { stopReporting(); return; }
+                    if (Object.keys(counts).length > 0) schedule();
+                }, function() {
+                    inFlight = false;
+                    stopReporting();
+                });
             };
             const note = function(path) {
                 if (!reporting) return;
                 counts[path] = (counts[path] || 0) + 1;
-                if (!pending) {
-                    pending = true;
-                    setTimeout(flush, 0);
-                }
+                schedule();
             };
             let wrapped = 0;
             for (let i = 0; i < paths.length; i++) {
@@ -176,6 +192,10 @@ nonisolated enum ExtensionPolyfillStubs {
                         note(path);
                         return original.apply(this, arguments);
                     };
+                    // What an extension can read off the function stays the
+                    // original's.
+                    try { Object.defineProperty(counted, 'length', { value: original.length, configurable: true }); } catch (e) {}
+                    try { Object.defineProperty(counted, 'name', { value: original.name, configurable: true }); } catch (e) {}
                     Object.defineProperty(counted, '__detourCounted', { value: true });
                     if (original._detourPolyfill) counted._detourPolyfill = true;
                     __detourDefine(owner, name, counted);

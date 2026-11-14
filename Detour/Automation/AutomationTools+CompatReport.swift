@@ -113,11 +113,24 @@ extension AutomationTools {
             }
             for (api, count) in perAPI { totals[api]?.files.append((file.path, count, file.roles)) }
         }
-        func probePaths(_ api: String, _ total: ReferenceTotal) -> [String] {
-            let global = total.globals.contains("chrome") ? "chrome" : "browser"
+        // Under each global the extension names it with (`chrome` and
+        // `browser` can be two objects, and the polyfill fills in `chrome`):
+        // the namespace and the member, which must be there, and for a stub
+        // its first counted function, whose nativeness says whether the
+        // stand-in or WebKit's own answers (an object-valued stub, such as
+        // storage.managed, has no addListener to tell by).
+        func presencePaths(_ global: String, _ total: ReferenceTotal) -> [String] {
             var paths = ["\(global).\(total.namespace)"]
             if let member = total.member { paths.append("\(global).\(total.namespace).\(member)") }
             return paths
+        }
+        func nativenessPath(_ api: String, _ global: String) -> String? {
+            ExtensionPolyfillStubs.byAPI[api]?.paths.first.map { "\(global).\($0)" }
+        }
+        func probePaths(_ api: String, _ total: ReferenceTotal) -> [String] {
+            total.globals.sorted().flatMap { global in
+                presencePaths(global, total) + (nativenessPath(api, global).map { [$0] } ?? [])
+            }
         }
         let paths = Array(Set(totals.flatMap { probePaths($0.key, $0.value) })).sorted()
         let pathsJSON = JSONValue.array(paths.map(JSONValue.string)).jsonString
@@ -137,8 +150,11 @@ extension AutomationTools {
                     workerProbe = result["value"]?.objectValue ?? [:]
                     workerStarted = true
                 } catch {
-                    workerStarted = false
-                    workerError = (error as? AutomationToolError)?.code.rawValue ?? AutomationErrorCode.internalError.rawValue
+                    // A worker that took the command and then threw or ran
+                    // out of time did start.
+                    let code = (error as? AutomationToolError)?.code ?? .internalError
+                    workerStarted = code != .workerNotRunning && code != .internalError
+                    workerError = code.rawValue
                 }
             }
             do {
@@ -158,12 +174,16 @@ extension AutomationTools {
 
         func status(_ api: String, _ total: ReferenceTotal, in results: [String: JSONValue]?) -> String {
             guard let results else { return "not_checked" }
-            let probed = probePaths(api, total)
-            for path in probed where results[path]?["present"]?.boolValue != true { return "missing" }
-            if ExtensionPolyfillStubs.byAPI[api] != nil, results[probed.last!]?["native"]?.boolValue != true {
-                return "stubbed"
+            var stubbed = false
+            for global in total.globals.sorted() {
+                let presence = presencePaths(global, total)
+                for path in presence where results[path]?["present"]?.boolValue != true { return "missing" }
+                guard ExtensionPolyfillStubs.byAPI[api] != nil else { continue }
+                let native = nativenessPath(api, global).flatMap { results[$0]?["native"]?.boolValue }
+                    ?? results[presence.last!]?["native"]?.boolValue
+                if native != true { stubbed = true }
             }
-            return "available"
+            return stubbed ? "stubbed" : "available"
         }
 
         var references: [JSONValue] = []
@@ -212,9 +232,15 @@ extension AutomationTools {
         var errorCounts: [ErrorKey: Int] = [:]
         let buffer = AutomationExtensionConsole.shared.buffer(extensionID: ext.id, profileID: target.profile.id)
         let records = buffer?.entries(after: 0) ?? []
-        let patterns = AutomationCompatReport.Patterns()
+        let patterns = AutomationCompatReport.Patterns.shared
         for record in records {
             guard let text = record.fields["text"]?.stringValue else { continue }
+            // A log line about feature detection ("chrome.sidePanel is
+            // undefined, using a tab") is not an error: below warn, only text
+            // that names the error counts.
+            let level = record.fields["level"]?.stringValue
+            guard level == "error" || level == "warn" || text.contains("TypeError") || text.contains("ReferenceError")
+            else { continue }
             for match in AutomationCompatReport.apiErrors(in: text, patterns: patterns) {
                 let key = ErrorKey(api: match.api, expression: match.expression, error: match.error)
                 errorContexts[key, default: []].insert(record.fields["context_kind"]?.stringValue ?? "page")
@@ -398,7 +424,12 @@ final class AutomationExtensionProbePages: NSObject, WKNavigationDelegate {
         let id = ObjectIdentifier(webView)
         webView.navigationDelegate = self
         live[id] = webView
+        // Cancelled when this run ends: a later probe page can be allocated
+        // at this one's address, and so get its ObjectIdentifier, and a
+        // timer left running would fail that page's load.
+        var loadTimer: Task<Void, Never>?
         defer {
+            loadTimer?.cancel()
             webView.stopLoading()
             webView.navigationDelegate = nil
             live[id] = nil
@@ -409,8 +440,8 @@ final class AutomationExtensionProbePages: NSObject, WKNavigationDelegate {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             loads[id] = continuation
             webView.load(URLRequest(url: url))
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: limit)
+            loadTimer = Task { @MainActor [weak self] in
+                guard (try? await Task.sleep(for: limit)) != nil else { return }
                 self?.settle(id, .failure(AutomationToolError(
                     .timeout, "The extension's probe page did not load within \(milliseconds) ms")))
             }

@@ -2702,6 +2702,30 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(result["kept"] as? Bool, true)
     }
 
+    /// Every registry path under a namespace the polyfill defines is a
+    /// function there, wrapped by the counter, and the wrapper keeps the
+    /// original's `length` and `name`: a module that renames or drops a
+    /// stand-in shows here. `storage.managed` and `action` patch WebKit's own
+    /// namespaces, which this page does not have.
+    @MainActor func testEveryStubRegistryPathIsDefinedAndCounted() async throws {
+        let paths = ExtensionPolyfillStubs.all.flatMap(\.paths)
+            .filter { !$0.hasPrefix("storage.") && !$0.hasPrefix("action.") }
+        let raw = try await evalJSON("""
+        const problems = [];
+        for (const path of paths) {
+            let value = chrome;
+            for (const part of path.split('.')) value = value == null ? undefined : value[part];
+            if (typeof value !== 'function' || value.__detourCounted !== true) problems.push(path);
+        }
+        const get = chrome.sessions.getRecentlyClosed;
+        return JSON.stringify({ problems, length: get.length, name: get.name });
+        """, arguments: ["paths": paths])
+        let result = try XCTUnwrap(raw as? [String: Any])
+        XCTAssertEqual(result["problems"] as? [String], [], "registry paths the polyfill does not define or the counter left alone")
+        XCTAssertEqual(result["length"] as? Int, 2, "getRecentlyClosed(filter, callback)")
+        XCTAssertEqual(result["name"] as? String, "getRecentlyClosed")
+    }
+
     private static func jsString(_ value: String) -> String {
         let data = try! JSONSerialization.data(withJSONObject: [value])
         let array = String(decoding: data, as: UTF8.self)

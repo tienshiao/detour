@@ -59,6 +59,11 @@ nonisolated enum AutomationCompatReport {
         let esExport: NSRegularExpression
         let dynamicImport: NSRegularExpression
         let scriptSource: NSRegularExpression
+        let missingVariable: NSRegularExpression
+        let extensionOrigin: NSRegularExpression
+
+        /// Built once: compiling them is most of a short scan's cost.
+        static let shared = Patterns()
 
         init() {
             func regex(_ pattern: String) -> NSRegularExpression {
@@ -73,11 +78,13 @@ nonisolated enum AutomationCompatReport {
             esExport = regex(#"(?<![\w$.])export\s*(?:\*(?:\s*as\s+[\w$]+)?|\{[^}]*\})\s*from\s*["']([^"'\n]+)["']"#)
             dynamicImport = regex(#"(?<![\w$.])import\s*\(\s*["']([^"'\n]+)["']\s*\)"#)
             scriptSource = regex(#"<script\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']"#)
+            missingVariable = regex(#"Can't find variable: (chrome|browser)\b"#)
+            extensionOrigin = regex(#"webkit-extension://([A-Za-z0-9-]+)"#)
         }
     }
 
     /// The references in one script, counted.
-    static func references(in source: String, patterns: Patterns = Patterns()) -> [Reference: Int] {
+    static func references(in source: String, patterns: Patterns = .shared) -> [Reference: Int] {
         guard source.contains("chrome") || source.contains("browser") else { return [:] }
         let text = source as NSString
         var found: [Reference: Int] = [:]
@@ -98,7 +105,7 @@ nonisolated enum AutomationCompatReport {
     /// static and dynamic `import`, `export ... from`. Relative to `directory`
     /// (the importing file's, relative to the root); bare specifiers and URLs
     /// are left out.
-    static func imports(in source: String, directory: String, patterns: Patterns = Patterns()) -> [String] {
+    static func imports(in source: String, directory: String, patterns: Patterns = .shared) -> [String] {
         guard source.contains("import") else { return [] }
         let text = source as NSString
         let whole = NSRange(location: 0, length: text.length)
@@ -128,7 +135,7 @@ nonisolated enum AutomationCompatReport {
     }
 
     /// The `<script src>` paths of an HTML page.
-    static func scriptSources(inHTML html: String, directory: String, patterns: Patterns = Patterns()) -> [String] {
+    static func scriptSources(inHTML html: String, directory: String, patterns: Patterns = .shared) -> [String] {
         let text = html as NSString
         var paths: [String] = []
         patterns.scriptSource.enumerateMatches(in: html, range: NSRange(location: 0, length: text.length)) { match, _, _ in
@@ -194,7 +201,7 @@ nonisolated enum AutomationCompatReport {
     /// manifest content script `content_script`, a page's script `page`,
     /// anything reached from none of them `other`.
     static func scan(root: URL, manifest: [String: Any], limits: Limits = Limits()) -> ScanResult {
-        let patterns = Patterns()
+        let patterns = Patterns.shared
         let base = root.resolvingSymlinksInPath().standardizedFileURL.path
         var result = ScanResult()
         var sources: [String: String] = [:]
@@ -447,7 +454,7 @@ nonisolated enum AutomationCompatReport {
     /// undefined)", "Can't find variable: chrome". A chain that is a prefix of
     /// another in the same text is folded into the longer one. Detour's own
     /// polyfill warnings and unchecked lastError reports are skipped.
-    static func apiErrors(in text: String, patterns: Patterns = Patterns()) -> [ErrorMatch] {
+    static func apiErrors(in text: String, patterns: Patterns = .shared) -> [ErrorMatch] {
         guard !text.hasPrefix("[Detour polyfill]"), !text.contains("Unchecked runtime.lastError") else { return [] }
         let error: String
         if text.contains("ReferenceError") || text.contains("Can't find variable") {
@@ -461,8 +468,7 @@ nonisolated enum AutomationCompatReport {
         let message = errorLine(text, name: error)
         if error == "ReferenceError" {
             let nsText = text as NSString
-            let variable = try! NSRegularExpression(pattern: #"Can't find variable: (chrome|browser)\b"#)
-            if let match = variable.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length)) {
+            if let match = patterns.missingVariable.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length)) {
                 let global = nsText.substring(with: match.range(at: 1))
                 return [ErrorMatch(api: global, expression: global, error: error, message: message)]
             }
@@ -507,9 +513,21 @@ nonisolated enum AutomationCompatReport {
     static func normalise(_ text: String, extensionID: String, basePath: String?) -> String {
         var out = text
         if let basePath, !basePath.isEmpty { out = out.replacingOccurrences(of: basePath + "/", with: "") }
-        guard out.contains("webkit-extension://") else { return out }
-        let origin = try! NSRegularExpression(pattern: #"webkit-extension://[A-Za-z0-9-]+"#)
-        return origin.stringByReplacingMatches(in: out, range: NSRange(location: 0, length: (out as NSString).length),
-                                               withTemplate: "webkit-extension://" + NSRegularExpression.escapedTemplate(for: extensionID))
+        return nameExtensionOrigins(out) { _ in extensionID }
+    }
+
+    /// `text` with each `webkit-extension://<host>` written
+    /// `webkit-extension://<name(host)>`.
+    static func nameExtensionOrigins(_ text: String, _ name: (String) -> String) -> String {
+        guard text.contains("webkit-extension://") else { return text }
+        let ns = text as NSString
+        var out = ""
+        var last = 0
+        for match in Patterns.shared.extensionOrigin.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            out += ns.substring(with: NSRange(location: last, length: match.range.location - last))
+            out += "webkit-extension://" + name(ns.substring(with: match.range(at: 1)))
+            last = match.range.location + match.range.length
+        }
+        return out + ns.substring(from: last)
     }
 }

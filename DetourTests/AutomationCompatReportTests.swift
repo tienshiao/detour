@@ -171,7 +171,7 @@ nonisolated final class AutomationCompatReportTests: XCTestCase {
         let text = "at webkit-extension://3F2A9C1E-0000-4000-8000-ABCDEF012345/bg.js:3 and /data/Extensions/abc/lib.js"
         XCTAssertEqual(AutomationCompatReport.normalise(text, extensionID: "abc", basePath: "/data/Extensions/abc"),
                        "at webkit-extension://abc/bg.js:3 and lib.js")
-        XCTAssertEqual(AutomationTools.nameExtensionOrigins("webkit-extension://h1/x webkit-extension://h2/y") { $0 == "h1" ? "one" : "unknown" },
+        XCTAssertEqual(AutomationCompatReport.nameExtensionOrigins("webkit-extension://h1/x webkit-extension://h2/y") { $0 == "h1" ? "one" : "unknown" },
                        "webkit-extension://one/x webkit-extension://unknown/y")
     }
 

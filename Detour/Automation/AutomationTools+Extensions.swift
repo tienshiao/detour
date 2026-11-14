@@ -309,11 +309,6 @@ extension AutomationTools {
             })
     }
 
-    static func describe(_ error: any Error) -> JSONValue {
-        let nsError = error as NSError
-        return ["domain": .string(nsError.domain), "code": .int(nsError.code), "message": .string(nsError.localizedDescription)]
-    }
-
     static func permissionTypeName(_ raw: Int) -> String {
         switch ExtensionPermissionType(rawValue: raw) {
         case .apiPermission?: "api"

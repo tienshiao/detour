@@ -301,9 +301,7 @@ extension AutomationTools {
         let buffered: AutomationRingBuffer?
         var kindFilter: String?
         // How an extension origin is written in stable output.
-        var originName: (String) -> String = { host in
-            self.extensionOriginHosts()[host] ?? "unknown"
-        }
+        var originName: (String) -> String = { _ in "unknown" }
         if case .extension(let kind, let ref) = try AutomationContextID.parse(contextValue) {
             // Extension contexts (TASK-228.2): the console bridge's records.
             guard key == "messages" else {
@@ -323,6 +321,11 @@ extension AutomationTools {
             let (tab, _) = try resolvePage(context: contextValue)
             capturing = AutomationPageCapture.shared.isActive
             buffered = buffer(tab.id)
+            if stable {
+                // Read once, not for every origin in every entry.
+                let hosts = extensionOriginHosts()
+                originName = { hosts[$0] ?? "unknown" }
+            }
         }
         guard let records = buffered else {
             return [key: [], "next_seq": .int(after), "dropped": 0, "has_more": false, "capturing": .bool(capturing)]
@@ -340,7 +343,7 @@ extension AutomationTools {
             fields["timestamp"] = nil
             for (field, value) in fields {
                 if let text = value.stringValue, text.contains("webkit-extension://") {
-                    fields[field] = .string(Self.nameExtensionOrigins(text, originName))
+                    fields[field] = .string(AutomationCompatReport.nameExtensionOrigins(text, originName))
                 }
             }
             return .object(fields)
@@ -363,21 +366,6 @@ extension AutomationTools {
             }
         }
         return hosts
-    }
-
-    /// `text` with each `webkit-extension://<host>` written
-    /// `webkit-extension://<name(host)>`.
-    static func nameExtensionOrigins(_ text: String, _ name: (String) -> String) -> String {
-        let pattern = try! NSRegularExpression(pattern: #"webkit-extension://([A-Za-z0-9-]+)"#)
-        let ns = text as NSString
-        var out = ""
-        var last = 0
-        for match in pattern.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            out += ns.substring(with: NSRange(location: last, length: match.range.location - last))
-            out += "webkit-extension://" + name(ns.substring(with: match.range(at: 1)))
-            last = match.range.location + match.range.length
-        }
-        return out + ns.substring(from: last)
     }
 
     // MARK: wait_for
