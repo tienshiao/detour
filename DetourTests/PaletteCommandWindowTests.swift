@@ -207,6 +207,45 @@ nonisolated final class PaletteCommandWindowTests: XCTestCase {
         XCTAssertFalse(space.pinnedEntries.contains { $0.tab?.id == tab.id }, "unpinned")
     }
 
+    /// `NSWindow` declares `selectNextTab:` itself (window tabbing) and is in
+    /// front of the controller in the responder chain: the command must
+    /// still reach the controller whose rule offered it.
+    @MainActor func testNextTabRunsInTheControllerNotTheWindowsOwnTabbing() throws {
+        let (wc, first) = windowWithPage()
+        let second = store.addTab(in: space, url: URL(string: "https://palette-commands.invalid/second")!)
+        wc.selectTab(id: first.id)
+        spin()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(NSWindow.instancesRespond(to: BrowserCommands.nextTab.action), "why the controller is named")
+        wc.newTab(nil)
+        try type(">next tab", in: window)
+        XCTAssertEqual(commandRows(wc.commandPaletteView).first?.id, "tab.next")
+        try pressReturn(in: window)
+        XCTAssertNil(wc.commandPaletteView)
+        XCTAssertEqual(wc.selectedTabID, second.id)
+    }
+
+    /// With the page focused, `WKWebView`'s own `goBack:` is ahead of the
+    /// controller in the responder chain, and has no history item to go back
+    /// to on a tab opened from another (TASK-325). The palette's Back goes
+    /// to the controller, whose rule offered it, so it closes the tab to its
+    /// opener.
+    @MainActor func testBackFromThePaletteClosesAChildTabToItsOpener() throws {
+        let (wc, opener) = windowWithPage()
+        let child = store.addTab(in: space, url: URL(string: "https://palette-commands.invalid/child")!,
+                                 parentID: opener.id)
+        wc.selectTab(id: child.id)
+        spin()
+        let window = try XCTUnwrap(wc.window)
+        wc.newTab(nil)
+        try type(">back", in: window)
+        XCTAssertEqual(commandRows(wc.commandPaletteView).first?.id, "page.back")
+        try pressReturn(in: window)
+        XCTAssertNil(wc.commandPaletteView)
+        XCTAssertFalse(space.tabs.contains { $0.id == child.id }, "closed")
+        XCTAssertEqual(wc.selectedTabID, opener.id, "to its opener")
+    }
+
     @MainActor func testTypedTextRanksACommandInAfterTheVerbatimRow() throws {
         let (wc, _) = windowWithPage()
         spin()

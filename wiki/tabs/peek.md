@@ -271,7 +271,8 @@ switcher uses it to draw the Peek on the host's card
   The File menu has one Cmd+O item, whose action is
   `openInDefaultSpace(_:)`: a Quick Detour answers it with Open in <Space>
   (unchanged), a browser window with the Peek's expand, and each window's
-  `validateMenuItem` names it. In a browser window it reads "Open Peek in
+  `validateMenuItem` names it (the registry's `page.open-in-space` rule
+  since TASK-320, see [browser commands](../features/browser-commands.md)). In a browser window it reads "Open Peek in
   New Tab" and is enabled only while a Peek is presented; otherwise it keeps
   the Quick Detour title, disabled, as before. The File menu is not
   delegate-driven, so AppKit matches the key natively

@@ -217,8 +217,10 @@ beep (TASK-76), and handles Esc for the Peek. See
 Main menu items target the responder chain with selectors on this class
 (`newTab(_:)`, `closeCurrentTab(_:)`, `reopenClosedTab(_:)`, `nextSpace(_:)`
 and so on; the menu is built in [app shell](./app-shell.md)).
-`validateMenuItem` disables space switching, pinning and the archive items in
-a Private window, and retitles Undo/Redo from the store's undo manager unless
+`validateMenuItem` answers the [command registry](../features/browser-commands.md)'s
+rules (TASK-320) over the window's facts (`CommandContext`, implemented
+next to it): they disable space switching, pinning and the archive items in
+a Private window, and retitle Undo/Redo from the store's undo manager unless
 the page has an editable field focused.
 
 `closeCurrentTab` has a fixed precedence: an open Peek closes first; with no

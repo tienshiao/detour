@@ -65,8 +65,16 @@ enum CommandDispatch {
     /// a click gives it), resolved along `window`'s responder chain and
     /// validated there. False, doing nothing, when nothing in the window
     /// answers it or it is disabled now.
+    ///
+    /// `controller`, when given, answers a `.windowController` command that it
+    /// implements ahead of the responder chain: the palette offers such a
+    /// command by that controller's rule, and responders in front of it in
+    /// the chain implement some of the same actions (`NSWindow`'s own
+    /// `selectNextTab:` and `selectPreviousTab:` for window tabbing,
+    /// `WKWebView`'s `goBack:`), which would otherwise take the command.
     @discardableResult
-    static func perform(_ command: BrowserCommand, in window: NSWindow, menu: NSMenu?) -> Bool {
+    static func perform(_ command: BrowserCommand, in window: NSWindow, menu: NSMenu?,
+                        controller: AnyObject? = nil) -> Bool {
         // A command with an explicit target (Sparkle's updater) runs only
         // through its live item, which holds that target.
         let liveItem = menuItem(for: command.id, in: menu)
@@ -75,8 +83,12 @@ enum CommandDispatch {
         if liveItem == nil, case .appDelegate(explicitTarget: true) = command.responder {
             item.target = NSApp.delegate
         }
-        guard let action = item.action,
-              let target = item.target ?? responderTarget(for: action, in: window),
+        guard let action = item.action else { return false }
+        var controllerTarget: AnyObject?
+        if case .windowController = command.responder, let controller, controller.responds(to: action) {
+            controllerTarget = controller
+        }
+        guard let target = item.target ?? controllerTarget ?? responderTarget(for: action, in: window),
               isEnabled(item, autoenables: item.menu?.autoenablesItems ?? true, target: target) else { return false }
         return NSApp.sendAction(action, to: target, from: item)
     }

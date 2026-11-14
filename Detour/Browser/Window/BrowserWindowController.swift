@@ -3921,11 +3921,17 @@ extension BrowserWindowController: CommandPaletteDelegate {
     /// A command row (TASK-320): the palette goes first, giving the page its
     /// focus back as any dismissal does (New Tab and Open Location… also
     /// read whether a palette is up), then the command runs in this window
-    /// through its menu item, as a click on it would.
+    /// through its menu item, validated as a click on it would be, sent to
+    /// this controller when it is one of its commands (the rule that offered
+    /// it is this controller's).
     func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID) {
         dismissCommandPalette()
         guard let window, let command = BrowserCommands.command(withID: id) else { return }
-        CommandDispatch.perform(command, in: window, menu: NSApp.mainMenu)
+        // Refused (state changed since the row was offered): a beep, as a
+        // disabled menu item's key equivalent gives.
+        if !CommandDispatch.perform(command, in: window, menu: NSApp.mainMenu, controller: self) {
+            NSSound.beep()
+        }
     }
 }
 

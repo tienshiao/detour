@@ -1186,7 +1186,11 @@ extension QuickDetourWindowController: CommandPaletteDelegate {
         dismissPalette()
         restoreWebContentFocus()
         guard let window, let command = BrowserCommands.command(withID: id) else { return }
-        CommandDispatch.perform(command, in: window, menu: NSApp.mainMenu)
+        // Refused (state changed since the row was offered): a beep, as a
+        // disabled menu item's key equivalent gives.
+        if !CommandDispatch.perform(command, in: window, menu: NSApp.mainMenu, controller: self) {
+            NSSound.beep()
+        }
     }
 }
 

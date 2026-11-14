@@ -313,8 +313,16 @@ none).
 Activating one calls `commandPalette(_:didRequestCommand:)`. The owner
 dismisses the palette first (so focus goes back to the page, and New Tab
 and Open Location… would not see a palette), then runs the command through
-`CommandDispatch.perform`: its live main-menu item, resolved along the
-window's responder chain, validated, and sent as a click on it would be.
+`CommandDispatch.perform`: from its live main-menu item, validated and sent
+as a click on it would be. A window controller's command is sent to that
+controller (`controller: self`), whose rule offered it, rather than to the
+first responder along the chain: with the page focused, `WKWebView`'s own
+`goBack:`/`goForward:` are ahead of the controller, and `NSWindow` declares
+`selectNextTab:`/`selectPreviousTab:` for window tabbing. So the palette's
+Back can close a tab to its opener (TASK-325), which Cmd+[ with the page
+focused does not. A command refused at that point (its state changed since
+the row was offered; rows are resolved once per showing) beeps, as a
+disabled menu key equivalent does.
 
 Not offered in the palette: New Tab and Open Location… (they open the
 palette), Undo and Redo (they act on whatever had focus), AppKit's text,
@@ -356,11 +364,14 @@ always mixed in. The thresholds (3 characters, 2 rows) are guesses.
   row after the top hit and the verbatim row, Return still taking the top
   hit, arrowing to the command, the `>` list alone (no late pass adds to
   it), Return with no match doing nothing, each matched command resolved
-  once, and `>` as text without a source.
+  once, and `>` as text without a source. Command rows can push the last
+  history or tab matches past the 12-row cap (`compose`).
 - `PaletteCommandWindowTests` - real windows: a normal, a Private, a Quick
   Detour and a quarantine window's `>` list is exactly the palette commands
   its main menu enables there; Return pins and unpins the tab through the
-  menu item and the palette is gone; a Quick Detour's Copy URL runs in it.
+  menu item and the palette is gone; Next Tab and Back reach the
+  controller (Back closes a child tab to its opener); a Quick Detour's Copy
+  URL runs in it.
 - `EmptyStatePaletteTests` - the empty-state line is hidden under the
   palette in all three modes (Cmd+T, Cmd+L, anchored), shown again after a
   dismiss, stays hidden after a commit, and stays hidden when the selection

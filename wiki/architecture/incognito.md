@@ -286,7 +286,7 @@ spaces are saved, its history is recorded, and `isIncognito` is false.
 | `incognitoProfileID`, `ensureIncognitoProfile`, `addIncognitoSpace`, `removeIncognitoSpace`, `canMove` | [TabStore.swift](../../Detour/Browser/TabStore.swift) |
 | The non-persistent store and controller | `Profile.dataStore`, `Profile.extensionController` in [Profile.swift](../../Detour/Browser/Profile.swift) |
 | Window setup and teardown | `BrowserWindowController.init(incognito:)`, `windowWillClose` |
-| Menu validation | `BrowserWindowController.validateMenuItem` |
+| Menu validation | `BrowserWindowController.validateMenuItem`, which answers the registry's rules in `BrowserCommands` (TASK-320); the command palette offers commands by the same rule |
 | Entry points | File > New Private Window (Cmd+Shift+N) and the Dock menu, `AppDelegate.createNewIncognitoWindow` |
 | Download scope rules | `DownloadScope` in [DownloadManager.swift](../../Detour/Browser/Downloads/DownloadManager.swift), `BrowserWindowController.downloadScope` |
 | Downloads in flight at close | `PrivateDownloadClosePolicy` in [PrivateDownloadClosePolicy.swift](../../Detour/Browser/Downloads/PrivateDownloadClosePolicy.swift), `BrowserWindowController.windowShouldClose`, `AppDelegate.applicationShouldTerminate` |

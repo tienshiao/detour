@@ -142,10 +142,16 @@ enum PaletteCommands {
     /// `command` as a palette over `context`'s window offers it, or nil when
     /// it is not offered there: the same `isAvailable(in:)` its menu item's
     /// validation answers (AC #4). A command with an explicit target (the
-    /// updater) needs its live item, which only a run with Sparkle has.
+    /// updater) needs its live item, which only a run with Sparkle has, and
+    /// that item enabled by its target.
     static func resolve(_ command: BrowserCommand, in context: any CommandContext, menu: NSMenu?) -> PaletteCommand? {
         guard command.palette.isOffered, command.isAvailable(in: context) else { return nil }
-        if command.responder == .updater, CommandDispatch.menuItem(for: command.id, in: menu) == nil { return nil }
+        if command.responder == .updater {
+            // Its target validates it (Sparkle disables it while a check runs).
+            guard let item = CommandDispatch.menuItem(for: command.id, in: menu), let target = item.target,
+                  CommandDispatch.isEnabled(item, autoenables: item.menu?.autoenablesItems ?? true, target: target)
+            else { return nil }
+        }
         return PaletteCommand(id: command.id, title: command.title(in: context), symbol: command.symbol,
                               keyEquivalent: CommandDispatch.keyEquivalentLabel(for: command, in: menu))
     }

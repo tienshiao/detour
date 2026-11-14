@@ -619,8 +619,10 @@ TASK-193.3, the user's decisions of 2026-10-26. The capsule at the right of
 the title bar: its main part, **Open in 💼 Work ⌘O**, moves the page to the
 space it names; its chevron opens the dropdown. File > Open Quick Detour in
 Space (⌘O) does what the main part does while a Quick Detour is key, its
-title then naming the target ("Open in 💼 Work"; `validateMenuItem`, put
-back to the general title when the window resigns key). Since TASK-307 a
+title then naming the target ("Open in 💼 Work"; `validateMenuItem`, which
+answers the [command registry](./browser-commands.md)'s `page.open-in-space`
+rule since TASK-320, put back to the general title when the window resigns
+key). Since TASK-307 a
 browser window answers the same item too: "Open Peek in New Tab" while a
 [Peek](../tabs/peek.md) is up, otherwise the general title, disabled; with
 any other window key nothing answers it and it is disabled.
@@ -697,7 +699,8 @@ Detour's, a page without a web view (`canMoveQuickDetourTab`).
 
 **Not while a sheet is up.** `open(in:)` does nothing while the window has
 an attached sheet, and `validateMenuItem` disables Cmd+O then (found in the
-code review). The page's `alert()`/`confirm()`/`prompt()`, a file panel, a
+code review; since TASK-320 the fact is the window's `canOpenInSpace`, read
+by the registry's rule). The page's `alert()`/`confirm()`/`prompt()`, a file panel, a
 camera or microphone question and HTTP sign-in all run as sheets on the
 Quick Detour window, whose completion WebKit (or the page's process) is
 waiting on; moving the page from under one, then closing the window, left

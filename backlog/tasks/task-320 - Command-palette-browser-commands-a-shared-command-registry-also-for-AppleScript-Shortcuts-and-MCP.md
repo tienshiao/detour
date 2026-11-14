@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-10T09:38:00Z'
-updated_date: '2026-11-14T21:45:00Z'
+updated_date: '2026-11-14T22:28:00Z'
 labels:
   - command-palette
   - automation
@@ -66,3 +66,59 @@ Constraints from the codebase: the palette is scoped to its window's profile (TA
 5. Tests: registry rules over fake contexts, ranking, palette integration (normal/Private/Quick Detour), menu/palette/MCP-menu/Quick Detour suites. /verify: palette commands in a normal and a Private window, menu items by key and by path through the automation endpoint, menu enablement in Private and Quick Detour.
 6. Record AC #1 (shape, how menus/palette/AppleScript/MCP use it, rejected alternatives), provisional decisions, AC #3 options + recommendation (not built), what is left (context menus, dock menu). Wiki: new commands page, app-shell, command-palette, suggestion-pipeline. Task stays In Progress.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Registry shape (AC #1)
+
+Code: Detour/Commands/ (BrowserCommand.swift, BrowserCommands.swift, CommandDispatch.swift); palette side Detour/Browser/CommandPalette/PaletteCommands.swift. Wiki: wiki/features/browser-commands.md.
+
+- Command (BrowserCommand): `id: CommandID` (dotted lowercase string, written out by hand, never derived from a title; pinned by BrowserCommandRegistryTests because TASK-327 will persist bindings keyed by it), `title` (what the menu item is built with), `aliases`, `symbol` (SF Symbol), `keyEquivalent` (default; the live item can differ, e.g. the Quick Detour hotkey setting), `parameters: [CommandParameter]` (space, tab, profile, url, position, extension), `action` (selector) + `tag`, `responder` (CommandResponder: `.windowController(kinds)` = the window kinds whose controller implements the action, target nil / responder chain; `.appDelegate(explicitTarget:)`; `.updater`; `.appKit`), `rule` + `contextualTitle` over a `CommandContext`, `palette: PalettePresence` (offered / notOffered(reason) / needsParameter).
+- Availability: `CommandContext` is a protocol of facts about a window (kind: normal, Private, Quick Detour, quarantine; selected tab, has URL, pinned; Peek; back/forward; undo; closed tabs; archive; next/previous space; tab stepping; Cmd+O destination). BrowserWindowController and QuickDetourWindowController implement it lazily (each fact computed when a rule reads it; some read the DB). Missing facts default to false (fail closed). `isAvailable(in:)` = kind in `kinds` && rule. Both controllers' validateMenuItem are now `BrowserCommands.validate(item, in: self)` (retitle, then the rule); the palette offers a command by the same `isAvailable(in:)` (AC #4).
+- Action: the selector through the responder chain. `CommandDispatch` resolves a command or item in a GIVEN window (first responder up to the window, its delegate, NSApp, its delegate), applies AppKit's tiered enable decision, and `perform` sends from the command's LIVE menu item (sender, tag, target as a click gives). Shared by the key-equivalent fast path, run_menu_item and the palette.
+- Menus: AppDelegate.setupMainMenu keeps the layout and adds every item with `add(_:to:)` = `command.makeMenuItem()` (title, key, mask, action, tag, identifier = command ID) + the responder's target. Dynamic items (spaces, extension submenus, Develop inspect/reload) keep their builders with the parameterised commands' actions.
+- Palette: the owner gives the palette `PaletteCommands.source(for: controller)` (candidates = offered commands its kind answers; resolve(id) evaluated only for matched candidates, memoized per showing). Return dismisses the palette, then `CommandDispatch.perform` in that window.
+- How TASK-319 (AppleScript/App Intents) should use it: one script command / intent per command ID with its `parameters`, run with `CommandDispatch.perform` against the named window (resolution does not need the window to be key), gated by `isAvailable(in:)` of that window's controller (so Private rules hold for scripts too).
+- How TASK-228 (MCP) should use it: `list_commands` (IDs, titles, availability for a window) and `run_command` by ID beside run_menu_item (which keeps working by path/key and now shares CommandDispatch).
+- TASK-327: bindings keyed by CommandID applied to the live items; defaults = `keyEquivalent`; the palette shows the live item's shortcut so it follows.
+
+Rejected alternatives:
+- An action closure per command instead of selectors: the menu, run_menu_item, the TASK-56 fast path, HotKeyShortcutValidation (skips the QD item by action), updateSpacesMenu (finds Manage Spaces… by action) and AppKit's own items all work by selector/target; a closure would have had to find its window itself.
+- An eager snapshot struct of every fact per validation: validation runs per item and on every key equivalent, and some facts query the DB.
+- Palette asking validateMenuItem through the responder chain while it is open: its field editor is first responder then; the rule over the window controller is what the item answers once the palette is gone.
+- Leaving "which windows answer it" to the responder chain only: declared as `kinds` so the palette and scripts can tell without resolving; a test holds it to instancesRespond(to:).
+- Moving the menu layout (order, separators, conditional Check for Updates…, delegates, dynamic sections) into registry data: more change than the move needed.
+- Moving the dynamic items onto the registry now: their availability is per parameter (nil action when an extension has no popup), which rules do not express yet.
+
+## PROVISIONAL decisions
+
+- PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): commands show up both ways — ranked in among URL and history rows when the typed text (3+ characters) matches a title or alias by word prefixes, at most 2 rows, placed right after the verbatim row (the top hit and Return on the text unchanged); and a ">" prefix lists commands only (no history pass, no network suggestions, no completion/filler; Return with no match does nothing). Thresholds 3 characters / 2 rows are guesses. Alternatives: only after ">" (never mixed), or always mixed in with no ">" mode; other thresholds.
+- PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): not offered in the palette — New Tab and Open Location… (they open the palette), Undo/Redo (act on whatever had focus), Back/Forward (once the palette is dismissed the page has the keys and WKWebView's own goBack:/goForward: answer ahead of the controller, disabled without a history item, so the row would do nothing), AppKit's Cut/Copy/Paste/Select All/Hide/Hide Others/Show All/Quit/Minimize/Zoom, and every parameterised command. Alternative: offer Quit/Minimize/Hide, or route Back/Forward straight to the controller from the palette (would differ from Cmd+[ with the page focused).
+- PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): the Quick Detour launcher panel offers no commands (it belongs to no window); a Quick Detour window's and a quarantine's palette do. Alternative: app-level commands (New Window, Settings…) in the launcher too.
+- PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): the command ID names. They are not persisted anywhere yet, so free to rename until TASK-327 stores bindings. Worth a look: `extension.*` (per-extension, parameterised: show-popup, options, inspect-offscreen, reload-unpacked) vs `extensions.*` (the Extensions menu's own: add, manage, check-for-updates); `location.open` (Open Location…); `page.open-in-space` (Cmd+O, both Quick Detour's Open in and Open Peek in New Tab); `help.guide` (Detour Help). Alternative: one prefix per menu (file.*, edit.*, view.*, …), which ties IDs to the menu layout.
+- PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): the first cut builds the registry and moves the main menu onto it before adding palette commands (the brief's order). Alternative: palette commands first, menus later.
+- Matching note for the user: a 3-letter query matches aliases too, e.g. "arc" ranks in Show Archived Tabs (alias "archive") and Switching from Arc (alias "arc"); "chr" → Add Extensions… (alias "chrome web store"); "res" → Reopen Closed Tab ("restore tab") and Actual Size ("reset zoom"); "con" → Web Inspector ("console"); "dev" → Web Inspector ("devtools"). Whether that is "matching well" is the user's call (raise the threshold, or rank aliases in only on a prefix match).
+
+## AC #3: parameterised commands in the palette (not built; the user's call)
+
+Declared in the registry (`parameters`) and kept out of the palette: space.switch (space), extension.show-popup / extension.options / extension.inspect-offscreen / extension.reload-unpacked (extension). The starting set's "Move tab to <space>", "Switch to <space>", "Open in Quick Detour" would join them.
+Options:
+1. Nested list (Arc/Raycast): choosing "Move Tab to Space…" replaces the rows with the spaces; typing filters them; Return runs; Escape/Backspace goes back to the command list. Needs a "back" state and a title for the second step.
+2. A chip like site search (TASK-287): choosing the command puts a chip ("Move to Space") at the start of the field, the rows are the choices filtered by what is typed, Return runs on the selected choice, Backspace on an empty field leaves the mode. Reuses the palette's existing mode machinery (chip view, enter/leave, Backspace restoring the text, the color).
+3. Typed arguments (">move to work"): the command parses its argument from the text. No second step, but ambiguous (space names with spaces, partial names), poor discoverability, and the argument has to be matched before the command is known.
+Recommendation: option 2 (the chip). One field and one interaction model the palette already has and tests; it works the same for space, tab and profile pickers; typed text still filters. Option 1 is the fallback if the user wants a visible breadcrumb.
+
+## What is left off the registry
+
+Sidebar context menus (TabSidebarViewController's tab/folder/space/pinned/favourite menus, about 22 items), the favourites bar (1), the archive page (5), the page's context-menu additions (BrowserWebView.willOpenMenu, 4), the Quick Detour title bar menus (3), the Dock menu (2: New Window, New Private Window), the automation menu items (BrowserWindowController+Automation, 5), Settings' menus (not commands). Keys outside menus: Control+Tab switcher, Escape for Peek, the find bar, the Undo/Redo interception in BrowserWebView. Commands with no menu item at all (duplicate, mute, sleep, split with…, separate split, move to space, new/rename space, colour/emoji) do not exist as commands yet.
+
+## Code review (code-review medium --fix, over main...batch-b plus the working tree) and what was done
+
+The three commits (0b52c8c, b10ab60, 1bea240) were made as checkpoints before this review and /verify; the fixes land as a fourth commit.
+- Fixed by the review: the palette now sends a window-controller command to the controller whose rule offered it (`CommandDispatch.perform(…, controller:)`), not to whatever answers first along the responder chain (WKWebView's own goBack:/goForward: while the page has the keys; NSWindow declares selectNextTab:/selectPreviousTab: for window tabbing). New test testNextTabRunsInTheControllerNotTheWindowsOwnTabbing.
+- Fixed by the review: Check for Updates… is offered only while Sparkle's own validation enables its live item.
+- Done after the review: Back and Forward are offered in the palette again (the exclusion I had added was for the responder-chain problem the fix removes). Correction to the PROVISIONAL "not offered" list above: Back/Forward are no longer in it. Consequence, recorded in the wiki: the palette's Back on a child tab with no history closes it to its opener (TASK-325), which Cmd+[ with the page focused does not (WKWebView takes it; known since TASK-325). New test testBackFromThePaletteClosesAChildTabToItsOpener.
+- Done after the review: a command refused when Return runs it (its state changed after the row was offered) beeps, as a disabled menu key equivalent does.
+- Left as is: rows are resolved once per showing (cleared on show and when the window rescopes the palette), so a ">" list can go stale while the palette stays open; Return then re-validates and beeps. Each resolve walks the main menu twice (~45 commands × ~80 items on ">", negligible). Command rows in mixed mode take slots before history rows, so they can push the last history or tab match past the 12-row cap.
+<!-- SECTION:NOTES:END -->

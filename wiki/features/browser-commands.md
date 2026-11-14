@@ -139,6 +139,8 @@ its delegate), `isEnabled(_:autoenables:target:)` (AppKit's tiered decision:
 item's own `isEnabled` without autoenabling), and `perform(_:in:menu:)`,
 which sends the action from the command's **live** menu item (found by
 identifier) so the action gets the sender, tag and target a click gives it.
+Given a `controller`, a window-controller command it implements is sent to
+it rather than resolved along the chain; the palette passes its owner.
 The key-equivalent fast path and `AutomationMenus.resolve` (`run_menu_item`)
 use the same two helpers; before, each had its own copy.
 
@@ -149,8 +151,11 @@ A palette over a browser window or a Quick Detour gets
 `palette == .offered` that the window's kind answers, resolved one at a
 time when typed text matches them, by `PaletteCommands.resolve`:
 `isAvailable(in:)` (the menu item's rule), `title(in:)` and the live item's
-shortcut (`CommandDispatch.keyEquivalentLabel`). Running one is
-`CommandDispatch.perform` from the window after the palette is dismissed.
+shortcut (`CommandDispatch.keyEquivalentLabel`); the updater's only while
+Sparkle's own validation enables its live item. Running one is
+`CommandDispatch.perform(…, controller:)` from the window after the palette
+is dismissed: a window controller's command goes to that controller, whose
+rule offered it, not to whatever answers first along the chain (below).
 How rows are matched, ranked and placed, and the `>` list, are on
 [command palette](./command-palette.md#browser-commands).
 
@@ -223,14 +228,21 @@ exist as commands yet.
 
 # Gotchas
 
+- The palette resolves a window's commands once per showing; one refused
+  when Return runs it (the window changed meanwhile) beeps.
+
 - Titles that validation sets (Pin/Unpin Tab, Undo/Redo, Cmd+O) live on the
   shared main-menu items, so what an item says depends on the last window
   that validated it. Tests key items by action, not title.
 - Back and Forward with the page focused reach `WKWebView`'s own `goBack:`
   and `goForward:` first (they are in the responder chain ahead of the
-  controller), as found in TASK-325. The registry's rule is the
-  controller's; the characterization and agreement tests resolve from the
-  window itself as first responder for that reason.
+  controller), as found in TASK-325, and `NSWindow` declares
+  `selectNextTab:`/`selectPreviousTab:` (window tabbing). The registry's
+  rule is the controller's: the characterization and agreement tests
+  resolve from the window itself as first responder, and the palette sends
+  window-controller commands to the controller. That is where the palette
+  and the menu can differ: the palette's Back on a child tab with no
+  history closes it to its opener; Cmd+[ with the page focused does not.
 - AppKit adds items of its own to the Edit menu (Writing Tools, AutoFill,
   Start Dictation…, Emoji & Symbols) and the Window menu; they are not
   commands, and the tests leave them out.
