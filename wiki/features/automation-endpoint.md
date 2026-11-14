@@ -200,7 +200,7 @@ Deny prompt once, and gets a token of its own (user decisions,
    unanswered in the last 10 minutes is refused without a prompt (403 with
    `Retry-After`), and so is the title that prompt showed, under any name.
    A client that closes its connection withdraws its request and the panel
-   closes; the first such hang-up per name is let off (the person may have
+   closes; the first such hang-up per name or title is let off (the person may have
    closed the client), a second within 10 minutes counts as a denial. At
    most 5 prompts are shown in any 10 minutes, whatever the names (429 with
    `Retry-After` beyond); turning automation off closes every panel

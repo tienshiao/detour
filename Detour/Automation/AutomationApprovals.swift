@@ -248,7 +248,7 @@ final class AutomationApprovals {
     private var deniedAt: [String: Date] = [:]
     /// When each prompt of the last `denialWindow` was shown.
     private var shownAt: [Date] = []
-    /// When each name last hung up while its prompt was shown.
+    /// When each name and title last hung up while its prompt was shown.
     private var withdrawnAt: [String: Date] = [:]
     private var isStopped = false
 
@@ -336,17 +336,24 @@ final class AutomationApprovals {
             recordDenial(of: request)
             return Self.response(for: outcome, request)
         case .withdrawn:
-            if pending.wasShown {
-                let time = now()
-                if let earlier = withdrawnAt[key], time.timeIntervalSince(earlier) < Self.denialWindow {
-                    recordDenial(of: request)
-                } else {
-                    withdrawnAt[key] = time
-                }
-            }
+            if pending.wasShown { recordWithdrawal(of: request) }
             return Self.response(for: outcome, request)
         case .stopped:
             return Self.response(for: outcome, request)
+        }
+    }
+
+    /// A hang-up on a shown prompt: let off once per name and title, a
+    /// denial the second time within `denialWindow` (keyed like a denial,
+    /// so rotating the name under one title does not reset it).
+    private func recordWithdrawal(of request: AutomationApprovalRequest) {
+        let time = now()
+        withdrawnAt = withdrawnAt.filter { time.timeIntervalSince($0.value) < Self.denialWindow }
+        if withdrawnAt[request.key] != nil || withdrawnAt[request.displayKey] != nil {
+            recordDenial(of: request)
+        } else {
+            withdrawnAt[request.key] = time
+            withdrawnAt[request.displayKey] = time
         }
     }
 

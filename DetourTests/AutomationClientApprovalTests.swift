@@ -428,6 +428,24 @@ nonisolated final class AutomationClientApprovalTests: XCTestCase {
         XCTAssertEqual(prompter.prompts.count, 2)
     }
 
+    @MainActor func testHangingUpTwiceUnderOneTitleCountsAsADenialWhateverTheNames() async throws {
+        let prompter = FakeApprovalPrompter()
+        let (approvals, _) = approvals(prompter)
+        for round in 1...2 {
+            let cancellation = AutomationRequestCancellation()
+            let body: JSONValue = ["client_name": .string("rotated\(round)"), "client_title": "Claude Code"]
+            let task = Task { await approvals.handle(Self.authorizeRequest(body), cancellation: cancellation) }
+            try await waitUntil("prompt \(round)") { prompter.prompts.count == round }
+            cancellation.cancel()
+            let status = await task.value.response.status
+            XCTAssertEqual(status, 400)
+        }
+        let third = await approvals.handle(Self.authorizeRequest(["client_name": "rotated3", "client_title": "Claude Code"]),
+                                           cancellation: .init())
+        XCTAssertEqual(third.response.status, 403, "a fresh name does not reset the hang-ups under one title")
+        XCTAssertEqual(prompter.prompts.count, 2)
+    }
+
     @MainActor func testADenialHoldsForTheTitleThePromptShowedUnderAnotherName() async throws {
         let prompter = FakeApprovalPrompter()
         prompter.autoAnswer = .deny
