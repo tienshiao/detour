@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T06:59:00Z'
-updated_date: '2026-11-12T09:20:00Z'
+updated_date: '2026-11-14T01:36:00Z'
 labels:
   - import
 dependencies: []
@@ -25,15 +25,15 @@ What to verify before scoping (from memory during planning, not checked): Arc ke
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The on-disk formats the importer reads are documented in the wiki, with the Arc version they were checked against
-- [ ] #2 A user can import from Arc (File menu and first-run) and choose which Arc profiles and spaces to bring over
-- [ ] #3 Imported spaces keep their names, colors or emoji where Detour supports them, and land in a Detour Profile matching their Arc profile
-- [ ] #4 Pinned tabs and folders keep their order and nesting; favorites become Detour Favorites on the matching profile
-- [ ] #5 Browsing history is imported into the matching profile's history
-- [ ] #6 What is not imported (logins and cookies, passwords, anything else) is told to the user in the import UI, not silently dropped
-- [ ] #7 Importing twice does not duplicate spaces, pinned entries or favorites
-- [ ] #8 A missing or unreadable Arc install fails with a clear message and changes nothing
-- [ ] #9 Parsing and mapping are unit-tested against fixture files covering nested folders, multiple profiles and an empty sidebar
+- [x] #1 The on-disk formats the importer reads are documented in the wiki, with the Arc version they were checked against
+- [x] #2 A user can import from Arc (File menu and first-run) and choose which Arc profiles and spaces to bring over
+- [x] #3 Imported spaces keep their names, colors or emoji where Detour supports them, and land in a Detour Profile matching their Arc profile
+- [x] #4 Pinned tabs and folders keep their order and nesting; favorites become Detour Favorites on the matching profile
+- [x] #5 Browsing history is imported into the matching profile's history
+- [x] #6 What is not imported (logins and cookies, passwords, anything else) is told to the user in the import UI, not silently dropped
+- [x] #7 Importing twice does not duplicate spaces, pinned entries or favorites
+- [x] #8 A missing or unreadable Arc install fails with a clear message and changes nothing
+- [x] #9 Parsing and mapping are unit-tested against fixture files covering nested folders, multiple profiles and an empty sidebar
 - [ ] #10 The Switching from Arc hub (website src/pages/arc/) gets a migration section built around the importer, replacing the held-back manual guide in src/pages/arc/_move.md (user, Nov 7 2026: the hub leaves migration off until an import exists)
 <!-- AC:END -->
 
@@ -52,4 +52,16 @@ Nov 12 2026, format survey on this Mac (Arc 1.172.1 build 90370, running; struct
 - Profiles: names from User Data/Local State profile.info_cache[<dir>].name (Default, Profile 1..3 here); StorableProfiles.json lists the profile ids only.
 - History: User Data/<profile dir>/History, Chromium history schema version 70 (urls, visits; visit_time in microseconds since 1601-01-01). Copying the file while Arc runs works; read the copy (immutable). Here: Default 142k visits, Profile 1 22k, Profile 2 0, Profile 3 31.
 - Detour side: history.db visits are per space and expire after 90 days (AppDelegate expireOldVisits), so only the last 90 days are worth importing; favourites are per profile; pinned folders nest via parentFolderID; there is no first-run flow yet.
+
+2026-11-14, AC review against main (a0cc9c3+):
+#1 wiki/features/arc-import.md documents both formats, checked against Arc 1.172.1 (build 90370).
+#2 File › Import from Arc… (AppDelegate.importFromArc) and the one-time launch offer sheet (TASK-293.5). The window has a checkbox for each Arc profile and space, and an "into" popup per profile.
+#3 The planner keeps name, emoji and colour (ArcImportPlannerTests.testSpacesKeepNameEmojiAndColourWithDefaults). Each Arc profile goes to a new Detour profile by default, or a chosen existing one; a re-import follows the link (testAReImportGoesBackToTheLinkedProfileAndSpaceEvenAfterARename).
+#4 testPinnedTreeKeepsOrderNestingAndSplits (reader and planner) and testFavouritesGoToTheirProfile.
+#5 HistoryDatabase.importVisits imports the last 90 days per profile (ArcImportTabStoreTests.testHistoryIsImportedUnderTheSpaceOnceAndFeedsTheReaders).
+#6 ArcImportText.notImported is shown in the window; the offer sheet fine print says what stays in Arc.
+#7 testImportingTheSameDataAgainAddsNothing, plus the re-import planner tests.
+#8 Read failures are typed ArcImportError (LocalizedError: arcNotFound, unreadable, unrecognizedFormat). The window shows the message, has no snapshot, and keeps Import disabled. ArcSidebarReaderTests.testMalformedFilesAreTypedErrors.
+#9 Synthetic fixtures cover nested folders (testPinnedTreeKeepsOrderNestingAndTitles, export testDeeperHeadingsAndIndentedBulletsNest), several profiles (testProfilesAreNamedFromLocalStateAndCarryTheirFavourites) and an empty sidebar (testEmptySidebarGivesNoSpaces, testAnEmptySpaceAndAFileWithoutSpaces, testAnEmptySnapshotPlansNothing).
+#10 waits on TASK-293.4: the website branch arc-import merges with the next release. Then 293 can be closed.
 <!-- SECTION:NOTES:END -->
