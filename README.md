@@ -95,3 +95,7 @@ Architecture notes for contributors are in [CLAUDE.md](CLAUDE.md), and the proje
 
 - [GRDB.swift](https://github.com/groue/GRDB.swift): SQLite for the session and history databases
 - [Sparkle](https://github.com/sparkle-project/Sparkle): automatic updates
+
+## License
+
+Detour is released under the [MIT License](LICENSE).
