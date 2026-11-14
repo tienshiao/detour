@@ -3,11 +3,11 @@ id: TASK-228.1
 title: >-
   Automation: an MCP endpoint in Detour, first slice for testing (in-process
   input, menus, screenshots), off until turned on
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T01:08:00Z'
-updated_date: '2026-11-14T05:32:00Z'
+updated_date: '2026-11-14T05:47:00Z'
 labels:
   - tooling
   - automation
@@ -146,4 +146,18 @@ docs/harness/task324-endpoint-checks.py: launches the given build with its own d
 /code-review high --fix: 10 findings, all fixed (the script's own preferences domain and WebKit stores left behind; $OUT unset in the skill; a stale flight read when two fell in one second; the sidebar-hidden check not checking the end point; loop-count timeouts; Popen outside try and no wait after SIGKILL; press_key's Cmd path not announced; the observer on object nil; the test leaving a menu open on failure). After it: the script also removes the empty preferences file defaults leaves.
 Cleanup of this session's runs: DetourMCP1/2/3/Rel and DetourCheck324-* data directories, preferences domains and files, defaults keys, and the WebKit stores derivable from their records (677 -> 674 store directories). Not removed: the first check run's WebKit store (its record went with its data directory before the script removed stores) and ~674 stores from earlier sessions' isolated runs.
 Tests after the review: AutomationInputTests 9, AutomationHelperTests 3, AutomationControllerTests 7, AutomationCaptureTests 10, AutomationToolsTests 18, MCPServerTests 14, AutomationHTTPTests 22, AutomationEndpointTests 4, DownloadFlightStartTests 5: 92, 0 failures. Earlier in phase 5: plus DownloadManagerTests 35 and TossPathTests 11 (138, 0).
+
+2026-11-14: full suite after phase 5: 4141 tests, 19 skipped, 0 failures (screen unlocked, load ~35-50).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Detour has a local MCP endpoint (Detour/Automation) that agents and scripts use to read and drive the browser, shipped in Release and off until turned on: a Settings > General > Automation checkbox (port 47823), or DETOUR_MCP=1 with an isolated DETOUR_DATA_DIR for test runs. HTTP on 127.0.0.1 only; every request needs a loopback Host, a local or absent Origin and the bearer token (0600 file, shown, copied and reset in Settings); Private windows and spaces are never reachable.
+
+Tools (structuredContent plus the same JSON as text, flat input schemas, stable error codes): list_windows, list_spaces, list_tabs, select_tab, open_url, run_menu_item, click, type_text, press_key, hit_test, list_menu, choose_menu_item, close_menu, screenshot (in-app, or the window server's picture with Screen Recording), set_appearance, and set_debug_override (Debug only, checked absent from a Release build: Reduce Motion via the new MotionPreference, the space toss). Input is delivered inside the app from the run loop, so Detour stays in the background, the pointer never moves, and a menu or alert it opens leaves the endpoint answering; it is announced to the window's web-click monitor, which local event monitors otherwise never see.
+
+Every window shows an orange capsule naming connected agents, with Disconnect (blocks the client's name until allowed again), Turn Off Automation and Settings; idle sessions end after 10 minutes. Clients: scripts/detour-mcp (Python, no model), the bundled stdio helper Contents/MacOS/detour-mcp (finds the endpoint and token itself, reconnects, ends its session on exit; Claude Desktop and others), or HTTP with the token (Claude Code). /verify and the runtime-verification playbook go through the endpoint; docs/harness/task324-endpoint-checks.py re-runs TASK-324's four hands-on download checks with no manual steps, all passing.
+
+Verification: five /code-review high --fix rounds (one per phase, 49 findings, all fixed or decided and recorded); per-phase runtime checks in isolated profiles with Detour in the background; full suite 4141 tests, 0 failures. Not verified: a Developer ID signed and notarized build (sign-app.sh's helper signing first runs at the next release), Claude Desktop itself, the Settings checkbox clicked by hand. Known limits: a disconnect does not cancel a tool call already running; Control-Tab's switcher, sidebar swipes and the hover card do not see endpoint input; in-app screenshots lack window-server glass. Follow-ups already filed: TASK-228.2 (extension testing tools), TASK-228.3 (capture tooling); TASK-228 keeps OAuth authorisation and cloud agents.
+<!-- SECTION:FINAL_SUMMARY:END -->
