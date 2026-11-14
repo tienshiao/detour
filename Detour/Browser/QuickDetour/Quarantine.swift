@@ -113,47 +113,6 @@ enum Quarantine {
 
     // MARK: - Link tracking parameters
 
-    /// Query parameters that only identify a click or a campaign: click IDs
-    /// that ad networks and mail tools add (`gclid`, `fbclid`, `msclkid`,
-    /// `mc_eid`, …) and the campaign tags (`utm_*`). Compared without case.
-    /// WebKit's own link decoration filtering (on in quarantine, below)
-    /// removed `gclid`, `fbclid` and `mc_eid` on macOS 26.7 but kept `utm_*`
-    /// (measured, TASK-194); this list is the floor whatever WebKit's does.
-    static let trackingParameterNames: Set<String> = [
-        // Google Ads, DoubleClick, Google's app and iOS click IDs
-        "gclid", "gclsrc", "dclid", "gbraid", "wbraid",
-        // Meta, Microsoft Ads, Instagram, Yandex, X, TikTok, LinkedIn
-        "fbclid", "msclkid", "igshid", "yclid", "twclid", "ttclid", "li_fat_id",
-        // Mailchimp, HubSpot, Marketo, Omeda, Vero, Adobe, Rakuten
-        "mc_eid", "mc_cid", "_hsenc", "_hsmi", "mkt_tok", "oly_anon_id", "oly_enc_id", "vero_id", "s_cid",
-        "rb_clickid",
-    ]
-
-    /// Whether `name` is a tracking parameter (`trackingParameterNames`, or any
-    /// `utm_` parameter).
-    static func isTrackingParameter(_ name: String) -> Bool {
-        let name = name.lowercased()
-        return trackingParameterNames.contains(name) || (name.hasPrefix("utm_") && name.count > 4)
-    }
-
-    /// `url` without its tracking query parameters; the same URL when it has
-    /// none, or is not http(s). The other parameters keep their order and
-    /// spelling (their encoding untouched), and the fragment is kept.
-    static func removingTrackingParameters(from url: URL) -> URL {
-        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
-              var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let query = components.percentEncodedQuery, !query.isEmpty else { return url }
-        let pairs = query.split(separator: "&", omittingEmptySubsequences: false)
-        let kept = pairs.filter { pair in
-            let rawName = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
-            let name = String(rawName).removingPercentEncoding ?? String(rawName)
-            return !isTrackingParameter(name)
-        }
-        guard kept.count < pairs.count else { return url }
-        components.percentEncodedQuery = kept.isEmpty ? nil : kept.joined(separator: "&")
-        return components.url ?? url
-    }
-
     /// Where a main-frame navigation in a quarantine window should go instead,
     /// nil to let it through: a GET to an http(s) URL carrying tracking
     /// parameters is loaded again without them. Left alone: back/forward and
@@ -170,7 +129,7 @@ enum Quarantine {
         guard let url, !isBackForwardOrReload, !shouldPerformDownload,
               (httpMethod ?? "GET").uppercased() == "GET",
               !isSameDocument(url, as: currentURL) else { return nil }
-        let stripped = removingTrackingParameters(from: url)
+        let stripped = TrackingParameters.removing(from: url)
         return stripped == url ? nil : stripped
     }
 

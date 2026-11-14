@@ -217,6 +217,30 @@ nonisolated final class QuickDetourWindowTests: XCTestCase {
         pasteboard.releaseGlobally()
     }
 
+    /// TASK-326: Copy Link (the title bar's button) and the menu's Copy URL
+    /// (Shift-Cmd-C) copy the address without its tracking parameters; the
+    /// page keeps the one it loaded.
+    @MainActor func testCopyLinkAndCopyURLLeaveOutTrackingParameters() async throws {
+        let controller = open(makeProfile())
+        let tracked = "/?id=7&utm_source=news&fbclid=abc&q=a+b%2B#top"
+        let base = try await serve([String(tracked.prefix { $0 != "#" }): "<html><head><title>Tracked</title></head></html>"])
+        let url = try XCTUnwrap(URL(string: tracked, relativeTo: base)?.absoluteURL)
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("quick-detour-test-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        controller.urlPasteboard = pasteboard
+        controller.load(url, typed: true)
+        try await waitForTitle("Tracked", in: controller)
+        let clean = base.absoluteString + "?id=7&q=a+b%2B#top"
+
+        controller.titleBar.copyButton.performClick(nil)
+        XCTAssertEqual(pasteboard.string(forType: .string), clean)
+
+        pasteboard.clearContents()
+        controller.copyCurrentURL(nil)
+        XCTAssertEqual(pasteboard.string(forType: .string), clean)
+        XCTAssertEqual(controller.tab?.url, url, "the page keeps the address it loaded")
+    }
+
     @MainActor func testCloseTabClosesTheWindow() throws {
         let controller = open(makeProfile())
         let tabID = controller.tabID

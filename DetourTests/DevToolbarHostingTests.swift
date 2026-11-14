@@ -261,4 +261,21 @@ nonisolated final class DevToolbarHostingTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), localURL.absoluteString,
                        "the toolbar's own pane, not the focused one")
     }
+
+    /// TASK-326: the link button copies the pane's address without its
+    /// tracking parameters; the tab keeps them.
+    @MainActor func testTheCopyButtonLeavesOutTrackingParameters() throws {
+        let (wc, space) = try makeController()
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("DetourTests.devToolbar.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        wc.urlPasteboard = pasteboard
+        let tracked = URL(string: "http://app.test:3000/settings?tab=1&utm_campaign=x&gclid=2")!
+        let tab = addTab(tracked, to: wc, in: space)
+        wc.selectTab(id: tab.id)
+
+        try XCTUnwrap(tab.webViewContainer?.devToolbar).copyButton.performClick(nil)
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "http://app.test:3000/settings?tab=1")
+        XCTAssertEqual(tab.url, tracked)
+    }
 }

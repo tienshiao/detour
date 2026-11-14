@@ -80,7 +80,7 @@ final class QuickDetourWindowController: NSWindowController {
         let controller = QuickDetourWindowController(profile: privateProfile, sourceSpace: source, quarantine: session)
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
-        controller.load(Quarantine.removingTrackingParameters(from: url), typed: false)
+        controller.load(TrackingParameters.removing(from: url), typed: false)
         return controller
     }
 
@@ -492,8 +492,11 @@ final class QuickDetourWindowController: NSWindowController {
         window?.performClose(sender)
     }
 
+    /// Copy Link (the menu's Copy URL, Shift-Cmd-C, and the title bar's
+    /// button): the page's address without its tracking parameters
+    /// (TASK-326); the page keeps the address it loaded.
     @objc func copyCurrentURL(_ sender: Any?) {
-        guard let urlString = tab?.url?.absoluteString else { return }
+        guard let urlString = tab?.url.map(TrackingParameters.copyableString(for:)) else { return }
         urlPasteboard.clearContents()
         urlPasteboard.setString(urlString, forType: .string)
         toastManager.show(message: "Link copied")

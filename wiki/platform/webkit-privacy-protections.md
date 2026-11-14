@@ -4,7 +4,7 @@ title: WebKit privacy protections
 description: What the shipped macOS WebKit (macOS 26.7) offers an embedder against fingerprinting and link tracking — the _networkConnectionIntegrityPolicy SPI on WKWebpagePreferences and its obfuscated bit names, what each bit measurably does (canvas and audio noise, screen reported as the window, WebKit's own click-ID stripping that keeps utm_*), why it must be called through its IMP and not key-value coding, and what no API changes (IP, fonts, hardware concurrency); and the user agents every profile sends since TASK-216 (Safari's string with the macOS version frozen at 10_15_7, the Detour token only in the Detour mode, Safari's string on Detour's own favicon and suggestion requests), measured in page headers, navigator.userAgent and service workers.
 tags: [webkit, privacy, fingerprinting, spi, quarantine]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T20:30:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-194
@@ -27,7 +27,10 @@ sources:
     title: TASK-194 privacy SPI spike
   - id: quarantine
     resource: ../../Detour/Browser/QuickDetour/Quarantine.swift
-    title: Quarantine.swift (privacyProtectionPolicy, applyPrivacyProtections, the tracking-parameter rule)
+    title: Quarantine.swift (privacyProtectionPolicy, applyPrivacyProtections, trackingFreeURL)
+  - id: tracking-parameters
+    resource: ../../Detour/Browser/TrackingParameters.swift
+    title: TrackingParameters.swift (the tracking-parameter list and rule)
 ---
 
 Safari's Advanced Tracking and Fingerprinting Protection is built on WebKit
@@ -121,7 +124,7 @@ What WebKit does not cover, Detour adds itself for quarantine pages:
 
 | Gap | Measure |
 |---|---|
-| `utm_*` and click IDs not on WebKit's list | `Quarantine.removingTrackingParameters`: a fixed list (`gclid`, `fbclid`, `msclkid`, `mc_eid`, `igshid`, `ttclid`, `_hsenc`, `mkt_tok`, …) plus every `utm_` parameter, removed from the link before it loads and from every main-frame GET the page navigates to (cancelled and loaded again without them; back/forward, reloads, POSTs, downloads and anchor jumps untouched; each clean address rewritten once per user navigation, so a page or server that insists on its parameters gets them the second time instead of a loop) |
+| `utm_*` and click IDs not on WebKit's list | `TrackingParameters.removing` (the list [Copy URL](../features/copy-url.md) also uses): a fixed list (`gclid`, `fbclid`, `msclkid`, `mc_eid`, `igshid`, `ttclid`, `_hsenc`, `mkt_tok`, …) plus every `utm_` parameter, removed from the link before it loads and from every main-frame GET the page navigates to (cancelled and loaded again without them; back/forward, reloads, POSTs, downloads and anchor jumps untouched; each clean address rewritten once per user navigation, so a page or server that insists on its parameters gets them the second time instead of a loop) |
 | The Detour token in the default mode's user agent makes it rarer than Safari's | Safari's own string, no Detour token (`Quarantine.userAgent`, the same `UserAgentMode.safariUserAgent` the Safari mode sends) |
 | Favicons are fetched with the app's `URLSession.shared`, outside the page's store (its cookie jar is the app's) | none fetched for a quarantine page |
 
@@ -185,4 +188,4 @@ as the worker).
 [^protections]: AdvancedPrivacyProtections.h
 [^spike]: TASK-194 privacy SPI spike
 [^document]: Document.cpp (noiseInjectionPolicies)
-[^quarantine]: Quarantine.swift (privacyProtectionPolicy, applyPrivacyProtections, the tracking-parameter rule)
+[^quarantine]: Quarantine.swift (privacyProtectionPolicy, applyPrivacyProtections, trackingFreeURL)

@@ -28,63 +28,9 @@ nonisolated final class QuarantineTests: XCTestCase {
         try await super.tearDown()
     }
 
-    // MARK: - Link tracking parameters
-
-    @MainActor private func stripped(_ s: String) -> String {
-        Quarantine.removingTrackingParameters(from: URL(string: s)!).absoluteString
-    }
-
-    @MainActor func testClickIDsAndCampaignTagsAreRemoved() {
-        XCTAssertEqual(stripped("https://a.test/p?gclid=1&fbclid=2&msclkid=3&utm_source=news&utm_medium=email"
-                                + "&utm_campaign=fall&utm_term=t&utm_content=c&mc_eid=4&mc_cid=5"),
-                       "https://a.test/p")
-        for name in ["gclid", "gclsrc", "dclid", "gbraid", "wbraid", "fbclid", "msclkid", "mc_eid", "mc_cid", "igshid",
-                     "yclid", "twclid", "ttclid", "li_fat_id", "_hsenc", "_hsmi", "mkt_tok", "oly_anon_id",
-                     "oly_enc_id", "vero_id", "rb_clickid", "s_cid", "utm_id", "utm_source_platform"] {
-            XCTAssertTrue(Quarantine.isTrackingParameter(name), name)
-        }
-    }
-
-    @MainActor func testOtherParametersKeepTheirOrderAndSpelling() {
-        XCTAssertEqual(stripped("https://a.test/p?a=1&gclid=x&b=two%20words&utm_source=y&c"),
-                       "https://a.test/p?a=1&b=two%20words&c")
-        XCTAssertEqual(stripped("https://a.test/search?q=utm_source%3Dx&id=7"), "https://a.test/search?q=utm_source%3Dx&id=7",
-                       "a value that mentions a tracking name is not one")
-    }
-
-    @MainActor func testNamesAreComparedWithoutCase() {
-        XCTAssertEqual(stripped("https://a.test/?GCLID=1&UTM_Source=x&keep=1"), "https://a.test/?keep=1")
-    }
-
-    @MainActor func testLookalikeNamesAreKept() {
-        XCTAssertEqual(stripped("https://a.test/?utm=1&xutm_source=2&gclid_extra=3&fbclid2=4"),
-                       "https://a.test/?utm=1&xutm_source=2&gclid_extra=3&fbclid2=4")
-        XCTAssertFalse(Quarantine.isTrackingParameter("utm"))
-        XCTAssertFalse(Quarantine.isTrackingParameter("id"))
-    }
-
-    @MainActor func testRepeatedAndValuelessTrackingParametersGo() {
-        XCTAssertEqual(stripped("https://a.test/?utm_source=a&x=1&utm_source=b&gclid"), "https://a.test/?x=1")
-    }
-
-    @MainActor func testTheFragmentIsKeptAndAnEmptyQueryDropped() {
-        XCTAssertEqual(stripped("https://a.test/doc?fbclid=1#section-2"), "https://a.test/doc#section-2")
-        XCTAssertEqual(stripped("https://a.test/doc?utm_source=x"), "https://a.test/doc")
-    }
-
-    @MainActor func testAURLWithoutTrackingParametersIsUnchanged() {
-        for s in ["https://a.test/", "https://a.test/p?q=1", "http://a.test:8080/p?x=1#y", "https://a.test/p?"] {
-            XCTAssertEqual(stripped(s), s)
-        }
-    }
-
-    @MainActor func testOnlyWebURLsAreTouched() {
-        for s in ["mailto:someone@a.test?utm_source=x", "detour://history?utm_source=x", "data:text/plain,utm_source=x"] {
-            XCTAssertEqual(stripped(s), s)
-        }
-    }
-
     // MARK: - Which navigations are reloaded without them
+    // (The removal rule itself, the one list, is `TrackingParameters`:
+    // `TrackingParametersTests`.)
 
     @MainActor func testAGetNavigationCarryingTrackingParametersIsReloadedWithout() {
         let url = URL(string: "https://a.test/p?utm_campaign=x&id=1")!
@@ -92,6 +38,17 @@ nonisolated final class QuarantineTests: XCTestCase {
                        URL(string: "https://a.test/p?id=1")!)
         XCTAssertEqual(Quarantine.trackingFreeURL(for: url, httpMethod: nil, isBackForwardOrReload: false),
                        URL(string: "https://a.test/p?id=1")!, "no method is a GET")
+    }
+
+    /// TASK-326 shares the list with Copy URL: `_ga` joined it, and stray
+    /// empty pieces go with the parameters removed.
+    @MainActor func testTheSharedListsAdditionsApplyToQuarantineNavigations() {
+        XCTAssertEqual(Quarantine.trackingFreeURL(for: URL(string: "https://a.test/p?_ga=1.2.3&id=1")!, httpMethod: "GET",
+                                                  isBackForwardOrReload: false),
+                       URL(string: "https://a.test/p?id=1")!)
+        XCTAssertEqual(Quarantine.trackingFreeURL(for: URL(string: "https://a.test/p?a=1&&gclid=2")!, httpMethod: "GET",
+                                                  isBackForwardOrReload: false),
+                       URL(string: "https://a.test/p?a=1")!)
     }
 
     @MainActor func testOtherNavigationsGoThrough() {

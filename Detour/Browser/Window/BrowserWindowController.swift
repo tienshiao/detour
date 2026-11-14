@@ -2444,9 +2444,10 @@ class BrowserWindowController: NSWindowController {
     }
 
     /// Copy URL for the address bar's link button, the menu, and a dev
-    /// toolbar's link button (which copies its own pane's URL).
+    /// toolbar's link button (which copies its own pane's URL): the address
+    /// without its tracking parameters (TASK-326); the tab keeps its own.
     func copyURL(_ url: URL?) {
-        guard let urlString = url?.absoluteString else { return }
+        guard let urlString = url.map(TrackingParameters.copyableString(for:)) else { return }
         urlPasteboard.clearContents()
         urlPasteboard.setString(urlString, forType: .string)
         toastManager.show(message: "URL copied")

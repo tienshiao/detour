@@ -195,6 +195,10 @@ class TabSidebarViewController: NSViewController {
     private var contextMenuFolderID: UUID?
     private var contextMenuSplitGroupID: UUID?
 
+    /// Where the tab menu's Copy URL / Copy Link writes; a test substitutes a
+    /// private pasteboard so it never clobbers the user's clipboard.
+    var urlPasteboard: NSPasteboard = .general
+
     /// Context-menu targets resolved fresh against the current model — the tab list
     /// can change while the menu is open, so a stored index would go stale.
     private var contextMenuTab: BrowserTab? {
@@ -3916,8 +3920,8 @@ extension TabSidebarViewController: NSMenuDelegate {
             url = contextMenuTab?.url
         }
         guard let url else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+        urlPasteboard.clearContents()
+        urlPasteboard.setString(TrackingParameters.copyableString(for: url), forType: .string)
     }
 
     @objc private func contextMenuDuplicate(_ sender: NSMenuItem) {

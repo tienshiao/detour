@@ -4,7 +4,7 @@ title: Quarantine
 description: "A link opened in a throwaway Quick Detour window whose page has a non-persistent website data store of its own (TASK-194): how it is chosen (a Link Routes target, the Default for links from other apps, a route also for matching clicks, never a typed URL), the window (a Private-profile Quick Detour with its own store, its badge and tint, popups sharing the opener's store, Cmd+click a fresh one), Open in as a fresh load in any profile's space, history (none), archive (never), idle close (never), extensions (those allowed in Private), downloads (asked each time), the tracking-parameter rule, Safari's user agent, WebKit's fingerprinting protections, and the limits."
 tags: [links, privacy, window, incognito, extensions, downloads]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T20:30:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-194
@@ -37,6 +37,9 @@ sources:
   - id: privacy
     resource: ../platform/webkit-privacy-protections.md
     title: WebKit privacy protections
+  - id: tracking-parameters
+    resource: ../../Detour/Browser/TrackingParameters.swift
+    title: TrackingParameters.swift (the tracking-parameter list and rule, shared with Copy URL)
   - id: followup-harness
     resource: ../../docs/harness/task194-followup-harness.patch
     title: TASK-194 follow-up runtime harness (review fixes) and its results
@@ -188,12 +191,16 @@ package (`.crx`) is a download like any other here, not offered for install.
 
 ## Link tracking parameters
 
-`Quarantine.removingTrackingParameters` (pure) removes click IDs (`gclid`,
-`gclsrc`, `dclid`, `gbraid`, `wbraid`, `fbclid`, `msclkid`, `igshid`,
-`yclid`, `twclid`, `ttclid`, `li_fat_id`, `mc_eid`, `mc_cid`, `_hsenc`,
-`_hsmi`, `mkt_tok`, `oly_anon_id`, `oly_enc_id`, `vero_id`, `s_cid`,
-`rb_clickid`) and every `utm_` parameter, names compared without case and
-after percent-decoding, other parameters kept in order with their spelling.
+`TrackingParameters.removing` (pure; `Quarantine.removingTrackingParameters`
+until TASK-326 moved it out to share it with [Copy URL](copy-url.md))
+removes click IDs (`gclid`, `gclsrc`, `dclid`, `gbraid`, `wbraid`,
+`fbclid`, `msclkid`, `igshid`, `yclid`, `twclid`, `ttclid`, `li_fat_id`,
+`mc_eid`, `mc_cid`, `_hsenc`, `_hsmi`, `mkt_tok`, `oly_anon_id`,
+`oly_enc_id`, `vero_id`, `s_cid`, `rb_clickid`), Google Analytics' linker
+`_ga` (added by TASK-326) and every `utm_` parameter, names compared without
+case and after percent-decoding, other parameters kept in order with their
+spelling. The list is the one Copy URL uses: a name added for one applies to
+both.
 Applied to the link before the window loads it, and to every main-frame
 navigation of the page (`trackingFreeURL`: a GET carrying any is cancelled
 and loaded again without them). Left alone: back/forward, reloads, form
