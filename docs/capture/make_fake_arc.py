@@ -1,5 +1,10 @@
+# make_fake_arc.py <dir>: a fake Arc data folder (StorableSidebar.json, Local
+# State, a small History per profile) for the Arc import offer and window in
+# captures; open_ui arc_offer / arc_import read it. Public URLs only.
 import json, sys, os, sqlite3, time
 out = sys.argv[1]
+for profile_dir in ("Default", "Profile 1"):
+    os.makedirs(os.path.join(out, "User Data", profile_dir), exist_ok=True)
 items = []
 def item(id, parent, data, title=None, children=()):
     items.append((id, {"id": id, "parentID": parent, "title": title, "childrenIds": list(children),

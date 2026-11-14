@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "name": "Work",
+      "favorites": [
+        {"url": "https://slack.com/", "title": "Slack"},
+        {"url": "https://linear.app/", "title": "Linear"},
+        {"url": "https://www.notion.com/", "title": "Notion"},
+        {"url": "https://github.com/", "title": "GitHub"},
+        {"url": "https://www.figma.com/", "title": "Figma"},
+        {"url": "https://www.linkedin.com/", "title": "LinkedIn"},
+        {"url": "https://www.youtube.com/", "title": "YouTube"},
+        {"url": "https://www.apple.com/", "title": "Apple"}
+      ]
+    },
+    {
+      "name": "Personal",
+      "favorites": [
+        {"url": "https://www.youtube.com/", "title": "YouTube"},
+        {"url": "https://www.reddit.com/", "title": "Reddit"},
+        {"url": "https://en.wikipedia.org/", "title": "Wikipedia"},
+        {"url": "https://www.apple.com/", "title": "Apple"}
+      ]
+    },
+    {
+      "name": "Client X",
+      "favorites": [
+        {"url": "https://github.com/", "title": "GitHub"},
+        {"url": "https://linear.app/", "title": "Linear"}
+      ]
+    }
+  ],
+  "spaces": [
+    {
+      "name": "Work", "emoji": "🍊", "color": "FF7600", "profile": "Work",
+      "pinned": [
+        {"url": "https://developer.apple.com/documentation/webkit", "title": "WebKit | Apple Developer Documentation"},
+        {"folder": "Design", "items": [
+          {"url": "https://developer.apple.com/design/human-interface-guidelines", "title": "Human Interface Guidelines | Apple Developer Documentation"},
+          {"url": "https://www.figma.com/community", "title": "Figma Community | Explore and share designs"}
+        ]},
+        {"folder": "Research", "items": [
+          {"url": "https://webkit.org/blog/", "title": "Blog | WebKit"},
+          {"url": "https://arstechnica.com/", "title": "Ars Technica - Serving the Technologist since 1998"}
+        ]}
+      ],
+      "tabs": [
+        {"url": "https://github.com/tienshiao/detour", "title": "GitHub - tienshiao/detour: A Mac browser", "selected": true},
+        {"url": "https://en.wikipedia.org/wiki/WebKit", "title": "WebKit - Wikipedia"},
+        {"url": "https://developer.apple.com/documentation/webkit/wkwebview", "title": "WKWebView | Apple Developer Documentation"},
+        {"url": "https://docs.github.com/en", "title": "GitHub Docs"},
+        {"url": "https://news.ycombinator.com/", "title": "Hacker News"}
+      ]
+    },
+    {
+      "name": "Personal", "emoji": "🌿", "color": "7C5CFF", "profile": "Personal",
+      "pinned": [
+        {"folder": "News", "items": [
+          {"url": "https://theoldreader.com/", "title": "The Old Reader"},
+          {"url": "https://www.reddit.com/", "title": "Reddit - The heart of the internet"},
+          {"url": "https://news.ycombinator.com/", "title": "Hacker News"}
+        ]}
+      ],
+      "tabs": [
+        {"split": [
+          {"url": "https://en.wikipedia.org/wiki/Tab_(interface)", "title": "Tab (interface) - Wikipedia", "selected": true},
+          {"url": "https://www.apple.com/mac/", "title": "Mac - Apple"}
+        ], "fraction": 0.5},
+        {"url": "https://www.youtube.com/", "title": "YouTube"}
+      ]
+    },
+    {
+      "name": "Reading", "emoji": "📚", "color": "1FB6A8", "profile": "Personal",
+      "tabs": [
+        {"url": "https://en.wikipedia.org/wiki/Hypertext", "title": "Hypertext - Wikipedia", "selected": true},
+        {"url": "https://arstechnica.com/", "title": "Ars Technica - Serving the Technologist since 1998"},
+        {"url": "https://www.theverge.com/", "title": "The Verge"},
+        {"url": "https://en.wikipedia.org/wiki/Web_browser", "title": "Web browser - Wikipedia"},
+        {"url": "https://daringfireball.net/", "title": "Daring Fireball"}
+      ]
+    },
+    {
+      "name": "Side", "emoji": "🎨", "color": "E94F8C", "profile": "Client X",
+      "tabs": [
+        {"url": "https://github.com/tienshiao/detour/releases", "title": "Releases · tienshiao/detour", "selected": true},
+        {"url": "https://sparkle-project.org/", "title": "Sparkle: open source software update framework for macOS"}
+      ]
+    }
+  ],
+  "history": [
+    {"url": "https://en.wikipedia.org/wiki/Hypertext", "title": "Hypertext - Wikipedia", "space": "Reading", "ago": ["2h", "1d"]},
+    {"url": "https://www.apple.com/macbook-air/", "title": "MacBook Air - Apple", "space": "Personal", "ago": ["3h"]},
+    {"url": "https://developer.mozilla.org/en-US/docs/Web/HTML", "title": "HTML: HyperText Markup Language | MDN", "space": "Work", "ago": ["5h", "2d"]},
+    {"url": "https://en.wikipedia.org/wiki/Tim_Berners-Lee", "title": "Tim Berners-Lee - Wikipedia", "space": "Reading", "ago": ["26h"]},
+    {"url": "https://webkit.org/blog/", "title": "Blog | WebKit", "space": "Work", "ago": ["28h", "6d"]},
+    {"url": "https://en.wikipedia.org/wiki/World_Wide_Web", "title": "World Wide Web - Wikipedia", "space": "Reading", "ago": ["51h"]},
+    {"url": "https://developer.apple.com/xcode/", "title": "Xcode - Apple Developer", "space": "Work", "ago": ["53h"]}
+  ],
+  "link_routes": [
+    {"match": "domain_is", "pattern": "github.com", "target": "space:Work"},
+    {"match": "domain_is", "pattern": "wikipedia.org", "target": "space:Reading"},
+    {"source_app": "com.apple.TextEdit", "target": "quarantine"}
+  ],
+  "active_space": "Work"
+}
