@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T01:49:00Z'
-updated_date: '2026-11-14T10:30:00Z'
+updated_date: '2026-11-14T10:49:00Z'
 labels:
   - tooling
   - automation
@@ -75,4 +75,24 @@ Not done: folder toggling, Quick Detour placement, private windows, CRX installs
 Commits: 379ee11 (app + tests), b767ea6 (capture kit), 13f8688 (wiki).
 
 Correction: AutomationStagingTests has 17 tests (not 19), all passing in the full run.
+
+2026-11-14, /code-review high --fix on 8849b12..c8830e6: 10 findings, 9 fixed in 545ea8d. Two were real holes:
+- An arc_folder could reach the user's Arc data through a link inside it. It now refuses any symlink or extra hard link inside the folder, and anything under Arc's own folder.
+- A DETOUR_DATA_DIR with '..' counted as isolated. The name must now resolve inside Application Support.
+The other fixes:
+- The automation_indicator override is test-run only.
+- The fixture is read as a regular file with a bounded read.
+- demo.sh keeps the wallpaper snapshot if restoring fails.
+- capture.py restores after a failed wallpaper set and tolerates Release builds.
+- The Arc override is set only after the sheet is presented.
+- The space editor's original profile comes from the stored space.
+- One ASCII colour check; pinned split panes refuse 'selected'.
+Skipped:
+- A child window of a Private window, reached by window_number: parent is not checked, only sheetParent. Low severity.
+- DETOUR_DATA_DIR=Arc counts as isolated (no Arc data is read).
+- A link swapped in after the check (a test-run-only TOCTOU).
+The lead's runs after the fixes:
+- Staging, HTTP, Capture, MCPServer, Tools and Controller: 91 tests, 3 failures, all in testAWindowIsPlacedOnADisplayAndReadBack. The window server's bounds were still at AppKit's open animation (686×471 for 700×480), so settled was false.
+- The test's window now has animationBehavior .none. The staging suite then passed twice, 17/0 each.
+AC #5 stays open: the final capture.py has not completed a spaces loop. Two takes were stopped when another app came to the front while the Mac was in use. One run of capture.py on an idle Mac (it takes focus for about a minute and swaps the wallpaper, then restores it) closes it.
 <!-- SECTION:NOTES:END -->
