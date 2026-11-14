@@ -42,6 +42,9 @@ sources:
   - id: adguard-kb
     resource: https://adguard.com/kb/general/ad-filtering/create-own-filters/
     title: AdGuard knowledge base, $removeparam and $domain modifiers
+  - id: tsurlfilter
+    resource: https://github.com/AdguardTeam/tsurlfilter/blob/master/packages/tsurlfilter/src/modifiers/remove-param-modifier.ts
+    title: tsurlfilter remove-param-modifier.ts (a plain value becomes an anchored name= regex, no i flag)
 ---
 
 Detour copies the clean link: whichever button or shortcut copies the
@@ -161,13 +164,16 @@ shown to the user.[^task-329]
 | `domain=` | `domain=aboutamazon.com\|amazon.*\|~shop.example` | includes (any) and `~` excludes (none), subdomains included, `name.*` wildcards |
 | remove all / all but | `/?affijet-click=$removeparam`, `\|\|go.mysku.ru^$removeparam=~r` | supported; refused without a pattern or included domain (it would strip every address) |
 | request types | `$xhr`, `$image`, `$font`, `$3p` | skipped (`notForPages`): a page is none of them; `$document`, `$~xhr`, `$~3p` apply |
-| regex | `$removeparam=/^at_custom/`, `/…/` patterns | skipped (`regex`: 42 rules); a regex **exception** keeps every parameter of its addresses instead |
+| regex | `$removeparam=/^at_custom/`, `/…/` patterns | skipped (`regex`: 42 rules); a regex **exception** keeps every parameter of its addresses from the list's rules instead (not from the built-in names) |
 | unknown option | `$app=…`, `$match-case` | block rule skipped (`unsupported`); an exception kept without the option (`widenedExceptions`) |
 | `@@` exceptions | `@@\|\|archive.*^$removeparam`, `@@\|\|eneba.com^$removeparam=utm_source` | bare: keeps every parameter; named: keeps that one, compared without case; `$important` on a block rule is ignored, so an exception still wins (the list has no `$important`) |
 
 List names are compared exactly (raw or percent-decoded: `amp;utm_campaign`,
-`%243p`), as AdGuard's plain `$removeparam` is case-sensitive; built-in
-names stay case-insensitive. The whole list (2026-11-13) parsed into 2,665
+`%243p`) and only on a `name=` pair, as AdGuard's tsurlfilter does (its plain
+`$removeparam` becomes an anchored `name=` regex with no `i` flag)[^tsurlfilter]; built-in names stay
+case-insensitive and also match a bare `?name`. Patterns are matched against
+the whole address including its `#fragment`, which a content blocker never
+sees; a substring pattern could match text there (none in the list does). The whole list (2026-11-13) parsed into 2,665
 rules (96 exceptions, 1 widened), skipping 42 regex, 46 for other request
 types and 1 element-hiding line; each parse logs these counts
 ("Installed adguard-url-tracking from …") under the `content-blocker`
@@ -248,6 +254,7 @@ included: `||127.0.0.1/keep/` does not match `127.0.0.1:64903/keep/`.
 [^checks-329]: docs/harness/task329-tracking-filter-checks.py
 [^adguard-filter]: AdGuard URL Tracking filter sources (GPL-3.0)
 [^adguard-kb]: AdGuard knowledge base, $removeparam and $domain modifiers
+[^tsurlfilter]: tsurlfilter remove-param-modifier.ts (a plain value becomes an anchored name= regex, no i flag)
 
 # Related
 

@@ -257,8 +257,9 @@ nonisolated final class TrackingParameterFilterTests: XCTestCase {
 
     // MARK: - Case, encoding, repeats
 
-    /// List names are compared exactly, as AdGuard and uBlock Origin do;
-    /// patterns and domains without case; exceptions without case (keeping a
+    /// List names are compared exactly, as AdGuard's tsurlfilter does (its
+    /// plain `$removeparam` regex `^name=[^&#]*$` has no `i` flag); patterns
+    /// and domains without case; exceptions without case (keeping a
     /// parameter is the safe side).
     @MainActor func testCase() {
         XCTAssertEqual(clean("https://sell.amazon.de/?refTag=1&reftag=2&REFTAG=3"), "https://sell.amazon.de/?reftag=2&REFTAG=3")
@@ -266,6 +267,12 @@ nonisolated final class TrackingParameterFilterTests: XCTestCase {
         XCTAssertEqual(clean("https://www.AMAZON.co.UK/b?asc_campaign=1"), "https://www.AMAZON.co.UK/b")
         XCTAssertEqual(clean("https://www.eneba.com/x?UTM_SOURCE=a&utm_medium=b"), "https://www.eneba.com/x?UTM_SOURCE=a")
         assertUnchanged("https://shop.test/?PJCLID=1")
+    }
+
+    /// tsurlfilter matches `name=`: a list name with no `=` is kept (a
+    /// built-in name goes either way, as before).
+    @MainActor func testAListNameNeedsAValue() {
+        XCTAssertEqual(clean("https://shop.test/?pjclid&a=1&pjclid=&gclid"), "https://shop.test/?pjclid&a=1")
     }
 
     @MainActor func testRepeatedKeysAreAllRemoved() {

@@ -61,7 +61,7 @@ enum TrackingParameters {
             let name = rawName.removingPercentEncoding ?? rawName
             if let verdict {
                 if verdict.protects(rawName: rawName, name: name) { return false }
-                if verdict.removes(rawName: rawName, name: name) { return true }
+                if verdict.removes(rawName: rawName, name: name, hasValue: pair.contains("=")) { return true }
             }
             return isTracking(name)
         }

@@ -86,12 +86,14 @@ nonisolated struct TrackingParameterFilter: Sendable {
         }
 
         /// Whether one of the list's rules removes the parameter and no
-        /// exception keeps it from them.
-        func removes(rawName: String, name: String) -> Bool {
+        /// exception keeps it from them. A named rule needs a `name=` pair
+        /// (`hasValue`), as AdGuard's `^name=[^&#]*$` does: a bare `?name`
+        /// is kept.
+        func removes(rawName: String, name: String, hasValue: Bool = true) -> Bool {
             guard !protects(rawName: rawName, name: name), !listOnlyProtectsAll,
                   !listOnlyProtectedNames.contains(rawName.lowercased()),
                   !listOnlyProtectedNames.contains(name.lowercased()) else { return false }
-            return names.contains(rawName) || names.contains(name) || removesAll
+            return (hasValue && (names.contains(rawName) || names.contains(name))) || removesAll
                 || keepsOnly.contains { $0 != rawName && $0 != name }
         }
     }
