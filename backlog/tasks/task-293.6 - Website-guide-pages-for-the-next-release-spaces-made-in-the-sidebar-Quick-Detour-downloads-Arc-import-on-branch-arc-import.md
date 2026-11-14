@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T01:38:00Z'
-updated_date: '2026-11-14T01:41:00Z'
+updated_date: '2026-11-14T02:08:00Z'
 labels:
   - website
 dependencies:
@@ -51,4 +51,6 @@ Media (AC #3), still owed:
 2. spaces.md has no picture of the new editor. Add a 2x still or a short loop (Create Space with the toss) to "Create a Space". docs/task-289 captures are 1x (240 px wide), too small for the site.
 3. Optional: a still of the Arc launch offer or the import window for the Arc hub, made with demo Arc data, never the user's own.
 Still valid: spaces.mp4 (switching unchanged), profiles-spaces.webp (the Settings › Spaces list looks the same; compared with docs/task-289/settings-spaces.png), profiles-list.webp.
+
+2026-11-14 media: captured from a Debug build of main 06a0d22 with the docs/task-110 kit (DETOUR_DATA_DIR DetourCap2936; fake Arc folder; wallpaper and virtual display restored; data dir, suite, suffixed keys and WebsiteDataStore folders removed). On website arc-import 909c6e1: quick-detour.mp4 (2440x1700, 7.9 s, 376 KB) + poster re-taken with the Back button and the capsule load progress, aria label updated; spaces-editor.webp (1400x1760, 92 KB) in Spaces › Create a Space. Build passes. Held back for a user decision: arc-import-offer.webp and arc-import-result.webp (the offer sheet shows Arc's real app icon, and docs/feature-pages.md says no Arc logos). These are kept in the session scratchpad captures-2936. Kit updates committed to docs/task-110.
 <!-- SECTION:NOTES:END -->

@@ -1,14 +1,26 @@
 diff --git a/Detour/App/AppDelegate.swift b/Detour/App/AppDelegate.swift
-index 138fa29..9bacbb9 100644
+index e9a2897..1952330 100644
 --- a/Detour/App/AppDelegate.swift
 +++ b/Detour/App/AppDelegate.swift
-@@ -166,6 +166,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+@@ -174,6 +174,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+             }
          }
  
-         observeWindowClose(wc)
 +        #if DEBUG
 +        if let dir = ProcessInfo.processInfo.environment["DETOUR_DEMO_STAGE"] { DemoStage.current = DemoStage(dir: dir, wc: wc) }  // TEMP TASK-110
 +        #endif
- 
++
          // Last: the links that launched Detour, now that the session and
          // the routes are loaded (TASK-304).
+         launchLinks.launchDidFinish(at: ProcessInfo.processInfo.systemUptime)
+@@ -324,6 +328,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
+     /// to anyone whose Mac has Arc's data with something in it, whatever they
+     /// answer. Arc's sidebar is read first so the sheet shows their spaces.
+     private func offerArcImportIfNeeded(over windowController: BrowserWindowController) {
++        #if DEBUG
++        // TEMP TASK-293.6 capture: a staged run never looks for the real Arc folder.
++        if ProcessInfo.processInfo.environment["DETOUR_DEMO_STAGE"] != nil { return }
++        #endif
+         let offer = ArcImportOffer.live
+         guard offer.isDue(isTestHost: Self.isRunningUnitTests) else { return }
+         Task {

@@ -436,6 +436,10 @@ extension DemoStage {
                 let c = QuickDetourWindowController.open(profile: p, sourceSpace: s, url: u, typed: t)
                 if let f = DemoStage.quickFrame { c.window?.setFrame(f, display: false) }
                 NSApp.activate()
+                // As a hotkey-opened window over the app in front: in front of it (TASK-293.6 re-take).
+                NSApp.activate(ignoringOtherApps: true)
+                c.window?.makeKeyAndOrderFront(nil)
+                c.window?.orderFrontRegardless()
             }
             log("qdframe \(String(describing: Self.quickFrame))")
         case "openext":
@@ -677,6 +681,66 @@ extension DemoStage {
                 sw.makeKeyAndOrderFront(nil)
                 self.log("settings window=\(sw.windowNumber) quartz=\(self.quartz(sw.frame))")
             }
+        default:
+            extra3(cmd, arg, words: words, wc: wc)
+        }
+    }
+}
+// MARK: - Capture session 3 (TASK-293.6: Quick Detour re-take, space editor, Arc offer). Temporary, never committed.
+extension DemoStage {
+    /// Visible views in every window whose accessibility label or button title is exactly `text`.
+    func views(exactly text: String) -> [NSView] {
+        NSApp.windows.filter(\.isVisible).flatMap { w -> [NSView] in
+            guard let root = w.contentView?.superview ?? w.contentView else { return [] }
+            return allViews(root).filter { v in
+                !v.isHiddenOrHasHiddenAncestor
+                    && (v.accessibilityLabel() == text || (v as? NSButton)?.title == text)
+            }
+        }
+    }
+
+    func extra3(_ cmd: String, _ arg: String, words: [String], wc: BrowserWindowController) {
+        switch cmd {
+        case "spaceeditor":
+            // The sidebar's + : the space editor for a new space.
+            wc.beginCreatingSpace()
+            log("space editor open")
+        case "axpress":
+            // axpress <label>: presses the first visible view labelled or titled exactly <label>.
+            guard let v = views(exactly: arg).first else { log("axpress: no view \(arg)"); return }
+            let ok = v.accessibilityPerformPress()
+            log("axpress \(arg) \(type(of: v)) -> \(ok)")
+        case "arcoffer":
+            // arcoffer <dir>: the launch offer sheet, fed from a (fake) Arc data folder.
+            do {
+                let snapshot = try ArcSidebarReader.read(dataDirectory: URL(fileURLWithPath: arg, isDirectory: true))
+                log("arc snapshot spaces=\(snapshot.spaces.map(\.title)) profiles=\(snapshot.profiles.map(\.name)) totals=\(ArcImportText.offerTotals(snapshot))")
+                let shown = ArcImportOfferSheetController.present(snapshot, over: wc)
+                after(0.8) {
+                    let sheet = wc.window?.attachedSheet
+                    self.log("arc offer shown=\(shown) sheet=\(sheet?.windowNumber ?? -1) quartz=\(sheet.map { self.quartz($0.frame) } ?? "-")")
+                }
+            } catch { log("arcoffer failed \(error)") }
+        case "quicklaunch2":
+            // The hotkey action, with the panel moved straight onto the 2x display's visible
+            // frame (it opens under the real pointer when Detour is not active).
+            (NSApp.delegate as? AppDelegate)?.quickDetourHotKeyPressed()
+            if let p = QuickDetourLauncher.shared.panel, let screen = retina {
+                p.setFrame(QuickDetour.panelFrame(size: p.frame.size, in: screen.visibleFrame), display: false)
+                log("launcher quartz=\(quartz(p.frame)) active=\(NSApp.isActive)")
+            } else { log("quicklaunch2: no panel") }
+        case "qdinfo":
+            for c in QuickDetourWindowController.openControllers {
+                log("qd window=\(c.window?.windowNumber ?? -1) quartz=\(c.window.map { quartz($0.frame) } ?? "-")")
+            }
+        case "sheetinfo":
+            let sheet = wc.window?.attachedSheet
+            log("sheet=\(sheet?.windowNumber ?? -1) quartz=\(sheet.map { quartz($0.frame) } ?? "-") main=\(quartz(wc.window!.frame))")
+        case "historyvisit":
+            // historyvisit <url>: loads <url> in the selected tab (history comes from real loads).
+            if let u = URL(string: arg) { wc.selectedTab?.load(u, typed: true) }
+        case "spaces":
+            log("spaces \(store.spaces.map { "\($0.emoji)\($0.name)/\($0.profile?.name ?? "-")" }) profiles=\(store.profiles.map(\.name)) active=\(wc.activeSpace?.name ?? "-")")
         default:
             log("unknown \(cmd)")
         }

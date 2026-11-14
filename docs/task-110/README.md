@@ -46,3 +46,18 @@ Colour: screencapture's video records #F7F2EA as 246,241,230; encode.sh applies 
 tone curve and an accurate BT.709 conversion so the loop background decodes to
 248,241,234 (same as encoding a solid #F7F2EA). Measure with
 `flags=accurate_rnd+full_chroma_int` — ffmpeg's default RGB conversion reads 2-3 low.
+
+Third session (Nov 13 2026, TASK-293.6, built from main 06a0d22): the hook
+patch is adapted to that main, and also stops the one-time Arc import offer in
+a staged run (it would otherwise read the real Arc folder). New DemoStage
+commands: `spaceeditor` (the sidebar's + editor), `axpress <label>` (press a
+view by its exact accessibility label or button title), `arcoffer <dir>` (the
+Arc launch offer fed from a fake Arc folder made by `make_fake_arc.py <dir>`;
+never point it at the real one), `quicklaunch2` (the hotkey action with the
+palette moved onto the 2x display; otherwise it opens under the real pointer),
+`qdinfo`, `sheetinfo`, `spaces`, `historyvisit <url>`; `qdframe` now also
+brings the Quick Detour to the front. `axwin.swift` places another app's window
+(TextEdit) through Accessibility. Gotchas: the harness `quit` raises a "Quit
+Detour?" confirmation, so stop your own PID instead; the system Emoji & Symbols
+viewer popped up mid-take once and ruined it. TASK-228.3 plans to replace this
+harness with tools on the MCP endpoint.
