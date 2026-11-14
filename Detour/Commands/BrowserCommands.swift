@@ -302,19 +302,31 @@ enum BrowserCommands {
 
     // MARK: - The list
 
+    /// The menus of the menu bar, each with its commands in menu order: how
+    /// Settings > Shortcuts groups them (TASK-327). The layout itself
+    /// (separators, conditional items) stays in `AppDelegate.setupMainMenu`;
+    /// `BrowserCommandRegistryTests` holds the two together.
+    static let menus: [CommandMenu] = [
+        CommandMenu(title: "Detour", commands: [about, checkForUpdates, settings, hide, hideOthers, showAll, quit]),
+        CommandMenu(title: "File", commands: [newTab, openLocation, closeTab, reopenClosedTab, togglePin,
+                                              newWindow, newPrivateWindow, newQuickDetourWindow, openInSpace,
+                                              importFromArc]),
+        CommandMenu(title: "Edit", commands: [undo, redo, cut, copy, copyURL, paste, selectAll, find, findNext,
+                                              findPrevious]),
+        CommandMenu(title: "View", commands: [toggleSidebar, reload, actualSize, zoomIn, zoomOut]),
+        CommandMenu(title: "Navigate", commands: [back, forward, previousTab, nextTab, showHistory, showArchivedTabs,
+                                                  clearArchivedTabs]),
+        CommandMenu(title: "Spaces", commands: [nextSpace, previousSpace, switchToSpace, manageSpaces]),
+        CommandMenu(title: "Extensions", commands: [showExtensionPopup, extensionOptions, addExtensions,
+                                                    manageExtensions, checkForExtensionUpdates]),
+        CommandMenu(title: "Develop", commands: [webInspector, loadUnpackedExtension, inspectExtensionOffscreen,
+                                                 reloadUnpackedExtension]),
+        CommandMenu(title: "Window", commands: [minimize, zoomWindow]),
+        CommandMenu(title: "Help", commands: help),
+    ]
+
     /// Every command, in menu order.
-    static let all: [BrowserCommand] = [
-        about, checkForUpdates, settings, hide, hideOthers, showAll, quit,
-        newTab, openLocation, closeTab, reopenClosedTab, togglePin,
-        newWindow, newPrivateWindow, newQuickDetourWindow, openInSpace, importFromArc,
-        undo, redo, cut, copy, copyURL, paste, selectAll, find, findNext, findPrevious,
-        toggleSidebar, reload, actualSize, zoomIn, zoomOut,
-        back, forward, previousTab, nextTab, showHistory, showArchivedTabs, clearArchivedTabs,
-        nextSpace, previousSpace, switchToSpace, manageSpaces,
-        showExtensionPopup, extensionOptions, addExtensions, manageExtensions, checkForExtensionUpdates,
-        webInspector, loadUnpackedExtension, inspectExtensionOffscreen, reloadUnpackedExtension,
-        minimize, zoomWindow,
-    ] + help
+    static let all: [BrowserCommand] = menus.flatMap(\.commands)
 
     private static let byID: [CommandID: BrowserCommand] = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
 

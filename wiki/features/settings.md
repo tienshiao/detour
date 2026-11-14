@@ -1,11 +1,11 @@
 ---
 type: Component
 title: Settings window
-description: "The Settings window and its eight panes (General, Spaces, Links, Quick Detour, Profiles, Search, Extensions, Content Blocking): what each one edits, how changes reach TabStore, the shared metrics and pane container (one scrolling body, or since TASK-211 a list and detail column fixed to the pane and scrolling on their own), the height rule (natural height, capped to the screen, resizable in height only) and the layout traps met on the way."
+description: "The Settings window and its nine panes (General, Spaces, Links, Quick Detour, Profiles, Search, Shortcuts, Extensions, Content Blocking): what each one edits, how changes reach TabStore, the shared metrics and pane container (one scrolling body, or since TASK-211 a list and detail column fixed to the pane and scrolling on their own), the height rule (natural height, capped to the screen, resizable in height only) and the layout traps met on the way."
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T23:30:00Z }
 sources:
   - id: task-211
     resource: backlog:TASK-211
@@ -85,6 +85,12 @@ sources:
   - id: switch-row-tests
     resource: ../../DetourTests/SettingsSwitchRowTests.swift
     title: SettingsSwitchRowTests.swift
+  - id: task-327
+    resource: backlog:TASK-327
+    title: "Keyboard shortcuts: assign and customize the shortcuts of browser commands in Settings"
+  - id: shortcuts-pane
+    resource: ../../Detour/Browser/Settings/ShortcutsSettingsViewController.swift
+    title: ShortcutsSettingsViewController.swift
   - id: layout-notes
     resource: "Agent session notes, 2026-09-25 and 2026-09-26: Settings pane layout (not in the repository)"
     title: Settings pane layout lessons
@@ -93,7 +99,7 @@ sources:
 # Role
 
 `SettingsWindowController.shared` is one window with a preference-style
-toolbar and eight panes. It holds no settings of its own: each pane reads and
+toolbar and nine panes. It holds no settings of its own: each pane reads and
 writes model objects directly (`TabStore`, `Profile`, `ExtensionManager`,
 `ContentBlockerManager`, `ExternalAppPermissionStore`), and persistence
 happens in those owners. The only app-wide setting, the default browser, is
@@ -116,8 +122,8 @@ the current page. See
   root view also holds a required `width == 740`, so no content can widen
   the window (a long extension name used to stretch it to 1104). Full screen
   is off (`.fullScreenNone`), tabbing disallowed.[^task-189]
-- The eight view controllers (in toolbar order: General, Spaces, Links,
-  Quick Detour, Profiles, Search, Extensions, Content Blocking;
+- The nine view controllers (in toolbar order: General, Spaces, Links,
+  Quick Detour, Profiles, Search, Shortcuts, Extensions, Content Blocking;
   `SettingsWindowController.paneOrder`) are created once in `init` and kept in `panes`;
   switching swaps `window.contentViewController` at the current size, then
   `fitWindow` animates to the new pane's height with the top edge fixed (moved
@@ -171,7 +177,7 @@ takes one of two forms, chosen by `scrollsBodyAsWhole`:[^task-211]
   as tall as the visible area (a `>=` plus a priority-49 `==`). `scrollView`
   is that scroll view.
 - **Fixed columns** (`scrollsBodyAsWhole == false`: Spaces, Links,
-  Profiles, Extensions). The body is pinned to the pane's edges, 12 below
+  Profiles, Search, Shortcuts, Extensions). The body is pinned to the pane's edges, 12 below
   the description (or its link) and 20 from the sides and bottom; `scrollView` is nil.
   The master list (its bordered box, table and +/- bar) fills the body's
   height, and so does the detail column, which is a
@@ -293,6 +299,7 @@ on Profiles and Extensions have no accessible name yet.
 | Quick Detour | about 317, fixed (with the Debug build's warning line and the Learn more link; TASK-328's switch rows and Shortcut row, 2026-11-14) | toolbar only |
 | Profiles | 630 (Private) / 709 (a normal profile) to 1218 (custom UA, warning, 15 extensions); 1047 for Private with 14 extensions (2026-10-27) | toolbar only |
 | Extensions | 400 (none, or one small extension) to 1092 (22 permissions, 4 hosts, 6 optional) | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
+| Shortcuts | 400 minimum; every row (about 1,800 pt) is its natural height, so it opens at the screen's cap | toolbar only |
 | Content Blocking | 243, fixed (plus its Learn more link line, TASK-292.11) | toolbar only |
 
 TASK-189 part 1 moved every pane into the container and rebuilt General,
@@ -492,6 +499,19 @@ columns in one bordered list pane with a +, −, pencil bar; add and edit in an
 `NSAlert` sheet holding `SiteSearchForm`, whose Save is off while the store
 would refuse the entry. Details on [site search](./site-search.md).
 
+## Shortcuts
+
+Every menu command with its shortcut (TASK-327): a description, a search
+field and Restore Defaults on one line, then one bordered list that fills
+the pane (a column pane, 400 pt minimum; the list scrolls on its own) with
+the menus as floating group rows and a row per command (title, a note when
+it is set elsewhere, the shortcut recorder, a reset button once it differs
+from the built-in one), then a warning line under the list for a refused
+shortcut. No Learn more link: the website's shortcuts page (Help >
+Keyboard Shortcuts, `HelpLinks.keyboardShortcuts`, not a `GuidePage`) does
+not cover customizing them yet. What it lists, what it refuses and how the shortcuts apply
+are on [keyboard shortcuts](./keyboard-shortcuts.md).
+
 ## Extensions
 
 A list of installed extensions and a detail view for the selected one:
@@ -665,6 +685,7 @@ suites.
 - [Extension manager](../extensions/extension-manager.md), [permissions](../extensions/permissions.md), [updates](../extensions/updates.md) - what the Extensions pane drives.
 - [Popup and options UI](../extensions/popup-and-options-ui.md) - the "Settings…" button and the sidebar's settings popover.
 - [App shell](../architecture/app-shell.md) - the menu items that open the window.
+- [Keyboard shortcuts](./keyboard-shortcuts.md) - the Shortcuts pane's behaviour.
 - [AppKit gotchas](../platform/appkit-gotchas.md) - the stack-view and layout traps in general form.
 
 [^layout-notes]: Settings pane layout lessons

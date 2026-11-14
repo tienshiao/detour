@@ -329,9 +329,9 @@ nonisolated final class SettingsPaneColumnsTests: XCTestCase {
 
     @MainActor func testQuickDetourHasAPaneOfItsOwnAfterLinks() {
         XCTAssertEqual(SettingsWindowController.paneOrder.map(\.rawValue),
-                       ["general", "spaces", "links", "quickdetour", "profiles", "search", "extensions",
+                       ["general", "spaces", "links", "quickdetour", "profiles", "search", "shortcuts", "extensions",
                         "contentblocker"],
-                       "Search (TASK-287) sits after Profiles, where each profile's default engine is")
+                       "Search (TASK-287) sits after Profiles, where each profile's default engine is; Shortcuts (TASK-327) after it")
     }
 
     @MainActor func testPanesWithAListScrollTheirColumnsAndTheOthersScrollAsOneBody() throws {
@@ -340,8 +340,12 @@ nonisolated final class SettingsPaneColumnsTests: XCTestCase {
         let links = LinksSettingsViewController(linkRoutes: try makeLinkRouteStore())
         let search = SearchSettingsViewController(
             siteSearches: SiteSearchStore(database: try AppDatabase(dbQueue: DatabaseQueue())))
+        let suite = "SettingsPaneColumnsTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let shortcuts = ShortcutsSettingsViewController(store: ShortcutBindingStore(defaults: defaults))
         let columns: [SettingsPaneViewController] = [SpacesSettingsViewController(), links,
-                                                     ProfilesSettingsViewController(), search,
+                                                     ProfilesSettingsViewController(), search, shortcuts,
                                                      ExtensionsSettingsViewController()]
         for pane in whole {
             _ = pane.view

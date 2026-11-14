@@ -343,8 +343,11 @@ final class QuickDetourTitleBar: NSView {
             .font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor])
         title.append(NSAttributedString(string: destination, attributes: [
             .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.labelColor]))
-        title.append(NSAttributedString(string: "  ⌘O", attributes: [
-            .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
+        // File > Open in's shortcut as it is now (TASK-327: the user can change it).
+        if let shortcut = CommandDispatch.keyEquivalentLabel(for: BrowserCommands.openInSpace, in: NSApp.mainMenu) {
+            title.append(NSAttributedString(string: "  \(shortcut)", attributes: [
+                .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
         openInButton.attributedTitle = title
         openInButton.toolTip = reloads
             ? "Open this address in \(destination) (another profile: the page reloads there)"

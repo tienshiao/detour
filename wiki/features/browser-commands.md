@@ -5,7 +5,7 @@ description: "The command registry (TASK-320): every main-menu command defined o
 resource: ../../Detour/Commands/BrowserCommands.swift
 tags: [commands, menus, command-palette, automation, keyboard]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T22:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T23:30:00Z }
 sources:
   - id: task-320
     resource: backlog:TASK-320
@@ -31,6 +31,9 @@ sources:
   - id: palette-commands
     resource: ../../Detour/Browser/CommandPalette/PaletteCommands.swift
     title: PaletteCommands.swift
+  - id: task-327
+    resource: backlog:TASK-327
+    title: "Keyboard shortcuts: assign and customize the shortcuts of browser commands in Settings"
 ---
 
 # Role
@@ -42,7 +45,9 @@ script or bind a shortcut to. `BrowserCommands` is that list: every
 main-menu command, in menu order. The main menu is built from it, and the
 [command palette](./command-palette.md) offers its commands. AppleScript and
 Shortcuts (TASK-319), the [MCP endpoint](./automation-endpoint.md)
-(TASK-228) and user shortcuts (TASK-327) are meant to read it too.
+(TASK-228) are meant to read it too, and [keyboard shortcuts](./keyboard-shortcuts.md)
+(TASK-327) do: Settings > Shortcuts lists its commands by menu, and the
+user's shortcuts are stored by command ID over its defaults.
 
 # How it works
 
@@ -56,7 +61,7 @@ Shortcuts (TASK-319), the [MCP endpoint](./automation-endpoint.md)
 | `title` | The title its menu item is built with. |
 | `aliases` | Other names the palette matches (`refresh` for Reload Page). |
 | `symbol` | An SF Symbol for the palette row. |
-| `keyEquivalent: KeyEquivalent?` | The built-in shortcut, spelled as `NSMenuItem` spells it (an uppercase key implies Shift; function keys are AppKit's private-use characters). The live item can differ: the Quick Detour item follows its hotkey setting. |
+| `keyEquivalent: KeyEquivalent?` | The built-in shortcut, spelled as `NSMenuItem` spells it (an uppercase key implies Shift; function keys are AppKit's private-use characters). The live item can differ: the Quick Detour item follows its hotkey setting, the others the user's shortcut (`ShortcutBindingStore`, TASK-327), and any item a System Settings App Shortcut names shows macOS's ([keyboard shortcuts](./keyboard-shortcuts.md)). |
 | `parameters: [CommandParameter]` | What it acts on besides its window: space, tab, profile, URL, position, extension. A command with one is never offered in the palette yet (`PalettePresence.needsParameter`). |
 | `action`, `tag` | The selector its menu item sends, and the item's tag (Help's items name their page by it). |
 | `responder: CommandResponder` | Who answers it, which is also how its item is targeted (below). |
@@ -127,7 +132,16 @@ and reload items) keep their builders and tags and carry no identifier;
 their actions come from the parameterised commands `space.switch`,
 `extension.show-popup`, `extension.options`, `extension.inspect-offscreen`
 and `extension.reload-unpacked`. The TASK-56 `menuHasKeyEquivalent` fast
-path is unchanged.
+path is unchanged; it matches the live items, so it sees the user's
+shortcuts, which can put a letter on a static item of the Spaces or
+Extensions menu.
+
+`BrowserCommands.menus` lists the commands under the title of the bar menu
+that holds their item (the application menu as "Detour"); `all` is their
+concatenation, in the same order as before. Settings > Shortcuts groups its
+rows by it, and `ShortcutMenuTests` holds it to the real menu bar. After the
+bar is built, `ShortcutBindingStore.shared.apply(to:)` gives every bindable
+command's item its effective shortcut, and again on every change.
 
 ## Running a command in a window
 
@@ -173,9 +187,10 @@ Recorded for TASK-319 and TASK-228 (not built here):
 - **MCP (TASK-228)**: a `run_command` tool by ID (and a `list_commands`
   listing IDs, titles and availability for a window) beside the existing
   `run_menu_item`, which keeps working by menu path or key equivalent.
-- **User shortcuts (TASK-327)**: bindings keyed by `CommandID`, applied to
-  the live items (the palette already shows the live item's shortcut, so
-  it follows); defaults are `keyEquivalent`.
+- **User shortcuts (TASK-327, built)**: bindings keyed by `CommandID`,
+  applied to the live items (the palette shows the live item's shortcut, so
+  it follows); defaults are `keyEquivalent`. See
+  [keyboard shortcuts](./keyboard-shortcuts.md).
 
 ## Why this shape
 
@@ -220,7 +235,10 @@ exist as commands yet.
 - Every item the main menu builds is a registry command and carries its ID
   as `identifier`; every command without a parameter has an item (Check for
   Updates… only in a run that starts Sparkle).
-- An ID, once shipped, is never renamed or reused.
+- An ID, once shipped, is never renamed or reused: user shortcuts are
+  stored by it (TASK-327).
+- `BrowserCommands.menus` lists each command under the bar menu that holds
+  its item (`ShortcutMenuTests.testTheRegistrysMenusAreTheMenuBarsMenus`).
 - A command's `kinds` are exactly the controllers that implement its action.
 - The registry's `isAvailable(in:)` for a window's controller is what the
   real menu item resolves to in that window
@@ -273,3 +291,4 @@ exist as commands yet.
 - [Command palette](./command-palette.md) - the palette.
 - [Automation endpoint (MCP)](./automation-endpoint.md) - `run_menu_item`.
 - [Quick Detour](./quick-detour.md) - its window's commands, and the hotkey that sets the item's key equivalent.
+- [Keyboard shortcuts](./keyboard-shortcuts.md) - the user's shortcuts over the registry's defaults, Settings > Shortcuts.

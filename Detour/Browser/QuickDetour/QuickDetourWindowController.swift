@@ -260,6 +260,12 @@ final class QuickDetourWindowController: NSWindowController {
         // name among them) were saved.
         NotificationCenter.default.addObserver(self, selector: #selector(profileDidChange(_:)),
                                                name: .init("UserAgentDidChange"), object: nil)
+        // The Open in capsule shows File > Open in's shortcut, which the user
+        // can change (TASK-327). AppDelegate's observer, registered at launch
+        // and so called first, has already put it on the menu item.
+        NotificationCenter.default.addObserver(self, selector: #selector(shortcutBindingsDidChange),
+                                               name: ShortcutBindingStore.didChangeNotification,
+                                               object: ShortcutBindingStore.shared)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -595,6 +601,10 @@ final class QuickDetourWindowController: NSWindowController {
         updateExtensionButtons()
     }
 
+    @objc private func shortcutBindingsDidChange() {
+        updateOpenIn()
+    }
+
     @objc private func extensionActionDidChange(_ notification: Notification) {
         guard let extensionID = notification.userInfo?["extensionID"] as? String,
               let ext = ExtensionManager.shared.extension(withID: extensionID) else { return }
@@ -841,9 +851,9 @@ final class QuickDetourWindowController: NSWindowController {
                     menuItem.toolTip = "Opens this address in \(section.title)'s \(item.name): its cookies and "
                         + "sign-ins, without this page's back and forward history"
                 }
+                // File > Open in's shortcut, which the user can change (TASK-327).
                 if item.isDefault {
-                    menuItem.keyEquivalent = "o"
-                    menuItem.keyEquivalentModifierMask = .command
+                    menuItem.showShortcut(ofCommand: BrowserCommands.openInSpace.id)
                 }
                 menu.addItem(menuItem)
             }

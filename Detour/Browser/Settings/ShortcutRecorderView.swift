@@ -8,7 +8,31 @@ import AppKit
 /// What a key press means is `HotKeyRecordingOutcome`, which is tested.
 final class ShortcutRecorderView: NSView {
     var shortcut: HotKeyShortcut? {
+        didSet { shortcutLabel = shortcut?.displayString }
+    }
+
+    /// What it shows when not recording: `shortcut`'s label, or one set
+    /// directly for a shortcut known only as a menu key equivalent
+    /// (Settings > Shortcuts, TASK-327). Nil shows `placeholder`.
+    var shortcutLabel: String? {
         didSet { updateLabel() }
+    }
+
+    /// Shown when there is no shortcut.
+    var placeholder = "Record Shortcut" {
+        didSet { updateLabel() }
+    }
+
+    /// Off, a click does not record: the shortcut is shown, dimmed, as one
+    /// that is set elsewhere (TASK-327).
+    var isEnabled = true {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            if !isEnabled { endRecording() }
+            setAccessibilityEnabled(isEnabled)
+            updateLabel()
+            needsDisplay = true
+        }
     }
 
     /// The validator a recorded shortcut must pass.
@@ -103,8 +127,10 @@ final class ShortcutRecorderView: NSView {
         guard let layer else { return }
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer.cornerRadius = 5
-            layer.backgroundColor = NSColor.controlBackgroundColor.cgColor
-            layer.borderWidth = isRecording ? 2 : 1
+            // A disabled recorder has no field of its own: its shortcut
+            // shows as text, without a box.
+            layer.backgroundColor = isEnabled ? NSColor.controlBackgroundColor.cgColor : NSColor.clear.cgColor
+            layer.borderWidth = isRecording ? 2 : (isEnabled ? 1 : 0)
             layer.borderColor = (isRecording ? NSColor.controlAccentColor : NSColor.separatorColor).cgColor
         }
     }
@@ -114,25 +140,27 @@ final class ShortcutRecorderView: NSView {
             let glyphs = HotKeyShortcut(keyCode: UInt16.max, modifiers: modifiers, character: "").displayString
             label.stringValue = glyphs.isEmpty ? "Type Shortcut" : glyphs
             label.textColor = glyphs.isEmpty ? .secondaryLabelColor : .labelColor
-        } else if let shortcut {
-            label.stringValue = shortcut.displayString
-            label.textColor = .labelColor
+        } else if let shortcutLabel {
+            label.stringValue = shortcutLabel
+            label.textColor = isEnabled ? .labelColor : .secondaryLabelColor
         } else {
-            label.stringValue = "Record Shortcut"
-            label.textColor = .secondaryLabelColor
+            label.stringValue = placeholder
+            label.textColor = isEnabled ? .secondaryLabelColor : .tertiaryLabelColor
         }
-        setAccessibilityValue(shortcut?.displayString ?? "none")
+        setAccessibilityValue(shortcutLabel ?? "none")
     }
 
     // MARK: - Recording
 
-    override var acceptsFirstResponder: Bool { true }
+    override var acceptsFirstResponder: Bool { isEnabled }
 
     override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return super.mouseDown(with: event) }
         toggleRecording()
     }
 
     override func accessibilityPerformPress() -> Bool {
+        guard isEnabled else { return false }
         toggleRecording()
         return true
     }
@@ -146,7 +174,9 @@ final class ShortcutRecorderView: NSView {
     }
 
     func beginRecording() {
-        guard window?.makeFirstResponder(self) == true else { return }
+        // `makeFirstResponder` ignores `acceptsFirstResponder` (wiki:
+        // key-view loop probe), so a disabled recorder says no here.
+        guard isEnabled, window?.makeFirstResponder(self) == true else { return }
         isRecording = true
     }
 

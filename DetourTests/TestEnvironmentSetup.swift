@@ -140,6 +140,10 @@ private final class TestObserver: NSObject, XCTestObservation {
         cleanTestExtensions()
         resetTabStore()
         clearPendingProfileDataRemovals()
+        // A run cut short can leave a user shortcut in the test host's suite
+        // (TASK-327); the menu suites pin the built-in ones. Resetting also
+        // puts them back on the menu bar, which applied the stale one at launch.
+        ShortcutBindingStore.shared.resetAll()
         // The profiles TabStore.shared restored are live; leave their storage.
         removeRecordedWebKitStorage(phase: "start", excludingProfileIDs: Set(TabStore.shared.profiles.map(\.id)))
         seenStorageIdentifiers = Set(AppDatabase.shared.recordedWebKitStorageIdentifiers())

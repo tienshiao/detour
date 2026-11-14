@@ -47,7 +47,38 @@ nonisolated struct KeyEquivalent: Equatable, Sendable {
 
     var displayString: String? { Self.displayString(key: key, modifiers: modifiers) }
 
+    /// The modifiers a shortcut can hold; Caps Lock, Fn and the numeric-pad
+    /// bit are state.
+    static let significantModifiers: NSEvent.ModifierFlags = [.control, .option, .shift, .command]
+
+    /// The same shortcut spelled one way (TASK-327): the key lowercased and
+    /// Shift in the mask, so "Z" with ⌘ and "z" with ⇧⌘ compare equal, as
+    /// AppKit reads both.
+    var normalized: KeyEquivalent {
+        var mask = modifiers.intersection(Self.significantModifiers)
+        if key.contains(where: \.isUppercase) { mask.insert(.shift) }
+        return KeyEquivalent(key.lowercased(), mask)
+    }
+
+    /// Whether both are the same keystroke (`normalized`).
+    func isSameShortcut(as other: KeyEquivalent) -> Bool { normalized == other.normalized }
+
     private static func keyName(_ key: String) -> String {
+        // AppKit's private-use characters for keys with no character of their
+        // own, named as `HotKeyShortcut` names them.
+        if key.unicodeScalars.count == 1, let scalar = key.unicodeScalars.first {
+            switch scalar.value {
+            case 0xF704...0xF726: return "F\(scalar.value - 0xF704 + 1)"
+            case 0xF728: return "⌦"
+            case 0xF729: return "↖"
+            case 0xF72B: return "↘"
+            case 0xF72C: return "⇞"
+            case 0xF72D: return "⇟"
+            case 0xF746: return "Help"
+            case 0x3: return "⌤"
+            default: break
+            }
+        }
         switch key {
         case "\u{F700}": return "↑"
         case "\u{F701}": return "↓"
@@ -60,6 +91,22 @@ nonisolated struct KeyEquivalent: Equatable, Sendable {
         case "\u{1B}": return "⎋"
         default: return key.uppercased()
         }
+    }
+
+    // MARK: - Persistence (TASK-327)
+
+    /// `key` as the menu spells it and `modifiers` as `NSEvent.ModifierFlags`
+    /// raw bits, narrowed to `significantModifiers`.
+    var propertyList: [String: Any] {
+        ["key": key, "modifiers": Int(modifiers.intersection(Self.significantModifiers).rawValue)]
+    }
+
+    /// Nil for anything that is not a non-empty key with modifier bits.
+    init?(propertyList: Any?) {
+        guard let dictionary = propertyList as? [String: Any],
+              let key = dictionary["key"] as? String, !key.isEmpty,
+              let raw = dictionary["modifiers"] as? Int, raw >= 0 else { return nil }
+        self.init(key, NSEvent.ModifierFlags(rawValue: UInt(raw)).intersection(Self.significantModifiers))
     }
 }
 
@@ -180,6 +227,14 @@ extension CommandContext {
     var canOpenInSpace: Bool { false }
 }
 
+/// A menu of the menu bar and its commands, in menu order (TASK-327:
+/// Settings > Shortcuts groups the commands by it).
+struct CommandMenu {
+    /// The menu's title in the bar ("File"); the application menu's is the app's name.
+    let title: String
+    let commands: [BrowserCommand]
+}
+
 /// One command of the registry.
 struct BrowserCommand {
     let id: CommandID
@@ -191,8 +246,9 @@ struct BrowserCommand {
     /// An SF Symbol for the palette row.
     let symbol: String?
     /// The built-in shortcut, if any. The live menu item can differ: the
-    /// Quick Detour item follows its hotkey setting (TASK-193.2), and user
-    /// bindings will (TASK-327).
+    /// Quick Detour item follows its hotkey setting (TASK-193.2), the others
+    /// the user's bindings (`ShortcutBindingStore`, TASK-327), and any item
+    /// a System Settings App Shortcut names.
     let keyEquivalent: KeyEquivalent?
     /// What the command acts on besides the window it runs in.
     let parameters: [CommandParameter]

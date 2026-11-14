@@ -3733,10 +3733,12 @@ extension TabSidebarViewController: NSMenuDelegate {
             let copyItem = NSMenuItem(
                 title: isSelectedTab ? "Copy URL" : "Copy Link",
                 action: #selector(contextMenuCopyURL(_:)),
-                keyEquivalent: isSelectedTab ? "C" : ""
+                keyEquivalent: ""
             )
+            // The selected tab's is Edit > Copy URL: it shows that item's
+            // shortcut, which the user can change (TASK-327).
             if isSelectedTab {
-                copyItem.keyEquivalentModifierMask = [.command, .shift]
+                copyItem.showShortcut(ofCommand: BrowserCommands.copyURL.id)
             }
             copyItem.target = self
             menu.addItem(copyItem)

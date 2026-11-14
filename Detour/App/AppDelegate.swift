@@ -22,6 +22,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var linksAwaitingLaunch: [(urls: [URL], sourceApp: String?)] = []
     /// File > New Quick Detour Window.
     private(set) var quickDetourMenuItem: NSMenuItem?
+    /// Applies the user's shortcuts to the menu bar when they change (TASK-327).
+    private var shortcutBindingsObserver: NSObjectProtocol?
 
     /// Whether this process is the XCTest host (the test runner injects
     /// `XCTest*` variables into the app it launches).
@@ -83,6 +85,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // (TASK-243); without it they are left running.
         NativeMessagingHost.installSIGTERMHandler()
         setupMainMenu()
+        // The user's shortcuts (TASK-327): a change reaches the menu bar, and
+        // with it every window, the palette's shortcut column and the
+        // key-equivalent fast path, at once.
+        shortcutBindingsObserver = NotificationCenter.default.addMainObserver(
+            forName: ShortcutBindingStore.didChangeNotification, object: ShortcutBindingStore.shared) { _ in
+            ShortcutBindingStore.shared.apply(to: NSApp.mainMenu)
+        }
 
         // The Quick Detour hotkey (TASK-193.2): the menu item mirrors the
         // shortcut everywhere; `start` registers the system-wide hotkey only
@@ -985,6 +994,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(helpMenuItem)
         NSApp.helpMenu = helpMenuItem.submenu
 
+        // The user's shortcuts over the registry's (TASK-327).
+        ShortcutBindingStore.shared.apply(to: mainMenu)
         NSApp.mainMenu = mainMenu
     }
 
@@ -1128,8 +1139,12 @@ extension AppDelegate: NSMenuDelegate {
     /// equivalent; `MenuKeyEquivalentMatcherTests` asserts it on the real
     /// menus). Whether older AppKit trusts `false` outright is not verified,
     /// which is why the matcher stays as the belt to that braces: every
-    /// shortcut left in these menus is a layout-independent function key it
-    /// matches exactly.
+    /// built-in shortcut left in these menus is a layout-independent function
+    /// key it matches exactly. A user's binding (TASK-327) on one of their
+    /// static items (Manage Spaces…, Add Extensions…) can be a letter: the
+    /// matcher reads the live items, so it answers that too, and a press it
+    /// does not model (a layout-dependent character) is a miss AppKit then
+    /// matches itself.
     ///
     /// `true`, by contrast, *is* trusted: AppKit performs the returned action
     /// on the returned target with no validation of its own. So this path must

@@ -12,14 +12,20 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private static let quickDetourID = NSToolbarItem.Identifier("quickdetour")
     private static let profilesID = NSToolbarItem.Identifier("profiles")
     private static let searchID = NSToolbarItem.Identifier("search")
+    private static let shortcutsID = NSToolbarItem.Identifier("shortcuts")
     private static let extensionsID = NSToolbarItem.Identifier("extensions")
     private static let contentBlockerID = NSToolbarItem.Identifier("contentblocker")
 
     private var panes: [NSToolbarItem.Identifier: SettingsPaneViewController] = [:]
     /// The toolbar's panes, in order.
     static let paneOrder: [NSToolbarItem.Identifier] = [
-        generalID, spacesID, linksID, quickDetourID, profilesID, searchID, extensionsID, contentBlockerID,
+        generalID, spacesID, linksID, quickDetourID, profilesID, searchID, shortcutsID, extensionsID,
+        contentBlockerID,
     ]
+
+    /// The Quick Detour pane's name (`showPane(named:)`): Settings > Shortcuts
+    /// points its Quick Detour row there (TASK-327).
+    static let quickDetourPaneName = quickDetourID.rawValue
 
     /// Replaces the height of the screen's visible frame in the height rule,
     /// so a harness can exercise the cap on a tall screen. Nil in the app.
@@ -66,6 +72,8 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         panes[Self.profilesID] = profilesVC
 
         panes[Self.searchID] = SearchSettingsViewController()
+
+        panes[Self.shortcutsID] = ShortcutsSettingsViewController()
 
         let extensionsVC = ExtensionsSettingsViewController()
         panes[Self.extensionsID] = extensionsVC
@@ -140,6 +148,9 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         case Self.searchID:
             item.label = "Search"
             item.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Search")
+        case Self.shortcutsID:
+            item.label = "Shortcuts"
+            item.image = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Shortcuts")
         case Self.extensionsID:
             item.label = "Extensions"
             item.image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: "Extensions")
@@ -207,7 +218,8 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     }
 
     /// The panes' names, as the toolbar identifies them: general, spaces,
-    /// links, quickdetour, profiles, search, extensions, contentblocker.
+    /// links, quickdetour, profiles, search, shortcuts, extensions,
+    /// contentblocker.
     static var paneNames: [String] { paneOrder.map(\.rawValue) }
 
     /// Shows the pane called `name` (one of `paneNames`). False for a name

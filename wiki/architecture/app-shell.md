@@ -5,7 +5,7 @@ description: "AppDelegate and main.swift — launch and termination, window crea
 resource: ../../Detour/App/AppDelegate.swift
 tags: [architecture, app, menus, sparkle, startup]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T22:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T23:30:00Z }
 sources:
   - id: task-320
     resource: backlog:TASK-320
@@ -221,8 +221,12 @@ verified.[^task-56]
 Invariants the tests pin against the real main menu:
 
 - Only **Spaces** and **Extensions** have a delegate.
-- Every shortcut in a delegate-driven menu is a static, layout-independent
-  function key (the arrow keys `\u{F702}` / `\u{F703}`).
+- Every built-in shortcut in a delegate-driven menu is a static,
+  layout-independent function key (the arrow keys `\u{F702}` /
+  `\u{F703}`). A user's own shortcut (TASK-327) on a static item there
+  (Manage Spaces…, Add Extensions…) can be a letter; the matcher reads the
+  live items and answers it, and a press it does not model is a miss that
+  AppKit matches itself ([keyboard shortcuts](../features/keyboard-shortcuts.md)).
 - **Dynamic items carry no key equivalent.** One would exist only after the
   menu was first opened, and a hit would be dispatched without an
   `NSMenuItem` sender.

@@ -72,8 +72,17 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
             QuickDetourSettingsViewController(), ProfilesSettingsViewController(),
             SearchSettingsViewController(
                 siteSearches: SiteSearchStore(database: try AppDatabase(dbQueue: DatabaseQueue()))),
+            ShortcutsSettingsViewController(store: ShortcutBindingStore(defaults: throwawayDefaults())),
             ExtensionsSettingsViewController(), ContentBlockerSettingsViewController(),
         ]
+    }
+
+    /// A defaults suite of its own, gone after the test.
+    @MainActor private func throwawayDefaults() -> UserDefaults {
+        let suite = "SettingsSwitchRowTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return defaults
     }
 
     // MARK: - No checkboxes
