@@ -18,6 +18,20 @@ import WebKit
 ///   goes as a key press with no physical key, so it stays in order.
 enum AutomationInput {
 
+    /// Posted (object: the window) with each mouse-down and key-down an input
+    /// tool delivers, the event under `eventKey`. Handing events to views
+    /// skips `NSApp.sendEvent`, so no local event monitor
+    /// (`NSEvent.addLocalMonitorForEvents`) sees them; a component whose
+    /// behaviour hangs on a monitor listens here too (the window's last web
+    /// click, which places a download's flight, TASK-324).
+    static let didDeliverEventNotification = Notification.Name("DetourAutomationDidDeliverEvent")
+    static let eventKey = "event"
+
+    static func announce(_ event: NSEvent, in window: NSWindow) {
+        NotificationCenter.default.post(name: didDeliverEventNotification, object: window,
+                                        userInfo: [eventKey: event])
+    }
+
     // MARK: Running input from the run loop
 
     /// Runs `body` from the main run loop and waits up to `wait` for it to
@@ -148,6 +162,8 @@ enum AutomationInput {
             switch target {
             case .webView(let webView):
                 let returned = await runFromRunLoop(wait: wait) {
+                    // Before delivery, as a local monitor sees an event.
+                    announce(down, in: window)
                     if button == .left {
                         focus(webView, in: window)
                         webView.mouseDown(with: down)
@@ -166,6 +182,7 @@ enum AutomationInput {
                 // The control's tracking loop finds the mouse-up in the queue.
                 NSApp.postEvent(up, atStart: false)
                 let returned = await runFromRunLoop(wait: wait) {
+                    announce(down, in: window)
                     if button == .left {
                         focus(view, in: window)
                         view.mouseDown(with: down)
@@ -280,9 +297,13 @@ enum AutomationInput {
         return (down, up)
     }
 
-    /// Delivers one key press (down and up) to `responder`.
-    static func press(_ down: NSEvent, _ up: NSEvent, to responder: NSResponder, wait: Duration) async -> Bool {
-        let returned = await runFromRunLoop(wait: wait) { responder.keyDown(with: down) }
+    /// Delivers one key press (down and up) to `responder` in `window`.
+    static func press(_ down: NSEvent, _ up: NSEvent, to responder: NSResponder, in window: NSWindow,
+                      wait: Duration) async -> Bool {
+        let returned = await runFromRunLoop(wait: wait) {
+            announce(down, in: window)
+            responder.keyDown(with: down)
+        }
         guard returned else { return false }
         return await runFromRunLoop(wait: wait) { responder.keyUp(with: up) }
     }
@@ -297,7 +318,7 @@ enum AutomationInput {
                 let base = shift ? String(shifted[character] ?? Character(typed.lowercased())) : typed
                 guard let (down, up) = keyEvents(characters: typed, ignoringModifiers: base, code: code,
                                                  modifiers: shift ? .shift : [], in: window) else { continue }
-                guard await press(down, up, to: responder, wait: wait) else { return false }
+                guard await press(down, up, to: responder, in: window, wait: wait) else { return false }
             } else {
                 // A key press carrying the character, with no US key behind it:
                 // AppKit's text input inserts its characters. Not insertText
@@ -307,7 +328,7 @@ enum AutomationInput {
                 let typed = String(character)
                 guard let (down, up) = keyEvents(characters: typed, ignoringModifiers: typed, code: unmappedKeyCode,
                                                  modifiers: [], in: window) else { continue }
-                guard await press(down, up, to: responder, wait: wait) else { return false }
+                guard await press(down, up, to: responder, in: window, wait: wait) else { return false }
             }
             if interval > .zero { try? await Task.sleep(for: interval) }
         }

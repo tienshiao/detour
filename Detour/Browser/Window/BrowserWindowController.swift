@@ -155,6 +155,7 @@ class BrowserWindowController: NSWindowController {
     /// that starts soon after flies from it (`DownloadFlightStart`).
     private(set) var lastWebContentClick: WebContentClick?
     private var webContentClickMonitor: Any?
+    private var automationInputObserver: (any NSObjectProtocol)?
 
     /// Notes every left and right click on a web view in the content area
     /// (Download Linked File comes from a right click); a click on the find
@@ -164,17 +165,30 @@ class BrowserWindowController: NSWindowController {
     /// runtime, TASK-324).
     private func installWebContentClickMonitor() {
         webContentClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-            guard let self, let window = self.window, event.window === window else { return event }
-            let content = self.contentContainerView
-            if let container = content.superview,
-               let hit = content.hitTest(container.convert(event.locationInWindow, from: nil)),
-               sequence(first: hit, next: \.superview).contains(where: { $0 is WKWebView }) {
-                // Timed on the clock `triggerDownloadAnimation` reads, not
-                // `event.timestamp`: the two need not share a base.
-                self.lastWebContentClick = WebContentClick(point: event.locationInWindow,
-                                                           time: ProcessInfo.processInfo.systemUptime)
-            }
+            self?.noteWebContentClick(event)
             return event
+        }
+        // The automation endpoint hands its clicks to the views themselves,
+        // which no local monitor sees; it announces them instead (TASK-228.1).
+        automationInputObserver = NotificationCenter.default.addMainObserver(
+            forName: AutomationInput.didDeliverEventNotification, object: window
+        ) { [weak self] notification in
+            guard let event = notification.userInfo?[AutomationInput.eventKey] as? NSEvent,
+                  event.type == .leftMouseDown || event.type == .rightMouseDown else { return }
+            self?.noteWebContentClick(event)
+        }
+    }
+
+    private func noteWebContentClick(_ event: NSEvent) {
+        guard let window, event.window === window else { return }
+        let content = contentContainerView
+        if let container = content.superview,
+           let hit = content.hitTest(container.convert(event.locationInWindow, from: nil)),
+           sequence(first: hit, next: \.superview).contains(where: { $0 is WKWebView }) {
+            // Timed on the clock `triggerDownloadAnimation` reads, not
+            // `event.timestamp`: the two need not share a base.
+            lastWebContentClick = WebContentClick(point: event.locationInWindow,
+                                                  time: ProcessInfo.processInfo.systemUptime)
         }
     }
     private var splitScrimView: NSView?
@@ -3707,6 +3721,10 @@ extension BrowserWindowController: NSWindowDelegate {
         if let automationObserver {
             NotificationCenter.default.removeObserver(automationObserver)
             self.automationObserver = nil
+        }
+        if let automationInputObserver {
+            NotificationCenter.default.removeObserver(automationInputObserver)
+            self.automationInputObserver = nil
         }
         if let webContentClickMonitor {
             NSEvent.removeMonitor(webContentClickMonitor)

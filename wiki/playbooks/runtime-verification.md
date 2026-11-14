@@ -1,11 +1,14 @@
 ---
 type: Playbook
 title: Runtime verification
-description: How to build, launch and observe Detour in an isolated profile (the /verify skill), including how to be sure the app you launched is the build you just made.
+description: How to build, launch, drive and observe Detour in an isolated profile (the /verify skill), through the automation endpoint where it reaches, including how to be sure the app you launched is the build you just made.
 tags: [playbook, verify, runtime, isolation]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T10:25:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T09:30:00Z }
 sources:
+  - id: task-228-1
+    resource: backlog:TASK-228.1
+    title: "Automation: an MCP endpoint in Detour, first slice for testing"
   - id: task-187
     resource: backlog:TASK-187
     title: Storage - a per-site settings table, with content blocking's site list migrated into it
@@ -56,8 +59,12 @@ binary.
 Before committing any code change (policy in CLAUDE.md), and whenever a
 change touches something tests cannot see: layout, hosting, focus,
 animation. In that case the check must exercise the UI, not stop at "it
-launches"; the tools for that are the [debug harness](./debug-harness.md)
-and [in-process UI automation](./in-process-ui-automation.md).
+launches". The first tool for that is the
+[automation endpoint](../features/automation-endpoint.md) (step 5): clicks,
+keys, menus, screenshots and state from a script, with Detour in the
+background and no harness patch. A [debug harness](./debug-harness.md) and
+[in-process UI automation](./in-process-ui-automation.md) remain for what it
+does not reach.
 
 # Steps
 
@@ -84,8 +91,8 @@ until 2026-10-04, and so did the release and deploy scripts (see
 ## 2. Launch against an isolated data directory
 
 ```bash
-# direct: stderr is yours
-DETOUR_DATA_DIR=DetourVerify "$APP/Contents/MacOS/Detour" 2> "$OUT/stderr.log" &
+# direct, with the automation endpoint on (the usual way)
+DETOUR_DATA_DIR=DetourVerify DETOUR_MCP=1 "$APP/Contents/MacOS/Detour" 2> "$OUT/stderr.log" &
 
 # through Launch Services: no stderr, but -g keeps it from taking focus
 open -n -g "$APP" --env DETOUR_DATA_DIR=DetourVerify --env DETOUR_VERIFY_DIR="$OUT"
@@ -159,7 +166,37 @@ the database (wait until the `space` row is saved before stopping it), insert
 rows with `sqlite3`, then build the new code and launch on that data
 directory (TASK-187).[^task-187]
 
-## 5. Observe
+## 5. Drive and observe
+
+Through the endpoint, from a shell or a script ([automation
+endpoint](../features/automation-endpoint.md) has every tool):
+
+```bash
+export DETOUR_DATA_DIR=DetourVerify
+scripts/detour-mcp call list_windows
+scripts/detour-mcp call open_url window_id=1 url=http://127.0.0.1:8765/
+scripts/detour-mcp call click context=<tab_id> selector='#link' button=right
+scripts/detour-mcp call choose_menu_item title='Download Linked File'
+scripts/detour-mcp call screenshot window_id=1 save_to="$OUT/after.png" include_image=false
+```
+
+Wait for `~/Library/Application Support/DetourVerify/mcp-endpoint.json`
+before the first call. A check longer than a few calls belongs in a script
+that imports `scripts/detour-mcp`'s `Session` and exits non-zero on failure:
+`docs/harness/task324-endpoint-checks.py` launches its own isolated Detour,
+serves a fixture, runs TASK-324's four download checks (Download Linked File,
+a split pane, the sidebar hidden, Reduce Motion) by reading a log line the
+change added, saves screenshots, and cleans up its data directory, defaults
+keys and downloads.[^task-228-1] Effects that finish after a call returns
+(an animation, a load, a download) are polled for, never read once.
+
+What the endpoint does not cover yet: input that a component sees only
+through a local event monitor (Control-Tab's switcher, sidebar swipes, the
+hover card), drags and drops, hover tracking, frame-level animation, and
+windows other than browser windows (Settings: `run_menu_item` opens it,
+`screencapture -l` sees it). For those, a harness.
+
+Other channels:
 
 | Channel | Good for | Needs |
 |---|---|---|
@@ -172,7 +209,9 @@ directory (TASK-187).[^task-187]
 
 ## 6. Stop it
 
-Find the process by its build path and kill that PID only:
+With the endpoint on, the `pid` is in `mcp-endpoint.json`; SIGTERM it
+(which also removes that file). Otherwise find the process by its build path
+and kill that PID only:
 
 ```bash
 pgrep -f "$APP/Contents/MacOS/Detour"
@@ -281,3 +320,4 @@ pgrep -f "$APP/Contents/MacOS/Detour"
 [^notes-probes]: Session notes on hit-test and resize probes
 [^notes-updates]: Session notes on verifying the extension update UI
 [^task-187]: Storage - a per-site settings table, with content blocking's site list migrated into it
+[^task-228-1]: Automation: an MCP endpoint in Detour, first slice for testing

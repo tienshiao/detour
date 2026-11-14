@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T01:08:00Z'
-updated_date: '2026-11-14T05:15:00Z'
+updated_date: '2026-11-14T05:32:00Z'
 labels:
   - tooling
   - automation
@@ -60,8 +60,8 @@ Known in-process techniques (from TASK-89 and the wiki playbooks):
 - [x] #2 A client can click, modifier-click, right-click and type at a point in a window, or on an element of a tab by CSS selector, without the app coming to the front or the real pointer moving
 - [x] #3 A client can list the items of an open menu (including a web page's context menu) and choose one
 - [x] #4 A client can take a PNG of a window's content and of its sidebar, switch light or dark, and set Debug overrides (at least Reduce Motion and the space toss's hop and gravity)
-- [ ] #5 The /verify skill and the runtime-verification playbook show how to use it, replacing the paste-a-harness-into-AppDelegate approach
-- [ ] #6 Demonstrated end to end with no manual steps by re-running the TASK-324 checks that needed a human: Download Linked File, a download in a split pane, with the sidebar hidden, and with Reduce Motion
+- [x] #5 The /verify skill and the runtime-verification playbook show how to use it, replacing the paste-a-harness-into-AppDelegate approach
+- [x] #6 Demonstrated end to end with no manual steps by re-running the TASK-324 checks that needed a human: Download Linked File, a download in a split pane, with the sidebar hidden, and with Reduce Motion
 - [x] #7 Off until turned on: in Release the endpoint does not listen until the user enables it (a setting, off by default, listening on localhost only); a test run can enable it only with an isolated DETOUR_DATA_DIR; Private windows are not reachable
 - [x] #8 The testing-only tools (Debug overrides such as Reduce Motion) are absent from Release builds (verified on the built product)
 - [x] #9 Tests cover the gate (not listening while off; the test-run switch refused without an isolated DETOUR_DATA_DIR; a Private window refused) and each tool's happy path and error cases (unknown window or tab, no open menu, a selector that matches nothing)
@@ -139,4 +139,11 @@ Tests: AutomationHelperTests 3, AutomationControllerTests 7, AutomationCaptureTe
 Runtime (isolated DetourMCP3, Debug, in the background): the capsule appeared for two sessions ("Claude Code + 2" with the script), its menu listed the clients, Disconnect ended the session and the next initialize got 403; the capsule answers as one AX button; the Settings section rendered (checked by screencapture); the helper relayed initialize/tools/list/list_windows, showed "Claude Desktop" in the capsule, answered while Detour was down with a clear error, reconnected after Detour restarted on a new port, and ended its session at the end of stdin. Not verified: the Settings checkbox clicked by hand, a Developer ID signed build (sign-app.sh's helper signing is owed at the next release), Claude Desktop itself.
 
 2026-11-14: the indicator's menu opened from the capsule's left edge and ran off the screen's right edge (cut off, seen in a screencapture of the open menu); it now opens above the capsule with their right edges aligned. Re-captured: fully on screen.
+
+2026-11-14, phase 5 done (verify skill, playbook, TASK-324 end to end). Finding: the endpoint's input is handed to views directly, so no local event monitor saw it; the window's web-click monitor (which places a download's flight, TASK-324) missed every endpoint click and a download flew from the page's middle. AutomationInput now posts didDeliverEventNotification (object: the window) before each mouse-down and key-down it delivers (press_key's Cmd path too); the window's monitor listens to it through the same noteWebContentClick. Control-Tab's switcher, sidebar swipes and the hover card still only see real events (documented). DownloadAnimation logs "Download flight from x,y to x,y; catcher …; motion …" (category downloads, public).
+docs/harness/task324-endpoint-checks.py: launches the given build with its own data directory and DETOUR_MCP=1, serves a fixture, runs TASK-324's four hands-on checks through the endpoint with Detour in the background and checks each flight from the log; saves screenshots; cleans up its downloads, data directory, WebKit stores (only identifiers recorded in its DB and derived from its name, as WebKitStorageScope.refusalToRemove requires), its preferences domain and file, and its defaults keys. Result (twice, before and after the review): ALL PASSED: Download Linked File from the right click (914,1020 -> button), a download in a split pane from the click in the right pane (1254,750), sidebar hidden to (20,20) with no catcher, Reduce Motion with no flight, app_active false.
+/verify skill and wiki/playbooks/runtime-verification.md rewritten around the endpoint (launch with DETOUR_MCP=1, drive with scripts/detour-mcp, poll effects, screenshots and their limits, logs by pid, what still needs a harness, stopping by the endpoint file's pid).
+/code-review high --fix: 10 findings, all fixed (the script's own preferences domain and WebKit stores left behind; $OUT unset in the skill; a stale flight read when two fell in one second; the sidebar-hidden check not checking the end point; loop-count timeouts; Popen outside try and no wait after SIGKILL; press_key's Cmd path not announced; the observer on object nil; the test leaving a menu open on failure). After it: the script also removes the empty preferences file defaults leaves.
+Cleanup of this session's runs: DetourMCP1/2/3/Rel and DetourCheck324-* data directories, preferences domains and files, defaults keys, and the WebKit stores derivable from their records (677 -> 674 store directories). Not removed: the first check run's WebKit store (its record went with its data directory before the script removed stores) and ~674 stores from earlier sessions' isolated runs.
+Tests after the review: AutomationInputTests 9, AutomationHelperTests 3, AutomationControllerTests 7, AutomationCaptureTests 10, AutomationToolsTests 18, MCPServerTests 14, AutomationHTTPTests 22, AutomationEndpointTests 4, DownloadFlightStartTests 5: 92, 0 failures. Earlier in phase 5: plus DownloadManagerTests 35 and TossPathTests 11 (138, 0).
 <!-- SECTION:NOTES:END -->

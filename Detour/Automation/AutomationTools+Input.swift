@@ -344,10 +344,11 @@ extension AutomationTools {
                 if down.modifierFlags.contains(.command) {
                     let view = (responder as? NSView) ?? window.contentView
                     completed = await AutomationInput.runFromRunLoop(wait: inputWait) {
+                        AutomationInput.announce(down, in: window)
                         handled = view?.performKeyEquivalent(with: down) ?? false
                     }
                 } else {
-                    completed = await AutomationInput.press(down, up, to: responder, wait: inputWait)
+                    completed = await AutomationInput.press(down, up, to: responder, in: window, wait: inputWait)
                 }
                 return [
                     "window_id": .int(windowIDs.id(for: controller)),

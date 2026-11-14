@@ -1,5 +1,8 @@
 import AppKit
 import QuartzCore
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "downloads")
 
 /// A click in a window's web content (TASK-324): where, in window
 /// coordinates, and when, on the `ProcessInfo.systemUptime` clock (read when
@@ -53,6 +56,11 @@ enum DownloadAnimation {
         guard sourcePoint.x.isFinite, sourcePoint.y.isFinite,
               destPoint.x.isFinite, destPoint.y.isFinite else { return }
 
+        // What a runtime check reads (TASK-228.1's re-run of TASK-324's checks):
+        // where the flight starts and ends, in window points, and how.
+        let style = MotionPreference.reduceMotion ? "reduced (no flight)" : "toss"
+        let caught = catcher == nil ? "none" : "downloads button"
+        log.info("Download flight from \(Int(sourcePoint.x), privacy: .public),\(Int(sourcePoint.y), privacy: .public) to \(Int(destPoint.x), privacy: .public),\(Int(destPoint.y), privacy: .public); catcher \(caught, privacy: .public); motion \(style, privacy: .public)")
         if MotionPreference.reduceMotion {
             if let layer = catcher?.layer { SpringCatch.fadeIn(on: layer) }
             return

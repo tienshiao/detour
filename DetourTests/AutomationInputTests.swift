@@ -125,6 +125,24 @@ nonisolated final class AutomationInputTests: XCTestCase {
         XCTAssertEqual(clicks.first?["trusted"] as? Bool, true, "a person's click, not a script's")
     }
 
+    /// A local event monitor never sees the endpoint's clicks; the window's
+    /// web-click monitor hears of them through the announcement instead, so a
+    /// download started by one flies from it (TASK-324).
+    @MainActor func testAClickInThePageIsTheWindowsLastWebClick() async throws {
+        let f = try await makeFixture()
+        XCTAssertNil(f.window.lastWebContentClick)
+        let (clicked, isError) = try await call(f, "click", ["context": context(f), "selector": "#btn", "button": "right"])
+        // Closed before any unwrap can throw, so a failure leaves no menu open.
+        await AutomationMenuTracker.shared.closeAll()
+        XCTAssertFalse(isError, clicked.jsonString)
+        let noted = try XCTUnwrap(f.window.lastWebContentClick)
+        let content = try XCTUnwrap(f.window.window?.contentView)
+        let point = try XCTUnwrap(clicked["point"])
+        XCTAssertEqual(noted.point.x, point["x"]?.doubleValue ?? -1, accuracy: 1)
+        XCTAssertEqual(noted.point.y, content.bounds.height - (point["y"]?.doubleValue ?? -1), accuracy: 1)
+        XCTAssertEqual(noted.time, ProcessInfo.processInfo.systemUptime, accuracy: 5)
+    }
+
     @MainActor func testModifierDoubleAndWindowPointClicks() async throws {
         let f = try await makeFixture()
         _ = try await call(f, "click", ["context": context(f), "selector": "#btn", "modifiers": ["cmd", "shift"]])

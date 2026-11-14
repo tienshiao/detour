@@ -212,6 +212,21 @@ Settings > General > Automation copies what a client needs:
   - Other clients: `{"mcpServers":{"detour":{"command":"…/detour-mcp"}}}`
 - **The URL and the token**, for clients that speak HTTP with a header.
 
+# A worked check
+
+`docs/harness/task324-endpoint-checks.py` re-runs TASK-324's hands-on
+download checks with no manual steps: it launches the given build with its
+own data directory, serves a fixture, and checks each download's flight from
+the `Download flight from x,y to x,y; catcher …; motion …` log line
+(category `downloads`, added for this): Download Linked File from the right
+click, a download in a split pane from the click in the right pane, with the
+sidebar hidden to the window's corner with no catcher, and with Reduce Motion
+(the Debug override) no flight. All passed on 2026-11-14 with Detour in the
+background; it cleans up its downloads, data directory, defaults keys, its
+own preferences domain (`com.detourbrowser.mac.<data dir>`) and the WebKit
+stores recorded in its database (under `~/Library/WebKit`, outside the data
+directory, so deleting the directory alone orphans them).
+
 # The scripting client
 
 `scripts/detour-mcp` (Python 3, standard library only) reads
@@ -289,6 +304,16 @@ Claude Code connects directly:
 - **A bitmap context is in pixels.** `NSGraphicsContext(bitmapImageRep:)`
   does not scale to the rep's `size`; drawing a 1x capture into a 2x rep
   without a CTM scale filled only its bottom-left quarter.
+- **Local event monitors do not see the endpoint's input.** AppKit runs
+  `NSEvent.addLocalMonitorForEvents` handlers only for events going through
+  `NSApp.sendEvent`, and the input tools hand events to views directly (that
+  is what makes them work in the background). The window's web-click monitor,
+  which places a download's flight (TASK-324), saw none of them, so a
+  download started through the endpoint flew from the middle of the page.
+  The tools now post `AutomationInput.didDeliverEventNotification` (object:
+  the window, the event under `eventKey`) before each mouse-down and
+  key-down, and that monitor listens to it too. Control-Tab's switcher,
+  sidebar swipes and the hover card do not yet.
 - **SIGTERM runs no quit path.** The SIGTERM source ends native hosts and
   re-raises the signal, so `applicationWillTerminate` never runs. It removes
   the endpoint file too, and only if the file's `pid` is this process. A
