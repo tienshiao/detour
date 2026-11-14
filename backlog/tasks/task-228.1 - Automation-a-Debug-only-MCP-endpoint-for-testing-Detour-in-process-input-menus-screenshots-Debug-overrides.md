@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T01:08:00Z'
-updated_date: '2026-11-14T05:06:00Z'
+updated_date: '2026-11-14T05:15:00Z'
 labels:
   - tooling
   - automation
@@ -137,4 +137,6 @@ Helper Helpers/detour-mcp (target detour-mcp, embedded at Contents/MacOS/detour-
 /code-review high --fix: 10 findings. Fixed by the review: a listener leaked when the endpoint file could not be written; disconnect left same-name sessions; the helper split lines on U+2028/CR; Reset Token during a start kept the old token; the checkbox showed the running state, not the setting; shell quoting in the copied command; duplicated port parsing. Fixed after: the helper now retries once after a refused connection. Not an issue: port reuse on the fixed port (SIGTERM with a client connected, immediate relaunch on 47999 bound fine and the helper reconnected), so no reuse option (which could let another process share the port). Known limit, not fixed: Disconnect or Turn Off does not cancel a tool call already running (a long type_text finishes); the helper handles one request at a time.
 Tests: AutomationHelperTests 3, AutomationControllerTests 7, AutomationCaptureTests 10, AutomationInputTests 8, AutomationToolsTests 18, MCPServerTests 14, AutomationHTTPTests 22, AutomationEndpointTests 4, SplitTabTests 63, RecentTabSwitcherCloseTests 5, CommandPaletteFocusTests 4, SettingsPaneColumnsTests 22: 180, 0 failures.
 Runtime (isolated DetourMCP3, Debug, in the background): the capsule appeared for two sessions ("Claude Code + 2" with the script), its menu listed the clients, Disconnect ended the session and the next initialize got 403; the capsule answers as one AX button; the Settings section rendered (checked by screencapture); the helper relayed initialize/tools/list/list_windows, showed "Claude Desktop" in the capsule, answered while Detour was down with a clear error, reconnected after Detour restarted on a new port, and ended its session at the end of stdin. Not verified: the Settings checkbox clicked by hand, a Developer ID signed build (sign-app.sh's helper signing is owed at the next release), Claude Desktop itself.
+
+2026-11-14: the indicator's menu opened from the capsule's left edge and ran off the screen's right edge (cut off, seen in a screencapture of the open menu); it now opens above the capsule with their right edges aligned. Re-captured: fully on screen.
 <!-- SECTION:NOTES:END -->

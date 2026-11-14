@@ -151,13 +151,22 @@ final class AutomationIndicatorView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard let menu = menuProvider?() else { return }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.height + 4), in: self)
+        showMenu()
     }
 
     override func accessibilityPerformPress() -> Bool {
+        showMenu()
+    }
+
+    /// Opens the menu above the capsule with their right edges aligned: the
+    /// capsule sits at the window's right edge, and a menu hanging off its
+    /// left edge ran past the screen's.
+    @discardableResult
+    private func showMenu() -> Bool {
         guard let menu = menuProvider?() else { return false }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.height + 4), in: self)
+        let x = bounds.width - menu.size.width
+        let y = isFlipped ? -4 : bounds.height + 4
+        menu.popUp(positioning: nil, at: NSPoint(x: x, y: y), in: self)
         return true
     }
 }
