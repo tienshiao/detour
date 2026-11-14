@@ -81,6 +81,10 @@ struct ExtensionAPIPolyfill {
             searchJS,
             offscreenJS,
             webNavigationJS,
+            // After every module that defines a stub: counts the calls to the
+            // stubs for the automation endpoint's compatibility report
+            // (TASK-228.2), sent only while automation is on.
+            ExtensionPolyfillStubs.countingModuleJS,
             // Last: the automation endpoint's channel into the background
             // (TASK-228.2), which answers with every other module in place.
             AutomationExtensionChannel.polyfillModuleJS,
@@ -137,6 +141,8 @@ struct ExtensionAPIPolyfill {
         // preamble classified it (TASK-43).
         try { __detourPolyfillDiag.contextKind = globalThis.__detourContextKind; } catch(e) { __detourPolyfillDiag.contextKind = 'error: ' + e.message; }
         try { __detourPolyfillDiag.apis.contentBridge = globalThis.__detourContentBridge; } catch(e) { __detourPolyfillDiag.apis.contentBridge = 'error: ' + e.message; }
+        // How many stub members the automation endpoint's counter wrapped (TASK-228.2).
+        try { __detourPolyfillDiag.apis.stubCounting = globalThis.__detourStubCounting ? globalThis.__detourStubCounting.wrapped : 'absent'; } catch(e) { __detourPolyfillDiag.apis.stubCounting = 'error: ' + e.message; }
         } catch(e) {
         __detourPolyfillDiag.error = e.message || String(e);
         __detourPolyfillDiag.stack = e.stack || '';

@@ -1291,6 +1291,24 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                 AutomationExtensionChannel.shared.park(key: key, instance: instance, reply: replyHandler)
             }
 
+        // The polyfill's stub-call counts for the compatibility report
+        // (`ExtensionPolyfillStubs.countingModuleJS`), from any context of the
+        // verified extension (content scripts do not run the bundle). `stop`
+        // while automation is off, and always in the Private profile, ends
+        // the context's reporting; only registry paths are kept.
+        case ExtensionPolyfillStubs.reportRequestType:
+            guard AutomationExtensionStubCalls.shared.isActive, let profile, !profile.isIncognito else {
+                replyHandler(["stop": true], nil)
+                return
+            }
+            let kind = AutomationExtensionConsole.contextKind(extensionID: extensionID, profile: profile,
+                                                              sender: sender, webView: webView)
+            if kind != AutomationExtensionConsole.probeKind, let batch = params["counts"] as? [String: Any] {
+                AutomationExtensionStubCalls.shared.record(extensionID: extensionID, profileID: profile.id,
+                                                           contextKind: kind, batch: batch)
+            }
+            replyHandler(["stop": false], nil)
+
         // MARK: - Logging Bridge
         case "log":
             // The automation endpoint's console (TASK-228.2), before the os_log

@@ -210,12 +210,17 @@ extension AutomationTools {
                 + "pages); each entry adds context_kind (worker, popup, options, page) and context, and the "
                 + "records are kept per extension (one seq) while automation is on, also after a popup closes. "
                 + "The bridge's own limit applies there: past a burst of 50, about 20 a second, repeats folded "
-                + "into \"(repeated N times)\"; console.debug is not forwarded.",
+                + "into \"(repeated N times)\"; console.debug is not forwarded. stable true leaves out each "
+                + "entry's seq and timestamp and writes extension origins (webkit-extension://<uuid>, new at every "
+                + "load) as webkit-extension://<extension id>, for diffing against a saved baseline; entries keep "
+                + "their order of arrival, which between two contexts can differ from run to run.",
             inputSchema: MCPSchema.input([
                 ("context", .string("A tab_id or tab:<id>, or worker:, popup:, options: or extension:<ext>")),
                 ("after_seq", .integer("Only entries with a larger seq (default 0: all kept)")),
                 ("levels", .stringArray("Only these levels: log, info, warn, error, debug")),
                 ("limit", .integer("Most entries to return (default 200, at most 1000)")),
+                ("stable", .boolean("Leave out seq and timestamp, and name extension origins by extension id "
+                                    + "(default false)")),
             ], required: ["context"]),
             outputSchema: MCPSchema.output([
                 "messages": MCPSchema.arrayOfObjects(
@@ -228,7 +233,9 @@ extension AutomationTools {
             annotations: ["readOnlyHint": true],
             handler: { [self] arguments in
                 try records(arguments, filter: "levels", allowed: AutomationPageCapture.consoleLevels,
-                            key: "messages") { AutomationPageCapture.shared.console(for: $0) }
+                            key: "messages", stable: try arguments.bool("stable") ?? false) {
+                    AutomationPageCapture.shared.console(for: $0)
+                }
             })
     }
 
@@ -277,6 +284,7 @@ extension AutomationTools {
     /// The entries of one of a tab's buffers after a cursor, filtered and
     /// limited, with the cursor to read on from.
     private func records(_ arguments: ToolArguments, filter name: String, allowed: Set<String>, key: String,
+                         stable: Bool = false,
                          where include: (AutomationRingBuffer.Entry) -> Bool = { _ in true },
                          buffer: (UUID) -> AutomationRingBuffer?) throws -> JSONValue {
         let after = try arguments.int("after_seq") ?? 0
@@ -292,6 +300,10 @@ extension AutomationTools {
         let capturing: Bool
         let buffered: AutomationRingBuffer?
         var kindFilter: String?
+        // How an extension origin is written in stable output.
+        var originName: (String) -> String = { host in
+            self.extensionOriginHosts()[host] ?? "unknown"
+        }
         if case .extension(let kind, let ref) = try AutomationContextID.parse(contextValue) {
             // Extension contexts (TASK-228.2): the console bridge's records.
             guard key == "messages" else {
@@ -303,6 +315,10 @@ extension AutomationTools {
             capturing = AutomationExtensionConsole.shared.isActive
             buffered = AutomationExtensionConsole.shared.buffer(extensionID: target.ext.id, profileID: target.profile.id)
             if kind != .extension { kindFilter = kind.rawValue }
+            // Its own records: every extension origin in them is its own,
+            // the current one or one from before a reload.
+            let id = target.ext.id
+            originName = { _ in id }
         } else {
             let (tab, _) = try resolvePage(context: contextValue)
             capturing = AutomationPageCapture.shared.isActive
@@ -318,13 +334,50 @@ extension AutomationTools {
         let page = matching.prefix(limit)
         let hasMore = matching.count > limit
         let next = hasMore ? (page.last?.seq ?? after) : max(after, records.lastSeq)
+        let entries: [JSONValue] = page.map { entry in
+            guard stable else { return entry.json }
+            var fields = entry.fields
+            fields["timestamp"] = nil
+            for (field, value) in fields {
+                if let text = value.stringValue, text.contains("webkit-extension://") {
+                    fields[field] = .string(Self.nameExtensionOrigins(text, originName))
+                }
+            }
+            return .object(fields)
+        }
         return [
-            key: .array(page.map(\.json)),
+            key: .array(entries),
             "next_seq": .int(next),
             "dropped": .int(records.dropped(after: after)),
             "has_more": .bool(hasMore),
             "capturing": .bool(capturing),
         ]
+    }
+
+    /// Every loaded extension context's origin host, with its extension id.
+    func extensionOriginHosts() -> [String: String] {
+        var hosts: [String: String] = [:]
+        for profile in environment.store.profiles where !profile.isIncognito {
+            for (id, context) in profile.extensionContexts {
+                if let host = context.baseURL.host { hosts[host] = id }
+            }
+        }
+        return hosts
+    }
+
+    /// `text` with each `webkit-extension://<host>` written
+    /// `webkit-extension://<name(host)>`.
+    static func nameExtensionOrigins(_ text: String, _ name: (String) -> String) -> String {
+        let pattern = try! NSRegularExpression(pattern: #"webkit-extension://([A-Za-z0-9-]+)"#)
+        let ns = text as NSString
+        var out = ""
+        var last = 0
+        for match in pattern.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            out += ns.substring(with: NSRange(location: last, length: match.range.location - last))
+            out += "webkit-extension://" + name(ns.substring(with: match.range(at: 1)))
+            last = match.range.location + match.range.length
+        }
+        return out + ns.substring(from: last)
     }
 
     // MARK: wait_for

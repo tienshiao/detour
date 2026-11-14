@@ -147,8 +147,13 @@ final class AutomationController {
         self.mode = mode
         // In this main-actor turn, before any extension background's first
         // message is handled: a background parks for the endpoint's commands
-        // only while the channel is open when it starts (TASK-228.2).
+        // only while the channel is open when it starts (TASK-228.2). The
+        // extension console and the stub-call counts start in the same turn,
+        // so a worker's start-up errors and stub calls are kept too (a
+        // context told `stop` by the counting stops reporting for good).
         AutomationExtensionChannel.shared.isOpen = true
+        AutomationExtensionConsole.shared.start()
+        AutomationExtensionStubCalls.shared.start()
         status = .starting
         let directory = directory()
         Task { await self.start(port: port, in: directory, generation: started) }
@@ -187,13 +192,14 @@ final class AutomationController {
             self.endpoint = endpoint
             startExpiryTimer()
             AutomationPageCapture.shared.start(store: environment().store)
-            AutomationExtensionConsole.shared.start()
             status = .listening(port: listening)
             log.notice("Automation endpoint listening on \(AutomationCredentials.endpointURL(port: listening), privacy: .public)")
         } catch {
             pending?.stop()
             guard started == generation else { return }
             AutomationExtensionChannel.shared.isOpen = false
+            AutomationExtensionConsole.shared.stop()
+            AutomationExtensionStubCalls.shared.stop()
             status = .failed(String(describing: error))
             log.error("Automation endpoint did not start: \(String(describing: error), privacy: .public)")
         }
@@ -211,6 +217,7 @@ final class AutomationController {
         tools = nil
         AutomationPageCapture.shared.stop()
         AutomationExtensionConsole.shared.stop()
+        AutomationExtensionStubCalls.shared.stop()
         AutomationExtensionPopups.shared.closeAll()
         AutomationExtensionChannel.shared.isOpen = false
         AutomationCredentials.removeEndpointFile(in: directory(), pid: ProcessInfo.processInfo.processIdentifier)

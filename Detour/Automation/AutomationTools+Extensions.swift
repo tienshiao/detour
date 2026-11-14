@@ -196,9 +196,26 @@ extension AutomationTools {
 
     // MARK: Describing an extension
 
-    func describe(_ ext: WebExtension) -> JSONValue {
+    /// `stable`: for diffing against a baseline, without what changes from
+    /// run to run: profile ids (profiles are named and sorted by name),
+    /// worker_parked, open_contexts, repeat counts, and extension origins
+    /// (written with the extension's id) and its installed folder (left out)
+    /// in error messages.
+    func describe(_ ext: WebExtension, stable: Bool = false) -> JSONValue {
         let manifest = ext.manifest
-        let profiles: [JSONValue] = environment.store.profiles.filter { !$0.isIncognito }.map { profile in
+        let basePath = ext.basePath.resolvingSymlinksInPath().standardizedFileURL.path
+        func message(_ text: String) -> String {
+            stable ? AutomationCompatReport.normalise(text, extensionID: ext.id, basePath: basePath) : text
+        }
+        func describeError(_ error: any Error) -> JSONValue {
+            let nsError = error as NSError
+            return ["domain": .string(nsError.domain), "code": .int(nsError.code),
+                    "message": .string(message(nsError.localizedDescription))]
+        }
+        let normalProfiles = environment.store.profiles.filter { !$0.isIncognito }
+        let ordered = stable ? normalProfiles.sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
+            : normalProfiles
+        let profiles: [JSONValue] = ordered.map { profile in
             let context = profile.extensionContext(for: ext.id)
             let key = AutomationExtensionChannel.Key(extensionID: ext.id, profileID: profile.id)
             var contexts: [JSONValue] = []
@@ -211,7 +228,7 @@ extension AutomationTools {
                     contexts.append(.string("options:\(ext.id)"))
                 }
             }
-            return [
+            var described: [String: JSONValue] = [
                 "profile_id": .string(profile.id.uuidString),
                 "profile_name": .string(profile.name),
                 "turned_on": .bool(AppDatabase.shared.isExtensionEnabledByProfile(extensionID: ext.id,
@@ -219,21 +236,40 @@ extension AutomationTools {
                 "loaded": .bool(context != nil),
                 "worker_parked": .bool(AutomationExtensionChannel.shared.hasParked(key)),
                 "open_contexts": .array(contexts),
-                "context_errors": .array((context?.errors ?? []).map(Self.describe)),
+                "context_errors": .array((context?.errors ?? []).map(describeError)),
             ]
+            if stable {
+                described["profile_id"] = nil
+                described["worker_parked"] = nil
+                described["open_contexts"] = nil
+            }
+            return .object(described)
         }
         // The Private profile's errors are left out with the rest of it.
-        let recorded: [JSONValue] = ExtensionErrorLog.shared.errors(for: ext.id).filter {
+        let names = Dictionary(normalProfiles.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        var recorded: [JSONValue] = ExtensionErrorLog.shared.errors(for: ext.id).filter {
             $0.profileID != TabStore.incognitoProfileID
         }.map { entry in
-            [
+            var described: [String: JSONValue] = [
                 "source": .string(entry.source),
                 "profile_id": .nullable(entry.profileID?.uuidString),
                 "domain": .string(entry.domain),
                 "code": .int(entry.code),
-                "message": .string(entry.message),
+                "message": .string(message(entry.message)),
                 "count": .int(entry.count),
             ]
+            if stable {
+                described["profile_id"] = nil
+                described["count"] = nil
+                described["profile_name"] = .nullable(entry.profileID.flatMap { names[$0] })
+            }
+            return .object(described)
+        }
+        if stable {
+            // Sorted rather than in the order they happened, without repeats.
+            recorded = Array(Set(recorded.map(\.jsonString))).sorted().compactMap {
+                try? JSONValue.parse(Data($0.utf8))
+            }
         }
         func strings(_ list: [String]?) -> JSONValue { .array((list ?? []).map(JSONValue.string)) }
         return [
@@ -255,7 +291,7 @@ extension AutomationTools {
                 "optional_host_permissions": strings(manifest.optionalHostPermissions),
             ],
             "permission_decisions": permissionDecisions(ext),
-            "manifest_errors": .array((ext.wkExtension?.errors ?? []).map(Self.describe)),
+            "manifest_errors": .array((ext.wkExtension?.errors ?? []).map(describeError)),
             "load_errors": .array(recorded),
         ]
     }
@@ -302,16 +338,21 @@ extension AutomationTools {
                 + "now). requested_permissions is the manifest's lists; permission_decisions the saved grants and "
                 + "denials (type api, match_pattern or url); manifest_errors WebKit's manifest warnings; "
                 + "load_errors every load error recorded this session (reading the files, loading the context, a "
-                + "background that failed to load), with a count of repeats. The Private profile is left out.",
+                + "background that failed to load), with a count of repeats. The Private profile is left out. "
+                + "stable true is for diffing against a saved baseline: no profile_id (profiles sorted by name), "
+                + "worker_parked, open_contexts or repeat counts, load errors sorted and once each, and extension "
+                + "origins in messages written with the extension id.",
             inputSchema: MCPSchema.input([
                 ("extension", .string("Optional: one extension, by id or manifest name")),
+                ("stable", .boolean("Leave out what changes from run to run (default false)")),
             ]),
             outputSchema: MCPSchema.output(["extensions": MCPSchema.arrayOfObjects("One entry per extension")]),
             annotations: ["readOnlyHint": true],
             handler: { [self] arguments in
                 let list = try arguments.string("extension").map { [try resolveExtension($0)] }
                     ?? ExtensionManager.shared.extensions.sorted { $0.id < $1.id }
-                return ["extensions": .array(list.map(describe))]
+                let stable = try arguments.bool("stable") ?? false
+                return ["extensions": .array(list.map { describe($0, stable: stable) })]
             })
     }
 

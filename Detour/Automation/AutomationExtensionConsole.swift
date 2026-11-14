@@ -50,6 +50,8 @@ final class AutomationExtensionConsole {
                 webView: WKWebView?, params: [String: Any]) {
         guard isActive, !profile.isIncognito else { return }
         let kind = Self.contextKind(extensionID: extensionID, profile: profile, sender: sender, webView: webView)
+        // The compatibility report's own probe page is not the extension's.
+        guard kind != Self.probeKind else { return }
         let bridged = params["level"] as? String
         let level = Self.pick(params["consoleLevel"], from: AutomationPageCapture.consoleLevels,
                               else: bridged == "warn" || bridged == "error" ? bridged! : "info")
@@ -82,14 +84,20 @@ final class AutomationExtensionConsole {
         buffers[key] = buffer
     }
 
+    /// The kind of the compatibility report's probe page
+    /// (`AutomationExtensionProbePages`), whose messages are not recorded.
+    static let probeKind = "probe"
+
     /// Which context a bridged message came from: `worker` (the service
-    /// worker, or a background page), `popup`, `options`, or `page` (any
-    /// other extension page: a tab, an offscreen document, a frame).
+    /// worker, or a background page), `popup`, `options`, `probe` (the
+    /// compatibility report's own page), or `page` (any other extension
+    /// page: a tab, an offscreen document, a frame).
     static func contextKind(extensionID: String, profile: Profile, sender: ExtensionPolyfillHandler.PolyfillSender,
                             webView: WKWebView?) -> String {
         let background = ExtensionManager.shared.extension(withID: extensionID)?.manifest.background
         if ExtensionPolyfillHandler.senderIsBackgroundContext(sender, background: background) { return "worker" }
         guard let webView else { return "page" }
+        if AutomationExtensionProbePages.shared.isProbe(webView) { return probeKind }
         if AutomationExtensionPopups.shared.isPopup(webView)
             || ExtensionManager.shared.extensionOpenedPopupWebView(extensionID: extensionID) === webView {
             return "popup"

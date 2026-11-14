@@ -1070,6 +1070,7 @@ class Profile {
         }
         attempts.append(now)
         backgroundRecoveryAttempts[extensionID] = attempts
+        ExtensionErrorLog.shared.recordRecovery(extensionID: extensionID, profileID: id)
 
         log.notice("Background content for \(extensionID, privacy: .public) failed to load; reloading its context in profile \(self.name, privacy: .public) (attempt \(attempts.count) of \(Self.backgroundRecoveryLimit))")
         let oldBase = unloadExtension(id: extensionID)

@@ -10,6 +10,7 @@ import WebKit
 /// Context errors are copied in as they arrive, because WebKit consolidates
 /// and clears `context.errors` (a recovery reload starts a fresh context), and
 /// a failure the recovery papered over still matters to a compatibility run.
+/// The recoveries themselves are counted too (`recordRecovery`).
 /// Repeats are kept once (counted), and each extension keeps its newest
 /// `capacity` distinct errors. Forgotten on uninstall.
 final class ExtensionErrorLog {
@@ -33,6 +34,9 @@ final class ExtensionErrorLog {
     }
 
     private var entries: [String: [Entry]] = [:]
+    /// Background-load recoveries (`Profile.recoverFromBackgroundLoadFailure`
+    /// reloading the context) per extension and profile, this session.
+    private var recoveries: [String: [UUID: Int]] = [:]
 
     func record(extensionID: String, source: String, profileID: UUID?, error: any Error) {
         let nsError = error as NSError
@@ -53,7 +57,18 @@ final class ExtensionErrorLog {
         entries[extensionID] ?? []
     }
 
+    /// A recovery reloaded the extension's context in `profileID` after its
+    /// background failed to load.
+    func recordRecovery(extensionID: String, profileID: UUID) {
+        recoveries[extensionID, default: [:]][profileID, default: 0] += 1
+    }
+
+    func recoveryAttempts(for extensionID: String, profileID: UUID) -> Int {
+        recoveries[extensionID]?[profileID] ?? 0
+    }
+
     func forget(_ extensionID: String) {
         entries[extensionID] = nil
+        recoveries[extensionID] = nil
     }
 }

@@ -1732,6 +1732,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         AppDatabase.shared.deleteExtension(id: id)
         ExtensionErrorLog.shared.forget(id)
         AutomationExtensionConsole.shared.forget(extensionID: id)
+        AutomationExtensionStubCalls.shared.forget(extensionID: id)
         // A reinstall starts without an earlier copy's cancelled dialog.
         uninstallSelfCancelledAt[id] = nil
 

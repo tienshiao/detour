@@ -2631,6 +2631,109 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
         XCTAssertEqual(calls[3]["consoleLevel"] as? String, "error")
     }
 
+    // MARK: - Stub call counting (TASK-228.2)
+
+    /// The counting module wraps the polyfill's stand-ins (and nothing
+    /// WebKit vends), keeps what they answer and their `this`, and sends the
+    /// calls of one task in one `automation.stubCalls` batch; after a `stop`
+    /// reply the context sends nothing more.
+    @MainActor func testStubCallsAreCountedAndSentInOneBatchUntilStopped() async throws {
+        let raw = try await evalJSON("""
+        const sent = [];
+        const orig = globalThis.__detourPolyfillRequest;
+        let reply = { stop: false };
+        globalThis.__detourPolyfillRequest = function(type, params) {
+            if (type === 'automation.stubCalls') { sent.push(params.counts); return Promise.resolve(reply); }
+            return orig(type, params);
+        };
+        const tick = () => new Promise(r => setTimeout(r, 20));
+        try {
+            const setting = await chrome.privacy.services.passwordSavingEnabled.get({});
+            await chrome.privacy.services.passwordSavingEnabled.get({});
+            const closed = await chrome.sessions.getRecentlyClosed();
+            chrome.history.onVisited.addListener(function() {});
+            await tick();
+            const first = sent.slice();
+            reply = { stop: true };
+            chrome.sessions.getDevices();
+            await tick();
+            const afterStop = sent.length;
+            chrome.sessions.getDevices();
+            await tick();
+            return JSON.stringify({
+                first: first, afterStop: afterStop, final: sent.length, setting: setting, closed: closed,
+                wrapped: globalThis.__detourStubCounting.wrapped,
+                marked: chrome.privacy.services.passwordSavingEnabled.get.__detourCounted === true,
+                queryStateCounted: chrome.idle.queryState.__detourCounted === true,
+                diag: __detourPolyfillDiag.apis.stubCounting
+            });
+        } finally { globalThis.__detourPolyfillRequest = orig; }
+        """)
+        let result = try XCTUnwrap(raw as? [String: Any])
+        let first = try XCTUnwrap(result["first"] as? [[String: Int]])
+        XCTAssertEqual(first.count, 1, "one batch for the task's calls: \(first)")
+        XCTAssertEqual(first.first?["privacy.services.passwordSavingEnabled.get"], 2)
+        XCTAssertEqual(first.first?["sessions.getRecentlyClosed"], 1)
+        XCTAssertEqual(first.first?["history.onVisited.addListener"], 1)
+        XCTAssertEqual(result["afterStop"] as? Int, 2, "the batch that got stop was sent")
+        XCTAssertEqual(result["final"] as? Int, 2, "nothing after stop")
+        XCTAssertEqual((result["setting"] as? [String: Any])?["levelOfControl"] as? String, "not_controllable",
+                       "the stub still answers")
+        XCTAssertEqual((result["closed"] as? [Any])?.count, 0)
+        XCTAssertEqual(result["marked"] as? Bool, true)
+        XCTAssertEqual(result["queryStateCounted"] as? Bool, false, "a real polyfill API is not a stub")
+        XCTAssertGreaterThan(result["wrapped"] as? Int ?? 0, 10)
+        XCTAssertEqual(result["diag"] as? Int, result["wrapped"] as? Int)
+    }
+
+    /// Every counted path that the shim's permissions install is wrapped, and
+    /// nothing WebKit's own (a native function) ever is.
+    @MainActor func testTheCountingModuleLeavesNativeFunctionsAlone() async throws {
+        let raw = try await evalJSON("""
+        const nativeFn = Array.prototype.push;
+        const ns = { addListener: nativeFn };
+        globalThis.chrome.idle.onStateChanged = ns;
+        delete globalThis.__detourStubCounting;
+        const run = new Function(\(Self.jsString(ExtensionPolyfillStubs.countingModuleJS)));
+        run();
+        return JSON.stringify({ kept: globalThis.chrome.idle.onStateChanged.addListener === nativeFn });
+        """)
+        let result = try XCTUnwrap(raw as? [String: Any])
+        XCTAssertEqual(result["kept"] as? Bool, true)
+    }
+
+    private static func jsString(_ value: String) -> String {
+        let data = try! JSONSerialization.data(withJSONObject: [value])
+        let array = String(decoding: data, as: UTF8.self)
+        return String(array.dropFirst().dropLast())
+    }
+
+    /// The runner's probe: presence, typeof, and whether a function (or an
+    /// event's addListener) is WebKit's own, for the compatibility report.
+    @MainActor func testTheRunnerProbeAnswersPresenceTypeAndNativeness() async throws {
+        let paths = ["chrome.privacy", "chrome.privacy.services", "chrome.sessions.getDevices", "chrome.noSuchApi",
+                     "chrome.noSuchApi.member", "chrome.history.onVisited", "Array.isArray", "chrome.runtime.lastError"]
+        let raw = try await webView!.callAsyncJavaScript(
+            "globalThis.chrome.runtime.lastError = undefined;\n" + AutomationExtensionChannel.pageCommandBody,
+            arguments: ["command": ["id": 1, "op": "probe",
+                                    "args": String(decoding: try JSONSerialization.data(withJSONObject: paths), as: UTF8.self)]],
+            contentWorld: .page)
+        let result = try JSONValue.parse(Data(try XCTUnwrap(raw as? String).utf8))
+        XCTAssertEqual(result["ok"], true, result.jsonString)
+        let value = try XCTUnwrap(result["value"])
+        XCTAssertEqual(value["chrome.privacy"]?["present"], true)
+        XCTAssertEqual(value["chrome.privacy.services"]?["type"], "object")
+        XCTAssertEqual(value["chrome.privacy.services"]?["native"], .null, "an object with no addListener")
+        XCTAssertEqual(value["chrome.sessions.getDevices"]?["type"], "function")
+        XCTAssertEqual(value["chrome.sessions.getDevices"]?["native"], false)
+        XCTAssertEqual(value["chrome.noSuchApi"]?["present"], false)
+        XCTAssertEqual(value["chrome.noSuchApi.member"]?["present"], false)
+        XCTAssertEqual(value["chrome.noSuchApi.member"]?["type"], "undefined")
+        XCTAssertEqual(value["chrome.history.onVisited"]?["native"], false, "the event's addListener")
+        XCTAssertEqual(value["Array.isArray"]?["native"], true)
+        XCTAssertEqual(value["chrome.runtime.lastError"]?["present"], true, "a member there with the value undefined")
+    }
+
     /// The bridge swallows its own rejection: an unhandledrejection reporter that
     /// logs through the same path must not turn one failed send into a loop.
     @MainActor func testConsoleBridgeDoesNotFeedItselfWhenBridgeRejects() async throws {

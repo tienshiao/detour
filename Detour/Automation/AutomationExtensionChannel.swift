@@ -188,7 +188,7 @@ final class AutomationExtensionChannel {
     /// running, or was until WebKit unloaded it).
     func hasParked(_ key: Key) -> Bool { lastInstance[key] != nil }
 
-    /// Runs `op` (`call`, `get` or `ping`) in `key`'s background and returns
+    /// Runs `op` (`call`, `get`, `ping` or `probe`) in `key`'s background and returns
     /// the runner's result object (`ok`, `type`, `value`, `truncated`, or
     /// `ok: false` with the thrown error). Starts the background when it is
     /// not running. Fails with `worker_not_running` when no live background
@@ -326,11 +326,18 @@ final class AutomationExtensionChannel {
     /// `globalThis`, `self` or `window` is skipped) on the object holding it,
     /// with `args` (a JSON array string), and awaits what it returns; `get`
     /// reads the value at `path` (a promise is not awaited); `ping` answers
-    /// the context kind and URL. Results go through `AutomationPage`'s
+    /// the context kind and URL; `probe` answers, for each dotted path in
+    /// `args` (a JSON array, at most `probeLimit`), whether it is there, its
+    /// `typeof`, and whether the function (or an event's `addListener`) is
+    /// WebKit's own (`native`), for the compatibility report. Results go
+    /// through `AutomationPage`'s
     /// serialiser, so any value comes back. A missing member, or a call of
     /// something that is not a function, is a TypeError like the one the
     /// extension would get. Shared by the worker module and by calls into
     /// popup and options pages. `let`/`const` only.
+    /// The most paths one `probe` answers for.
+    static let probeLimit = 4000
+
     static let runnerJS = """
         const __detourAutomationRun = async (command) => {
           \(AutomationPage.plainFunction)
@@ -357,6 +364,47 @@ final class AutomationExtensionChannel {
               let url = null;
               try { url = String(globalThis.location.href); } catch (error) {}
               return succeed({ kind: globalThis.__detourContextKind || null, url });
+            }
+            if (op === 'probe') {
+              const paths = typeof command.args === 'string' && command.args !== '' ? JSON.parse(command.args) : [];
+              if (!Array.isArray(paths)) throw new TypeError('probe takes a JSON array of paths');
+              const nativeness = typeof globalThis.__detourNativeness === 'function' ? globalThis.__detourNativeness : null;
+              const out = {};
+              for (const raw of paths.slice(0, \(probeLimit))) {
+                const path = String(raw);
+                const parts = path.split('.');
+                let value = globalThis;
+                let present = true;
+                try {
+                  for (let index = 0; index < parts.length; index++) {
+                    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+                      present = false;
+                      value = undefined;
+                      break;
+                    }
+                    const owner = value;
+                    value = owner[parts[index]];
+                    // A member (chrome.ns.member) that is there with the value
+                    // undefined (runtime.lastError) is present; a namespace
+                    // WebKit hides reads undefined and is not.
+                    if (value === undefined && !(index >= 2 && parts[index] in owner)) {
+                      present = false;
+                      break;
+                    }
+                  }
+                  const callable = typeof value === 'function' ? value
+                    : (value && typeof value === 'object' && typeof value.addListener === 'function' ? value.addListener : null);
+                  out[path] = {
+                    present,
+                    type: present ? (value === null ? 'null' : typeof value) : 'undefined',
+                    native: callable && nativeness ? nativeness(callable) === 'native' : null
+                  };
+                } catch (error) {
+                  out[path] = { present: false, type: 'error', native: null,
+                                error: String(error && error.message ? error.message : error) };
+                }
+              }
+              return succeed(out);
             }
             if (op !== 'call' && op !== 'get') throw new TypeError('Unknown automation command ' + String(op));
             const path = String(command.path || '');
