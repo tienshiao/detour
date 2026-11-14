@@ -281,6 +281,39 @@ final class MCPSessionStore {
         sessions[id]?.initialized = true
     }
 
+    /// Client names the user disconnected: their `initialize` is refused
+    /// until the user allows them again (or the endpoint is turned off),
+    /// since a client whose session ends simply starts a new one.
+    private(set) var blockedClientNames: Set<String> = []
+
+    func block(_ clientName: String) {
+        guard blockedClientNames.insert(clientName).inserted else { return }
+        onChange?()
+    }
+
+    func unblock(_ clientName: String) {
+        guard blockedClientNames.remove(clientName) != nil else { return }
+        onChange?()
+    }
+
+    func unblockAll() {
+        guard !blockedClientNames.isEmpty else { return }
+        blockedClientNames.removeAll()
+        onChange?()
+    }
+
+    /// Ends the sessions not seen for `idle` (a client that went away without
+    /// saying so). One that comes back gets a 404 and starts a new session,
+    /// as Streamable HTTP clients do.
+    @discardableResult
+    func expire(idleFor idle: TimeInterval, now: Date) -> [Session] {
+        let stale = sessions.values.filter { now.timeIntervalSince($0.lastSeen) > idle }
+        guard !stale.isEmpty else { return [] }
+        for session in stale { sessions.removeValue(forKey: session.id) }
+        onChange?()
+        return stale
+    }
+
     @discardableResult
     func end(_ id: String) -> Bool {
         guard sessions.removeValue(forKey: id) != nil else { return false }
@@ -424,6 +457,12 @@ final class MCPServer {
             ?? Self.supportedProtocolVersions[0]
         let clientInfo = params?["clientInfo"]
         let clientName = clientInfo?["title"]?.stringValue ?? clientInfo?["name"]?.stringValue ?? "MCP client"
+        guard !sessions.blockedClientNames.contains(clientName) else {
+            return .json(Self.errorResponse(id: id, code: -32001,
+                                            message: "\(clientName) was disconnected from Detour by the user. Allow it "
+                                                + "again from Detour's automation indicator or Settings."),
+                         status: 403)
+        }
         let session = sessions.start(clientName: clientName, clientVersion: clientInfo?["version"]?.stringValue,
                                      protocolVersion: version, now: now())
         let result: JSONValue = [

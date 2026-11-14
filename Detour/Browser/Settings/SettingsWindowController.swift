@@ -191,6 +191,14 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         switchToPane(vc, identifier: Self.linksID)
     }
 
+    /// Programmatically show the General pane (its Automation section,
+    /// TASK-228.1).
+    func showGeneralPane() {
+        showWindow(nil)
+        guard let vc = panes[Self.generalID] else { return }
+        switchToPane(vc, identifier: Self.generalID)
+    }
+
     /// Programmatically show the Extensions pane.
     func showExtensionsPane() {
         showWindow(nil)

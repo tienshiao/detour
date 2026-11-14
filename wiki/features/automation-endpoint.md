@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Automation endpoint (MCP)
-description: "Detour's local MCP server for agents and scripts (TASK-228.1): how it is turned on, who may connect (Host, Origin, bearer token), the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM)."
+description: "Detour's local MCP server for agents and scripts (TASK-228.1): how it is turned on, who may connect (Host, Origin, bearer token), the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the connected-agent indicator and disconnecting, the bundled stdio helper and client setup, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM)."
 tags: [automation, mcp, testing, security]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T06:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T08:00:00Z }
 sources:
   - id: automation-dir
     resource: ../../Detour/Automation
@@ -18,6 +18,12 @@ sources:
   - id: task-228-1
     resource: backlog:TASK-228.1
     title: "Automation: an MCP endpoint in Detour, first slice for testing"
+  - id: controller
+    resource: ../../Detour/Automation/AutomationController.swift
+    title: AutomationController.swift (lifecycle, clients, token, indicator text)
+  - id: helper
+    resource: ../../Helpers/detour-mcp/main.swift
+    title: detour-mcp, the bundled stdio helper
   - id: input
     resource: ../../Detour/Automation/AutomationInput.swift
     title: AutomationInput.swift (delivery, keys, elements, the menu tracker)
@@ -34,9 +40,8 @@ browser's state and act on it: list windows, spaces and tabs, select a tab,
 open a URL, run a menu command, click, type, and choose from the menu that is
 open, take screenshots. Built first for testing Detour itself
 (replacing harness patches pasted into AppDelegate), and shipped in Release
-too, off until turned on.[^task-228-1] Later phases of TASK-228.1 add a
-connected indicator and a bundled stdin/stdout helper; TASK-228.2 adds
-extension contexts.
+too, off until turned on.[^task-228-1] TASK-228.2 adds extension
+contexts.
 
 # How it is turned on
 
@@ -44,7 +49,7 @@ extension contexts.
 
 | How | Listens on | Notes |
 |---|---|---|
-| The user's setting (`AutomationEndpointEnabled` in the data directory's defaults suite) | 47823, or `AutomationEndpointPort` | A fixed port, so a client configured once keeps working. The Settings row comes in a later phase. |
+| The user's setting (`AutomationEndpointEnabled` in the data directory's defaults suite), Settings > General > Automation | 47823, or `AutomationEndpointPort` | A fixed port, so a client configured once keeps working. Turned on and off at runtime by `AutomationController.setEnabled`; the window's indicator has Turn Off Automation too. |
 | `DETOUR_MCP=1` for a test run | an ephemeral port, or `DETOUR_MCP_PORT` | Only with `DETOUR_DATA_DIR` set and not `Detour`: a scripted run can never open the user's real profile. A refused request is logged, never silent. |
 | The XCTest host | never | Tests start their own endpoint. |
 
@@ -161,7 +166,53 @@ the person's pointer never moves (`AutomationInput`):[^input]
   Choosing calls `performActionForItem(at:)` while the menu is still
   tracking (WebKit's items need their live menu), then `cancelTracking()`.
 
-# The client
+# Who is connected, and stopping them
+
+`AutomationController` runs the endpoint (off, starting, listening, failed;
+a generation counter makes a start still in flight harmless after a stop)
+and posts `didChangeNotification` for the UI:[^controller]
+
+- **The indicator.** While a client is connected, every browser window
+  (Private ones too) shows an orange capsule at the bottom right of its
+  content naming the client ("Claude Code + 1"), whether the sidebar is shown
+  or not. The sidebar's title row had no room, and a sidebar placement would
+  have needed a second home when it is hidden. Its menu lists Disconnect for
+  each client, Allow … Again for disconnected ones, Turn Off Automation and
+  Automation Settings…. It lives in `contentContainerView` above the page
+  (pages go in below the drag handle), so `removeContentViews()` must skip it,
+  or the first tab switch removes it.
+- **Disconnect** ends the session and blocks the client's name: a
+  Streamable HTTP client whose session ends simply starts a new one, so
+  ending the session alone does nothing. The blocked client's `initialize`
+  gets 403 until the user allows it again or turns automation off and on.
+  It is a control for the user, not a security boundary: the token is the
+  boundary.
+- **Idle sessions end** after 10 minutes without a request, since most
+  clients never send DELETE. A client that comes back gets 404 and starts a
+  new session, as the transport expects.
+- **Reset Token** (Settings) writes a new token, swaps it into the running
+  endpoint and ends every session.
+
+# Setting up a client
+
+Settings > General > Automation copies what a client needs:
+
+- **The bundled helper**, `Detour.app/Contents/MacOS/detour-mcp`, for any
+  client that launches a command (Claude Desktop, Cursor, Claude Code). It
+  relays MCP's stdio transport, one JSON-RPC message per line, to the
+  endpoint, finding the URL and token in `mcp-endpoint.json` itself (with
+  `DETOUR_DATA_DIR` for a test run), so the client's configuration holds no
+  secret. When the session ended, the token was reset or Detour restarted
+  on another port, it reads the file again, replays the client's
+  `initialize` and retries once. With Detour not running, each request gets
+  a JSON-RPC error saying so. At the end of stdin it ends its session, so the
+  indicator goes away at once. Signed by `sign-app.sh` on its own, without
+  Detour's entitlements.
+  - Claude Code: `claude mcp add detour -- "/Applications/Detour.app/Contents/MacOS/detour-mcp"`
+  - Other clients: `{"mcpServers":{"detour":{"command":"…/detour-mcp"}}}`
+- **The URL and the token**, for clients that speak HTTP with a header.
+
+# The scripting client
 
 `scripts/detour-mcp` (Python 3, standard library only) reads
 `mcp-endpoint.json` from `$DETOUR_DATA_DIR` (or `--data-dir`), runs the
@@ -260,7 +311,12 @@ native context menu chosen from, and the input errors),
 `AutomationCaptureTests` (window, sidebar and page PNGs as image content
 and on disk, scale 2, the page's own colours from WebKit's snapshot, light
 and dark, the Debug overrides and that they exist only in Debug, and the
-errors).[^tests]
+errors), `AutomationControllerTests` (on and off with the endpoint file, a
+stop during a start, Reset Token, disconnect and allow, idle sessions, the
+indicator's text and its place above the page through tab switches) and
+`AutomationHelperTests` (the built helper relaying a session, starting a new
+one, its error without Detour, ending its session at the end of stdin, and
+the setup strings Settings copies).[^tests]
 
 # Related
 
@@ -273,5 +329,6 @@ errors).[^tests]
 [^automation-dir]: Detour/Automation (gate, credentials, HTTP, authorisation, MCP server, tools, endpoint)
 [^client]: scripts/detour-mcp (stdlib Python client)
 [^task-228-1]: Automation: an MCP endpoint in Detour, first slice for testing
-[^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests, AutomationInputTests, AutomationCaptureTests
+[^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests, AutomationInputTests, AutomationCaptureTests, AutomationControllerTests, AutomationHelperTests
 [^input]: Detour/Automation/AutomationInput.swift
+[^controller]: Detour/Automation/AutomationController.swift

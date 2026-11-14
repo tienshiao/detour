@@ -18,6 +18,13 @@ targets:
     dependencies:
       - package: GRDB
       - package: Sparkle
+      # TASK-228.1: the stdio MCP helper, beside the app's executable
+      # (Detour.app/Contents/MacOS/detour-mcp).
+      - target: detour-mcp
+        embed: true
+        codeSign: true
+        copy:
+          destination: executables
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.detourbrowser.mac
@@ -64,6 +71,26 @@ targets:
           if [ -n "$commit" ]; then
             /usr/libexec/PlistBuddy -c "Add :$key string ${commit}" "$plist"
           fi
+  detour-mcp:
+    # The stdio MCP helper (TASK-228.1): relays an MCP client's stdin and
+    # stdout to the automation endpoint in the running Detour.
+    type: tool
+    platform: macOS
+    sources:
+      - Helpers/detour-mcp
+    settings:
+      base:
+        PRODUCT_NAME: detour-mcp
+        PRODUCT_BUNDLE_IDENTIFIER: com.detourbrowser.mac.mcp-helper
+        DEVELOPMENT_TEAM: 58MN2R524R
+        CODE_SIGN_IDENTITY: "Developer ID Application"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: YES
+        OTHER_CODE_SIGN_FLAGS: "--timestamp"
+        SWIFT_VERSION: "6"
+        SWIFT_STRICT_CONCURRENCY: complete
+        MACOSX_DEPLOYMENT_TARGET: "15.4"
+        SKIP_INSTALL: YES
   DetourTests:
     type: bundle.unit-test
     platform: macOS

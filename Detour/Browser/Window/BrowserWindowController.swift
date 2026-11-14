@@ -129,6 +129,10 @@ class BrowserWindowController: NSWindowController {
     /// The empty-state line is on screen (for tests).
     var isEmptyStateLabelVisible: Bool { !emptyStateLabel.isHidden }
     let toastManager = ToastManager()
+    /// Shows that an agent is connected through the automation endpoint
+    /// (TASK-228.1); see BrowserWindowController+Automation.
+    let automationIndicator = AutomationIndicatorView()
+    var automationObserver: (any NSObjectProtocol)?
     private var webViewTopConstraint: NSLayoutConstraint?
     private lazy var findSession = FindInPageSession(bar: findBar)
 
@@ -346,6 +350,7 @@ class BrowserWindowController: NSWindowController {
         setupDragHandle()
         setupFindBar()
         setupLinkStatusBar()
+        setupAutomationIndicator()
 
         window.delegate = self
         setupRecentTabSwitcher(for: window)
@@ -2111,7 +2116,7 @@ class BrowserWindowController: NSWindowController {
         // split drop re-runs within a tick (deferred sidebar selection restore
         // → selectTab) and must not cut the animation short. The claim paths
         // remove it themselves when hosting moves to different content.
-        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipContentView && subview !== splitDropZoneView && subview !== splitRevealOverlay {
+        for subview in contentContainerView.subviews where subview !== findBar && subview !== dragHandle && subview !== peekOverlayView && subview !== currentPeekWebView && subview !== linkStatusBar && subview !== emptyStateLabel && subview !== pipContentView && subview !== splitDropZoneView && subview !== splitRevealOverlay && subview !== automationIndicator {
             webViews(in: subview).forEach(releaseScriptHandlers(of:))
             // Dismantle a split view before removing it so pane containers end
             // up superview-less, like a single tab's container after handoff —
@@ -3699,6 +3704,10 @@ extension BrowserWindowController: NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         hasClosed = true
+        if let automationObserver {
+            NotificationCenter.default.removeObserver(automationObserver)
+            self.automationObserver = nil
+        }
         if let webContentClickMonitor {
             NSEvent.removeMonitor(webContentClickMonitor)
             self.webContentClickMonitor = nil

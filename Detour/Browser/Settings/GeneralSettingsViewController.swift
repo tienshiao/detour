@@ -4,6 +4,11 @@ class GeneralSettingsViewController: SettingsPaneViewController {
     private var defaultBrowserButton: NSButton!
     private var statusLabel: NSTextField!
     private var peekCheckbox: NSButton!
+    private var automationCheckbox: NSButton!
+    private var automationStatus: NSTextField!
+    private var automationButtons: NSStackView!
+    private var allowAgainButton: NSButton!
+    private var automationObserver: (any NSObjectProtocol)?
     private static let textWidth = SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin
 
     override func makeBody() -> NSView {
@@ -47,7 +52,44 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         peekSection.alignment = .leading
         peekSection.spacing = SettingsMetrics.sectionTitleToRows
 
-        let stack = NSStackView(views: [browserSection, peekSection])
+        // Automation (TASK-228.1): the MCP endpoint, off by default.
+        let automationTitle = NSTextField.settingsSectionTitle("Automation")
+        automationCheckbox = NSButton(checkboxWithTitle: "Let AI agents and scripts control Detour (MCP)",
+                                      target: self, action: #selector(automationCheckboxChanged))
+        automationCheckbox.setAccessibilityIdentifier("automationEnabled")
+        let automationHelp = SettingsWrappingLabel(
+            wrapping: "While this is on, an MCP client given this Mac's token, such as Claude Code, can read your "
+                + "pages and act in them as you, signed in to your sites. Private windows are never reachable. "
+                + "Each window shows which agent is connected, with a way to disconnect it.",
+            estimatedWidth: Self.textWidth)
+        automationStatus = NSTextField(labelWithString: "")
+        automationStatus.font = .systemFont(ofSize: 12)
+        automationStatus.textColor = .secondaryLabelColor
+        automationStatus.isSelectable = true
+        automationStatus.lineBreakMode = .byTruncatingMiddle
+        let copyCommand = NSButton(title: "Copy Claude Code Command", target: self, action: #selector(copyClaudeCommand))
+        copyCommand.toolTip = "claude mcp add with Detour's helper, which finds the address and token itself"
+        let copyConfig = NSButton(title: "Copy MCP Config", target: self, action: #selector(copyMCPConfig))
+        copyConfig.toolTip = "The mcpServers entry for Claude Desktop, Cursor and other MCP clients"
+        let copyToken = NSButton(title: "Copy Token", target: self, action: #selector(copyToken))
+        let resetToken = NSButton(title: "Reset Token…", target: self, action: #selector(resetToken))
+        allowAgainButton = NSButton(title: "Allow Disconnected Agents Again", target: self,
+                                    action: #selector(allowDisconnectedAgents))
+        for button in [copyCommand, copyConfig, copyToken, resetToken, allowAgainButton!] { button.bezelStyle = .rounded }
+        automationButtons = NSStackView(views: [copyCommand, copyConfig, copyToken, resetToken])
+        automationButtons.orientation = .horizontal
+        automationButtons.spacing = SettingsMetrics.labelToControl
+        let automationRows = NSStackView(views: [automationCheckbox, automationHelp, automationStatus,
+                                                 automationButtons, allowAgainButton])
+        automationRows.orientation = .vertical
+        automationRows.alignment = .leading
+        automationRows.spacing = SettingsMetrics.controlToHelp
+        let automationSection = NSStackView(views: [automationTitle, automationRows])
+        automationSection.orientation = .vertical
+        automationSection.alignment = .leading
+        automationSection.spacing = SettingsMetrics.sectionTitleToRows
+
+        let stack = NSStackView(views: [browserSection, peekSection, automationSection])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = SettingsMetrics.sectionGap
@@ -62,6 +104,8 @@ class GeneralSettingsViewController: SettingsPaneViewController {
             // Full width, so the Peek help wraps at the pane's width.
             stack.trailingAnchor.constraint(equalTo: body.trailingAnchor),
             peekHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            automationHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            automationStatus.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: body.bottomAnchor),
             bottomHug(stack.bottomAnchor, body.bottomAnchor),
         ])
@@ -72,6 +116,119 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         super.viewWillAppear()
         updateStatus()
         peekCheckbox.state = PeekSettings.shared.isEnabled ? .on : .off
+        updateAutomation()
+        if automationObserver == nil {
+            automationObserver = NotificationCenter.default.addMainObserver(
+                forName: AutomationController.didChangeNotification, object: nil
+            ) { [weak self] _ in
+                self?.updateAutomation()
+            }
+        }
+    }
+
+    // MARK: Automation (TASK-228.1)
+
+    private func updateAutomation() {
+        let controller = AutomationController.shared
+        // The saved setting too: after a failed start the box stays checked
+        // (the endpoint will try again at launch) until the user unchecks it.
+        automationCheckbox.state = controller.status.isOn || controller.isEnabledInSettings ? .on : .off
+        switch controller.status {
+        case .off:
+            automationStatus.stringValue = "Off."
+        case .starting:
+            automationStatus.stringValue = "Starting…"
+        case .listening(let port):
+            let count = controller.sessions.count
+            let agents = count == 0 ? "no agent connected" : count == 1 ? "1 agent connected" : "\(count) agents connected"
+            automationStatus.stringValue = "On at \(AutomationCredentials.endpointURL(port: port)), \(agents)."
+        case .failed(let reason):
+            automationStatus.stringValue = "Could not start: \(reason)"
+        }
+        let buttonsHidden = !controller.status.isOn
+        let allowHidden = controller.blockedClientNames.isEmpty
+        if automationButtons.isHidden != buttonsHidden || allowAgainButton.isHidden != allowHidden {
+            automationButtons.isHidden = buttonsHidden
+            allowAgainButton.isHidden = allowHidden
+            // Rows came or went: the window fits the pane again.
+            contentHeightDidChange()
+        }
+    }
+
+    @objc private func automationCheckboxChanged() {
+        AutomationController.shared.setEnabled(automationCheckbox.state == .on)
+    }
+
+    /// The bundled stdio helper (TASK-228.1): clients run it, and it finds
+    /// the endpoint and token itself.
+    static var helperPath: String {
+        Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/detour-mcp").path
+    }
+
+    /// The helper's environment: the data directory, when it is not the
+    /// default one (a test run), so the helper finds that run's endpoint.
+    static func helperEnvironment(dataDirectory: String = detourDataDirectoryName()) -> [String: String] {
+        dataDirectory == defaultDetourDataDirectoryName ? [:] : ["DETOUR_DATA_DIR": dataDirectory]
+    }
+
+    /// `claude mcp add` running the helper.
+    static func claudeCodeCommand(helperPath: String, environment: [String: String]) -> String {
+        let env = environment.keys.sorted().map { " -e \(shellQuoted("\($0)=\(environment[$0]!)"))" }.joined()
+        return "claude mcp add detour\(env) -- \(shellQuoted(helperPath))"
+    }
+
+    /// `value` as one shell word: single-quoted, so spaces, `$` and quotes
+    /// in a path or a data directory name stay literal.
+    static func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// The `mcpServers` entry most MCP clients' config files take.
+    static func mcpConfig(helperPath: String, environment: [String: String]) -> String {
+        var server: [String: JSONValue] = ["command": .string(helperPath)]
+        if !environment.isEmpty { server["env"] = .object(environment.mapValues(JSONValue.string)) }
+        let config: JSONValue = ["mcpServers": ["detour": .object(server)]]
+        return config.jsonString
+    }
+
+    @objc private func copyClaudeCommand() {
+        copy(Self.claudeCodeCommand(helperPath: Self.helperPath, environment: Self.helperEnvironment()))
+    }
+
+    @objc private func copyMCPConfig() {
+        copy(Self.mcpConfig(helperPath: Self.helperPath, environment: Self.helperEnvironment()))
+    }
+
+    @objc private func copyToken() {
+        guard let token = try? AutomationController.shared.token() else { return }
+        copy(token)
+    }
+
+    private func copy(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+    }
+
+    @objc private func resetToken() {
+        let alert = NSAlert()
+        alert.messageText = "Reset the automation token?"
+        alert.informativeText = "Every connected agent is disconnected, and each one has to be set up again with "
+            + "the new token."
+        alert.addButton(withTitle: "Reset Token")
+        alert.addButton(withTitle: "Cancel")
+        let reset = { try? AutomationController.shared.resetToken() }
+        if let window = view.window {
+            alert.beginSheetModal(for: window) { response in
+                if response == .alertFirstButtonReturn { _ = reset() }
+            }
+        } else if alert.runModal() == .alertFirstButtonReturn {
+            _ = reset()
+        }
+    }
+
+    @objc private func allowDisconnectedAgents() {
+        let controller = AutomationController.shared
+        for name in controller.blockedClientNames { controller.allow(clientName: name) }
     }
 
     @objc private func peekCheckboxChanged() {

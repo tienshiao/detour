@@ -25,7 +25,7 @@ nonisolated final class AutomationEndpoint: Sendable {
 
     private let listener: NWListener
     private let queue = DispatchQueue(label: "com.detourbrowser.automation-endpoint")
-    private let token: String
+    private let token: Mutex<String>
     private let handler: Handler
     private let state = Mutex(State())
 
@@ -35,7 +35,7 @@ nonisolated final class AutomationEndpoint: Sendable {
 
     /// - Parameter port: 0 lets the system pick one; `start()` returns it.
     init(port: UInt16, token: String, handler: @escaping Handler) throws {
-        self.token = token
+        self.token = Mutex(token)
         self.handler = handler
         let parameters = NWParameters.tcp
         parameters.requiredInterfaceType = .loopback
@@ -46,6 +46,11 @@ nonisolated final class AutomationEndpoint: Sendable {
     }
 
     var port: UInt16 { state.withLock { $0.port } }
+
+    /// Replaces the token (Reset Token); requests from then on need the new one.
+    func setToken(_ newToken: String) {
+        token.withLock { $0 = newToken }
+    }
 
     /// Starts listening; returns the port once the listener is ready.
     func start(timeout: TimeInterval = 5) async throws -> UInt16 {
@@ -171,7 +176,7 @@ nonisolated final class AutomationEndpoint: Sendable {
     }
 
     private func authorize(_ request: AutomationHTTP.Request) -> AutomationAuthorization.Decision {
-        AutomationAuthorization.decide(headers: request.headers, token: token, port: port)
+        AutomationAuthorization.decide(headers: request.headers, token: token.withLock { $0 }, port: port)
     }
 
     private func refuse(status: Int, reason: String, on connection: NWConnection, closing: Bool, rest: Data?) {
@@ -200,84 +205,6 @@ nonisolated private final class OnceFlag: Sendable {
         used.withLock { used in
             defer { used = true }
             return !used
-        }
-    }
-}
-
-/// Starts and stops the automation endpoint for the app (TASK-228.1): asks
-/// `AutomationGate` at launch, creates the token, writes the endpoint file once
-/// listening, and removes it at quit.
-final class AutomationController {
-
-    static let shared = AutomationController()
-
-    private(set) var mode: AutomationGate.Mode = .off
-    private(set) var server: MCPServer?
-    private(set) var tools: AutomationTools?
-    private var endpoint: AutomationEndpoint?
-    private var directory: URL?
-    /// Set by `stop()`, so a start still in flight at quit neither keeps
-    /// listening nor writes an endpoint file nothing would remove.
-    private var stopped = false
-
-    /// What the server tells a client at initialize: how the ids fit together.
-    static let instructions = """
-        Detour browser automation. list_windows gives each window a window_id; list_spaces and list_tabs \
-        describe spaces and their sidebar items. select_tab, open_url and run_menu_item act on a window by \
-        window_id. Private windows and spaces are never reachable. Failed calls return isError with \
-        structuredContent.error.code, a stable code such as unknown_window or unknown_tab.
-        """
-
-    func startIfEnabled(isRunningUnitTests: Bool) {
-        let defaults = UserDefaultsScope.defaults
-        let (mode, refusal) = AutomationGate.mode(
-            environment: ProcessInfo.processInfo.environment,
-            settingEnabled: defaults.bool(forKey: AutomationGate.enabledDefaultsKey),
-            settingPort: defaults.object(forKey: AutomationGate.portDefaultsKey) as? Int,
-            isRunningUnitTests: isRunningUnitTests)
-        if let refusal {
-            log.error("Automation endpoint not started for the test run: \(refusal.description, privacy: .public)")
-        }
-        guard let port = mode.port else { return }
-        self.mode = mode
-        let directory = detourDataDirectory()
-        self.directory = directory
-        Task { await start(port: port, in: directory) }
-    }
-
-    private func start(port: UInt16, in directory: URL) async {
-        do {
-            let token = try AutomationCredentials.loadOrCreateToken(in: directory)
-            let tools = AutomationTools(environment: .live)
-            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
-            let server = MCPServer(tools: tools.all, serverVersion: version, instructions: Self.instructions)
-            let endpoint = try AutomationEndpoint(port: port, token: token) { request in
-                await server.handle(request)
-            }
-            let listening = try await endpoint.start()
-            guard !stopped else {
-                endpoint.stop()
-                return
-            }
-            try AutomationCredentials.writeEndpointFile(port: listening, token: token,
-                                                        pid: ProcessInfo.processInfo.processIdentifier,
-                                                        testRun: mode.isTestRun, in: directory)
-            self.tools = tools
-            self.server = server
-            self.endpoint = endpoint
-            log.notice("Automation endpoint listening on \(AutomationCredentials.endpointURL(port: listening), privacy: .public)")
-        } catch {
-            log.error("Automation endpoint did not start: \(String(describing: error), privacy: .public)")
-        }
-    }
-
-    func stop() {
-        stopped = true
-        endpoint?.stop()
-        endpoint = nil
-        server?.sessions.endAll()
-        if let directory {
-            AutomationCredentials.removeEndpointFile(in: directory, pid: ProcessInfo.processInfo.processIdentifier)
         }
     }
 }

@@ -86,10 +86,15 @@ nonisolated enum AutomationGate {
         }
 
         if settingEnabled {
-            let port = settingPort.flatMap { UInt16(exactly: $0) }.flatMap { $0 == 0 ? nil : $0 } ?? defaultPort
-            return (.userEnabled(port: port), refusal)
+            return (.userEnabled(port: userPort(settingPort: settingPort)), refusal)
         }
         return (.off, refusal)
+    }
+
+    /// The port a user-enabled endpoint listens on: the setting's, when it
+    /// is a valid non-zero port, else `defaultPort`.
+    static func userPort(settingPort: Int?) -> UInt16 {
+        settingPort.flatMap { UInt16(exactly: $0) }.flatMap { $0 == 0 ? nil : $0 } ?? defaultPort
     }
 
     /// Whether `name` (a `DETOUR_DATA_DIR` value, appended to Application

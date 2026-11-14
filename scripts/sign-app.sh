@@ -163,6 +163,11 @@ if [ -d "$APP_PATH/Contents/Frameworks" ]; then
         | while read -r nested; do sign_nested "$nested"; done
 fi
 
+# The stdio MCP helper (TASK-228.1): its own signature, without Detour's
+# entitlements (it needs none, and must not claim the app's identifier).
+HELPER="$APP_PATH/Contents/MacOS/detour-mcp"
+[ -f "$HELPER" ] && sign_nested "$HELPER"
+
 cp "$PROFILE" "$APP_PATH/Contents/embedded.provisionprofile"
 codesign --force --sign "$SIGN_SHA1" --timestamp -o runtime \
     --entitlements "$ENTITLEMENTS" "$APP_PATH"
@@ -176,7 +181,7 @@ codesign -d --entitlements - --xml "$APP_PATH" > "$WORK_DIR/signed.entitlements"
     || fail "cannot read the signed app's entitlements"
 [ "$(pb com.apple.application-identifier "$WORK_DIR/signed.entitlements")" = "$APP_ID" ] \
     || fail "the signed app does not carry the application identifier $APP_ID"
-for nested in "$SPARKLE"/Versions/B/XPCServices/*.xpc "$SPARKLE/Versions/B/Autoupdate" "$SPARKLE/Versions/B/Updater.app"; do
+for nested in "$SPARKLE"/Versions/B/XPCServices/*.xpc "$SPARKLE/Versions/B/Autoupdate" "$SPARKLE/Versions/B/Updater.app" "$HELPER"; do
     [ -e "$nested" ] || continue
     # Captured first: grep -q exiting early under pipefail could SIGPIPE codesign
     # and turn a match into a pass.
