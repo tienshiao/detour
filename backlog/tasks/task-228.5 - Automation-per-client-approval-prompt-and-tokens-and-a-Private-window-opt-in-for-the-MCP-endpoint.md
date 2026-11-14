@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T06:26:00Z'
-updated_date: '2026-11-14T12:04:00Z'
+updated_date: '2026-11-14T12:12:00Z'
 labels:
   - tooling
   - automation
@@ -143,4 +143,10 @@ Tests after the fixes: the 11 automation suites ran, 148 tests. The only failure
 Still owed for Done, both on an unlocked screen:
 - AC #1's real Allow click: docs/harness/task2285-approval-check.py <Detour.app>.
 - One full-suite run.
+
+2026-11-14, the lead's additions after the review:
+- aa9557a: AutomationApprovalPanelTests drives the real panel. A click before it is armed answers nothing, Allow answers once armed, Return approves nothing, Escape denies, and a dismissed panel cannot be approved. 3/0, passing on a locked screen; the panel shows and the Dock bounces during the run.
+- The Release build succeeds. Sidebar, space and Arc suites: 192/0.
+- /code-review medium on the lead's rate limits, fixed in 5b18d7f: hang-ups now count per name and per title, and old entries are pruned. AutomationClientApprovalTests 28/0.
+Open for the user, a trade-off: a local process can lock a real client out for 10 minutes by asking under its title and hanging up twice, or can use up the 5-prompts-per-10-minutes budget, so other clients get 429. That is a denial of service, not access. The alternative is unbounded prompt spam. The user can relax or keep the limits.
 <!-- SECTION:NOTES:END -->
