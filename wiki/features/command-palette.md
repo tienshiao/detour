@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Command palette
-description: "The overlay used for URL entry, tab switching, history and web search: its two modes, how it is opened and dismissed, inline completion, keyboard handling, and how focus returns to the page."
+description: "The overlay used for URL entry, tab switching, history, web search and browser commands: its two modes, how it is opened and dismissed, inline completion, command rows and the > list, keyboard handling, and how focus returns to the page."
 tags: [command-palette, navigation, keyboard, focus, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T22:30:00Z }
 sources:
   - id: palette-view
     resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
@@ -54,6 +54,12 @@ sources:
   - id: focus-tests
     resource: ../../DetourTests/CommandPaletteFocusTests.swift
     title: CommandPaletteFocusTests.swift
+  - id: task-320
+    resource: backlog:TASK-320
+    title: "Command palette: browser commands (a shared command registry, also for AppleScript, Shortcuts and MCP)"
+  - id: palette-commands
+    resource: ../../Detour/Browser/CommandPalette/PaletteCommands.swift
+    title: PaletteCommands.swift
 ---
 
 # What it does
@@ -272,6 +278,52 @@ A click outside the glass container dismisses and then re-sends the event to
 the window (`targetWindow?.sendEvent(event)`), so the click also lands on
 whatever was under it.
 
+## Browser commands
+
+Since TASK-320 a browser window's and a Quick Detour's palette also offer
+the browser's commands, from the [command registry](./browser-commands.md).
+The owner hands the palette a `commandSource`
+(`PaletteCommands.source(for:)`): the registry's palette commands that its
+kind of window answers, each resolved (available now by the rule that
+enables its menu item, titled as its item would be, with the live item's
+shortcut) only when typed text matches it, and once per showing
+(`resolvedCommands`), since some rules read the session database. A palette
+with no source, the Quick Detour launcher's, offers none and treats `>` as
+text.
+
+| Typed | Rows | Return |
+|---|---|---|
+| Text of 3 characters or more that a command's title or alias matches | At most two command rows right after the verbatim row (`PaletteRows.insertingCommands`); the top hit and the verbatim row keep their places | Unchanged: row 0 is the top hit or the verbatim text. Arrowing to a command row (the field shows its title) and Return runs it |
+| `>` then text | Commands only: every available one in menu order for a bare `>`, else the matches, best first. No history pass, no search suggestions (the text never goes to the search engine), no inline completion, no filler, no site-search entry by Tab or Space | Runs the selected command (row 0 after each rebuild). With no matching command, nothing: the text is never submitted as a search |
+
+Matching (`PaletteCommands`): a name matches when it starts with the typed
+words (`new pri` for New Private Window: *prefix*), or when every typed
+word starts a different word of it (`tab close` for Close Tab: *words*).
+Names are split at anything that is not a letter or digit, so
+"Pin/Unpin Tab" is pin, unpin, tab. Ranking: prefix before words, title
+before alias, then the shorter title, then menu order. In the `>` list the
+field is the filter: the arrow keys move the selection without changing it.
+
+A command row shows the command's symbol, its title in the window ("Unpin
+Tab" for a pinned tab, "Open in 🏠 Home" in a Quick Detour) and, where a
+history row shows its address, the live menu item's shortcut ("⇧⌘T"; the
+Quick Detour item's follows its hotkey setting, and a cleared hotkey shows
+none).
+
+Activating one calls `commandPalette(_:didRequestCommand:)`. The owner
+dismisses the palette first (so focus goes back to the page, and New Tab
+and Open Location… would not see a palette), then runs the command through
+`CommandDispatch.perform`: its live main-menu item, resolved along the
+window's responder chain, validated, and sent as a click on it would be.
+
+Not offered in the palette: New Tab and Open Location… (they open the
+palette), Undo and Redo (they act on whatever had focus), AppKit's text,
+window and application items, and every command that needs a parameter
+(switch to a space, an extension's popup or options). PROVISIONAL (chosen
+while the user was away): commands are both ranked in among the URL rows
+and listed alone after `>`; the alternatives were only after a prefix, or
+always mixed in. The thresholds (3 characters, 2 rows) are guesses.
+
 # Edge cases
 
 - **Profiles and Incognito**: a Private window's palette lists only its own
@@ -298,6 +350,17 @@ whatever was under it.
 
 # Tests
 
+- `PaletteCommandsTests` - matching, ranking, the `>` query, where command
+  rows go, and what a window's source offers and resolves (TASK-320).
+- `PaletteCommandRowsTests` - a real palette over a fake source: a command
+  row after the top hit and the verbatim row, Return still taking the top
+  hit, arrowing to the command, the `>` list alone (no late pass adds to
+  it), Return with no match doing nothing, each matched command resolved
+  once, and `>` as text without a source.
+- `PaletteCommandWindowTests` - real windows: a normal, a Private, a Quick
+  Detour and a quarantine window's `>` list is exactly the palette commands
+  its main menu enables there; Return pins and unpins the tab through the
+  menu item and the palette is gone; a Quick Detour's Copy URL runs in it.
 - `EmptyStatePaletteTests` - the empty-state line is hidden under the
   palette in all three modes (Cmd+T, Cmd+L, anchored), shown again after a
   dismiss, stays hidden after a commit, and stays hidden when the selection

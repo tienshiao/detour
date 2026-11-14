@@ -8,11 +8,16 @@ protocol CommandPaletteDelegate: AnyObject {
     func commandPalette(_ palette: CommandPaletteView, didSubmitSiteSearch url: URL)
     func commandPaletteDidDismiss(_ palette: CommandPaletteView)
     func commandPalette(_ palette: CommandPaletteView, didRequestSwitchToTab tabID: UUID, in spaceID: UUID)
+    /// A command row was activated (TASK-320): the owner dismisses the
+    /// palette and runs the command in its window as its menu item.
+    func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID)
 }
 
 extension CommandPaletteDelegate {
     func commandPalette(_ palette: CommandPaletteView, didSubmitSearch query: String) {}
     func commandPalette(_ palette: CommandPaletteView, didRequestSwitchToTab tabID: UUID, in spaceID: UUID) {}
+    /// Only an owner that gives the palette a `commandSource` gets command rows.
+    func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID) {}
 }
 
 class CommandPaletteTextField: NSTextField {
@@ -48,6 +53,20 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         get { glassContainer.tintColor }
         set { glassContainer.tintColor = newValue }
     }
+
+    /// The browser commands the palette offers (TASK-320), from its owner's
+    /// window: ranked in among the rows when typed text matches one, or
+    /// listed alone after ">". Nil, the default, offers none (the Quick
+    /// Detour launcher, which belongs to no window).
+    var commandSource: PaletteCommandSource? {
+        didSet { resolvedCommands = [:] }
+    }
+    /// Each command resolved for this showing (available, titled), so a rule
+    /// that reads the database runs once per command, not per keystroke.
+    private var resolvedCommands: [CommandID: PaletteCommand?] = [:]
+    /// The command rows ranked in for the current typed query, kept so the
+    /// instant and the late passes show the same ones.
+    private var commandRows: [SuggestionItem] = []
 
     /// The site searches the palette offers (TASK-287); tests pass a store
     /// over their own database.
@@ -283,6 +302,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     }
 
     func show(in parentView: NSView, initialText: String? = nil, anchorFrame: NSRect? = nil) {
+        resolvedCommands = [:]
         userTypedText = ""
         inlineCompletionSuffix = nil
         wasPrepopulated = initialText?.isEmpty == false
@@ -347,6 +367,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// another profile with the palette open, TASK-209). Leaves the field
     /// alone: no inline completion is applied.
     func reloadSuggestions() {
+        // The window's state changed under the palette: commands are
+        // resolved again for it.
+        resolvedCommands = [:]
         // The chip's color came from the old space and the old profile's
         // history: start over from the new ones (TASK-290).
         if let entry = activeSiteSearch {
@@ -381,6 +404,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         let items = suggestionProvider.defaultSuggestions(historySpaceIDs: historySpaceIDs, tabs: gatherTabInfos())
         suggestionsQuery = nil
         siteSearchOffer = nil
+        commandRows = []
         defaultRows = items
         matchRows = []
         searchSuggestionTexts = []
@@ -500,7 +524,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// default-list rows to fill the fixed-height list (TASK-184). A late pass
     /// (history, network) never changes the row the user has arrowed to.
     private func showQueryRows(isLatePass: Bool) {
-        var matches = matchRows
+        var matches = PaletteRows.insertingCommands(commandRows, into: matchRows)
         // Arrowing drops the inline completion the offer may rest on (`g`
         // completed to github.com); the row must not come or go under the
         // selection, so a late pass after the user moved keeps the offer.
@@ -589,7 +613,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             leaveSiteSearchByBackspace()
             return true
         }
-        if commandSelector == #selector(NSResponder.insertTab(_:)), activeSiteSearch == nil,
+        if commandSelector == #selector(NSResponder.insertTab(_:)), activeSiteSearch == nil, !isInCommandMode,
            let offer = selectionMovedByUser ? siteSearchOffer : siteSearchForTabKey() {
             // Before the inline completion is accepted: `w` completing to
             // wikipedia.org with `w` a keyword, or `you` completing to
@@ -606,6 +630,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             case .activateRow(let index):
                 activateSuggestion(at: index)
             case .submitText(let text):
+                // ">" text is a command to find, never a search to run.
+                guard !isInCommandMode else { break }
                 delegate?.commandPalette(self, didSubmitInput: text)
             case .nothing:
                 break
@@ -665,7 +691,11 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         setKeyboardSelection(to: newIndex)
         selectionMovedByUser = true
 
-        if let idx = newIndex {
+        if isInCommandMode {
+            // The command list's field is its filter: it keeps what was
+            // typed, so typing on narrows the list.
+            if let idx = newIndex { tableView.scrollRowToVisible(idx) }
+        } else if let idx = newIndex {
             tableView.scrollRowToVisible(idx)
 
             let displayText = suggestionDisplayText(at: idx)
@@ -684,8 +714,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
 
         // A late pass skipped while the selection sat on a row it would have
-        // changed lands now if the new selection allows it.
-        if suggestionsQuery != nil {
+        // changed lands now if the new selection allows it. The command list
+        // has no late passes.
+        if suggestionsQuery != nil, !isInCommandMode {
             showQueryRows(isLatePass: true)
         }
     }
@@ -704,6 +735,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             return query
         case .siteSearchHint(_, _, let fieldText):
             return fieldText
+        case .command(let command):
+            return command.title
         }
     }
 
@@ -723,12 +756,17 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             refreshSiteSearchSuggestions(entry)
             return
         }
+        if let commandQuery = commandModeQuery {
+            showCommandList(for: commandQuery)
+            return
+        }
         let query = userTypedText.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else {
             loadDefaultSuggestions()
             return
         }
         let tabs = gatherTabInfos()
+        commandRows = rankedInCommandRows(for: query)
 
         // --- Instant synchronous pass: open tabs only ---
         // The provider's own tab rules, so the background pass agrees with it.
@@ -794,6 +832,67 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
     }
 
+    // MARK: - Commands (TASK-320)
+
+    /// What follows ">" when the typed text is in command mode, and the
+    /// palette has commands to offer; nil otherwise. A palette without a
+    /// command source treats ">" as ordinary text.
+    private var commandModeQuery: String? {
+        commandSource == nil ? nil : PaletteCommands.commandModeQuery(userTypedText)
+    }
+
+    private var isInCommandMode: Bool { commandModeQuery != nil }
+
+    private func isCommandModeText(_ text: String) -> Bool {
+        commandSource != nil && PaletteCommands.commandModeQuery(text) != nil
+    }
+
+    /// The command as offered now, resolved once per showing.
+    private func resolvedCommand(_ id: CommandID) -> PaletteCommand? {
+        if let cached = resolvedCommands[id] { return cached }
+        let resolved = commandSource?.resolve(id)
+        resolvedCommands[id] = resolved
+        return resolved
+    }
+
+    /// The rows of the commands `query` matches that are available now, best
+    /// first, at most `limit` of them. Only matched candidates are resolved.
+    private func availableCommandRows(for query: String, limit: Int) -> [SuggestionItem] {
+        guard let source = commandSource, limit > 0 else { return [] }
+        var rows: [SuggestionItem] = []
+        for candidate in PaletteCommands.ranked(query, in: source.candidates) {
+            guard let command = resolvedCommand(candidate.id) else { continue }
+            rows.append(.command(command))
+            if rows.count == limit { break }
+        }
+        return rows
+    }
+
+    /// The command rows ranked in among a typed query's URL and history
+    /// rows: a few, and only for a query long enough to mean one.
+    private func rankedInCommandRows(for query: String) -> [SuggestionItem] {
+        guard PaletteCommands.ranksCommandsIn(query) else { return [] }
+        return availableCommandRows(for: query, limit: PaletteCommands.maximumMixedRows)
+    }
+
+    /// The list after ">": commands only, every available one when nothing
+    /// follows. No history pass, no search suggestions (the text is never
+    /// sent to the search engine), no inline completion and no filler; the
+    /// first row is selected, so Return runs the best match.
+    private func showCommandList(for query: String) {
+        localSuggestionGeneration &+= 1
+        debounceWorkItem?.cancel()
+        currentTask?.cancel()
+        inlineCompletionSuffix = nil
+        siteSearchOffer = nil
+        suggestionsQuery = "\(PaletteCommands.commandModePrefix)\(query)"
+        matchRows = []
+        commandRows = []
+        searchSuggestionTexts = []
+        searchSuggestionsQuery = nil
+        updateSuggestions(availableCommandRows(for: query, limit: .max))
+    }
+
     // MARK: - Site search (TASK-287)
 
     /// The site search a just-typed Space enters: the field is a keyword
@@ -801,7 +900,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// text (not what deleting the rest of `r foo` left), and that keyword
     /// was not just declined.
     private func siteSearchEnteredBySpace(_ raw: String) -> SiteSearch? {
-        guard activeSiteSearch == nil, raw.hasSuffix(" ") else { return nil }
+        guard activeSiteSearch == nil, raw.hasSuffix(" "), !isCommandModeText(raw) else { return nil }
         let word = String(raw.dropLast())
         guard word == userTypedText else { return nil }
         guard !word.isEmpty, !word.contains(where: \.isWhitespace),
@@ -933,6 +1032,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
         let siteRow = SuggestionItem.siteSearch(name: entry.name, query: query, url: url.absoluteString)
         suggestionsQuery = query
+        // A site search's query is the site's, never a command's.
+        commandRows = []
         matchRows = [siteRow]
         searchSuggestionTexts = []
         searchSuggestionsQuery = nil
@@ -978,6 +1079,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             let current = activeSiteSearch.flatMap { siteSearches.entry(withID: $0.id) }?.url(for: query)
             guard let url = current ?? URL(string: url) else { return }
             delegate?.commandPalette(self, didSubmitSiteSearch: url)
+        case .command(let command):
+            delegate?.commandPalette(self, didRequestCommand: command.id)
         case .siteSearchHint(let id, _, let fieldText):
             guard let entry = siteSearches.entry(withID: id) else { return }
             enterSiteSearch(entry, from: fieldText)
@@ -1090,6 +1193,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         case .siteSearchHint(_, let name, _):
             cell.configure(title: "Search \(name)", url: nil, icon: nil, isSearch: true,
                            badge: ("Tab", "arrow.right.to.line"))
+        case .command(let command):
+            // The shortcut where a history row shows its address.
+            cell.configure(title: command.title, url: command.keyEquivalent, icon: nil, isSearch: false,
+                           symbol: command.symbol ?? "command")
         }
     }
 
@@ -1235,8 +1342,9 @@ private class SuggestionCellView: NSTableCellView {
 
     /// `badge` (text, SF Symbol name) is the trailing hint: "Switch to Tab"
     /// for an open tab, "Tab" for a site search's keyword row (TASK-287).
+    /// `symbol` (an SF Symbol name) is a command row's icon (TASK-320).
     func configure(title: String, url: String?, icon: NSImage?, isSearch: Bool, switchToTab: Bool = false,
-                   isGoTo: Bool = false, badge: (text: String, symbol: String)? = nil) {
+                   isGoTo: Bool = false, badge: (text: String, symbol: String)? = nil, symbol: String? = nil) {
         expectedFaviconURL = nil
         titleLabel.stringValue = title.isEmpty ? (url ?? "") : title
 
@@ -1251,7 +1359,11 @@ private class SuggestionCellView: NSTableCellView {
             badgeIcon.image = NSImage(systemSymbolName: badge.symbol, accessibilityDescription: nil)
         }
 
-        if isSearch {
+        if let symbol {
+            iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+                ?? NSImage(systemSymbolName: "command", accessibilityDescription: nil)
+            iconView.contentTintColor = .secondaryLabelColor
+        } else if isSearch {
             iconView.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
             iconView.contentTintColor = .secondaryLabelColor
         } else if isGoTo {

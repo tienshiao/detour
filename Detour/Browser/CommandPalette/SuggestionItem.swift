@@ -11,4 +11,6 @@ nonisolated enum SuggestionItem: Equatable, Sendable {
     /// name): activating the row switches the palette to searching that site.
     /// `fieldText` is what the field shows while the row is selected.
     case siteSearchHint(id: UUID, name: String, fieldText: String)
+    /// A browser command (TASK-320): Return runs it as its menu item.
+    case command(PaletteCommand)
 }

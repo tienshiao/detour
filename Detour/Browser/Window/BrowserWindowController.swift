@@ -2685,6 +2685,8 @@ class BrowserWindowController: NSWindowController {
         let palette = CommandPaletteView()
         palette.delegate = self
         palette.tabStore = store
+        // The registry's commands this window answers (TASK-320).
+        palette.commandSource = PaletteCommands.source(for: self)
         scopeCommandPalette(palette)
         commandPaletteView = palette
 
@@ -3914,6 +3916,16 @@ extension BrowserWindowController: CommandPaletteDelegate {
         }
         selectTab(id: tabID)
         restoreWebContentFocus()
+    }
+
+    /// A command row (TASK-320): the palette goes first, giving the page its
+    /// focus back as any dismissal does (New Tab and Open Location… also
+    /// read whether a palette is up), then the command runs in this window
+    /// through its menu item, as a click on it would.
+    func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID) {
+        dismissCommandPalette()
+        guard let window, let command = BrowserCommands.command(withID: id) else { return }
+        CommandDispatch.perform(command, in: window, menu: NSApp.mainMenu)
     }
 }
 

@@ -5,7 +5,7 @@ description: How the command palette's rows are produced - open tabs and history
 resource: ../../Detour/Browser/CommandPalette/SuggestionProvider.swift
 tags: [command-palette, history, search, frecency, performance]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T22:30:00Z }
 sources:
   - id: provider
     resource: ../../Detour/Browser/CommandPalette/SuggestionProvider.swift
@@ -84,8 +84,14 @@ enum SuggestionItem {
     case searchSuggestion(text:)   // from the search engine
     case siteSearch(name:query:url:)             // site-search mode's row (TASK-287)
     case siteSearchHint(id:name:fieldText:)       // "Search <name>" with a Tab badge
+    case command(PaletteCommand)                  // a browser command (TASK-320)
 }
 ```
+
+Command rows are not the provider's: the view ranks them in on the main
+thread from its command source and inserts them after the verbatim row in
+both passes (`PaletteRows.insertingCommands`), so the instant and the late
+pass show the same ones. See [command palette](./command-palette.md#browser-commands).
 
 For a non-empty query `localSuggestions(for:historySpaceIDs:tabs:allowAutocomplete:currentTabID:)`
 returns, in order, capped at `maxSuggestions` (12):

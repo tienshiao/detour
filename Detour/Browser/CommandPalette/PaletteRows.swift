@@ -86,11 +86,23 @@ enum PaletteRows {
         return rows
     }
 
+    /// `matches` with command rows (TASK-320) right after the verbatim row,
+    /// so the top hit and the verbatim row keep their places and Return on
+    /// typed text does what it did before commands matched. With no verbatim
+    /// row they go last: a command is never the row Return picks by itself.
+    static func insertingCommands(_ commands: [SuggestionItem], into matches: [SuggestionItem]) -> [SuggestionItem] {
+        guard !commands.isEmpty else { return matches }
+        var rows = matches
+        let verbatim = rows.firstIndex { if case .searchInput = $0 { return true } else { return false } }
+        rows.insert(contentsOf: commands, at: verbatim.map { $0 + 1 } ?? rows.count)
+        return rows
+    }
+
     private static func url(of item: SuggestionItem) -> String? {
         switch item {
         case .historyResult(let url, _, _), .openTab(_, _, let url, _, _), .siteSearch(_, _, let url):
             return url
-        case .searchInput, .searchSuggestion, .siteSearchHint:
+        case .searchInput, .searchSuggestion, .siteSearchHint, .command:
             return nil
         }
     }

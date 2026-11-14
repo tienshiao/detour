@@ -28,6 +28,9 @@ sources:
   - id: menu-tests
     resource: ../../DetourTests/MainMenuCharacterizationTests.swift
     title: MainMenuCharacterizationTests.swift
+  - id: palette-commands
+    resource: ../../Detour/Browser/CommandPalette/PaletteCommands.swift
+    title: PaletteCommands.swift
 ---
 
 # Role
@@ -138,6 +141,74 @@ which sends the action from the command's **live** menu item (found by
 identifier) so the action gets the sender, tag and target a click gives it.
 The key-equivalent fast path and `AutomationMenus.resolve` (`run_menu_item`)
 use the same two helpers; before, each had its own copy.
+
+## In the command palette
+
+A palette over a browser window or a Quick Detour gets
+`PaletteCommands.source(for: controller)`: the commands with
+`palette == .offered` that the window's kind answers, resolved one at a
+time when typed text matches them, by `PaletteCommands.resolve`:
+`isAvailable(in:)` (the menu item's rule), `title(in:)` and the live item's
+shortcut (`CommandDispatch.keyEquivalentLabel`). Running one is
+`CommandDispatch.perform` from the window after the palette is dismissed.
+How rows are matched, ranked and placed, and the `>` list, are on
+[command palette](./command-palette.md#browser-commands).
+
+## How the other consumers are meant to use it
+
+Recorded for TASK-319 and TASK-228 (not built here):
+
+- **AppleScript and App Intents (TASK-319)**: one script command or intent
+  per command ID, its parameters from `parameters`, run with
+  `CommandDispatch.perform` against the window the script names (resolving
+  through that window's responder chain works whether or not it is key,
+  as `run_menu_item` already does); `isAvailable(in:)` with that window's
+  controller says whether it may run, so a script cannot do in a Private
+  window what its menu cannot.
+- **MCP (TASK-228)**: a `run_command` tool by ID (and a `list_commands`
+  listing IDs, titles and availability for a window) beside the existing
+  `run_menu_item`, which keeps working by menu path or key equivalent.
+- **User shortcuts (TASK-327)**: bindings keyed by `CommandID`, applied to
+  the live items (the palette already shows the live item's shortcut, so
+  it follows); defaults are `keyEquivalent`.
+
+## Why this shape
+
+- **Commands keep their selectors and the responder chain**, rather than an
+  action closure per command. The menu, `run_menu_item`, the key-equivalent
+  fast path, `HotKeyShortcutValidation` and AppKit's own items all work by
+  selector and target, and a closure would have had to find the window
+  itself: the responder chain already does, for the key window and, through
+  `CommandDispatch`, for a given one.
+- **Availability is a rule over a lazy context**, not an eager snapshot
+  struct of every fact (some facts query the database and validation runs
+  per item and on every key equivalent), and not "ask `validateMenuItem`"
+  for the palette (while the palette is open its field editor is first
+  responder; the rule over the window controller is what its menu item
+  answers once the palette is gone).
+- **Which kinds of window answer a command is declared**, not only left to
+  the responder chain, so the palette and scripts can tell without
+  resolving, and a test holds the declaration to `instancesRespond(to:)`.
+- **IDs are written out**, never derived from titles (titles change with
+  validation and with wording; bindings must not).
+- **The menu layout stays in code** (`setupMainMenu`), not as registry
+  data: separators, conditional items (Check for Updates…), delegates and
+  dynamic sections are layout, and moving them would have changed more than
+  the move needed.
+- **Dynamic items stay with their builders** for now: their availability is
+  per parameter (an extension with no popup has a nil action), which the
+  registry's rules do not express yet.
+
+## What is not on the registry yet
+
+The sidebar's context menus (tab, folder, space, pinned and favourite
+menus in `TabSidebarViewController`, the favourites bar, the archive page),
+the page's context menu additions (`BrowserWebView.willOpenMenu`), the Quick
+Detour title bar's menus, the Dock menu, and keys handled outside menus
+(the Control+Tab switcher, Escape for Peek, the find bar, the Undo and Redo
+interception in `BrowserWebView`). Commands with no menu item at all
+(duplicate, mute, sleep, split, move to space, new or rename space) do not
+exist as commands yet.
 
 # Invariants
 

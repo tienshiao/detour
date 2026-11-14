@@ -457,6 +457,9 @@ final class QuickDetourWindowController: NSWindowController {
         palette.historySpaceIDs = PaletteTabScope.historySpaceIDs(profile: profile, in: store)
         // No browser around it to say where the page goes (TASK-210).
         palette.placeholder = "Search or enter a URL"
+        // The registry's commands a Quick Detour or quarantine answers
+        // (TASK-320).
+        palette.commandSource = PaletteCommands.source(for: self)
         commandPaletteView = palette
 
         do {
@@ -1175,6 +1178,15 @@ extension QuickDetourWindowController: CommandPaletteDelegate {
     func commandPaletteDidDismiss(_ palette: CommandPaletteView) {
         dismissPalette()
         restoreWebContentFocus()
+    }
+
+    /// A command row (TASK-320): back to the page, then the command runs in
+    /// this window through its menu item, as a click on it would.
+    func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID) {
+        dismissPalette()
+        restoreWebContentFocus()
+        guard let window, let command = BrowserCommands.command(withID: id) else { return }
+        CommandDispatch.perform(command, in: window, menu: NSApp.mainMenu)
     }
 }
 
