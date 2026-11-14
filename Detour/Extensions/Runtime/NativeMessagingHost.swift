@@ -803,6 +803,9 @@ class NativeMessagingHost {
     /// `installSIGTERMHandler` call.
     nonisolated private static let sigtermSource = makeHostEndingSignalSource(SIGTERM) {
         terminateAllSpawnedHosts(within: quitGrace, refusingNewHosts: true)
+        // No quit path runs after a SIGTERM, so the automation endpoint's file
+        // (TASK-228.1) would outlive the process; removed only if it is ours.
+        AutomationCredentials.removeEndpointFile(in: detourDataDirectory(), pid: getpid())
     }
 
     /// Handles `signo` by running `endHosts`, then lets the signal take its

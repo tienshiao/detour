@@ -3789,6 +3789,16 @@ extension BrowserWindowController: CommandPaletteDelegate {
     private func paletteLoadURL(_ url: URL, typed: Bool) {
         let navigateInPlace = commandPaletteNavigatesInPlace
         dismissCommandPalette()
+        openTypedURL(url, typed: typed, navigateInPlace: navigateInPlace)
+    }
+
+    /// What submitting `url` in the palette does once it is dismissed: load it
+    /// in the selected tab (`navigateInPlace`, Cmd+L) or a new tab (Cmd+T),
+    /// with Link Routes applied to a routable new-tab URL. Also the automation
+    /// endpoint's `open_url` (TASK-228.1), so a scripted URL behaves as typed.
+    /// True when a Link Route sent it elsewhere.
+    @discardableResult
+    func openTypedURL(_ url: URL, typed: Bool, navigateInPlace: Bool) -> Bool {
         // Again once the target is hosted: a new tab's web view only joins the
         // window in `selectTab`, and an in-place load may first reclaim it.
         defer { restoreWebContentFocus() }
@@ -3808,7 +3818,7 @@ extension BrowserWindowController: CommandPaletteDelegate {
            let appDelegate = NSApp.delegate as? AppDelegate,
            let decision = routedTypedDecision(for: url) {
             appDelegate.openLink(url, routedTo: decision, typed: typed)
-            return
+            return true
         }
 
         if navigateInPlace, let tab = selectedTab {
@@ -3819,16 +3829,17 @@ extension BrowserWindowController: CommandPaletteDelegate {
                 tab.load(url, typed: typed)
             }
         } else {
-            guard let space = activeSpace else { return }
+            guard let space = activeSpace else { return false }
             if let internalPage {
                 let tab = store.addTab(in: space, internalPage: internalPage)
                 selectTab(id: tab.id)
-                return
+                return false
             }
             let tab = store.addTab(in: space)
             selectTab(id: tab.id)
             tab.load(url, typed: typed)
         }
+        return false
     }
 
     func commandPaletteDidDismiss(_ palette: CommandPaletteView) {

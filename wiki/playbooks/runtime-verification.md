@@ -270,6 +270,7 @@ pgrep -f "$APP/Contents/MacOS/Detour"
 
 - [Build and test](./build-and-test.md) — build directories and the one-build-at-a-time rule.
 - [Debug harness](./debug-harness.md) — driving the app from inside.
+- [Automation endpoint (MCP)](../features/automation-endpoint.md) — state, selection, URLs and menu commands from a script, with no harness patch (TASK-228.1; input and screenshots in later phases).
 - [In-process UI automation](./in-process-ui-automation.md) — clicks, keys and captures without external input.
 - [UI probes](./ui-probes.md) — hit-test maps and focus dumps.
 - [Seeding extensions](./seeding-extensions.md) — an extension in an isolated profile.

@@ -183,6 +183,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             openExternalURLs(links.urls, sourceApp: links.sourceApp, launchedDetour: true)
         }
 
+        // The automation endpoint (TASK-228.1): off unless the user turned it
+        // on, or a test run asked for it with an isolated data directory.
+        AutomationController.shared.startIfEnabled(isRunningUnitTests: Self.isRunningUnitTests)
+
         // Once the first window has settled: the one-time Arc import offer.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.offerArcImportIfNeeded(over: wc)
@@ -190,6 +194,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        AutomationController.shared.stop()
         QuickDetourHotKey.shared.stop()
         QuickDetourIdleMonitor.shared.stop()
         // Open Quick Detours go to the archive at quit (TASK-193.1's decision,
