@@ -63,6 +63,44 @@ nonisolated final class AutomationExtensionChannelTests: XCTestCase {
         }
     }
 
+    /// Private access turned off (TASK-228.5): that profile's parks are told
+    /// to stop and its waiting commands fail; other profiles are untouched.
+    @MainActor func testClosingOneProfilesParksLeavesTheOthers() async throws {
+        let privateKey = AutomationExtensionChannel.Key(extensionID: "ext", profileID: TabStore.incognitoProfileID)
+        let other = park("a")
+        let privatePark = ParkReply()
+        channel.park(key: privateKey, instance: "p") { value, error in
+            privatePark.value = value as? [String: Any]
+            privatePark.error = error
+        }
+        let otherProfile = AutomationExtensionChannel.Key(extensionID: "ext2", profileID: TabStore.incognitoProfileID)
+        let queued = Task { try await channel.send(otherProfile, op: "ping", limit: .seconds(5)) }
+        try await waitUntil("the command to wait for a park", pollInterval: 0.01) { self.wakes.contains(otherProfile) }
+
+        channel.closeParks(profileID: TabStore.incognitoProfileID)
+        XCTAssertTrue(privatePark.stopped)
+        await expectFailure(queued, .privateUnreachable)
+        XCTAssertFalse(other.answered, "another profile's park still waits")
+        let call = Task { try await channel.send(key, op: "ping", limit: .seconds(5)) }
+        try await waitUntil("the other profile's command", pollInterval: 0.01) { other.command != nil }
+        channel.acknowledge(key: key, instance: "a", commandID: other.commandID)
+        finish(other.commandID, value: "pong")
+        let value = try await call.value
+        XCTAssertEqual(value["value"], "pong")
+    }
+
+    @MainActor func testForgettingOneProfilesStubCounts() {
+        let calls = AutomationExtensionStubCalls()
+        calls.start()
+        let normal = UUID()
+        calls.record(extensionID: "ext", profileID: normal, contextKind: "worker", batch: ["privacy.services.passwordSavingEnabled.get": 2])
+        calls.record(extensionID: "ext", profileID: TabStore.incognitoProfileID, contextKind: "worker",
+                     batch: ["privacy.services.passwordSavingEnabled.get": 3])
+        calls.forget(profileID: TabStore.incognitoProfileID)
+        XCTAssertTrue(calls.calls(extensionID: "ext", profileID: TabStore.incognitoProfileID).isEmpty)
+        XCTAssertEqual(calls.calls(extensionID: "ext", profileID: normal).values.reduce(0, +), 2)
+    }
+
     @MainActor func testAClosedChannelTellsTheBackgroundToStop() {
         channel.isOpen = false
         XCTAssertTrue(park("a").stopped)

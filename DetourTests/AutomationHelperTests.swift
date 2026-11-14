@@ -237,6 +237,50 @@ nonisolated final class AutomationHelperTests: XCTestCase {
         try helper.input.close()
     }
 
+    /// Revoked while the client was not running: the saved token is refused
+    /// before it was ever accepted in this run, so it is deleted and the
+    /// helper asks once, instead of answering "revoked" for good.
+    @MainActor func testASavedTokenRevokedMeanwhileIsReplacedWithOnePrompt() async throws {
+        let directory = try temporaryDirectory()
+        let prompter = FakeApprovalPrompter()
+        prompter.autoAnswer = .allow
+        let (_, store) = try await startUserEndpoint(in: directory, prompter: prompter)
+        let folder = directory.appendingPathComponent("mcp-clients")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let tokenFile = folder.appendingPathComponent(AutomationClientStore.hash("claude-desktop") + ".token")
+        try Data("revoked-long-ago-0123456789abcdef0123456789\n".utf8).write(to: tokenFile)
+
+        let helper = try launchHelper(endpointFile: directory.appendingPathComponent(AutomationCredentials.endpointFileName))
+        helper.send(initialize)
+        let initialized = try await helper.receive()
+        XCTAssertEqual(initialized["result"]?["serverInfo"]?["name"], "detour", initialized.jsonString)
+        XCTAssertEqual(prompter.prompts.count, 1, "asked once")
+        let saved = try String(contentsOf: tokenFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertNotNil(store.client(presenting: saved), "the new token replaced the stale one")
+        try helper.input.close()
+    }
+
+    /// Disconnected, then the client quit before sending anything else: the
+    /// helper's closing DELETE is refused, and the token file goes with it.
+    @MainActor func testARevokedClientThatQuitsLeavesNoTokenBehind() async throws {
+        let directory = try temporaryDirectory()
+        let prompter = FakeApprovalPrompter()
+        prompter.autoAnswer = .allow
+        let (server, store) = try await startUserEndpoint(in: directory, prompter: prompter)
+        let helper = try launchHelper(endpointFile: directory.appendingPathComponent(AutomationCredentials.endpointFileName))
+        helper.send(initialize)
+        _ = try await helper.receive()
+        let record = try XCTUnwrap(store.records.first)
+        let tokenFile = directory.appendingPathComponent("mcp-clients/\(AutomationClientStore.hash("claude-desktop")).token")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tokenFile.path))
+        store.revoke(clientID: record.clientID)
+        server.sessions.endAll(clientID: record.clientID)
+        try helper.input.close()
+        try await waitUntil("the helper to exit", timeout: 5) { !helper.process.isRunning }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tokenFile.path))
+    }
+
     @MainActor func testADeniedClientGetsAnErrorAndNoSecondPromptInTheRun() async throws {
         let directory = try temporaryDirectory()
         let prompter = FakeApprovalPrompter()

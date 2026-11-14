@@ -51,6 +51,9 @@ enum RelayError: Error {
     /// The client has no token and cannot get one in this run (denied,
     /// revoked, no answer): every request gets this message.
     case unauthorized(String)
+    /// The saved token was refused before Detour ever accepted it in this
+    /// run: deleted, and asked for again once.
+    case staleSavedToken
 }
 
 let protocolVersionHeader = "MCP-Protocol-Version"
@@ -133,6 +136,10 @@ func saveClientToken(_ token: String, to file: URL) throws {
     private var initializeParams: Any?
     /// The token this client was approved with (the user's endpoint).
     private var clientToken: String?
+    /// Whether `clientToken` came from the file and Detour has not accepted
+    /// it yet in this run: a 401 then means it was revoked while the client
+    /// was not running, and the helper asks again once instead of giving up.
+    private var clientTokenUnconfirmed = false
     /// Why this run can no longer reach Detour (denied, revoked): sticky,
     /// so a client that retries never prompts the user again.
     private var unauthorized: String?
@@ -172,6 +179,7 @@ func saveClientToken(_ token: String, to file: URL) throws {
         let file = clientTokenFile(name: clientInfo.name, in: endpoint.directory)
         if let saved = readClientToken(file) {
             clientToken = saved
+            clientTokenUnconfirmed = true
             return saved
         }
         let token = try await requestToken(from: endpoint)
@@ -182,6 +190,7 @@ func saveClientToken(_ token: String, to file: URL) throws {
             FileHandle.standardError.write(Data("detour-mcp: the token was not saved: \(error)\n".utf8))
         }
         clientToken = token
+        clientTokenUnconfirmed = false
         return token
     }
 
@@ -239,6 +248,16 @@ func saveClientToken(_ token: String, to file: URL) throws {
     }
 
     private func post(_ body: Data, includeSession: Bool = true) async throws -> (Int, Data, String?) {
+        do {
+            return try await postOnce(body, includeSession: includeSession)
+        } catch RelayError.staleSavedToken {
+            // Revoked while the client was not running: the file is gone, so
+            // this asks for a new token (one prompt), then sends again.
+            return try await postOnce(body, includeSession: includeSession)
+        }
+    }
+
+    private func postOnce(_ body: Data, includeSession: Bool) async throws -> (Int, Data, String?) {
         if endpoint == nil { endpoint = try readEndpoint() }
         guard let endpoint else { throw RelayError.notRunning("Detour is not running") }
         let token = try await bearer(for: endpoint)
@@ -253,7 +272,21 @@ func saveClientToken(_ token: String, to file: URL) throws {
         do {
             let (data, response) = try await urlSession.data(for: request)
             let http = response as! HTTPURLResponse
-            if http.statusCode == 401, endpoint.sharedToken == nil { throw revoked() }
+            if endpoint.sharedToken == nil {
+                if http.statusCode == 401 {
+                    if clientTokenUnconfirmed {
+                        // A saved token Detour no longer knows: delete it and
+                        // ask once more in this run.
+                        try? FileManager.default.removeItem(at: clientTokenFile(name: clientInfo.name,
+                                                                                in: endpoint.directory))
+                        clientToken = nil
+                        clientTokenUnconfirmed = false
+                        throw RelayError.staleSavedToken
+                    }
+                    throw revoked()
+                }
+                clientTokenUnconfirmed = false
+            }
             return (http.statusCode, data, http.value(forHTTPHeaderField: sessionHeader))
         } catch let error as RelayError {
             throw error
@@ -354,7 +387,12 @@ func saveClientToken(_ token: String, to file: URL) throws {
         request.httpMethod = "DELETE"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue(session, forHTTPHeaderField: sessionHeader)
-        _ = try? await urlSession.data(for: request)
+        let answer = try? await urlSession.data(for: request)
+        // Disconnected and then quit: the token is gone in Detour, so the
+        // file goes too, and the next start asks again.
+        if endpoint.sharedToken == nil, (answer?.1 as? HTTPURLResponse)?.statusCode == 401 {
+            try? FileManager.default.removeItem(at: clientTokenFile(name: clientInfo.name, in: endpoint.directory))
+        }
     }
 }
 
