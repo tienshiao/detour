@@ -16,3 +16,4 @@
 # Features
 
 * [Sidebar visibility and auto-hide](visibility-and-auto-hide.md) - The sidebar's two modes (pinned and auto-hidden), the pure SidebarVisibilityState reducer that attributes every collapse to its source, edge-hover reveal, the level-triggered hover hide, and how open popovers hold a revealed sidebar.
+* [Space editor](space-editor.md) - Making and editing a space in the sidebar itself: the editor that replaces the page area, the draft it previews on the real tint and switcher, the curated colours and emoji, and the toss-and-catch moment on Create Space / Done.

@@ -206,6 +206,7 @@ are relative dates.
 
 # Related
 
+- [Space editor](./space-editor.md) — takes the page area while a space is made or edited, and previews the draft on the switcher.
 - [Sidebar overview](./overview.md) — the controller that owns the strip.
 - [Closed tabs and archive](../tabs/closed-tabs-and-archive.md) — what the archive page lists and how restore works.
 - [Profiles and spaces](../architecture/profiles-and-spaces.md) — per-window active space, space lifecycle.

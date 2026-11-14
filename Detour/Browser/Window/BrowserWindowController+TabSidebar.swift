@@ -153,11 +153,58 @@ extension BrowserWindowController: TabSidebarDelegate {
     }
 
     func tabSidebarDidRequestAddSpace(_ sidebar: TabSidebarViewController, sourceButton: NSButton) {
-        SettingsWindowController.shared.showSpacesPane()
+        beginCreatingSpace()
     }
 
     func tabSidebarDidRequestEditSpace(_ sidebar: TabSidebarViewController, spaceID: UUID, sourceButton: NSButton) {
-        SettingsWindowController.shared.showSpacesPane(selectSpaceID: spaceID)
+        beginEditingSpace(id: spaceID)
+    }
+
+    /// Opens the space editor in this window's sidebar for a new space
+    /// (TASK-289): the first curated colour and emoji no space has yet, on
+    /// this window's profile. Nothing exists until Create Space.
+    func beginCreatingSpace() {
+        guard !isIncognito else { return }
+        let profiles = spaceEditorProfiles
+        guard let profileID = activeSpace?.profileID ?? profiles.first?.id else { return }
+        let spaces = store.nonIncognitoSpaces
+        let draft = SpaceDraft.forNewSpace(usedColorHexes: spaces.map(\.colorHex),
+                                           usedEmoji: spaces.map(\.emoji),
+                                           profileID: profileID)
+        revealSidebarForSpaceEditor()
+        tabSidebar.beginSpaceEditor(.creating(draft), profiles: profiles)
+    }
+
+    /// Opens the space editor in this window's sidebar on `id` (TASK-289).
+    func beginEditingSpace(id: UUID) {
+        guard !isIncognito, let space = store.space(withID: id), !space.isIncognito else { return }
+        let draft = SpaceDraft(name: space.name, emoji: space.emoji, colorHex: space.colorHex, profileID: space.profileID)
+        revealSidebarForSpaceEditor()
+        tabSidebar.beginSpaceEditor(.editing(spaceID: id, draft), profiles: spaceEditorProfiles)
+    }
+
+    private var spaceEditorProfiles: [SpaceEditorView.ProfileChoice] {
+        store.profiles.filter { !$0.isIncognito }.map { SpaceEditorView.ProfileChoice(id: $0.id, name: $0.name) }
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didCreateSpaceFrom draft: SpaceDraft) {
+        guard let name = draft.committedName, store.profile(withID: draft.profileID) != nil else { return }
+        let space = store.addSpace(name: name, emoji: draft.emoji, colorHex: draft.colorHex, profileID: draft.profileID)
+        setActiveSpace(id: space.id)
+        tabSidebar.celebrateNewSpace(id: space.id)
+    }
+
+    func tabSidebar(_ sidebar: TabSidebarViewController, didEditSpace spaceID: UUID, with draft: SpaceDraft) {
+        guard let space = store.space(withID: spaceID), let name = draft.committedName else { return }
+        let profileID = store.profile(withID: draft.profileID) != nil ? draft.profileID : space.profileID
+        guard name != space.name || draft.emoji != space.emoji
+                || draft.colorHex != space.colorHex || profileID != space.profileID else { return }
+        // One call, so Undo puts the whole edit back at once.
+        store.updateSpace(id: spaceID, name: name, emoji: draft.emoji, colorHex: draft.colorHex, profileID: profileID)
+    }
+
+    func tabSidebarSpaceEditorDidChange(_ sidebar: TabSidebarViewController, isOpen: Bool) {
+        refreshSidebarPopoverHold()
     }
 
     /// The page takes the keyboard the sidebar gave up or never wanted (a

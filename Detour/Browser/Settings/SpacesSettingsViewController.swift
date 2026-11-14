@@ -3,9 +3,12 @@ import AppKit
 class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataSource, NSTableViewDelegate {
     private var tableView: NSTableView!
     private var nameField: NSTextField!
-    private var emojiButton: NSButton!
+    /// The curated emoji and colours, the same controls as the sidebar's
+    /// space editor (TASK-289).
+    private var emojiGrid: SpaceChoiceGridView!
+    private var allEmojiButton: NSButton!
     private var profilePopUp: NSPopUpButton!
-    private var colorWell: NSColorWell!
+    private var colorGrid: SpaceChoiceGridView!
     private var gridView: NSGridView!
     private var addButton: NSButton!
     private var deleteButton: NSButton!
@@ -108,10 +111,22 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
         nameField.target = self
         nameField.action = #selector(nameChanged)
 
-        emojiButton = NSButton(title: "⭐️", target: self, action: #selector(showEmojiPicker))
-        emojiButton.bezelStyle = .rounded
-        emojiButton.font = .systemFont(ofSize: 20)
-        emojiButton.translatesAutoresizingMaskIntoConstraints = false
+        emojiGrid = SpaceChoiceGridView(columns: 9, rowHeight: 28, spacing: 1, accessibilityLabel: "Emoji")
+        emojiGrid.choices = SpaceEmojiPreset.all.map {
+            SpaceChoiceGridView.Choice(id: $0.emoji, label: $0.name, look: .emoji($0.emoji))
+        }
+        emojiGrid.onSelect = { [weak self] choice in self?.emojiChosen(choice.id) }
+        emojiGrid.translatesAutoresizingMaskIntoConstraints = false
+        emojiGrid.widthAnchor.constraint(equalToConstant: SettingsMetrics.fieldWidth).isActive = true
+
+        allEmojiButton = NSButton(title: "All Emoji…", target: self, action: #selector(showEmojiPicker))
+        allEmojiButton.bezelStyle = .rounded
+        allEmojiButton.controlSize = .small
+        allEmojiButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        let emojiStack = NSStackView(views: [emojiGrid, allEmojiButton])
+        emojiStack.orientation = .vertical
+        emojiStack.alignment = .leading
+        emojiStack.spacing = 6
 
         // Profile dropdown: as wide as its longest profile name, but never
         // wider than the name field; a longer name truncates (defect 12).
@@ -122,18 +137,16 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
         profilePopUp.widthAnchor.constraint(lessThanOrEqualToConstant: SettingsMetrics.fieldWidth).isActive = true
         profilePopUp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // Color well
-        colorWell = NSColorWell()
-        colorWell.translatesAutoresizingMaskIntoConstraints = false
-        colorWell.colorWellStyle = .expanded
-        colorWell.target = self
-        colorWell.action = #selector(colorChanged)
+        colorGrid = SpaceChoiceGridView(columns: 12, rowHeight: 22, spacing: 0, accessibilityLabel: "Color")
+        colorGrid.onSelect = { [weak self] choice in self?.colorChosen(choice) }
+        colorGrid.translatesAutoresizingMaskIntoConstraints = false
+        colorGrid.widthAnchor.constraint(equalToConstant: SettingsMetrics.fieldWidth).isActive = true
 
         gridView = NSGridView(views: [
             [makeLabel("Name"), nameField],           // row 0
-            [makeLabel("Emoji"), emojiButton],          // row 1
+            [makeLabel("Emoji"), emojiStack],           // row 1
             [makeLabel("Profile"), profilePopUp],      // row 2
-            [makeLabel("Color"), colorWell],            // row 3
+            [makeLabel("Color"), colorGrid],            // row 3
         ])
         gridView.translatesAutoresizingMaskIntoConstraints = false
         gridView.rowSpacing = SettingsMetrics.rowGap
@@ -141,9 +154,12 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
         gridView.column(at: 0).xPlacement = .trailing
         gridView.column(at: 0).width = SettingsMetrics.labelColumnWidth
         gridView.column(at: 1).xPlacement = .leading
-        // Labels sit on their control's text baseline (defect 6). The colour
-        // well has no text, so its label is centred on it instead.
+        // Labels sit on their control's text baseline (defect 6). The emoji
+        // and colour grids have no text, so their labels sit at their top
+        // and middle instead.
         gridView.rowAlignment = .firstBaseline
+        gridView.row(at: 1).rowAlignment = .none
+        gridView.row(at: 1).yPlacement = .top
         gridView.row(at: 3).rowAlignment = .none
         gridView.row(at: 3).yPlacement = .center
 
@@ -255,13 +271,22 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
             scrollColumnsToTop()
         }
         nameField.stringValue = space.name
-        emojiButton.title = space.emoji
-        colorWell.color = NSColor(hex: space.colorHex) ?? .controlAccentColor
+        showLook(of: space)
 
         // Select the space's profile in the dropdown
         if let idx = profileIDs.firstIndex(of: space.profileID) {
             profilePopUp.selectItem(at: idx)
         }
+    }
+
+    /// The emoji and colour grids show `space`'s; a colour that is not a
+    /// preset shows in the custom swatch.
+    private func showLook(of space: Space) {
+        emojiGrid.selectedID = space.emoji
+        emojiGrid.selectionTint = space.color
+        let colors = SpaceChoiceGridView.spaceColorChoices(currentHex: space.colorHex)
+        colorGrid.choices = colors.choices
+        colorGrid.selectedID = colors.selectedID
     }
 
     private func updateButtonStates() {
@@ -285,20 +310,25 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
 
     @objc private func nameChanged() {
         guard let space = selectedSpace else { return }
-        let newName = nameField.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !newName.isEmpty else {
+        // The same rule as the sidebar's space editor (TASK-289).
+        guard let newName = SpaceNameRule.normalized(nameField.stringValue) else {
             nameField.stringValue = space.name
             return
         }
+        nameField.stringValue = newName
         saveSpace(space, name: newName)
     }
 
     @objc private func showEmojiPicker() {
-        EmojiPickerViewController.showPicker(relativeTo: emojiButton) { [weak self] emoji in
-            guard let self, let space = self.selectedSpace else { return }
-            self.emojiButton.title = emoji
-            self.saveSpace(space, emoji: emoji)
+        EmojiPickerViewController.showPicker(relativeTo: allEmojiButton) { [weak self] emoji in
+            self?.emojiChosen(emoji)
         }
+    }
+
+    private func emojiChosen(_ emoji: String) {
+        guard let space = selectedSpace else { return }
+        saveSpace(space, emoji: emoji)
+        showLook(of: space)
     }
 
     @objc private func profileChanged() {
@@ -329,15 +359,48 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
         }
     }
 
-    @objc private func colorChanged() {
+    private func colorChosen(_ choice: SpaceChoiceGridView.Choice) {
         guard let space = selectedSpace else { return }
-        saveSpace(space, colorHex: colorWell.color.toHex())
+        switch choice.look {
+        case .color(let hex):
+            saveSpace(space, colorHex: hex)
+            showLook(of: space)
+        case .customColor:
+            SpaceColorPanel.show(for: self, color: space.color, continuous: false,
+                                 action: #selector(colorPanelChanged(_:)))
+        case .emoji:
+            break
+        }
     }
 
+    @objc private func colorPanelChanged(_ panel: NSColorPanel) {
+        guard let space = selectedSpace else { return }
+        saveSpace(space, colorHex: panel.color.toHex())
+        showLook(of: space)
+    }
+
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        SpaceColorPanel.release(self, close: false)
+    }
+
+    /// A new space is made in the sidebar's space editor (TASK-289), in the
+    /// browser window the user was last in, so there is one way to make a
+    /// space. With no normal browser window open, the space is made here
+    /// with the editor's defaults.
     @objc private func addSpaceClicked() {
+        let browserWindows = NSApp.browserWindowControllersFrontToBack
+        if let wc = browserWindows.first(where: { !$0.isIncognito }) {
+            wc.window?.makeKeyAndOrderFront(nil)
+            wc.beginCreatingSpace()
+            return
+        }
         guard let profileID = TabStore.shared.profiles.first(where: { !$0.isIncognito })?.id
                 ?? TabStore.shared.profiles.first?.id else { return }
-        TabStore.shared.addSpace(name: "Space", emoji: "⭐️", colorHex: Space.presetColors[0], profileID: profileID)
+        let existing = spaces
+        let draft = SpaceDraft.forNewSpace(usedColorHexes: existing.map(\.colorHex), usedEmoji: existing.map(\.emoji),
+                                           profileID: profileID)
+        TabStore.shared.addSpace(name: "New Space", emoji: draft.emoji, colorHex: draft.colorHex, profileID: profileID)
         tableView.reloadData()
         selectedIndex = spaces.count - 1
         tableView.selectRowIndexes(IndexSet(integer: selectedIndex), byExtendingSelection: false)

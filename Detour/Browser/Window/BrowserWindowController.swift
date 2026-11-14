@@ -975,8 +975,10 @@ class BrowserWindowController: NSWindowController {
     /// up. `didShow` and `didClose` call it, and so does every pointer sample
     /// and every elapsed hide delay: a popover that went away without a
     /// `didClose` stops holding the sidebar the next time anyone looks.
-    private func refreshSidebarPopoverHold() {
-        var holding = false
+    func refreshSidebarPopoverHold() {
+        // The space editor (TASK-289) holds a hover-revealed sidebar open
+        // like a popover does: it is being typed into.
+        var holding = tabSidebar.isSpaceEditorOpen
         for popover in sidebarHoldingPopovers.allObjects {
             if popover.isShown && isPopoverOnThisWindow(popover) {
                 holding = true
@@ -2466,6 +2468,14 @@ class BrowserWindowController: NSWindowController {
         guard let space = activeSpace,
               let tab = store.reopenClosedTab(in: space) else { return }
         selectTab(id: tab.id)
+    }
+
+    /// The space editor opens in the sidebar (TASK-289), so a hidden sidebar
+    /// is shown first, as Show Archived Tabs does.
+    func revealSidebarForSpaceEditor() {
+        if sidebarItem.isCollapsed {
+            toggleSidebarAutoHide()
+        }
     }
 
     // MARK: - Archived Tabs (TASK-119)

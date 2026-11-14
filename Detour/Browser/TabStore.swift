@@ -400,14 +400,8 @@ class Space {
     })();
     """
 
-    nonisolated static let presetColors: [String] = [
-        "007AFF", // Blue
-        "FF3B30", // Red
-        "34C759", // Green
-        "FF9500", // Orange
-        "AF52DE", // Purple
-        "FF2D55", // Pink
-    ]
+    /// The curated space colours (TASK-289), in picker order.
+    nonisolated static var presetColors: [String] { SpaceColorPreset.all.map(\.hex) }
 }
 
 /// What `TabStore.deleteSpace` did.

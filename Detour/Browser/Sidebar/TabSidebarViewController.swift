@@ -18,6 +18,12 @@ protocol TabSidebarDelegate: AnyObject {
     func tabSidebarDidRequestSwitchToSpace(_ sidebar: TabSidebarViewController, spaceID: UUID)
     func tabSidebarDidRequestAddSpace(_ sidebar: TabSidebarViewController, sourceButton: NSButton)
     func tabSidebarDidRequestEditSpace(_ sidebar: TabSidebarViewController, spaceID: UUID, sourceButton: NSButton)
+    /// The space editor's Create Space (TASK-289). The editor has closed.
+    func tabSidebar(_ sidebar: TabSidebarViewController, didCreateSpaceFrom draft: SpaceDraft)
+    /// The space editor's Done for `spaceID` (TASK-289). The editor has closed.
+    func tabSidebar(_ sidebar: TabSidebarViewController, didEditSpace spaceID: UUID, with draft: SpaceDraft)
+    /// The space editor opened or closed (TASK-289).
+    func tabSidebarSpaceEditorDidChange(_ sidebar: TabSidebarViewController, isOpen: Bool)
     func tabSidebarDidRequestDeleteSpace(_ sidebar: TabSidebarViewController, spaceID: UUID)
     func tabSidebarDidRequestShowDownloads(_ sidebar: TabSidebarViewController, sourceButton: NSButton)
     func tabSidebarDidRequestShowSettings(_ sidebar: TabSidebarViewController, sourceButton: NSView)
@@ -325,6 +331,11 @@ class TabSidebarViewController: NSViewController {
 
     var activeSpaceID: UUID? {
         didSet {
+            // Another space in this window ends an open space editor: what it
+            // previewed belongs to the page the window just left.
+            if spaceEditor != nil, activeSpaceID != oldValue {
+                endSpaceEditor(animated: false)
+            }
             // A real space change (a restore into another space, a keyboard
             // space switch) leaves the archive page for the new space. Setting
             // the same value — rebuildPages and friends do, often — keeps it.
@@ -780,20 +791,31 @@ class TabSidebarViewController: NSViewController {
 
     private(set) var safeTintColor: NSColor?
 
+    /// The active space's colour, set by the window.
     var tintColor: NSColor? {
-        didSet {
-            safeTintColor = tintColor?.sidebarSafe(darkBackground: isDarkBackground)
-            let safeColor = safeTintColor
-            applyRestingBackground()
-            tableView.enumerateAvailableRowViews { rowView, row in
-                (rowView as? TabRowView)?.selectionColor = safeColor
-                if let folderCell = rowView.view(atColumn: 0) as? FolderCellView {
-                    folderCell.updateColor(safeColor)
-                }
+        didSet { applyTint() }
+    }
+
+    /// The space editor's colour while it is open (TASK-289): the draft's, or
+    /// the one under the pointer. It wins over `tintColor` until the editor
+    /// closes, so a store update meanwhile cannot undo the preview.
+    private var previewTintColor: NSColor? {
+        didSet { applyTint() }
+    }
+
+    private func applyTint() {
+        let tint = previewTintColor ?? tintColor
+        safeTintColor = tint?.sidebarSafe(darkBackground: isDarkBackground)
+        let safeColor = safeTintColor
+        applyRestingBackground()
+        tableView.enumerateAvailableRowViews { rowView, row in
+            (rowView as? TabRowView)?.selectionColor = safeColor
+            if let folderCell = rowView.view(atColumn: 0) as? FolderCellView {
+                folderCell.updateColor(safeColor)
             }
-            for page in spacePages {
-                page.favoritesBar.selectionColor = safeColor
-            }
+        }
+        for page in spacePages {
+            page.favoritesBar.selectionColor = safeColor
         }
     }
 
@@ -1375,7 +1397,9 @@ class TabSidebarViewController: NSViewController {
 
     /// `currentStripIndex` as a (possibly negative) space-button index.
     private var currentSpaceButtonIndex: CGFloat {
-        pageStrip.spaceButtonIndex(forFractionalStripIndex: CGFloat(currentStripIndex))
+        // The space editor keeps the highlight on the space it is shaping.
+        if let index = spaceEditorHighlightIndex { return CGFloat(index) }
+        return pageStrip.spaceButtonIndex(forFractionalStripIndex: CGFloat(currentStripIndex))
     }
 
     /// The tint a strip page shows while the strip moves (raw space colours,
@@ -1481,6 +1505,9 @@ class TabSidebarViewController: NSViewController {
     /// sidebar or when the page already shows.
     func showArchivePage(animated: Bool) {
         guard archivePage != nil, !isShowingArchivePage else { return }
+        // The archive takes the page area the space editor has: going there
+        // leaves the editor without changing anything (TASK-289).
+        if spaceEditor != nil { endSpaceEditor(animated: false) }
         reloadArchivePage()
         isShowingArchivePage = true
         if animated {
@@ -1753,6 +1780,7 @@ class TabSidebarViewController: NSViewController {
     }
 
     func updateSpaceButtons(spaces: [Space], activeSpaceID: UUID?) {
+        endSpaceEditorIfItsSpaceIsGone()
         rebuildAllSpaceButtons()
         rebuildPages()
         updateSpaceLabels()
@@ -1761,25 +1789,29 @@ class TabSidebarViewController: NSViewController {
     /// Rebuilds ALL space buttons in the strip and positions the viewport.
     private func rebuildAllSpaceButtons() {
         let spaces = relevantSpaces
+        // The switcher's buttons: the spaces, with the space editor's draft in
+        // them while it is open (TASK-289).
+        let entries = spaceStripEntries
         let activeSpaceID = self.activeSpaceID
-        let activeIndex = spaces.firstIndex(where: { $0.id == activeSpaceID }) ?? 0
+        let activeIndex = spaceEditorHighlightIndex(in: entries)
+            ?? spaces.firstIndex(where: { $0.id == activeSpaceID }) ?? 0
 
         addSpaceButton.isHidden = isIncognito
 
         // Calculate how many buttons fit in the available space
         let availableWidth = addSpaceButton.frame.minX - downloadButton.frame.maxX - 12
-        let needsDots = spaces.count > max(1, Int((availableWidth + spaceButtonSpacing) / (spaceButtonWidth + spaceButtonSpacing)))
+        let needsDots = entries.count > max(1, Int((availableWidth + spaceButtonSpacing) / (spaceButtonWidth + spaceButtonSpacing)))
         let dotSpace: CGFloat = needsDots ? 18 : 0  // 5px dot + 4px gap on each side
         let effectiveWidth = availableWidth - dotSpace
         maxVisibleSpaces = max(1, Int((effectiveWidth + spaceButtonSpacing) / (spaceButtonWidth + spaceButtonSpacing)))
 
         let currentWidth = bottomBar.bounds.width
         let clipReady = spaceClipView.bounds.width > 0
-        let spaceSignature = spaces.map { $0.emoji + $0.colorHex }.joined()
-        if spaces.count == lastSpaceCount && activeIndex == lastActiveSpaceIndex && currentWidth == lastBottomBarWidth && spaceSignature == lastSpaceSignature && clipReady {
+        let spaceSignature = entries.map { $0.emoji + $0.colorHex + $0.name + ($0.spaceID?.uuidString ?? "new") }.joined(separator: "|")
+        if entries.count == lastSpaceCount && activeIndex == lastActiveSpaceIndex && currentWidth == lastBottomBarWidth && spaceSignature == lastSpaceSignature && clipReady {
             return
         }
-        lastSpaceCount = spaces.count
+        lastSpaceCount = entries.count
         lastActiveSpaceIndex = activeIndex
         lastBottomBarWidth = currentWidth
         lastSpaceSignature = spaceSignature
@@ -1791,29 +1823,39 @@ class TabSidebarViewController: NSViewController {
         spaceDots.removeAll()
         spaceButtonColors.removeAll()
 
-        guard !spaces.isEmpty else { return }
+        guard !entries.isEmpty else { return }
 
         let dark = isDarkBackground
-        let totalWidth = CGFloat(spaces.count) * spaceButtonWidth + CGFloat(max(0, spaces.count - 1)) * spaceButtonSpacing
+        let totalWidth = CGFloat(entries.count) * spaceButtonWidth + CGFloat(max(0, entries.count - 1)) * spaceButtonSpacing
         spaceStripView.frame = NSRect(x: 0, y: 0, width: totalWidth, height: spaceButtonHeight)
 
         spaceHighlightView.frame = NSRect(x: 0, y: 0, width: spaceButtonWidth, height: spaceButtonHeight)
         spaceStripView.addSubview(spaceHighlightView, positioned: .below, relativeTo: nil)
 
-        for (i, space) in spaces.enumerated() {
+        for (i, entry) in entries.enumerated() {
             let button = NSButton()
-            button.title = space.emoji
+            button.title = entry.emoji
             button.font = .systemFont(ofSize: 14)
             button.bezelStyle = .inline
             button.isBordered = false
             button.target = self
-            button.action = #selector(spaceButtonClicked(_:))
             button.tag = i
-            button.toolTip = isIncognito ? "Private Browsing" : space.name
             button.wantsLayer = true
             button.layer?.cornerRadius = UIConstants.defaultCornerRadius
 
-            if !isIncognito {
+            if entry.spaceID == nil {
+                // The space being created: not a space yet, so no switching
+                // and no menu.
+                button.action = #selector(pendingSpaceButtonClicked(_:))
+                button.toolTip = entry.name
+                button.setAccessibilityLabel("\(entry.name), not created yet")
+            } else {
+                button.action = #selector(spaceButtonClicked(_:))
+                button.toolTip = isIncognito ? "Private Browsing" : entry.name
+                button.setAccessibilityLabel(isIncognito ? "Private Browsing" : entry.name)
+            }
+
+            if !isIncognito, entry.spaceID != nil {
                 let menu = NSMenu()
                 let editItem = NSMenuItem(title: "Edit Space…", action: #selector(editSpaceClicked(_:)), keyEquivalent: "")
                 editItem.target = self
@@ -1830,7 +1872,7 @@ class TabSidebarViewController: NSViewController {
             button.frame = NSRect(x: x, y: 0, width: spaceButtonWidth, height: spaceButtonHeight)
             spaceStripView.addSubview(button)
             spaceButtons.append(button)
-            spaceButtonColors.append(space.color.sidebarSafe(darkBackground: dark))
+            spaceButtonColors.append((NSColor(hex: entry.colorHex) ?? .controlAccentColor).sidebarSafe(darkBackground: dark))
 
             let dot = NSView(frame: NSRect(
                 x: x + (spaceButtonWidth - spaceDotSize) / 2,
@@ -1847,7 +1889,7 @@ class TabSidebarViewController: NSViewController {
 
         // Size the clip view: visible buttons + padding for edge dots
         let buttonsWidth = CGFloat(maxVisibleSpaces) * spaceButtonWidth + CGFloat(max(0, maxVisibleSpaces - 1)) * spaceButtonSpacing
-        let dotPadding: CGFloat = spaces.count > maxVisibleSpaces ? spaceButtonSpacing + spaceDotSize : 0
+        let dotPadding: CGFloat = entries.count > maxVisibleSpaces ? spaceButtonSpacing + spaceDotSize : 0
         let clipWidth = min(totalWidth, buttonsWidth + dotPadding * 2)
         if let constraint = spaceClipWidthConstraint {
             constraint.constant = clipWidth
@@ -1944,6 +1986,7 @@ class TabSidebarViewController: NSViewController {
         let archiveFade = pageStrip.hasArchivePage && activeIndex < 0 ? 1 - min(1, -activeIndex) : 1
         spaceHighlightView.alphaValue = hlEdgeT * archiveFade
 
+        let celebratingIndex = celebratingSpaceID.flatMap { id in relevantSpaces.firstIndex { $0.id == id } }
         for (i, button) in spaceButtons.enumerated() {
             guard i < spaceButtonColors.count else { continue }
 
@@ -1962,7 +2005,8 @@ class TabSidebarViewController: NSViewController {
             transform = CATransform3DScale(transform, scale, scale, 1)
             transform = CATransform3DTranslate(transform, -cx, -cy, 0)
             button.layer?.transform = transform
-            button.alphaValue = edgeT
+            // A button the celebration's emoji is still flying to waits unseen.
+            button.alphaValue = i == celebratingIndex ? 0 : edgeT
 
             if i < spaceDots.count {
                 spaceDots[i].alphaValue = 1.0 - edgeT
@@ -2028,6 +2072,8 @@ class TabSidebarViewController: NSViewController {
     @objc private func spaceButtonClicked(_ sender: NSButton) {
         let spaces = relevantSpaces
         guard sender.tag >= 0, sender.tag < spaces.count else { return }
+        // Going to a space leaves the space editor without changing anything.
+        if spaceEditor != nil { endSpaceEditor(animated: false) }
         animateToSpace(id: spaces[sender.tag].id)
     }
 
@@ -2090,6 +2136,286 @@ class TabSidebarViewController: NSViewController {
         delegate?.tabSidebarDidRequestDeleteSpace(self, spaceID: spaceID)
     }
 
+    // MARK: - Space editor (TASK-289)
+
+    /// The editor taking the page area, while it is open.
+    private var spaceEditor: SpaceEditorView?
+    /// What the open editor previews on the tint and the switcher.
+    private var spaceEditorPreview: SpaceEditorPreview?
+    /// The draft the editor opened with: Done without a change has nothing
+    /// to celebrate.
+    private var spaceEditorOriginalDraft: SpaceDraft?
+    /// Where the committed editor's emoji takes off from, and what it looks
+    /// like, until the space's button is there to land on.
+    private var pendingCelebration: (origin: NSRect, draft: SpaceDraft)?
+    /// The switcher button the celebration's emoji is flying to, hidden
+    /// until it lands.
+    private var celebratingSpaceID: UUID?
+
+    var isSpaceEditorOpen: Bool { spaceEditor != nil }
+
+    /// The switcher's buttons: the spaces, with the open editor's draft in them.
+    private var spaceStripEntries: [SpaceStripEntry] {
+        let spaces = relevantSpaces.map {
+            SpaceStripEntry(spaceID: $0.id, emoji: $0.emoji, name: $0.name, colorHex: $0.colorHex)
+        }
+        return SpaceEditorPreview.stripEntries(spaces: spaces, preview: spaceEditorPreview)
+    }
+
+    private func spaceEditorHighlightIndex(in entries: [SpaceStripEntry]) -> Int? {
+        spaceEditorPreview.flatMap { SpaceEditorPreview.highlightedIndex(in: entries, preview: $0) }
+    }
+
+    /// The editor's highlight index, building the switcher entries only
+    /// while an editor is open: `currentSpaceButtonIndex` runs on every
+    /// frame of a swipe or strip slide.
+    private var spaceEditorHighlightIndex: Int? {
+        guard spaceEditorPreview != nil else { return nil }
+        return spaceEditorHighlightIndex(in: spaceStripEntries)
+    }
+
+    /// Opens the space editor over the page area: the page slides away, the
+    /// editor slides in, the tint and the switcher follow the draft. Nothing
+    /// is created or changed until Create Space / Done.
+    func beginSpaceEditor(_ preview: SpaceEditorPreview, profiles: [SpaceEditorView.ProfileChoice]) {
+        guard !isIncognito else { return }
+        if spaceEditor != nil { endSpaceEditor(animated: false) }
+        if isShowingArchivePage { dismissArchivePage(animated: false) }
+        stopSpaceClickAnimation()
+
+        let mode: SpaceEditorView.Mode
+        switch preview {
+        case .creating: mode = .create
+        case .editing(_, let draft): mode = .edit(originalProfileID: draft.profileID)
+        }
+        let editor = SpaceEditorView(mode: mode, draft: preview.draft, profiles: profiles)
+        editor.onChange = { [weak self] draft in self?.spaceEditorDraftChanged(draft) }
+        editor.onHoverColor = { [weak self] hex in self?.spaceEditorHoverChanged(hex) }
+        editor.onCommit = { [weak self] draft in self?.commitSpaceEditor(draft) }
+        editor.onCancel = { [weak self] in self?.endSpaceEditor(animated: true) }
+        editor.wantsLayer = true
+        editor.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(editor, positioned: .above, relativeTo: pageClipView)
+        NSLayoutConstraint.activate([
+            editor.topAnchor.constraint(equalTo: pageClipView.topAnchor, constant: Self.addressBarRowHeight),
+            editor.leadingAnchor.constraint(equalTo: pageClipView.leadingAnchor),
+            editor.trailingAnchor.constraint(equalTo: pageClipView.trailingAnchor),
+            editor.bottomAnchor.constraint(equalTo: pageClipView.bottomAnchor),
+        ])
+        spaceEditor = editor
+        spaceEditorPreview = preview
+        spaceEditorOriginalDraft = preview.draft
+        setPreviewTint(hex: preview.draft.colorHex)
+        rebuildAllSpaceButtons()
+        view.layoutSubtreeIfNeeded()
+
+        // The page gives way to the editor as if the strip moved on to a new
+        // page; a cross-fade with Reduce Motion.
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = reduceMotion ? 0.15 : 0.28
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            pageStripView.animator().alphaValue = 0
+        } onMain: { [weak self] in
+            guard let self, self.spaceEditor != nil else { return }
+            self.pageStripView.isHidden = true
+        }
+        editor.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = reduceMotion ? 0.15 : 0.28
+            editor.animator().alphaValue = 1
+        }
+        if !reduceMotion, let layer = editor.layer {
+            let slide = CABasicAnimation(keyPath: "transform")
+            slide.fromValue = NSValue(caTransform3D: CATransform3DMakeTranslation(pageClipView.bounds.width * 0.4, 0, 0))
+            slide.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+            slide.duration = 0.32
+            slide.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1)
+            layer.add(slide, forKey: "slideIn")
+        }
+
+        editor.focusNameField()
+        delegate?.tabSidebarSpaceEditorDidChange(self, isOpen: true)
+    }
+
+    /// Closes the editor without creating or changing anything: the page,
+    /// the tint and the switcher come back as they were.
+    func endSpaceEditor(animated: Bool) {
+        closeSpaceEditor(slidingOut: animated)
+    }
+
+    private func closeSpaceEditor(slidingOut: Bool) {
+        guard let editor = spaceEditor else { return }
+        let editorHadKeyboard = (view.window?.firstResponder as? NSView)?.isDescendant(of: editor) ?? false
+        editor.releaseColorPanel()
+        editor.onChange = nil
+        editor.onHoverColor = nil
+        editor.onCommit = nil
+        editor.onCancel = nil
+        spaceEditor = nil
+        spaceEditorPreview = nil
+        spaceEditorOriginalDraft = nil
+        setPreviewTint(hex: nil)
+        rebuildAllSpaceButtons()
+
+        pageStripView.isHidden = false
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let duration = reduceMotion ? 0.15 : (slidingOut ? 0.24 : 0.2)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            pageStripView.animator().alphaValue = 1
+            editor.animator().alphaValue = 0
+        } onMain: {
+            editor.removeFromSuperview()
+        }
+        if slidingOut, !reduceMotion, let layer = editor.layer {
+            let slide = CABasicAnimation(keyPath: "transform")
+            slide.fromValue = NSValue(caTransform3D: CATransform3DIdentity)
+            slide.toValue = NSValue(caTransform3D: CATransform3DMakeTranslation(pageClipView.bounds.width * 0.4, 0, 0))
+            slide.duration = duration
+            slide.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            slide.fillMode = .forwards
+            slide.isRemovedOnCompletion = false
+            layer.add(slide, forKey: "slideOut")
+        }
+
+        delegate?.tabSidebarSpaceEditorDidChange(self, isOpen: false)
+        if editorHadKeyboard {
+            view.window?.makeFirstResponder(nil)
+            delegate?.tabSidebarDidReleaseKeyboardFocus(self)
+        }
+    }
+
+    private func commitSpaceEditor(_ draft: SpaceDraft) {
+        guard let preview = spaceEditorPreview, let editor = spaceEditor else { return }
+        // Compared as saved: a name that differs only in spacing saves nothing
+        // and has nothing to celebrate.
+        let changed = spaceEditorOriginalDraft.map {
+            $0.committedName != draft.committedName || $0.emoji != draft.emoji
+                || $0.colorHex != draft.colorHex || $0.profileID != draft.profileID
+        } ?? true
+        pendingCelebration = (view.convert(editor.emojiTileFrameInWindow, from: nil), draft)
+        // Close first: the store changes that follow rebuild the switcher and
+        // the pages from the real spaces, not the preview.
+        closeSpaceEditor(slidingOut: false)
+        switch preview {
+        case .creating:
+            // The window answers with `celebrateNewSpace(id:)`.
+            delegate?.tabSidebar(self, didCreateSpaceFrom: draft)
+        case .editing(let id, _):
+            delegate?.tabSidebar(self, didEditSpace: id, with: draft)
+            if changed {
+                celebrate(spaceID: id, style: .edited)
+            }
+        }
+        pendingCelebration = nil
+    }
+
+    private func spaceEditorDraftChanged(_ draft: SpaceDraft) {
+        switch spaceEditorPreview {
+        case .creating: spaceEditorPreview = .creating(draft)
+        case .editing(let id, _): spaceEditorPreview = .editing(spaceID: id, draft)
+        case nil: return
+        }
+        setPreviewTint(hex: draft.colorHex)
+        rebuildAllSpaceButtons()
+    }
+
+    /// A colour under the pointer tints the sidebar until the pointer moves
+    /// on; leaving the colours goes back to the draft's.
+    private func spaceEditorHoverChanged(_ hex: String?) {
+        guard let draft = spaceEditorPreview?.draft else { return }
+        setPreviewTint(hex: hex ?? draft.colorHex)
+    }
+
+    private func setPreviewTint(hex: String?) {
+        let color = hex.flatMap { NSColor(hex: $0) }
+        guard color?.toHex() != previewTintColor?.toHex() else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            context.allowsImplicitAnimation = true
+            previewTintColor = color
+        }
+    }
+
+    /// The editor's space is gone (deleted from another window or Settings):
+    /// close the editor rather than edit nothing.
+    private func endSpaceEditorIfItsSpaceIsGone() {
+        guard case .editing(let id, _) = spaceEditorPreview,
+              !relevantSpaces.contains(where: { $0.id == id }) else { return }
+        endSpaceEditor(animated: false)
+    }
+
+    /// The new space has arrived: its emoji flies from the editor into its
+    /// switcher button (TASK-289).
+    func celebrateNewSpace(id: UUID) {
+        celebrate(spaceID: id, style: .created)
+    }
+
+    /// The committed editor's emoji flies into the space's switcher button,
+    /// which pops when it lands; the space's colour ripples over the sidebar
+    /// and a ring of dots sparkles around the button. With Reduce Motion the
+    /// button fades in and nothing flies.
+    private func celebrate(spaceID: UUID, style: SpaceCelebration.Style) {
+        guard let pending = pendingCelebration else { return }
+        pendingCelebration = nil
+        guard let index = relevantSpaces.firstIndex(where: { $0.id == spaceID }),
+              index < spaceButtons.count else { return }
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            popSpaceButton(id: spaceID)
+            return
+        }
+        bottomBar.layoutSubtreeIfNeeded()
+        let button = spaceButtons[index]
+        let target = view.convert(button.bounds, from: button)
+        celebratingSpaceID = spaceID
+        updateSpaceButtonAppearances(activeIndex: currentSpaceButtonIndex)
+        SpaceCelebration.run(in: view, from: pending.origin, to: target, emoji: pending.draft.emoji,
+                             color: NSColor(hex: pending.draft.colorHex) ?? .controlAccentColor,
+                             style: style) { [weak self] in
+            guard let self else { return }
+            self.celebratingSpaceID = nil
+            self.updateSpaceButtonAppearances(activeIndex: self.currentSpaceButtonIndex)
+            self.popSpaceButton(id: spaceID)
+        }
+    }
+
+    /// The space's switcher button arrives with a small spring; with Reduce
+    /// Motion it fades in.
+    private func popSpaceButton(id: UUID) {
+        guard let index = relevantSpaces.firstIndex(where: { $0.id == id }),
+              index < spaceButtons.count, let layer = spaceButtons[index].layer else { return }
+        let button = spaceButtons[index]
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0
+            fade.toValue = 1
+            fade.duration = 0.25
+            layer.add(fade, forKey: "arrive")
+            return
+        }
+        // Caught with a spring: squashed by the landing, then springing
+        // back through a small overshoot to rest.
+        let base = layer.transform
+        let midX = button.bounds.midX
+        let midY = button.bounds.midY
+        var squash = CATransform3DTranslate(base, midX, midY, 0)
+        squash = CATransform3DScale(squash, 1.35, 0.65, 1)
+        squash = CATransform3DTranslate(squash, -midX, -midY, 0)
+        let pop = CASpringAnimation(keyPath: "transform")
+        pop.fromValue = NSValue(caTransform3D: squash)
+        pop.toValue = NSValue(caTransform3D: base)
+        pop.mass = 1
+        pop.stiffness = 420
+        pop.damping = 11
+        pop.duration = pop.settlingDuration
+        layer.add(pop, forKey: "arrive")
+    }
+
+    @objc private func pendingSpaceButtonClicked(_ sender: NSButton) {
+        spaceEditor?.focusNameField()
+    }
+
     // MARK: - Swipe Paging
 
     private var swipeAccumulatedX: CGFloat = 0
@@ -2101,7 +2427,8 @@ class TabSidebarViewController: NSViewController {
     /// Returns `true` when the event is consumed by horizontal swipe handling.
     @discardableResult
     private func handleSpaceSwipe(_ event: NSEvent) -> Bool {
-        if isIncognito { return false }
+        // The space editor has the page area; the strip stays put under it.
+        if isIncognito || spaceEditor != nil { return false }
 
         // Already tracking — delegate to the shared processor (deduplicates with monitor)
         if isTrackingHorizontalSwipe {
