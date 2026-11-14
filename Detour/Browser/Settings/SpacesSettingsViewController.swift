@@ -34,6 +34,8 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
         "Spaces are workspaces that group your tabs together. Each Space uses a Profile for its cookies, history, and extensions."
     }
 
+    override var guidePage: GuidePage? { .spaces }
+
     override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }
     override var scrollsBodyAsWhole: Bool { false }
 

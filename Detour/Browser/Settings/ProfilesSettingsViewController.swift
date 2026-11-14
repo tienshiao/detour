@@ -12,6 +12,8 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
     private var customUserAgentField: NSTextField!
     private var profileNameField: NSTextField!
     private var privateNoteLabel: NSTextField!
+    /// The note and its Learn more link to the Private Browsing guide.
+    private var privateNoteRow: NSStackView!
     private var uaPreviewLabel: NSTextField!
     private var adBlockSwitch: NSSwitch!
     private var easyListSwitch: NSSwitch!
@@ -46,6 +48,8 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
     override var paneDescription: String? {
         "Profiles help keep your data separate across Spaces — like history, logins, cookies, and extensions. You can use any Profile across one or more Spaces."
     }
+
+    override var guidePage: GuidePage? { .profiles }
 
     override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }
     override var scrollsBodyAsWhole: Bool { false }
@@ -130,6 +134,12 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
 
         privateNoteLabel = SettingsWrappingLabel(wrapping: "This profile is used for Private Windows.",
                                                  estimatedWidth: Self.estimatedControlColumnWidth)
+        // TASK-292.11: the Private profile is Private Browsing's settings.
+        privateNoteRow = NSStackView(views: [privateNoteLabel, SettingsGuideLink(.privateBrowsing)])
+        privateNoteRow.orientation = .vertical
+        privateNoteRow.alignment = .leading
+        privateNoteRow.spacing = SettingsMetrics.controlToHelp
+        privateNoteLabel.widthAnchor.constraint(equalTo: privateNoteRow.widthAnchor).isActive = true
 
         searchEnginePopUp = NSPopUpButton()
         for engine in SearchEngine.allCases {
@@ -231,7 +241,7 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
         func cells(for row: ProfileSettingsRow) -> (label: String?, control: NSView) {
             switch row {
             case .name: return ("Name", profileNameField)
-            case .privateNote: return (nil, privateNoteLabel)
+            case .privateNote: return (nil, privateNoteRow)
             case .searchEngine: return ("Search engine", searchEnginePopUp)
             case .searchSuggestions: return ("Search suggestions", suggestionsSwitch)
             case .archiveTabs: return ("Archive tabs after", archivePopUp)
@@ -323,7 +333,17 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
         sectionView.spacing = SettingsMetrics.sectionTitleToRows
         sectionView.translatesAutoresizingMaskIntoConstraints = false
         if let title = section.title {
-            sectionView.addArrangedSubview(NSTextField.settingsSectionTitle(title))
+            let titleView = NSTextField.settingsSectionTitle(title)
+            if let page = section.guidePage {
+                // TASK-292.11: beside the title, which names the feature.
+                let titleRow = NSStackView(views: [titleView, SettingsGuideLink(page, title: "Learn more")])
+                titleRow.orientation = .horizontal
+                titleRow.alignment = .firstBaseline
+                titleRow.spacing = SettingsMetrics.labelToControl
+                sectionView.addArrangedSubview(titleRow)
+            } else {
+                sectionView.addArrangedSubview(titleView)
+            }
         }
         sectionView.addArrangedSubview(grid)
         grid.widthAnchor.constraint(lessThanOrEqualTo: sectionView.widthAnchor).isActive = true
@@ -338,7 +358,8 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
             }
             // Help text and groups take the control column's whole width: help
             // text wraps at it, and a long extension name truncates inside it.
-            if control is SettingsWrappingLabel || control is SettingsGroupBoxView || control === customUserAgentField {
+            if control is SettingsWrappingLabel || control is SettingsGroupBoxView || control === customUserAgentField
+                || control === privateNoteRow {
                 control.widthAnchor.constraint(equalTo: sectionView.widthAnchor, constant: -Self.controlColumnInset).isActive = true
             }
             if control is SettingsGroupBoxView {

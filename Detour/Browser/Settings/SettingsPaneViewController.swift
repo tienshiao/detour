@@ -1,7 +1,8 @@
 import AppKit
 
-/// The base of every Settings pane (TASK-189): a fixed description at the top
-/// and the pane's body below it.
+/// The base of every Settings pane (TASK-189): a fixed description at the top,
+/// a Learn more link to the feature's guide page under it (`guidePage`,
+/// TASK-292.11), and the pane's body below them.
 ///
 /// A pane without a master list (General, Quick Detour, Content Blocking)
 /// scrolls as one body: the body is a scroll view's document, pinned to its width, so
@@ -34,6 +35,11 @@ class SettingsPaneViewController: NSViewController {
     /// The text shown above the scroll area, or nil for none.
     var paneDescription: String? { nil }
 
+    /// The guide page a Learn more link at the top of the pane opens
+    /// (TASK-292.11): under the description, or in its place in a pane
+    /// without one. Nil for none.
+    var guidePage: GuidePage? { nil }
+
     /// The pane's smallest content height: `SettingsMetrics.listPaneMinimumHeight`
     /// for panes with a master list, nil to use the natural height (the pane
     /// cannot be shortened).
@@ -56,6 +62,8 @@ class SettingsPaneViewController: NSViewController {
     private(set) var scrollView: NSScrollView?
     private var body: NSView!
     private var descriptionLabel: NSTextField?
+    /// The pane's Learn more link (`guidePage`), under the description.
+    private var guideLink: SettingsGuideLink?
     /// The constraints that stretch the document to the visible height; off
     /// while the body is measured, so the window's current height never
     /// feeds back into the natural height.
@@ -97,6 +105,22 @@ class SettingsPaneViewController: NSViewController {
             bodyAreaTop = label.bottomAnchor
             bodyTopInset = SettingsMetrics.descriptionToBody
         }
+        // The Learn more link closes the header: help-text spacing under the
+        // description, the pane's margin without one; the body then starts
+        // below it as it would below a description.
+        if let page = guidePage {
+            let link = SettingsGuideLink(page, fontSize: 12)
+            root.addSubview(link)
+            guideLink = link
+            let top = descriptionLabel == nil ? margin : SettingsMetrics.controlToHelp
+            constraints += [
+                link.topAnchor.constraint(equalTo: bodyAreaTop, constant: top),
+                link.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: margin),
+                link.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -margin),
+            ]
+            bodyAreaTop = link.bottomAnchor
+            bodyTopInset = SettingsMetrics.descriptionToBody
+        }
 
         if scrollsBodyAsWhole {
             let scroll = Self.configureVerticalScrollView(NSScrollView())
@@ -109,12 +133,14 @@ class SettingsPaneViewController: NSViewController {
             scroll.documentView = document
             document.addSubview(body)
 
-            // Below a description the scroll area starts at the gap, so the
-            // body's own top inset is 0; without one the body starts a margin
-            // below the toolbar, inside the scroll area.
+            // Below a description (or a Learn more link) the scroll area
+            // starts at the gap, so the body's own top inset is 0; without
+            // one the body starts a margin below the toolbar, inside the
+            // scroll area.
+            let hasHeader = descriptionLabel != nil || guideLink != nil
             let scrollTop = scroll.topAnchor.constraint(
-                equalTo: bodyAreaTop, constant: descriptionLabel == nil ? 0 : bodyTopInset)
-            if descriptionLabel != nil { bodyTopInset = 0 }
+                equalTo: bodyAreaTop, constant: hasHeader ? bodyTopInset : 0)
+            if hasHeader { bodyTopInset = 0 }
 
             // The document fills the clip view's width (never wider), and is at
             // least as tall as the visible area so a column can stretch.
@@ -208,10 +234,17 @@ class SettingsPaneViewController: NSViewController {
         _ = view
         let margin = SettingsMetrics.paneMargin
         // The body starts a margin below the toolbar, or the gap below the
-        // description, whether or not it scrolls as a whole.
+        // description and Learn more link, whether or not it scrolls as a whole.
         var top: CGFloat = margin
         if let label = descriptionLabel {
-            top += label.fittingSize.height + SettingsMetrics.descriptionToBody
+            top += label.fittingSize.height
+        }
+        if let link = guideLink {
+            if descriptionLabel != nil { top += SettingsMetrics.controlToHelp }
+            top += link.fittingSize.height
+        }
+        if descriptionLabel != nil || guideLink != nil {
+            top += SettingsMetrics.descriptionToBody
         }
         // Measured at the width the body has in the window: the clip view's
         // width when laid out (narrower with legacy scrollers), else the window's.

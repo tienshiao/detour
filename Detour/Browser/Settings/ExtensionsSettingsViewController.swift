@@ -43,6 +43,7 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
 
     override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }
     override var scrollsBodyAsWhole: Bool { false }
+    override var guidePage: GuidePage? { .webExtensions }
 
     /// Tall enough to show every extension without scrolling the list.
     override func idealBodyHeight(fittingHeight: CGFloat) -> CGFloat {

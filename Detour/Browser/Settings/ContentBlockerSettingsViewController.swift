@@ -28,6 +28,8 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableV
         "Filter lists are downloaded and compiled into WebKit content rules. Lists update automatically every 24 hours."
     }
 
+    override var guidePage: GuidePage? { .contentBlocker }
+
     override func makeBody() -> NSView {
         let container = NSView()
         let spacing = SettingsMetrics.rowGap

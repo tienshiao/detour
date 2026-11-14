@@ -51,7 +51,8 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         let peekHelp = SettingsWrappingLabel(
             wrapping: "Off, links to other sites from pinned tabs and favorites open in new tabs. Shift-click still opens a Peek.",
             estimatedWidth: Self.textWidth)
-        let peekRows = NSStackView(views: [peekCheckbox, peekHelp])
+        // TASK-292.11: the Peek guide, under the help that explains it.
+        let peekRows = NSStackView(views: [peekCheckbox, peekHelp, SettingsGuideLink(.peek)])
         peekRows.orientation = .vertical
         peekRows.alignment = .leading
         peekRows.spacing = SettingsMetrics.controlToHelp

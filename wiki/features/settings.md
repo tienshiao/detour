@@ -70,6 +70,15 @@ sources:
   - id: content-blocker
     resource: ../../Detour/Browser/Settings/ContentBlockerSettingsViewController.swift
     title: ContentBlockerSettingsViewController.swift
+  - id: task-292-11
+    resource: backlog:TASK-292.11
+    title: "Settings: Learn more links from feature settings to their guide pages"
+  - id: guide-link
+    resource: ../../Detour/Browser/Settings/SettingsGuideLink.swift
+    title: SettingsGuideLink.swift (the Learn more link)
+  - id: guide-link-tests
+    resource: ../../DetourTests/SettingsGuideLinkTests.swift
+    title: SettingsGuideLinkTests.swift
   - id: layout-notes
     resource: "Agent session notes, 2026-09-25 and 2026-09-26: Settings pane layout (not in the repository)"
     title: Settings pane layout lessons
@@ -142,8 +151,11 @@ screens where the 400 minimum comes down to the cap).
 
 `SettingsPaneViewController` is the base of every pane. A fixed
 **description** sits at the top (`paneDescription`, wrapped at
-`740 - 2 * 20`); a pane without one (Extensions, Quick Detour) starts its
-body 20 pt below the toolbar. Below it the pane's **body** (`makeBody()`)
+`740 - 2 * 20`), with the pane's Learn more link (`guidePage`) 4 pt under
+it; Extensions and Quick Detour have no description, so their link sits 20
+pt below the toolbar (see [Learn more links](#learn-more-links)), and a pane
+with neither starts its body 20 pt below the toolbar. Below this header the
+pane's **body** (`makeBody()`)
 takes one of two forms, chosen by `scrollsBodyAsWhole`:[^task-211]
 
 - **One scrolling body** (the default: General, Quick Detour, Content
@@ -154,7 +166,7 @@ takes one of two forms, chosen by `scrollsBodyAsWhole`:[^task-211]
   is that scroll view.
 - **Fixed columns** (`scrollsBodyAsWhole == false`: Spaces, Links,
   Profiles, Extensions). The body is pinned to the pane's edges, 12 below
-  the description and 20 from the sides and bottom; `scrollView` is nil.
+  the description (or its link) and 20 from the sides and bottom; `scrollView` is nil.
   The master list (its bordered box, table and +/- bar) fills the body's
   height, and so does the detail column, which is a
   `makeColumnScrollView(document:estimatedWidth:)`: a
@@ -178,8 +190,8 @@ takes one of two forms, chosen by `scrollsBodyAsWhole`:[^task-211]
   view; anywhere else the offset is kept, and content that fits stays at
   its top. The sidebar's `SpacePageView` does the same in its
   `layout()` (TASK-192).
-- `naturalContentHeight` = margin + description + 12 + the body's height +
-  margin. The body's height is its `fittingSize` at its width (the clip
+- `naturalContentHeight` = margin + description (+ 4 + link) + 12 + the
+  body's height + margin. The body's height is its `fittingSize` at its width (the clip
   view's in a scrolling body, narrower with legacy scrollers). In a column
   pane each visible column scroll view is held, for the measurement, at the
   full `fittingSize` of its document (measured at its clip view's width, its
@@ -242,17 +254,58 @@ section title is 12 pt semibold, like System Settings' group headers.
 
 | Pane | Content height (examples measured 2026-10-24) | Opened by |
 |---|---|---|
-| General | 164, fixed (with the Peek section, 2026-11-08) | Detour > Settings… (Cmd+,), which opens whatever pane was last shown |
+| General | 164, fixed (with the Peek section, 2026-11-08; one 15 pt link line more with Learn more about Peek, TASK-292.11) | Detour > Settings… (Cmd+,), which opens whatever pane was last shown |
 | Spaces | 400 minimum; 628 with 19 spaces | the sidebar's add-space and edit-space actions (`showSpacesPane(selectSpaceID:)`), the Spaces menu's Manage Spaces… (`openSpacesSettings`) |
 | Links | 400 minimum (no routes); 743 with 5 routes (measured before the Quick Detour section came and went); capped (1242 on a 1410 pt screen) with 12 routes, then the route list scrolls (177 pt of list at 400, 129 pt at a 352 pt cap, 2026-10-27) | toolbar; Open Links Settings… in the blocked space-deletion alert (`showLinksPane(highlightingSpaceID:)`) |
-| Quick Detour | 248, fixed (with the Debug build's warning line, 2026-10-27) | toolbar only |
+| Quick Detour | 248, fixed (with the Debug build's warning line, 2026-10-27; plus its Learn more link line, TASK-292.11) | toolbar only |
 | Profiles | 630 (Private) / 709 (a normal profile) to 1218 (custom UA, warning, 15 extensions); 1047 for Private with 14 extensions (2026-10-27) | toolbar only |
 | Extensions | 400 (none, or one small extension) to 1092 (22 permissions, 4 hosts, 6 optional) | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
-| Content Blocking | 243, fixed | toolbar only |
+| Content Blocking | 243, fixed (plus its Learn more link line, TASK-292.11) | toolbar only |
 
 TASK-189 part 1 moved every pane into the container and rebuilt General,
 Content Blocking and Spaces on the metrics; part 2 rebuilt Profiles (titled
 sections) and Extensions (one column in the pane's scroll view).
+
+### Learn more links
+
+Settings links each feature that has a guide page on the website to it
+(TASK-292.11).[^task-292-11] The pages are `GuidePage` in
+[HelpMenu.swift](../../Detour/App/HelpMenu.swift): its raw value is the
+site's slug, and its URL is `HelpLinks.detourHelp.url` (the Help menu's
+guide index, https://detourbrowser.com/features/) plus `<slug>/`, so the
+Help menu and Settings share one definition. Only pages that exist are
+listed (all 11 answered 200 on Nov 14 2026).
+
+The link is `SettingsGuideLink`, a borderless `NSButton` in `linkColor`
+with a pointing-hand cursor, accessibility role link, label "Learn more
+about <page>" and identifier `learnMore.<slug>`. Its action calls
+`SettingsGuideLink.open`, which is `AppDelegate.openHelpPage`: the page
+opens as the Help menu's do, in a new selected tab of the frontmost normal
+browser window (which comes forward over Settings), or a new window. Not a
+`.link` attribute in a text field, which would open through NSWorkspace in
+the default browser. Tests replace `open` to record the URL. A borderless
+button draws its title 2 pt further in than a label draws its text, so its
+`alignmentRectInsets` take 2 pt off each side and its text lines up with
+the text above it. Its vertical hugging is required: with the default, a
+list pane held taller than its content (Links at its 400 pt minimum) gave
+the spare height to the link button instead of the list, and in dark mode
+the captures showed the top link centred in a 70 pt gap
+(`testSpareHeightNeverStretchesALink`).
+
+Where the links are:
+
+| Where | Page | Placement |
+|---|---|---|
+| Spaces, Links, Quick Detour, Profiles, Search, Extensions, Content Blocking | spaces, link-routes, quick-detour, profiles, site-search, web-extensions, content-blocker | `guidePage` on the pane: the container puts "Learn more about <page>" (12 pt) 4 pt under the description, or 20 pt below the toolbar in a pane without one (Quick Detour, Extensions); the body starts 12 pt below it, and `naturalContentHeight` counts it |
+| General › Peek | peek | under the Peek help text |
+| Links › Default | quarantine | under the caption, which is where the pane explains Quarantine |
+| Profiles › Tabs, Content Blocking, Extensions | tab-archiving, content-blocker, web-extensions | "Learn more" beside the section title (`ProfileSettingsSection.guidePage`); Tab Archiving covers sleeping too, so Private keeps it |
+| Profiles › the Private profile's note | private-browsing | under "This profile is used for Private Windows." |
+
+Not linked, because no Settings belong to them: command-palette,
+favorites, pinned-tabs, split-tabs, recent-tabs, history, dev-mode (its
+switch is in the sidebar's settings popover) and privacy (a setup guide
+across several panes). Copy URL has no guide page.
 
 ## General
 
@@ -315,7 +368,8 @@ Default only). The toolbar item sits after Links, labelled
 `QuickDetour.displayName` with the SF Symbol `macwindow.on.rectangle` (a
 window over another: the launcher opens over the app in front). No master
 list, so it scrolls as one body, like General; no description and no
-section title (the toolbar names it). Top to bottom:
+section title (the toolbar names it). Top to bottom, below its Learn more
+link (TASK-292.11):
 
 - "[✓] Open Quick Detour from any app with" and the shortcut recorder
   (`ShortcutRecorderView`), a warning line when the shortcut is refused or
@@ -531,7 +585,11 @@ which form, the toolbar order with Quick Detour after Links, the Quick
 Detour pane's natural height, Links fitting the 400 pt minimum, and the end
 anchoring of `SettingsColumnScrollView`); `LinkRouteEditorTests` the Links pane's rules (target
 menus, drag destination, warnings, drafts); `ProfileSettingsLayoutTests` the Profiles sections, which
-rows show for a normal and the Private profile, and the row spacing. The panes have no dedicated UI tests; their layout is
+rows show for a normal and the Private profile, and the row spacing;
+`SettingsGuideLinkTests` the Learn more links (`GuidePage` URLs under the
+Help menu's guide index, which links each pane has, a click handing its URL
+to the opener, the link under the description or in its place, and the
+natural height counting it). The panes have no dedicated UI tests; their layout is
 checked at runtime with the TASK-189 survey harness (every pane and state,
 light and dark, frames measured; pane switches, drags, the cap and a real
 second screen; uninstalling the only extension through the pane; a run with
@@ -557,6 +615,7 @@ suites.
 - [AppKit gotchas](../platform/appkit-gotchas.md) - the stack-view and layout traps in general form.
 
 [^layout-notes]: Settings pane layout lessons
+[^task-292-11]: TASK-292.11
 [^task-189]: TASK-189
 [^task-211]: TASK-211
 [^task211-harness]: TASK-211 harness

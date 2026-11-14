@@ -46,6 +46,8 @@ final class SearchSettingsViewController: SettingsPaneViewController, NSTableVie
         "Search a site straight from the address bar: type the start of its name or address, or its keyword, and press Tab (Space works after a keyword too), then type what you're looking for. Sites that offer their own search are added when you visit them. Each profile's default search engine is set in Profiles."
     }
 
+    override var guidePage: GuidePage? { .siteSearch }
+
     override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }
     override var scrollsBodyAsWhole: Bool { false }
 

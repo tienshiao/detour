@@ -25,6 +25,18 @@ enum ProfileSettingsSection: CaseIterable, Equatable {
         }
     }
 
+    /// The guide page the Learn more link beside the section's title opens
+    /// (TASK-292.11), nil for none. The Tab Archiving guide covers sleeping
+    /// tabs too, so Private (whose tabs are never archived) keeps it.
+    var guidePage: GuidePage? {
+        switch self {
+        case .tabs: return .tabArchiving
+        case .contentBlocking: return .contentBlocker
+        case .extensions: return .webExtensions
+        case .profile, .search, .userAgent, .externalApps: return nil
+        }
+    }
+
     /// The section's rows, top to bottom.
     var rows: [ProfileSettingsRow] {
         switch self {

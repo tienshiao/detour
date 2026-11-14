@@ -62,6 +62,8 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
         "Link Routes open links in the space you choose: links from other apps, addresses typed in a new tab, and links clicked to another site. Routes are tried from the top, and the first that matches decides. Drag routes to change their order."
     }
 
+    override var guidePage: GuidePage? { .linkRoutes }
+
     override var minimumContentHeight: CGFloat? { SettingsMetrics.listPaneMinimumHeight }
     /// The routes scroll inside their list; the Default and its caption stay
     /// at the bottom of the pane (TASK-211).
@@ -147,6 +149,9 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
             wrapping: "For every link no route matches: links from other apps, addresses typed in a new tab, and links clicked to another site. Most Recent Space opens a link from another app in the space in front and leaves a typed or clicked link where it is. Quick Detour and Quarantine take links from other apps; a route to Quarantine also takes the clicked links it matches, except in Private windows. Quarantine opens the link in a throwaway window with no cookies of yours: Open in moves it to a space.",
             estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin)
         container.addSubview(caption)
+        // TASK-292.11: the caption is where the pane explains Quarantine.
+        let quarantineLink = SettingsGuideLink(.quarantine)
+        container.addSubview(quarantineLink)
 
         // The list asks for the height of all its rows, weakly: in a window
         // shorter than that it gives way and its rows scroll. Below the
@@ -208,7 +213,9 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
             caption.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: LinkRouteHighlightView.insetX),
             caption.trailingAnchor.constraint(equalTo: container.trailingAnchor),
 
-            caption.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            quarantineLink.topAnchor.constraint(equalTo: caption.bottomAnchor, constant: SettingsMetrics.controlToHelp),
+            quarantineLink.leadingAnchor.constraint(equalTo: caption.leadingAnchor),
+            quarantineLink.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         return container
     }

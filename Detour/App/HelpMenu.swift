@@ -39,6 +39,46 @@ enum HelpLinks: CaseIterable {
     }
 }
 
+/// The website's feature guide pages that Settings links to with Learn more
+/// (TASK-292.11). The raw value is the page's slug: each page is
+/// `/features/<slug>/` under Detour Help's guide index, so these URLs and the
+/// Help menu's come from the same place. Only pages that exist on the site
+/// are listed here.
+enum GuidePage: String, CaseIterable {
+    case spaces
+    case profiles
+    case linkRoutes = "link-routes"
+    case quickDetour = "quick-detour"
+    case siteSearch = "site-search"
+    case webExtensions = "web-extensions"
+    case contentBlocker = "content-blocker"
+    case peek
+    case quarantine
+    case tabArchiving = "tab-archiving"
+    case privateBrowsing = "private-browsing"
+
+    /// The page's name, as the website titles it.
+    var name: String {
+        switch self {
+        case .spaces: return "Spaces"
+        case .profiles: return "Profiles"
+        case .linkRoutes: return "Link Routes"
+        case .quickDetour: return QuickDetour.displayName
+        case .siteSearch: return "Site Search"
+        case .webExtensions: return "Web Extensions"
+        case .contentBlocker: return "Content Blocker"
+        case .peek: return "Peek"
+        case .quarantine: return "Quarantine"
+        case .tabArchiving: return "Tab Archiving"
+        case .privateBrowsing: return "Private Browsing"
+        }
+    }
+
+    var url: URL {
+        HelpLinks.detourHelp.url.appendingPathComponent(rawValue, isDirectory: true)
+    }
+}
+
 /// Where a Help page opens.
 enum HelpLinkPlacement<ID: Hashable>: Equatable {
     /// A new tab, selected, in this normal window's active space.

@@ -25,6 +25,8 @@ final class QuickDetourSettingsViewController: SettingsPaneViewController {
     /// The width of a full-width line of text in the body.
     private static let textWidth = SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin
 
+    override var guidePage: GuidePage? { .quickDetour }
+
     // MARK: - Building
 
     /// "[✓] Open Quick Detour from any app with [⌥⌘N]", a warning line when

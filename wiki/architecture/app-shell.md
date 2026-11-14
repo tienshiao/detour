@@ -146,6 +146,10 @@ the active space of the frontmost normal browser window
 Quick Detour and quarantine windows are not browser windows), or in a new
 window (`createNewWindowWithURL`) when there is none; the choice is the pure
 `HelpLinks.placement(windows:)`.
+Settings' Learn more links (TASK-292.11) open the website's feature guides
+(`GuidePage`, URLs under `HelpLinks.detourHelp`) through the same
+`openHelpPage`; see
+[Settings](../features/settings.md#learn-more-links).
 
 The **Dock menu** (`applicationDockMenu`, built fresh each time macOS asks):
 New Window, New Private Window, then, while any Quick Detour is open and not
