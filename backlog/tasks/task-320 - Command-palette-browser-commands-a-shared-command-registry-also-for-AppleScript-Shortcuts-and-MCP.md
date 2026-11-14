@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-10T09:38:00Z'
-updated_date: '2026-11-14T22:34:00Z'
+updated_date: '2026-11-14T22:56:00Z'
 labels:
   - command-palette
   - automation
@@ -146,6 +146,8 @@ Correction to the counts above (from the logs): BrowserCommandRegistryTests 22, 
 - PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): the palette sends a window's commands straight to its controller (whose rule offered them), so Back and Forward are offered and the palette's Back on a child tab with no history closes it to its opener (TASK-325), which Cmd+[ with the page focused does not (WKWebView's own goBack: takes it); alternative: keep Back/Forward out of the palette, or send commands along the responder chain as the menu does (then Back from the palette is the page's own and does nothing without history).
 - Wording correction: NSWindow declares selectNextTab:/selectPreviousTab: (window tabbing), but a Detour window was not seen to take them (the characterization's resolution from the window followed the controller's rule: on with two tabs, off empty, off in a one-tab Private window); the controller-first dispatch makes that moot. The demonstrated case is WKWebView's goBack:/goForward:.
 - Lock attribution is INFERRED, not shown: the control suite FaviconLinkBridgeTests (8/8) loaded pages under the same lock. The evidence is that the three failing suites passed at b10ab60 and that nothing after it is on the failing tests' path (they open no palette). Rerun owed on an unlocked screen.
+
+2026-11-14 lead: the 12 Quick Detour / quarantine failures were the locked screen. Rerun on an unlocked screen at f0f38d7 (TASK-320 rebased on main with 326/292.11/325/328/329): QuickDetourWindowTests 16/16, QuarantineWindowTests 22/22, QuickDetourOpenInWindowTests 17/17 (55/55). Rebased neighbours: 210 tests, 0 failures, 1 skipped (opt-in whole-list test).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
