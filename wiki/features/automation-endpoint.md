@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Automation endpoint (MCP)
-description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4): how it is turned on, who may connect (Host, Origin, bearer token), the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the connected-agent indicator and disconnecting, the bundled stdio helper and client setup, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status)."
+description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2): how it is turned on, who may connect (Host, Origin, bearer token), the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the connected-agent indicator and disconnecting, the bundled stdio helper and client setup, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host)."
 tags: [automation, mcp, testing, security]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T10:00:00Z }
@@ -36,6 +36,18 @@ sources:
   - id: tests
     resource: ../../DetourTests/MCPServerTests.swift
     title: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests
+  - id: task-228-2
+    resource: backlog:TASK-228.2
+    title: "Automation: extension testing tools on the MCP endpoint"
+  - id: extension-tools
+    resource: ../../Detour/Automation/AutomationTools+Extensions.swift
+    title: AutomationTools+Extensions.swift (addressing, the extension tools)
+  - id: channel
+    resource: ../../Detour/Automation/AutomationExtensionChannel.swift
+    title: AutomationExtensionChannel.swift (the channel into an extension's background, the command runner)
+  - id: extension-tests
+    resource: ../../DetourTests/AutomationExtensionTests.swift
+    title: AutomationExtensionTests and AutomationExtensionChannelTests
 ---
 
 # What it does
@@ -48,8 +60,10 @@ open, take screenshots, and read a page: run JavaScript, read its text, HTML and
 interactive elements, its console and network records, and wait for
 something to happen in it (TASK-228.4). Built first for testing Detour itself
 (replacing harness patches pasted into AppDelegate), and shipped in Release
-too, off until turned on.[^task-228-1] TASK-228.2 adds extension
-contexts.
+too, off until turned on.[^task-228-1] TASK-228.2 adds extensions:
+installing and managing them in a test run, and their popup, options page
+and service worker as contexts the same tools reach (see "Extension
+contexts").[^task-228-2]
 
 # How it is turned on
 
@@ -166,6 +180,15 @@ tool's schema to hold it.
 | `wait_for` | Polls every 100 ms until `load` (not loading and readyState complete), `selector` (with `visible`), `expression` truthy (a throw counts as false; the last one is in the timeout's message) or `url` (a plain substring) | `timeout` after `timeout_ms` (default 10 s). Exactly one condition. |
 | `wake_tab` | Loads a sleeping tab's page (`BrowserTab.wake()`) without selecting it | `woken` false when it was awake. |
 | `set_debug_override` | Debug builds only: `reduce_motion` (this process, via `MotionPreference`), `space_toss_hop` and `space_toss_gravity` (the data directory's defaults keys `SpaceCelebration` already read in Debug); `default` clears | Absent from Release (checked on a Release build: its tool list and its binary's strings). |
+| `list_extensions` | Installed extensions sorted by id (or one, by id or name): version, source, global switch, `loaded`/`load_failed`, per normal profile `turned_on`, `loaded`, `worker_parked`, `open_contexts`, `context_errors`; the manifest's permission lists, the saved decisions, WebKit's manifest warnings and every load error recorded this session | Reads whenever the endpoint is on. Load errors come from `ExtensionErrorLog` (see "Extension contexts"). |
+| `install_extension` | Test runs only. An unpacked folder or a `.crx`, turned on in `profile_id` (default: the only normal profile); waits for it to load | No prompt. A CRX goes through `CRXInstallGate` with a file URL (its developer signature), may replace an installed id, and never updates. A keyless folder installed again keeps its id. `install_failed` for no or a bad manifest or a refused CRX. |
+| `uninstall_extension` | Test runs only. Settings' Uninstall, every profile, no prompt | Closes the endpoint's popups of it first. |
+| `set_extension_enabled` | Test runs only. One normal profile's switch (`profile_id`) or the global one | The Private profile is `private_unreachable`. |
+| `set_extension_permission` | Test runs only. Saves a grant or denial and applies it to every profile's context (`setPermissionDecision`): an API permission, a match pattern, or a URL with `type` url | `warnings` names a decision with no effect: a host outside the manifest's host patterns stays inert, an undeclared API permission is not restored next launch, `nativeMessaging` gates real hosts only. |
+| `open_extension_context` | `kind` popup (in a window, at its button, with a click's user gesture), options (a tab, in the background or selected in `window_id`), worker (start it and wait for it to answer) | Returns the `context` string. `sidepanel` is `unsupported_context` on this build. |
+| `close_extension_context` | Closes the endpoint's popup, or the options page's tab | `context_not_open` when it is not open. |
+| `call_extension_api` | Calls the function at a dotted path (`chrome.storage.local.get`) with `args` (a JSON array as a string), awaits it, returns the result as `evaluate_js` does | In `worker:` through the channel; in a popup, options page or tab through `callAsyncJavaScript`. A missing member is a `TypeError` (`script_error`). |
+| `read_extension_global` | Reads the value at a dotted path (`self.cache.size`) | How a worker's own globals are read. |
 
 Tools that act on page content take a `context` (`tab:<uuid>`, or a bare
 tab id): a tab of a non-Private space, normal or pinned, or a live favorite.
@@ -175,9 +198,9 @@ take it whether or not a window shows the tab (`resolvePage`); the input
 tools still need a window and answer `not_displayed` without one (input to
 those tabs is TASK-228.6). A sleeping tab (no web view) answers `tab_asleep`
 in every page and input tool; before TASK-228.4 the input tools said
-`not_displayed`. `popup:`, `options:`, `sidepanel:` and `worker:` already parse and
-answer `unknown_context`, so TASK-228.2 adds extension contexts without
-changing signatures.
+`not_displayed`. Extension contexts (`popup:<ext>`, `options:<ext>`,
+`worker:<ext>`, `extension:<ext>`) go in the same argument
+(`resolvePageTarget`); see "Extension contexts" for which tool takes which.
 
 ## How input is delivered
 
@@ -256,6 +279,146 @@ navigation entries comes from `PerformanceResourceTiming.responseStatus`,
 which the WebKit on this machine (macOS 26, November 2026) does not expose:
 it is null there (checked in tests and at runtime), and only fetch and XHR
 carry a status.
+
+# Extension contexts
+
+What TASK-228.2 (part 1) adds, for a suite that installs third-party
+extensions and drives them:[^task-228-2][^extension-tools]
+
+## Addressing
+
+An extension is named by its id, or by its exact manifest name (localised
+or as written, ignoring case): two with that name are
+`ambiguous_extension`, none `unknown_extension`. Ids survive relaunch, and
+a reinstall of the same folder keeps a keyless extension's random id (the
+install passes Reload's `forcedID` when an installed unpacked extension came
+from that folder), so a scenario's saved id still resolves.
+
+A context is `<kind>:<extension>`, with `@<profile uuid>` appended when the
+extension is on in more than one normal profile (else
+`ambiguous_profile`); only a UUID after the last `@` counts, so a name with
+an `@` still reads as a name. Off in every profile is
+`extension_disabled`. The Private profile is never a target: not listed,
+not installable into, `private_unreachable` by id.
+
+| Context | What it is | Tools |
+|---|---|---|
+| `popup:<ext>` | The action popup the endpoint opened (or one the extension opened with `action.openPopup()`), while it is up; else `context_not_open` | `evaluate_js`, `read_page`, `wait_for`, `click`, `type_text`, `press_key`, `screenshot`, `call_extension_api`, `read_extension_global`, `console_messages` (also after it closed) |
+| `options:<ext>` | The tab of one of the profile's spaces showing the options page (`existingOptionsPageTab`); `unsupported_context` without an options page | The same; input needs it shown in a window (`open_extension_context` with `window_id`) |
+| `worker:<ext>` | The background service worker, or background page | `call_extension_api`, `read_extension_global`, `console_messages`, `wait_for` with `worker_started`; every page tool is `unsupported_context` |
+| `extension:<ext>` | Every context of the extension | `console_messages` only |
+| `sidepanel:<ext>` | No side panel on `main` (only the epic branch has them) | `unsupported_context` everywhere |
+
+## The popup
+
+`AutomationExtensionPopups` opens it with an `ExtensionPopoverController`
+built for the profile and the window's active tab, anchored where a click
+on the extension's button would anchor it (its pinned button in the
+address bar, else the address bar, else the content's top right when the
+sidebar is hidden), and `show` records the user gesture a click records, so
+`activeTab` works. An extension whose action has no popup for the tab is
+`unsupported_context`: `show` would fire `action.onClicked` instead.
+`show` reloads the popup and presents the popover once the page has loaded
+(or after 0.5 s); `wait_for load` covers that. The popover is in its own
+window, a child of the browser window, so input goes there and results name
+the browser window. All of it works with Detour in the background (checked
+at runtime: popups opened, clicked, typed into and captured while another
+app was active). A popup a person opened from the toolbar is not tracked
+and not reachable.
+
+## The worker channel
+
+Nothing public evaluates script in an extension's service worker, and an
+MV3 worker's CSP forbids `eval` and `new Function`, so `worker:` takes
+commands, not code: call the function at a path with JSON arguments, read
+the value at a path, or ping.[^channel] The polyfill bundle's last module
+(background contexts only) parks a request, `automation.awaitCommand`, as
+`notifications.awaitEvent` does ([polyfill layer](../extensions/polyfill-layer.md)).
+The endpoint answers it with a command; the worker acknowledges it at once
+(`automation.ack`), parks again, runs it, and sends the result
+(`automation.result`). So a call that never settles holds up nothing else,
+and several run side by side.
+
+Why this channel and not another:
+
+- A `runtime.onMessage` listener would be seen by the extension's own
+  listeners. A Proxy on, or a replacement of, `chrome`/`browser` is never
+  done ([never replace the globals](../decisions/never-replace-chrome-globals.md)).
+- A native port would push without parking, but opening and closing ports
+  changes how long WebKit keeps the background alive and can make it forget
+  another port (TASK-141), which would skew a compatibility run. A pending
+  native-message reply is not activity and touches no port bookkeeping
+  ([service worker unload rules](../platform/service-worker-unload-rules.md)).
+- A hidden extension page relaying through `chrome.*` runs in a page, not
+  in the worker, and cannot read the worker's globals.
+
+What follows from parking:
+
+- **A park keeps nothing alive, and a dead one is silent.** WebKit unloads
+  an idle background after about 30 s and says nothing; a reply to the dead
+  worker's park goes nowhere. A delivered command must be acknowledged
+  within 1.5 s; if it is not, the background is started
+  (`loadBackgroundContent`) and the command goes to the new worker's park,
+  up to three times. A call to an unloaded worker therefore takes about
+  1.7 s (measured at runtime: the worker's polyfill lines appeared again in
+  its console). With no park at all the background is started at once.
+- **A worker that restarted mid-command** loses the command, which is not
+  run twice: the call answers `worker_not_running`. A late acknowledgement
+  of a command already sent again is honoured, and the worker skips an id it
+  has seen.
+- **The channel is open while the endpoint is on.** `AutomationController`
+  opens it in the same main-actor turn as the launch's start, before any
+  worker's first message is handled, so every background parks in a test
+  run. A worker that started while automation was off was answered `stop`
+  and parks again only at its next start: turning the endpoint on in
+  Settings leaves running workers unreachable until they cycle
+  (`worker_not_running`, whose message says so). Stopping the endpoint
+  stops every park and fails what waits.
+- **Who may park.** Only the verified extension's background context
+  (`senderIsBackgroundContext`), never in the Private profile; a page that
+  tries is refused (tested from an options page). The extension's own code
+  in its worker could still call the request itself and answer its own
+  commands; a test of that extension accepts that. The channel's requests
+  do not count as the extension's background activity (which delays
+  updates, TASK-123).
+- **Cost when automation is off:** one `automation.awaitCommand` round trip
+  per worker start, answered `stop`.
+- **What a call can do:** `call` invokes the function on the object holding
+  it (`this` is `chrome.storage.local` for `chrome.storage.local.get`),
+  promise form only (a callback-only API gets no callback); `get` does not
+  await. Results go through the same serialiser as `evaluate_js`.
+  `worker_not_running` when no live background took the command in time,
+  `timeout` when it took it and did not finish.
+
+## The console of extension contexts
+
+`console_messages` on an extension context reads what the polyfill's
+[console bridge](../extensions/console-bridge.md) forwards, kept by
+`AutomationExtensionConsole` per extension and profile while the endpoint is
+on (ring of 1000, one `seq` for all the extension's contexts, the same entry
+shape as a tab's plus `context_kind` and `context`). The bridge now sends
+the console method (`consoleLevel`: `log` still reaches os_log as info), an
+`origin` (`uncaught`, `unhandledrejection`) and an error's stack and
+location. The kind comes from the sender: the native-message bridge or the
+background page's frame is `worker`, a tracked popup web view `popup`, a web
+view showing the options page `options`, anything else `page`. It is
+recorded before the os_log path's native cap, but the bridge's in-page
+limiter still applies: past a burst of 50 messages, about 20 a second, with
+repeats folded into "(repeated N times)"; `console.debug` is not bridged,
+and content scripts have no bridge. The options page's tab is not captured
+by page capture (it is built from the extension's configuration), so read
+it as `options:<ext>`, not `tab:<id>`.
+
+## Load errors
+
+`ExtensionErrorLog` keeps, per extension and this session, every error
+WebKit reported when reading the installed files (at launch or after an
+install), when the controller refused a context, and every context error it
+posted (`errorsDidUpdateNotification`, a background that failed to load
+among them), deduplicated with a count and cut at 50; forgotten on
+uninstall. Before, all of these were only logged. A recovery reload clears
+`context.errors`, so the copy is what tells a run that a worker failed at
+all. `WKWebExtension.errors` (manifest warnings) is read live.
 
 # Who is connected, and stopping them
 
@@ -422,6 +585,27 @@ Claude Code connects directly:
 - **A property named `format`** trips `MCPServerTests`' flat-schema walk,
   which refuses JSON Schema keywords anywhere, property names included; most
   validators would accept it, but `read_page` calls it `mode`.
+- **A content script needs site access the manifest does not grant.**
+  hello-world declares `content_scripts` matching `<all_urls>` and no
+  `host_permissions`; WebKit does not count content-script matches as
+  requested patterns, so its content script ran on no page, and
+  `set_extension_permission` for `<all_urls>` was saved but inert (its
+  warning said so). An extension with matching `host_permissions` (API
+  Explorer) is fine.
+- **A CRX that uses native messaging reaches the real host.** Installing the
+  store's 1Password CRX started its worker at once, and it connected to the
+  installed 1Password app's browser helper (which refused the unsigned
+  Debug build and exited). Point `DETOUR_NATIVE_MESSAGING_HOSTS_DIR` (Debug
+  builds) at an empty folder for such runs; with it the same install
+  connected to nothing.
+- **A popup's profile must outlive the test.** Releasing a profile whose
+  controller hosted a popup traps in `WKProcessPool` dealloc, in whichever
+  suite runs next; `AutomationExtensionTests` keeps its profiles alive
+  ([WebKit test host traps](../platform/webkit-test-host-traps.md)).
+- **A command that never settles** (a promise left pending) used to hold the
+  worker's only park, so every later call answered `worker_not_running`;
+  the result now travels in its own request and the worker parks again at
+  once.
 - **SIGTERM runs no quit path.** The SIGTERM source ends native hosts and
   re-raises the signal, so `applicationWillTerminate` never runs. It removes
   the endpoint file too, and only if the file's `pid` is this process. A
@@ -453,6 +637,20 @@ and a refused fetch; wait_for's four conditions and timeouts; wake_tab;
 every page tool on a tab no window shows; unknown, closed, sleeping and
 Private tabs; capture off until started, reaching an already loaded page
 once, removed on stop, never in a Private profile; the ring buffer),
+`AutomationExtensionTests` (TASK-228.2: the management tools refused
+outside a test run; install from a folder, list and address by id or name,
+ambiguity, a reinstall keeping the id; no manifest, a bad manifest, a bad
+CRX, a relative path, the Private and an unknown profile refused; the worker
+answering calls, reads and its console, a never-settling call timing out and
+not blocking the next, a closed channel; the popup driven with
+evaluate_js, read_page, call_extension_api, click, console and screenshot,
+then closed; the options page in the background and in a window, and a page
+refused the channel; turning on and off per profile and globally, permission
+decisions with their warnings, uninstall; side panels, unknown extensions and
+two profiles), `AutomationExtensionChannelTests` (the channel by hand:
+delivery and results, side-by-side commands, a wake with no park, a dead
+park's command sent to the next start, supersession, a restart mid-command,
+another extension unable to answer, unload and stop),
 `AutomationControllerTests` (on and off with the endpoint file, a
 stop during a start, Reset Token, disconnect and allow, idle sessions, the
 indicator's text and its place above the page through tab switches) and
@@ -471,7 +669,10 @@ the setup strings Settings copies).[^tests]
 [^automation-dir]: Detour/Automation (gate, credentials, HTTP, authorisation, MCP server, tools, endpoint)
 [^client]: scripts/detour-mcp (stdlib Python client)
 [^task-228-1]: Automation: an MCP endpoint in Detour, first slice for testing
-[^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests, AutomationInputTests, AutomationCaptureTests, AutomationControllerTests, AutomationHelperTests
+[^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests, AutomationInputTests, AutomationCaptureTests, AutomationControllerTests, AutomationHelperTests, AutomationExtensionTests, AutomationExtensionChannelTests
 [^input]: Detour/Automation/AutomationInput.swift
 [^controller]: Detour/Automation/AutomationController.swift
 [^page]: AutomationPageCapture.swift and AutomationPage.swift (capture script, buffers, page scripts)
+[^task-228-2]: Automation: extension testing tools on the MCP endpoint
+[^extension-tools]: AutomationTools+Extensions.swift (addressing, the extension tools)
+[^channel]: AutomationExtensionChannel.swift (the channel into an extension's background, the command runner)

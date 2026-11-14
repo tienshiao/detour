@@ -184,7 +184,17 @@ scripts/detour-mcp call read_page context=<tab_id> mode=elements     # selectors
 scripts/detour-mcp call wait_for context=<tab_id> selector='#late' visible=true timeout_ms=5000
 scripts/detour-mcp call console_messages context=<tab_id> after_seq=0 'levels=["error"]'
 scripts/detour-mcp call network_requests context=<tab_id> failed_only=true
+# Extensions (TASK-228.2; installing and permissions only in a test run):
+scripts/detour-mcp call install_extension path="$PWD/TestExtensions/api-explorer"
+scripts/detour-mcp call wait_for context='worker:API Explorer' worker_started=true
+scripts/detour-mcp call call_extension_api context='worker:API Explorer' path=chrome.storage.local.get 'args="[\"k\"]"'
+scripts/detour-mcp call open_extension_context extension='API Explorer' kind=popup   # then popup:API Explorer
+scripts/detour-mcp call console_messages context='extension:API Explorer'
 ```
+
+An extension that uses native messaging connects to the real host as soon
+as its worker starts: launch with `DETOUR_NATIVE_MESSAGING_HOSTS_DIR` (Debug
+builds) pointing at an empty folder unless the check needs one.
 
 Wait for `~/Library/Application Support/DetourVerify/mcp-endpoint.json`
 before the first call. A check longer than a few calls belongs in a script

@@ -67,6 +67,13 @@ offscreen documents. It does not run in content scripts.
    pages, `sendNativeMessage` to `detourPolyfill` in workers. The promise's
    rejection is swallowed, or the unhandled-rejection reporter would feed
    itself for as long as the bridge keeps failing.
+   Since TASK-228.2 the request also carries `consoleLevel` (the console
+   method; `log` still goes to os_log as info), `origin` (`uncaught`,
+   `unhandledrejection`) and, for errors, `stack`, `sourceURL`, `line` and
+   `column`. While the automation endpoint is on, the handler keeps each
+   message for `console_messages` before the native cap (see
+   [automation endpoint](../features/automation-endpoint.md)), with the
+   context it came from (worker, popup, options, page).
 5. **Limit natively**, then log in category `extension-polyfill` as
    `[SW <extension id>] <message>`. The `SW` prefix is used for every context
    kind, not only workers.

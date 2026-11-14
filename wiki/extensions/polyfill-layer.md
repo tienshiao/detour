@@ -191,6 +191,16 @@ is how a worker's result can be read at all; the API Explorer popup shows them.
 `apis.<name>` says which path each gap-filling module took (`native`,
 `polyfill`, `absent`, `polyfill-not-visible`, `error: …`).
 
+The last module is the automation endpoint's channel (TASK-228.2,
+`AutomationExtensionChannel.polyfillModuleJS`): in the background context
+only, it parks `automation.awaitCommand`, acknowledges each command
+(`automation.ack`) and sends its result (`automation.result`). The handler
+takes those three from the verified extension's background context alone,
+never in the Private profile, and they do not count as the background's
+activity. With the endpoint off a park is answered `stop` at once, so the
+cost is one round trip per worker start. Why a park and not a port or a
+listener: [automation endpoint](../features/automation-endpoint.md#the-worker-channel).
+
 Preamble helpers every module uses:
 
 | Helper | Purpose |

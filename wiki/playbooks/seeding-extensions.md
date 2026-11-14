@@ -53,6 +53,11 @@ yourself. The catch is that a real install writes more than the
 
 # When to use
 
+With the [automation endpoint](../features/automation-endpoint.md) in a
+test run, `install_extension` installs a folder or CRX through the real
+install path (rows included) with no prompt; seed by hand only when the
+extension must be there before the first launch, or without the endpoint.
+
 - A `/verify`-style run ([runtime verification](./runtime-verification.md))
   that needs a working extension from launch, with no UI driving.
 - A harness that measures worker lifetime, native messaging or storage in
