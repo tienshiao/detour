@@ -68,11 +68,12 @@ equivalent, a swipe, light/dark appearance, a second window, a split, or a
 picture of the result. Do these from the harness before concluding that a
 person has to try it by hand.
 
-Clicks, keys, menu commands and a page's or a view's context menu are now
-tools of the [automation endpoint](../features/automation-endpoint.md)
-(TASK-228.1), which applies the techniques below from a script with no
-harness patch. A harness is still the way for what it does not cover yet:
-swipes, drops, captures and appearance.
+Clicks, keys, menu commands, a page's or a view's context menu,
+captures and light/dark are now tools of the
+[automation endpoint](../features/automation-endpoint.md) (TASK-228.1),
+which applies the techniques below from a script with no harness patch. A
+harness is still the way for what it does not cover: swipes, drops and
+hover tracking.
 
 # Steps
 

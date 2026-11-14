@@ -409,7 +409,7 @@ final class SpaceEmojiTileButton: NSButton {
 
     /// A short spring when the emoji changes; nothing with Reduce Motion.
     func bounce() {
-        guard let layer, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        guard let layer, !MotionPreference.reduceMotion else { return }
         layer.removeAnimation(forKey: "bounce")
         let animation = CAKeyframeAnimation(keyPath: "transform")
         let center = CATransform3DMakeTranslation(bounds.midX, bounds.midY, 0)

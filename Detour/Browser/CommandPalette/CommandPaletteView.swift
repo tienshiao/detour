@@ -1290,7 +1290,7 @@ final class SiteSearchChipView: NSView {
         fill = color
         let resolved = resolvedFill
         updateTextColor(for: resolved)
-        if animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let old {
+        if animated, !MotionPreference.reduceMotion, let old {
             let fade = CABasicAnimation(keyPath: "backgroundColor")
             fade.fromValue = old
             fade.toValue = resolved

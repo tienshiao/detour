@@ -22,6 +22,8 @@ nonisolated enum AutomationErrorCode: String, Sendable, CaseIterable {
     case notDisplayed = "not_displayed"
     /// The selector matched an element with no visible box.
     case elementNotVisible = "element_not_visible"
+    /// A system permission the call needs is not granted (Screen Recording).
+    case permissionDenied = "permission_denied"
 }
 
 /// A tool call that failed in a way the caller can act on.
@@ -44,7 +46,27 @@ struct MCPTool {
     let outputSchema: JSONValue
     /// MCP tool annotations (`readOnlyHint`, `destructiveHint`, ...).
     let annotations: JSONValue
-    let handler: @MainActor (ToolArguments) async throws -> JSONValue
+    /// What the tool does: its structured result, and any images to send
+    /// alongside it as image content (a screenshot).
+    let run: @MainActor (ToolArguments) async throws -> MCPToolOutput
+
+    init(name: String, title: String, description: String, inputSchema: JSONValue, outputSchema: JSONValue,
+         annotations: JSONValue, handler: @escaping @MainActor (ToolArguments) async throws -> JSONValue) {
+        self.init(name: name, title: title, description: description, inputSchema: inputSchema,
+                  outputSchema: outputSchema, annotations: annotations,
+                  output: { MCPToolOutput(structured: try await handler($0)) })
+    }
+
+    init(name: String, title: String, description: String, inputSchema: JSONValue, outputSchema: JSONValue,
+         annotations: JSONValue, output: @escaping @MainActor (ToolArguments) async throws -> MCPToolOutput) {
+        self.name = name
+        self.title = title
+        self.description = description
+        self.inputSchema = inputSchema
+        self.outputSchema = outputSchema
+        self.annotations = annotations
+        self.run = output
+    }
 
     /// The tool as `tools/list` describes it.
     var listing: JSONValue {
@@ -57,6 +79,15 @@ struct MCPTool {
             "annotations": annotations,
         ]
     }
+}
+
+/// A tool's result: the structured content, and images sent as MCP image
+/// content after the text (clients that show images show them; the
+/// structured content says how to find the same picture on disk).
+struct MCPToolOutput {
+    var structured: JSONValue
+    /// PNG data.
+    var images: [Data] = []
 }
 
 /// A tool's arguments, checked against its input schema's property names, so
@@ -451,8 +482,8 @@ final class MCPServer {
             }
             let allowed = Set(tool.inputSchema["properties"]?.objectValue?.keys.map { $0 } ?? [])
             let parsed = try ToolArguments(fields, allowed: allowed)
-            let structured = try await tool.handler(parsed)
-            return Self.toolResult(structured, isError: false)
+            let output = try await tool.run(parsed)
+            return Self.toolResult(output.structured, isError: false, images: output.images)
         } catch let error as AutomationToolError {
             return Self.toolResult(["error": ["code": .string(error.code.rawValue), "message": .string(error.message)]],
                                    isError: true)
@@ -465,9 +496,13 @@ final class MCPServer {
 
     /// A tool result: `structuredContent`, and the same JSON as text for
     /// clients that only read text content (AC #12, #16).
-    static func toolResult(_ structured: JSONValue, isError: Bool) -> JSONValue {
-        [
-            "content": [["type": "text", "text": .string(structured.jsonString)]],
+    static func toolResult(_ structured: JSONValue, isError: Bool, images: [Data] = []) -> JSONValue {
+        let text: JSONValue = ["type": "text", "text": .string(structured.jsonString)]
+        let pictures: [JSONValue] = images.map {
+            ["type": "image", "data": .string($0.base64EncodedString()), "mimeType": "image/png"]
+        }
+        return [
+            "content": .array([text] + pictures),
             "structuredContent": structured,
             "isError": .bool(isError),
         ]

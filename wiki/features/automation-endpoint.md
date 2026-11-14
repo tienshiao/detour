@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Automation endpoint (MCP)
-description: "Detour's local MCP server for agents and scripts (TASK-228.1): how it is turned on, who may connect (Host, Origin, bearer token), the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, SIGTERM)."
+description: "Detour's local MCP server for agents and scripts (TASK-228.1): how it is turned on, who may connect (Host, Origin, bearer token), the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM)."
 tags: [automation, mcp, testing, security]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T05:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T06:30:00Z }
 sources:
   - id: automation-dir
     resource: ../../Detour/Automation
@@ -32,11 +32,11 @@ A local [MCP](https://modelcontextprotocol.io) server inside Detour, so an
 agent (Claude Code, another MCP client) or a plain script can read the
 browser's state and act on it: list windows, spaces and tabs, select a tab,
 open a URL, run a menu command, click, type, and choose from the menu that is
-open. Built first for testing Detour itself
+open, take screenshots. Built first for testing Detour itself
 (replacing harness patches pasted into AppDelegate), and shipped in Release
-too, off until turned on.[^task-228-1] Later phases of TASK-228.1 add
-screenshots, a connected indicator and a bundled stdin/stdout helper;
-TASK-228.2 adds extension contexts.
+too, off until turned on.[^task-228-1] Later phases of TASK-228.1 add a
+connected indicator and a bundled stdin/stdout helper; TASK-228.2 adds
+extension contexts.
 
 # How it is turned on
 
@@ -127,6 +127,9 @@ tool's schema to hold it.
 | `list_menu` | The open menu's items (index, title, enabled, checked, submenu, identifier); waits `timeout_ms` for one to open; `path` for a submenu | A page's context menu shows WebKit's `WKMenuItemIdentifier…` identifiers. |
 | `choose_menu_item` | Chooses an item by title, index or identifier, then closes the menu | WebKit's own items run for real (Download Linked File downloaded at runtime). |
 | `close_menu` | Closes the open menu without choosing | |
+| `screenshot` | A PNG of a window's content, its sidebar (`part`) or a tab's page (`context`), as image content and/or written to `save_to` (an existing file only with `overwrite`); `scale` 1 or 2, never above the display's | `source` app (default): drawn inside Detour, no grant, works in the background, no shadow, but no glass (see Traps). `source` screen: the window server's picture through ScreenCaptureKit, exact; needs Screen Recording (checked with `CGPreflightScreenCaptureAccess`, never prompted), else `permission_denied`. |
+| `set_appearance` | Light, dark, or following the system, for all of Detour (`NSApp.appearance`) | Until quit or the next call. |
+| `set_debug_override` | Debug builds only: `reduce_motion` (this process, via `MotionPreference`), `space_toss_hop` and `space_toss_gravity` (the data directory's defaults keys `SpaceCelebration` already read in Debug); `default` clears | Absent from Release (checked on a Release build: its tool list and its binary's strings). |
 
 Tools that act on page content take a `context` (`tab:<uuid>`, or a bare
 tab id). `popup:`, `options:`, `sidepanel:` and `worker:` already parse and
@@ -217,6 +220,24 @@ Claude Code connects directly:
   location moved, so a button's action never fires there.
   `AutomationInputTests` checks that the view gets the mouse-down; the
   action is checked in the running app.
+- **In-app captures cannot draw window-server materials.** `cacheDisplay`
+  draws the content view (web content included, even with Detour in the
+  background) but leaves the sidebar blank, so the sidebar is drawn again
+  from its layer. Neither path reproduces the sidebar's glass
+  (`NSGlassEffectView` or `NSVisualEffectView`, composited by the window
+  server with backdrop filters and blend modes): in dark mode the captured
+  sidebar comes out light while the real one is dark (compared with
+  `screencapture -l` of the same window), and glass panels drawn over the
+  content (the command palette, find bar, toasts, hover cards) come out as
+  blank boxes. Redrawing the views stacked above the sidebar from their
+  layers was tried and made it worse: the palette's full-window view painted
+  the whole sidebar white. `source: "screen"` (ScreenCaptureKit,
+  `SCContentFilter(desktopIndependentWindow:)`, shadow ignored) gives the
+  exact picture, also with Detour in the background; a test run launched
+  from a terminal that has the Screen Recording grant inherits it.
+- **A bitmap context is in pixels.** `NSGraphicsContext(bitmapImageRep:)`
+  does not scale to the rep's `size`; drawing a 1x capture into a 2x rep
+  without a CTM scale filled only its bottom-left quarter.
 - **SIGTERM runs no quit path.** The SIGTERM source ends native hosts and
   re-raises the signal, so `applicationWillTerminate` never runs. It removes
   the endpoint file too, and only if the file's `pid` is this process. A
@@ -235,7 +256,11 @@ session and a split, kept-alive request over a real socket),
 `AutomationInputTests` (trusted clicks by selector, by page and by window
 point, modifier and double clicks, typing in order with US codes, Return,
 a page's context menu listed and closed, a native view's mouse-down and a
-native context menu chosen from, and the input errors).[^tests]
+native context menu chosen from, and the input errors),
+`AutomationCaptureTests` (window, sidebar and page PNGs as image content
+and on disk, scale 2, the page's own colours from WebKit's snapshot, light
+and dark, the Debug overrides and that they exist only in Debug, and the
+errors).[^tests]
 
 # Related
 
@@ -248,5 +273,5 @@ native context menu chosen from, and the input errors).[^tests]
 [^automation-dir]: Detour/Automation (gate, credentials, HTTP, authorisation, MCP server, tools, endpoint)
 [^client]: scripts/detour-mcp (stdlib Python client)
 [^task-228-1]: Automation: an MCP endpoint in Detour, first slice for testing
-[^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests, AutomationInputTests
+[^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests, AutomationInputTests, AutomationCaptureTests
 [^input]: Detour/Automation/AutomationInput.swift

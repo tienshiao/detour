@@ -71,16 +71,25 @@ final class SpaceCelebration {
     /// directory's defaults (`SpaceTossHop`, `SpaceTossGravity`), so the feel
     /// can be tuned without a rebuild; a release build always uses the
     /// defaults.
+    #if DEBUG
+    /// The Debug defaults keys of the toss overrides (also written by the
+    /// automation endpoint's `set_debug_override`).
+    static let tossHopDefaultsKey = "SpaceTossHop"
+    static let tossGravityDefaultsKey = "SpaceTossGravity"
+    #endif
+
     private static var tunedHop: Double {
         #if DEBUG
-        if let value = UserDefaultsScope.defaults.object(forKey: "SpaceTossHop") as? Double { return max(0, value) }
+        if let value = UserDefaultsScope.defaults.object(forKey: tossHopDefaultsKey) as? Double { return max(0, value) }
         #endif
         return SpaceCelebration.hop
     }
 
     private static var tunedGravity: Double {
         #if DEBUG
-        if let value = UserDefaultsScope.defaults.object(forKey: "SpaceTossGravity") as? Double, value > 0 { return value }
+        if let value = UserDefaultsScope.defaults.object(forKey: tossGravityDefaultsKey) as? Double, value > 0 {
+            return value
+        }
         #endif
         return TossPath.defaultGravity
     }

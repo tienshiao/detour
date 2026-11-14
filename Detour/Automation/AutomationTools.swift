@@ -93,7 +93,7 @@ final class AutomationTools {
     }
 
     var all: [MCPTool] {
-        [listWindows, listSpaces, listTabs, selectTab, openURL, runMenuItem] + inputTools
+        [listWindows, listSpaces, listTabs, selectTab, openURL, runMenuItem] + inputTools + captureTools
     }
 
     // MARK: Lookup

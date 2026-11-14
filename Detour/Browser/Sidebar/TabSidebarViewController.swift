@@ -2211,7 +2211,7 @@ class TabSidebarViewController: NSViewController {
 
         // The page gives way to the editor as if the strip moved on to a new
         // page; a cross-fade with Reduce Motion.
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let reduceMotion = MotionPreference.reduceMotion
         NSAnimationContext.runAnimationGroup { context in
             context.duration = reduceMotion ? 0.15 : 0.28
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -2259,7 +2259,7 @@ class TabSidebarViewController: NSViewController {
         rebuildAllSpaceButtons()
 
         pageStripView.isHidden = false
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let reduceMotion = MotionPreference.reduceMotion
         let duration = reduceMotion ? 0.15 : (slidingOut ? 0.24 : 0.2)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
@@ -2361,7 +2361,7 @@ class TabSidebarViewController: NSViewController {
         pendingCelebration = nil
         guard let index = relevantSpaces.firstIndex(where: { $0.id == spaceID }),
               index < spaceButtons.count else { return }
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+        guard !MotionPreference.reduceMotion else {
             popSpaceButton(id: spaceID)
             return
         }
@@ -2386,7 +2386,7 @@ class TabSidebarViewController: NSViewController {
         guard let index = relevantSpaces.firstIndex(where: { $0.id == id }),
               index < spaceButtons.count, let layer = spaceButtons[index].layer else { return }
         let button = spaceButtons[index]
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if MotionPreference.reduceMotion {
             let fade = CABasicAnimation(keyPath: "opacity")
             fade.fromValue = 0
             fade.toValue = 1

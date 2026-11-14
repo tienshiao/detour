@@ -53,7 +53,7 @@ enum DownloadAnimation {
         guard sourcePoint.x.isFinite, sourcePoint.y.isFinite,
               destPoint.x.isFinite, destPoint.y.isFinite else { return }
 
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if MotionPreference.reduceMotion {
             if let layer = catcher?.layer { SpringCatch.fadeIn(on: layer) }
             return
         }

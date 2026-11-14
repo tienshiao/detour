@@ -328,7 +328,7 @@ private final class SpaceChoiceCell: NSView {
     /// A colour swatch grows a little under the pointer; not with Reduce Motion.
     private func updateHoverScale() {
         guard case .color = choice.look, let layer else { return }
-        let grow = isHovered && !isSelected && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let grow = isHovered && !isSelected && !MotionPreference.reduceMotion
         let scale: CGFloat = grow ? 1.12 : 1
         var transform = CATransform3DIdentity
         transform = CATransform3DTranslate(transform, bounds.midX, bounds.midY, 0)
