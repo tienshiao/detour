@@ -4,7 +4,7 @@ title: WKWebView snapshots on macOS
 description: What WKWebView.takeSnapshot really captures on macOS — a software paint at the device scale, clipped to the visible viewport whatever rect is asked for — how a whole-document capture is made instead (the private _usesContentsRect, or createPDF rasterised), what each does with fixed, sticky, filtered and GPU content, and the NSImage size quirks that decide how to get device pixels out.
 tags: [webkit, snapshot, retina, dev-mode, private-api]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T21:45:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T06:50:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: wkwebview
@@ -34,6 +34,9 @@ sources:
   - id: harness
     resource: ../../docs/harness/task186-3-harness.patch
     title: TASK-186.3 runtime harness
+  - id: task-325-spike
+    resource: ../../docs/harness/task325-underlay-snapshot-spike.swift
+    title: TASK-325 snapshot cost spike (results in its header)
   - id: task-186-3
     resource: backlog:TASK-186.3
     title: "Dev mode: capture buttons in the dev toolbar"
@@ -108,6 +111,26 @@ missing, it rasterises the PDF straight at the capped size
   = 72 x pixels per point (144 at 2x), so Preview and paste targets show it
   at the page's size.
 
+## What a capture costs
+
+Measured for TASK-325 (choosing what to show under a back swipe) on a
+1500 x 950 pt page of 400 shadowed cards, on a machine at a load average of
+about 250, so the absolute times are high:[^task-325-spike]
+
+| Capture | 1x | 2x |
+|---|---|---|
+| `takeSnapshot`, `snapshotWidth` 480 px (the switcher preview) | ~5 ms | ~5.6 ms |
+| `takeSnapshot`, full size, web view on screen | 15.6 ms, 5 MB | 64 ms, 22 MB |
+| `cacheDisplay` (synchronous, app main thread) | 5.5 ms | 26 ms |
+| `takeSnapshot`, full size, 3 s after the web view left its window | median 240 ms, max 1449 ms in one run; 19.5 ms in another | 63 ms |
+
+`takeSnapshot` is asynchronous and the web process does the paint, so the
+app's main thread does not wait. The time grows with the pixel count. Once
+the web view has left its window, WebKit has dropped the page to background
+priority ([hidden web view load stalls](./hidden-webview-load-stalls.md)), so
+how long a capture takes depends on how busy the machine is. Take a snapshot
+you will need later while the page is still on screen.
+
 ## Testing at 2x on a 1x display
 
 `-[WKWebView _setOverrideDeviceScaleFactor:]` makes WebKit render and
@@ -135,3 +158,4 @@ screen; move the window onto it.
 [^webpage]: WebPage.cpp (preSnapshotSetup, takeSnapshot, paintSnapshotAtSize)
 [^webpage-cocoa]: WebPageCocoa.mm (drawToPDF)
 [^geometry]: PageCaptureGeometry.swift (CaptureGeometry, CaptureFileName)
+[^task-325-spike]: docs/harness/task325-underlay-snapshot-spike.swift, run 2026-11-14 on macOS 26.7 (2x via `_setOverrideDeviceScaleFactor:`).
