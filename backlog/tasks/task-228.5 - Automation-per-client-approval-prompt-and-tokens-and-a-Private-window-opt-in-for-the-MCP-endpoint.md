@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-14T06:26:00Z'
+updated_date: '2026-11-14T06:35:00Z'
 labels:
   - tooling
   - automation
@@ -41,3 +42,12 @@ Two parts:
 - [ ] #4 Private windows and spaces stay unreachable unless the user turns on a setting that allows them; turning it off refuses them again at once
 - [ ] #5 The chosen design and the rejected alternatives are recorded here and in the wiki automation page; tests cover approval, denial, revocation, the Private opt-in on and off
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-13, user decisions on the open questions:
+(a) The bundled stdio helper requests the token. It asks the endpoint for a token under the client's name, Detour shows its native Allow / Deny prompt, and the helper keeps the per-client token. Local OAuth (discovery, dynamic client registration, PKCE) is not built: a URL-configured client breaks whenever the per-launch port changes, and it adds code and attack surface.
+(b) The shared mcp-token stays for test runs only: DETOUR_MCP=1 with an isolated DETOUR_DATA_DIR, plus scripts/detour-mcp against such a run. Without a prompt there. With the user's setting, every client goes through approval, and Settings no longer offers Copy Token.
+(c) Private windows: an opt-in setting under Automation, off by default ('Allow agents to use Private windows'). Turning it off refuses them again at once. While it is on, the page capture script also runs in Private pages.
+<!-- SECTION:NOTES:END -->
