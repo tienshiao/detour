@@ -4,7 +4,7 @@ title: Testing extensions
 description: Which kind of extension test proves what — pure rules, the polyfill in a bare web view, a real WebKit extension context, the production Profile wiring, a runtime check with API Explorer, and the signed build — with the fixtures and the traps.
 tags: [extensions, testing, playbook, fixtures]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-04T02:43:07Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T09:20:00Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
@@ -81,7 +81,7 @@ Explorer update). This page explains the test kinds that policy refers to.
 | 2. Polyfill JS | `ExtensionPolyfillTests` | A bare `WKWebView` at `https://test.example.com` with a shim for `chrome.runtime` and a fake `connectNative`, then the real polyfill; `OriginMappingProfile` stands in for sender attribution | Module logic, callback and promise forms, the native handler's dispatch | WebKit's wrapper objects, the worker transport, sender verification by context |
 | 3. Real context | `ExtensionPolyfillIntegrationTests`, `WKExtensionIntegrationTests` | A real `WKWebExtensionContext` in a controller built by the test | The patch coexists with native APIs and **survives garbage collection**; real worker round trips; a page cannot claim another extension's id | Detour's own controller configuration |
 | 4. Production wiring | `ExtensionPolyfillProfileWiringTests`, `NativeMessagingEnforcementTests`, `ExtensionPrivateStoreTests`, `ExtensionOriginTrackingPreventionTests`, `NewProfileExtensionLoadTests` | `Profile.extensionController` and `Profile.loadExtensionContext`, `ExtensionManager` as delegate | That deleting the wiring in `Profile` or `ExtensionManager` fails a test; per-profile isolation; native hosts and ports | Behaviour over minutes, unless an env-gated leg is run |
-| 5. Running app | API Explorer in an isolated profile | Debug build, `DETOUR_DATA_DIR` | Real windows, tabs, menus, timers | Anything needing a trusted native host |
+| 5. Running app | API Explorer in an isolated profile, by hand or scripted through the automation endpoint ([extension compatibility run](../playbooks/extension-compat-run.md)) | Debug build, `DETOUR_DATA_DIR` (`DETOUR_MCP=1` for the endpoint) | Real windows, tabs, menus, timers; with the endpoint, a compatibility report diffable against a baseline | Anything needing a trusted native host |
 | 6. Signed build | The real extension | `/Applications` build | What users get | Repeatability |
 
 Level 2 exists because it is fast and precise; it is not sufficient. The
@@ -145,9 +145,17 @@ Leave them off in normal runs.
 | `hello-world-module` | The same with a `type: module` worker. The only one an automated test reads (`ModuleBundlerTests`) |
 | `api-explorer` | One popup section per API, a background that logs events to storage |
 | `1password/1password.crx` | A checked-in store CRX. No test references it |
+| `vimium` | A real third-party MV3 extension (module worker, many content scripts); used by the compatibility run as a non-fixture example |
 
-Load one with Develop → Load Unpacked Extension, or seed it into an isolated
-profile ([seeding extensions](../playbooks/seeding-extensions.md)).
+Load one with Develop → Load Unpacked Extension, seed it into an isolated
+profile ([seeding extensions](../playbooks/seeding-extensions.md)), or install
+it through the automation endpoint in a test run: the
+[extension compatibility run](../playbooks/extension-compat-run.md) installs
+API Explorer, hello-world and Vimium, drives a popup and a content script,
+reads the console, fetches each compatibility report and diffs it against a
+baseline (`docs/harness/task2282-compat-run.py`). hello-world's content script
+never runs in Detour (no `host_permissions`), so content scripts are driven
+with API Explorer.
 
 API Explorer details that show up in logs and are easy to misread:
 
@@ -250,6 +258,7 @@ API Explorer details that show up in logs and are easy to misread:
 - [Build and test](../playbooks/build-and-test.md) — commands, one build at a time, the memory watchdog
 - [Test host crashes](../playbooks/test-host-crashes.md) — "TEST FAILED" with zero failures
 - [Debug harness](../playbooks/debug-harness.md) — driving the app for level 5
+- [Extension compatibility run](../playbooks/extension-compat-run.md) — level 5 through the automation endpoint, with a baseline diff
 - [1Password integration](./1password-integration.md) — what only level 6 can show
 
 [^task-2]: Service worker restart (harness artifacts met on the way)

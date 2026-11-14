@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Automation endpoint (MCP)
-description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2): how it is turned on, who may connect (Host, Origin, bearer token), the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the connected-agent indicator and disconnecting, the bundled stdio helper and client setup, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host)."
+description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2): how it is turned on, who may connect (Host, Origin, bearer token), the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the per-extension compatibility report (static scan of chrome.* references checked in the live worker and a probe page, the stub registry and its call counts, API-naming runtime errors, unsupported manifest keys and permissions, worker failures) and the stable output for diffing against a baseline, the connected-agent indicator and disconnecting, the bundled stdio helper and client setup, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host)."
 tags: [automation, mcp, testing, security]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T10:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T09:20:00Z }
 sources:
   - id: automation-dir
     resource: ../../Detour/Automation
@@ -48,6 +48,18 @@ sources:
   - id: extension-tests
     resource: ../../DetourTests/AutomationExtensionTests.swift
     title: AutomationExtensionTests and AutomationExtensionChannelTests
+  - id: compat-report
+    resource: ../../Detour/Automation/AutomationTools+CompatReport.swift
+    title: AutomationTools+CompatReport.swift and AutomationCompatReport.swift (the report, the probe page, the scan)
+  - id: stubs
+    resource: ../../Detour/Extensions/Runtime/ExtensionPolyfillStubs.swift
+    title: ExtensionPolyfillStubs.swift (the stub registry and the counting module)
+  - id: compat-tests
+    resource: ../../DetourTests/AutomationCompatReportTests.swift
+    title: AutomationCompatReportTests
+  - id: webkit-manifest
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
+    title: "WebKit, WebExtension.cpp (the manifest keys it reads, supportedPermissions)"
 ---
 
 # What it does
@@ -175,12 +187,12 @@ tool's schema to hold it.
 | `set_appearance` | Light, dark, or following the system, for all of Detour (`NSApp.appearance`) | Until quit or the next call. |
 | `evaluate_js` | Runs `expression` or `script` (a function body with `return`) in a tab's main frame, `world` page (default) or isolated (`WKContentWorld` "DetourAutomation": the DOM, not the page's globals); awaits promises | Result as JSON with its `type`; what JSON cannot hold is converted in the page (nodes `<div#id.class>`, cycles `[Circular]`, functions, undefined null). A throw is `script_error` with `error.details` {name, message, stack}; a syntax error too (from WebKit's exception). `timeout_ms` (default 10 s) gives `timeout`; the script runs on. Results over 1 MB are cut (`truncated`). |
 | `read_page` | url, title, ready_state, viewport, and by `mode`: `text` (default, `innerText`), `html` (`outerHTML`), `elements`, `summary` | `selector` narrows; `max_length` cuts text and html, `max_elements` the list, with `truncated`. Elements: tag, role (explicit or implicit), name (aria-labelledby, aria-label, label, text, alt, title, placeholder), a selector unique in the document (`#id`, then `tag[data-testid|name|aria-label=…]`, then an `nth-of-type` path), rect in CSS pixels, visible (`checkVisibility`), in_viewport, disabled. Runs in the isolated world. The argument is `mode`, not `format`, a JSON Schema keyword the flatness test refuses. |
-| `console_messages` | A tab's console calls, uncaught errors and unhandled rejections, all frames, after `after_seq`, filtered by `levels` | See "Page capture". |
+| `console_messages` | A tab's console calls, uncaught errors and unhandled rejections, all frames, after `after_seq`, filtered by `levels` | See "Page capture". `stable: true` leaves out `seq` and `timestamp` and names extension origins by extension id. |
 | `network_requests` | A tab's navigation and resource loads (Resource Timing) and its fetch and XHR calls, after `after_seq`, by `sources`, `failed_only` | See "Page capture" for the limits. |
 | `wait_for` | Polls every 100 ms until `load` (not loading and readyState complete), `selector` (with `visible`), `expression` truthy (a throw counts as false; the last one is in the timeout's message) or `url` (a plain substring) | `timeout` after `timeout_ms` (default 10 s). Exactly one condition. |
 | `wake_tab` | Loads a sleeping tab's page (`BrowserTab.wake()`) without selecting it | `woken` false when it was awake. |
 | `set_debug_override` | Debug builds only: `reduce_motion` (this process, via `MotionPreference`), `space_toss_hop` and `space_toss_gravity` (the data directory's defaults keys `SpaceCelebration` already read in Debug); `default` clears | Absent from Release (checked on a Release build: its tool list and its binary's strings). |
-| `list_extensions` | Installed extensions sorted by id (or one, by id or name): version, source, global switch, `loaded`/`load_failed`, per normal profile `turned_on`, `loaded`, `worker_parked`, `open_contexts`, `context_errors`; the manifest's permission lists, the saved decisions, WebKit's manifest warnings and every load error recorded this session | Reads whenever the endpoint is on. Load errors come from `ExtensionErrorLog` (see "Extension contexts"). |
+| `list_extensions` | Installed extensions sorted by id (or one, by id or name): version, source, global switch, `loaded`/`load_failed`, per normal profile `turned_on`, `loaded`, `worker_parked`, `open_contexts`, `context_errors`; the manifest's permission lists, the saved decisions, WebKit's manifest warnings and every load error recorded this session | Reads whenever the endpoint is on. Load errors come from `ExtensionErrorLog` (see "Extension contexts"). `stable: true` is the diffable form (see "Diffing against a baseline"). |
 | `install_extension` | Test runs only. An unpacked folder or a `.crx`, turned on in `profile_id` (default: the only normal profile); waits for it to load | No prompt. A CRX goes through `CRXInstallGate` with a file URL (its developer signature), may replace an installed id, and never updates. A keyless folder installed again keeps its id. `install_failed` for no or a bad manifest or a refused CRX. |
 | `uninstall_extension` | Test runs only. Settings' Uninstall, every profile, no prompt | Closes the endpoint's popups of it first. |
 | `set_extension_enabled` | Test runs only. One normal profile's switch (`profile_id`) or the global one | The Private profile is `private_unreachable`. |
@@ -189,6 +201,7 @@ tool's schema to hold it.
 | `close_extension_context` | Closes the endpoint's popup, or the options page's tab | `context_not_open` when it is not open. |
 | `call_extension_api` | Calls the function at a dotted path (`chrome.storage.local.get`) with `args` (a JSON array as a string), awaits it, returns the result as `evaluate_js` does | In `worker:` through the channel; in a popup, options page or tab through `callAsyncJavaScript`. A missing member is a `TypeError` (`script_error`). |
 | `read_extension_global` | Reads the value at a dotted path (`self.cache.size`) | How a worker's own globals are read. |
+| `extension_compat_report` | What an extension uses that Detour lacks: its `chrome.*`/`browser.*` references checked in the worker and a page, the stubs it references or called, API-naming TypeErrors, unsupported manifest keys and permissions, worker failures | Whenever the endpoint is on (not gated: it installs nothing). `probe: false` skips the runtime checks. See "The compatibility report". |
 
 Tools that act on page content take a `context` (`tab:<uuid>`, or a bare
 tab id): a tab of a non-Private space, normal or pinned, or a live favorite.
@@ -407,7 +420,10 @@ limiter still applies: past a burst of 50 messages, about 20 a second, with
 repeats folded into "(repeated N times)"; `console.debug` is not bridged,
 and content scripts have no bridge. The options page's tab is not captured
 by page capture (it is built from the extension's configuration), so read
-it as `options:<ext>`, not `tab:<id>`.
+it as `options:<ext>`, not `tab:<id>`. Recording starts in the same
+main-actor turn as the channel opens, before the listener is ready (since
+TASK-228.2 part 2; before, it started once listening), so a worker that
+starts at launch keeps its start-up errors too.
 
 ## Load errors
 
@@ -419,6 +435,162 @@ among them), deduplicated with a count and cut at 50; forgotten on
 uninstall. Before, all of these were only logged. A recovery reload clears
 `context.errors`, so the copy is what tells a run that a worker failed at
 all. `WKWebExtension.errors` (manifest warnings) is read live.
+
+# The compatibility report
+
+`extension_compat_report {extension, profile_id?, probe?, timeout_ms?}`
+answers what an extension tried to use that Detour does not have, for a
+suite that runs many third-party extensions and diffs each run against a
+baseline (TASK-228.2 part 2).[^compat-report] It never wraps or replaces
+`chrome` or `browser` ([never replace the globals](../decisions/never-replace-chrome-globals.md)),
+so nothing an extension sees changes shape; the five parts are built from
+what can be read without that.
+
+## 1. References, checked at runtime
+
+A static scan (`AutomationCompatReport.scan`, off the main thread) reads
+the installed copy's `.js` and `.mjs` files (Detour's own `_detour_*` files
+and `_metadata/` left out; at most 3000 scripts, 16 MB a file, 160 MB in
+all, in path order, `scan.truncated`/`skipped` say what a bound cut) and
+counts each `chrome.X.Y` and `browser.X.Y`, also with `?.`, a bracket with
+a string (`chrome['scripting']`) or `globalThis.`/`window.`/`self.` before
+it. Only the first two segments are kept: `chrome.storage.local.get` is
+the api `storage.local`, `chrome.sidePanel` alone the api `sidePanel`. Only
+namespaces in Chrome's published list (plus Firefox's and Safari's) count,
+which keeps out `chrome.google.com` in a URL and a library's own
+`browser.version`. Not followed: aliases (`const api = chrome.storage`),
+computed names, and minified code that renamed the global.
+
+Each file gets roles from the installed manifest and the pages: the
+worker, `background.scripts` and a background page's scripts are
+`background`, manifest content scripts `content_script`, any HTML page's
+`<script src>` `page`, followed through `importScripts`, static and dynamic
+`import` and `export … from` (relative specifiers only); a file reached from
+none of them is `other`. A member missing in the worker matters less when
+only a content script names it.
+
+Every referenced api is then checked in two live contexts with the
+runner's `probe` command (present, `typeof`, and whether the function, or
+an event's `addListener`, is WebKit's own by the `[native code]` test):
+
+- **worker**: through the channel, which starts the worker if needed.
+  `worker.started` false with `start_error` (`worker_not_running`,
+  `timeout`) when it did not answer; its column is then `not_checked`.
+- **page**: a probe page of the report's own, `_detour_probe.html`, an
+  empty document written into the installed copy (WebKit reads an
+  extension's resources from disk when they are requested, so a file
+  written after load is served) and loaded in a hidden web view from the
+  context's configuration, so the polyfill runs in it and none of the
+  extension's scripts do; closed once it answered. Its console and stub
+  calls are not the extension's (`probe` context kind, never recorded).
+  Content scripts' surface is not checked: nothing reaches their world.
+
+Status per context: `available`, `missing` (the namespace or the member is
+not there; a member present with the value undefined, like
+`runtime.lastError`, counts as there), `stubbed` (in the stub registry and
+not WebKit's own function), `not_checked`.
+
+## 2. Stubs and their calls
+
+`ExtensionPolyfillStubs` is the one registry of the polyfill's stand-ins
+(read from `ExtensionAPIPolyfill`, November 2026):[^stubs] `privacy.services`
+(settings read false, set does nothing), `privacy.network`/`websites`
+(empty), every `webRequest` event and `handlerBehaviorChanged`,
+`action.getUserSettings` (always on the toolbar), `storage.managed` (no
+policy source), `sessions.getRecentlyClosed`/`getDevices` (always `[]`) and
+`sessions.onChanged`, `idle.onStateChanged`, `notifications.onButtonClicked`,
+`history.onVisited`/`onVisitRemoved` (TASK-146), `history.getVisits` and its
+no-op writers, and the four `management` events. `notifications.onClicked`
+and `onClosed` are not stubs (delivered since TASK-247). A module that
+starts delivering an event leaves the list in the same change.
+
+The polyfill's counting module (`countingModuleJS`, after every module that
+defines a stub, before the automation channel) wraps each registry function
+that is the polyfill's own, on the polyfill's objects or a native wrapper
+the polyfill already patched and rooted (`chrome.action`), keeping `this`,
+the arguments, the result and the `_detourPolyfill` marker. Calls of one
+task go in one batch, `automation.stubCalls`, from any extension context
+(not content scripts, which run no bundle). The handler keeps registry
+paths only, per extension, profile, path and context kind
+(`AutomationExtensionStubCalls`), and answers `stop` while automation is
+off or in the Private profile: the context then stops sending for its
+lifetime, so with the endpoint off the cost is one request per context
+that calls a stub. The request is an `automation.` one and is not the
+worker's activity. Counts start in the same turn as the channel opens, so
+a worker's start-up calls count; the report waits 300 ms after its probes
+for the batch the probe's own worker start sent.
+
+## 3. Runtime errors
+
+The extension's recorded console (every context, uncaught errors and
+rejections included) is searched for JavaScriptCore's wording of a missing
+API: "undefined is not an object (evaluating 'chrome.sidePanel.open')",
+"chrome.x.y is not a function. (In 'chrome.x.y()', 'chrome.x.y' is
+undefined)", "Can't find variable: chrome". Each is reported once per api,
+expression and error name, with the contexts it came from and one message
+line (from the error's name on, origins normalised); repeats are counted in
+`run`. A chain that is a prefix of a longer one in the same text is folded
+in; Detour's own `[Detour polyfill]` warnings and unchecked lastError lines
+are skipped; a minified alias (`e.sidePanel.open`) names no global and is
+not attributed. Content scripts' errors never reach the console bridge.
+
+## 4. The manifest
+
+Top-level keys (`manifest.keys`, only those not plainly supported, and
+`supported_keys`), from what WebKit's parser reads (`WebExtension.cpp` on
+main, read 2026-11-14)[^webkit-manifest] and what Detour reads itself (`key`,
+`update_url`): `unsupported` (WebKit parses `commands`, but Detour never calls
+`performCommand(for:)`, so shortcuts do not run; `chrome_url_overrides`;
+`side_panel` on this build; `incognito`, which Detour's per-profile switch
+replaces; `omnibox` and the other Chrome-only keys), `ignored`
+(informational: `minimum_chrome_version`, `author`, …), `unverified`
+(`devtools_page`, `icon_variants`) and `unknown`. API permissions are
+`supported` when WebKit kept them (its live `requestedPermissions` and
+`optionalPermissions`, which drop names it does not support, so this
+follows the installed WebKit), `polyfill` (history, management,
+notifications, idle, fontSettings, sessions, search, offscreen, favicon),
+`stubbed` (privacy; webRequest, whose listeners never fire although WebKit
+keeps the name), `ignored` (`background`) or `unsupported`. Host patterns
+WebKit refuses are listed, and `WKWebExtension.errors` as `warnings`.
+
+## 5. The worker
+
+`background` (service_worker, service_worker_module, scripts, page, none),
+whether it answered the probe, whether a `backgroundContentFailedToLoad` was
+recorded this session (`failed_to_load`), whether
+`Profile.recoverFromBackgroundLoadFailure` reloaded it
+(`recovery_attempted`; `ExtensionErrorLog.recordRecovery` counts them), and
+its load errors (normalised, once each; counts in `run`).
+
+## Diffing against a baseline
+
+Everything outside the report's `run` object is stable over the same files:
+arrays sorted, no timestamps, no profile ids, extension origins written
+`webkit-extension://<extension id>` (a context's base URL is new at every
+load), paths relative to the extension's root and the installed folder
+removed from messages. `run` holds `profile_id`, the stub call counts, error
+and load-error repeat counts, recovery attempts, and how many console
+records were read. `summary` gathers the short lists worth diffing
+first (`missing_in_worker`, `missing_in_page`, `stubbed_referenced`,
+`stubs_called`, `runtime_error_apis`, `unsupported_manifest_keys`,
+`unsupported_permissions`, `worker_started`). Whether a stub was called and
+which errors appear depend on the scenario, not on timing, as long as the
+scenario drives the same code.
+
+The other tools have a `stable: true` form for the same purpose:
+`list_extensions` drops profile ids (profiles sorted by name),
+`worker_parked`, `open_contexts` and repeat counts, lists load errors once
+each, sorted, and normalises origins in messages; `console_messages` drops
+each entry's `seq` and `timestamp` and normalises origins (an extension
+context's records with its own id; a tab's with the id of the loaded
+context that has that origin, else `unknown`). Console entries keep their
+order of arrival, which between two contexts can change from run to run,
+so a baseline is better kept as a sorted set of lines (the playbook's
+script does that). `next_seq`, `dropped` and `capturing` are cursor state,
+never compared.
+
+[Extension compatibility run](../playbooks/extension-compat-run.md) is the
+end-to-end playbook, with `docs/harness/task2282-compat-run.py`.
 
 # Who is connected, and stopping them
 
@@ -598,6 +770,13 @@ Claude Code connects directly:
   Debug build and exited). Point `DETOUR_NATIVE_MESSAGING_HOSTS_DIR` (Debug
   builds) at an empty folder for such runs; with it the same install
   connected to nothing.
+- **A popup taller than its popover does not scroll from script.** WebKit
+  lays the popup out at its content size inside the 600-point popover;
+  `scrollIntoView`, `scrollTo` and `scrollTop` left `scrollY` at 0 (API
+  Explorer, 3617 points tall), so the input tools answer
+  `element_not_visible` for anything below 600 points. Whether a person's
+  scroll wheel scrolls it was not checked. Use `call_extension_api` or
+  `evaluate_js` for such elements.
 - **A popup's profile must outlive the test.** Releasing a profile whose
   controller hosted a popup traps in `WKProcessPool` dealloc, in whichever
   suite runs next; `AutomationExtensionTests` keeps its profiles alive
@@ -651,7 +830,15 @@ two profiles), `AutomationExtensionChannelTests` (the channel by hand:
 delivery and results, side-by-side commands, a wake with no park, a dead
 park's command sent to the next start, supersession, a restart mid-command,
 another extension unable to answer, unload and stop),
-`AutomationControllerTests` (on and off with the endpoint file, a
+`AutomationCompatReportTests` (TASK-228.2 part 2: the scan's reference forms,
+imports, roles, Detour files, bounds and order; manifest keys and permissions;
+JavaScriptCore error messages; origin normalising; the registry; a report for
+a real extension with references checked in the worker and the probe page, a
+stub called from the worker and from the popup, TypeErrors from a caught and an
+uncaught error, unsupported keys and permissions, two reports equal outside
+`run`, `probe: false`; an unknown and a turned-off extension, a closed
+channel; the counts' handler taking registry paths only and answering stop;
+`stable` list and console), `AutomationControllerTests` (on and off with the endpoint file, a
 stop during a start, Reset Token, disconnect and allow, idle sessions, the
 indicator's text and its place above the page through tab switches) and
 `AutomationHelperTests` (the built helper relaying a session, starting a new
@@ -664,12 +851,17 @@ the setup strings Settings copies).[^tests]
   techniques the input tools of the next phase build on.
 - [Runtime verification](../playbooks/runtime-verification.md): what the
   endpoint is meant to replace for `/verify`.
+- [Extension compatibility run](../playbooks/extension-compat-run.md): the
+  extension tools end to end, with a baseline diff.
 - [Link Routes](./link-routing.md): what `open_url` applies to a new tab.
 
 [^automation-dir]: Detour/Automation (gate, credentials, HTTP, authorisation, MCP server, tools, endpoint)
 [^client]: scripts/detour-mcp (stdlib Python client)
 [^task-228-1]: Automation: an MCP endpoint in Detour, first slice for testing
 [^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests, AutomationInputTests, AutomationCaptureTests, AutomationControllerTests, AutomationHelperTests, AutomationExtensionTests, AutomationExtensionChannelTests
+[^compat-report]: AutomationTools+CompatReport.swift and AutomationCompatReport.swift (the report, the probe page, the scan)
+[^stubs]: ExtensionPolyfillStubs.swift (the stub registry and the counting module)
+[^webkit-manifest]: WebKit, WebExtension.cpp (the manifest keys it reads, supportedPermissions)
 [^input]: Detour/Automation/AutomationInput.swift
 [^controller]: Detour/Automation/AutomationController.swift
 [^page]: AutomationPageCapture.swift and AutomationPage.swift (capture script, buffers, page scripts)
