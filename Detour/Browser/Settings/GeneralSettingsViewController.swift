@@ -60,7 +60,9 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         let automationHelp = SettingsWrappingLabel(
             wrapping: "While this is on, an MCP client given this Mac's token, such as Claude Code, can read your "
                 + "pages and act in them as you, signed in to your sites. Private windows are never reachable. "
-                + "Each window shows which agent is connected, with a way to disconnect it.",
+                + "Each window shows which agent is connected, with a way to disconnect it. Set clients up with "
+                + "the commands below: they run Detour's helper, which finds the address and token itself. The "
+                + "address changes each time Detour starts.",
             estimatedWidth: Self.textWidth)
         automationStatus = NSTextField(labelWithString: "")
         automationStatus.font = .systemFont(ofSize: 12)
@@ -72,6 +74,8 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         let copyConfig = NSButton(title: "Copy MCP Config", target: self, action: #selector(copyMCPConfig))
         copyConfig.toolTip = "The mcpServers entry for Claude Desktop, Cursor and other MCP clients"
         let copyToken = NSButton(title: "Copy Token", target: self, action: #selector(copyToken))
+        copyToken.toolTip = "For a client that connects to the address itself (advanced): the address changes each "
+            + "time Detour starts, so the helper commands are the lasting setup"
         let resetToken = NSButton(title: "Reset Token…", target: self, action: #selector(resetToken))
         allowAgainButton = NSButton(title: "Allow Disconnected Agents Again", target: self,
                                     action: #selector(allowDisconnectedAgents))
@@ -141,7 +145,8 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         case .listening(let port):
             let count = controller.sessions.count
             let agents = count == 0 ? "no agent connected" : count == 1 ? "1 agent connected" : "\(count) agents connected"
-            automationStatus.stringValue = "On at \(AutomationCredentials.endpointURL(port: port)), \(agents)."
+            automationStatus.stringValue = "On at \(AutomationCredentials.endpointURL(port: port)) "
+                + "(until Detour quits), \(agents)."
         case .failed(let reason):
             automationStatus.stringValue = "Could not start: \(reason)"
         }

@@ -49,7 +49,7 @@ contexts.
 
 | How | Listens on | Notes |
 |---|---|---|
-| The user's setting (`AutomationEndpointEnabled` in the data directory's defaults suite), Settings > General > Automation | 47823, or `AutomationEndpointPort` | A fixed port, so a client configured once keeps working. Turned on and off at runtime by `AutomationController.setEnabled`; the window's indicator has Turn Off Automation too. |
+| The user's setting (`AutomationEndpointEnabled` in the data directory's defaults suite), Settings > General > Automation | a port the system picks at each start (`AutomationEndpointPort` fixes one, advanced) | Not a fixed port (user decision, 2026-11-14): while Detour is not running, another account could listen on a fixed one and collect the token from a client configured with the address. Clients use the bundled helper, which reads the port. Turned on and off at runtime by `AutomationController.setEnabled`; the window's indicator has Turn Off Automation too. |
 | `DETOUR_MCP=1` for a test run | an ephemeral port, or `DETOUR_MCP_PORT` | Only with `DETOUR_DATA_DIR` set and not `Detour`: a scripted run can never open the user's real profile. A refused request is logged, never silent. |
 | The XCTest host | never | Tests start their own endpoint. |
 
@@ -202,8 +202,11 @@ and posts `didChangeNotification` for the UI:[^controller]
   Streamable HTTP client whose session ends simply starts a new one, so
   ending the session alone does nothing. The blocked client's `initialize`
   gets 403 until the user allows it again or turns automation off and on.
-  It is a control for the user, not a security boundary: the token is the
-  boundary.
+  It is a "please stop", not a revocation: the name is the client's own, so
+  a client could come back under another (its menu item says so; Turn Off
+  stops every client). Kept that way by user decision (2026-11-14); real
+  per-client revocation belongs to TASK-228's remaining authorisation work,
+  an approval prompt that gives each client its own token.
 - **Idle sessions end** after 10 minutes without a request, since most
   clients never send DELETE. A client that comes back gets 404 and starts a
   new session, as the transport expects.

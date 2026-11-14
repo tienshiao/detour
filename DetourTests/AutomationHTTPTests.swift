@@ -198,13 +198,13 @@ nonisolated final class AutomationHTTPTests: XCTestCase {
         XCTAssertEqual(refusal, .badPort("99999"))
     }
 
-    func testTheUsersSettingListensOnTheFixedPort() {
-        XCTAssertEqual(mode([:], setting: true).0, .userEnabled(port: AutomationGate.defaultPort))
-        XCTAssertEqual(mode([:], setting: true, port: 6000).0, .userEnabled(port: 6000))
-        XCTAssertEqual(mode([:], setting: true, port: 0).0, .userEnabled(port: AutomationGate.defaultPort))
-        XCTAssertEqual(mode([:], setting: true, port: 70000).0, .userEnabled(port: AutomationGate.defaultPort))
+    func testTheUsersSettingListensOnAPortTheSystemPicks() {
+        XCTAssertEqual(mode([:], setting: true).0, .userEnabled(port: 0), "no fixed port another account could take")
+        XCTAssertEqual(mode([:], setting: true, port: 6000).0, .userEnabled(port: 6000), "unless one is set on purpose")
+        XCTAssertEqual(mode([:], setting: true, port: 0).0, .userEnabled(port: 0))
+        XCTAssertEqual(mode([:], setting: true, port: 70000).0, .userEnabled(port: 0))
         let (result, refusal) = mode(["DETOUR_MCP": "1"], setting: true)
-        XCTAssertEqual(result, .userEnabled(port: AutomationGate.defaultPort), "a refused test run leaves the setting")
+        XCTAssertEqual(result, .userEnabled(port: 0), "a refused test run leaves the setting")
         XCTAssertEqual(refusal, .testRunNeedsIsolatedDataDirectory)
     }
 

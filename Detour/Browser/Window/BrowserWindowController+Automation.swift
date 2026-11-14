@@ -45,8 +45,13 @@ extension BrowserWindowController {
                                   action: #selector(disconnectAutomationClient(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = session.id
+            // Blocks the name the client reports, until allowed again (user
+            // decision, 2026-11-14): a "please stop", not a revocation. A
+            // client could come back under another name; Turn Off stops all.
             item.toolTip = "Connected \(AutomationIndicator.age(of: session.startedAt, now: now)), "
-                + "last request \(AutomationIndicator.age(of: session.lastSeen, now: now))"
+                + "last request \(AutomationIndicator.age(of: session.lastSeen, now: now)). Disconnecting "
+                + "refuses \(session.clientName) until you allow it again; to stop every agent for sure, "
+                + "Turn Off Automation."
             menu.addItem(item)
         }
         for name in controller.blockedClientNames {

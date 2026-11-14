@@ -6,9 +6,12 @@ import Security
 ///
 /// The endpoint reads pages and acts with the user's sessions, so it is off
 /// until turned on, in one of two ways:
-/// - The user turns it on (a setting, off by default; the Settings row comes
-///   in a later phase of TASK-228.1). It listens on a fixed port, so a client
-///   configured once keeps working across relaunches.
+/// - The user turns it on (Settings > General > Automation, off by default).
+///   It listens on a port the system picks at each start, written to the
+///   0600 endpoint file, which the bundled helper reads. Not a fixed port
+///   (user decision, 2026-11-14): while Detour is not running, another
+///   account on the Mac could listen on a fixed one and collect the token
+///   from a client configured with the address.
 /// - A test run sets `DETOUR_MCP=1`. Only with an isolated data directory
 ///   (`DETOUR_DATA_DIR` set and not the production one), so an agent's
 ///   scripted run can never open the user's real profile to automation. It
@@ -57,10 +60,9 @@ nonisolated enum AutomationGate {
 
     /// The user's setting (in the data directory's defaults suite).
     static let enabledDefaultsKey = "AutomationEndpointEnabled"
-    /// An optional port override for the user's setting.
+    /// An optional fixed port for the user's setting (advanced, not in
+    /// Settings): it brings back the risk a fixed port has (see above).
     static let portDefaultsKey = "AutomationEndpointPort"
-    /// The port a user-enabled endpoint listens on by default.
-    static let defaultPort: UInt16 = 47823
 
     static func mode(environment: [String: String],
                      settingEnabled: Bool,
@@ -91,10 +93,10 @@ nonisolated enum AutomationGate {
         return (.off, refusal)
     }
 
-    /// The port a user-enabled endpoint listens on: the setting's, when it
-    /// is a valid non-zero port, else `defaultPort`.
+    /// The port a user-enabled endpoint listens on: the fixed port setting,
+    /// when it is a valid non-zero port, else 0 (the system picks one).
     static func userPort(settingPort: Int?) -> UInt16 {
-        settingPort.flatMap { UInt16(exactly: $0) }.flatMap { $0 == 0 ? nil : $0 } ?? defaultPort
+        settingPort.flatMap { UInt16(exactly: $0) }.flatMap { $0 == 0 ? nil : $0 } ?? 0
     }
 
     /// Whether `name` (a `DETOUR_DATA_DIR` value, appended to Application
