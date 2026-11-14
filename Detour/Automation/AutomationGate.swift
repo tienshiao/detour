@@ -131,11 +131,14 @@ nonisolated enum AutomationGate {
 /// The endpoint's token and the file that tells clients where it listens
 /// (TASK-228.1). Both live in the data directory and are readable only by the
 /// user (0600):
-/// - `mcp-token`: the bearer token. Kept across launches, so a client
-///   configured with it keeps working; replaced only by a reset.
-/// - `mcp-endpoint.json`: `url`, `port`, `pid` and `token` of the running
-///   endpoint, written once it listens and removed when it stops. The
-///   scripts/ client and the bundled helper read it.
+/// - `mcp-token`: a test run's shared bearer token. Kept across launches, so
+///   a client configured with it keeps working; replaced only by a reset.
+///   The user's endpoint has none (TASK-228.5): each approved client has
+///   its own (`AutomationClientStore`), and a leftover file is deleted.
+/// - `mcp-endpoint.json`: `url`, `port`, `pid`, `test_run` and, in a test
+///   run only, `token` of the running endpoint, written once it listens and
+///   removed when it stops. The scripts/ client and the bundled helper read
+///   it.
 nonisolated enum AutomationCredentials {
 
     static let tokenFileName = "mcp-token"
@@ -155,6 +158,11 @@ nonisolated enum AutomationCredentials {
             return token
         }
         return try resetToken(in: directory)
+    }
+
+    /// Deletes the shared token's file (the user's endpoint never uses one).
+    static func removeTokenFile(in directory: URL) {
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent(tokenFileName))
     }
 
     /// Replaces the token with a new random one and returns it.
@@ -180,17 +188,20 @@ nonisolated enum AutomationCredentials {
     /// `localhost` to ::1 first, where nothing listens.
     static func endpointURL(port: UInt16) -> String { "http://127.0.0.1:\(port)/mcp" }
 
-    static func endpointFileContents(port: UInt16, token: String, pid: Int32, testRun: Bool) -> JSONValue {
-        [
+    /// `token` is the test run's shared token; nil (the user's endpoint)
+    /// leaves the key out.
+    static func endpointFileContents(port: UInt16, token: String?, pid: Int32, testRun: Bool) -> JSONValue {
+        var fields: [String: JSONValue] = [
             "url": .string(endpointURL(port: port)),
             "port": .int(Int(port)),
             "pid": .int(Int(pid)),
-            "token": .string(token),
             "test_run": .bool(testRun),
         ]
+        if let token { fields["token"] = .string(token) }
+        return .object(fields)
     }
 
-    static func writeEndpointFile(port: UInt16, token: String, pid: Int32, testRun: Bool, in directory: URL) throws {
+    static func writeEndpointFile(port: UInt16, token: String?, pid: Int32, testRun: Bool, in directory: URL) throws {
         let contents = endpointFileContents(port: port, token: token, pid: pid, testRun: testRun)
         try writePrivateFile(contents.serialized(), to: directory.appendingPathComponent(endpointFileName))
     }

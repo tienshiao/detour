@@ -23,6 +23,10 @@ nonisolated enum AutomationHTTP {
         /// Header names lowercased; a repeated header keeps its last value.
         var headers: [String: String]
         var body: Data
+        /// The approved client whose token the request carried (TASK-228.5):
+        /// set by the endpoint after authorisation, never parsed from the
+        /// request. Nil for a test run's shared token.
+        var client: AutomationClientIdentity? = nil
 
         func header(_ name: String) -> String? { headers[name.lowercased()] }
 
@@ -193,7 +197,9 @@ nonisolated enum AutomationHTTP {
         case 405: "Method Not Allowed"
         case 406: "Not Acceptable"
         case 413: "Content Too Large"
+        case 411: "Length Required"
         case 415: "Unsupported Media Type"
+        case 429: "Too Many Requests"
         case 500: "Internal Server Error"
         case 501: "Not Implemented"
         case 503: "Service Unavailable"

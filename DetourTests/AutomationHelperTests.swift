@@ -130,6 +130,133 @@ nonisolated final class AutomationHelperTests: XCTestCase {
         try helper.input.close()
     }
 
+    // MARK: Per-client tokens (TASK-228.5)
+
+    /// The user's endpoint: approved clients' tokens only, the prompt faked,
+    /// and an endpoint file with no token.
+    @MainActor private func startUserEndpoint(in directory: URL, prompter: FakeApprovalPrompter)
+        async throws -> (MCPServer, AutomationClientStore) {
+        let tool = MCPTool(
+            name: "echo", title: "Echo", description: "Returns its text.",
+            inputSchema: MCPSchema.input([("text", .string("Text"))], required: ["text"]),
+            outputSchema: MCPSchema.output(["text": MCPSchema.stringType]), annotations: ["readOnlyHint": true],
+            handler: { ["text": .string(try $0.requiredString("text"))] })
+        let server = MCPServer(tools: [tool], serverVersion: "test", instructions: "")
+        let store = AutomationClientStore(directory: directory)
+        server.isClientApproved = { store.contains(clientID: $0) }
+        let approvals = AutomationApprovals(store: store, prompter: prompter)
+        let endpoint = try AutomationEndpoint(port: 0, credentials: .perClient(store),
+                                              handler: { await server.handle($0) },
+                                              authorizer: { await approvals.handle($0, cancellation: $1) })
+        self.endpoint = endpoint
+        let port = try await endpoint.start()
+        try AutomationCredentials.writeEndpointFile(port: port, token: nil,
+                                                    pid: ProcessInfo.processInfo.processIdentifier,
+                                                    testRun: false, in: directory)
+        return (server, store)
+    }
+
+    private func permissions(_ path: String) throws -> Int {
+        try XCTUnwrap(FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int)
+    }
+
+    private func call(_ id: Int, _ text: String) -> JSONValue {
+        ["jsonrpc": "2.0", "id": .int(id), "method": "tools/call", "params": ["name": "echo", "arguments": ["text": .string(text)]]]
+    }
+
+    @MainActor func testTheHelperAsksForATokenSavesItPrivatelyAndReusesIt() async throws {
+        let directory = try temporaryDirectory()
+        let prompter = FakeApprovalPrompter()
+        let (server, store) = try await startUserEndpoint(in: directory, prompter: prompter)
+        let endpointFile = directory.appendingPathComponent(AutomationCredentials.endpointFileName)
+        let helper = try launchHelper(endpointFile: endpointFile)
+
+        helper.send(initialize)
+        try await waitUntil("Detour's prompt") { prompter.prompts.count == 1 }
+        XCTAssertEqual(prompter.prompts[0].request,
+                       AutomationApprovalRequest(name: "claude-desktop", title: "Claude Desktop", version: "1"),
+                       "the helper sends the client's name, title and version")
+        prompter.prompts[0].respond(.allow)
+        let initialized = try await helper.receive()
+        XCTAssertEqual(initialized["id"], 1)
+        XCTAssertEqual(initialized["result"]?["serverInfo"]?["name"], "detour")
+        let record = try XCTUnwrap(store.records.first)
+        XCTAssertEqual(server.sessions.orderedSessions.map(\.clientID), [record.clientID])
+        XCTAssertEqual(server.sessions.orderedSessions.map(\.clientName), ["Claude Desktop"])
+        helper.send(call(2, "hi"))
+        let called = try await helper.receive()
+        XCTAssertEqual(called["result"]?["structuredContent"], ["text": "hi"])
+
+        // Saved 0600 in a 0700 folder under the data directory, named by the
+        // name's hash; the token itself matches the approval.
+        let folder = directory.appendingPathComponent("mcp-clients")
+        XCTAssertEqual(try permissions(folder.path), 0o700)
+        let files = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        XCTAssertEqual(files, [AutomationClientStore.hash("claude-desktop") + ".token"])
+        let tokenPath = folder.appendingPathComponent(files[0]).path
+        XCTAssertEqual(try permissions(tokenPath), 0o600)
+        let saved = try String(contentsOfFile: tokenPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(store.client(presenting: saved)?.clientID, record.clientID)
+        try helper.input.close()
+        try await waitUntil("the helper to exit", timeout: 5) { !helper.process.isRunning }
+
+        // The next run uses the saved token: no prompt.
+        let next = try launchHelper(endpointFile: endpointFile)
+        next.send(initialize)
+        let again = try await next.receive()
+        XCTAssertEqual(again["result"]?["serverInfo"]?["name"], "detour")
+        XCTAssertEqual(prompter.prompts.count, 1)
+        try next.input.close()
+    }
+
+    @MainActor func testARevokedClientIsToldSoItsTokenDeletedAndNotPromptedAgain() async throws {
+        let directory = try temporaryDirectory()
+        let prompter = FakeApprovalPrompter()
+        prompter.autoAnswer = .allow
+        let (server, store) = try await startUserEndpoint(in: directory, prompter: prompter)
+        let helper = try launchHelper(endpointFile: directory.appendingPathComponent(AutomationCredentials.endpointFileName))
+        helper.send(initialize)
+        _ = try await helper.receive()
+        let record = try XCTUnwrap(store.records.first)
+        let tokenFile = directory.appendingPathComponent("mcp-clients/\(AutomationClientStore.hash("claude-desktop")).token")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tokenFile.path))
+
+        // Disconnect / Revoke in Detour.
+        store.revoke(clientID: record.clientID)
+        server.sessions.endAll(clientID: record.clientID)
+        helper.send(call(2, "after"))
+        let refused = try await helper.receive()
+        XCTAssertEqual(refused["id"], 2)
+        XCTAssertTrue(refused["error"]?["message"]?.stringValue?.contains("revoked") == true, refused.jsonString)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tokenFile.path), "the token file is deleted")
+        helper.send(call(3, "still"))
+        let still = try await helper.receive()
+        XCTAssertTrue(still["error"]?["message"]?.stringValue?.contains("restart the client") == true, still.jsonString)
+        XCTAssertEqual(prompter.prompts.count, 1, "no prompt loop")
+        XCTAssertTrue(store.records.isEmpty)
+        try helper.input.close()
+    }
+
+    @MainActor func testADeniedClientGetsAnErrorAndNoSecondPromptInTheRun() async throws {
+        let directory = try temporaryDirectory()
+        let prompter = FakeApprovalPrompter()
+        prompter.autoAnswer = .deny
+        let (server, store) = try await startUserEndpoint(in: directory, prompter: prompter)
+        let helper = try launchHelper(endpointFile: directory.appendingPathComponent(AutomationCredentials.endpointFileName))
+        helper.send(initialize)
+        let denied = try await helper.receive()
+        XCTAssertEqual(denied["id"], 1)
+        XCTAssertTrue(denied["error"]?["message"]?.stringValue?.contains("403") == true, denied.jsonString)
+        helper.send(call(2, "x"))
+        let again = try await helper.receive()
+        XCTAssertNotNil(again["error"])
+        XCTAssertEqual(prompter.prompts.count, 1)
+        XCTAssertTrue(store.records.isEmpty)
+        XCTAssertTrue(server.sessions.sessions.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("mcp-clients").path))
+        try helper.input.close()
+    }
+
     // MARK: What Settings copies
 
     @MainActor func testTheSetupCommandsRunTheHelper() {

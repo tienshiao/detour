@@ -182,8 +182,17 @@ def main():
         except PermissionError:
             pass
 
+    token = endpoint.get("token")
+    if not token:
+        # The user's endpoint (TASK-228.5) has no shared token: each client is
+        # approved in Detour and gets its own, which the bundled helper keeps.
+        print(f"detour-mcp: {path} has no token: this Detour asks the user to approve each client. "
+              "This script works with a test run (DETOUR_MCP=1 with an isolated DETOUR_DATA_DIR); "
+              "use Detour.app/Contents/MacOS/detour-mcp for the user's endpoint.", file=sys.stderr)
+        return 2
+
     indent = None if args.compact else 2
-    session = Session(endpoint["url"], endpoint["token"], args.client_name)
+    session = Session(endpoint["url"], token, args.client_name)
     try:
         session.open()
         if args.command == "tools":

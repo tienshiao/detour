@@ -301,6 +301,10 @@ final class MCPSessionStore {
         let startedAt: Date
         var lastSeen: Date
         var initialized: Bool
+        /// The approved client the session belongs to (the user's setting,
+        /// TASK-228.5); nil for a test run's shared token. Only that client's
+        /// token reaches the session.
+        var clientID: UUID? = nil
     }
 
     static let maximumSessions = 32
@@ -313,13 +317,15 @@ final class MCPSessionStore {
     /// Sessions in the order they started.
     var orderedSessions: [Session] { sessions.values.sorted { $0.startedAt < $1.startedAt } }
 
-    func start(clientName: String, clientVersion: String?, protocolVersion: String, now: Date) -> Session {
+    func start(clientName: String, clientVersion: String?, protocolVersion: String, now: Date,
+               clientID: UUID? = nil) -> Session {
         if sessions.count >= Self.maximumSessions,
            let oldest = sessions.values.min(by: { $0.lastSeen < $1.lastSeen }) {
             sessions.removeValue(forKey: oldest.id)
         }
         let session = Session(id: UUID().uuidString, clientName: clientName, clientVersion: clientVersion,
-                              protocolVersion: protocolVersion, startedAt: now, lastSeen: now, initialized: false)
+                              protocolVersion: protocolVersion, startedAt: now, lastSeen: now, initialized: false,
+                              clientID: clientID)
         sessions[session.id] = session
         onChange?()
         return session
@@ -333,9 +339,12 @@ final class MCPSessionStore {
         sessions[id]?.initialized = true
     }
 
-    /// Client names the user disconnected: their `initialize` is refused
-    /// until the user allows them again (or the endpoint is turned off),
-    /// since a client whose session ends simply starts a new one.
+    /// Client names the user disconnected in a test run: their `initialize`
+    /// is refused until the user allows them again (or the endpoint is
+    /// turned off), since a client whose session ends simply starts a new
+    /// one. Only for the test run's shared token, which cannot be revoked
+    /// without cutting off every client; an approved client is disconnected
+    /// by revoking its token (TASK-228.5).
     private(set) var blockedClientNames: Set<String> = []
 
     func block(_ clientName: String) {
@@ -373,6 +382,14 @@ final class MCPSessionStore {
         return true
     }
 
+    /// Ends every session of an approved client (its token was revoked).
+    func endAll(clientID: UUID) {
+        let ended = sessions.values.filter { $0.clientID == clientID }
+        guard !ended.isEmpty else { return }
+        for session in ended { sessions.removeValue(forKey: session.id) }
+        onChange?()
+    }
+
     func endAll() {
         guard !sessions.isEmpty else { return }
         sessions.removeAll()
@@ -401,6 +418,11 @@ final class MCPServer {
     private let serverVersion: String
     private let instructions: String
     private let now: () -> Date
+    /// Whether an approved client still is (TASK-228.5). The endpoint
+    /// checked the token on its own queue; this is asked again on the main
+    /// actor, so a request authorised just before a revocation is refused
+    /// all the same.
+    var isClientApproved: (UUID) -> Bool = { _ in true }
 
     init(tools: [MCPTool], serverVersion: String, instructions: String, now: @escaping () -> Date = Date.init) {
         self.tools = tools
@@ -414,6 +436,10 @@ final class MCPServer {
 
     /// Answers one authorised HTTP request.
     func handle(_ request: AutomationHTTP.Request) async -> AutomationHTTP.Response {
+        if let client = request.client, !isClientApproved(client.id) {
+            return .text("Missing, wrong or revoked bearer token", status: 401,
+                         headers: AutomationAuthorization.unauthorizedHeaders)
+        }
         guard request.path == Self.path else {
             return .text("Not found. The MCP endpoint is \(Self.path)", status: 404)
         }
@@ -424,6 +450,7 @@ final class MCPServer {
             guard let id = request.header(Self.sessionHeader) else {
                 return .text("Missing \(Self.sessionHeader)", status: 400)
             }
+            guard ownsSession(id, request) else { return .text("Unknown session", status: 404) }
             return sessions.end(id) ? AutomationHTTP.Response(status: 204) : .text("Unknown session", status: 404)
         case "GET":
             // No server-initiated stream: every answer comes back on its POST.
@@ -472,7 +499,7 @@ final class MCPServer {
                 return .json(Self.errorResponse(id: .null, code: -32600, message: "initialize cannot be batched"),
                              status: 400)
             }
-            return initialize(message)
+            return initialize(message, client: request.client)
         }
 
         guard let sessionID = request.header(Self.sessionHeader) else {
@@ -480,7 +507,7 @@ final class MCPServer {
                                             message: "Missing \(Self.sessionHeader); send initialize first"),
                          status: 400)
         }
-        guard sessions.sessions[sessionID] != nil else {
+        guard ownsSession(sessionID, request) else {
             // 404 tells a Streamable HTTP client to start a new session.
             return .json(Self.errorResponse(id: messages.first?["id"] ?? .null, code: -32001,
                                             message: "Unknown or ended session"),
@@ -498,7 +525,15 @@ final class MCPServer {
         return .json(isBatch ? .array(responses) : responses[0])
     }
 
-    private func initialize(_ message: JSONValue) -> AutomationHTTP.Response {
+    /// Whether `id` is a session of the client that sent `request`: an
+    /// approved client's token reaches only its own sessions, the shared
+    /// token only the sessions it started.
+    private func ownsSession(_ id: String, _ request: AutomationHTTP.Request) -> Bool {
+        guard let session = sessions.sessions[id] else { return false }
+        return session.clientID == request.client?.id
+    }
+
+    private func initialize(_ message: JSONValue, client: AutomationClientIdentity?) -> AutomationHTTP.Response {
         let id = message["id"] ?? .null
         guard message["jsonrpc"]?.stringValue == "2.0", !id.isNull else {
             return .json(Self.errorResponse(id: id, code: -32600, message: "Invalid request"), status: 400)
@@ -508,15 +543,18 @@ final class MCPServer {
         let version = requested.flatMap { Self.supportedProtocolVersions.contains($0) ? $0 : nil }
             ?? Self.supportedProtocolVersions[0]
         let clientInfo = params?["clientInfo"]
-        let clientName = clientInfo?["title"]?.stringValue ?? clientInfo?["name"]?.stringValue ?? "MCP client"
-        guard !sessions.blockedClientNames.contains(clientName) else {
+        // An approved client goes by the name it was approved under, whatever
+        // its clientInfo says now.
+        let clientName = client?.name
+            ?? clientInfo?["title"]?.stringValue ?? clientInfo?["name"]?.stringValue ?? "MCP client"
+        guard client != nil || !sessions.blockedClientNames.contains(clientName) else {
             return .json(Self.errorResponse(id: id, code: -32001,
                                             message: "\(clientName) was disconnected from Detour by the user. Allow it "
                                                 + "again from Detour's automation indicator or Settings."),
                          status: 403)
         }
         let session = sessions.start(clientName: clientName, clientVersion: clientInfo?["version"]?.stringValue,
-                                     protocolVersion: version, now: now())
+                                     protocolVersion: version, now: now(), clientID: client?.id)
         let result: JSONValue = [
             "protocolVersion": .string(version),
             "capabilities": ["tools": ["listChanged": false]],
