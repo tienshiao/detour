@@ -276,6 +276,9 @@ again from the next call.
   extension console and stub counts forgotten. Changing the key from
   outside (`defaults write`) changes what the tools allow at once (checked
   at runtime), but only the Settings checkbox installs or removes capture.
+  "At once" means from the next call: a call already running into a
+  Private tab (a long `type_text` with `interval_ms`, an `evaluate_js`)
+  finishes, as one does after Disconnect, Revoke or Turn Off.
 - **Never, whatever the setting**: the Private profile as a target of
   `install_extension`, `set_extension_enabled` or a permission (those skip
   the user's prompts); a route into a quarantine; the Private profile's
