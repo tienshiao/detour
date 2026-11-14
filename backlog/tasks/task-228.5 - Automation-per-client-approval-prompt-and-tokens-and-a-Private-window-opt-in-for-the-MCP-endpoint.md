@@ -38,10 +38,10 @@ Two parts:
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 With automation on, a new client's first connection shows Detour's own Allow / Deny prompt naming the client; Deny refuses it, Allow gives it a token of its own
-- [ ] #2 Disconnect (indicator) and Revoke (Settings, which lists approved clients) invalidate that client's token at once; other clients keep working
-- [ ] #3 Test runs (DETOUR_MCP=1 with an isolated DETOUR_DATA_DIR) and scripts/detour-mcp keep working without a prompt
-- [ ] #4 Private windows and spaces stay unreachable unless the user turns on a setting that allows them; turning it off refuses them again at once
-- [ ] #5 The chosen design and the rejected alternatives are recorded here and in the wiki automation page; tests cover approval, denial, revocation, the Private opt-in on and off
+- [x] #2 Disconnect (indicator) and Revoke (Settings, which lists approved clients) invalidate that client's token at once; other clients keep working
+- [x] #3 Test runs (DETOUR_MCP=1 with an isolated DETOUR_DATA_DIR) and scripts/detour-mcp keep working without a prompt
+- [x] #4 Private windows and spaces stay unreachable unless the user turns on a setting that allows them; turning it off refuses them again at once
+- [x] #5 The chosen design and the rejected alternatives are recorded here and in the wiki automation page; tests cover approval, denial, revocation, the Private opt-in on and off
 <!-- AC:END -->
 
 ## Implementation Plan
