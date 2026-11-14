@@ -296,8 +296,12 @@ class Capture:
         self.profiles = seeded["profile_ids"]
         self.log(f"seeded {seeded['counts']}")
         self.call("set_appearance", appearance=self.args.appearance)
-        # The connected-agent capsule would be in every take (Debug builds).
-        self.call("set_debug_override", name="automation_indicator", value="off")
+        # The connected-agent capsule would be in every take. Debug builds
+        # only: a Release build has no set_debug_override, and keeps it.
+        try:
+            self.call("set_debug_override", name="automation_indicator", value="off")
+        except Exception as error:
+            self.log(f"the connected-agent capsule stays (a Release build?): {error}")
 
     def find_display(self, display_id):
         for _ in range(20):
@@ -329,8 +333,11 @@ class Capture:
         bounds = window["screen_bounds"]
         if bounds is None:
             raise RuntimeError("the window is not on screen")
-        if abs(bounds["x"] - placed["screen_bounds"]["x"]) > 0.5 or abs(bounds["y"] - placed["screen_bounds"]["y"]) > 0.5:
-            self.log(f"the window moved after placing: {placed['screen_bounds']} -> {bounds}")
+        before = placed.get("screen_bounds")
+        if not placed.get("settled") or before is None:
+            self.log(f"the window server had not settled the window when placed: {before} -> {bounds}")
+        elif abs(bounds["x"] - before["x"]) > 0.5 or abs(bounds["y"] - before["y"]) > 0.5:
+            self.log(f"the window moved after placing: {before} -> {bounds}")
         return bounds, window["window_number"]
 
     def region(self, bounds):
@@ -468,9 +475,12 @@ class Capture:
             self.display = self.find_display(display_id)
             self.seed()
             if self.args.wallpaper:
+                # Set first: demo.sh snapshots the store before it changes
+                # anything, so a failure or an interrupt part way still
+                # restores (and with no snapshot, the restore does nothing).
+                self.wallpaper_set = True
                 subprocess.run([os.path.join(KIT, "demo.sh"), "wallpaper", self.args.wallpaper, str(display_id)],
                                check=True)
-                self.wallpaper_set = True
                 time.sleep(1.5)
             for name in self.args.shots:
                 self.log(f"shot {name}")

@@ -183,7 +183,10 @@ nonisolated final class AutomationHTTPTests: XCTestCase {
         XCTAssertEqual(mode(["DETOUR_MCP": "1", "DETOUR_DATA_DIR": "Detour"]).0, .off)
         XCTAssertEqual(mode(["DETOUR_MCP": "1", "DETOUR_DATA_DIR": ""]).1, .testRunNeedsIsolatedDataDirectory)
         // Other spellings of the production directory (APFS ignores case).
-        for name in ["detour", "Detour/", "./Detour", "x/../Detour", "."] {
+        // And names that climb out of Application Support (TASK-228.3 review):
+        // the second is the production directory by another spelling.
+        for name in ["detour", "Detour/", "./Detour", "x/../Detour", ".", "..", "../Application Support/Detour",
+                     "x/../../Detour"] {
             XCTAssertEqual(mode(["DETOUR_MCP": "1", "DETOUR_DATA_DIR": name]).1, .testRunNeedsIsolatedDataDirectory, name)
         }
         XCTAssertEqual(mode(["DETOUR_MCP": "1", "DETOUR_DATA_DIR": "DetourVerify"]).0, .testRun(port: 0))

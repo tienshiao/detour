@@ -47,13 +47,21 @@ extension AutomationTools {
                     throw AutomationToolError(.invalidArguments, "fixture_path must be an absolute path")
                 }
                 let data: Data
+                let limit = 4 << 20
                 do {
-                    let url = URL(fileURLWithPath: path)
-                    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-                    guard size <= 4 << 20 else {
+                    // A regular file, read at most to the limit: a FIFO or a
+                    // device (/dev/zero) would block or never end, and the
+                    // size read first can change before the read.
+                    let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+                    guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                        throw AutomationToolError(.invalidArguments, "\(path) is not a regular file")
+                    }
+                    let handle = try FileHandle(forReadingFrom: url)
+                    defer { try? handle.close() }
+                    data = try handle.read(upToCount: limit + 1) ?? Data()
+                    guard data.count <= limit else {
                         throw AutomationToolError(.invalidFixture, "\(path) is larger than 4 MB")
                     }
-                    data = try Data(contentsOf: url)
                 } catch let error as AutomationToolError {
                     throw error
                 } catch {
@@ -447,11 +455,10 @@ extension AutomationTools {
             draft.emoji = emoji
         }
         if let color = try arguments.string("color") {
-            let hex = color.hasPrefix("#") ? String(color.dropFirst()) : color
-            guard hex.count == 6, hex.allSatisfy(\.isHexDigit) else {
+            guard let hex = AutomationWorldFixture.colorHex(color) else {
                 throw AutomationToolError(.invalidArguments, "color is six hex digits such as FF7600")
             }
-            draft.colorHex = hex.uppercased()
+            draft.colorHex = hex
         }
         if let profileID = try arguments.uuid("profile_id") {
             guard let profile = store.profile(withID: profileID) else {
@@ -491,11 +498,16 @@ extension AutomationTools {
             defer { free(real) }
             return String(cString: real)
         }
+        func isInside(_ path: String, _ root: String) -> Bool {
+            path == root || path.hasPrefix(root + "/")
+        }
         let folder = resolved(URL(fileURLWithPath: path, isDirectory: true))
         let roots = [dataDirectory, FileManager.default.temporaryDirectory,
                      URL(fileURLWithPath: "/tmp"), URL(fileURLWithPath: "/private/var/folders")].map(resolved)
-        guard roots.contains(where: { folder == $0 || folder.hasPrefix($0 + "/") }),
-              folder != resolved(ArcSidebarReader.userDataDirectory) else {
+        // Compared without regard to case, as APFS does by default: Arc's
+        // folder spelt in another case is still Arc's folder.
+        let arc = resolved(ArcSidebarReader.userDataDirectory).lowercased()
+        guard roots.contains(where: { isInside(folder, $0) }), !isInside(folder.lowercased(), arc) else {
             throw AutomationToolError(.invalidArguments,
                                       "arc_folder must be inside the data directory or a temporary folder, never Arc's own")
         }
@@ -503,7 +515,29 @@ extension AutomationTools {
         guard ArcSidebarReader.isArcDataPresent(in: url) else {
             throw AutomationToolError(.invalidArguments, "\(folder) has no StorableSidebar.json")
         }
+        // The reader follows links inside the folder (StorableSidebar.json,
+        // User Data, each profile's History): a fixture has none, so a link
+        // to Arc's own files (symbolic, or a second hard link) is refused.
+        if let linked = Self.linkedEntry(in: url) {
+            throw AutomationToolError(.invalidArguments,
+                                      "\(linked) is a link; a fixture Arc folder holds only its own files")
+        }
         return url
+    }
+
+    /// The first entry under `folder` that is a symbolic link, or a file
+    /// with more than one hard link; nil when there is none.
+    private static func linkedEntry(in folder: URL) -> String? {
+        let keys: [URLResourceKey] = [.isSymbolicLinkKey, .isRegularFileKey, .linkCountKey]
+        guard let entries = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: keys) else {
+            return folder.path
+        }
+        for case let entry as URL in entries {
+            guard let values = try? entry.resourceValues(forKeys: Set(keys)) else { return entry.path }
+            if values.isSymbolicLink == true { return entry.path }
+            if values.isRegularFile == true, (values.linkCount ?? 1) > 1 { return entry.path }
+        }
+        return nil
     }
 
     private func arcFolder(_ arguments: ToolArguments) throws -> URL {
@@ -523,12 +557,13 @@ extension AutomationTools {
         case .failure(let error):
             throw AutomationToolError(.invalidArguments, "The Arc folder could not be read: \(error.localizedDescription)")
         }
-        // Choose… opens the Import from Arc window, which reads the same folder.
-        ArcSidebarReader.dataDirectoryOverride.withLock { $0 = folder }
         guard let window = controller.window,
               ArcImportOfferSheetController.present(snapshot, over: controller, store: store) else {
             throw AutomationToolError(.invalidArguments, "The offer is already up, or the window is not visible")
         }
+        // Choose… opens the Import from Arc window, which reads the same
+        // folder. Only once the offer is up: a refusal points nothing anywhere.
+        ArcSidebarReader.dataDirectoryOverride.withLock { $0 = folder }
         for _ in 0..<40 where window.attachedSheet == nil {
             try? await Task.sleep(for: .milliseconds(50))
         }

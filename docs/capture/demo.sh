@@ -27,7 +27,10 @@ case $1 in
     echo "wallpaper store saved to $BACKUP; run 'demo.sh wallpaper-restore' when done" ;;
   wallpaper-restore)
     [ -f $BACKUP ] || { echo "no wallpaper backup in $STATE; nothing to restore"; exit 1; }
-    cp $BACKUP "$STORE" && killall WallpaperAgent 2>/dev/null
+    # Keep the snapshot unless it went back: it is the only copy of the
+    # user's wallpaper.
+    cp $BACKUP "$STORE" || { echo "could not restore $STORE; the snapshot stays in $BACKUP"; exit 1; }
+    killall WallpaperAgent 2>/dev/null
     rm $BACKUP && echo "wallpaper restored" ;;
   *) echo "unknown: $1"; exit 1 ;;
 esac

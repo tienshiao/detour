@@ -2186,7 +2186,10 @@ class TabSidebarViewController: NSViewController {
         let mode: SpaceEditorView.Mode
         switch preview {
         case .creating: mode = .create
-        case .editing(_, let draft): mode = .edit(originalProfileID: draft.profileID)
+        // The space's own profile, not the draft's: a staged draft (the
+        // automation endpoint's open_ui) may already name another one.
+        case .editing(let spaceID, let draft):
+            mode = .edit(originalProfileID: TabStore.shared.space(withID: spaceID)?.profileID ?? draft.profileID)
         }
         let editor = SpaceEditorView(mode: mode, draft: preview.draft, profiles: profiles)
         editor.onChange = { [weak self] draft in self?.spaceEditorDraftChanged(draft) }

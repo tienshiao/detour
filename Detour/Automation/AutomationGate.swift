@@ -114,12 +114,17 @@ nonisolated enum AutomationGate {
     /// Support) names a directory other than the production one. Compared as
     /// a standardised path and without regard to case, as APFS does by
     /// default: `detour`, `Detour/` and `./Detour` are all the user's profile.
+    /// A name that climbs out of Application Support (`..`,
+    /// `../Application Support/Detour`) is never isolated: it can name the
+    /// production directory, or a folder above other apps' data, by another
+    /// spelling than the one compared here.
     static func isIsolatedDataDirectoryName(_ name: String) -> Bool {
         guard !name.isEmpty else { return false }
-        let base = URL(fileURLWithPath: "/ApplicationSupport", isDirectory: true)
-        let resolved = base.appendingPathComponent(name).standardizedFileURL.path
-        let production = base.appendingPathComponent(defaultDetourDataDirectoryName).standardizedFileURL.path
-        return resolved.caseInsensitiveCompare(production) != .orderedSame && resolved != base.standardizedFileURL.path
+        let base = URL(fileURLWithPath: "/ApplicationSupport", isDirectory: true).standardizedFileURL.path
+        let resolved = URL(fileURLWithPath: base, isDirectory: true).appendingPathComponent(name).standardizedFileURL.path
+        let production = URL(fileURLWithPath: base, isDirectory: true)
+            .appendingPathComponent(defaultDetourDataDirectoryName).standardizedFileURL.path
+        return resolved.hasPrefix(base + "/") && resolved.caseInsensitiveCompare(production) != .orderedSame
     }
 }
 

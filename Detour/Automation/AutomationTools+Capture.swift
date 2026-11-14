@@ -202,7 +202,7 @@ extension AutomationTools {
                 + "off, for this process, without touching the protected system setting), space_toss_hop and "
                 + "space_toss_gravity (points and points/s², the space editor's toss, kept in the data "
                 + "directory's defaults), automation_indicator (off hides the connected-agent capsule in every "
-                + "window while a capture records, for this process). value default clears the override. "
+                + "window while a capture records, for this process; test runs only). value default clears the override. "
                 + "Returns every override.",
             inputSchema: MCPSchema.input([
                 ("name", .enumeration(["reduce_motion", "space_toss_hop", "space_toss_gravity", "automation_indicator"],
@@ -211,7 +211,7 @@ extension AutomationTools {
             ], required: ["name", "value"]),
             outputSchema: MCPSchema.output(["overrides": MCPSchema.objectType]),
             annotations: ["readOnlyHint": false, "destructiveHint": false, "idempotentHint": true],
-            handler: { arguments in
+            handler: { [self] arguments in
                 let name = try arguments.requiredString("name")
                 // A client may send a number for a numeric override.
                 guard let raw = arguments.values["value"] else {
@@ -231,6 +231,10 @@ extension AutomationTools {
                     default: throw AutomationToolError(.invalidArguments, "reduce_motion is on, off or default")
                     }
                 case "automation_indicator":
+                    // The capsule tells the user an agent is connected: only
+                    // a test run's client may hide it, never one on the
+                    // user's own endpoint.
+                    try requireStagingTestRun("set_debug_override automation_indicator")
                     switch value {
                     case "on", "true", "default": AutomationIndicator.isHiddenForCapture = false
                     case "off", "false": AutomationIndicator.isHiddenForCapture = true

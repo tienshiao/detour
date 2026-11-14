@@ -69,6 +69,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A test run never reads the user's Arc folder (TASK-228.3): Arc's
+        // data is looked for in the run's own data directory instead, where
+        // only a fixture is (the endpoint's open_ui shows the offer on demand).
+        // First, before anything at launch could look for Arc's data.
+        if Self.isAutomationTestRun {
+            ArcSidebarReader.dataDirectoryOverride.withLock {
+                $0 = detourDataDirectory().appending(path: "Arc", directoryHint: .isDirectory)
+            }
+        }
+
         // A SIGTERM to Detour ends its native hosts before the app dies
         // (TASK-243); without it they are left running.
         NativeMessagingHost.installSIGTERMHandler()
@@ -187,15 +197,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         linksAwaitingLaunch = []
         for links in awaiting {
             openExternalURLs(links.urls, sourceApp: links.sourceApp, launchedDetour: true)
-        }
-
-        // A test run never reads the user's Arc folder (TASK-228.3): Arc's
-        // data is looked for in the run's own data directory instead, where
-        // only a fixture is (the endpoint's open_ui shows the offer on demand).
-        if Self.isAutomationTestRun {
-            ArcSidebarReader.dataDirectoryOverride.withLock {
-                $0 = detourDataDirectory().appending(path: "Arc", directoryHint: .isDirectory)
-            }
         }
 
         // The automation endpoint (TASK-228.1): off unless the user turned it

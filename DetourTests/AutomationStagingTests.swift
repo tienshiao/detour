@@ -284,6 +284,10 @@ nonisolated final class AutomationStagingTests: XCTestCase {
              "spaces[0].tabs[1]"),
             (world(#", "pinned": [{"folder": "F", "items": [{"url": "nope"}]}]"#), "spaces[0].pinned[0].items[0].url"),
             (world(#", "pinned": [{"url": "https://a.example.com/", "selected": true}]"#), "spaces[0].pinned[0].selected"),
+            (world(#", "pinned": [{"split": [{"url": "https://a.example.com/", "selected": true}, {"url": "https://b.example.com/"}]}]"#),
+             "spaces[0].pinned[0].split[0].selected"),
+            (#"{"profiles": [{"name": "P"}], "spaces": [{"name": "S", "emoji": "S", "color": "１１２２３３", "profile": "P"}]}"#,
+             "spaces[0].color"),
             (world(top: #", "history": [{"url": "https://a.example.com/", "space": "S", "ago": ["3 days"]}]"#),
              "history[0].ago[0]"),
             (world(top: #", "history": [{"url": "https://a.example.com/", "space": "S", "ago": ["100d"]}]"#),
@@ -360,6 +364,11 @@ nonisolated final class AutomationStagingTests: XCTestCase {
         wc.sidebarSplitView.autosaveName = nil
         windows.append(wc)
         wc.setActiveSpace(id: space.id, selectTab: false)
+        // No open animation: AppKit scales a newly shown window up from its
+        // centre, and while that runs the window server's bounds lag the frame
+        // (686 × 471 for 700 × 480 in a full run on a busy Mac), so the
+        // read-back would test the animation's timing, not the tool.
+        wc.window?.animationBehavior = .none
         wc.showWindow(nil)
         var environment = AutomationEnvironment(windowControllers: { [wc] }, mainMenu: { nil }, store: store)
         environment.isTestRun = testRun
@@ -525,6 +534,24 @@ nonisolated final class AutomationStagingTests: XCTestCase {
             "what": "arc_offer", "window_id": id, "arc_folder": .string(empty.path),
         ])
         XCTAssertEqual(noSidebar, "invalid_arguments")
+        // A link inside the folder could reach Arc's own files: refused, a
+        // symbolic one and a second hard link alike.
+        let elsewhere = try temporaryDirectory()
+        let target = elsewhere.appending(path: "StorableSidebar.json")
+        try Data(Self.arcSidebar.utf8).write(to: target)
+        for symbolic in [true, false] {
+            let linked = try temporaryDirectory()
+            let link = linked.appending(path: "StorableSidebar.json")
+            if symbolic {
+                try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+            } else {
+                try FileManager.default.linkItem(at: target, to: link)
+            }
+            let code = try await errorCode(stage.server, "open_ui", [
+                "what": "arc_import", "arc_folder": .string(linked.path),
+            ])
+            XCTAssertEqual(code, "invalid_arguments", symbolic ? "a symbolic link" : "a hard link")
+        }
         XCTAssertEqual(ArcSidebarReader.defaultDataDirectory, ArcSidebarReader.userDataDirectory,
                        "a refusal points nothing anywhere")
 

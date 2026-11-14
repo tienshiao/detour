@@ -38,6 +38,15 @@ struct AutomationWorldFixture {
         var counts: [String: Int] = [:]
     }
 
+    /// Six ASCII hex digits, with or without a leading #, upper-cased as a
+    /// space's `colorHex` is stored; nil for anything else. Shared with
+    /// `open_ui`'s space editor draft.
+    static func colorHex(_ text: String) -> String? {
+        let hex = text.hasPrefix("#") ? text.dropFirst() : Substring(text)
+        guard hex.count == 6, hex.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
+        return hex.uppercased()
+    }
+
     static let currentVersion = 1
     /// Deeper than any sidebar a capture needs; keeps a runaway file bounded.
     static let maximumFolderDepth = 16
@@ -194,7 +203,8 @@ struct AutomationWorldFixture {
                     try pinnedItem(child, at: "\(path).items[\(index)]", spaceID: spaceID, folderID: id, depth: depth + 1)
                 }
             } else if fields["split"] != nil {
-                let (pages, fraction) = try split(value, at: path)
+                // No `selected`: a pinned pane is not a tab a window selects.
+                let (pages, fraction) = try split(value, at: path, paneKeys: [])
                 let group = makeID()
                 for page in pages {
                     plan.world.pinnedEntries.append(.init(id: makeID(), spaceID: spaceID, url: page.url, title: page.title,
@@ -216,7 +226,7 @@ struct AutomationWorldFixture {
             let fields = try object(value, at: path, keys: nil)
             var added: [(UUID, Bool)] = []
             if fields["split"] != nil {
-                let (pages, fraction) = try split(value, at: path)
+                let (pages, fraction) = try split(value, at: path, paneKeys: ["selected"])
                 let group = makeID()
                 for page in pages {
                     let id = makeID()
@@ -333,7 +343,7 @@ struct AutomationWorldFixture {
 
         /// `{"split": [page, page], "fraction": 0.5}`: two panes, the first
         /// on the left taking `fraction` of the width.
-        func split(_ value: JSONValue, at path: String) throws(Problem) -> ([Page], Double?) {
+        func split(_ value: JSONValue, at path: String, paneKeys: Set<String>) throws(Problem) -> ([Page], Double?) {
             let fields = try object(value, at: path, keys: ["split", "fraction"])
             let panes = try array(fields["split"], at: "\(path).split", required: true)
             guard panes.count == 2 else {
@@ -341,7 +351,7 @@ struct AutomationWorldFixture {
             }
             var pages: [Page] = []
             for (index, pane) in panes.enumerated() {
-                pages.append(try page(pane, at: "\(path).split[\(index)]", extraKeys: ["selected"]))
+                pages.append(try page(pane, at: "\(path).split[\(index)]", extraKeys: paneKeys))
             }
             var fraction: Double?
             if let given = fields["fraction"] {
@@ -411,14 +421,11 @@ struct AutomationWorldFixture {
             return flag
         }
 
-        /// Six hex digits, with or without a leading #, stored upper-case.
         func color(_ value: JSONValue?, at path: String) throws(Problem) -> String {
-            var hex = try name(value, at: path)
-            if hex.hasPrefix("#") { hex.removeFirst() }
-            guard hex.count == 6, hex.allSatisfy(\.isHexDigit) else {
+            guard let hex = AutomationWorldFixture.colorHex(try name(value, at: path)) else {
                 throw Problem(path: path, message: "A colour is six hex digits such as FF7600")
             }
-            return hex.uppercased()
+            return hex
         }
 
         /// An http(s) URL with a host.

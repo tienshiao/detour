@@ -48,7 +48,7 @@ nonisolated final class AutomationCaptureTests: XCTestCase {
         let tab: BrowserTab
     }
 
-    @MainActor private func makeFixture() async throws -> Fixture {
+    @MainActor private func makeFixture(testRun: Bool = false) async throws -> Fixture {
         let http = try LoopbackHTTPServer(routes: ["/": "<title>Capture</title><body style='background:#123456'>Hi</body>"])
         servers.append(http)
         let port = try await http.start()
@@ -65,7 +65,7 @@ nonisolated final class AutomationCaptureTests: XCTestCase {
         wc.selectTab(id: tab.id)
         try await waitUntil("the page to load") { tab.webView?.title == "Capture" && !tab.isLoading }
         let tools = AutomationTools(environment: AutomationEnvironment(windowControllers: { [wc] }, mainMenu: { nil },
-                                                                       store: store))
+                                                                       store: store, isTestRun: testRun))
         let server = MCPServer(tools: tools.all, serverVersion: "test", instructions: "")
         return Fixture(server: server, window: wc, windowID: tools.windowIDs.id(for: wc), tab: tab)
     }
@@ -258,7 +258,13 @@ nonisolated final class AutomationCaptureTests: XCTestCase {
     /// TASK-228.3: a capture hides the connected-agent capsule, which would
     /// otherwise be in every take; Debug builds only.
     @MainActor func testTheAutomationIndicatorCanBeHiddenForACapture() async throws {
-        let f = try await makeFixture()
+        let userEndpoint = try await makeFixture()
+        let refused = try await errorCode(userEndpoint, "set_debug_override",
+                                          ["name": "automation_indicator", "value": "off"])
+        XCTAssertEqual(refused, "gate_closed", "the user's own endpoint never hides who is connected")
+        XCTAssertFalse(AutomationIndicator.isHiddenForCapture)
+
+        let f = try await makeFixture(testRun: true)
         let now = Date()
         let connected = [MCPSessionStore.Session(id: "s", clientName: "capture.py", clientVersion: nil,
                                                  protocolVersion: "2025-06-18", startedAt: now, lastSeen: now,
