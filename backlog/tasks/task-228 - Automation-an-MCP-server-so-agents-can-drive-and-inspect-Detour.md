@@ -4,7 +4,7 @@ title: 'Automation: an MCP server so agents can drive and inspect Detour'
 status: To Do
 assignee: []
 created_date: '2026-10-29T04:10:00Z'
-updated_date: '2026-11-14T06:20:00Z'
+updated_date: '2026-11-14T06:27:00Z'
 labels:
   - tooling
   - automation
@@ -63,4 +63,6 @@ This is likely an epic. Split it into subtasks (transport and auth, tab and navi
 2026-11-13: cloud-hosted agents (claude.ai and ChatGPT connectors, cloud agents) cannot reach a localhost endpoint and are out of scope; reaching them would need a tunnel that exposes the user's browser to the internet. Open for the fuller authorisation in AC #3: Detour as its own local OAuth authorisation server (the MCP spec's HTTP auth), showing an 'X wants to control Detour: Allow / Deny' prompt, so OAuth-only clients work and nobody copies tokens. TASK-228.1 ships bearer token + Origin check + a bundled stdin/stdout helper instead.
 
 2026-11-14 (user decision): TASK-228.1's Disconnect blocks a client by the name it reports, which a client can change; real per-client revocation belongs here, with the approval prompt in AC #3 ('X wants to control Detour: Allow / Deny') giving each client its own token that Disconnect revokes. The user-enabled endpoint now uses a port the system picks per launch (no fixed 47823).
+
+2026-11-13: split the parent's remaining ACs into subtasks. TASK-228.4 covers page inspection (ACs #1 and #2: JS, page text and DOM, console, network, waits, sleeping and unselected tabs). TASK-228.5 covers the approval prompt with per-client tokens and the Private-window opt-in (AC #3; it has open design questions for the user). TASK-228.6 covers input to tabs no window shows (AC #2's last part). It waits for epic-claude-extension, whose AutomationParking (TASK-132.3) already solves that, so main does not grow a second mechanism. Order: 228.4, then 228.2 (which builds on 228.4's evaluate/console), then 228.3. 228.5 waits for the user's answers. 228.6 waits for the epic merge.
 <!-- SECTION:NOTES:END -->

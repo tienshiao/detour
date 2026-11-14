@@ -6,13 +6,14 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-14T01:26:00Z'
-updated_date: '2026-11-14T01:30:00Z'
+updated_date: '2026-11-14T06:27:00Z'
 labels:
   - tooling
   - automation
   - extensions
 dependencies:
   - TASK-228.1
+  - TASK-228.4
 references:
   - TASK-228.1
   - wiki/extensions/testing-extensions.md
