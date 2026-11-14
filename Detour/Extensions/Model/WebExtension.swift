@@ -37,9 +37,10 @@ class WebExtension {
 
     /// The native WKWebExtension, loaded asynchronously. Shared across profiles.
     var wkExtension: WKWebExtension?
-    /// True once reading the installed files into `wkExtension` failed after
-    /// an install (the error is in `ExtensionErrorLog`): nothing will load it
-    /// this session. An installer waiting for the load stops on it.
+    /// True once reading the installed files into `wkExtension` failed, at
+    /// launch or after an install (the error is in `ExtensionErrorLog`):
+    /// nothing will load it this session. An installer waiting for the load
+    /// stops on it.
     var loadFailed = false
 
     /// The API permissions a prompt can come from: the manifest's `permissions`

@@ -434,6 +434,16 @@ nonisolated final class AutomationExtensionTests: XCTestCase {
         try await ok(f, "close_extension_context", ["context": options])
         let closed = try await code(f, "read_page", ["context": options])
         XCTAssertEqual(closed, "context_not_open")
+
+        // A pinned options page is closed too (its entry stays, dormant).
+        let reopened = try await ok(f, "open_extension_context", ["extension": .string(id), "kind": "options"])
+        let pinnedTabID = try XCTUnwrap(reopened["tab_id"]?.stringValue.flatMap(UUID.init(uuidString:)))
+        TabStore.shared.pinTab(id: pinnedTabID, in: f.space)
+        XCTAssertTrue(f.space.pinnedTabs.contains { $0.id == pinnedTabID }, "pinned")
+        try await ok(f, "close_extension_context", ["context": options])
+        XCTAssertFalse(f.space.pinnedTabs.contains { $0.id == pinnedTabID }, "its backing tab is closed")
+        let pinnedClosed = try await code(f, "read_page", ["context": options])
+        XCTAssertEqual(pinnedClosed, "context_not_open")
     }
 
     // MARK: Turning on and off, permissions, uninstall (AC #1)

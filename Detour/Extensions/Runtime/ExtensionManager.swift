@@ -579,6 +579,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 ext.wkExtension = wkExt
                 if let error {
                     ExtensionErrorLog.shared.record(extensionID: ext.id, source: "extension", profileID: nil, error: error)
+                    ext.loadFailed = true
                 }
                 extensions.append(ext)
                 log.info("Loaded extension \(ext.manifest.name, privacy: .public) (\(ext.id, privacy: .public)), enabled: \(ext.isEnabled)")
@@ -1730,6 +1731,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         extensions.removeAll { $0.id == id }
         AppDatabase.shared.deleteExtension(id: id)
         ExtensionErrorLog.shared.forget(id)
+        AutomationExtensionConsole.shared.forget(extensionID: id)
         // A reinstall starts without an earlier copy's cancelled dialog.
         uninstallSelfCancelledAt[id] = nil
 

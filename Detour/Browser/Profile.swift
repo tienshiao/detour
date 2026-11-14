@@ -632,6 +632,9 @@ class Profile {
         // An automation command waiting on this context's background has
         // nothing left to answer it (TASK-228.2).
         AutomationExtensionChannel.shared.contextUnloaded(extensionID: id, profileID: self.id)
+        // A popup the endpoint opened shows a page of the unloaded origin,
+        // whatever unloaded it (Settings, an update, a recovery reload).
+        AutomationExtensionPopups.shared.close(.init(extensionID: id, profileID: self.id))
         if let token = extensionErrorObservers.removeValue(forKey: id) {
             NotificationCenter.default.removeObserver(token)
         }

@@ -222,16 +222,10 @@ extension AutomationTools {
                 "context_errors": .array((context?.errors ?? []).map(Self.describe)),
             ]
         }
-        let decisions: [JSONValue] = AppDatabase.shared.loadPermissions(extensionID: ext.id)
-            .sorted { ($0.permissionType, $0.permissionKey) < ($1.permissionType, $1.permissionKey) }
-            .map { record in
-                [
-                    "permission": .string(record.permissionKey),
-                    "type": .string(Self.permissionTypeName(record.permissionType)),
-                    "granted": .bool(record.status == ExtensionPermissionStatus.granted.rawValue),
-                ]
-            }
-        let recorded: [JSONValue] = ExtensionErrorLog.shared.errors(for: ext.id).map { entry in
+        // The Private profile's errors are left out with the rest of it.
+        let recorded: [JSONValue] = ExtensionErrorLog.shared.errors(for: ext.id).filter {
+            $0.profileID != TabStore.incognitoProfileID
+        }.map { entry in
             [
                 "source": .string(entry.source),
                 "profile_id": .nullable(entry.profileID?.uuidString),
@@ -260,10 +254,23 @@ extension AutomationTools {
                 "optional_permissions": strings(manifest.optionalPermissions),
                 "optional_host_permissions": strings(manifest.optionalHostPermissions),
             ],
-            "permission_decisions": .array(decisions),
+            "permission_decisions": permissionDecisions(ext),
             "manifest_errors": .array((ext.wkExtension?.errors ?? []).map(Self.describe)),
             "load_errors": .array(recorded),
         ]
+    }
+
+    /// The saved grants and denials, sorted by type and key.
+    func permissionDecisions(_ ext: WebExtension) -> JSONValue {
+        .array(AppDatabase.shared.loadPermissions(extensionID: ext.id)
+            .sorted { ($0.permissionType, $0.permissionKey) < ($1.permissionType, $1.permissionKey) }
+            .map { record in
+                [
+                    "permission": .string(record.permissionKey),
+                    "type": .string(Self.permissionTypeName(record.permissionType)),
+                    "granted": .bool(record.status == ExtensionPermissionStatus.granted.rawValue),
+                ]
+            })
     }
 
     static func describe(_ error: any Error) -> JSONValue {
@@ -471,9 +478,9 @@ extension AutomationTools {
             handler: { [self] arguments in
                 try requireTestRun("uninstall_extension")
                 let ext = try resolveExtension(try arguments.requiredString("extension"))
-                AutomationExtensionPopups.shared.closeAll(extensionID: ext.id)
+                // Unloading its contexts closes the endpoint's popups, and the
+                // uninstall forgets its console records.
                 ExtensionManager.shared.uninstall(id: ext.id)
-                AutomationExtensionConsole.shared.forget(extensionID: ext.id)
                 return ["extension_id": .string(ext.id), "uninstalled": .bool(ExtensionManager.shared.extension(withID: ext.id) == nil)]
             })
     }
@@ -501,12 +508,12 @@ extension AutomationTools {
                 guard let enabled = try arguments.bool("enabled") else {
                     throw AutomationToolError(.invalidArguments, "Missing required argument enabled")
                 }
+                // Turning it off unloads its contexts, which closes the
+                // endpoint's popups (`Profile.unloadExtension`).
                 if let profileID = try arguments.uuid("profile_id") {
                     let profile = try normalProfile(id: profileID)
-                    if !enabled { AutomationExtensionPopups.shared.close(.init(extensionID: ext.id, profileID: profile.id)) }
                     ExtensionManager.shared.setEnabled(id: ext.id, profileID: profile.id, enabled: enabled)
                 } else {
-                    if !enabled { AutomationExtensionPopups.shared.closeAll(extensionID: ext.id) }
                     ExtensionManager.shared.setEnabled(id: ext.id, enabled: enabled)
                 }
                 return ["extension": describe(ext)]
@@ -588,7 +595,7 @@ extension AutomationTools {
                     "type": .string(typeName),
                     "granted": .bool(granted),
                     "warnings": .array(warnings.map(JSONValue.string)),
-                    "permission_decisions": describe(ext)["permission_decisions"] ?? [],
+                    "permission_decisions": permissionDecisions(ext),
                 ]
             })
     }
@@ -739,7 +746,13 @@ extension AutomationTools {
                                                                                             in: target.profile) else {
                         throw AutomationToolError(.contextNotOpen, "No tab shows the options page of \(Self.name(of: target.ext))")
                     }
-                    environment.store.closeTab(id: tab.id, in: space)
+                    // `existingOptionsPageTab` also finds a pinned entry's
+                    // backing tab, which `closeTab` (normal tabs only) skips.
+                    if let entry = space.pinnedEntries.first(where: { $0.tab?.id == tab.id }) {
+                        environment.store.closePinnedTab(id: entry.id, in: space)
+                    } else {
+                        environment.store.closeTab(id: tab.id, in: space)
+                    }
                 default:
                     throw AutomationToolError(.unsupportedContext, "Only a popup or an options page is closed here")
                 }

@@ -44,9 +44,14 @@ nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", categor
 ///   call to it answers `worker_not_running` until then.
 /// - Each background context is one key (extension, profile). A newer start
 ///   supersedes an older park, which is answered `stop`.
-/// - Only the background context of the verified extension may park or
-///   acknowledge (`ExtensionPolyfillHandler`); the extension's own code could
-///   still answer its own commands, which a test of that extension accepts.
+/// - Only the verified extension's background context may park or
+///   acknowledge (`ExtensionPolyfillHandler`): never a web page, a content
+///   script or another extension. A worker's requests arrive as native
+///   messages, which WebKit attributes to the extension's context but not to
+///   a page, so for a service-worker extension any of its own pages that calls
+///   `runtime.sendNativeMessage` directly counts as the background too. The
+///   extension's own code can therefore take (or, by parking, supersede) its
+///   own commands, which a test of that extension accepts.
 final class AutomationExtensionChannel {
 
     static let shared = AutomationExtensionChannel()
@@ -90,6 +95,9 @@ final class AutomationExtensionChannel {
         var deliveredTo: String?
         var acknowledged = false
         var deliveries = 0
+        /// The `limit` timer of `send`, cancelled when the command finishes
+        /// so it does not hold the command for the rest of its limit.
+        var limitTimer: Task<Void, Never>?
 
         init(id: Int, key: Key, payload: [String: Any]) {
             self.id = id
@@ -100,6 +108,8 @@ final class AutomationExtensionChannel {
         func finish(_ result: Result<JSONValue, any Error>) {
             guard let continuation else { return }
             self.continuation = nil
+            limitTimer?.cancel()
+            limitTimer = nil
             continuation.resume(with: result)
         }
     }
@@ -201,7 +211,7 @@ final class AutomationExtensionChannel {
             queues[key, default: []].append(command)
             if parks[key] == nil { wake(key) }
             deliverNext(key)
-            Task { @MainActor [weak self] in
+            command.limitTimer = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: limit)
                 guard let self, command.continuation != nil else { return }
                 self.forget(command)

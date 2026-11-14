@@ -83,12 +83,6 @@ final class AutomationExtensionPopups {
         return true
     }
 
-    /// Closes every popup of an extension (before it is uninstalled or
-    /// turned off).
-    func closeAll(extensionID: String) {
-        for key in open.keys where key.extensionID == extensionID { close(key) }
-    }
-
     func closeAll() {
         for key in Array(open.keys) { close(key) }
     }
