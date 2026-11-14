@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T06:26:00Z'
-updated_date: '2026-11-14T11:42:00Z'
+updated_date: '2026-11-14T12:04:00Z'
 labels:
   - tooling
   - automation
@@ -122,4 +122,25 @@ Runtime checks (isolated data directories, Detour in the background, app_active 
     - choose_menu_item Disconnect revoked: the next helper call answered 'Detour revoked this client's access…', the token file was deleted, the record was gone, and the old token and the leftover shared token both got 401.
   - The panel and Settings pane were rendered in the test host (light/dark): panel text, disarmed buttons, Settings rows with Allowed clients + Revoke.
 - Owed on an unlocked screen: docs/harness/task2285-approval-check.py <Detour.app> (the AXPress on Allow, the panel picture and where it lands), and the full suite.
+
+2026-11-14, /code-review high --fix (security focus) on befafdd..1256892: found no way to act without an approved token (exact-path authorize route, re-authorisation of every pipelined request, the shared token refused in user mode, sessions bound to their client, waiters never sharing an answer, the panel unreachable by tools). 10 findings; fixed in 5d0bf61:
+- A batch is re-checked before each message.
+- The authorize route accepts only the application/json media type. text/plain;x=application/json from a localhost page passed.
+- Revoking closes the client's open connections.
+- At the session cap, a client evicts only its own oldest session.
+- The helper's authorize wait is 630 s, to cover a queued prompt.
+- Turning Private access on also covers the Private profile's favorites.
+The lead closed two prompt-spam gaps that defeated the plan's 'a looping client cannot spam prompts':
+- A denial now also holds for the title the prompt showed.
+- A second hang-up on a shown prompt within 10 minutes counts as a denial; the first is forgiven, since the person may have closed the client.
+- At most 5 prompts are shown in any 10 minutes, whatever the names. Past that, 429 with Retry-After.
+- A local program can still make a real client wait (429) by using up the budget. That is a local denial of service, not access; documented.
+Skipped (low; policy):
+- A revoke whose file write fails is revoked in memory only.
+- type_text or evaluate already running on a Private tab finishes after the opt-in is turned off.
+- A Private worker re-parks only at its next start.
+Tests after the fixes: the 11 automation suites ran, 148 tests. The only failure was the new budget test, which caught a real gap: an at-once answer skipped the count. Fixed, and the approval, endpoint, helper and controller suites then passed 52/0.
+Still owed for Done, both on an unlocked screen:
+- AC #1's real Allow click: docs/harness/task2285-approval-check.py <Detour.app>.
+- One full-suite run.
 <!-- SECTION:NOTES:END -->

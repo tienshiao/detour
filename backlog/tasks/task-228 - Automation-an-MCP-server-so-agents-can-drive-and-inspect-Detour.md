@@ -4,7 +4,7 @@ title: 'Automation: an MCP server so agents can drive and inspect Detour'
 status: To Do
 assignee: []
 created_date: '2026-10-29T04:10:00Z'
-updated_date: '2026-11-14T06:27:00Z'
+updated_date: '2026-11-14T12:04:00Z'
 labels:
   - tooling
   - automation
@@ -41,12 +41,12 @@ This is likely an epic. Split it into subtasks (transport and auth, tab and navi
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An MCP client can connect to a running Detour, list its windows, spaces and tabs, open and select tabs, navigate, and read a tab's URL, title and page text or DOM
+- [x] #1 An MCP client can connect to a running Detour, list its windows, spaces and tabs, open and select tabs, navigate, and read a tab's URL, title and page text or DOM
 - [ ] #2 An MCP client can run JavaScript in a tab, read console messages and network requests, take a screenshot of a tab or window, and send clicks and keys, including to tabs no window currently owns
-- [ ] #3 Access is off until the user turns it on. A connected agent is visible in the UI and can be disconnected. Private windows are not reachable unless the user explicitly allows it
-- [ ] #4 The build and transport decision and the relationship to TASK-89 are recorded in the task, with the alternatives that were rejected
-- [ ] #5 The /verify skill (or a wiki playbook) shows how to verify a Detour change through the MCP server against an isolated DETOUR_DATA_DIR
-- [ ] #6 Tests cover the authorisation gate (refused without access, refused for a Private window) and each tool's happy path and error cases (unknown tab, closed tab, sleeping tab)
+- [x] #3 Access is off until the user turns it on. A connected agent is visible in the UI and can be disconnected. Private windows are not reachable unless the user explicitly allows it
+- [x] #4 The build and transport decision and the relationship to TASK-89 are recorded in the task, with the alternatives that were rejected
+- [x] #5 The /verify skill (or a wiki playbook) shows how to verify a Detour change through the MCP server against an isolated DETOUR_DATA_DIR
+- [x] #6 Tests cover the authorisation gate (refused without access, refused for a Private window) and each tool's happy path and error cases (unknown tab, closed tab, sleeping tab)
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -65,4 +65,16 @@ This is likely an epic. Split it into subtasks (transport and auth, tab and navi
 2026-11-14 (user decision): TASK-228.1's Disconnect blocks a client by the name it reports, which a client can change; real per-client revocation belongs here, with the approval prompt in AC #3 ('X wants to control Detour: Allow / Deny') giving each client its own token that Disconnect revokes. The user-enabled endpoint now uses a port the system picks per launch (no fixed 47823).
 
 2026-11-13: split the parent's remaining ACs into subtasks. TASK-228.4 covers page inspection (ACs #1 and #2: JS, page text and DOM, console, network, waits, sleeping and unselected tabs). TASK-228.5 covers the approval prompt with per-client tokens and the Private-window opt-in (AC #3; it has open design questions for the user). TASK-228.6 covers input to tabs no window shows (AC #2's last part). It waits for epic-claude-extension, whose AutomationParking (TASK-132.3) already solves that, so main does not grow a second mechanism. Order: 228.4, then 228.2 (which builds on 228.4's evaluate/console), then 228.3. 228.5 waits for the user's answers. 228.6 waits for the epic merge.
+
+2026-11-14, state after the batch:
+- TASK-228.4 Done: page tools.
+- TASK-228.2 Done: extension tools and the compatibility report.
+- TASK-228.3: capture staging, reviewed; AC #5 waits for one capture.py run on an idle Mac.
+- TASK-228.5: approval prompt with per-client tokens, and the Private opt-in; reviewed with a security focus. AC #1 waits for a real Allow click and a full-suite run on an unlocked screen.
+- TASK-228.6: input to tabs no window shows; waits for epic-claude-extension.
+Parent ACs:
+- #1, #3, #4, #5 and #6 are met: #1 through 228.1 and 228.4, #3 through 228.1 and 228.5.
+- #2 is met except 'clicks and keys to tabs no window currently owns', which is TASK-228.6.
+Owed from the batch:
+- A signed-build 1Password check. The polyfill now loads the automation channel and stub-counting modules in every extension context, and the automation-off cost was reviewed as one stopped request at most.
 <!-- SECTION:NOTES:END -->
