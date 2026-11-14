@@ -113,6 +113,10 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         automationRows.orientation = .vertical
         automationRows.alignment = .leading
         automationRows.spacing = SettingsMetrics.controlToHelp
+        // The Private checkbox and the client list are their own groups.
+        for view in [automationHelp, privateHelp, automationStatus, automationButtons, allowAgainButton!] as [NSView] {
+            automationRows.setCustomSpacing(SettingsMetrics.rowGap, after: view)
+        }
         let automationSection = NSStackView(views: [automationTitle, automationRows])
         automationSection.orientation = .vertical
         automationSection.alignment = .leading
