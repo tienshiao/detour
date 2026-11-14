@@ -40,6 +40,11 @@ final class AutomationPageCapture: NSObject, WKScriptMessageHandler {
     /// The controllers the script and handler were added to, so stopping
     /// removes them again.
     private let installed = NSHashTable<WKUserContentController>.weakObjects()
+    /// The controllers `Space.makeUserContentController(for:)` made for a
+    /// non-Private profile: the only ones capture goes into. An extension
+    /// page's web view shares its extension context's controller with the
+    /// extension's popup, background and offscreen pages, so it is never one.
+    private let eligible = NSHashTable<WKUserContentController>.weakObjects()
     /// Web view to tab, filled on a tab's first message.
     private let tabsByWebView = NSMapTable<WKWebView, BrowserTab>.weakToWeakObjects()
     private var buffers: [UUID: TabBuffers] = [:]
@@ -60,7 +65,8 @@ final class AutomationPageCapture: NSObject, WKScriptMessageHandler {
         guard !isActive else { return }
         isActive = true
         for tab in Self.reachableTabs(in: store) {
-            guard let webView = tab.webView else { continue }
+            guard let webView = tab.webView,
+                  eligible.contains(webView.configuration.userContentController) else { continue }
             install(on: webView.configuration.userContentController)
             // A page loaded before the endpoint started: run the script once.
             // Its guard makes this harmless where the user script already ran.
@@ -84,9 +90,11 @@ final class AutomationPageCapture: NSObject, WKScriptMessageHandler {
         tabsByWebView.removeAllObjects()
     }
 
-    /// Adds the script and the handler to a new web view's controller while
-    /// recording. The caller has already left out Private profiles.
+    /// Notes a new space web view's controller as one capture may go into,
+    /// and adds the script and the handler to it while recording. The caller
+    /// has already left out Private profiles.
     func installIfActive(on controller: WKUserContentController) {
+        eligible.add(controller)
         guard isActive else { return }
         install(on: controller)
     }
@@ -389,8 +397,16 @@ final class AutomationPageCapture: NSObject, WKScriptMessageHandler {
               const open = prototype.open;
               const send = prototype.send;
               const requests = new WeakMap();
+              const pending = new WeakMap();
               prototype.open = function (method, url) {
-                try { requests.set(this, { method: String(method).toUpperCase(), url: absolute(url) }); } catch (error) {}
+                try {
+                  // open() on a request in flight ends it without an event:
+                  // report it as aborted, so its listeners cannot later report
+                  // the next request's load with this one's method and URL.
+                  const previous = pending.get(this);
+                  if (previous && this.readyState !== 4) previous('aborted');
+                  requests.set(this, { method: String(method).toUpperCase(), url: absolute(url) });
+                } catch (error) {}
                 return open.apply(this, arguments);
               };
               prototype.send = function () {
@@ -409,6 +425,7 @@ final class AutomationPageCapture: NSObject, WKScriptMessageHandler {
                                 failure ? { error: failure, status } : { status, ok: status >= 200 && status < 300 });
                       } catch (error) {}
                     };
+                    pending.set(this, report);
                     this.addEventListener('load', () => report(null));
                     this.addEventListener('error', () => report('network error'));
                     this.addEventListener('abort', () => report('aborted'));

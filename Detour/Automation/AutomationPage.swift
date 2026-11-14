@@ -38,7 +38,16 @@ enum AutomationPage {
                            world: WKContentWorld, limit: Duration) async throws -> String {
         let once = ResumeOnce()
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+            // Cancelled when the reply comes, so a poll (wait_for calls ten
+            // times a second) leaves no sleeping deadline tasks behind.
+            let deadline = Task { @MainActor in
+                try? await Task.sleep(for: limit)
+                guard !Task.isCancelled, once.claim() else { return }
+                continuation.resume(throwing: AutomationToolError(
+                    .timeout, "The page did not answer within \(Self.milliseconds(limit)) ms (the script keeps running)"))
+            }
             webView.callAsyncJavaScript(body, arguments: arguments, in: nil, in: world) { result in
+                deadline.cancel()
                 guard once.claim() else { return }
                 switch result {
                 case .success(let value):
@@ -50,12 +59,6 @@ enum AutomationPage {
                 case .failure(let error):
                     continuation.resume(throwing: Self.toolError(for: error))
                 }
-            }
-            Task { @MainActor in
-                try? await Task.sleep(for: limit)
-                guard once.claim() else { return }
-                continuation.resume(throwing: AutomationToolError(
-                    .timeout, "The page did not answer within \(Self.milliseconds(limit)) ms (the script keeps running)"))
             }
         }
     }
@@ -118,11 +121,13 @@ enum AutomationPage {
             };
             try {
               const value = await __detourUser();
-              let json = JSON.stringify({ ok: true, type: __detourType(value), truthy: !!value, value: __detourPlain(value) });
+              // Converted once: the walk runs the value's getters and toJSON.
+              const plain = __detourPlain(value);
+              const type = __detourType(value);
+              let json = JSON.stringify({ ok: true, type, truthy: !!value, value: plain });
               if (json.length > __detourMaximum) {
-                const text = JSON.stringify(__detourPlain(value));
-                json = JSON.stringify({ ok: true, type: __detourType(value), truthy: !!value, truncated: true,
-                                        value: text.slice(0, __detourMaximum) });
+                json = JSON.stringify({ ok: true, type, truthy: !!value, truncated: true,
+                                        value: JSON.stringify(plain).slice(0, __detourMaximum) });
               }
               return json;
             } catch (error) {
@@ -371,18 +376,22 @@ enum AutomationPage {
 
     // MARK: wait_for
 
-    /// Whether `selector` matches (and, with `visible`, has a visible box),
-    /// in the isolated world. `{matched}` or `{error: 'invalid'}`.
+    /// Whether `selector` matches (and, with `visible`, whether any element
+    /// it matches has a visible box, not only the first), in the isolated
+    /// world. `{matched}` or `{error: 'invalid'}`.
     static let selectorMatchBody = """
-        let element;
-        try { element = document.querySelector(selector); }
-        catch (error) { return JSON.stringify({ error: 'invalid', message: String(error) }); }
-        if (!element) return JSON.stringify({ matched: false });
-        if (!visible) return JSON.stringify({ matched: true });
-        const rect = element.getBoundingClientRect();
-        let shown = rect.width > 0 && rect.height > 0;
-        if (shown && element.checkVisibility) shown = element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
-        return JSON.stringify({ matched: shown });
+        let elements;
+        try {
+          if (!visible) return JSON.stringify({ matched: document.querySelector(selector) !== null });
+          elements = document.querySelectorAll(selector);
+        } catch (error) { return JSON.stringify({ error: 'invalid', message: String(error) }); }
+        for (const element of elements) {
+          const rect = element.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          if (element.checkVisibility && !element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) continue;
+          return JSON.stringify({ matched: true });
+        }
+        return JSON.stringify({ matched: false });
         """
 
     static let readyStateBody = "return JSON.stringify(document.readyState);"

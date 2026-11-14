@@ -356,6 +356,7 @@ extension AutomationTools {
                 let started = ContinuousClock.now
                 let deadline = started + .milliseconds(timeout)
                 var lastThrown: String?
+                var lastFailure: String?
                 while true {
                     // Again each time: the tab may close or fall asleep meanwhile.
                     let (_, webView) = try resolvePage(context: context)
@@ -395,8 +396,11 @@ extension AutomationTools {
                         default:
                             matched = webView.url?.absoluteString.contains(urlText ?? "") ?? false
                         }
-                    } catch let error as AutomationToolError where error.code == .timeout {
-                        // The page was too busy to answer this time.
+                    } catch let error as AutomationToolError where error.code == .timeout || error.code == .internalError {
+                        // The page was too busy to answer this time, or was
+                        // between documents (a navigation replaced the frame
+                        // or the web content process): ask again.
+                        if error.code == .internalError { lastFailure = error.message }
                         matched = false
                     }
                     if matched {
@@ -416,7 +420,8 @@ extension AutomationTools {
                         case "expression": "The expression was not truthy" + (lastThrown.map { " (it threw \($0))" } ?? "")
                         default: "The URL did not contain \(urlText ?? "")"
                         }
-                        throw AutomationToolError(.timeout, "\(what) within \(timeout) ms")
+                        throw AutomationToolError(.timeout, "\(what) within \(timeout) ms"
+                                                      + (lastFailure.map { " (last failure: \($0))" } ?? ""))
                     }
                     try? await Task.sleep(for: min(.milliseconds(100), deadline - ContinuousClock.now))
                 }
