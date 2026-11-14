@@ -4,7 +4,7 @@ title: 'Automation: an MCP server so agents can drive and inspect Detour'
 status: To Do
 assignee: []
 created_date: '2026-10-29T04:10:00Z'
-updated_date: '2026-11-10T09:38:00Z'
+updated_date: '2026-11-14T01:11:00Z'
 labels:
   - tooling
   - automation
@@ -53,4 +53,10 @@ This is likely an epic. Split it into subtasks (transport and auth, tab and navi
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-10: related new tasks. TASK-319 (AppleScript / JXA dictionary and Shortcuts actions) and TASK-320 (browser commands in the Command Palette) want the same command layer as this one's Detour-specific tools: one registry of commands (identifier, title, typed parameters, availability rule, action through the menu item's code) that menus, palette, AppleScript, App Intents and MCP tools all read. Decide the relationship when planning.
+
+2026-11-14: The testing slice is TASK-228.1 (Debug + DETOUR_DATA_DIR only, a localhost MCP endpoint, in-process input and menus, screenshots, Debug overrides). It supersedes TASK-89, which is archived. The product questions above (Release exposure, auth UI, Private windows, CDP coverage) stay open for the rest of this task.
+
+2026-11-14, user decision: the MCP server is not Debug-only; it ships in Release too (overriding TASK-89's 'absent from Release' rule). This answers the 'which builds' open question; access stays off until the user turns it on (AC #3).
+
+2026-11-14: the 'agent connected' indicator and disconnect moved into TASK-228.1 (user decision). AC #3 here keeps the rest: fuller authorisation and the Private-window opt-in.
 <!-- SECTION:NOTES:END -->

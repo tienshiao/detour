@@ -5,7 +5,8 @@ title: >-
   (debug builds only)
 status: To Do
 assignee: []
-created_date: '2026-09-19 19:45'
+created_date: 2026-09-19 19:45
+updated_date: '2026-11-14T01:08:00Z'
 labels:
   - tooling
 dependencies: []
@@ -44,3 +45,9 @@ What still needs a human regardless, and should stay out of scope: the real syst
 - [ ] #5 The verify skill (.claude/skills/verify) documents how to use it, replacing the paste-a-harness-into-AppDelegate approach
 - [ ] #6 Demonstrated end to end by re-running the TASK-86 hands-on list (row click, Cmd-click opens in the same space, Cmd+Y, dark mode, split pane, incognito empty state) with no manual steps
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-14: Superseded by TASK-228.1 (user decision). The testing slice of the MCP task takes over this need: Debug-only, isolated data directory only, a localhost MCP endpoint, in-process input and menus, screenshots, Debug overrides. This task's constraints and acceptance criteria were carried into it. Archived rather than done: none of it was built here.
+<!-- SECTION:NOTES:END -->
