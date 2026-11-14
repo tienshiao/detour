@@ -15,12 +15,6 @@ sources:
   - id: task104-run
     resource: ../../docs/task-104/run_harness.sh
     title: TASK-104 launch-and-sample script
-  - id: task110-stage
-    resource: ../../docs/task-110/DemoStage.swift.txt
-    title: TASK-110 DemoStage harness (command-file driven)
-  - id: task110-hook
-    resource: ../../docs/task-110/appdelegate-hook.patch
-    title: TASK-110 AppDelegate hook
   - id: dragdrop
     resource: ../../Detour/Browser/Sidebar/SidebarDragDrop.swift
     title: SidebarDragDrop.swift (payload types)
@@ -228,10 +222,10 @@ In the repository:
 - [docs/task-104/task104-harness.patch](../../docs/task-104/task104-harness.patch)
   — seeds N tabs and cycles the selection through `selectTab` in phases,
   marking each phase in a log so an outside loop can chart a measurement.
-- [docs/task-110/DemoStage.swift.txt](../../docs/task-110/DemoStage.swift.txt)
-  with [appdelegate-hook.patch](../../docs/task-110/appdelegate-hook.patch)
-  — a long-lived harness that polls a command file every 0.2 s, so a shell
-  script can drive the app step by step
+- TASK-110's DemoStage (retired by TASK-228.3, in git history at
+  `ab3c3fb:docs/task-110/DemoStage.swift.txt`) — a long-lived harness that
+  polled a command file every 0.2 s so a shell script could drive the app
+  step by step. Its job is now the automation endpoint's staging tools
   ([release and website](./release-and-website.md)).
 
 - [docs/harness/task175-176-harness.patch](../../docs/harness/task175-176-harness.patch)

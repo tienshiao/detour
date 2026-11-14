@@ -33,15 +33,18 @@ sources:
   - id: app-delegate
     resource: ../../Detour/App/AppDelegate.swift
     title: AppDelegate.swift (startsUpdater)
-  - id: task110-readme
-    resource: ../../docs/task-110/README.md
-    title: TASK-110 website capture kit
-  - id: task110-demo
-    resource: ../../docs/task-110/demo.sh
-    title: demo.sh (commands, shots, wallpaper)
-  - id: task110-encode
-    resource: ../../docs/task-110/encode.sh
+  - id: capture-readme
+    resource: ../../docs/capture/README.md
+    title: The website capture kit (TASK-110, TASK-228.3)
+  - id: capture-script
+    resource: ../../docs/capture/capture.py
+    title: capture.py (launch, seed, place, record, clean up)
+  - id: capture-encode
+    resource: ../../docs/capture/encode.sh
     title: encode.sh (constant frame rate, colour, H.264 and poster)
+  - id: task-228-3
+    resource: backlog:TASK-228.3
+    title: "Automation: capture tooling on the MCP endpoint"
   - id: task-110
     resource: backlog:TASK-110
     title: Website — replace the HTML feature mockups with real screenshots and loops
@@ -60,7 +63,7 @@ Two procedures that share tools: making a release
 ([scripts/build-release.sh](../../scripts/build-release.sh), then
 [scripts/publish-release.sh](../../scripts/publish-release.sh)) and capturing
 real screenshots and short video loops for the website
-([docs/task-110](../../docs/task-110/README.md)). The website itself is a
+([docs/capture](../../docs/capture/README.md)). The website itself is a
 separate repository; only the capture kit lives here.
 
 # When to use
@@ -226,78 +229,54 @@ be run again:
 # Website captures
 
 The site shows real windows: stills as WebP, motion as short muted MP4
-loops with a poster. They are produced from a staged demo profile (public
-pages only, isolated data directory), driven in-process, and recorded with
-`screencapture`. Recording needs the Screen Recording grant for the
-process that runs the shell.[^notes-capture]
+loops with a poster. They are produced from a demo world seeded into an
+isolated data directory through the automation endpoint, and recorded with
+`screencapture`, with no patch to the app (TASK-228.3 replaced the DemoStage
+harness and its AppDelegate hook).[^task-228-3] Recording needs the Screen
+Recording grant for the process that runs the shell.[^notes-capture]
 
 ## Steps
 
-1. **Install the stage harness** (temporary; do not commit):
+1. **Build Debug** (`open_ui` and the indicator override are Debug-only)
+   and resolve the app from `-showBuildSettings`.
+2. **Run the script** while nobody is using the Mac (it takes the focus, see
+   Traps):
 
    ```bash
-   cp docs/task-110/DemoStage.swift.txt Detour/App/DemoStage.swift
-   git apply docs/task-110/appdelegate-hook.patch
-   xcodegen generate && xcodebuild -scheme Detour -configuration Debug build
+   docs/capture/capture.py "$APP" --out ~/Desktop/captures [--shots spaces,split,space-editor]
    ```
 
-   The harness polls `<dir>/cmd` for commands and logs to `<dir>/log.txt`.
-   The hook patch applied cleanly to `main` on 2026-10-04
-   (`git apply --check`); if it stops applying, add its three lines after
-   `observeWindowClose(wc)` by hand.
-
-2. **Create a 2x virtual display** if the physical display is 1x, so
-   captures are Retina:
-
-   ```bash
-   clang -fobjc-arc -framework Foundation -framework CoreGraphics docs/task-110/vdisplay.m -o vdisplay
-   ./vdisplay &        # 1600x1000 @2x; lives until the process is killed
-   ```
-
-   It uses the private `CGVirtualDisplay` API.
-
-3. **Launch and stage:**
-
-   ```bash
-   open -n <BUILT_PRODUCTS_DIR>/Detour.app --env DETOUR_DATA_DIR=DetourDemo --env DETOUR_DEMO_STAGE=<dir>
-   demo.sh cmd "to2x 1280 680"     # move the window to the virtual display at a size
-   demo.sh cmd seed                # spaces, profiles, pinned folders, favourites, a split
-   demo.sh cmd visitall            # show every background tab once
-   ```
-
-   `demo.sh` reads the command file and log from its own directory, so run
-   a copy of the kit from the directory you pass as `DETOUR_DEMO_STAGE`.
-   Other commands (`space`, `select`, `folder`, `split`, `settings`, …)
-   are listed in the README.
-
-4. **Stills:** `demo.sh shot <name>` (`screencapture -x -o -l <window id>`;
-   prints the pixel size).
-
-5. **Loops:** record the whole window with a margin, not a crop:
-
-   ```bash
-   screencapture -x -v -V <seconds> -R<x>,<y>,<w>,<h> <out.mov>
-   ```
-
-   Take the rectangle from the window's live bounds
-   (`swift docs/task-110/wins.swift <pid>` prints each window's id, name,
-   layer, x, y, width and height) immediately before recording, in global
-   top-left coordinates on the virtual display.
-
-6. **Encode:** `encode.sh <in.mov> <name> <start> <end> [crop]` converts to
-   30 fps, trims, applies the colour correction and writes an H.264 MP4
-   plus a WebP poster. Needs `ffmpeg` and `cwebp`.
-
-7. **Clean up:** `demo.sh wallpaper-restore` if the wallpaper was changed,
-   kill the virtual display, delete `Detour/App/DemoStage.swift`,
-   `git checkout -- Detour/App/AppDelegate.swift`, `xcodegen generate`.
+   It builds and starts the 2x virtual display (`vdisplay.m`, private
+   `CGVirtualDisplay`), launches the app with a fresh `DetourCapture-*` data
+   directory and `DETOUR_MCP=1`, seeds `docs/capture/demo-world.json`
+   (`seed_world`), hides the connected-agent capsule, sets the wallpaper to
+   the site's background (`demo.sh wallpaper F7F2EA`), places the window mid
+   virtual display (`list_displays`, `set_window_frame activate=true`),
+   stages each shot through the endpoint and records it, encodes loops with
+   `encode.sh`, and undoes all of it at the end, also on failure.
+3. **A new shot** is a `shot_<name>` method in `capture.py`: select a space
+   (`select_tab`), place the window, stage (`run_menu_item`, `click`,
+   `type_text … interval_ms`, `open_ui`), then `record` or `still`. The kit
+   README maps every old DemoStage command to its endpoint tool.
+4. **Check** each output (Read a still or a frame) and copy what is right
+   into the website's `public/assets/features/`.
 
 ## Traps
 
 - **Region from the requested frame.** The first loops used the frame the
   harness asked for; by recording time the window sat about 9 points to
   the right, and the video's left edge showed the display background.
-  Always use live bounds.[^task-110]
+  Always use live bounds.[^task-110] A window that has just appeared is
+  still scaling up from its centre; `set_window_frame` waits for the window
+  server's bounds to match and returns them (`screen_bounds`,
+  `settled`).[^task-228-3]
+- **A capture takes the focus.** The window records as active (traffic
+  lights in colour) only while Detour is the active app with it key, so the
+  script activates Detour, taking the focus from the app in use for the
+  whole run. screencapture alone would not. When someone uses the Mac
+  meanwhile, the front goes back to their app mid-take (seen on Nov 14
+  2026); the script checks after placing and after every loop step and
+  stops, naming the app in front.[^task-228-3]
 - **Cropped windows look wrong on the page.** A crop plus CSS rounding
   does not match the window's real corners. Record the whole window with
   its native corners and shadow, over a wallpaper set to the page's
@@ -306,7 +285,7 @@ process that runs the shell.[^notes-capture]
   radius or shadow of its own.[^task-110]
 - **The wallpaper command changes every display and Space.** That is how
   macOS applies it. `demo.sh wallpaper <hex>` snapshots the wallpaper
-  store first, the harness refuses to change it without that snapshot,
+  store first, the script never changes it without that snapshot,
   and `demo.sh wallpaper-restore` puts it back. Run the restore as soon as
   capturing is done.[^task-110]
 - **The Dock is on the virtual display too.** Place the window
@@ -321,8 +300,10 @@ process that runs the shell.[^notes-capture]
   background matches the still and the page; measure with
   `flags=accurate_rnd+full_chroma_int`.[^task-110]
 - **Background tabs look unfinished.** A tab that has never been shown may
-  not have finished loading (favicon, title). `visitall` shows each one
-  once before capture.[^task-112] See
+  not have finished loading. The fixture gives every row its title and icon,
+  so the sidebar needs no load; a page a take will show is shown once
+  before recording (the spaces loop visits each space first; its first take
+  showed a blank split).[^task-112] See
   [hidden web view load stalls](../platform/hidden-webview-load-stalls.md).
 - **Captures come from the current branch.** Unreleased UI can appear in
   a screenshot of the released product; check crops against what the
@@ -332,11 +313,13 @@ process that runs the shell.[^notes-capture]
 
 - [Signed-build verification](./signed-build-verification.md) — the test deployment of a signed build.
 - [In-process UI automation](./in-process-ui-automation.md) — driving the app and capturing views.
-- [Debug harness](./debug-harness.md) — the pattern DemoStage is an instance of.
+- [Debug harness](./debug-harness.md) — the pattern DemoStage was an instance of.
+- [Automation endpoint](../features/automation-endpoint.md) — the staging tools and the fixture format.
 - [App shell](../architecture/app-shell.md) — Sparkle wiring and launch switches.
 - [Updates](../extensions/updates.md) — extension updates, which are unrelated to Sparkle.
 
 [^task-110]: TASK-110
+[^task-228-3]: Automation: capture tooling on the MCP endpoint
 [^task-179]: TASK-179
 [^task-112]: TASK-112
 [^notes-capture]: Session notes on screen capture for UI verification
