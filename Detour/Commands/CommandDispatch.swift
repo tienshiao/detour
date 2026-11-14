@@ -68,10 +68,12 @@ enum CommandDispatch {
     ///
     /// `controller`, when given, answers a `.windowController` command that it
     /// implements ahead of the responder chain: the palette offers such a
-    /// command by that controller's rule, and responders in front of it in
-    /// the chain implement some of the same actions (`NSWindow`'s own
-    /// `selectNextTab:` and `selectPreviousTab:` for window tabbing,
-    /// `WKWebView`'s `goBack:`), which would otherwise take the command.
+    /// command by that controller's rule, and a responder in front of it can
+    /// implement the same action and take it (`WKWebView`'s `goBack:` and
+    /// `goForward:` while the page has the keys, TASK-325). `NSWindow` also
+    /// declares `selectNextTab:` and `selectPreviousTab:` (window tabbing);
+    /// a Detour window was not seen to take them (the menu's resolution from
+    /// the window follows the controller's rule), but nothing then can.
     @discardableResult
     static func perform(_ command: BrowserCommand, in window: NSWindow, menu: NSMenu?,
                         controller: AnyObject? = nil) -> Bool {

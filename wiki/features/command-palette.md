@@ -317,8 +317,9 @@ and Open Location… would not see a palette), then runs the command through
 as a click on it would be. A window controller's command is sent to that
 controller (`controller: self`), whose rule offered it, rather than to the
 first responder along the chain: with the page focused, `WKWebView`'s own
-`goBack:`/`goForward:` are ahead of the controller, and `NSWindow` declares
-`selectNextTab:`/`selectPreviousTab:` for window tabbing. So the palette's
+`goBack:`/`goForward:` are ahead of the controller (and `NSWindow` declares
+`selectNextTab:`/`selectPreviousTab:` for window tabbing, though a Detour
+window was not seen to take them). So the palette's
 Back can close a tab to its opener (TASK-325), which Cmd+[ with the page
 focused does not. A command refused at that point (its state changed since
 the row was offered; rows are resolved once per showing) beeps, as a

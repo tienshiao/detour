@@ -208,8 +208,10 @@ nonisolated final class PaletteCommandWindowTests: XCTestCase {
     }
 
     /// `NSWindow` declares `selectNextTab:` itself (window tabbing) and is in
-    /// front of the controller in the responder chain: the command must
-    /// still reach the controller whose rule offered it.
+    /// front of the controller in the responder chain. Whether a Detour
+    /// window takes it is not shown here (the class responds; the menu's
+    /// resolution follows the controller's rule), but the command must reach
+    /// the controller whose rule offered it either way.
     @MainActor func testNextTabRunsInTheControllerNotTheWindowsOwnTabbing() throws {
         let (wc, first) = windowWithPage()
         let second = store.addTab(in: space, url: URL(string: "https://palette-commands.invalid/second")!)

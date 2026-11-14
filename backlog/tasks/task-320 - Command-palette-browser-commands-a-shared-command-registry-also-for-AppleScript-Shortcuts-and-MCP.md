@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-10T09:38:00Z'
-updated_date: '2026-11-14T22:32:00Z'
+updated_date: '2026-11-14T22:34:00Z'
 labels:
   - command-palette
   - automation
@@ -142,6 +142,10 @@ MainMenuCharacterizationTests' structure and enablement tests were written and p
 - Cleaned up: the app was stopped by pid; its `NSWindow Frame`/`NSSplitView` defaults keys and the DetourVerify-320 suite were deleted.
 
 Correction to the counts above (from the logs): BrowserCommandRegistryTests 22, PaletteCommandRowsTests 13, PaletteCommandWindowTests 9; pre-lock run at b10ab60 (finished 14:02): QuickDetourWindowTests 16/16, QuarantineWindowTests 22/22, QuickDetourOpenInWindowTests 17/17. Failing at HEAD with the screen locked: QuickDetourWindowTests 6 of 16, QuarantineWindowTests 4 of 22, QuickDetourOpenInWindowTests 2 of 17 (all page-load or paint waits).
+
+- PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): the palette sends a window's commands straight to its controller (whose rule offered them), so Back and Forward are offered and the palette's Back on a child tab with no history closes it to its opener (TASK-325), which Cmd+[ with the page focused does not (WKWebView's own goBack: takes it); alternative: keep Back/Forward out of the palette, or send commands along the responder chain as the menu does (then Back from the palette is the page's own and does nothing without history).
+- Wording correction: NSWindow declares selectNextTab:/selectPreviousTab: (window tabbing), but a Detour window was not seen to take them (the characterization's resolution from the window followed the controller's rule: on with two tabs, off empty, off in a one-tab Private window); the controller-first dispatch makes that moot. The demonstrated case is WKWebView's goBack:/goForward:.
+- Lock attribution is INFERRED, not shown: the control suite FaviconLinkBridgeTests (8/8) loaded pages under the same lock. The evidence is that the three failing suites passed at b10ab60 and that nothing after it is on the failing tests' path (they open no palette). Rerun owed on an unlocked screen.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

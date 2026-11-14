@@ -236,8 +236,10 @@ exist as commands yet.
   that validated it. Tests key items by action, not title.
 - Back and Forward with the page focused reach `WKWebView`'s own `goBack:`
   and `goForward:` first (they are in the responder chain ahead of the
-  controller), as found in TASK-325, and `NSWindow` declares
-  `selectNextTab:`/`selectPreviousTab:` (window tabbing). The registry's
+  controller), as found in TASK-325. `NSWindow` also declares
+  `selectNextTab:`/`selectPreviousTab:` (window tabbing); a Detour window
+  was not seen to take them (the menu's resolution from the window follows
+  the controller's rule). The registry's
   rule is the controller's: the characterization and agreement tests
   resolve from the window itself as first responder, and the palette sends
   window-controller commands to the controller. That is where the palette
