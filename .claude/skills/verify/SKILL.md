@@ -79,6 +79,14 @@ scripts/detour-mcp call wait_for context=<tab_id> selector='#late' visible=true 
 scripts/detour-mcp call console_messages context=<tab_id> after_seq=0 'levels=["error"]'   # pass next_seq back
 scripts/detour-mcp call network_requests context=<tab_id> failed_only=true
 scripts/detour-mcp call wake_tab context=<tab_id>               # a sleeping tab (tab_asleep), not selected
+# Extensions (install/uninstall/enable/permissions: test runs only; keep DETOUR_NATIVE_MESSAGING_HOSTS_DIR empty)
+scripts/detour-mcp call install_extension path="$PWD/TestExtensions/api-explorer"   # or a .crx
+scripts/detour-mcp call list_extensions stable=true
+scripts/detour-mcp call open_extension_context extension='API Explorer' kind=popup window_id=1   # → popup:<id>
+scripts/detour-mcp call evaluate_js context='popup:API Explorer' expression='document.title'
+scripts/detour-mcp call call_extension_api '{"context":"worker:API Explorer","path":"chrome.storage.local.get","args":"[\"k\"]"}'   # args is a JSON string
+scripts/detour-mcp call console_messages context='worker:API Explorer' after_seq=0
+scripts/detour-mcp call extension_compat_report extension='API Explorer'   # see wiki/playbooks/extension-compat-run.md
 ```
 
 - Points are in the window's content, top-left origin, in points (what
