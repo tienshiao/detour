@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T01:26:00Z'
-updated_date: '2026-11-14T08:13:00Z'
+updated_date: '2026-11-14T08:26:00Z'
 labels:
   - tooling
   - automation
@@ -103,4 +103,17 @@ Part 2: compatibility report, determinism, playbook (ACs #5, #8, #9, #11).
 - Not run: /code-review (the lead's). The verify skill (.claude/skills, not writable from the sandbox) does not list the extension tools yet; runtime-verification.md does.
 
 Full suite after 8b73747: 4178 tests, 19 skipped, 0 failures (TEST SUCCEEDED).
+
+2026-11-14, /code-review high --fix on 64b6466..358e41f: 9 findings, 7 fixed in the commit after 358e41f. Fixed:
+- A pinned options page now closes.
+- Popups the endpoint opened close whenever their context unloads.
+- Private-profile load errors are left out.
+- Launch read failures set loadFailed.
+- A Settings uninstall forgets the console records.
+- The channel's time-limit task is cancelled.
+- One permission-decisions helper.
+Not closable: an extension's own pages can send automation.awaitCommand, because WebKit does not say which page sent a native message, so they could disturb that extension's own commands. Only the comment was corrected. Kept as documented: wait_for worker_started answers timeout for a closed channel.
+The review's own pass found that, with automation off, worker lifetime and keep-alive are unchanged: a native request is not WebKit activity, and automation.* skips noteBackgroundActivity.
+After the fixes: AutomationExtension, Channel, ExtensionProfileScope, PageRehost, PolyfillProfileWiring and Updater tests passed, 140/0 with 13 skipped.
+Owed: a signed-build 1Password check, since the polyfill now parks one automation request at every worker start.
 <!-- SECTION:NOTES:END -->
