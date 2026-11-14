@@ -199,6 +199,10 @@ class TabSidebarViewController: NSViewController {
     /// private pasteboard so it never clobbers the user's clipboard.
     var urlPasteboard: NSPasteboard = .general
 
+    /// Builds the tab menu's Share… picker from the items it shares; a test
+    /// substitutes one that records them.
+    var makeSharingPicker: ([Any]) -> NSSharingServicePicker = { NSSharingServicePicker(items: $0) }
+
     /// Context-menu targets resolved fresh against the current model — the tab list
     /// can change while the menu is open, so a stored index would go stale.
     private var contextMenuTab: BrowserTab? {
@@ -3738,9 +3742,10 @@ extension TabSidebarViewController: NSMenuDelegate {
             menu.addItem(copyItem)
         }
 
-        // Share submenu
+        // Share submenu: shares the same clean link Copy URL copies
+        // (TASK-326); the tab keeps the address as loaded.
         if let url = tabURL {
-            let picker = NSSharingServicePicker(items: [url])
+            let picker = makeSharingPicker([TrackingParameters.removing(from: url)])
             menu.addItem(picker.standardShareMenuItem)
         }
 

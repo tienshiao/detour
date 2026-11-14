@@ -188,4 +188,25 @@ nonisolated final class CopyURLTests: XCTestCase {
         XCTAssertEqual(copied(), Self.clean)
         XCTAssertEqual(tab.url, url)
     }
+
+    // MARK: - Share…
+
+    @MainActor func testTheSidebarsShareSharesTheLinkWithoutTrackingParameters() throws {
+        let wc = makeWindow()
+        let url = try XCTUnwrap(URL(string: Self.tracked))
+        let tab = store.addTab(in: space, url: url)
+        wc.selectTab(id: tab.id)
+        var shared: [Any] = []
+        wc.tabSidebar.makeSharingPicker = { items in
+            shared = items
+            return NSSharingServicePicker(items: items)
+        }
+
+        let menu = try sidebarMenu(wc, row: row(of: tab, in: wc))
+
+        XCTAssertTrue(menu.items.contains { $0.title == "Share…" }, "\(menu.items.map(\.title))")
+        XCTAssertEqual(shared.count, 1)
+        XCTAssertEqual((shared.first as? URL)?.absoluteString, Self.clean)
+        XCTAssertEqual(tab.url, url)
+    }
 }

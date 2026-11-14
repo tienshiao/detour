@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Copy URL
-description: "Every copy of a page's or tab's address (Edit > Copy URL / Shift-Cmd-C in a browser or Quick Detour window, the faux address bar's and Quick Detour's Copy Link buttons, the dev toolbar's link button, the sidebar tab menu's Copy URL / Copy Link) puts the address on the clipboard without its tracking parameters, through the one rule and list in TrackingParameters that quarantine pages also use; what is left alone (a page's own Copy Link, Share…, Opt-Cmd-click copies into Quick Detour) and why; the loaded URL, history and session keep the original (TASK-326)."
+description: "Every copy of a page's or tab's address (Edit > Copy URL / Shift-Cmd-C in a browser or Quick Detour window, the faux address bar's and Quick Detour's Copy Link buttons, the dev toolbar's link button, the sidebar tab menu's Copy URL / Copy Link) puts the address on the clipboard without its tracking parameters, through the one rule and list in TrackingParameters that quarantine pages also use; Share… shares the clean link too; what is left alone (a page's own Copy Link, Opt-Cmd-click copies into Quick Detour) and why; the loaded URL, history and session keep the original (TASK-326)."
 tags: [links, privacy, clipboard, sidebar, window]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T20:30:00Z }
@@ -43,7 +43,7 @@ address as it was loaded.
 | Quick Detour's title-bar Copy Link button | `titleBar.onCopyLink` → `copyCurrentURL` | yes |
 | The sidebar tab menu's Copy URL / Copy Link (a tab, a split row, a pinned entry live or dormant, a pinned split) | `TabSidebarViewController.contextMenuCopyURL` | yes |
 | A page's own context menu, Copy Link on a link | WebKit's item | no |
-| The sidebar tab menu's Share… | `NSSharingServicePicker(items: [url])` | no (not a copy; see below) |
+| The sidebar tab menu's Share… | `makeSharingPicker([TrackingParameters.removing(from: url)])` | yes (see below) |
 | Opt-Cmd-click on a sidebar tab or favourite ("a Quick Detour copy") | `QuickDetour.sidebarCopyURL` | no: it picks the address a new Quick Detour *loads*, not a clipboard string |
 
 The three code paths that write the clipboard call
@@ -62,9 +62,12 @@ developer testing how their own site handles `utm_*` on localhost gets the
 clean address from its button too (the palette, Cmd+L, still shows the
 full address).[^task-326]
 
-Share… in the sidebar tab menu shares the tab's `URL` object and was left as
-it is: it is not a copy, and the task did not cover it. It is the one other
-place a page's address leaves Detour on the user's request.
+Share… in the sidebar tab menu shares the clean link too (the user's call,
+Nov 14 2026, after the first cut had left it alone): it is the other place a
+page's address leaves Detour on the user's request, and a link sent from
+Detour should be the same clean one whichever way it was sent. The picker is
+built through `TabSidebarViewController.makeSharingPicker`, which a test
+replaces to see the items.
 
 # How it works
 
