@@ -3,9 +3,11 @@ id: TASK-320
 title: >-
   Command palette: browser commands (a shared command registry, also for
   AppleScript, Shortcuts and MCP)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-10T09:38:00Z'
+updated_date: '2026-11-14T21:45:00Z'
 labels:
   - command-palette
   - automation
@@ -53,3 +55,14 @@ Constraints from the codebase: the palette is scoped to its window's profile (TA
 - [ ] #4 A command unavailable in the context (window kind, selection, tab state) is not offered, by the same rule that disables its menu item
 - [ ] #5 Tests cover the availability rules and the palette's ranking of commands against URL and history rows; the runtime check exercises the palette in a normal and a Private window
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. (a) Characterization tests on the untouched code: a golden snapshot of the real main menu (path, title, key equivalent, mask, action, target, tag, separators) and an enablement + post-validation-title matrix for normal, Private, Quick Detour and quarantine windows, resolved as run_menu_item resolves (no key window needed).
+2. (a) The registry (Detour/Commands/): BrowserCommand (stable string CommandID, title, aliases, SF Symbol, default KeyEquivalent, typed parameters, the window kinds whose controller answers it, an availability rule and a contextual title over a lazy CommandContext protocol, the action selector and target kind, palette presence). A golden test of the identifier list (unique, never title-derived); a test that every main-menu item is a registry command.
+3. (b) The main menu built from the registry (same titles, key equivalents, masks, selectors, nil targets; NSMenuItem.identifier = command ID). Both validateMenuItem implementations (BrowserWindowController, QuickDetourWindowController) delegate to the registry rule, reproducing today's per-controller quirks. One shared dispatch helper (responder target in a given window + AppKit's tiered enable decision) used by menuHasKeyEquivalent, run_menu_item and the palette. Dynamic items (spaces, extensions, Develop inspect/reload) keep their builders and tags, declared as parameterised commands. Test: registry availability equals real-menu resolution for every command and window kind (AC #4).
+4. (c) Palette commands: SuggestionItem.command; the owner (browser window, Quick Detour window; not the launcher) hands the palette a command source; pure ranking (word-prefix match on title/aliases) mixed after the verbatim row (capped, min length), '>' prefix = commands only (no history, network, completion, filler; Return with no row does nothing); rows show the live menu item's key equivalent and the contextual title; Return dismisses the palette then performs the command as run_menu_item does. Availability evaluated only for matched candidates, memoized per showing.
+5. Tests: registry rules over fake contexts, ranking, palette integration (normal/Private/Quick Detour), menu/palette/MCP-menu/Quick Detour suites. /verify: palette commands in a normal and a Private window, menu items by key and by path through the automation endpoint, menu enablement in Private and Quick Detour.
+6. Record AC #1 (shape, how menus/palette/AppleScript/MCP use it, rejected alternatives), provisional decisions, AC #3 options + recommendation (not built), what is left (context menus, dock menu). Wiki: new commands page, app-shell, command-palette, suggestion-pipeline. Task stays In Progress.
+<!-- SECTION:PLAN:END -->
