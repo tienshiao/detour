@@ -1,61 +1,80 @@
 import AppKit
 import QuartzCore
 
+/// A click in a window's web content (TASK-324): where, in window
+/// coordinates, and when, on the `ProcessInfo.systemUptime` clock (read when
+/// the click is noted, as the download side reads it).
+nonisolated struct WebContentClick: Equatable, Sendable {
+    var point: CGPoint
+    var time: TimeInterval
+}
+
+/// Where a download's icon takes off (TASK-324). WebKit does not say where a
+/// download came from, and it reports one only once the server has answered,
+/// possibly seconds after the click, when the pointer may have moved. So the
+/// window remembers the last click in any of its web views (the opener's,
+/// for a link that opens a new tab first), and a download soon after it flies
+/// from there. Anything else (the keyboard, a script, a click long ago)
+/// flies from the middle of the page, as before.
+nonisolated enum DownloadFlightStart {
+    /// A click older than this did not start the download.
+    static let maxClickAge: TimeInterval = 5
+    /// Download Linked File: the click is the right click that opened the
+    /// context menu, which may have stayed open a while before the choice.
+    static let contextMenuMaxClickAge: TimeInterval = 60
+
+    static func point(click: WebContentClick?, now: TimeInterval, contentRect: CGRect,
+                      maxAge: TimeInterval = maxClickAge) -> CGPoint {
+        let middle = CGPoint(x: contentRect.midX, y: contentRect.midY)
+        guard let click else { return middle }
+        let age = now - click.time
+        guard age >= 0, age <= maxAge, contentRect.contains(click.point) else { return middle }
+        return click.point
+    }
+}
+
+/// The download's icon tossed from where the download started into the
+/// sidebar's Downloads button, which catches it with a spring: the same toss
+/// as the space editor's (`TossPath`, TASK-289), with a bigger hop since a
+/// download is thrown up and out of the page.
 enum DownloadAnimation {
-    static func animate(in window: NSWindow, from sourcePoint: NSPoint, to destPoint: NSPoint, iconName: String = "doc.fill") {
-        guard let contentView = window.contentView, contentView.wantsLayer else { return }
-        guard let rootLayer = contentView.layer else { return }
+    /// The icon is thrown up and out of the page; a short or level throw
+    /// still takes this long, so it arcs instead of darting sideways.
+    static let hop: Double = 40
+    static let minimumDuration: Double = 0.5
+
+    /// `sourcePoint` and `destPoint` are in window coordinates. `catcher`
+    /// (the Downloads button, nil when the sidebar is hidden) catches the
+    /// icon; with Reduce Motion nothing flies and the catcher brightens back
+    /// in instead.
+    static func animate(in window: NSWindow, from sourcePoint: NSPoint, to destPoint: NSPoint,
+                        catcher: NSView?, iconName: String = "doc.fill") {
+        guard let contentView = window.contentView else { return }
         guard sourcePoint.x.isFinite, sourcePoint.y.isFinite,
               destPoint.x.isFinite, destPoint.y.isFinite else { return }
 
-        let iconLayer = CALayer()
-        let iconSize: CGFloat = 36
-        if let image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil) {
-            let config = NSImage.SymbolConfiguration(pointSize: iconSize, weight: .medium)
-            let configured = image.withSymbolConfiguration(config) ?? image
-            iconLayer.contents = configured.layerContents(forContentsScale: window.backingScaleFactor)
-            iconLayer.contentsGravity = .resizeAspect
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            if let layer = catcher?.layer { SpringCatch.fadeIn(on: layer) }
+            return
         }
-        iconLayer.frame = CGRect(x: 0, y: 0, width: iconSize, height: iconSize)
-        iconLayer.position = sourcePoint
-        rootLayer.addSublayer(iconLayer)
+        guard let image = iconImage(iconName) else { return }
 
-        // Build arc path
-        let path = CGMutablePath()
-        path.move(to: sourcePoint)
-        let midX = (sourcePoint.x + destPoint.x) / 2
-        let midY = (sourcePoint.y + destPoint.y) / 2
-        let controlPoint = CGPoint(x: midX, y: midY + 250)
-        path.addQuadCurve(to: destPoint, control: controlPoint)
-
-        CATransaction.begin()
-        CATransaction.setCompletionBlock {
-            iconLayer.removeFromSuperlayer()
+        let overlay = TossOverlayView.add(over: contentView)
+        TossFlight.play(image, in: overlay,
+                        from: overlay.convert(sourcePoint, from: nil),
+                        to: overlay.convert(destPoint, from: nil),
+                        hop: hop, minimumDuration: minimumDuration,
+                        look: TossFlight.Look(apexScale: 1.05, endScale: 0.45, turn: 0.35)) {
+            if let catcher, let layer = catcher.layer {
+                SpringCatch.play(on: layer, size: catcher.bounds.size)
+            }
+            overlay.removeFromSuperview()
         }
+    }
 
-        let positionAnim = CAKeyframeAnimation(keyPath: "position")
-        positionAnim.path = path
-        positionAnim.duration = 0.6
-        positionAnim.timingFunction = CAMediaTimingFunction(name: .easeIn)
-
-        let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
-        scaleAnim.fromValue = 1.0
-        scaleAnim.toValue = 0.4
-        scaleAnim.duration = 0.6
-
-        let opacityAnim = CABasicAnimation(keyPath: "opacity")
-        opacityAnim.fromValue = 1.0
-        opacityAnim.toValue = 0.6
-        opacityAnim.duration = 0.6
-
-        let group = CAAnimationGroup()
-        group.animations = [positionAnim, scaleAnim, opacityAnim]
-        group.duration = 0.6
-        group.fillMode = .forwards
-        group.isRemovedOnCompletion = false
-
-        iconLayer.add(group, forKey: "downloadArc")
-
-        CATransaction.commit()
+    private static func iconImage(_ name: String) -> NSImage? {
+        guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return nil }
+        let config = NSImage.SymbolConfiguration(pointSize: 36, weight: .medium)
+        return symbol.withSymbolConfiguration(config) ?? symbol
     }
 }

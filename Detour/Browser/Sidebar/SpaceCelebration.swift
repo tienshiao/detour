@@ -15,7 +15,12 @@ final class SpaceCelebration {
         case edited
     }
 
-    private let overlay: CelebrationOverlayView
+    /// How high the emoji hops off the tile: a small lift, so it reads as
+    /// let go rather than thrown up (50 pt read as a throw, 16 pt still a
+    /// little much; the user chose 8).
+    static let hop: Double = 8
+
+    private let overlay: TossOverlayView
 
     /// `host` is the view the overlay covers; `origin` (the editor's emoji
     /// tile) and `target` (the switcher button) are in `host`'s coordinates.
@@ -32,11 +37,7 @@ final class SpaceCelebration {
     }
 
     private init(host: NSView) {
-        overlay = CelebrationOverlayView(frame: host.bounds)
-        overlay.autoresizingMask = [.width, .height]
-        overlay.wantsLayer = true
-        overlay.layer?.masksToBounds = true
-        host.addSubview(overlay, positioned: .above, relativeTo: nil)
+        overlay = TossOverlayView.add(over: host)
         // Keeps itself alive until the overlay is gone.
         overlay.owner = self
     }
@@ -44,70 +45,26 @@ final class SpaceCelebration {
     private var hostLayer: CALayer? { overlay.layer }
 
     private func point(_ p: NSPoint) -> CGPoint {
-        // The overlay matches the host's flippedness, so view and layer
-        // coordinates agree.
+        // The overlay is never flipped, whatever the host is; its layer
+        // shares its coordinates, and the toss reads `isFlipped`.
         overlay.convert(p, from: overlay.superview)
     }
 
     // MARK: - The flight
 
+    /// A toss (`TossPath`): a small hop off the tile, then gravity, a little
+    /// bigger at the top of the hop and the switcher's size on landing.
     private func fly(from origin: NSRect, to target: NSRect, emoji: String, landed: @escaping () -> Void) {
-        guard let hostLayer, let image = Self.emojiImage(emoji, pointSize: 26) else {
+        guard let image = Self.emojiImage(emoji, pointSize: 26) else {
             landed()
             return
         }
-        let start = point(NSPoint(x: origin.midX, y: origin.midY))
-        let end = point(NSPoint(x: target.midX, y: target.midY))
-
-        let proxy = CALayer()
-        proxy.contents = image
-        proxy.contentsScale = overlay.window?.backingScaleFactor ?? 2
-        proxy.bounds = CGRect(origin: .zero, size: image.size)
-        proxy.position = end
-        hostLayer.addSublayer(proxy)
-
-        // A real toss (SpaceFlightPath): a hop off the tile, then gravity.
-        // Positions are sampled at even times and played linearly, so the
-        // emoji slows into the top of its hop and speeds up as it falls.
-        let toss = SpaceFlightPath.toss(from: start, to: end, in: hostLayer.bounds, flipped: overlay.isFlipped,
-                                        hop: Self.tunedHop, gravity: Self.tunedGravity)
-        let duration = toss.duration
-        let move = CAKeyframeAnimation(keyPath: "position")
-        move.values = toss.points.map { NSValue(point: $0) }
-        move.calculationMode = .linear
-
-        // A little bigger at the top of the hop, the switcher's size on
-        // landing.
-        let scale = CAKeyframeAnimation(keyPath: "transform.scale")
-        if toss.apexTime > 0.02 {
-            scale.values = [1, 1.1, 0.55]
-            scale.keyTimes = [0, NSNumber(value: toss.apexTime / duration), 1]
-        } else {
-            // No hop: it shrinks on the way down only.
-            scale.values = [1, 0.55]
-            scale.keyTimes = [0, 1]
-        }
-
-        // It turns the way it travels, a little.
-        let spin = CABasicAnimation(keyPath: "transform.rotation.z")
-        spin.fromValue = 0
-        spin.toValue = toss.points.last!.x < toss.points.first!.x ? 0.5 : -0.5
-
-        let group = CAAnimationGroup()
-        group.animations = [move, scale, spin]
-        group.duration = duration
-        group.timingFunction = CAMediaTimingFunction(name: .linear)
-        group.fillMode = .forwards
-        group.isRemovedOnCompletion = false
-
-        // The group's completion waits for the flight added inside it.
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            proxy.add(group, forKey: "fly")
-        } onMain: {
-            proxy.removeFromSuperlayer()
-            landed()
-        }
+        TossFlight.play(image, in: overlay,
+                        from: point(NSPoint(x: origin.midX, y: origin.midY)),
+                        to: point(NSPoint(x: target.midX, y: target.midY)),
+                        hop: Self.tunedHop, gravity: Self.tunedGravity,
+                        look: TossFlight.Look(apexScale: 1.1, endScale: 0.55, turn: 0.5),
+                        landed: landed)
     }
 
     /// The toss's hop and gravity. A Debug build reads overrides from the data
@@ -118,29 +75,26 @@ final class SpaceCelebration {
         #if DEBUG
         if let value = UserDefaultsScope.defaults.object(forKey: "SpaceTossHop") as? Double { return max(0, value) }
         #endif
-        return SpaceFlightPath.defaultHop
+        return SpaceCelebration.hop
     }
 
     private static var tunedGravity: Double {
         #if DEBUG
         if let value = UserDefaultsScope.defaults.object(forKey: "SpaceTossGravity") as? Double, value > 0 { return value }
         #endif
-        return SpaceFlightPath.defaultGravity
+        return TossPath.defaultGravity
     }
 
     // MARK: - The landing
 
     private func burst(at landing: NSPoint, color: NSColor, style: Style) {
+        // The overlay outlives the longest particle, then goes (and with it
+        // this celebration, which it keeps alive), even with nothing to draw.
+        overlay.finish(after: 1.2)
         guard let hostLayer else { return }
         let center = point(landing)
         ripple(at: center, color: color, in: hostLayer)
         sparkle(at: center, color: color, style: style, in: hostLayer)
-        // The overlay outlives the longest particle, then goes.
-        let overlay = self.overlay
-        Timer.scheduledMainTimer(withTimeInterval: 1.2, repeats: false) { _ in
-            overlay.owner = nil
-            overlay.removeFromSuperview()
-        }
     }
 
     /// A disc of the space's colour that spreads from the button over the
@@ -223,76 +177,4 @@ final class SpaceCelebration {
             return true
         }
     }
-}
-
-/// The celebration's flight (TASK-289): the emoji is tossed from the
-/// editor's tile into the space's switcher button under constant gravity.
-///
-/// It hops `hop` points up, then falls; its sideways speed is constant, so
-/// the path is a true parabola and its timing is the physics', not an easing
-/// curve. Two earlier versions were a quadratic and then a cubic Bézier,
-/// eased out into the button: a falling thing that slows down as it lands
-/// reads as floaty. In a tall sidebar a fall lands nearly vertically; it
-/// arrives fast and the button catches it with a spring.
-nonisolated enum SpaceFlightPath {
-    struct Toss: Equatable {
-        /// Positions at even time steps, `start` first and `end` last.
-        var points: [CGPoint]
-        var duration: Double
-        /// When the hop peaks, from the start.
-        var apexTime: Double
-    }
-
-    /// Points per second squared: a sidebar-tall fall takes about 0.6 s.
-    static let defaultGravity: Double = 6000
-    /// How high it hops above the tile, at most: a small lift, so it reads as
-    /// let go rather than thrown up (50 pt read as a throw; the user asked for
-    /// less).
-    static let defaultHop: Double = 8
-    static let margin: Double = 14
-    static let framesPerSecond: Double = 60
-
-    /// `flipped`: y grows downwards in `bounds` (up is then -y).
-    static func toss(from start: CGPoint, to end: CGPoint, in bounds: CGRect, flipped: Bool,
-                     hop: Double = defaultHop, gravity: Double = defaultGravity) -> Toss {
-        let up: Double = flipped ? -1 : 1
-        // Heights measured upwards, whatever the space's orientation.
-        let startHeight = Double(start.y) * up
-        let endHeight = Double(end.y) * up
-        let ceiling = flipped ? -(Double(bounds.minY) + margin) : Double(bounds.maxY) - margin
-        let hopHeight = max(0, min(hop, ceiling - startHeight))
-
-        let g = max(1, gravity)
-        let vy = (2 * g * hopHeight).squareRoot()
-        // Height h(t) = startHeight + vy t - g t² / 2 meets endHeight.
-        let drop = startHeight - endHeight
-        let discriminant = max(0, vy * vy + 2 * g * drop)
-        let duration = max(0.25, (vy + discriminant.squareRoot()) / g)
-        let vx = Double(end.x - start.x) / duration
-        // The shortest flight, or a target above the hop, does not land at
-        // `duration` with `vy`: launch at the speed that does, so the last
-        // step meets the button instead of jumping to it.
-        let fallEnd = startHeight + vy * duration - g * duration * duration / 2
-        let launch = abs(endHeight - fallEnd) < 0.01 ? vy : vy + (endHeight - fallEnd) / duration
-
-        let steps = max(2, Int((duration * framesPerSecond).rounded(.up)))
-        var points: [CGPoint] = []
-        points.reserveCapacity(steps + 1)
-        for step in 0...steps {
-            let t = duration * Double(step) / Double(steps)
-            let height = startHeight + launch * t - g * t * t / 2
-            points.append(CGPoint(x: Double(start.x) + vx * t, y: height * up))
-        }
-        points[points.count - 1] = end
-        return Toss(points: points, duration: duration, apexTime: min(duration, max(0, launch / g)))
-    }
-}
-
-/// The celebration's canvas: on top of the sidebar, never in the way of a
-/// click.
-private final class CelebrationOverlayView: NSView {
-    /// The celebration that draws here, kept alive while it runs.
-    var owner: SpaceCelebration?
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

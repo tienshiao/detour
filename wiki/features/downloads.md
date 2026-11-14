@@ -4,7 +4,7 @@ title: Downloads
 description: "How a navigation becomes a download, what DownloadManager tracks and persists, how a Private window's downloads are kept apart and cancelled when it closes, the sidebar popover and badge, the fly-to-button animation, and the CRX path that reuses the list."
 tags: [downloads, webkit, navigation, persistence, incognito]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T01:09:15Z }
 sources:
   - id: manager
     resource: ../../Detour/Browser/Downloads/DownloadManager.swift
@@ -18,6 +18,12 @@ sources:
   - id: animation
     resource: ../../Detour/Browser/Downloads/DownloadAnimation.swift
     title: DownloadAnimation.swift
+  - id: toss
+    resource: ../../Detour/Browser/Shared/Toss.swift
+    title: Toss.swift (TossPath, TossFlight, SpringCatch; shared with the space editor)
+  - id: task-324
+    resource: backlog:TASK-324
+    title: The download animation starts at the triggering click and shares the space editor's toss; Download Linked File fixed
   - id: navigation
     resource: ../../Detour/Browser/Window/BrowserWindowController+Navigation.swift
     title: BrowserWindowController+Navigation.swift (download policy, CRX interception)
@@ -98,6 +104,16 @@ the window's `downloadScope` and trigger the animation. In a tab no window
 has claimed the scope is its space's (a Private space's own list) and there
 is no animation.
 
+**Download Linked File and Download Image** (the page's context menu) are
+not navigations. WebKit reports them only through
+`WKNavigationDelegatePrivate`'s `_webView:contextMenuDidCreateDownload:`
+(macOS 12+). Until TASK-324 Detour did not implement it, so the download had
+no taker and nothing was saved; the window, `BrowserTab` and Quick Detour now
+handle it like the `didBecome` callbacks (source URL from
+`download.originalRequest`), except that a context-menu download never
+closes the tab it came from (`DownloadOpenedTab` is for navigations). `WebKitDelegateReachabilityTests` checks all
+three still respond to it.[^task-324]
+
 ## A tab opened for a download closes
 
 A tab whose **first** navigation becomes a download is left empty: nothing
@@ -122,7 +138,8 @@ The order inside the action policy matters. An **Option-click** on a link is
 handled earlier (it opens the link in a split pane), and that branch must stay
 before the `shouldPerformDownload` check: WebKit sets that flag for
 Alt-clicked links, Safari's Option-click-downloads convention, which Detour
-retires. The context menu's "Download Linked File" still downloads. See
+retires. The context menu's "Download Linked File" downloads (through the
+private callback above, since TASK-324). See
 [split tabs hosting](../tabs/split-tabs-hosting.md).
 
 ## DownloadManager
@@ -252,10 +269,26 @@ closure whose default runs the alert, so tests answer it without a modal.
 - The cell's single action button changes meaning with the state: cancel while
   downloading, reveal in Finder when completed, remove when failed or
   cancelled.
-- `DownloadAnimation.animate(in:from:to:iconName:)` flies a 36 pt SF Symbol
-  layer along a quadratic arc from the centre of the content area to the
-  download button over 0.6 s, shrinking and fading. With the sidebar collapsed
-  the destination is the fixed point `(20, 20)`.
+- **The animation** (TASK-324) tosses a 36 pt SF Symbol into the download
+  button, which catches it with a spring: the space editor's toss
+  ([space editor](../sidebar/space-editor.md), `Toss.swift`), a true
+  parabola under gravity with a 40 pt hop and at least 0.5 s, so a short or
+  level throw arcs. It shrinks to 0.45 and turns a little the way it goes.
+- **Where it starts:** each window notes the last left or right click on a
+  web view in its content area (a local event monitor that hit-tests the
+  content container, so the find bar, the drag handle or a snapshot of a
+  tab another window owns do not count; point and `systemUptime`).
+  `DownloadFlightStart.point` takes that click when it is at most 5 s old
+  (60 s for Download Linked File, whose click is the right click that opened
+  the menu) and inside the content, else the middle of the page. A link that opens a new
+  tab first therefore starts at the click in the opener. (A
+  `BrowserWebView.mouseDown` override was tried and replaced by the monitor,
+  which covers any view in the content area, a Peek's or a split pane's.)
+- With the sidebar collapsed the destination is the fixed point `(20, 20)`
+  and nothing catches it. With Reduce Motion nothing flies: the button
+  brightens back in.
+- Before TASK-324: a quadratic arc from the middle of the page, 0.6 s
+  ease-in, shrinking and fading; the button did not react.[^task-324]
 
 ## The CRX path
 
@@ -301,8 +334,9 @@ See [installer and CRX](../extensions/installer-and-crx.md).
   code comment says double-click.
 - **Stale destinations.** A persisted item keeps its path; reveal and open do
   not check that the file still exists.
-- **The animation needs a layer-backed content view** and finite points; it
-  returns silently otherwise, and when the download button has zero width.
+- **The animation needs finite points**; it returns silently otherwise, and
+  when the download button has zero width. It draws in a click-through
+  overlay over the window's content view that removes itself on landing.
 - The destination directory is always the user's Downloads folder; there is
   no "ask where to save" setting.
 
@@ -337,11 +371,15 @@ server that sends a large attachment slowly: WebKit keeps the download
 running after its web view is gone and a cancel leaves the partial file (the
 measurement), and closing a Private window stops the transfer and removes the
 file.
+- `DownloadFlightStartTests`: a fresh click inside the content is the start;
+  no click, a stale one, one from the future or one outside the content
+  start in the middle. `TossPathTests` cover the shared toss.
+- `WebKitDelegateReachabilityTests.testEveryNavigationDelegateTakesContextMenuDownloads`.
 
 Not covered by tests: `downloadDidFinish` and `didFailWithError` with a real
 `WKDownload`, the one-line call in `applicationWillTerminate`, the quit
 confirmation's cancel in `applicationShouldTerminate`, the alert itself, the
-scope the CRX creation site passes, the popover, the animation and most of
+scope the CRX creation site passes, the popover, the animation's views and most of
 the download policy branches. Unpacking and verifying a CRX have
 their own suites (see [testing extensions](../extensions/testing-extensions.md));
 the interception in `handleCRXDownload` does not.
@@ -357,3 +395,4 @@ the interception in `handleCRXDownload` does not.
 
 [^task-156]: A Private window's download still running when the window closes is cancelled, after asking
 [^task-205]: Routed and new-tab clicks that turn into downloads leave an empty tab
+[^task-324]: TASK-324

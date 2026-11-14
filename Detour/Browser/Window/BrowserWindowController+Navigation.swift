@@ -377,21 +377,22 @@ extension BrowserWindowController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
-        let sourceURL = navigationResponse.response.url
-        download.delegate = DownloadManager.shared
-        let item = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
-        _ = item // suppress unused warning
-        triggerDownloadAnimation()
+        startDownload(download, from: navigationResponse.response.url)
         DownloadOpenedTab.navigationBecameDownload(in: tab(owning: webView))
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
-        let sourceURL = navigationAction.request.url
-        download.delegate = DownloadManager.shared
-        let item = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
-        _ = item
-        triggerDownloadAnimation()
+        startDownload(download, from: navigationAction.request.url)
         DownloadOpenedTab.navigationBecameDownload(in: tab(owning: webView))
+    }
+
+    /// Lists a download one of this window's web views started, in this
+    /// window's list, and tosses its icon into the Downloads button.
+    private func startDownload(_ download: WKDownload, from sourceURL: URL?,
+                               clickMaxAge: TimeInterval = DownloadFlightStart.maxClickAge) {
+        download.delegate = DownloadManager.shared
+        DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
+        triggerDownloadAnimation(clickMaxAge: clickMaxAge)
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -439,6 +440,18 @@ extension BrowserWindowController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         tab(owning: webView)?.didStartProvisionalNavigation()
+    }
+
+    /// `WKNavigationDelegatePrivate` (macOS 12+): Download Linked File or
+    /// Download Image from a page's context menu. WebKit reports that
+    /// download only here; before TASK-324 Detour did not implement it, so
+    /// the download had no taker and nothing was saved.
+    @objc(_webView:contextMenuDidCreateDownload:)
+    func webView(_ webView: WKWebView, contextMenuDidCreateDownload download: WKDownload) {
+        // The last click is the right click that opened the menu, however
+        // long the menu stayed open.
+        startDownload(download, from: download.originalRequest?.url,
+                      clickMaxAge: DownloadFlightStart.contextMenuMaxClickAge)
     }
 
     /// `WKNavigationDelegatePrivate`: the web process has not answered for
@@ -571,26 +584,35 @@ extension BrowserWindowController: WKNavigationDelegate {
         }
     }
 
-    internal func triggerDownloadAnimation(iconName: String = "doc.fill") {
+    /// The download's icon flies from the click that started it, when there
+    /// was one in this window's web content moments ago, else from the middle
+    /// of the page (TASK-324), into the Downloads button.
+    internal func triggerDownloadAnimation(iconName: String = "doc.fill",
+                                           clickMaxAge: TimeInterval = DownloadFlightStart.maxClickAge) {
         guard let window = self.window else { return }
         let contentBounds = contentContainerView.bounds
         guard contentBounds.width > 0, contentBounds.height > 0 else { return }
 
-        let sourcePoint = contentContainerView.convert(
-            NSPoint(x: contentBounds.midX, y: contentBounds.midY), to: nil
-        )
+        let contentRect = contentContainerView.convert(contentBounds, to: nil)
+        let sourcePoint = DownloadFlightStart.point(click: lastWebContentClick,
+                                                    now: ProcessInfo.processInfo.systemUptime,
+                                                    contentRect: contentRect, maxAge: clickMaxAge)
         guard sourcePoint.x.isFinite, sourcePoint.y.isFinite else { return }
 
         let destPoint: NSPoint
+        let catcher: NSView?
         if !sidebarItem.isCollapsed {
-            let buttonFrame = tabSidebar.downloadButton.convert(tabSidebar.downloadButton.bounds, to: nil)
+            let button = tabSidebar.downloadButton
+            let buttonFrame = button.convert(button.bounds, to: nil)
             guard buttonFrame.width > 0 else { return }
             destPoint = NSPoint(x: buttonFrame.midX, y: buttonFrame.midY)
+            catcher = button
         } else {
             destPoint = NSPoint(x: 20, y: 20)
+            catcher = nil
         }
 
-        DownloadAnimation.animate(in: window, from: sourcePoint, to: destPoint, iconName: iconName)
+        DownloadAnimation.animate(in: window, from: sourcePoint, to: destPoint, catcher: catcher, iconName: iconName)
     }
 
     func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,

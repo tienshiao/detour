@@ -2394,22 +2394,8 @@ class TabSidebarViewController: NSViewController {
             layer.add(fade, forKey: "arrive")
             return
         }
-        // Caught with a spring: squashed by the landing, then springing
-        // back through a small overshoot to rest.
-        let base = layer.transform
-        let midX = button.bounds.midX
-        let midY = button.bounds.midY
-        var squash = CATransform3DTranslate(base, midX, midY, 0)
-        squash = CATransform3DScale(squash, 1.35, 0.65, 1)
-        squash = CATransform3DTranslate(squash, -midX, -midY, 0)
-        let pop = CASpringAnimation(keyPath: "transform")
-        pop.fromValue = NSValue(caTransform3D: squash)
-        pop.toValue = NSValue(caTransform3D: base)
-        pop.mass = 1
-        pop.stiffness = 420
-        pop.damping = 11
-        pop.duration = pop.settlingDuration
-        layer.add(pop, forKey: "arrive")
+        // Caught with a spring (shared with the Downloads button, TASK-324).
+        SpringCatch.play(on: layer, size: button.bounds.size)
     }
 
     @objc private func pendingSpaceButtonClicked(_ sender: NSButton) {

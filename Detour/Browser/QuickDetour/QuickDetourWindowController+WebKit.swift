@@ -148,6 +148,13 @@ extension QuickDetourWindowController: WKNavigationDelegate {
         startDownload(download, from: navigationAction.request.url)
     }
 
+    /// `WKNavigationDelegatePrivate` (macOS 12+): Download Linked File or
+    /// Download Image from the context menu (TASK-324).
+    @objc(_webView:contextMenuDidCreateDownload:)
+    func webView(_ webView: WKWebView, contextMenuDidCreateDownload download: WKDownload) {
+        startDownload(download, from: download.originalRequest?.url)
+    }
+
     private func startDownload(_ download: WKDownload, from url: URL?) {
         if isQuarantine {
             // Asked each time (TASK-194), once WebKit knows the file's name.

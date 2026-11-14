@@ -146,6 +146,33 @@ class BrowserWindowController: NSWindowController {
     /// the extension window lists (`isOpenForExtensions`) and the few direct
     /// `orderedWindows` reads.
     private(set) var hasClosed = false
+
+    /// The last click in this window's web content (TASK-324): a download
+    /// that starts soon after flies from it (`DownloadFlightStart`).
+    private(set) var lastWebContentClick: WebContentClick?
+    private var webContentClickMonitor: Any?
+
+    /// Notes every left and right click on a web view in the content area
+    /// (Download Linked File comes from a right click); a click on the find
+    /// bar, the drag handle or a snapshot is not one. A window event monitor,
+    /// not a `BrowserWebView.mouseDown` override: WebKit takes a left click in
+    /// a subview of the web view, so the override never saw one (found at
+    /// runtime, TASK-324).
+    private func installWebContentClickMonitor() {
+        webContentClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self, let window = self.window, event.window === window else { return event }
+            let content = self.contentContainerView
+            if let container = content.superview,
+               let hit = content.hitTest(container.convert(event.locationInWindow, from: nil)),
+               sequence(first: hit, next: \.superview).contains(where: { $0 is WKWebView }) {
+                // Timed on the clock `triggerDownloadAnimation` reads, not
+                // `event.timestamp`: the two need not share a base.
+                self.lastWebContentClick = WebContentClick(point: event.locationInWindow,
+                                                           time: ProcessInfo.processInfo.systemUptime)
+            }
+            return event
+        }
+    }
     private var splitScrimView: NSView?
     private var contentScrimView: NSView?
     /// Transparent content-area overlay for split edge drops, present only while a
@@ -350,6 +377,8 @@ class BrowserWindowController: NSWindowController {
             tabSidebar.updateSpaceButtons(spaces: store.spaces, activeSpaceID: activeSpaceID)
         }
 
+        installWebContentClickMonitor()
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleWebViewOwnershipChanged(_:)),
@@ -544,6 +573,9 @@ class BrowserWindowController: NSWindowController {
     /// Isolated: it tears down main-actor state; the object is released on
     /// the main thread in practice, and the teardown hops there otherwise.
     isolated deinit {
+        // A controller released without its window closing (tests) still
+        // drops its app-wide click monitor.
+        if let webContentClickMonitor { NSEvent.removeMonitor(webContentClickMonitor) }
         store.removeObserver(self)
         DownloadManager.shared.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
@@ -3667,6 +3699,10 @@ extension BrowserWindowController: NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         hasClosed = true
+        if let webContentClickMonitor {
+            NSEvent.removeMonitor(webContentClickMonitor)
+            self.webContentClickMonitor = nil
+        }
         hoverCard.dismiss()
         selectedTab?.savePeekStateForPersistence()
         recentTabSwitcher?.invalidate()

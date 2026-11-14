@@ -180,6 +180,15 @@ pgrep -f "$APP/Contents/MacOS/Detour"
 
 # Traps
 
+- **System Events `click at {x, y}` is not a mouse event.** It performs an
+  accessibility press on the element at that point: a link opens and a
+  button acts, but the app never sees a `mouseDown`, and an event monitor
+  or a view's `mouseDown` override does nothing. A check that depends on
+  where or how a click happened (TASK-324's download start point) needs a
+  real event: a `CGEvent` posted to `.cghidEventTap`, which moves the real
+  pointer and reaches only the frontmost app. A `CGEvent.postToPid` click is
+  ignored by an inactive app and by WebKit. Driving Detour this way competes
+  with a user at the machine; TASK-228.1 is the in-process alternative.
 - **Never `pkill Detour`, `killall Detour` or
   `tell application "Detour" to quit`.** An installed Detour from
   `/Applications` has the same name and may be someone's running browser.

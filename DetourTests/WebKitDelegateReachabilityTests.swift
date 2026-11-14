@@ -137,6 +137,18 @@ nonisolated final class WebKitDelegateReachabilityTests: XCTestCase {
                     ]),
     ]
 
+    /// Private WebKit delegate methods are declared with an explicit
+    /// `@objc(...)` name, so they cannot drift the way protocol witnesses do;
+    /// this only checks that each navigation delegate still has them.
+    /// `_webView:contextMenuDidCreateDownload:` is how Download Linked File
+    /// reaches the app (TASK-324): without it the download is dropped.
+    @MainActor func testEveryNavigationDelegateTakesContextMenuDownloads() {
+        let selector = NSSelectorFromString("_webView:contextMenuDidCreateDownload:")
+        for cls: NSObject.Type in [BrowserWindowController.self, QuickDetourWindowController.self, BrowserTab.self] {
+            XCTAssertTrue(cls.instancesRespond(to: selector), "\(cls) drops Download Linked File")
+        }
+    }
+
     @MainActor func testEveryImplementedOptionalDelegateMethodIsReachableFromObjectiveC() {
         for expectation in Self.expectations {
             let className = NSStringFromClass(expectation.cls)

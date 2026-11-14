@@ -1822,13 +1822,26 @@ extension BrowserTab: WKNavigationDelegate {
         startDownload(download, from: navigationAction.request.url)
     }
 
+    /// `WKNavigationDelegatePrivate` (macOS 12+): Download Linked File or
+    /// Download Image from the context menu (TASK-324).
+    @objc(_webView:contextMenuDidCreateDownload:)
+    func webView(_ webView: WKWebView, contextMenuDidCreateDownload download: WKDownload) {
+        // Not a navigation: the tab keeps its page, so it is not closed as a
+        // tab opened for a download would be.
+        listDownload(download, from: download.originalRequest?.url)
+    }
+
     /// A download started in a web view no window has claimed: listed in the
     /// windows of the tab's space (a Private space's own list), as a window
     /// would list it, with no animation since no window shows the tab.
     private func startDownload(_ download: WKDownload, from sourceURL: URL?) {
-        download.delegate = DownloadManager.shared
-        _ = DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
+        listDownload(download, from: sourceURL)
         DownloadOpenedTab.navigationBecameDownload(in: self)
+    }
+
+    private func listDownload(_ download: WKDownload, from sourceURL: URL?) {
+        download.delegate = DownloadManager.shared
+        DownloadManager.shared.handleNewDownload(download, sourceURL: sourceURL, scope: downloadScope)
     }
 
     /// The download list of the windows that show this tab's space.

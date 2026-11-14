@@ -4,7 +4,7 @@ title: Space editor
 description: "Making and editing a space in the sidebar itself: the editor that replaces the page area, the draft it previews on the real tint and switcher, the curated colours and emoji, and the toss-and-catch moment on Create Space / Done."
 tags: [sidebar, spaces, animation, accessibility]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T00:25:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T01:09:15Z }
 sources:
   - id: appearance
     resource: ../../Detour/Browser/Spaces/SpaceAppearance.swift
@@ -17,7 +17,7 @@ sources:
     title: SpaceEditorView.swift
   - id: celebration
     resource: ../../Detour/Browser/Sidebar/SpaceCelebration.swift
-    title: SpaceCelebration.swift (the toss, the ripple, the sparkle; SpaceFlightPath)
+    title: SpaceCelebration.swift (the ripple, the sparkle; the toss is shared, Toss.swift)
   - id: sidebar-vc
     resource: ../../Detour/Browser/Sidebar/TabSidebarViewController.swift
     title: TabSidebarViewController.swift (Space editor section)
@@ -31,8 +31,8 @@ sources:
     resource: ../../DetourTests/SpaceAppearanceTests.swift
     title: SpaceAppearanceTests.swift
   - id: tests-flight
-    resource: ../../DetourTests/SpaceFlightPathTests.swift
-    title: SpaceFlightPathTests.swift
+    resource: ../../DetourTests/TossPathTests.swift
+    title: TossPathTests.swift
   - id: task-289
     resource: backlog:TASK-289
     title: "Spaces: a delightful UI for creating and editing a space"
@@ -91,13 +91,14 @@ alert.
 `SpaceCelebration` runs in a click-through overlay over the sidebar:
 
 1. The emoji leaves the editor's tile (its frame is taken before the editor
-   closes) and is **tossed**: `SpaceFlightPath.toss` is a real parabola, a
+   closes) and is **tossed**: `TossPath.toss` (shared with downloads since
+   TASK-324, `Toss.swift`) is a real parabola, a
    hop of 8 pt then constant gravity (6000 pt/s²) and constant sideways
    speed, sampled at 60 fps and played linearly. A sidebar-tall fall takes
    about 0.6 s and speeds up into the landing. The emoji shrinks to the
    switcher's size and turns a little the way it travels.
 2. The target button stays hidden (`celebratingSpaceID`) until the emoji
-   lands, then is **caught** with a `CASpringAnimation`: squashed 1.35 × 0.65,
+   lands, then is **caught** with `SpringCatch` (a `CASpringAnimation`): squashed 1.35 × 0.65,
    springing back through a small overshoot.
 3. A soft ripple of the space's colour spreads over the sidebar from the
    button, and a ring of six to eight dots sparkles around it.
@@ -117,7 +118,7 @@ What the feel went through with the user, 2026-11-13:[^task-289]
 | Cubic Bézier sweep | Replaced before shipping by physics, at the user's suggestion. |
 | Toss with a 50 pt hop, then 16 pt | Read as thrown up; the user chose 8 pt. |
 
-The download animation is to share this toss and catch (TASK-324).[^task-324]
+The download animation shares this toss and catch since TASK-324 ([downloads](../features/downloads.md)).[^task-324]
 
 # Edge cases
 
@@ -139,7 +140,7 @@ The download animation is to share this toss and catch (TASK-324).[^task-324]
   character, blank), suggestions (first word, whole-word short keys,
   diacritics), the suggestion stopping once an emoji is picked, and the
   switcher entries for create, edit, a vanished space and no editor.
-- `SpaceFlightPathTests`: the toss starts and ends on its points, hops and
+- `TossPathTests`: the toss starts and ends on its points, hops and
   stays below the sidebar's top, speeds up while falling, keeps a constant
   sideways speed, takes under a second for a sidebar-tall fall, mirrors in a
   flipped space, and falls from rest with no hop.
