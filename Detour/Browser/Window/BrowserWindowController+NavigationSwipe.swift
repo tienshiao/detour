@@ -300,15 +300,22 @@ extension BrowserWindowController {
     @objc(_webView:didNotHandleWheelEvent:)
     func webView(_ webView: WKWebView, didNotHandleWheelEvent event: NSEvent) {
         guard let webView = webView as? BrowserWebView else { return }
+        let sample = NavigationSwipeScrollSample(event)
         guard case .ownSwipe(let canGoForward) = webView.navigationSwipe.mode, navigationSwipe.session == nil,
               event.type == .scrollWheel, NSEvent.isSwipeTrackingFromScrollEventsEnabled else {
             webView.navigationSwipe.pending.reset()
+            // For a hand check that never starts: `log stream --level debug
+            // --predicate 'subsystem == "com.detourbrowser.mac" AND category == "NavigationSwipe"'`.
+            log.debug("Unhandled scroll ignored: mode \(String(describing: webView.navigationSwipe.mode), privacy: .public), swipe tracking from scrolls \(NSEvent.isSwipeTrackingFromScrollEventsEnabled, privacy: .public), session \(self.navigationSwipe.session != nil, privacy: .public)")
             return
         }
-        guard let direction = webView.navigationSwipe.pending.handle(
-            NavigationSwipeScrollSample(event), armedAt: webView.navigationSwipe.armedAt,
-            allowsBack: true, allowsForward: canGoForward) else { return }
-        beginNavigationSwipe(on: webView, direction: direction, tracker: SystemNavigationSwipeTracker(event: event))
+        let direction = webView.navigationSwipe.pending.handle(
+            sample, armedAt: webView.navigationSwipe.armedAt, allowsBack: true, allowsForward: canGoForward)
+        log.debug("Unhandled scroll: phase \(String(describing: sample.phase), privacy: .public), momentum \(String(describing: sample.momentumPhase), privacy: .public), dx \(sample.deltaX, privacy: .public), dy \(sample.deltaY, privacy: .public), before arming \(sample.timestamp < webView.navigationSwipe.armedAt, privacy: .public) -> \(direction?.rawValue ?? "pending or no", privacy: .public)")
+        guard let direction else { return }
+        if !beginNavigationSwipe(on: webView, direction: direction, tracker: SystemNavigationSwipeTracker(event: event)) {
+            log.info("Swipe \(direction.rawValue, privacy: .public) not started (no outcome, or tracking refused)")
+        }
     }
 
     /// Starts a swipe on `webView`, a hosted pane's, tracked by `tracker`.

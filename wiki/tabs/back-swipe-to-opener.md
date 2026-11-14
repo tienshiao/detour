@@ -159,10 +159,13 @@ an unrelated tab.
 
 # Edge cases
 
-- Navigate › Back (Cmd+[) with the page focused reaches `WKWebView`'s own
-  `goBack:` action first, which is disabled on a page with no back item, so
-  it does not close the tab; the sidebar's button and mouse button 4 do.
-  Found while verifying; not changed here.
+- Observed while verifying: with the page focused, Navigate › Back (Cmd+[)
+  was disabled on a child with no back item, so it did not close the tab;
+  the sidebar's button and mouse button 4 do. Likely cause: `WKWebView`
+  declares its own `goBack:` action (WKWebView.h) and sits ahead of the
+  window controller in the responder chain, and WebKit enables it only with
+  a back item. Not checked on a build without this change; nothing here
+  touches the menu or the responder chain. Not changed.
 - `pushState` adds a back item without a provisional navigation, so WebKit
   may miss the first page's snapshot for its later swipe back (source
   reading).

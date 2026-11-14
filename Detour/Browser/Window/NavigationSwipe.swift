@@ -374,7 +374,8 @@ final class SystemNavigationSwipeTracker: NavigationSwipeTracking {
     }
 
     /// WebKit's options (`NSEventSwipeTrackingConsumeMouseEvents`, an AppKit
-    /// SPI bit): mouse events during the swipe's animation are consumed.
+    /// SPI bit, `0x1 << 2` in WebKit's `pal/spi/mac/NSEventSPI.h`): mouse
+    /// events during the swipe's animation are consumed.
     private static let consumeMouseEvents = NSEvent.SwipeTrackingOptions(rawValue: 1 << 2)
 
     func track(direction: NavigationSwipeDirection,

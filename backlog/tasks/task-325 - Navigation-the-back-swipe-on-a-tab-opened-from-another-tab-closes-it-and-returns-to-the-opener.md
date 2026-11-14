@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T06:21:00Z'
-updated_date: '2026-11-14T20:54:00Z'
+updated_date: '2026-11-14T21:13:00Z'
 labels:
   - feature
 dependencies: []
@@ -140,4 +140,20 @@ Tests (Debug, -derivedDataPath .derived):
 - 28 affected suites (window, split, Peek, switcher, automation, MCP schema, link routing, ownership/focus, release): 363 passed, 49 failed. All 49 are "timed out waiting for the page to load" in InPageLinkRoutingTests (17), PageOpenedWindowTests (11), WindowCloseReleaseTests (19), QuickDetourOpenInWindowTests (2): new web views loading a loopback page. The screen was locked during that run (CGSSessionScreenIsLocked true, checked right after), the known cluster where the GPU process stops taking new web processes. Not rerun on an unlocked screen: owed (those four suites, or the full suite).
 
 Runtime (/verify via docs/harness/task325-swipe-checks.py, Debug build, isolated DetourVerify325-* data dirs, Detour in the background): all 15 checks passed (on the build before the review fixes; the screen was locked afterwards, so not rerun): no opener = WebKit's gesture, edges 15; target=_blank child = own mode, gesture off, edges 14, opener pictured; cancelled swipe leaves it open and selected; page 2 gives WebKit the gesture (edges 15); Back to page 1 = own mode with forward (edges 10); forward swipe goes forward; completed back swipe closes the child and selects the opener; Reopen Closed Tab brings it back; the sidebar's Back button still closes a child; Open Link in Split View child closes from its own pane (back to one pane); nothing starts under a Peek. Screenshots of the veneer half-way (back over the opener's picture, forward card, split pane) looked right. Not verified: the real trackpad gesture (trackSwipeEvent cannot be driven by synthetic events) — see the hand checks above.
+
+Follow-up 2026-11-14 (after the first commit):
+- Correction to the test note above: the 49 failures were NOT shown to be the locked screen. Shown instead: they are an order-dependent cluster that predates this change. The same four suites (InPageLinkRoutingTests, PageOpenedWindowTests, QuickDetourOpenInWindowTests, WindowCloseReleaseTests) run together give 52 passed / 20 failed on this branch AND on a baseline build of the parent commit 410d1a1 (same 20 tests: 19 WindowCloseReleaseTests after its first test, plus QuickDetourOpenInWindowTests.testCmdOMovesThePageIntoTheWindowShowingTheSpace; all 'timed out waiting for First loads'). Run alone on this branch, WindowCloseReleaseTests passes 20/20 (its release assertions ran, so the new subscriptions, work items and snapshot closures let closed windows go), and CommittedLoadFailureTests 2/2. InPageLinkRoutingTests 24/24 and PageOpenedWindowTests 11/11 passed in the four-suite run. A full-suite run on an unlocked screen is still the lead's.
+- NavigationSwipeTests + WebKitDelegateReachabilityTests: 40 passed, 0 failed on the final source.
+- Runtime: docs/harness/task325-swipe-checks.py rerun on the final build (review fixes and the diagnostic logging included): all 15 checks passed.
+- The swipe-tracking option bit (1 << 2) is NSEventSwipeTrackingConsumeMouseEvents as WebKit's pal/spi/mac/NSEventSPI.h defines it (checked).
+- Diagnostics for the hand check: every unhandled scroll in the own mode logs at debug level (phase, momentum, deltas, whether it began before the mode was armed, the pending tracker's answer), and a swipe that does not start logs at info. Watch with: /usr/bin/log stream --level debug --predicate 'subsystem == "com.detourbrowser.mac" AND category == "NavigationSwipe"' (sandbox off). Mode changes, swipe begin/complete/cancel log at info.
+- Cmd+[ finding reworded: observed (Navigate > Back disabled on a child with no back item while the page has the keyboard); likely cause WKWebView's own goBack: action (declared in WKWebView.h) ahead of the window controller in the responder chain; not checked on a baseline build.
+- Behaviour change to the Back button itself: its core now selects the opener before closing the child (settlingSelectionForClose), instead of closing first (which selected a neighbour, possibly waking it) and then selecting the opener. Same end state; the activation order differs and the closing child gets a switcher preview as it leaves.
+- Left on disk: four WebKit website-data-store folders from the first runtime runs (12:29-12:31, before the check script cleaned its stores); later runs clean up after themselves.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Detour's own back swipe for a tab opened from another tab with no back history (option A). While a hosted pane is a normal tab whose opener resolves and it has no back item, its web view's back/forward gesture is off and the left edge does not rubber-band; scrolls the page does not use (_webView:didNotHandleWheelEvent:) go through WebKit's pending-swipe rules into NSEvent.trackSwipeEvent behind a tracker seam. A completed back swipe runs the Back button's core on the pane that received it (close, select the opener; Reopen Closed Tab works); forward goes forward in the mode. WebKit's gesture is restored before any main-frame commit and the own mode waits for WebKit's own swipe to end; three-finger swipes and momentum are handled. A veneer shows the opener's 1x picture taken as it left. Rules and window paths unit-tested (40 tests); runtime checked through a Debug-only automation tool that runs the completion code (15 checks). Owed: the hand swipe on a real trackpad (AC #1-#3, #7), the user's confirmation of three provisional choices (forward card, split-pane underlay, pinned tabs never swiped closed), and a full suite on an unlocked screen.
+<!-- SECTION:FINAL_SUMMARY:END -->
