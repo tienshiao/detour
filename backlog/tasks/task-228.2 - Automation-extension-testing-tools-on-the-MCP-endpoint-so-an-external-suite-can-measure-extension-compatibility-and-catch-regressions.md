@@ -3,11 +3,11 @@ id: TASK-228.2
 title: >-
   Automation: extension testing tools on the MCP endpoint, so an external suite
   can measure extension compatibility and catch regressions
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T01:26:00Z'
-updated_date: '2026-11-14T09:14:00Z'
+updated_date: '2026-11-14T09:26:00Z'
 labels:
   - tooling
   - automation
@@ -124,4 +124,37 @@ Owed: a signed-build 1Password check, since the polyfill now parks one automatio
 - Runtime (AC #9): docs/harness/task2282-compat-run.py on the Debug build of 2b3c1c2, Detour in the background, empty DETOUR_NATIVE_MESSAGING_HOSTS_DIR: installed api-explorer, hello-world and vimium, workers started; popup's chrome.tabs.query saw the fixture tab; chrome.tabs.sendMessage from the popup reached API Explorer's content script (page outlined, reply {highlighted: true}); a real click on Query All Tabs; consoles, stable lists and reports read. Run twice, the second with --baseline: no differences. Reports: API Explorer missing bookmarks.getTree and tabs.move, stubs referenced action.getUserSettings, idle.onStateChanged (called), privacy.services, storage.managed, commands and bookmarks unsupported; Vimium missing bookmarks.getTree, runtime.getBrowserInfo, tabs.move. Cleanup checked (no data dirs, prefs domains/plists or window keys left).
 - Findings: (a) a keyless unpacked extension gets a new random id in every new data directory, so baselines across runs name it by folder (the script does) or fixtures need a manifest key. (b) WebKit's autosized action popup does not scroll from script (scrollIntoView/scrollTo/scrollTop leave scrollY 0; API Explorer is 3617 points tall in a 600-point popover), so the input tools answer element_not_visible below 600 points; whether a person's wheel scrolls it was not checked; possibly worth a task. (c) No real fixture produced an API-naming runtime error; the integration test covers that part.
 - Not done: /code-review (the lead's); the verify skill (not writable from the sandbox) does not list extension_compat_report; signed-build 1Password check owed (the polyfill now also runs the counting module in every extension context; with automation off a context that calls a stub sends one automation.stubCalls request, answered stop).
+
+2026-11-14, /code-review high --fix on 9f3ca35..72f94ab (part 2): 10 findings, 9 fixed in 438188c.
+- The stub-counting module sends no second batch while one waits for its reply, and a stop clears its counts: automation-off costs one stopped request at most.
+- Wrapped stubs keep length and name.
+- The probe page's load timer is cancelled.
+- References are probed under every global used, and a stub object's nativeness is read from its first counted function.
+- worker_started is false only when the worker did not start.
+- Only warn/error records or named TypeErrors and ReferenceErrors count as runtime errors.
+- Regexes are compiled once, with one origin-naming helper.
+- A registry test checks every counted path.
+Skipped: running the worker and page probes concurrently (needs a restructure); the 300 ms wait for stub batches (a heuristic).
+Lead's check after the fixes: CompatReport, ExtensionPolyfill, AutomationExtension, Channel, PolyfillIntegration and MCPServer passed (488 tests, 0 failures). docs/harness/task2282-compat-run.py --vimium ran on a fresh Debug build, twice, the second with --baseline on the first. ALL PASSED, no differences, Detour in the background. Reports: API Explorer is missing bookmarks.getTree and tabs.move in the worker; stubbed: action.getUserSettings, idle.onStateChanged (called), privacy.services, storage.managed; commands key and bookmarks permission unsupported. Vimium is also missing runtime.getBrowserInfo, with stubbed history events. hello-world is clean.
+The wiki records the batching and the both-globals probing.
+Owed: a signed-build 1Password check, since every extension context now loads the channel and counting modules.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Extension testing tools on the MCP endpoint:
+- Install an unpacked folder or a CRX, list, enable or disable, uninstall, and grant or revoke permissions without a prompt. Install, enable and permission tools are test runs only.
+- popup:, options: and worker: contexts, addressed by id or manifest name, with an optional @profile. evaluate_js, read_page, input and screenshot work in the popup and options page.
+- The worker gets call_extension_api and read_extension_global through a polyfill-parked native-message channel. MV3's CSP forbids eval there, and the channel is checked against the verified background context.
+- Extension console with uncaught errors and rejections, and wait_for worker_started.
+- extension_compat_report: a static chrome.*/browser.* scan checked live in the worker and in a probe page, the stub registry with call counts, API-naming errors, unsupported manifest keys and permissions, and worker failures. Results are stable and sorted for baseline diffs, with stable: true on list and console.
+- Playbook in wiki/playbooks/extension-compat-run.md and docs/harness/task2282-compat-run.py.
+Two reviews; 488 affected tests pass. The full suite (4192) had 2 load-induced timeouts in unrelated suites that pass alone.
+Known limits:
+- An extension's own pages can disturb its own channel commands.
+- A worker started while automation was off is reachable only after its next start.
+- Script cannot scroll the action popup.
+- Content scripts' surface is not probed.
+Owed: a signed-build 1Password check.
+<!-- SECTION:FINAL_SUMMARY:END -->

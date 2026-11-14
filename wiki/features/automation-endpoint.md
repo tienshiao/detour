@@ -471,7 +471,11 @@ only a content script names it.
 
 Every referenced api is then checked in two live contexts with the
 runner's `probe` command (present, `typeof`, and whether the function, or
-an event's `addListener`, is WebKit's own by the `[native code]` test):
+an event's `addListener`, is WebKit's own by the `[native code]` test;
+for a stub that is an object, such as `storage.managed`, the test reads its
+first counted function). Each reference is probed under every global the
+extension uses for it, since `chrome` and `browser` can be different objects
+and the polyfill fills in `chrome` only:
 
 - **worker**: through the channel, which starts the worker if needed.
   `worker.started` false with `start_error` (`worker_not_running`,

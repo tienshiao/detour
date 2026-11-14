@@ -208,9 +208,12 @@ wraps the polyfill's own stand-ins (the registry in
 history and management events, …) to count their calls for the automation
 endpoint's compatibility report. It never wraps a function WebKit vends (the
 `[native code]` test), keeps `this`, the arguments, the result and the
-`_detourPolyfill` marker, and sends one `automation.stubCalls` batch per
-task, which the handler answers `stop` while automation is off (the context
-then stops sending). `__detourPolyfillDiag.apis.stubCounting` says how many
+`_detourPolyfill` marker and the stand-in's own `length` and `name` (an
+extension may branch on them), and sends one `automation.stubCalls` batch
+per task, never a second while one waits for its reply (calls meanwhile go
+in the next batch). The handler answers `stop` while automation is off, and
+the context then drops its counts and stops sending, so with automation off
+a context costs one stopped request at most. `__detourPolyfillDiag.apis.stubCounting` says how many
 members it wrapped. The automation runner also answers a `probe` command
 (presence, `typeof`, nativeness per path) for the same report; see
 [automation endpoint](../features/automation-endpoint.md#the-compatibility-report).
