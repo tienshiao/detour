@@ -1,30 +1,32 @@
 import AppKit
 
-/// What a page-content tool acts on (TASK-228.1, AC #11). A tab today. The
-/// string form leaves room for TASK-228.2's extension contexts (an action
-/// popup, an options page, a side panel, a service worker, named by
-/// extension), so tools that take a `context` keep their signatures when
-/// those arrive.
+/// What a page-content tool acts on (TASK-228.1, AC #11): a tab, or one of an
+/// extension's contexts (TASK-228.2), named by kind and extension so a
+/// scenario written earlier still resolves (AC #10): `popup:<ext>`,
+/// `options:<ext>`, `worker:<ext>`, `sidepanel:<ext>`, and `extension:<ext>`
+/// (every context of the extension, for the console). `<ext>` is an
+/// extension id or its exact manifest name (case-insensitive); a profile is
+/// picked with a trailing `@<profile uuid>` when the extension is on in more
+/// than one.
 nonisolated enum AutomationContextID: Equatable, Sendable {
     case tab(UUID)
-
-    /// Kinds reserved for TASK-228.2. They parse, so a scenario gets
-    /// `unknown_context` ("not supported yet") rather than a syntax error.
-    static let reservedKinds: Set<String> = ["popup", "options", "sidepanel", "worker"]
+    case `extension`(AutomationExtensionContextKind, AutomationExtensionRef)
 
     var stringValue: String {
         switch self {
         case .tab(let id): "tab:\(id.uuidString)"
+        case .extension(let kind, let ref): "\(kind.rawValue):\(ref.stringValue)"
         }
     }
 
-    /// Parses `tab:<uuid>`. A bare UUID is read as a tab, which is what every
-    /// list result calls `tab_id`.
+    /// Parses `tab:<uuid>` and the extension forms. A bare UUID is read as a
+    /// tab, which is what every list result calls `tab_id`.
     static func parse(_ value: String) throws -> AutomationContextID {
         if let uuid = UUID(uuidString: value) { return .tab(uuid) }
         let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
         guard parts.count == 2 else {
-            throw AutomationToolError(.invalidArguments, "A context is tab:<uuid>, got \"\(value)\"")
+            throw AutomationToolError(.invalidArguments,
+                                      "A context is tab:<uuid> or popup|options|worker|sidepanel|extension:<extension>, got \"\(value)\"")
         }
         switch parts[0] {
         case "tab":
@@ -32,11 +34,53 @@ nonisolated enum AutomationContextID: Equatable, Sendable {
                 throw AutomationToolError(.invalidArguments, "tab:<uuid> needs a UUID, got \"\(parts[1])\"")
             }
             return .tab(uuid)
-        case let kind where reservedKinds.contains(kind):
-            throw AutomationToolError(.unknownContext, "Context kind \(kind) is not supported yet")
-        default:
-            throw AutomationToolError(.invalidArguments, "Unknown context kind \(parts[0])")
+        case let name:
+            guard let kind = AutomationExtensionContextKind(rawValue: name) else {
+                throw AutomationToolError(.invalidArguments, "Unknown context kind \(name)")
+            }
+            return .extension(kind, try AutomationExtensionRef.parse(parts[1]))
         }
+    }
+}
+
+/// The kinds of extension context a `context` names (TASK-228.2).
+nonisolated enum AutomationExtensionContextKind: String, Sendable, CaseIterable {
+    /// The action popup, while it is open.
+    case popup
+    /// The options page, while a tab shows it.
+    case options
+    /// The background service worker (or background page).
+    case worker
+    /// The side panel: not on this build (only the epic branch has one).
+    case sidepanel
+    /// Every context of the extension: the console reads all of them.
+    case `extension`
+}
+
+/// An extension as a client names it: its id or its manifest name, and
+/// optionally the profile whose context is meant.
+nonisolated struct AutomationExtensionRef: Equatable, Sendable {
+    var query: String
+    var profileID: UUID?
+
+    var stringValue: String {
+        query + (profileID.map { "@\($0.uuidString)" } ?? "")
+    }
+
+    /// `<ext>` or `<ext>@<profile uuid>`. Only a UUID after the last `@` is a
+    /// profile, so a manifest name with an `@` in it still reads as a name.
+    static func parse(_ value: String) throws -> AutomationExtensionRef {
+        var query = value
+        var profileID: UUID?
+        if let at = value.lastIndex(of: "@"), let uuid = UUID(uuidString: String(value[value.index(after: at)...])) {
+            query = String(value[..<at])
+            profileID = uuid
+        }
+        query = query.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else {
+            throw AutomationToolError(.invalidArguments, "An extension context needs an extension id or name, got \"\(value)\"")
+        }
+        return AutomationExtensionRef(query: query, profileID: profileID)
     }
 }
 
@@ -63,6 +107,11 @@ struct AutomationEnvironment {
     var windowControllers: () -> [BrowserWindowController]
     var mainMenu: () -> NSMenu?
     var store: TabStore
+    /// Whether the endpoint runs in the isolated test-run mode
+    /// (`AutomationGate.Mode.testRun`). The tools that install extensions or
+    /// grant them permissions without the user's prompt answer `gate_closed`
+    /// otherwise (TASK-228.2, AC #7).
+    var isTestRun = false
 
     static var live: AutomationEnvironment {
         AutomationEnvironment(
@@ -94,6 +143,7 @@ final class AutomationTools {
 
     var all: [MCPTool] {
         [listWindows, listSpaces, listTabs, selectTab, openURL, runMenuItem] + inputTools + captureTools + pageTools
+            + extensionTools
     }
 
     // MARK: Lookup

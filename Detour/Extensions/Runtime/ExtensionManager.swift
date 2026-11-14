@@ -89,6 +89,12 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         activePopovers[extensionID] != nil
     }
 
+    /// The web view of the popup the extension opened itself
+    /// (`action.openPopup()`), while it is up.
+    func extensionOpenedPopupWebView(extensionID: String) -> WKWebView? {
+        activePopovers[extensionID]?.currentWebView
+    }
+
     /// Real native messaging hosts connected for `extensionID`, across every
     /// profile's controller.
     func liveNativeHostCount(extensionID: String) -> Int {
@@ -555,22 +561,25 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // The child tasks carry only Sendable values (the index, the path and
         // id, the loaded WKWebExtension) and await the main-actor load; the
         // WebExtension is looked up again by index once its load finishes.
-        await withTaskGroup(of: (Int, WKWebExtension?).self) { group in
+        await withTaskGroup(of: (Int, WKWebExtension?, (any Error)?).self) { group in
             for (index, ext) in pendingExtensions.enumerated() {
                 let basePath = ext.basePath
                 let id = ext.id
                 group.addTask {
                     do {
-                        return (index, try await WKWebExtension(resourceBaseURL: basePath))
+                        return (index, try await WKWebExtension(resourceBaseURL: basePath), nil)
                     } catch {
                         log.error("Failed to load WKWebExtension for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                        return (index, nil)
+                        return (index, nil, error)
                     }
                 }
             }
-            for await (index, wkExt) in group {
+            for await (index, wkExt, error) in group {
                 let ext = pendingExtensions[index]
                 ext.wkExtension = wkExt
+                if let error {
+                    ExtensionErrorLog.shared.record(extensionID: ext.id, source: "extension", profileID: nil, error: error)
+                }
                 extensions.append(ext)
                 log.info("Loaded extension \(ext.manifest.name, privacy: .public) (\(ext.id, privacy: .public)), enabled: \(ext.isEnabled)")
             }
@@ -1685,6 +1694,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 NotificationCenter.default.post(name: Self.extensionsDidChangeNotification, object: nil)
             } catch {
                 log.error("Failed to load WKWebExtension after install: \(error.localizedDescription, privacy: .public)")
+                ExtensionErrorLog.shared.record(extensionID: ext.id, source: "extension", profileID: nil, error: error)
+                ext.loadFailed = true
                 // The old contexts are already unloaded; nothing will replace
                 // them, so the pages they served can only be dead. The extension
                 // is still installed, though, so the origin stays pending and the
@@ -1718,6 +1729,7 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         extensions.removeAll { $0.id == id }
         AppDatabase.shared.deleteExtension(id: id)
+        ExtensionErrorLog.shared.forget(id)
         // A reinstall starts without an earlier copy's cancelled dialog.
         uninstallSelfCancelledAt[id] = nil
 

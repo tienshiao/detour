@@ -22,15 +22,21 @@ extension AutomationTools {
 
     /// The live tab a `context` names and the browser window showing it.
     /// Input needs a window: a tab no window shows is `not_displayed`
-    /// (TASK-228.6 reaches those), a sleeping one `tab_asleep`.
+    /// (TASK-228.6 reaches those), a sleeping one `tab_asleep`. An
+    /// extension's popup (TASK-228.2) is in its popover's window, a child of
+    /// the browser window it was opened from, which `controller` names.
     func resolve(context value: String) throws -> InputTarget {
-        let (tab, webView) = try resolvePage(context: value)
+        let page = try resolvePageTarget(context: value)
+        let webView = page.webView
         guard let window = webView.window,
-              let controller = environment.windowControllers().first(where: { $0.window === window }) else {
-            throw AutomationToolError(.notDisplayed, "Tab \(tab.id.uuidString) is not shown in a window; select it first")
+              let controller = environment.windowControllers().first(where: {
+                  $0.window === window || ($0.window != nil && $0.window === window.parent)
+              }) else {
+            throw AutomationToolError(.notDisplayed, "\(page.label) is not shown in a window"
+                                        + (page.tab == nil ? " yet" : "; select it first"))
         }
         guard !controller.isIncognito else {
-            throw AutomationToolError(.privateUnreachable, "Tab \(tab.id.uuidString) is in a Private window")
+            throw AutomationToolError(.privateUnreachable, "\(page.label) is in a Private window")
         }
         return InputTarget(controller: controller, window: window, webView: webView)
     }
@@ -73,7 +79,7 @@ extension AutomationTools {
                 + "is still open.",
             inputSchema: MCPSchema.input([
                 ("window_id", .integer("A window from list_windows, with x and y")),
-                ("context", .string("A tab_id or tab:<id>, with selector or x and y")),
+                ("context", .string("A tab_id or tab:<id>, popup:<ext> or options:<ext>, with selector or x and y")),
                 ("selector", .string("A CSS selector for the element to click (its centre is clicked)")),
                 ("x", .number("Horizontal position")),
                 ("y", .number("Vertical position")),
@@ -254,7 +260,7 @@ extension AutomationTools {
                 + "interval_ms paces the characters.",
             inputSchema: MCPSchema.input([
                 ("text", .string("What to type")),
-                ("context", .string("A tab_id or tab:<id>")),
+                ("context", .string("A tab_id or tab:<id>, popup:<ext> or options:<ext>")),
                 ("selector", .string("With context: an element to click first, to focus it")),
                 ("window_id", .integer("A window, to type into its focused control")),
                 ("interval_ms", .integer("Pause between characters in milliseconds (default 0)")),
@@ -307,7 +313,7 @@ extension AutomationTools {
                 + "something took it. For a menu command use run_menu_item.",
             inputSchema: MCPSchema.input([
                 ("key", .string("Modifiers and a key joined by +")),
-                ("context", .string("A tab_id or tab:<id>")),
+                ("context", .string("A tab_id or tab:<id>, popup:<ext> or options:<ext>")),
                 ("window_id", .integer("A window, for its focused control")),
             ], required: ["key"]),
             outputSchema: MCPSchema.output([

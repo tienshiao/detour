@@ -279,23 +279,33 @@ nonisolated final class MCPServerTests: XCTestCase {
             "invalid_arguments", "unknown_window", "unknown_space", "unknown_tab", "unknown_context",
             "private_unreachable", "dormant_refused", "unknown_menu_item", "menu_item_disabled", "no_open_menu",
             "selector_no_match", "timeout", "gate_closed", "internal_error", "not_displayed", "element_not_visible", "permission_denied",
-            "tab_asleep", "script_error",
+            "tab_asleep", "script_error", "unknown_extension", "ambiguous_extension", "ambiguous_profile",
+            "unknown_profile", "extension_disabled", "context_not_open", "unsupported_context", "worker_not_running",
+            "install_failed",
         ], "codes are part of the contract: add new ones, never rename")
     }
 
     // MARK: Context identifiers (AC #11)
 
-    func testContextIdentifiersNameATabAndReserveExtensionKinds() throws {
+    func testContextIdentifiersNameATabOrAnExtensionContext() throws {
         let id = UUID()
         XCTAssertEqual(try AutomationContextID.parse("tab:\(id.uuidString)"), .tab(id))
         XCTAssertEqual(try AutomationContextID.parse(id.uuidString), .tab(id), "a bare tab_id")
         XCTAssertEqual(AutomationContextID.tab(id).stringValue, "tab:\(id.uuidString)")
-        for reserved in ["popup:abc", "options:abc", "sidepanel:abc", "worker:abc"] {
-            XCTAssertThrowsError(try AutomationContextID.parse(reserved)) {
-                XCTAssertEqual(($0 as? AutomationToolError)?.code, .unknownContext, reserved)
-            }
+        // TASK-228.2: kind and extension (id or manifest name), with an
+        // optional profile after the last @.
+        for kind in AutomationExtensionContextKind.allCases {
+            XCTAssertEqual(try AutomationContextID.parse("\(kind.rawValue):abc"),
+                           .extension(kind, AutomationExtensionRef(query: "abc", profileID: nil)))
         }
-        for bad in ["tab:nope", "window:1", "nothing"] {
+        let profile = UUID()
+        let named = try AutomationContextID.parse("popup:My Ext@Home@\(profile.uuidString)")
+        XCTAssertEqual(named, .extension(.popup, AutomationExtensionRef(query: "My Ext@Home", profileID: profile)),
+                       "only a UUID after the last @ is a profile")
+        XCTAssertEqual(named.stringValue, "popup:My Ext@Home@\(profile.uuidString)")
+        XCTAssertEqual(try AutomationContextID.parse("worker:a@b"),
+                       .extension(.worker, AutomationExtensionRef(query: "a@b", profileID: nil)))
+        for bad in ["tab:nope", "window:1", "nothing", "popup:", "worker: "] {
             XCTAssertThrowsError(try AutomationContextID.parse(bad)) {
                 XCTAssertEqual(($0 as? AutomationToolError)?.code, .invalidArguments, bad)
             }

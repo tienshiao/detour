@@ -70,7 +70,12 @@ final class AutomationController {
         describe spaces and their sidebar items; a tab's tab_id is the context the page tools take. \
         select_tab, open_url, run_menu_item, click, type_text, press_key and screenshot act on a window or a \
         tab. evaluate_js, read_page, console_messages, network_requests, wait_for and wake_tab read a tab's \
-        page, whether or not a window shows it. Private windows and spaces are never reachable. Failed calls return isError with \
+        page, whether or not a window shows it. Extensions: list_extensions names each by id; \
+        open_extension_context opens its popup or options page, and popup:<ext>, options:<ext> and worker:<ext> \
+        (ext is an id or manifest name) are contexts the page tools take; call_extension_api and \
+        read_extension_global reach its service worker. install_extension, uninstall_extension, \
+        set_extension_enabled and set_extension_permission work only in a test run. Private windows, spaces and \
+        the Private profile are never reachable. Failed calls return isError with \
         structuredContent.error.code, a stable code such as unknown_window or selector_no_match.
         """
 
@@ -140,6 +145,10 @@ final class AutomationController {
         generation += 1
         let started = generation
         self.mode = mode
+        // In this main-actor turn, before any extension background's first
+        // message is handled: a background parks for the endpoint's commands
+        // only while the channel is open when it starts (TASK-228.2).
+        AutomationExtensionChannel.shared.isOpen = true
         status = .starting
         let directory = directory()
         Task { await self.start(port: port, in: directory, generation: started) }
@@ -151,7 +160,9 @@ final class AutomationController {
         var pending: AutomationEndpoint?
         do {
             let initialToken = try AutomationCredentials.loadOrCreateToken(in: directory)
-            let tools = AutomationTools(environment: environment())
+            var toolEnvironment = environment()
+            toolEnvironment.isTestRun = mode.isTestRun
+            let tools = AutomationTools(environment: toolEnvironment)
             let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
             let server = MCPServer(tools: tools.all, serverVersion: version, instructions: Self.instructions)
             let endpoint = try AutomationEndpoint(port: port, token: initialToken) { request in
@@ -176,11 +187,13 @@ final class AutomationController {
             self.endpoint = endpoint
             startExpiryTimer()
             AutomationPageCapture.shared.start(store: environment().store)
+            AutomationExtensionConsole.shared.start()
             status = .listening(port: listening)
             log.notice("Automation endpoint listening on \(AutomationCredentials.endpointURL(port: listening), privacy: .public)")
         } catch {
             pending?.stop()
             guard started == generation else { return }
+            AutomationExtensionChannel.shared.isOpen = false
             status = .failed(String(describing: error))
             log.error("Automation endpoint did not start: \(String(describing: error), privacy: .public)")
         }
@@ -197,6 +210,9 @@ final class AutomationController {
         server = nil
         tools = nil
         AutomationPageCapture.shared.stop()
+        AutomationExtensionConsole.shared.stop()
+        AutomationExtensionPopups.shared.closeAll()
+        AutomationExtensionChannel.shared.isOpen = false
         AutomationCredentials.removeEndpointFile(in: directory(), pid: ProcessInfo.processInfo.processIdentifier)
         status = .off
     }

@@ -35,7 +35,7 @@ extension AutomationTools {
             inputSchema: MCPSchema.input([
                 ("window_id", .integer("A window from list_windows")),
                 ("part", .enumeration(["window", "sidebar"], "With window_id: the whole content (default) or the sidebar")),
-                ("context", .string("A tab_id or tab:<id>: its page only")),
+                ("context", .string("A tab_id or tab:<id>, popup:<ext> or options:<ext>: its page only")),
                 ("save_to", .string("An absolute path ending in .png to write the image to")),
                 ("include_image", .boolean("Return the image as image content (default true)")),
                 ("scale", .integer("Pixels per point: 1 (default) or 2, at most the display's")),
@@ -79,8 +79,9 @@ extension AutomationTools {
                     guard !arguments.has("window_id"), !arguments.has("part"), source == "app" else {
                         throw AutomationToolError(.invalidArguments, "Give context, or window_id with part, not both")
                     }
-                    // Any live tab's page, shown in a window or not (TASK-228.4).
-                    let (_, webView) = try resolvePage(context: context)
+                    // Any live tab's page, shown in a window or not (TASK-228.4),
+                    // or an extension's open popup or options page (TASK-228.2).
+                    let webView = try resolvePageTarget(context: context).webView
                     guard webView.bounds.width >= 1, webView.bounds.height >= 1 else {
                         // A tab opened in the background and never shown:
                         // WebKit draws no picture of a page with no size.

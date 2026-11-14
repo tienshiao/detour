@@ -19,7 +19,7 @@ extension AutomationTools {
     /// pinned, or a live favorite. Live or asleep.
     func resolveTab(context value: String) throws -> BrowserTab {
         guard case .tab(let id) = try AutomationContextID.parse(value) else {
-            throw AutomationToolError(.unknownContext, "Unknown context \(value)")
+            throw AutomationToolError(.unsupportedContext, "\(value) is not a tab")
         }
         let store = environment.store
         let isPrivate = store.spaces.contains { space in
@@ -47,8 +47,8 @@ extension AutomationTools {
         return (tab, webView)
     }
 
-    private func boundedInt(_ arguments: ToolArguments, _ name: String, default value: Int,
-                              range: ClosedRange<Int>) throws -> Int {
+    func boundedInt(_ arguments: ToolArguments, _ name: String, default value: Int,
+                    range: ClosedRange<Int>) throws -> Int {
         let given = try arguments.int(name) ?? value
         guard range.contains(given) else {
             throw AutomationToolError(.invalidArguments, "\(name) is \(range.lowerBound) to \(range.upperBound)")
@@ -62,7 +62,9 @@ extension AutomationTools {
         MCPTool(
             name: "evaluate_js",
             title: "Run JavaScript in a page",
-            description: "Runs JavaScript in a tab's page (its main frame) and returns the result as JSON. Give "
+            description: "Runs JavaScript in a tab's page (its main frame), or in an extension's open popup "
+                + "(popup:<ext>) or options page (options:<ext>), and returns the result as JSON. Not in a "
+                + "worker: use call_extension_api or read_extension_global there. Give "
                 + "expression (one expression, for example document.title) or script (a function body that uses "
                 + "return; await works in both). A returned promise is awaited. world page (default) is the page's "
                 + "own globals; isolated is Detour's automation world, which shares the DOM but not the page's "
@@ -72,7 +74,7 @@ extension AutomationTools {
                 + "in error.details; after timeout_ms it fails with timeout (the script itself keeps running). "
                 + "Works for tabs no window shows.",
             inputSchema: MCPSchema.input([
-                ("context", .string("A tab_id or tab:<id> from list_tabs")),
+                ("context", .string("A tab_id or tab:<id> from list_tabs, popup:<ext> or options:<ext>")),
                 ("expression", .string("A JavaScript expression")),
                 ("script", .string("A function body; its return value is the result")),
                 ("world", .enumeration(["page", "isolated"], "page (default) or Detour's isolated world")),
@@ -93,7 +95,7 @@ extension AutomationTools {
                 let worldName = try arguments.string("world") ?? "page"
                 let world = try AutomationPage.world(named: worldName)
                 let timeout = try boundedInt(arguments, "timeout_ms", default: 10_000, range: 1...120_000)
-                let (_, webView) = try resolvePage(context: try arguments.requiredString("context"))
+                let webView = try resolvePageTarget(context: try arguments.requiredString("context")).webView
                 let result = try await AutomationPage.callJSON(
                     AutomationPage.evaluationBody(script: script, expression: expression),
                     in: webView, world: world, limit: .milliseconds(timeout))
@@ -128,7 +130,8 @@ extension AutomationTools {
         MCPTool(
             name: "read_page",
             title: "Read a page",
-            description: "Reads a tab's page (top document): its url, title and ready_state, and as mode asks "
+            description: "Reads a tab's page (top document), or an extension's open popup or options page "
+                + "(popup:<ext>, options:<ext>): its url, title and ready_state, and as mode asks "
                 + "its visible text (text, the default), its HTML (html), its interactive elements (elements), or "
                 + "nothing more (summary). selector limits text and html to that element and elements to what is "
                 + "inside it. Each element has tag, role, name (accessible name, best effort), selector (unique "
@@ -138,7 +141,7 @@ extension AutomationTools {
                 + "Works for tabs no window shows; one never shown has a 0 × 0 viewport, so its elements have "
                 + "empty rects and are not visible.",
             inputSchema: MCPSchema.input([
-                ("context", .string("A tab_id or tab:<id> from list_tabs")),
+                ("context", .string("A tab_id or tab:<id> from list_tabs, popup:<ext> or options:<ext>")),
                 ("mode", .enumeration(["text", "html", "elements", "summary"], "What to read (default text)")),
                 ("selector", .string("A CSS selector: read only that element")),
                 ("max_length", .integer("Most characters of text or html (default 50000, at most 1000000)")),
@@ -166,7 +169,7 @@ extension AutomationTools {
                 let maxLength = try boundedInt(arguments, "max_length", default: 50_000, range: 1...1_000_000)
                 let maxElements = try boundedInt(arguments, "max_elements", default: 200, range: 1...2000)
                 let selector = try arguments.string("selector")
-                let (_, webView) = try resolvePage(context: try arguments.requiredString("context"))
+                let webView = try resolvePageTarget(context: try arguments.requiredString("context")).webView
                 let result = try await AutomationPage.callJSON(
                     AutomationPage.readPageBody,
                     arguments: ["mode": mode, "selector": selector ?? NSNull(), "maxLength": maxLength,
@@ -201,9 +204,15 @@ extension AutomationTools {
                 + "entry has a seq that grows per tab: pass the result's next_seq as after_seq to read only newer "
                 + "entries. A tab keeps its newest 1000; dropped counts entries after the cursor that were lost. "
                 + "levels filters (log, info, warn, error, debug). Records survive navigation; a page loaded before "
-                + "automation was turned on is recorded from then on, its subframes from their next load.",
+                + "automation was turned on is recorded from then on, its subframes from their next load. "
+                + "Extension contexts: worker:<ext>, popup:<ext>, options:<ext> read that context's console "
+                + "(as Detour's console bridge forwards it), extension:<ext> all of them (and other extension "
+                + "pages); each entry adds context_kind (worker, popup, options, page) and context, and the "
+                + "records are kept per extension (one seq) while automation is on, also after a popup closes. "
+                + "The bridge's own limit applies there: past a burst of 50, about 20 a second, repeats folded "
+                + "into \"(repeated N times)\"; console.debug is not forwarded.",
             inputSchema: MCPSchema.input([
-                ("context", .string("A tab_id or tab:<id> from list_tabs")),
+                ("context", .string("A tab_id or tab:<id>, or worker:, popup:, options: or extension:<ext>")),
                 ("after_seq", .integer("Only entries with a larger seq (default 0: all kept)")),
                 ("levels", .stringArray("Only these levels: log, info, warn, error, debug")),
                 ("limit", .integer("Most entries to return (default 200, at most 1000)")),
@@ -279,13 +288,32 @@ extension AutomationTools {
                                       "\(name) are \(allowed.sorted().joined(separator: ", ")); got "
                                         + wanted.subtracting(allowed).sorted().joined(separator: ", "))
         }
-        let (tab, _) = try resolvePage(context: try arguments.requiredString("context"))
-        let capturing = AutomationPageCapture.shared.isActive
-        guard let records = buffer(tab.id) else {
+        let contextValue = try arguments.requiredString("context")
+        let capturing: Bool
+        let buffered: AutomationRingBuffer?
+        var kindFilter: String?
+        if case .extension(let kind, let ref) = try AutomationContextID.parse(contextValue) {
+            // Extension contexts (TASK-228.2): the console bridge's records.
+            guard key == "messages" else {
+                throw AutomationToolError(.unsupportedContext,
+                                          "network_requests reads tabs only: extension contexts' requests are not recorded")
+            }
+            try Self.refuseSidePanel(kind)
+            let target = try resolveExtensionTarget(ref)
+            capturing = AutomationExtensionConsole.shared.isActive
+            buffered = AutomationExtensionConsole.shared.buffer(extensionID: target.ext.id, profileID: target.profile.id)
+            if kind != .extension { kindFilter = kind.rawValue }
+        } else {
+            let (tab, _) = try resolvePage(context: contextValue)
+            capturing = AutomationPageCapture.shared.isActive
+            buffered = buffer(tab.id)
+        }
+        guard let records = buffered else {
             return [key: [], "next_seq": .int(after), "dropped": 0, "has_more": false, "capturing": .bool(capturing)]
         }
         let matching = records.entries(after: after).filter { entry in
             (wanted?.contains(entry.category) ?? true) && include(entry)
+                && (kindFilter == nil || entry.fields["context_kind"]?.stringValue == kindFilter)
         }
         let page = matching.prefix(limit)
         let hasMore = matching.count > limit
@@ -311,15 +339,18 @@ extension AutomationTools {
                 + "truthy, in world page or isolated; one that throws counts as false) or url (the tab's URL "
                 + "contains this text; a plain substring, no wildcards). Fails with timeout after timeout_ms "
                 + "(default 10000). Works for tabs no window shows, though WebKit may load those slowly, and one never "
-                + "shown has no size, so nothing in it is visible.",
+                + "shown has no size, so nothing in it is visible. Also for an extension's open popup or options "
+                + "page (popup:<ext>, options:<ext>). For worker:<ext>, worker_started true waits until its "
+                + "background answers through Detour's automation channel, starting it when it is not running.",
             inputSchema: MCPSchema.input([
-                ("context", .string("A tab_id or tab:<id> from list_tabs")),
+                ("context", .string("A tab_id or tab:<id> from list_tabs, popup:<ext>, options:<ext> or worker:<ext>")),
                 ("load", .boolean("true: wait for the page to finish loading")),
                 ("selector", .string("A CSS selector to wait for")),
                 ("visible", .boolean("With selector: wait until a matching element is visible (default false)")),
                 ("expression", .string("A JavaScript expression to wait to be truthy")),
                 ("world", .enumeration(["page", "isolated"], "With expression: page (default) or isolated")),
                 ("url", .string("Text the tab's URL must contain")),
+                ("worker_started", .boolean("With worker:<ext>, true: wait for the extension's background to answer")),
                 ("timeout_ms", .integer("How long to wait (default 10000, at most 120000)")),
             ], required: ["context"]),
             outputSchema: MCPSchema.output([
@@ -332,12 +363,41 @@ extension AutomationTools {
             annotations: ["readOnlyHint": true],
             handler: { [self] arguments in
                 let context = try arguments.requiredString("context")
-                let conditions = ["load", "selector", "expression", "url"].filter { arguments.has($0) }
+                let conditions = ["load", "selector", "expression", "url", "worker_started"].filter { arguments.has($0) }
                 guard conditions.count == 1, let condition = conditions.first else {
-                    throw AutomationToolError(.invalidArguments, "Give exactly one of load, selector, expression or url")
+                    throw AutomationToolError(.invalidArguments,
+                                              "Give exactly one of load, selector, expression, url or worker_started")
                 }
                 if condition == "load", try arguments.bool("load") != true {
                     throw AutomationToolError(.invalidArguments, "load takes true")
+                }
+                let isWorker: Bool
+                if case .extension(.worker, _) = try AutomationContextID.parse(context) { isWorker = true } else { isWorker = false }
+                guard (condition == "worker_started") == isWorker else {
+                    throw AutomationToolError(isWorker ? .unsupportedContext : .invalidArguments,
+                                              isWorker ? "A worker has no page: wait_for takes worker_started for it"
+                                                       : "worker_started goes with a worker:<ext> context")
+                }
+                if condition == "worker_started" {
+                    guard try arguments.bool("worker_started") == true else {
+                        throw AutomationToolError(.invalidArguments, "worker_started takes true")
+                    }
+                    let timeout = try boundedInt(arguments, "timeout_ms", default: 10_000, range: 1...120_000)
+                    guard case .extension(_, let ref) = try AutomationContextID.parse(context) else { return .null }
+                    let target = try resolveExtensionTarget(ref)
+                    let started = ContinuousClock.now
+                    do {
+                        let ping = try await pingWorker(target, limit: .milliseconds(timeout))
+                        return [
+                            "condition": "worker_started",
+                            "matched": true,
+                            "elapsed_ms": .int(AutomationPage.milliseconds(ContinuousClock.now - started)),
+                            "url": ping["value"]?["url"] ?? .null,
+                            "value": ping["value"] ?? .null,
+                        ]
+                    } catch let error as AutomationToolError where error.code == .workerNotRunning {
+                        throw AutomationToolError(.timeout, error.message)
+                    }
                 }
                 guard !arguments.has("visible") || condition == "selector" else {
                     throw AutomationToolError(.invalidArguments, "visible goes with selector")
@@ -351,7 +411,7 @@ extension AutomationTools {
                 let urlText = try arguments.string("url")
                 let world = try AutomationPage.world(named: try arguments.string("world"))
                 let timeout = try boundedInt(arguments, "timeout_ms", default: 10_000, range: 1...120_000)
-                _ = try resolvePage(context: context)
+                _ = try resolvePageTarget(context: context)
 
                 let started = ContinuousClock.now
                 let deadline = started + .milliseconds(timeout)
@@ -359,7 +419,7 @@ extension AutomationTools {
                 var lastFailure: String?
                 while true {
                     // Again each time: the tab may close or fall asleep meanwhile.
-                    let (_, webView) = try resolvePage(context: context)
+                    let webView = try resolvePageTarget(context: context).webView
                     let remaining = max(.milliseconds(250), deadline - ContinuousClock.now)
                     var value: JSONValue?
                     let matched: Bool

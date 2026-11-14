@@ -2598,6 +2598,39 @@ nonisolated final class ExtensionPolyfillTests: XCTestCase {
                       "Unexpected unhandled-rejection line: \(entry.message)")
     }
 
+    /// TASK-228.2: the bridge also sends what the automation endpoint's console
+    /// records: the console method, where an entry came from, and an error's
+    /// stack and location. `log` keeps reaching the os_log path as `info`.
+    @MainActor func testConsoleBridgeSendsTheAutomationDetail() async throws {
+        let raw = try await evalJSON("""
+        globalThis.__detourConsoleBridge.reset();
+        const calls = [];
+        const orig = globalThis.__detourPolyfillRequest;
+        globalThis.__detourPolyfillRequest = function(type, params) { if (type === 'log') calls.push(params); return Promise.resolve(); };
+        try {
+            console.log('plain');
+            console.warn('careful');
+            globalThis.dispatchEvent(new ErrorEvent('error', { message: 'boom', error: new RangeError('boom'), filename: 'sw.js', lineno: 12, colno: 7 }));
+            globalThis.dispatchEvent(new PromiseRejectionEvent('unhandledrejection', { promise: Promise.resolve(), reason: new TypeError('rejected') }));
+        } finally { globalThis.__detourPolyfillRequest = orig; }
+        return JSON.stringify(calls);
+        """)
+        let calls = try XCTUnwrap(raw as? [[String: Any]])
+        XCTAssertEqual(calls.count, 4, "\(calls)")
+        guard calls.count == 4 else { return }
+        XCTAssertEqual(calls[0]["level"] as? String, "info", "log reaches os_log as info, as before")
+        XCTAssertEqual(calls[0]["consoleLevel"] as? String, "log")
+        XCTAssertNil(calls[0]["origin"], "a console call carries no origin: it is the default")
+        XCTAssertEqual(calls[1]["consoleLevel"] as? String, "warn")
+        XCTAssertEqual(calls[2]["origin"] as? String, "uncaught")
+        XCTAssertEqual(calls[2]["sourceURL"] as? String, "sw.js")
+        XCTAssertEqual(calls[2]["line"] as? Int, 12)
+        XCTAssertEqual(calls[2]["column"] as? Int, 7)
+        XCTAssertNotNil(calls[2]["stack"] as? String, "the thrown error's stack")
+        XCTAssertEqual(calls[3]["origin"] as? String, "unhandledrejection")
+        XCTAssertEqual(calls[3]["consoleLevel"] as? String, "error")
+    }
+
     /// The bridge swallows its own rejection: an unhandledrejection reporter that
     /// logs through the same path must not turn one failed send into a loop.
     @MainActor func testConsoleBridgeDoesNotFeedItselfWhenBridgeRejects() async throws {

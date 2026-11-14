@@ -81,6 +81,9 @@ struct ExtensionAPIPolyfill {
             searchJS,
             offscreenJS,
             webNavigationJS,
+            // Last: the automation endpoint's channel into the background
+            // (TASK-228.2), which answers with every other module in place.
+            AutomationExtensionChannel.polyfillModuleJS,
         ].joined(separator: "\n")
 
         // Wrap everything in a try/catch that writes diagnostics to storage.
@@ -1230,16 +1233,26 @@ struct ExtensionAPIPolyfill {
         }
 
         // The unlimited transport. Everything the limiter decides to forward ends
-        // up here, including its own summaries.
-        function emit(level, message) {
+        // up here, including its own summaries. `detail` is what the
+        // automation endpoint's console records beyond the text (TASK-228.2):
+        // the console method (`consoleLevel`, since `log` reaches the os_log
+        // path as `info`), where it came from (`origin`: console, uncaught,
+        // unhandledrejection) and, for an error, its stack and location.
+        function emit(level, message, detail) {
             try {
                 // __detourPolyfillRequest (preamble) already picks the transport:
                 // webkit.messageHandlers in web views, sendNativeMessage in workers.
                 if (typeof g.__detourPolyfillRequest !== 'function') return;
+                const params = { level: level, message: message };
+                if (detail) {
+                    for (const key of ['consoleLevel', 'origin', 'stack', 'sourceURL', 'line', 'column']) {
+                        if (detail[key] !== undefined && detail[key] !== null) params[key] = detail[key];
+                    }
+                }
                 // Swallow the bridge's rejection: an unhandled one would reach the
                 // unhandledrejection reporter below, which logs through this same
                 // path and would feed itself for as long as the bridge keeps failing.
-                const pending = g.__detourPolyfillRequest('log', { level: level, message: message });
+                const pending = g.__detourPolyfillRequest('log', params);
                 if (pending && typeof pending.then === 'function') pending.then(null, function() {});
             } catch (e) {}
         }
@@ -1252,7 +1265,7 @@ struct ExtensionAPIPolyfill {
         let tokens, refilledAt;
         // The last message admitted to the dedupe window, and how many identical
         // ones have arrived since. `pendingLevel === null` means no window is open.
-        let pendingLevel, pendingMessage, repeats, dedupeTimer;
+        let pendingLevel, pendingMessage, pendingDetail, repeats, dedupeTimer;
         // Drops since the last summary. `dropsStartedAt < 0` means none pending;
         // `lastSummaryAt` paces summaries under a sustained flood.
         let dropped, droppedError, droppedWarn, droppedInfo, dropsStartedAt, summaryTimer, lastSummaryAt;
@@ -1276,7 +1289,7 @@ struct ExtensionAPIPolyfill {
             clearTimer(summaryTimer); summaryTimer = null;
             tokens = BRIDGE_BURST;
             refilledAt = nowMs();
-            pendingLevel = null; pendingMessage = null; repeats = 0;
+            pendingLevel = null; pendingMessage = null; pendingDetail = null; repeats = 0;
             dropped = 0; droppedError = 0; droppedWarn = 0; droppedInfo = 0;
             dropsStartedAt = -1;
             lastSummaryAt = -Infinity;
@@ -1328,7 +1341,7 @@ struct ExtensionAPIPolyfill {
         }
 
         // Spend a token, or count the message as dropped.
-        function admit(t, level, message, weight) {
+        function admit(t, level, message, weight, detail) {
             refill(t);
             // A returning token closes the episode, but at most one summary per
             // DROP_SUMMARY_MS: under a sustained flood a token returns every
@@ -1338,7 +1351,7 @@ struct ExtensionAPIPolyfill {
             emitDropSummary(t, tokens >= 1 && (t - lastSummaryAt) >= DROP_SUMMARY_MS);
             if (tokens >= 1) {
                 tokens -= 1;
-                emit(level, message);
+                emit(level, message, detail);
                 return;
             }
             countDrop(t, level, weight);
@@ -1351,13 +1364,14 @@ struct ExtensionAPIPolyfill {
             clearTimer(dedupeTimer); dedupeTimer = null;
             const level = pendingLevel;
             const message = pendingMessage;
+            const detail = pendingDetail;
             const count = repeats;
-            pendingLevel = null; pendingMessage = null; repeats = 0;
+            pendingLevel = null; pendingMessage = null; pendingDetail = null; repeats = 0;
             if (count === 0 || level === null) return;
-            admit(t, level, message + ' (repeated ' + count + ' times)', count);
+            admit(t, level, message + ' (repeated ' + count + ' times)', count, detail);
         }
 
-        function sendLog(level, args) {
+        function sendLog(level, args, detail) {
             try {
                 const message = formatArgs(args);
                 const t = nowMs();
@@ -1374,7 +1388,8 @@ struct ExtensionAPIPolyfill {
                 flushRepeats(t);
                 pendingLevel = level;
                 pendingMessage = message;
-                admit(t, level, message);
+                pendingDetail = detail || null;
+                admit(t, level, message, 1, detail);
             } catch (e) {}
         }
 
@@ -1395,10 +1410,15 @@ struct ExtensionAPIPolyfill {
             };
         } catch (x) {}
 
-        console.log = function() { _origLog.apply(console, arguments); sendLog('info', arguments); };
-        console.info = function() { _origInfo.apply(console, arguments); sendLog('info', arguments); };
-        console.warn = function() { _origWarn.apply(console, arguments); sendLog('warn', arguments); };
-        console.error = function() { _origError.apply(console, arguments); sendLog('error', arguments); };
+        console.log = function() { _origLog.apply(console, arguments); sendLog('info', arguments, { consoleLevel: 'log' }); };
+        console.info = function() { _origInfo.apply(console, arguments); sendLog('info', arguments, { consoleLevel: 'info' }); };
+        console.warn = function() { _origWarn.apply(console, arguments); sendLog('warn', arguments, { consoleLevel: 'warn' }); };
+        console.error = function() { _origError.apply(console, arguments); sendLog('error', arguments, { consoleLevel: 'error' }); };
+
+        // An error's stack, guarded like every other read of it.
+        function stackOf(value) {
+            try { return isErrorLike(value) && typeof value.stack === 'string' ? value.stack : null; } catch (x) { return null; }
+        }
 
         // Report uncaught exceptions and unhandled rejections through the bridge.
         // A background script that throws during evaluation makes WebKit fail the
@@ -1408,10 +1428,20 @@ struct ExtensionAPIPolyfill {
             g.addEventListener('error', function(e) {
                 const where = (e && e.filename) ? ' (' + e.filename + ':' + e.lineno + ':' + e.colno + ')' : '';
                 const detail = (e && e.error !== undefined && e.error !== null) ? e.error : (e ? e.message : undefined);
-                sendLog('error', ['[uncaught exception]' + where, detail]);
+                let location = {};
+                try {
+                    location = { sourceURL: e && e.filename ? String(e.filename) : null,
+                                 line: e && typeof e.lineno === 'number' ? e.lineno : null,
+                                 column: e && typeof e.colno === 'number' ? e.colno : null };
+                } catch (x) {}
+                sendLog('error', ['[uncaught exception]' + where, detail],
+                        { consoleLevel: 'error', origin: 'uncaught', stack: stackOf(detail),
+                          sourceURL: location.sourceURL, line: location.line, column: location.column });
             });
             g.addEventListener('unhandledrejection', function(e) {
-                sendLog('error', ['[unhandled rejection]', e ? e.reason : undefined]);
+                const reason = e ? e.reason : undefined;
+                sendLog('error', ['[unhandled rejection]', reason],
+                        { consoleLevel: 'error', origin: 'unhandledrejection', stack: stackOf(reason) });
             });
         } catch (x) {}
     })();

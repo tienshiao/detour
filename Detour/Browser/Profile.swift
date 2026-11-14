@@ -585,6 +585,7 @@ class Profile {
                     currentKeys.insert(key)
                     guard !loggedErrorKeys.keys.contains(key) else { continue }
                     log.error("Extension error [\(extID, privacy: .public)]: domain=\(nsError.domain, privacy: .public) code=\(nsError.code) \(nsError.localizedDescription, privacy: .public)")
+                    ExtensionErrorLog.shared.record(extensionID: extID, source: "context", profileID: self?.id, error: error)
                 }
                 loggedErrorKeys.keys = currentKeys
                 if backgroundLoadFailed, let self {
@@ -614,6 +615,7 @@ class Profile {
         } catch {
             let nsError = error as NSError
             log.error("Failed to load \(ext.id, privacy: .public): domain=\(nsError.domain, privacy: .public) code=\(nsError.code)")
+            ExtensionErrorLog.shared.record(extensionID: ext.id, source: "context_load", profileID: self.id, error: error)
             return false
         }
     }
@@ -627,6 +629,9 @@ class Profile {
     @discardableResult
     func unloadExtension(id: String, removeData: Bool = false) -> URL? {
         guard let context = extensionContexts.removeValue(forKey: id) else { return nil }
+        // An automation command waiting on this context's background has
+        // nothing left to answer it (TASK-228.2).
+        AutomationExtensionChannel.shared.contextUnloaded(extensionID: id, profileID: self.id)
         if let token = extensionErrorObservers.removeValue(forKey: id) {
             NotificationCenter.default.removeObserver(token)
         }

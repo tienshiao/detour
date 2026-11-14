@@ -327,6 +327,9 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         }
     }
 
+    /// The type prefix of the automation channel's requests.
+    static let automationRequestPrefix = "automation."
+
     /// WebKit's path for the page it generates to host a `background.scripts`
     /// list, relative to the context's base URL (measured for TASK-43; the
     /// polyfill's `preambleJS` hardcodes the same path).
@@ -673,6 +676,7 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
                                 // be WebKit's untouched background view, so it
                                 // fails closed as hosted (TASK-66).
                                 isDetourHosted: message.webView.map(ExtensionPageHostRegistry.isDetourHosted) ?? true),
+                 webView: message.webView,
                  replyHandler: replyHandler)
     }
 
@@ -749,7 +753,8 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
     /// bridge), which the background-context-only requests need on top of the
     /// identity (TASK-64).
     private func dispatch(_ body: [String: Any], verifiedExtensionID extensionID: String,
-                          sender: PolyfillSender, replyHandler: @escaping (Any?, String?) -> Void) {
+                          sender: PolyfillSender, webView: WKWebView? = nil,
+                          replyHandler: @escaping (Any?, String?) -> Void) {
         guard let type = body["type"] as? String else {
             // Values and foreign key names are extension data (storage values,
             // message payloads) that must not land in the log.
@@ -759,8 +764,10 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         }
 
         // Traffic from the background context is the one sign Detour has that
-        // its worker is running; an update waits while it is (TASK-123).
-        if Self.senderIsBackgroundContext(sender, background: ExtensionManager.shared.extension(withID: extensionID)?.manifest.background) {
+        // its worker is running; an update waits while it is (TASK-123). The
+        // automation channel's parks are not the extension's own activity.
+        if !type.hasPrefix(Self.automationRequestPrefix),
+           Self.senderIsBackgroundContext(sender, background: ExtensionManager.shared.extension(withID: extensionID)?.manifest.background) {
             ExtensionManager.shared.noteBackgroundActivity(extensionID: extensionID)
         }
 
@@ -1253,8 +1260,45 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
             log.notice("runtime.onInstalled: delivering \(details.reason.rawValue, privacy: .public) (previous \(details.previousVersion ?? "none", privacy: .public), now \(version, privacy: .public)) to \(extensionID, privacy: .public) in profile \(profile.name, privacy: .public), \(listenerCount.map { "\($0) listener(s)" } ?? "listeners not reported", privacy: .public)")
             replyHandler(details.dictionary, nil)
 
+        // MARK: - Automation channel (TASK-228.2)
+        // The background's half of `AutomationExtensionChannel`: it parks for
+        // the endpoint's commands, acknowledges each one and sends its result.
+        // Only the background context of the verified extension, and never in
+        // the Private profile, which automation does not reach.
+        case "automation.awaitCommand", "automation.ack", "automation.result":
+            let registered = ExtensionManager.shared.extension(withID: extensionID)
+            guard Self.senderIsBackgroundContext(sender, background: registered?.manifest.background) else {
+                replyHandler(nil, "automation: only the background context takes commands")
+                return
+            }
+            guard let profile, !profile.isIncognito, let instance = params["instance"] as? String else {
+                replyHandler(["stop": true], nil)
+                return
+            }
+            let key = AutomationExtensionChannel.Key(extensionID: extensionID, profileID: profile.id)
+            switch type {
+            case "automation.ack":
+                if let id = (params["id"] as? NSNumber)?.intValue {
+                    AutomationExtensionChannel.shared.acknowledge(key: key, instance: instance, commandID: id)
+                }
+                replyHandler(true, nil)
+            case "automation.result":
+                if let json = params["result"] as? String {
+                    AutomationExtensionChannel.shared.complete(key: key, resultJSON: json)
+                }
+                replyHandler(true, nil)
+            default:
+                AutomationExtensionChannel.shared.park(key: key, instance: instance, reply: replyHandler)
+            }
+
         // MARK: - Logging Bridge
         case "log":
+            // The automation endpoint's console (TASK-228.2), before the os_log
+            // path's cap: it is bounded by its own ring buffer.
+            if AutomationExtensionConsole.shared.isActive, let profile, !profile.isIncognito {
+                AutomationExtensionConsole.shared.record(extensionID: extensionID, profile: profile,
+                                                         sender: sender, webView: webView, params: params)
+            }
             // Extension console output is arbitrary extension data (1Password
             // logs native-messaging responses). By default it is `.private`,
             // which keeps it out of the persisted log while Xcode still shows

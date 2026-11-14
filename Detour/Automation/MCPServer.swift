@@ -32,6 +32,30 @@ nonisolated enum AutomationErrorCode: String, Sendable, CaseIterable {
     /// A script run in the page threw, or did not compile; the error's name,
     /// message and stack are in the message and in `structuredContent.error`.
     case scriptError = "script_error"
+    /// No installed extension has that id or manifest name (TASK-228.2).
+    case unknownExtension = "unknown_extension"
+    /// More than one installed extension has that manifest name: use its id.
+    case ambiguousExtension = "ambiguous_extension"
+    /// The extension is on in more than one profile (or several profiles
+    /// could take an install): name one with profile_id or `@<profile id>`.
+    case ambiguousProfile = "ambiguous_profile"
+    /// No profile has that id.
+    case unknownProfile = "unknown_profile"
+    /// The extension is installed but not on (loaded) in the profile.
+    case extensionDisabled = "extension_disabled"
+    /// The extension context is not open: no popup is shown, no tab shows
+    /// the options page (open_extension_context opens them).
+    case contextNotOpen = "context_not_open"
+    /// The extension has no such context (no popup, no options page, no
+    /// background), the tool does not apply to it (a worker has no page), or
+    /// the build has no such context at all (a side panel).
+    case unsupportedContext = "unsupported_context"
+    /// The extension's background did not start, or did not open the
+    /// automation channel, in time.
+    case workerNotRunning = "worker_not_running"
+    /// The folder or CRX could not be installed (no or invalid manifest, a
+    /// CRX that fails verification or unpacking).
+    case installFailed = "install_failed"
 }
 
 /// A tool call that failed in a way the caller can act on.

@@ -202,8 +202,9 @@ nonisolated final class AutomationInputTests: XCTestCase {
         let f = try await makeFixture()
         let unknown = try await code(f, "click", ["context": .string(UUID().uuidString), "selector": "#btn"])
         XCTAssertEqual(unknown, "unknown_context")
-        let reserved = try await code(f, "click", ["context": "popup:abcdef", "selector": "#btn"])
-        XCTAssertEqual(reserved, "unknown_context")
+        // An extension context (TASK-228.2) of an extension that is not installed.
+        let noExtension = try await code(f, "click", ["context": "popup:abcdef", "selector": "#btn"])
+        XCTAssertEqual(noExtension, "unknown_extension")
         // A tab the window is not showing has no place to take input.
         let other = TabStore.shared.addTab(in: f.space, url: nil)
         let notShown = try await code(f, "type_text", ["context": .string(other.id.uuidString), "text": "x"])

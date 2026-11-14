@@ -33,19 +33,31 @@ extension ExtensionManager {
         guard let optionsURL = context.optionsPageURL,
               let configuration = context.webViewConfiguration else { return nil }
 
+        if let existing = existingOptionsPageTab(for: context, in: profile) { return existing }
+
         let profileSpaces = TabStore.shared.spaces.filter { $0.profileID == profile.id }
-        for space in profileSpaces {
+        let target = profileSpaces.first { $0.id == preferredSpaceID } ?? profileSpaces.first
+        guard let space = target else { return nil }
+        let tab = TabStore.shared.addExtensionTab(in: space, url: optionsURL, configuration: configuration)
+        return (tab, space)
+    }
+
+    /// The tab of one of `profile`'s spaces (normal or pinned) that shows the
+    /// context's options page, if any; nothing is opened. The automation
+    /// endpoint's `options:<extension>` context resolves through this
+    /// (TASK-228.2).
+    @MainActor
+    func existingOptionsPageTab(for context: WKWebExtensionContext,
+                                in profile: Profile) -> (tab: BrowserTab, space: Space)? {
+        guard let optionsURL = context.optionsPageURL else { return nil }
+        for space in TabStore.shared.spaces where space.profileID == profile.id {
             if let tab = (space.tabs + space.pinnedTabs).first(where: {
                 Self.isOptionsPage($0.webView?.url ?? $0.url, optionsURL: optionsURL, baseURL: context.baseURL)
             }) {
                 return (tab, space)
             }
         }
-
-        let target = profileSpaces.first { $0.id == preferredSpaceID } ?? profileSpaces.first
-        guard let space = target else { return nil }
-        let tab = TabStore.shared.addExtensionTab(in: space, url: optionsURL, configuration: configuration)
-        return (tab, space)
+        return nil
     }
 
     /// Whether `url` shows the options page: the context's own origin (scheme

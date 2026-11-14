@@ -159,6 +159,14 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKUIDelegate {
     /// The presented popover's content size; nil until it is shown. For tests.
     var presentedContentSize: NSSize? { popover?.contentSize }
 
+    /// The popup's web view from `presentPopupWebView` until the popover
+    /// closes: loading, or on screen (the automation endpoint's
+    /// `popup:<extension>` context, TASK-228.2).
+    var currentWebView: WKWebView? { popupWebView }
+
+    /// Whether the popover is on screen.
+    var isShown: Bool { popover?.isShown ?? false }
+
     // MARK: - Sizing
 
     /// `size` held to the popover's limits.
