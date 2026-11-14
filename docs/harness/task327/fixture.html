@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Shortcut fixture</title></head>
+<body>
+<h1 id="h">Shortcut fixture</h1>
+<p>Loaded at <span id="t"></span></p>
+<input id="field" type="text" placeholder="type here" style="font-size:20px;width:400px">
+<script>
+  document.getElementById('t').textContent = String(performance.timeOrigin);
+  window.__loadedAt = performance.timeOrigin;
+  window.__keys = [];
+  document.addEventListener('keydown', e => window.__keys.push((e.altKey?'alt+':'') + (e.metaKey?'cmd+':'') + e.key));
+</script>
+</body></html>

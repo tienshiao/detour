@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T19:47:00Z'
-updated_date: '2026-11-14T23:33:00Z'
+updated_date: '2026-11-14T23:36:00Z'
 labels:
   - keyboard
   - menus
@@ -62,15 +62,15 @@ Open questions for the user:
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Binding store (Detour/Commands/ShortcutBindings.swift): user overrides only, keyed by CommandID, in UserDefaultsScope.defaults under one key (CommandShortcuts: {id: {key, modifiers}} or {} for none); defaults stay in the registry; an override equal to the default is dropped; unknown IDs ignored and kept (read-modify-write); a pure resolver from registry defaults + overrides to the effective binding per command, an override winning over a colliding default (TASK-295's future defaults); didChange notification.
-2. Registry: menu sections (the pane's grouping, TASK-295 adds to Spaces), isBindable (parameterless; not quick-detour.new, which the Quick Detour pane owns; PROVISIONAL: not Edit's Undo/Redo/Cut/Copy/Paste/Select All). KeyEquivalent names for F-keys, Home/End, Page Up/Down, Forward Delete.
-3. Applying: the main menu's items get the effective key where they are born (add(_:to:)) and on every store change (walk by identifier), so every window's menus, the palette column (live item) and the TASK-56 fast path (live items) follow. Stale hard-coded labels: the sidebar's Copy URL and Quick Detour's Open in item read the binding.
-4. Conflicts (pure, policy-parameterised from HotKeyShortcutValidation): needs ⌘/⌥/⌃ except F1-F20; refused when the live main menu holds it (by path; the row's own item excluded by identifier; covers AppKit's items and System Settings overrides), the Quick Detour shortcut (its setting), Detour's non-menu keys (Control-Tab, ⌘Z/⇧⌘Z in pages), macOS (CopySymbolicHotKeys + a short reserved list); message names the holder.
-5. System overrides (NSUserKeyEquivalents): measured with spikes. Row shows 'Set in System Settings' with the system key, recorder disabled, nothing written.
-6. Settings > Shortcuts pane: search field, Restore Defaults, a list grouped by menu (group rows), each row title + recorder + per-row reset; Quick Detour row read-only pointing at its pane; refusal on a warning line; the Quick Detour hotkey suspended while a recorder records.
-7. Tests: store (defaults, overrides, clearing, persistence, unknown IDs, resolver collisions), conflicts (commands, Quick Detour, system, reserved, F-keys), menu applies a binding and the fast path answers it, pane rows/search/reset; pane-order tests.
-8. /verify: AX + keys in the pane (time-boxed), fire in a browser window, clear, restore defaults, relaunch persistence, light/dark captures; NSUserKeyEquivalents via a launch argument only.
-9. Wiki: new keyboard-shortcuts page; browser-commands, settings, quick-detour; log. Notes: provisional decisions, measured AppKit behaviour, what is owed.
+1. Binding store (Detour/Commands/ShortcutBindings.swift): user overrides only, keyed by CommandID, in UserDefaultsScope.defaults under CommandShortcuts ({id: {key, modifiers}} or {} for none); defaults stay in the registry; recording the default drops the override; unknown IDs ignored and kept on writes (Restore Defaults removes them too); a pure resolver where an override wins over a colliding default; overrides cached per change; didChange notification.
+2. Registry: BrowserCommands.menus (the bar's menus and their commands; all = their concatenation). BrowserCommand.bindability: bindable = parameterless; New Quick Detour Window read-only (its pane); Undo, Redo, Cut, Copy, Paste, Select All fixed (PROVISIONAL); parameterised not listed. KeyEquivalent: normalized form, property list, names for F-keys, Home/End, Page Up/Down, Forward Delete.
+3. Applying: ShortcutBindingStore.apply(to:) at setupMainMenu and on every change (AppDelegate observer); palette column, TASK-56 fast path, run_menu_item read the live items; context-menu hints (sidebar Copy URL, Quick Detour Open in and its capsule, redrawn on change) read the live item.
+4. Conflicts: HotKeyShortcutValidation with rules (.globalHotKey unchanged; .appShortcut): ⌘ or ⌃ unless F1-F20 (⌥ alone types in a page's text field, measured); refused when the live main menu holds it (own item and Quick Detour item excluded by identifier), the Quick Detour setting, Control-Tab or ⌘Z in pages, macOS's reserved list and CopySymbolicHotKeys; the message names the holder (the application menu by the app's name).
+5. App Shortcuts: measured with spikes (docs/harness/task327); a row with one shows 'Set in System Settings', recorder off, nothing written.
+6. Settings > Shortcuts pane (after Search): search, Restore Defaults, list grouped by menu, row = title, note, recorder, reset; a reset onto a key another override holds is refused with the holder named; refusals on a line under the list; the Quick Detour hotkey suspended while recording.
+7. Tests: ShortcutBindingStoreTests, ShortcutConflictTests, ShortcutMenuTests, ShortcutsSettingsPaneTests; pane-order and pane-list tests; TestEnvironmentSetup resets the store.
+8. /verify through Accessibility and real key events plus the endpoint: record in the pane, fire in a browser window, clear, refusal, page-field behaviour, light/dark captures, relaunch persistence, an App Shortcut on the real menu. Owed (screen locked): the 'Set in System Settings' row, Restore Defaults and a row reset pressed in the app.
+9. Wiki: features/keyboard-shortcuts (new); browser-commands, settings, quick-detour, app-shell; log.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -132,6 +132,16 @@ Left as is: (a) conflicts on shifted punctuation are not seen (a recording store
 - BrowserWebView's ⇧⌘Z redo interception never matches (see above).
 - TASK-295: declare the nine space jumps as parameterless commands (space.jump-1 ... space.jump-9) with their default keys in the Spaces section of BrowserCommands.menus; they are then listed and bindable with no pane change. If their items are the dynamic per-space ones, updateSpacesMenu must give them ShortcutBindingStore.shared.keyEquivalent(for:), and the TASK-56 invariant test (only Next/Previous Space carry keys in the Spaces menu) changes; the resolver already lets a user's override win over a new colliding default.
 - AC #7's website part: the shortcuts page (Help > Keyboard Shortcuts) should say shortcuts can be changed in Settings > Shortcuts when this ships; it could then also be the pane's Learn more link.
+
+## Notes after the commit (3c0ab27)
+
+- Superseded entries: the 'Decision 2 tightened' section replaces the first decision-2 note (⌘ or ⌃ unless a function key, not ⌘/⌥/⌃), and the code-review section replaces the first decision-3 note's list (⌘Z only in pages: the ⇧⌘Z reservation was removed). The plan was rewritten to match what shipped.
+- Departures from the brief's wording, all PROVISIONAL: decision 2 is narrower (⌘ or ⌃); Undo and Redo are read-only although the brief's scope was every registry command; Restore Defaults also deletes unknown IDs although the brief says they are kept (ordinary writes keep them).
+- Not exercised at runtime: the build that was launched (15:19) predates the tightened ⌥ rule, the ⇧⌘Z removal and the refused-reset beep, which came after the code review too; they are unit-tested only (182-test run). AC #5 is checked on test evidence (the tests click the real reset and Restore Defaults buttons), not on a press in the running app.
+- AC #4's known hole: recording ⇧⌘= for a command is not seen as a conflict with Zoom In (⌘+), though AppKit fires both on that keystroke (measured in docs/harness/task327/menu-matching.swift).
+- Side effect outside the task: the Quick Detour recorder's refusal now names the application menu 'Detour > Settings…' instead of 'NSMenuItem > Settings…' (HotKeyShortcutValidation's menu path now titles the app menu by the app's name).
+- For the user: the row 'Open Quick Detour in Space' is also Open Peek in New Tab in a browser window (one item, one shortcut); the pane opens at the screen's height cap (1330 pt here) because the Settings height rule makes every row its natural height, which the user may want capped lower.
+- The spikes, the Accessibility helper (axdrive.swift) and the fixture page are in docs/harness/task327 for redoing the owed checks.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

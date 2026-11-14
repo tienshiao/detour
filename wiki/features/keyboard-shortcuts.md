@@ -24,8 +24,8 @@ sources:
     resource: ../../Detour/Browser/Settings/ShortcutRecorderView.swift
     title: ShortcutRecorderView.swift
   - id: spike
-    resource: "TASK-327 spikes: standalone AppKit programs that build a menu in code and run with -NSUserKeyEquivalents as a launch argument, macOS 26 (Darwin 25.6), 2026-11-14 (not in the repository)"
-    title: NSUserKeyEquivalents spikes
+    resource: ../../docs/harness/task327
+    title: "TASK-327 spikes (standalone AppKit programs building a menu in code, run with -NSUserKeyEquivalents as a launch argument; menu matching from real CGEvents; macOS 26, 2026-11-14) and the Accessibility helper for driving Settings"
 ---
 
 # What it does
@@ -215,6 +215,12 @@ so nothing is written to the app's real defaults), on macOS 26:[^spike]
   fix it (measured: an entry applied once the parent was titled, even after
   the items were added). Not changed in TASK-327.
 
+The spikes and `axdrive.swift` (Accessibility press and read by identifier
+in the Settings window, key events posted to the process) are in
+[docs/harness/task327](../../docs/harness/task327), with the fixture page
+used for the runtime checks. On a locked screen Accessibility returns no
+windows.
+
 What Detour does with it: a row whose live item has a non-empty
 `userKeyEquivalent` shows macOS's shortcut and "Set in System Settings",
 with the recorder off, and nothing is written. The conflict check sees the
@@ -253,6 +259,9 @@ for the app. To try one at runtime, pass it as a launch argument; never
 
   So ⌥ alone is refused for a command; the Quick Detour hotkey, a Carbon
   hotkey that takes the key before any app, still allows it.
+- **One title for two commands.** The row "Open Quick Detour in Space" is
+  the registry's title for Cmd+O, which is also Open Peek in New Tab in a
+  browser window: one item, one shortcut.
 - **Titles that change.** Pin/Unpin Tab, Undo/Redo and Cmd+O are retitled
   by validation, so an App Shortcut on one of their titles applies only
   while the item has it, and the row reflects the last validation.
