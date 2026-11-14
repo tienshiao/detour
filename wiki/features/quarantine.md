@@ -7,6 +7,9 @@ status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T20:30:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
+  - id: task-329
+    resource: backlog:TASK-329
+    title: "Links: strip tracking parameters with the AdGuard URL Tracking filter in addition to the built-in list"
   - id: task-194
     resource: backlog:TASK-194
     title: "Quarantine: links in a throwaway Quick Detour window, then moved to a profile and space on purpose"
@@ -200,7 +203,11 @@ removes click IDs (`gclid`, `gclsrc`, `dclid`, `gbraid`, `wbraid`,
 `_ga` (added by TASK-326) and every `utm_` parameter, names compared without
 case and after percent-decoding, other parameters kept in order with their
 spelling. The list is the one Copy URL uses: a name added for one applies to
-both.
+both. Copy URL also applies the downloaded AdGuard URL Tracking filter's
+site rules; quarantine navigations do not (TASK-329 AC #4, provisional:
+stripping a parameter a page needs on navigation breaks the page, while a
+copy only changes the copied text; see
+[Copy URL](copy-url.md#the-downloaded-filter-task-329)).
 Applied to the link before the window loads it, and to every main-frame
 navigation of the page (`trackingFreeURL`: a GET carrying any is cancelled
 and loaded again without them). Left alone: back/forward, reloads, form

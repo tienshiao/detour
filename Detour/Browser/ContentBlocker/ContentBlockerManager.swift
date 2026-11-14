@@ -121,11 +121,22 @@ class ContentBlockerManager {
     private let cacheDir: URL
     private let fetchInterval: TimeInterval = 86400 // 24 hours
 
+    /// The tracking-parameter list Copy URL uses (TASK-329), downloaded,
+    /// refreshed and cleared with the lists above but never compiled.
+    let trackingParameterList: TrackingParameterList
+
+    /// The test host leaves the tracking-parameter list alone: a live download
+    /// would change what every Copy URL test sees. Its tests make their own.
+    private var downloadsTrackingParameterList: Bool { !AppDelegate.isRunningUnitTests }
+
     private init() {
         whitelist = ContentBlockerWhitelist()
         // Detour/ContentBlocker in the default data directory, as before; an
         // isolated data directory downloads into its own (TASK-36).
-        cacheDir = ContentBlockerStorage.current.filterListCacheDirectory
+        let storage = ContentBlockerStorage.current
+        cacheDir = storage.filterListCacheDirectory
+        trackingParameterList = TrackingParameterList(cacheDirectory: storage.filterListCacheDirectory,
+                                                      defaults: storage.defaults)
     }
 
     private var pendingLookups = 0
@@ -134,6 +145,10 @@ class ContentBlockerManager {
         // Drop the per-profile whitelist rule lists earlier builds compiled: the
         // per-site switch is preferences-based now and nothing else deletes them.
         ruleStore.removeRetiredLists(withPrefix: "content-blocker-whitelist-")
+
+        if downloadsTrackingParameterList {
+            Task { await trackingParameterList.loadAtLaunch() }
+        }
 
         // For each list, try to look up compiled rules first, then fetch if needed
         pendingLookups = Self.filterLists.count
@@ -325,8 +340,15 @@ class ContentBlockerManager {
     var refreshingIdentifiers: Set<String> { refreshes.identifiers }
 
     func forceRefreshAll() {
+        forceRefreshAll(includingTrackingParameterList: true)
+    }
+
+    private func forceRefreshAll(includingTrackingParameterList: Bool) {
         for list in Self.filterLists {
             fetchAndCompile(list: list, refresh: refreshes.begin(list.identifier))
+        }
+        if includingTrackingParameterList && downloadsTrackingParameterList {
+            Task { await trackingParameterList.refresh() }
         }
         postStatusChange()
     }
@@ -362,7 +384,10 @@ class ContentBlockerManager {
         postStatusChange()
 
         // Re-fetch everything
-        forceRefreshAll()
+        forceRefreshAll(includingTrackingParameterList: false)
+        if downloadsTrackingParameterList {
+            Task { await trackingParameterList.clearCacheAndRedownload() }
+        }
     }
 
     private func postStatusChange() {

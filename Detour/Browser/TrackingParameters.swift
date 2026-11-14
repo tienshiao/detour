@@ -1,11 +1,18 @@
 import Foundation
 
-/// Link tracking parameters: the one list Detour removes from a link, and the
-/// pure rule that removes them. Used by a quarantine page's navigations
-/// (`Quarantine.trackingFreeURL`, TASK-194) and by every Copy URL / Copy Link
-/// of a page or tab (TASK-326), which copy the clean link while the page,
+/// Link tracking parameters: the built-in list Detour removes from a link,
+/// and the pure rule that removes them. Used by a quarantine page's
+/// navigations (`Quarantine.trackingFreeURL`, TASK-194: the built-in list
+/// only) and by every Copy URL / Copy Link / Share… of a page or tab
+/// (TASK-326), which copy the clean link (`cleanLink(for:)`: the built-in list
+/// plus the downloaded AdGuard URL Tracking filter, TASK-329) while the page,
 /// history and session keep the address as loaded.
 enum TrackingParameters {
+    /// The downloaded tracking filter's rules (`TrackingParameterList`), nil
+    /// until a download or the cached copy has parsed into rules. Copy and
+    /// Share use them on top of `names`; without them they use `names` alone.
+    static var downloadedFilter: TrackingParameterFilter?
+
     /// Query parameters that only identify a click or a campaign: click IDs
     /// that ad networks and mail tools add (`gclid`, `fbclid`, `msclkid`,
     /// `mc_eid`, …), Google Analytics' cross-domain linker (`_ga`) and the
@@ -32,19 +39,31 @@ enum TrackingParameters {
         return names.contains(name) || (name.hasPrefix("utm_") && name.count > 4)
     }
 
-    /// `url` without its tracking query parameters; the same URL when it has
-    /// none, or is not http(s). Names are compared after percent-decoding.
+    /// `url` without its tracking query parameters (the built-in `names`,
+    /// and `filter`'s rules when given); the same URL when it has none, or is
+    /// not http(s). Built-in names are compared without case after
+    /// percent-decoding; `filter` decides its own (`TrackingParameterFilter`).
+    /// A parameter one of `filter`'s exceptions keeps for this address is kept
+    /// even when it is a built-in name: the list says the site needs it (only
+    /// an exception as written and limited to some sites; a widened or global
+    /// one cancels the list's own rules alone).
     /// The other parameters keep their order, repeats and spelling (their
     /// encoding untouched), and the fragment is kept. A query left with
     /// nothing in it goes, `?` included; empty pieces (`a=1&&b=2`, a trailing
     /// `&`) go with the parameters removed.
-    static func removing(from url: URL) -> URL {
+    static func removing(from url: URL, using filter: TrackingParameterFilter? = nil) -> URL {
         guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
               var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let query = components.percentEncodedQuery, !query.isEmpty else { return url }
+        let verdict = filter?.verdict(for: url)
         func isTrackingPair(_ pair: Substring) -> Bool {
             let rawName = String(pair.prefix { $0 != "=" })
-            return isTracking(rawName.removingPercentEncoding ?? rawName)
+            let name = rawName.removingPercentEncoding ?? rawName
+            if let verdict {
+                if verdict.protects(rawName: rawName, name: name) { return false }
+                if verdict.removes(rawName: rawName, name: name) { return true }
+            }
+            return isTracking(name)
         }
         let pairs = query.split(separator: "&", omittingEmptySubsequences: false)
         let kept = pairs.filter { !$0.isEmpty && !isTrackingPair($0) }
@@ -54,9 +73,16 @@ enum TrackingParameters {
         return components.url ?? url
     }
 
+    /// The link Copy URL / Copy Link / Share… of a page or tab hands out:
+    /// `url` without the built-in list's tracking parameters nor the
+    /// downloaded filter's (`downloadedFilter`), when it has loaded.
+    static func cleanLink(for url: URL) -> URL {
+        removing(from: url, using: downloadedFilter)
+    }
+
     /// The string a Copy URL / Copy Link of a page or tab puts on the
-    /// clipboard: `url` without its tracking parameters (`removing`).
+    /// clipboard: `cleanLink(for:)`.
     static func copyableString(for url: URL) -> String {
-        removing(from: url).absoluteString
+        cleanLink(for: url).absoluteString
     }
 }

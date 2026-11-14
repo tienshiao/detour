@@ -129,6 +129,9 @@ enum Quarantine {
         guard let url, !isBackForwardOrReload, !shouldPerformDownload,
               (httpMethod ?? "GET").uppercased() == "GET",
               !isSameDocument(url, as: currentURL) else { return nil }
+        // The built-in list only, not the downloaded filter (TASK-329 AC #4):
+        // a navigation stripped of a parameter the page needs breaks the page,
+        // while a copy stripped of one only changes the copied text.
         let stripped = TrackingParameters.removing(from: url)
         return stripped == url ? nil : stripped
     }

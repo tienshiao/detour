@@ -6,6 +6,9 @@ tags: [content-blocker, webkit, profiles, spi, privacy]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T01:17:08Z }
 sources:
+  - id: task-329
+    resource: backlog:TASK-329
+    title: "Links: strip tracking parameters with the AdGuard URL Tracking filter in addition to the built-in list"
   - id: task-231-3
     resource: backlog:TASK-231.3
     title: Content-blocker list parsing and rule compilation are compiler-checked across threads
@@ -114,6 +117,16 @@ blocked on the current page.
 `Profile.isAdBlockingEnabled` is the master switch. The toggles live in
 Settings > Profiles; list status and refresh live in Settings > Content
 Blocking (see [settings](./settings.md)).
+
+A fifth list rides along without being one of them: AdGuard's URL Tracking
+filter (`adguard-url-tracking`, `TrackingParameterList`, TASK-329). It is
+fetched at launch, by Update Now and by Clear Cache & Redownload with the
+same ETag / `lastFetch` / 24-hour bookkeeping and cache folder, but it is
+parsed into `$removeparam` rules for [Copy URL](copy-url.md#the-downloaded-filter-task-329)
+instead of being compiled for WebKit; it has no Settings row and no profile
+switch, the test host never downloads it, and a Debug build takes its
+address from `DETOUR_TRACKING_FILTER_URL`. `EasyListParser` still drops
+`$removeparam` lines from the four content-blocking lists.
 
 ## Fetch, parse, compile
 
@@ -783,7 +796,7 @@ EasyPrivacy cannot un-block something EasyList blocks.
 
 | Data | Location |
 |---|---|
-| Raw list text | `<data directory>/ContentBlocker/<identifier>.txt` under Application Support |
+| Raw list text | `<data directory>/ContentBlocker/<identifier>.txt` under Application Support (`adguard-url-tracking.txt` too, written only once it parsed into rules) |
 | Compiled lists | WebKit's default `WKContentRuleListStore`, or `<data directory>/ContentRuleLists` for a non-default data directory. One rule list per chunk: `<id>`, `<id>-1`, … |
 | Fetch metadata | defaults keys `ContentBlocker.<id>.lastFetch`, `.etag`, `.ruleCount`, `.rulesFormat` (parser output format of the last successful compile) |
 | Compile metadata | defaults keys `ContentBlocker.<chunk id>.compiledRuleCount` per compiled chunk, and `ContentBlocker.<id>.chunkCount` for a list of more than one chunk |

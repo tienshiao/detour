@@ -28,6 +28,7 @@ nonisolated final class CopyURLTests: XCTestCase {
     }
 
     @MainActor override func tearDown() async throws {
+        TrackingParameters.downloadedFilter = nil
         pasteboard.releaseGlobally()
         for wc in windows {
             wc.sidebarSplitView.autosaveName = nil
@@ -187,6 +188,53 @@ nonisolated final class CopyURLTests: XCTestCase {
 
         XCTAssertEqual(copied(), Self.clean)
         XCTAssertEqual(tab.url, url)
+    }
+
+    // MARK: - The downloaded tracking filter (TASK-329)
+
+    private static let siteTracked = "https://www.amazon.co.uk/stores/page/X?lp_asin=B0&utm_source=news&id=1#top"
+    private static let siteClean = "https://www.amazon.co.uk/stores/page/X?id=1#top"
+
+    @MainActor func testCopyURLAlsoLeavesOutTheDownloadedFiltersSiteParameters() throws {
+        TrackingParameters.downloadedFilter = TrackingParameterFilter(text: TrackingParameterFilterFixture.text)
+        let wc = makeWindow()
+        let url = try XCTUnwrap(URL(string: Self.siteTracked))
+        let tab = store.addTab(in: space, url: url)
+        wc.selectTab(id: tab.id)
+
+        wc.copyCurrentURL(nil)
+        XCTAssertEqual(copied(), Self.siteClean)
+
+        try choose("Copy URL", in: sidebarMenu(wc, row: row(of: tab, in: wc)))
+        XCTAssertEqual(copied(), Self.siteClean)
+        XCTAssertEqual(tab.url, url)
+    }
+
+    @MainActor func testWithoutTheDownloadedFilterCopyURLUsesTheBuiltInNames() throws {
+        TrackingParameters.downloadedFilter = nil
+        let wc = makeWindow()
+        let tab = store.addTab(in: space, url: try XCTUnwrap(URL(string: Self.siteTracked)))
+        wc.selectTab(id: tab.id)
+
+        wc.copyCurrentURL(nil)
+
+        XCTAssertEqual(copied(), "https://www.amazon.co.uk/stores/page/X?lp_asin=B0&id=1#top")
+    }
+
+    @MainActor func testShareAlsoLeavesOutTheDownloadedFiltersSiteParameters() throws {
+        TrackingParameters.downloadedFilter = TrackingParameterFilter(text: TrackingParameterFilterFixture.text)
+        let wc = makeWindow()
+        let tab = store.addTab(in: space, url: try XCTUnwrap(URL(string: Self.siteTracked)))
+        wc.selectTab(id: tab.id)
+        var shared: [Any] = []
+        wc.tabSidebar.makeSharingPicker = { items in
+            shared = items
+            return NSSharingServicePicker(items: items)
+        }
+
+        _ = try sidebarMenu(wc, row: row(of: tab, in: wc))
+
+        XCTAssertEqual((shared.first as? URL)?.absoluteString, Self.siteClean)
     }
 
     // MARK: - Share…

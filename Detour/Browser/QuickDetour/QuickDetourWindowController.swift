@@ -80,6 +80,7 @@ final class QuickDetourWindowController: NSWindowController {
         let controller = QuickDetourWindowController(profile: privateProfile, sourceSpace: source, quarantine: session)
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
+        // The built-in list only, as for its later navigations (TASK-329).
         controller.load(TrackingParameters.removing(from: url), typed: false)
         return controller
     }

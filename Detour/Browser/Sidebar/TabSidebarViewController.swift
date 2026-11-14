@@ -3745,7 +3745,7 @@ extension TabSidebarViewController: NSMenuDelegate {
         // Share submenu: shares the same clean link Copy URL copies
         // (TASK-326); the tab keeps the address as loaded.
         if let url = tabURL {
-            let picker = makeSharingPicker([TrackingParameters.removing(from: url)])
+            let picker = makeSharingPicker([TrackingParameters.cleanLink(for: url)])
             menu.addItem(picker.standardShareMenuItem)
         }
 
