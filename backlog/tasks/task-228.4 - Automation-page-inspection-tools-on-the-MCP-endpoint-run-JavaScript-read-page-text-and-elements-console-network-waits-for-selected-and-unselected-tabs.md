@@ -4,11 +4,11 @@ title: >-
   Automation: page inspection tools on the MCP endpoint (run JavaScript, read
   page text and elements, console, network, waits), for selected and unselected
   tabs
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T06:26:00Z'
-updated_date: '2026-11-14T07:06:00Z'
+updated_date: '2026-11-14T07:14:00Z'
 labels:
   - tooling
   - automation
@@ -68,4 +68,31 @@ Overlap to reconcile later: the epic branch (TASK-132.15/.16) has its own per-de
 - For TASK-228.6 / the epic merge: the epic's TASK-132.15/.16 instrumentation overlaps AutomationPageCapture; decide then whether both share one source.
 
 Full suite after the commits: 4158 tests, 19 skipped, 1 failure: ProfileDataRemovalTests.testDeletingAProfileRemovesItsWebKitDataFromDisk (timed out waiting for an extension worker's storage); passes alone (1/0), so a load-induced timeout unrelated to this change. Not run: /code-review (the lead's).
+
+2026-11-13, /code-review high --fix on 8125a6f..22c3f8c: 10 findings, 6 fixed in e0f3c67.
+- wait_for visible now checks every match.
+- Capture is installed only on controllers built by Space.makeUserContentController. Extension contexts' shared controllers are no longer touched.
+- wait_for keeps polling through internal_error while a page is between documents.
+- The deadline task is cancelled when the reply comes.
+- An over-cap evaluate result is converted once.
+- A re-opened XHR in flight is reported aborted.
+Skipped:
+- Records of a sleeping tab answer tab_asleep: intended, per AC #6.
+- No negative cache for non-tab web views: it could miss a view that becomes a tab later.
+- The console wrapper stringifies whole objects before cutting them (getters run): changing that needs a bounded serializer, so it is left as a known cost while automation is on.
+- next_seq after an endpoint restart: sessions end with the endpoint, so a stale cursor is not reused in practice.
+After the fixes: AutomationPageTests, ControllerTests, CaptureTests, ToolsTests and InputTests passed (TEST SUCCEEDED), and the review ran Page, Input and MCPServer (37/0). The full suite before the review was 4158 with 1 failure. That failure, ProfileDataRemovalTests (an extension-worker storage timeout), passes alone, so it is load-induced and unrelated.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Page inspection tools on the MCP endpoint:
+- evaluate_js: page or isolated world, awaited promises, script_error with name, message and stack, timeout.
+- read_page: text, HTML, or interactive elements with selectors that click accepts.
+- console_messages: console calls, uncaught errors and unhandled rejections, frames included, with a seq cursor.
+- network_requests: Resource Timing plus fetch and XHR method, status and failures; responseStatus is not exposed by this WebKit.
+- wait_for: load, selector (optionally visible), expression, URL substring.
+- wake_tab, and a tab_asleep code everywhere.
+They work for tabs no window shows. A tab never shown has a 0×0 view, so it has no visible elements or screenshot. Capture runs only while the endpoint listens, never in Private profiles, and only on tab controllers. Tests pass: AutomationPageTests 14 and every automation suite. Runtime-checked on an isolated build with Detour in the background. Follow-ups: input to window-less tabs (TASK-228.6, waits for the epic), the epic's instrumentation overlap (same task), the console wrapper's stringify cost.
+<!-- SECTION:FINAL_SUMMARY:END -->
