@@ -3,10 +3,11 @@ id: TASK-228.1
 title: >-
   Automation: an MCP endpoint in Detour, first slice for testing (in-process
   input, menus, screenshots), off until turned on
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-14T01:08:00Z'
-updated_date: '2026-11-14T01:30:00Z'
+updated_date: '2026-11-14T02:47:00Z'
 labels:
   - tooling
   - automation
@@ -68,7 +69,32 @@ Known in-process techniques (from TASK-89 and the wiki playbooks):
 - [ ] #11 Tools that act on page content (input by selector, screenshots of web content) address a target context through an identifier that can later name an extension popup, options page, side panel or service worker, not only a tab. This way TASK-228.2 adds context kinds without changing existing tool signatures
 - [ ] #12 Every tool declares an outputSchema and returns structuredContent (JSON) alongside any text, and failures carry a stable machine-readable error code (for example unknown_window, unknown_context, selector_no_match, no_open_menu, timeout, gate_closed) that tests assert on
 - [ ] #13 A minimal client in the repo (a scripts/ CLI or small module) performs the MCP handshake and session header and calls any tool with JSON arguments, printing the structured result. Scripts, /verify and an external test repo can drive the endpoint with no model in the loop
+- [ ] #14 Authorisation: every request needs the bearer token Detour generates (Release: shown in Settings with a reset that disconnects clients; test run: written to a file in the isolated DETOUR_DATA_DIR) and is refused with a non-local Origin header; an unauthenticated request gets a plain 401 with no OAuth metadata, so an OAuth-only client fails clearly. Tests cover a missing or wrong token and a foreign Origin
+- [ ] #15 A stdin/stdout helper bundled in the app (for example Detour.app/Contents/Helpers/detour-mcp) finds the running Detour's port and token itself and relays to the HTTP endpoint, so Claude Desktop and any other local MCP client connect with one command line and never handle the token
+- [ ] #16 Client compatibility: the endpoint accepts the last few MCP protocol versions at initialize; the text result of every tool carries the same JSON as structuredContent; input schemas are flat objects with basic types (no $ref, oneOf or unusual formats) so OpenAI and Gemini models accept them; screenshot tools take a save_to path as well as returning an image; related actions share one tool (for example one click tool with a modifiers argument) to keep the tool list small
+- [ ] #17 Several clients can be connected at once: the connected indicator lists them by the name each sends at initialize, and each can be disconnected separately
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Phases (each committed separately; user agreed 2026-11-13):
+1. Connection and access (ACs 1, 7, 9, 11-14, 16): localhost HTTP + MCP, gate, token + Origin/Host checks, first tools, scripts/ client.
+2. Input and menus (ACs 2, 3).
+3. Screenshots, appearance, Debug overrides (ACs 4, 8).
+4. Connected indicator, Settings toggle, bundled stdin/stdout helper (ACs 10, 15, 17).
+5. /verify + playbook, TASK-324 checks end to end (ACs 5, 6).
+
+Phase 1 design:
+- Detour/Automation/ (new). Pure, nonisolated pieces: JSONValue; HTTP/1.1 request parser (Content-Length and chunked bodies, keep-alive, 4 MB cap) and response writer; request authorisation (Host must be 127.0.0.1/localhost/[::1] on our port, Origin absent or local, Authorization: Bearer <token> compared in constant time; 401 carries WWW-Authenticate: Bearer realm="Detour" and no resource_metadata); the gate (off unless the Release setting is on, or DETOUR_MCP=1 with DETOUR_DATA_DIR set and not the default directory).
+- Endpoint: NWListener on 127.0.0.1 only (loopback interface, acceptLocalOnly), state behind a Mutex, each parsed request handed to the main actor. POST /mcp JSON-RPC (single or batch) answered as application/json; notifications 202; GET 405; DELETE ends the session. Published URL uses 127.0.0.1, never localhost (Node resolves localhost to ::1 first).
+- MCP core (@MainActor, no sockets, so it is unit-testable): initialize negotiates 2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05, issues Mcp-Session-Id, records clientInfo per session (for the phase 4 indicator); unknown session 404, missing session 400; MCP-Protocol-Version header checked when present; ping, tools/list, tools/call. Each tool result: structuredContent plus the same JSON as text; failures isError with {error: {code, message}}. outputSchemas list no required top-level fields, so an error result still validates. Input schemas flat (a test walks every schema and rejects $ref/oneOf/anyOf/allOf and non-basic types).
+- Files in the data directory, 0600: mcp-token (persistent, so a client config survives relaunch) and mcp-endpoint.json (url, port, pid, token; removed at quit). Test runs listen on an ephemeral port unless DETOUR_MCP_PORT is set.
+- Phase 1 tools: list_windows (window_id = NSWindow.windowNumber, which is also the CGWindowID 228.3 needs), list_spaces, list_tabs (favorites, pinned entries live or dormant, normal tabs; split group, sleeping, loading), select_tab (switches the window's space when needed; wakes dormant pinned/favorite entries the way a sidebar click does), open_url (the palette's typed-URL path, so Link Routes and internal pages behave as typed), run_menu_item (menu path or key equivalent; action dispatched to the given window's responder chain and validated there, because an inactive app has no key window). Private windows and spaces are left out of the lists and refused by ID (private_unreachable).
+- Context identifiers (AC 11): tab:<uuid> now; the parser has room for popup:/options:/sidepanel:/worker:<extension id> in 228.2.
+- scripts/detour-mcp: Python 3 stdlib CLI (initialize, notifications/initialized, tools/list, tools/call with JSON args) that reads mcp-endpoint.json from the DETOUR_DATA_DIR directory.
+- Tests: parser, authorisation, gate, MCP core (negotiation, sessions, schema flatness, error shapes), tools against real BrowserWindowControllers (happy paths, unknown window/tab, private refusal, dormant pinned), endpoint over a real socket (401, foreign Origin 403, bad Host 403, initialize + tools/call, unknown session 404).
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -78,4 +104,8 @@ Known in-process techniques (from TASK-89 and the wiki playbooks):
 2026-11-14: TASK-228.2 (extension testing tools for an external compatibility suite) builds on this endpoint. AC #11 was added so the targeting model here does not have to be reworked there.
 
 2026-11-14, user decision: the endpoint must serve deterministic scripts as well as agents. Regression runs replay scenarios without spending tokens, and an agent only writes new scenarios and diagnoses failures. MCP stays the single surface; there is no separate REST API. WebDriver/BiDi and AppleScript (TASK-319) were considered and rejected for this use: WebDriver is a large spec for little gain, and AppleScript handles structured results and async poorly. ACs #12 and #13 were added. The scenario format and runner belong in the external test repo, not in Detour.
+
+2026-11-13, user discussion (agreed): authorisation is a bearer token plus an Origin check, not localhost alone (any local process, and a web page using DNS rebinding, can reach a localhost port). Threat model: the token stops web pages and local programs that cannot read the user's files (sandboxed apps, other accounts); it does not stop malware running as the user, which could read the token file anyway. Claude Code connects directly (claude mcp add --transport http ... --header 'Authorization: Bearer ...'); Claude Desktop's config only launches stdin/stdout servers and its connectors run in the cloud, so it needs the bundled helper (AC #15), which also spares Claude Code users the token. Client survey (from memory, to re-check against each client's docs before writing setup instructions): Cursor, VS Code, Windsurf, Gemini CLI and Cline take a local HTTP URL with headers; Codex CLI, Zed, Goose and LM Studio vary; every local client can launch a helper; claude.ai, ChatGPT and cloud agents cannot reach localhost (out of scope, recorded on TASK-228). ACs #14-#17 added.
+
+Indicator placement (proposed, not yet confirmed by the user): a small badge at the top of the sidebar, with a titlebar fallback when the sidebar is hidden, and Disconnect in its menu.
 <!-- SECTION:NOTES:END -->
