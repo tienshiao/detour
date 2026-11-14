@@ -178,6 +178,12 @@ scripts/detour-mcp call open_url window_id=1 url=http://127.0.0.1:8765/
 scripts/detour-mcp call click context=<tab_id> selector='#link' button=right
 scripts/detour-mcp call choose_menu_item title='Download Linked File'
 scripts/detour-mcp call screenshot window_id=1 save_to="$OUT/after.png" include_image=false
+# Reading a page (any live tab, shown in a window or not):
+scripts/detour-mcp call evaluate_js context=<tab_id> expression='document.title'
+scripts/detour-mcp call read_page context=<tab_id> mode=elements     # selectors click takes
+scripts/detour-mcp call wait_for context=<tab_id> selector='#late' visible=true timeout_ms=5000
+scripts/detour-mcp call console_messages context=<tab_id> after_seq=0 'levels=["error"]'
+scripts/detour-mcp call network_requests context=<tab_id> failed_only=true
 ```
 
 Wait for `~/Library/Application Support/DetourVerify/mcp-endpoint.json`

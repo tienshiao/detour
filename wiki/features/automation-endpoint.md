@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Automation endpoint (MCP)
-description: "Detour's local MCP server for agents and scripts (TASK-228.1): how it is turned on, who may connect (Host, Origin, bearer token), the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the connected-agent indicator and disconnecting, the bundled stdio helper and client setup, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM)."
+description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4): how it is turned on, who may connect (Host, Origin, bearer token), the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the connected-agent indicator and disconnecting, the bundled stdio helper and client setup, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status)."
 tags: [automation, mcp, testing, security]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T08:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T10:00:00Z }
 sources:
   - id: automation-dir
     resource: ../../Detour/Automation
@@ -27,6 +27,12 @@ sources:
   - id: input
     resource: ../../Detour/Automation/AutomationInput.swift
     title: AutomationInput.swift (delivery, keys, elements, the menu tracker)
+  - id: task-228-4
+    resource: backlog:TASK-228.4
+    title: "Automation: page inspection tools on the MCP endpoint"
+  - id: page
+    resource: ../../Detour/Automation/AutomationPageCapture.swift
+    title: AutomationPageCapture.swift and AutomationPage.swift (capture script, buffers, page scripts)
   - id: tests
     resource: ../../DetourTests/MCPServerTests.swift
     title: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests
@@ -38,7 +44,9 @@ A local [MCP](https://modelcontextprotocol.io) server inside Detour, so an
 agent (Claude Code, another MCP client) or a plain script can read the
 browser's state and act on it: list windows, spaces and tabs, select a tab,
 open a URL, run a menu command, click, type, and choose from the menu that is
-open, take screenshots. Built first for testing Detour itself
+open, take screenshots, and read a page: run JavaScript, read its text, HTML and
+interactive elements, its console and network records, and wait for
+something to happen in it (TASK-228.4). Built first for testing Detour itself
 (replacing harness patches pasted into AppDelegate), and shipped in Release
 too, off until turned on.[^task-228-1] TASK-228.2 adds extension
 contexts.
@@ -151,10 +159,23 @@ tool's schema to hold it.
 | `close_menu` | Closes the open menu without choosing | |
 | `screenshot` | A PNG of a window's content, its sidebar (`part`) or a tab's page (`context`), as image content and/or written to `save_to` (an existing file only with `overwrite`); `scale` 1 or 2, never above the display's | `source` app (default): drawn inside Detour, no grant, works in the background, no shadow, but no glass (see Traps). `source` screen: the window server's picture through ScreenCaptureKit, exact; needs Screen Recording (checked with `CGPreflightScreenCaptureAccess`, never prompted), else `permission_denied`. |
 | `set_appearance` | Light, dark, or following the system, for all of Detour (`NSApp.appearance`) | Until quit or the next call. |
+| `evaluate_js` | Runs `expression` or `script` (a function body with `return`) in a tab's main frame, `world` page (default) or isolated (`WKContentWorld` "DetourAutomation": the DOM, not the page's globals); awaits promises | Result as JSON with its `type`; what JSON cannot hold is converted in the page (nodes `<div#id.class>`, cycles `[Circular]`, functions, undefined null). A throw is `script_error` with `error.details` {name, message, stack}; a syntax error too (from WebKit's exception). `timeout_ms` (default 10 s) gives `timeout`; the script runs on. Results over 1 MB are cut (`truncated`). |
+| `read_page` | url, title, ready_state, viewport, and by `mode`: `text` (default, `innerText`), `html` (`outerHTML`), `elements`, `summary` | `selector` narrows; `max_length` cuts text and html, `max_elements` the list, with `truncated`. Elements: tag, role (explicit or implicit), name (aria-labelledby, aria-label, label, text, alt, title, placeholder), a selector unique in the document (`#id`, then `tag[data-testid|name|aria-label=…]`, then an `nth-of-type` path), rect in CSS pixels, visible (`checkVisibility`), in_viewport, disabled. Runs in the isolated world. The argument is `mode`, not `format`, a JSON Schema keyword the flatness test refuses. |
+| `console_messages` | A tab's console calls, uncaught errors and unhandled rejections, all frames, after `after_seq`, filtered by `levels` | See "Page capture". |
+| `network_requests` | A tab's navigation and resource loads (Resource Timing) and its fetch and XHR calls, after `after_seq`, by `sources`, `failed_only` | See "Page capture" for the limits. |
+| `wait_for` | Polls every 100 ms until `load` (not loading and readyState complete), `selector` (with `visible`), `expression` truthy (a throw counts as false; the last one is in the timeout's message) or `url` (a plain substring) | `timeout` after `timeout_ms` (default 10 s). Exactly one condition. |
+| `wake_tab` | Loads a sleeping tab's page (`BrowserTab.wake()`) without selecting it | `woken` false when it was awake. |
 | `set_debug_override` | Debug builds only: `reduce_motion` (this process, via `MotionPreference`), `space_toss_hop` and `space_toss_gravity` (the data directory's defaults keys `SpaceCelebration` already read in Debug); `default` clears | Absent from Release (checked on a Release build: its tool list and its binary's strings). |
 
 Tools that act on page content take a `context` (`tab:<uuid>`, or a bare
-tab id). `popup:`, `options:`, `sidepanel:` and `worker:` already parse and
+tab id): a tab of a non-Private space, normal or pinned, or a live favorite.
+The page tools (`evaluate_js`, `read_page`, `console_messages`,
+`network_requests`, `wait_for`, `wake_tab`, and `screenshot` with a context)
+take it whether or not a window shows the tab (`resolvePage`); the input
+tools still need a window and answer `not_displayed` without one (input to
+those tabs is TASK-228.6). A sleeping tab (no web view) answers `tab_asleep`
+in every page and input tool; before TASK-228.4 the input tools said
+`not_displayed`. `popup:`, `options:`, `sidepanel:` and `worker:` already parse and
 answer `unknown_context`, so TASK-228.2 adds extension contexts without
 changing signatures.
 
@@ -182,6 +203,59 @@ the person's pointer never moves (`AutomationInput`):[^input]
   every menu in the app; the newest one open is what `list_menu` shows.
   Choosing calls `performActionForItem(at:)` while the menu is still
   tracking (WebKit's items need their live menu), then `cancelTracking()`.
+
+# Page capture
+
+What `console_messages` and `network_requests` read (`AutomationPageCapture`):[^page]
+
+- **A user script in the page world**, at document start, in every frame
+  (`forMainFrameOnly: false`). It wraps `console.log/info/warn/error/debug`
+  (the wrapper calls the original, so the page's console is unchanged),
+  listens for `error` (uncaught, as `ErrorEvent`s only) and
+  `unhandledrejection`, observes Resource Timing (`PerformanceObserver`,
+  `resource`, buffered), sends the navigation's entry once after the load
+  event (it exists from the start but is complete only then: sent at once it
+  had duration 0), and wraps `fetch` and `XMLHttpRequest` for method,
+  status and failures. The fetch wrapper returns a promise that settles as
+  the page's own, so a fetch the page leaves unhandled is still unhandled for
+  it. Every hook is in a try/catch, the code is `let`/`const` only, and a
+  symbol on `window` makes a second run a no-op.
+- **One handler**, `detourAutomationCapture`, in the page world. The tab comes
+  from `message.webView` (looked up among reachable tabs, then cached); the
+  frame URL and main-frame flag from `message.frameInfo`, never from the page.
+  Fields are whitelisted and strings cut to 8000 characters, since the page
+  can post anything to the handler.
+- **Per tab, two ring buffers** (console, network) of 1000 entries with their
+  own increasing `seq`. Tools take `after_seq`, return `next_seq` (pass it
+  back to read only newer entries; with `has_more` it is the last returned)
+  and `dropped` (entries after the cursor the ring overwrote). Records
+  survive navigation. Buffers of closed tabs are pruned (at most every 5 s,
+  on a record or a read).
+- **Only while the endpoint listens.** `AutomationController` starts capture
+  once listening and stops it in `stop()`. Starting adds the script and the
+  handler to every reachable tab's user content controller and runs the
+  script once in pages already loaded (main frame only: their subframes are
+  recorded from their next load). New web views get it from
+  `Space.makeUserContentController(for:)`, never for a Private profile (nor a
+  quarantine, which uses the Private profile). Stopping removes both (there
+  is no public way to remove one user script: all are removed and the others
+  added back) and forgets every record. A page that already ran the script
+  keeps its wrappers until it reloads, posting to a handler that is gone,
+  silently. `seq` starts again after a restart.
+- **Noticeable by the page**, accepted while automation is on: the wrapped
+  `console.log.toString()`, `fetch` and `XMLHttpRequest.prototype`, and the
+  handler under `window.webkit.messageHandlers`. A page could also post
+  records of its own into its tab's buffer.
+
+Limits of `network_requests`: no headers or bodies; a cross-origin
+resource's sizes and timing are 0 unless it sends `Timing-Allow-Origin`; a
+load that failed outright (refused, blocked) has no Resource Timing entry
+(fetch and XHR report it as `error`); requests made by workers are not seen;
+a fetch appears twice, as `fetch` and as `resource`. `status` of resource and
+navigation entries comes from `PerformanceResourceTiming.responseStatus`,
+which the WebKit on this machine (macOS 26, November 2026) does not expose:
+it is null there (checked in tests and at runtime), and only fetch and XHR
+carry a status.
 
 # Who is connected, and stopping them
 
@@ -336,6 +410,18 @@ Claude Code connects directly:
   the window, the event under `eventKey`) before each mouse-down and
   key-down, and that monitor listens to it too. Control-Tab's switcher,
   sidebar swipes and the hover card do not yet.
+- **A tab never shown has no size.** A tab opened in the background has a
+  web view with a zero frame until a window first hosts it. Its page loads
+  and runs scripts, and `read_page` text works, but its viewport is 0 × 0, so
+  no element is visible, and WebKit's snapshot of it has no bitmap:
+  `screenshot` answers `not_displayed` ("select it once"). A tab shown once
+  keeps its frame after the window moves on, and its screenshot works with
+  no window (checked in tests and at runtime). Giving such a web view a
+  frame on demand was not done: it would resize and relayout a page nobody
+  asked to change.
+- **A property named `format`** trips `MCPServerTests`' flat-schema walk,
+  which refuses JSON Schema keywords anywhere, property names included; most
+  validators would accept it, but `read_page` calls it `mode`.
 - **SIGTERM runs no quit path.** The SIGTERM source ends native hosts and
   re-raises the signal, so `applicationWillTerminate` never runs. It removes
   the endpoint file too, and only if the file's `pid` is this process. A
@@ -358,7 +444,16 @@ native context menu chosen from, and the input errors),
 `AutomationCaptureTests` (window, sidebar and page PNGs as image content
 and on disk, scale 2, the page's own colours from WebKit's snapshot, light
 and dark, the Debug overrides and that they exist only in Debug, and the
-errors), `AutomationControllerTests` (on and off with the endpoint file, a
+errors), `AutomationPageTests` (TASK-228.4: evaluate_js in both worlds, awaited
+promises, converted values, thrown errors, syntax errors and timeouts;
+read_page text, html, summary and elements whose selectors click takes;
+console records from the main frame and a subframe with cursors and level
+filters; network records of the navigation, resources, a 404 fetch, an XHR
+and a refused fetch; wait_for's four conditions and timeouts; wake_tab;
+every page tool on a tab no window shows; unknown, closed, sleeping and
+Private tabs; capture off until started, reaching an already loaded page
+once, removed on stop, never in a Private profile; the ring buffer),
+`AutomationControllerTests` (on and off with the endpoint file, a
 stop during a start, Reset Token, disconnect and allow, idle sessions, the
 indicator's text and its place above the page through tab switches) and
 `AutomationHelperTests` (the built helper relaying a session, starting a new
@@ -379,3 +474,4 @@ the setup strings Settings copies).[^tests]
 [^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests, AutomationInputTests, AutomationCaptureTests, AutomationControllerTests, AutomationHelperTests
 [^input]: Detour/Automation/AutomationInput.swift
 [^controller]: Detour/Automation/AutomationController.swift
+[^page]: AutomationPageCapture.swift and AutomationPage.swift (capture script, buffers, page scripts)

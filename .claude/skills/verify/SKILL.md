@@ -72,6 +72,13 @@ scripts/detour-mcp call click window_id=1 x=208 y=1076     # a native control by
 scripts/detour-mcp call screenshot window_id=1 save_to="$OUT/after.png" include_image=false
 scripts/detour-mcp call set_appearance appearance=dark
 scripts/detour-mcp call set_debug_override name=reduce_motion value=on   # Debug builds
+# Reading a page: any live tab, shown in a window or not (input still needs a window)
+scripts/detour-mcp call evaluate_js context=<tab_id> expression='document.title'   # or script='…return x'
+scripts/detour-mcp call read_page context=<tab_id> mode=elements     # role, name, selector click takes
+scripts/detour-mcp call wait_for context=<tab_id> selector='#late' visible=true timeout_ms=5000
+scripts/detour-mcp call console_messages context=<tab_id> after_seq=0 'levels=["error"]'   # pass next_seq back
+scripts/detour-mcp call network_requests context=<tab_id> failed_only=true
+scripts/detour-mcp call wake_tab context=<tab_id>               # a sleeping tab (tab_asleep), not selected
 ```
 
 - Points are in the window's content, top-left origin, in points (what
