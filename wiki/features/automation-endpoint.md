@@ -275,7 +275,7 @@ again from the next call.
   stopped (waiting commands fail), its endpoint-opened popups closed, its
   extension console and stub counts forgotten. Changing the key from
   outside (`defaults write`) changes what the tools allow at once (checked
-  at runtime), but only the Settings checkbox installs or removes capture.
+  at runtime), but only the Settings switch installs or removes capture.
   "At once" means from the next call: a call already running into a
   Private tab (a long `type_text` with `interval_ms`, an `evaluate_js`)
   finishes, as one does after Disconnect, Revoke or Turn Off.
@@ -894,7 +894,7 @@ and posts `didChangeNotification` for the UI:[^controller]
 
 Settings > General > Automation copies what a client needs, lists the
 allowed clients (name, client name, when allowed, last used) with Revoke,
-and has the Private checkbox; its status line shows the address only in a
+and has the Private switch; its status line shows the address only in a
 test run:
 
 - **The bundled helper**, `Detour.app/Contents/MacOS/detour-mcp`, for any

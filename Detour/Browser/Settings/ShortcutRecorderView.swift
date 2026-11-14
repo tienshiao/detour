@@ -88,7 +88,7 @@ final class ShortcutRecorderView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// The label's baseline, so the row's checkbox lines up with it.
+    /// The label's baseline, so the row's "Shortcut" label lines up with it.
     override var firstBaselineOffsetFromTop: CGFloat {
         (22 - label.intrinsicContentSize.height) / 2 + label.firstBaselineOffsetFromTop
     }

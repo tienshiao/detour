@@ -3,13 +3,13 @@ import AppKit
 class GeneralSettingsViewController: SettingsPaneViewController {
     private var defaultBrowserButton: NSButton!
     private var statusLabel: NSTextField!
-    private var peekCheckbox: NSButton!
-    private var automationCheckbox: NSButton!
+    private var peekSwitch: NSSwitch!
+    private var automationSwitch: NSSwitch!
     private var automationStatus: NSTextField!
     private var automationButtons: NSStackView!
     private var tokenButtons: [NSButton] = []
     private var allowAgainButton: NSButton!
-    private var privateCheckbox: NSButton!
+    private var privateSwitch: NSSwitch!
     private var privateHelp: NSTextField!
     private var clientsTitle: NSTextField!
     private var clientsList: NSStackView!
@@ -45,14 +45,16 @@ class GeneralSettingsViewController: SettingsPaneViewController {
 
         // Peek (TASK-307): app-wide.
         let peekTitle = NSTextField.settingsSectionTitle("Peek")
-        peekCheckbox = NSButton(checkboxWithTitle: "Open links from pinned tabs and favorites in a Peek",
-                                target: self, action: #selector(peekCheckboxChanged))
-        peekCheckbox.setAccessibilityIdentifier("peekEnabled")
+        peekSwitch = NSSwitch()
+        peekSwitch.target = self
+        peekSwitch.action = #selector(peekSwitchChanged)
+        peekSwitch.setAccessibilityIdentifier("peekEnabled")
+        let peekRow = SettingsSwitchRow.make(peekSwitch, title: "Open links from pinned tabs and favorites in a Peek")
         let peekHelp = SettingsWrappingLabel(
             wrapping: "Off, links to other sites from pinned tabs and favorites open in new tabs. Shift-click still opens a Peek.",
             estimatedWidth: Self.textWidth)
         // TASK-292.11: the Peek guide, under the help that explains it.
-        let peekRows = NSStackView(views: [peekCheckbox, peekHelp, SettingsGuideLink(.peek)])
+        let peekRows = NSStackView(views: [peekRow, peekHelp, SettingsGuideLink(.peek)])
         peekRows.orientation = .vertical
         peekRows.alignment = .leading
         peekRows.spacing = SettingsMetrics.controlToHelp
@@ -63,9 +65,12 @@ class GeneralSettingsViewController: SettingsPaneViewController {
 
         // Automation (TASK-228.1): the MCP endpoint, off by default.
         let automationTitle = NSTextField.settingsSectionTitle("Automation")
-        automationCheckbox = NSButton(checkboxWithTitle: "Let AI agents and scripts control Detour (MCP)",
-                                      target: self, action: #selector(automationCheckboxChanged))
-        automationCheckbox.setAccessibilityIdentifier("automationEnabled")
+        automationSwitch = NSSwitch()
+        automationSwitch.target = self
+        automationSwitch.action = #selector(automationSwitchChanged)
+        automationSwitch.setAccessibilityIdentifier("automationEnabled")
+        let automationRow = SettingsSwitchRow.make(automationSwitch,
+                                                   title: "Let AI agents and scripts control Detour (MCP)")
         let automationHelp = SettingsWrappingLabel(
             wrapping: "While this is on, an MCP client you allow, such as Claude Code, can read your pages and act "
                 + "in them as you, signed in to your sites. The first time a client connects, Detour asks you to "
@@ -73,9 +78,11 @@ class GeneralSettingsViewController: SettingsPaneViewController {
                 + "clients up with the commands below: they run Detour's helper, which finds Detour and keeps the "
                 + "client's access itself.",
             estimatedWidth: Self.textWidth)
-        privateCheckbox = NSButton(checkboxWithTitle: "Allow agents to use Private windows", target: self,
-                                   action: #selector(privateCheckboxChanged))
-        privateCheckbox.setAccessibilityIdentifier("automationAllowPrivate")
+        privateSwitch = NSSwitch()
+        privateSwitch.target = self
+        privateSwitch.action = #selector(privateSwitchChanged)
+        privateSwitch.setAccessibilityIdentifier("automationAllowPrivate")
+        let privateRow = SettingsSwitchRow.make(privateSwitch, title: "Allow agents to use Private windows")
         privateHelp = SettingsWrappingLabel(
             wrapping: "Off, agents cannot see or use Private windows, their tabs or menus, or the Private "
                 + "profile's extensions. Turning it off takes effect at once.",
@@ -108,13 +115,13 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         automationButtons = NSStackView(views: [copyCommand, copyConfig, copyToken, resetToken])
         automationButtons.orientation = .horizontal
         automationButtons.spacing = SettingsMetrics.labelToControl
-        let automationRows = NSStackView(views: [automationCheckbox, automationHelp, privateCheckbox, privateHelp,
+        let automationRows = NSStackView(views: [automationRow, automationHelp, privateRow, privateHelp,
                                                  automationStatus, automationButtons, allowAgainButton,
                                                  clientsTitle, clientsList])
         automationRows.orientation = .vertical
         automationRows.alignment = .leading
         automationRows.spacing = SettingsMetrics.controlToHelp
-        // The Private checkbox and the client list are their own groups.
+        // The Private switch and the client list are their own groups.
         for view in [automationHelp, privateHelp, automationStatus, automationButtons, allowAgainButton!] as [NSView] {
             automationRows.setCustomSpacing(SettingsMetrics.rowGap, after: view)
         }
@@ -151,7 +158,7 @@ class GeneralSettingsViewController: SettingsPaneViewController {
     override func viewWillAppear() {
         super.viewWillAppear()
         updateStatus()
-        peekCheckbox.state = PeekSettings.shared.isEnabled ? .on : .off
+        peekSwitch.state = PeekSettings.shared.isEnabled ? .on : .off
         updateAutomation()
         if automationObserver == nil {
             automationObserver = NotificationCenter.default.addMainObserver(
@@ -166,9 +173,9 @@ class GeneralSettingsViewController: SettingsPaneViewController {
 
     private func updateAutomation() {
         let controller = AutomationController.shared
-        // The saved setting too: after a failed start the box stays checked
-        // (the endpoint will try again at launch) until the user unchecks it.
-        automationCheckbox.state = controller.status.isOn || controller.isEnabledInSettings ? .on : .off
+        // The saved setting too: after a failed start the switch stays on
+        // (the endpoint will try again at launch) until the user turns it off.
+        automationSwitch.state = controller.status.isOn || controller.isEnabledInSettings ? .on : .off
         switch controller.status {
         case .off:
             automationStatus.stringValue = "Off."
@@ -185,7 +192,7 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         case .failed(let reason):
             automationStatus.stringValue = "Could not start: \(reason)"
         }
-        privateCheckbox.state = controller.allowsPrivateInSettings ? .on : .off
+        privateSwitch.state = controller.allowsPrivateInSettings ? .on : .off
         let buttonsHidden = !controller.status.isOn
         let allowHidden = controller.blockedClientNames.isEmpty
         let tokenButtonsHidden = controller.usesClientApproval
@@ -258,12 +265,12 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         AutomationController.shared.revoke(clientID: id)
     }
 
-    @objc private func privateCheckboxChanged() {
-        AutomationController.shared.setAllowsPrivate(privateCheckbox.state == .on)
+    @objc private func privateSwitchChanged() {
+        AutomationController.shared.setAllowsPrivate(privateSwitch.state == .on)
     }
 
-    @objc private func automationCheckboxChanged() {
-        AutomationController.shared.setEnabled(automationCheckbox.state == .on)
+    @objc private func automationSwitchChanged() {
+        AutomationController.shared.setEnabled(automationSwitch.state == .on)
     }
 
     /// The bundled stdio helper (TASK-228.1): clients run it, and it finds
@@ -347,8 +354,8 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         for name in controller.blockedClientNames { controller.allow(clientName: name) }
     }
 
-    @objc private func peekCheckboxChanged() {
-        PeekSettings.shared.isEnabled = peekCheckbox.state == .on
+    @objc private func peekSwitchChanged() {
+        PeekSettings.shared.isEnabled = peekSwitch.state == .on
     }
 
     private func updateStatus() {

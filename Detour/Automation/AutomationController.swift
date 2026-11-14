@@ -122,7 +122,7 @@ final class AutomationController {
     /// read now: every check asks again, so turning it off refuses at once.
     var allowsPrivateInSettings: Bool { defaults.bool(forKey: AutomationGate.allowPrivateDefaultsKey) }
 
-    /// The Settings checkbox. Turning it off also removes page capture from
+    /// The Settings switch. Turning it off also removes page capture from
     /// Private pages and forgets their records, stops the Private profile's
     /// workers' parks and forgets its extension console and stub counts.
     func setAllowsPrivate(_ allowed: Bool) {
@@ -183,7 +183,7 @@ final class AutomationController {
         start(mode: mode)
     }
 
-    /// The Settings checkbox and the indicator's Turn Off: saves the setting
+    /// The Settings switch and the indicator's Turn Off: saves the setting
     /// and starts or stops the endpoint to match.
     func setEnabled(_ enabled: Bool) {
         defaults.set(enabled, forKey: AutomationGate.enabledDefaultsKey)

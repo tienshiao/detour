@@ -9,7 +9,7 @@ final class QuickDetourSettingsViewController: SettingsPaneViewController {
     private var hotKey: QuickDetourHotKey { .shared }
     private var quickDetourSettings: QuickDetourSettings { .shared }
 
-    private var hotKeyCheckbox: NSButton!
+    private var hotKeySwitch: NSSwitch!
     private var hotKeyRecorder: ShortcutRecorderView!
     private var hotKeyWarningIcon: NSImageView!
     private var hotKeyWarningLabel: SettingsWrappingLabel!
@@ -19,7 +19,7 @@ final class QuickDetourSettingsViewController: SettingsPaneViewController {
     /// Why the recorder refused the last shortcut typed, while it records.
     private var hotKeyRefusal: String?
     private var observers: [NSObjectProtocol] = []
-    private var optionCommandCheckbox: NSButton!
+    private var optionCommandSwitch: NSSwitch!
     private var idleTimeoutPopUp: NSPopUpButton!
 
     /// The width of a full-width line of text in the body.
@@ -29,20 +29,29 @@ final class QuickDetourSettingsViewController: SettingsPaneViewController {
 
     // MARK: - Building
 
-    /// "[✓] Open Quick Detour from any app with [⌥⌘N]", a warning line when
-    /// the shortcut is refused or not registered, and the help text; then a
-    /// switch for Opt-Cmd-click, the idle auto-close pop-up with its help, and
-    /// a caption saying links from other apps are routed on the Links pane
-    /// (no switch of their own).
+    /// "Open Quick Detour from any app [switch]" and under it "Shortcut
+    /// [⌥⌘N]" (TASK-328: a switch row as on the other panes, and the recorder
+    /// a row of its own, since it is also File > New Quick Detour Window's
+    /// shortcut while the switch is off), a warning line when the shortcut is
+    /// refused or not registered, and the help text; then a switch for
+    /// Opt-Cmd-click, the idle auto-close pop-up with its help, and a caption
+    /// saying links from other apps are routed on the Links pane (no switch
+    /// of their own).
     override func makeBody() -> NSView {
         let container = NSView()
         let name = QuickDetour.displayName
 
-        hotKeyCheckbox = NSButton(checkboxWithTitle: "Open \(name) from any app with",
-                                  target: self, action: #selector(hotKeyCheckboxChanged))
-        hotKeyCheckbox.translatesAutoresizingMaskIntoConstraints = false
-        hotKeyCheckbox.setAccessibilityIdentifier("quickDetourHotKeyEnabled")
-        container.addSubview(hotKeyCheckbox)
+        hotKeySwitch = NSSwitch()
+        hotKeySwitch.target = self
+        hotKeySwitch.action = #selector(hotKeySwitchChanged)
+        hotKeySwitch.setAccessibilityIdentifier("quickDetourHotKeyEnabled")
+        let hotKeyRow = SettingsSwitchRow.make(hotKeySwitch, title: "Open \(name) from any app")
+        container.addSubview(hotKeyRow)
+
+        let shortcutLabel = NSTextField(labelWithString: "Shortcut")
+        shortcutLabel.font = .systemFont(ofSize: 13)
+        shortcutLabel.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(shortcutLabel)
 
         hotKeyRecorder = ShortcutRecorderView()
         hotKeyRecorder.setAccessibilityIdentifier("quickDetourHotKeyShortcut")
@@ -77,11 +86,13 @@ final class QuickDetourSettingsViewController: SettingsPaneViewController {
         container.addSubview(help)
 
         // Opt-Cmd-click on a link or a sidebar tab.
-        optionCommandCheckbox = NSButton(checkboxWithTitle: "Open links and sidebar tabs in \(name) with ⌥⌘-click",
-                                         target: self, action: #selector(optionCommandCheckboxChanged))
-        optionCommandCheckbox.translatesAutoresizingMaskIntoConstraints = false
-        optionCommandCheckbox.setAccessibilityIdentifier("quickDetourOptionCommandClick")
-        container.addSubview(optionCommandCheckbox)
+        optionCommandSwitch = NSSwitch()
+        optionCommandSwitch.target = self
+        optionCommandSwitch.action = #selector(optionCommandSwitchChanged)
+        optionCommandSwitch.setAccessibilityIdentifier("quickDetourOptionCommandClick")
+        let optionCommandRow = SettingsSwitchRow.make(
+            optionCommandSwitch, title: "Open links and sidebar tabs in \(name) with ⌥⌘-click")
+        container.addSubview(optionCommandRow)
         let optionCommandHelp = SettingsWrappingLabel(
             wrapping: "A sidebar tab opens as a copy; the tab stays where it is.", estimatedWidth: Self.textWidth)
         container.addSubview(optionCommandHelp)
@@ -118,14 +129,20 @@ final class QuickDetourSettingsViewController: SettingsPaneViewController {
         hotKeyHelpBelowWarning = help.topAnchor.constraint(equalTo: hotKeyWarningLabel.bottomAnchor,
                                                            constant: SettingsMetrics.controlToHelp)
         NSLayoutConstraint.activate([
-            hotKeyRecorder.topAnchor.constraint(equalTo: container.topAnchor),
-            hotKeyCheckbox.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            hotKeyCheckbox.centerYAnchor.constraint(equalTo: hotKeyRecorder.centerYAnchor),
-            hotKeyRecorder.leadingAnchor.constraint(equalTo: hotKeyCheckbox.trailingAnchor,
+            hotKeyRow.topAnchor.constraint(equalTo: container.topAnchor),
+            hotKeyRow.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hotKeyRow.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
+
+            // "Shortcut" on the recorder's baseline, as the idle row's label
+            // sits on its pop-up's.
+            hotKeyRecorder.topAnchor.constraint(equalTo: hotKeyRow.bottomAnchor, constant: SettingsMetrics.rowGap),
+            shortcutLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            shortcutLabel.firstBaselineAnchor.constraint(equalTo: hotKeyRecorder.firstBaselineAnchor),
+            hotKeyRecorder.leadingAnchor.constraint(equalTo: shortcutLabel.trailingAnchor,
                                                     constant: SettingsMetrics.labelToControl),
             hotKeyRecorder.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
 
-            hotKeyWarningIcon.leadingAnchor.constraint(equalTo: hotKeyCheckbox.leadingAnchor),
+            hotKeyWarningIcon.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             hotKeyWarningIcon.centerYAnchor.constraint(equalTo: hotKeyWarningLabel.topAnchor,
                                                        constant: LinkRouteCellView.warningFirstLineCenter),
             hotKeyWarningLabel.topAnchor.constraint(equalTo: hotKeyRecorder.bottomAnchor,
@@ -138,10 +155,10 @@ final class QuickDetourSettingsViewController: SettingsPaneViewController {
             help.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             help.trailingAnchor.constraint(equalTo: container.trailingAnchor),
 
-            optionCommandCheckbox.topAnchor.constraint(equalTo: help.bottomAnchor, constant: SettingsMetrics.rowGap),
-            optionCommandCheckbox.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            optionCommandCheckbox.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
-            optionCommandHelp.topAnchor.constraint(equalTo: optionCommandCheckbox.bottomAnchor,
+            optionCommandRow.topAnchor.constraint(equalTo: help.bottomAnchor, constant: SettingsMetrics.rowGap),
+            optionCommandRow.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            optionCommandRow.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
+            optionCommandHelp.topAnchor.constraint(equalTo: optionCommandRow.bottomAnchor,
                                                    constant: SettingsMetrics.controlToHelp),
             optionCommandHelp.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             optionCommandHelp.trailingAnchor.constraint(equalTo: container.trailingAnchor),
@@ -199,12 +216,12 @@ final class QuickDetourSettingsViewController: SettingsPaneViewController {
 
     // MARK: - Actions
 
-    @objc private func hotKeyCheckboxChanged() {
-        hotKey.settings.isEnabled = hotKeyCheckbox.state == .on
+    @objc private func hotKeySwitchChanged() {
+        hotKey.settings.isEnabled = hotKeySwitch.state == .on
     }
 
-    @objc private func optionCommandCheckboxChanged() {
-        quickDetourSettings.isOptionCommandClickEnabled = optionCommandCheckbox.state == .on
+    @objc private func optionCommandSwitchChanged() {
+        quickDetourSettings.isOptionCommandClickEnabled = optionCommandSwitch.state == .on
     }
 
     @objc private func idleTimeoutChanged() {
@@ -216,12 +233,12 @@ final class QuickDetourSettingsViewController: SettingsPaneViewController {
     /// The controls from the settings; the warning line from the recorder's
     /// refusal, else the registration's state.
     private func updateControls() {
-        optionCommandCheckbox.state = quickDetourSettings.isOptionCommandClickEnabled ? .on : .off
+        optionCommandSwitch.state = quickDetourSettings.isOptionCommandClickEnabled ? .on : .off
         if let index = QuickDetourIdleTimeout.allCases.firstIndex(of: quickDetourSettings.idleTimeout) {
             idleTimeoutPopUp.selectItem(at: index)
         }
         let settings = hotKey.settings
-        hotKeyCheckbox.state = settings.isEnabled ? .on : .off
+        hotKeySwitch.state = settings.isEnabled ? .on : .off
         if !hotKeyRecorder.isRecording {
             hotKeyRecorder.shortcut = settings.shortcut
             hotKeyRefusal = nil

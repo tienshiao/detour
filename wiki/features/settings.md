@@ -79,6 +79,12 @@ sources:
   - id: guide-link-tests
     resource: ../../DetourTests/SettingsGuideLinkTests.swift
     title: SettingsGuideLinkTests.swift
+  - id: task-328
+    resource: backlog:TASK-328
+    title: "Settings: use switches instead of checkboxes on every Settings pane"
+  - id: switch-row-tests
+    resource: ../../DetourTests/SettingsSwitchRowTests.swift
+    title: SettingsSwitchRowTests.swift
   - id: layout-notes
     resource: "Agent session notes, 2026-09-25 and 2026-09-26: Settings pane layout (not in the repository)"
     title: Settings pane layout lessons
@@ -252,12 +258,39 @@ their control's first baseline (`rowAlignment = .firstBaseline`); a row
 whose control has no text (the colour well, a switch) is centred instead. A
 section title is 12 pt semibold, like System Settings' group headers.
 
+### Switch rows
+
+Every on/off setting in the window is an `NSSwitch` (TASK-328, at the
+user's request: General and Quick Detour used checkboxes until Nov 14
+2026).[^task-328] A switch has no title, so each one has a label beside it,
+in one of three forms:
+
+| Form | Where | Layout |
+|---|---|---|
+| Label column | Profiles (`ProfileSettingsLayout` grid) | the label right-aligned in the 124 pt column, the regular switch 8 pt after it, centred on it |
+| Label, then switch | Extensions (Enabled, Allow in Private), General, Quick Detour (`SettingsSwitchRow.make`) | the 13 pt label at the column's leading edge, the regular switch 8 pt after it, centred on it |
+| Switch, then name | a bordered group (Profiles' filter lists and extension switches, an extension's permissions; `SettingsGroupBoxView.switchRow`) | a small or mini switch, the 12 pt name 6 pt after it |
+
+General and Quick Detour have no label column, and their labels are
+sentences too long for one, so they take the second form. Measured with
+Accessibility on Nov 14 2026, their rows match Extensions' Enabled and
+Profiles' Search suggestions exactly: a 56 × 26 switch, its frame 6 pt after
+the label's (8 pt between alignment rects; a label's frame is 2 pt wider on
+each side), the same centre line. A click on a label does nothing, on every
+pane: the labels are plain text fields, as they were on Profiles and
+Extensions before (making them toggle the switch was the alternative).
+`SettingsSwitchRow` gives the switch the label's text as its accessibility
+label; the five converted switches keep the identifiers the checkboxes had
+(`peekEnabled`, `automationEnabled`, `automationAllowPrivate`,
+`quickDetourHotKeyEnabled`, `quickDetourOptionCommandClick`). The switches
+on Profiles and Extensions have no accessible name yet.
+
 | Pane | Content height (examples measured 2026-10-24) | Opened by |
 |---|---|---|
-| General | 164, fixed (with the Peek section, 2026-11-08; one 15 pt link line more with Learn more about Peek, TASK-292.11) | Detour > Settings… (Cmd+,), which opens whatever pane was last shown |
+| General | about 394 with automation off, 428 on in a test run (its four copy buttons), fixed (TASK-328 switch rows, 2026-11-14; the window's height less the 88 pt title bar and toolbar) | Detour > Settings… (Cmd+,), which opens whatever pane was last shown |
 | Spaces | 400 minimum; 628 with 19 spaces | the sidebar's add-space and edit-space actions (`showSpacesPane(selectSpaceID:)`), the Spaces menu's Manage Spaces… (`openSpacesSettings`) |
 | Links | 400 minimum (no routes); 743 with 5 routes (measured before the Quick Detour section came and went); capped (1242 on a 1410 pt screen) with 12 routes, then the route list scrolls (177 pt of list at 400, 129 pt at a 352 pt cap, 2026-10-27) | toolbar; Open Links Settings… in the blocked space-deletion alert (`showLinksPane(highlightingSpaceID:)`) |
-| Quick Detour | 248, fixed (with the Debug build's warning line, 2026-10-27; plus its Learn more link line, TASK-292.11) | toolbar only |
+| Quick Detour | about 317, fixed (with the Debug build's warning line and the Learn more link; TASK-328's switch rows and Shortcut row, 2026-11-14) | toolbar only |
 | Profiles | 630 (Private) / 709 (a normal profile) to 1218 (custom UA, warning, 15 extensions); 1047 for Private with 14 extensions (2026-10-27) | toolbar only |
 | Extensions | 400 (none, or one small extension) to 1092 (22 permissions, 4 hosts, 6 optional) | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
 | Content Blocking | 243, fixed (plus its Learn more link line, TASK-292.11) | toolbar only |
@@ -312,12 +345,18 @@ across several panes). Copy URL has no guide page.
 Two sections. **Default Browser**: "Set as Default Browser", which calls
 `NSWorkspace.setDefaultApplication(at:toOpenURLsWithScheme:)` for `http` and
 `https`, and reports the current state by asking which application would open
-`https://example.com`. **Peek** (TASK-307): the checkbox "Open links from
+`https://example.com`. **Peek** (TASK-307): the switch "Open links from
 pinned tabs and favorites in a Peek" (`PeekSettings`, app-wide, on by
 default) with the help "Off, links to other sites from pinned tabs and
 favorites open in new tabs. Shift-click still opens a Peek." The stack is
 pinned to the body's full width so the help wraps at the pane's width
 ([Peek](../tabs/peek.md#when-a-link-opens-in-a-peek)).
+**Automation** (TASK-228): the switches "Let AI agents and scripts control
+Detour (MCP)" and "Allow agents to use Private windows", each with its help,
+then the endpoint's status line, the copy buttons (shown while it listens)
+and the allowed clients; see [automation endpoint](./automation-endpoint.md).
+The Private switch is not disabled while automation is off: it is a saved
+choice of its own, read at every check.
 
 ## Spaces
 
@@ -371,17 +410,27 @@ list, so it scrolls as one body, like General; no description and no
 section title (the toolbar names it). Top to bottom, below its Learn more
 link (TASK-292.11):
 
-- "[✓] Open Quick Detour from any app with" and the shortcut recorder
-  (`ShortcutRecorderView`), a warning line when the shortcut is refused or
-  not registered (a Debug build says it does not register without
-  `DETOUR_GLOBAL_HOTKEY=1`), and help text (TASK-193.2; see
+- "Open Quick Detour from any app [switch]", then "Shortcut" and the
+  shortcut recorder (`ShortcutRecorderView`) on a row of their own, a
+  warning line when the shortcut is refused or not registered (a Debug
+  build says it does not register without `DETOUR_GLOBAL_HOTKEY=1`), and
+  help text (TASK-193.2; see
   [the Settings control](./quick-detour.md#the-settings-control)).
-- "Open links and sidebar tabs in Quick Detour with ⌥⌘-click" and its help,
+- "Open links and sidebar tabs in Quick Detour with ⌥⌘-click [switch]" and its help,
   the idle auto-close pop-up ("Close Quick Detour windows not used for
   [Never, 1 hour, 6 hours, 12 hours, 1 day]", 6 hours by default) and its
   help, and a caption pointing links from other apps to a route's Open in
   or the Default "on the Links pane" (TASK-193.5; see
   [the Settings section](./quick-detour.md#the-settings-section)).
+
+Until TASK-328 the hotkey was one sentence, "[✓] Open Quick Detour from
+any app with [⌥⌘N]". With a switch, which follows its label, the sentence
+would have run on into two controls ("… with [⌥⌘N] [switch]"), so the
+switch row ends at "any app" and the recorder has a labelled row under it.
+The recorder stays usable with the switch off: it is also File > New Quick
+Detour Window's shortcut, which the help text says. (PROVISIONAL, chosen
+by Claude while the user was away; the alternative is the one-line
+sentence with the switch at its end.)[^task-328]
 
 The pane retries a refused shortcut when it appears
 (`QuickDetourHotKey.retryIfFailed`) and ends a recording when it disappears.
@@ -589,7 +638,11 @@ rows show for a normal and the Private profile, and the row spacing;
 `SettingsGuideLinkTests` the Learn more links (`GuidePage` URLs under the
 Help menu's guide index, which links each pane has, a click handing its URL
 to the opener, the link under the description or in its place, and the
-natural height counting it). The panes have no dedicated UI tests; their layout is
+natural height counting it); `SettingsSwitchRowTests` the switch rows (no
+pane has a checkbox, the five converted settings are switches named by
+their labels, each 8 pt after its label and centred on it, the labels plain
+text, the Shortcut row under the hotkey switch, the Peek and ⌥⌘-click
+switches showing and writing their settings). The panes have no other UI tests; their layout is
 checked at runtime with the TASK-189 survey harness (every pane and state,
 light and dark, frames measured; pane switches, drags, the cap and a real
 second screen; uninstalling the only extension through the pane; a run with
@@ -618,5 +671,6 @@ suites.
 [^task-292-11]: TASK-292.11
 [^task-189]: TASK-189
 [^task-211]: TASK-211
+[^task-328]: TASK-328
 [^task211-harness]: TASK-211 harness
 [^survey-harness]: TASK-189 survey harness

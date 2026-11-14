@@ -335,8 +335,10 @@ browser, browser).[^harness-2]
 
 ### The Settings control
 
-Settings > **Quick Detour** (a pane of its own since TASK-211; before, a section of the Links pane): "[✓] Open Quick Detour from any app
-with [⌃⌥⌘F12]", a warning line under the row, and help text saying the
+Settings > **Quick Detour** (a pane of its own since TASK-211; before, a section of the Links pane): "Open Quick Detour from any app
+[switch]", under it "Shortcut [⌃⌥⌘F12]" (one sentence with a checkbox,
+"[✓] Open Quick Detour from any app with [⌃⌥⌘F12]", until TASK-328; see
+[Settings](./settings.md#quick-detour)), a warning line under the recorder, and help text saying the
 launcher opens over the app in front and that the same shortcut is File >
 New Quick Detour Window while Detour is in front, also when the hotkey is
 off. TASK-193.5 added the rest of the section
@@ -351,8 +353,9 @@ off. TASK-193.5 added the rest of the section
   local event monitor installed only while recording: another control,
   empty space, the toolbar, another window), losing focus, the window
   resigning key or the pane disappearing cancels it (so the hotkey never
-  stays suspended while the user is elsewhere). A click on the checkbox
-  ends recording and then does the checkbox's own action. The new
+  stays suspended while the user is elsewhere). A click on the switch
+  ends recording and then does the switch's own action (checked with real
+  clicks for the switch, TASK-328). The new
   shortcut is saved before recording ends, so the registration resumes
   straight onto it.
 - The warning line shows, in order: the recorder's refusal while recording;
@@ -362,7 +365,7 @@ off. TASK-193.5 added the rest of the section
   could not be set up as a shortcut for every app (error N)." (any other
   status), or "No shortcut: click the field and type one.". The setting
   keeps the user's choice in every case.
-- The checkbox and a recorded shortcut take effect at once.
+- The switch and a recorded shortcut take effect at once.
 
 ### Known limits
 
@@ -1118,7 +1121,7 @@ the hotkey's were the last section of the Links pane until TASK-211 moved
 them to a pane of their own (user decision 2026-10-26), next to Links in the
 toolbar, scrolling as one body; see [Settings](./settings.md#quick-detour).
 
-- **[✓] Open links and sidebar tabs in Quick Detour with ⌥⌘-click**
+- **Open links and sidebar tabs in Quick Detour with ⌥⌘-click [switch]**
   (`QuickDetourOptionCommandClickEnabled`, on by default), with "A sidebar
   tab opens as a copy; the tab stays where it is." Off, Opt-Cmd is a
   Cmd+click again, on links and in the sidebar.
