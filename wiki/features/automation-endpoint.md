@@ -83,6 +83,23 @@ token file, and could drive the browser in other ways anyway. Private
 windows and spaces are never listed and are refused by ID
 (`private_unreachable`).
 
+Before any token is shown, a connection costs little: the endpoint holds
+at most 64 and closes one that has not sent an authorised request within
+10 s, so a local process without the token cannot exhaust Detour's file
+descriptors (which SQLite and WebKit's IPC need).
+
+Private windows stay out of menus too: a menu that opened over a Private
+window (the person's context menu there, or the menu bar while one is in
+front and Detour is active) is refused by `list_menu` and
+`choose_menu_item`, and the Window menu's entries for Private windows (titled
+with their page) are neither listed nor run. This errs towards refusing: an
+agent's own menu opened while a Private window is in front is refused too.
+
+Clients must not leak the token: `scripts/detour-mcp` bypasses HTTP proxies
+(urllib sent the `Authorization` header to a configured proxy even for
+127.0.0.1), and Copy Token marks the pasteboard item transient, concealed
+and local-only, so clipboard managers and Universal Clipboard skip it.
+
 # How it works
 
 Three layers, each testable alone:
@@ -204,7 +221,9 @@ Settings > General > Automation copies what a client needs:
   `DETOUR_DATA_DIR` for a test run), so the client's configuration holds no
   secret. When the session ended, the token was reset or Detour restarted
   on another port, it reads the file again, replays the client's
-  `initialize` and retries once. With Detour not running, each request gets
+  `initialize` and retries once, but after a failed connection only when it
+  was refused: a timed-out or dropped request may already have acted, so it
+  gets an error instead of running twice. With Detour not running, each request gets
   a JSON-RPC error saying so. At the end of stdin it ends its session, so the
   indicator goes away at once. Signed by `sign-app.sh` on its own, without
   Detour's entitlements.
