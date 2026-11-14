@@ -1,11 +1,11 @@
 ---
 id: TASK-289
 title: 'Spaces: a delightful UI for creating and editing a space'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07T10:12:00Z'
-updated_date: '2026-11-14T00:37:00Z'
+updated_date: '2026-11-14T00:40:00Z'
 labels:
   - spaces
   - ui
@@ -39,7 +39,7 @@ A space is the most personal object in the browser (its name, emoji and color ti
 - [x] #2 Creating a space starts from the sidebar in the current window and lets the user pick name, emoji, color and profile before the space exists; cancelling creates nothing
 - [x] #3 Editing a space from the sidebar happens in the same window, and every change previews live on the real sidebar (tint, header, switcher icon) before or as it is applied; undo still undoes the edit as one action
 - [x] #4 Emoji and color are chosen from curated, good-looking options (with a way to reach any emoji and any color), not only the system picker and a raw color well
-- [ ] #5 The flow has at least one moment of delight (for example the new space arriving with an animation, or the sidebar re-tinting as colors are tried), and honours Reduce Motion
+- [x] #5 The flow has at least one moment of delight (for example the new space arriving with an animation, or the sidebar re-tinting as colors are tried), and honours Reduce Motion
 - [x] #6 Fully usable from the keyboard and with VoiceOver; looks right in light and dark mode
 - [x] #7 Settings > Spaces stays consistent with the new flow (shares its controls or opens it) rather than keeping a second, older editor
 - [x] #8 Rule logic (defaults for a new space, name validation, preset lists) has tests; the UI is checked at runtime with /verify in light and dark, with captures attached to the task notes
@@ -122,6 +122,8 @@ Runtime after the fixes (DetourVerify289e/f; AXPress and keys posted to the pid)
 - All Emoji… opens the picker popover; choosing 🦊 sets the tile (no grid cell selected).
 - Custom… opens the Colors panel (only while Detour is active: AppKit hides it in an inactive app), and Cancel closes it.
 Not verified at runtime: Reduce Motion (needs the system setting); VoiceOver speech (the AX tree was checked); hover re-tint with a real pointer.
+
+2026-11-14: AC #5 accepted by the user without a runtime Reduce Motion check (the delight moment is verified; the Reduce Motion branch is a fade in place of the flight).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
