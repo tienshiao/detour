@@ -71,8 +71,8 @@ final class TrackingParameterList {
     /// The counts of the rules in use, nil while none are.
     private(set) var counts: TrackingParameterFilter.Counts?
 
-    /// Text is ticketed when it is chosen (a cache read, a download's
-    /// response); rules are installed only from text newer than the rules in
+    /// Text is ticketed when it is asked for (a cache read, a download's
+    /// request is sent); rules are installed only from text newer than the rules in
     /// use, and never from text ticketed before the last clear.
     private var lastTicket = 0
     private var installedTicket = 0
@@ -108,7 +108,8 @@ final class TrackingParameterList {
             return TrackingParameterFilter(text: text)
         }.value
         guard let cached, !cached.isEmpty else {
-            await refresh(conditional: false)
+            // A Clear Cache & Redownload during the read runs its own download.
+            if ticket > supersededTicket { await refresh(conditional: false) }
             return
         }
         if installIfNewest(cached, ticket: ticket) { logCounts(cached.counts, source: "cache") }
@@ -134,6 +135,9 @@ final class TrackingParameterList {
             request.setValue(etag, forHTTPHeaderField: "If-None-Match")
         }
         log.info("Fetching \(Self.identifier, privacy: .public) from \(self.url, privacy: .public)")
+        // Ticketed when the request is sent, so a response to a request sent
+        // before Clear Cache & Redownload is refused however late it lands.
+        let ticket = takeTicket()
 
         let data: Data
         let response: URLResponse
@@ -145,6 +149,7 @@ final class TrackingParameterList {
         }
         guard let http = response as? HTTPURLResponse else { return .failed }
         if http.statusCode == 304 {
+            guard ticket > supersededTicket else { return .superseded }
             defaults.set(now(), forKey: lastFetchKey)
             log.info("\(Self.identifier, privacy: .public) not modified")
             return .notModified
@@ -154,7 +159,6 @@ final class TrackingParameterList {
             return .failed
         }
         let etag = http.value(forHTTPHeaderField: "ETag")
-        let ticket = takeTicket()
         let parsed = await Task.detached(priority: .utility) { () -> TrackingParameterFilter? in
             guard let text = String(data: data, encoding: .utf8) else { return nil }
             return TrackingParameterFilter(text: text)

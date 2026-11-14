@@ -169,9 +169,16 @@ nonisolated struct TrackingParameterFilter: Sendable {
         var otherRules: [Rule] = []
         var exceptionRules: [Rule] = []
 
-        for line in text.split(whereSeparator: \.isNewline) {
-            let line = line.trimmingCharacters(in: .whitespaces)
+        let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        // `$badfilter` disables the rule it repeats (without the option), as
+        // in the content blocker's lists (`EasyListParser`).
+        let disabledRules = Set(lines.compactMap(Self.badFilterTarget))
+        for line in lines {
             guard !line.isEmpty, !line.hasPrefix("!"), !line.hasPrefix("[") else { continue }
+            if Self.badFilterTarget(line) != nil || disabledRules.contains(line) {
+                counts.other += 1
+                continue
+            }
             switch Self.parse(line) {
             case .skipped(let reason):
                 switch reason {
@@ -292,8 +299,11 @@ nonisolated struct TrackingParameterFilter: Sendable {
         var rule = Rule(action: action, pattern: pattern, domains: domains)
 
         if isException {
-            // An exception for every address would switch the list off.
-            if pattern == nil && (domains?.include.isEmpty ?? true), case .all = action { return .skipped(.unsupported) }
+            // An exception keeping every parameter (`$removeparam`,
+            // `=~name`, a regex) for every address would switch the list off.
+            if pattern == nil && (domains?.include.isEmpty ?? true) {
+                if case .name = action {} else { return .skipped(.unsupported) }
+            }
             rule.overridesBuiltInNames = !widened && (pattern != nil || !(domains?.include.isEmpty ?? true))
             return .exception(rule, widened: widened)
         }
@@ -303,6 +313,17 @@ nonisolated struct TrackingParameterFilter: Sendable {
             if case .name = action {} else { return .skipped(.unsupported) }
         }
         return .block(rule, hostKey: pattern?.hostKey)
+    }
+
+    /// The rule a `$badfilter` line disables: the line without that option.
+    /// Nil for any other line.
+    private static func badFilterTarget(_ line: String) -> String? {
+        guard line.contains("badfilter") else { return nil }
+        let isException = line.hasPrefix("@@")
+        guard let (pattern, options) = splitOptions(isException ? String(line.dropFirst(2)) : line) else { return nil }
+        let kept = options.filter { $0 != "badfilter" }
+        guard kept.count < options.count else { return nil }
+        return (isException ? "@@" : "") + pattern + "$" + kept.joined(separator: ",")
     }
 
     /// The pattern and the options of `body`: the options start at the first
@@ -346,7 +367,10 @@ nonisolated private struct Address {
 
     init?(_ url: URL) {
         guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
+        // A request URL has no fragment: rules never see one (a single-page
+        // app's `#/route?x=` is not the page's query).
         var bytes = Array(url.absoluteString.lowercased().utf8)
+        if let hash = bytes.firstIndex(of: UInt8(ascii: "#")) { bytes.removeSubrange(hash...) }
         guard let schemeEnd = bytes.firstRange(of: Array("://".utf8)) else { return nil }
         var start = schemeEnd.upperBound
         var end = start
@@ -390,6 +414,11 @@ nonisolated private struct Address {
 /// or a common second-level label over a two-letter country code (`co.uk`,
 /// `com.au`, `co.jp`). It accepts no host of its own (`amazon.evil.com`
 /// is not `amazon.*`), at the cost of a rare real suffix it does not know.
+nonisolated private let publicSuffixSecondLevels: Set<Substring> = [
+    "co", "com", "net", "org", "gov", "edu", "ac", "ne", "or", "go", "gob",
+    "nic", "ltd", "plc", "sch", "mil", "nom", "info", "biz", "gen", "web",
+]
+
 nonisolated func isPublicSuffixLike(_ rest: Substring) -> Bool {
     let labels = rest.split(separator: ".", omittingEmptySubsequences: false)
     func isTopLevel(_ label: Substring) -> Bool {
@@ -399,9 +428,7 @@ nonisolated func isPublicSuffixLike(_ rest: Substring) -> Bool {
     case 1:
         return isTopLevel(labels[0])
     case 2:
-        let secondLevel: Set<Substring> = ["co", "com", "net", "org", "gov", "edu", "ac", "ne", "or", "go", "gob",
-                                           "nic", "ltd", "plc", "sch", "mil", "nom", "info", "biz", "gen", "web"]
-        return secondLevel.contains(labels[0]) && labels[1].count == 2 && labels[1].allSatisfy { $0.isASCII && $0.isLetter }
+        return publicSuffixSecondLevels.contains(labels[0]) && labels[1].count == 2 && labels[1].allSatisfy { $0.isASCII && $0.isLetter }
     default:
         return false
     }

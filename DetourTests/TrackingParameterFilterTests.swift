@@ -57,6 +57,35 @@ nonisolated final class TrackingParameterFilterTests: XCTestCase {
         assertUnchanged("https://b.test/search?q=1&page=2", filter)
     }
 
+    /// An exception keeping every parameter, or all but one, of every
+    /// address would switch the whole list off; the parser refuses it.
+    @MainActor func testAnExceptionForEveryAddressIsRefused() {
+        let filter = TrackingParameterFilter(text: "$removeparam=foo\n@@$removeparam=~bar\n@@*$removeparam=/^x/\n")
+        XCTAssertEqual(filter.counts.unsupported, 2)
+        XCTAssertEqual(clean("https://a.test/?foo=1&q=2", filter), "https://a.test/?q=2")
+    }
+
+    /// `$badfilter` disables the rule it repeats, block or exception.
+    @MainActor func testABadfilterLineDisablesItsRule() {
+        let filter = TrackingParameterFilter(text: """
+            $removeparam=foo
+            $removeparam=foo,badfilter
+            ||a.test^$removeparam=bar
+            @@||a.test^$removeparam=bar
+            @@||a.test^$removeparam=bar,badfilter
+            """)
+        assertUnchanged("https://b.test/?foo=1", filter)
+        XCTAssertEqual(clean("https://a.test/?bar=1&q=2", filter), "https://a.test/?q=2")
+        XCTAssertEqual(filter.counts.supported, 1)
+    }
+
+    /// A page's fragment is not part of the address the rules match.
+    @MainActor func testTheFragmentIsNotMatched() {
+        let filter = TrackingParameterFilter(text: "||a.test^*route$removeparam=foo\n")
+        assertUnchanged("https://a.test/?foo=1#/route", filter)
+        XCTAssertEqual(clean("https://a.test/route?foo=1#x", filter), "https://a.test/route#x")
+    }
+
     // MARK: - Global rules
 
     @MainActor func testGlobalNamesAreRemovedEverywhere() {
