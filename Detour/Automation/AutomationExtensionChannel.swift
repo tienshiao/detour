@@ -246,6 +246,21 @@ final class AutomationExtensionChannel {
         failAll(key, AutomationToolError(.workerNotRunning, "The extension was unloaded"))
     }
 
+    /// Stops the parks of one profile's backgrounds and fails what waits for
+    /// them: the user turned Private access off (TASK-228.5). Its workers
+    /// park again only at their next start, if it is turned back on.
+    func closeParks(profileID: UUID) {
+        for (key, park) in parks where key.profileID == profileID {
+            park.reply(["stop": true], nil)
+            parks[key] = nil
+        }
+        lastInstance = lastInstance.filter { $0.key.profileID != profileID }
+        let keys = Set(queues.keys).union(delivered.values.map(\.key)).filter { $0.profileID == profileID }
+        for key in keys {
+            failAll(key, AutomationToolError(.privateUnreachable, "Private access was turned off"))
+        }
+    }
+
     private func closeAll() {
         for park in parks.values { park.reply(["stop": true], nil) }
         parks.removeAll()
@@ -309,7 +324,7 @@ final class AutomationExtensionChannel {
     /// running; WebKit answers at once when it is.
     static func loadBackground(_ key: Key) {
         guard let profile = TabStore.shared.profiles.first(where: { $0.id == key.profileID }),
-              !profile.isIncognito,
+              !profile.isIncognito || AutomationPrivateAccess.isAllowed(),
               let context = profile.extensionContext(for: key.extensionID) else { return }
         context.loadBackgroundContent { error in
             if let error {

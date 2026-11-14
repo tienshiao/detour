@@ -416,10 +416,10 @@ nonisolated final class AutomationToolsTests: XCTestCase {
         XCTAssertTrue(listed.contains("Minimize"), message)
         XCTAssertFalse(listed.contains("Secret Page"), "the Private page's title is not listed: \(message)")
         let window = try XCTUnwrap(f.window.window)
-        XCTAssertThrowsError(try AutomationMenus.resolve(entry, in: window)) { error in
+        XCTAssertThrowsError(try AutomationMenus.resolve(entry, in: window, allowPrivate: false)) { error in
             XCTAssertEqual((error as? AutomationToolError)?.code, .privateUnreachable)
         }
-        let described = AutomationMenuTracker.describe(windowMenu)
+        let described = AutomationMenuTracker.describe(windowMenu, allowPrivate: false)
         XCTAssertEqual(described.compactMap { $0["title"]?.stringValue }, ["Minimize"])
     }
 

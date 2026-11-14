@@ -35,8 +35,8 @@ extension AutomationTools {
             throw AutomationToolError(.notDisplayed, "\(page.label) is not shown in a window"
                                         + (page.tab == nil ? " yet" : "; select it first"))
         }
-        guard !controller.isIncognito else {
-            throw AutomationToolError(.privateUnreachable, "\(page.label) is in a Private window")
+        guard privateAllowed || !controller.isIncognito else {
+            throw AutomationToolError(.privateUnreachable, "\(page.label) is in a Private window" + Self.privateHint)
         }
         return InputTarget(controller: controller, window: window, webView: webView)
     }
@@ -372,7 +372,8 @@ extension AutomationTools {
             handler: { [self] arguments in
                 let menu = try await openMenu(timeout: try arguments.int("timeout_ms") ?? 2000)
                 let target = try submenu(of: menu, path: try arguments.stringArray("path") ?? [])
-                return ["title": .string(target.title), "items": .array(AutomationMenuTracker.describe(target))]
+                return ["title": .string(target.title),
+                        "items": .array(AutomationMenuTracker.describe(target, allowPrivate: privateAllowed))]
             })
     }
 
@@ -380,8 +381,10 @@ extension AutomationTools {
         let deadline = ContinuousClock.now + .milliseconds(max(0, min(milliseconds, 30_000)))
         while true {
             if let menu = AutomationMenuTracker.shared.topMenu {
-                guard !AutomationMenuTracker.shared.isOverPrivateWindow(menu) else {
-                    throw AutomationToolError(.privateUnreachable, "The open menu is over a Private window")
+                // Whether the menu opened over a Private window was noted when
+                // it opened; whether that matters is asked now.
+                guard privateAllowed || !AutomationMenuTracker.shared.isOverPrivateWindow(menu) else {
+                    throw AutomationToolError(.privateUnreachable, "The open menu is over a Private window" + Self.privateHint)
                 }
                 return menu
             }
@@ -450,10 +453,11 @@ extension AutomationTools {
                 }
                 let root = try await openMenu(timeout: try arguments.int("timeout_ms") ?? 2000)
                 let menu = try submenu(of: root, path: try arguments.stringArray("path") ?? [])
+                let allowPrivate = privateAllowed
                 let index: Int
                 if let title = try arguments.string("title") {
                     guard let found = menu.items.firstIndex(where: {
-                        !$0.isSeparatorItem && !AutomationMenus.namesPrivateWindow($0)
+                        !$0.isSeparatorItem && (allowPrivate || !AutomationMenus.namesPrivateWindow($0))
                             && AutomationMenus.titlesMatch(AutomationMenus.displayTitle($0), title)
                     }) else {
                         throw AutomationToolError(.unknownMenuItem, "No \"\(title)\" in the menu")
@@ -472,8 +476,8 @@ extension AutomationTools {
                     index = wanted
                 }
                 let item = menu.items[index]
-                guard !AutomationMenus.namesPrivateWindow(item) else {
-                    throw AutomationToolError(.privateUnreachable, "The item acts on a Private window")
+                guard allowPrivate || !AutomationMenus.namesPrivateWindow(item) else {
+                    throw AutomationToolError(.privateUnreachable, "The item acts on a Private window" + Self.privateHint)
                 }
                 guard !item.isSeparatorItem, item.submenu == nil else {
                     throw AutomationToolError(.unknownMenuItem, "\"\(AutomationMenus.displayTitle(item))\" is not an item that can be chosen")

@@ -323,9 +323,9 @@ extension AutomationTools {
     ]
 
     /// The window `window_id` or `window_number` names: a browser window
-    /// (not a Private one), or another of Detour's windows (Settings, the
-    /// Arc import window). Never a Private window, never a sheet (it moves
-    /// with its parent).
+    /// (a Private one only while the user allows it), or another of Detour's
+    /// windows (Settings, the Arc import window). Never a sheet (it moves
+    /// with its parent), never the approval prompt (TASK-228.5).
     private func placeableWindow(_ arguments: ToolArguments) throws -> NSWindow {
         let windowID = try arguments.int("window_id")
         let number = try arguments.int("window_number")
@@ -341,8 +341,11 @@ extension AutomationTools {
         guard let window = NSApp.windows.first(where: { $0.windowNumber == number && $0.isVisible }) else {
             throw AutomationToolError(.unknownWindow, "Detour has no visible window \(number!)")
         }
-        guard !AutomationMenus.isPrivate(window), !AutomationMenus.isPrivate(window.sheetParent) else {
-            throw AutomationToolError(.privateUnreachable, "Window \(number!) is a Private window")
+        guard privateAllowed || (!AutomationMenus.isPrivate(window) && !AutomationMenus.isPrivate(window.sheetParent)) else {
+            throw AutomationToolError(.privateUnreachable, "Window \(number!) is a Private window" + Self.privateHint)
+        }
+        guard window.identifier != AutomationApprovalPanel.panelIdentifier else {
+            throw AutomationToolError(.unknownWindow, "Window \(number!) is Detour's approval prompt, which no agent reaches")
         }
         guard window.sheetParent == nil else {
             throw AutomationToolError(.invalidArguments, "Window \(number!) is a sheet; move the window it is attached to")

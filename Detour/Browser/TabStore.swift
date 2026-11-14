@@ -190,8 +190,10 @@ class Space {
     /// The configuration a web view of `profile` starts with — a space's, or a
     /// Quick Detour's, which belongs to a profile and no space (TASK-193.1).
     /// A missing or deleted profile gets a throwaway store and no extension
-    /// controller (TASK-35).
-    static func makeWebViewConfiguration(for profile: Profile?) -> WKWebViewConfiguration {
+    /// controller (TASK-35). `inSpace` false for a Quick Detour's (or a
+    /// quarantine's) page, which automation never reaches in the Private
+    /// profile (TASK-228.5).
+    static func makeWebViewConfiguration(for profile: Profile?, inSpace: Bool = true) -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         let profile = profile.flatMap { $0.isDeleted ? nil : $0 }
         if profile?.isPerTabIsolation == true {
@@ -211,7 +213,7 @@ class Space {
         // (TASK-152). With no usable profile it answers nothing.
         config.setURLSchemeHandler(FaviconSchemeHandler(profile: profile), forURLScheme: FaviconSchemeHandler.scheme)
 
-        config.userContentController = makeUserContentController(for: profile)
+        config.userContentController = makeUserContentController(for: profile, inSpace: inSpace)
 
         // Set Detour app name as default; Safari/Custom modes override via
         // webView.customUserAgent in BrowserTab.applyUserAgent()
@@ -229,7 +231,7 @@ class Space {
         Self.makeUserContentController(for: usableProfile)
     }
 
-    static func makeUserContentController(for profile: Profile?) -> WKUserContentController {
+    static func makeUserContentController(for profile: Profile?, inSpace: Bool = true) -> WKUserContentController {
         let usableProfile = profile.flatMap { $0.isDeleted ? nil : $0 }
         let controller = WKUserContentController()
 
@@ -260,9 +262,11 @@ class Space {
         controller.addUserScript(cwsScript)
 
         // Console and network capture while the automation endpoint is on
-        // (TASK-228.4), never in a Private profile.
-        if let profile = usableProfile, !profile.isIncognito {
-            AutomationPageCapture.shared.installIfActive(on: controller)
+        // (TASK-228.4). A Private space's page only while the user allows
+        // agents to use Private windows (TASK-228.5); the Private profile's
+        // Quick Detour and quarantine pages never.
+        if let profile = usableProfile, !profile.isIncognito || inSpace {
+            AutomationPageCapture.shared.installIfActive(on: controller, isPrivate: profile.isIncognito)
         }
 
         return controller

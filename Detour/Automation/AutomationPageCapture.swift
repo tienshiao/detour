@@ -12,10 +12,15 @@ import WebKit
 /// `message.webView`, and each tab keeps a bounded ring buffer per kind.
 ///
 /// Installed only while the endpoint is listening (`AutomationController`
-/// starts and stops it), and never into a Private profile's web views: new
-/// web views get it from `Space.makeUserContentController(for:)`, live ones
-/// when capture starts, with the script run once in pages already loaded
-/// (main frame only: their subframes are captured from their next load).
+/// starts and stops it): new web views get it from
+/// `Space.makeUserContentController(for:)`, live ones when capture starts,
+/// with the script run once in pages already loaded (main frame only: their
+/// subframes are captured from their next load). A Private space's web views
+/// get it only while the user allows agents to use Private windows
+/// (`AutomationPrivateAccess`, TASK-228.5): turning that on installs it in
+/// their live pages too, turning it off removes it from them and forgets
+/// their records. A Quick Detour or quarantine page in the Private profile
+/// never gets it.
 /// Stopping removes the script and the handler; a page that already ran the
 /// script keeps its wrappers until it reloads, posting to a handler that is
 /// gone (each post is in a try/catch, so the page never sees it fail).
@@ -45,6 +50,9 @@ final class AutomationPageCapture: NSObject, WKScriptMessageHandler {
     /// page's web view shares its extension context's controller with the
     /// extension's popup, background and offscreen pages, so it is never one.
     private let eligible = NSHashTable<WKUserContentController>.weakObjects()
+    /// The same for a Private space's web views: capture goes into these
+    /// only while Private access is allowed.
+    private let eligiblePrivate = NSHashTable<WKUserContentController>.weakObjects()
     /// Web view to tab, filled on a tab's first message.
     private let tabsByWebView = NSMapTable<WKWebView, BrowserTab>.weakToWeakObjects()
     private var buffers: [UUID: TabBuffers] = [:]
@@ -64,13 +72,45 @@ final class AutomationPageCapture: NSObject, WKScriptMessageHandler {
         self.store = store
         guard !isActive else { return }
         isActive = true
-        for tab in Self.reachableTabs(in: store) {
-            guard let webView = tab.webView,
-                  eligible.contains(webView.configuration.userContentController) else { continue }
-            install(on: webView.configuration.userContentController)
+        installInLiveTabs(Self.reachableTabs(in: store, includingPrivate: AutomationPrivateAccess.isAllowed()))
+    }
+
+    /// Adds the script to the eligible ones of `tabs` and runs it once in
+    /// their loaded pages.
+    private func installInLiveTabs(_ tabs: [BrowserTab]) {
+        let privateAllowed = AutomationPrivateAccess.isAllowed()
+        for tab in tabs {
+            guard let webView = tab.webView else { continue }
+            let controller = webView.configuration.userContentController
+            guard eligible.contains(controller) || (privateAllowed && eligiblePrivate.contains(controller)) else {
+                continue
+            }
+            install(on: controller)
             // A page loaded before the endpoint started: run the script once.
             // Its guard makes this harmless where the user script already ran.
             webView.evaluateJavaScript(Self.captureScript, in: nil, in: .page) { _ in }
+        }
+    }
+
+    /// The user turned Private access on or off (TASK-228.5): installs the
+    /// script in the live Private tabs, or removes it from every Private
+    /// controller and forgets their records.
+    func privateAccessChanged(allowed: Bool) {
+        guard isActive, let store else { return }
+        if allowed {
+            let privateTabs = store.spaces.filter(\.isIncognito).flatMap { $0.tabs + $0.pinnedTabs }
+            installInLiveTabs(privateTabs)
+        } else {
+            for controller in installed.allObjects where eligiblePrivate.contains(controller) {
+                uninstall(controller)
+            }
+            let reachable = Set(Self.reachableTabs(in: store, includingPrivate: false).map(\.id))
+            buffers = buffers.filter { reachable.contains($0.key) }
+            for webView in tabsByWebView.keyEnumerator().allObjects.compactMap({ $0 as? WKWebView }) {
+                if let tab = tabsByWebView.object(forKey: webView), !reachable.contains(tab.id) {
+                    tabsByWebView.removeObject(forKey: webView)
+                }
+            }
         }
     }
 
@@ -79,24 +119,35 @@ final class AutomationPageCapture: NSObject, WKScriptMessageHandler {
     func stop() {
         guard isActive else { return }
         isActive = false
-        for controller in installed.allObjects {
-            let others = controller.userScripts.filter { $0.source != Self.captureScript }
-            controller.removeAllUserScripts()
-            for script in others { controller.addUserScript(script) }
-            controller.removeScriptMessageHandler(forName: Self.handlerName, contentWorld: .page)
-        }
+        for controller in installed.allObjects { uninstall(controller) }
         installed.removeAllObjects()
         buffers.removeAll()
         tabsByWebView.removeAllObjects()
     }
 
-    /// Notes a new space web view's controller as one capture may go into,
-    /// and adds the script and the handler to it while recording. The caller
-    /// has already left out Private profiles.
-    func installIfActive(on controller: WKUserContentController) {
-        eligible.add(controller)
-        guard isActive else { return }
+    /// Notes a new web view's controller as one capture may go into, and
+    /// adds the script and the handler to it while recording. A Private
+    /// space's (`isPrivate`) only while Private access is allowed; the caller
+    /// leaves out the Private profile's Quick Detour and quarantine pages.
+    func installIfActive(on controller: WKUserContentController, isPrivate: Bool = false) {
+        if isPrivate {
+            eligiblePrivate.add(controller)
+            guard isActive, AutomationPrivateAccess.isAllowed() else { return }
+        } else {
+            eligible.add(controller)
+            guard isActive else { return }
+        }
         install(on: controller)
+    }
+
+    /// Removes the script and the handler (there is no public way to remove
+    /// one user script: all are removed and the others added back).
+    private func uninstall(_ controller: WKUserContentController) {
+        let others = controller.userScripts.filter { $0.source != Self.captureScript }
+        controller.removeAllUserScripts()
+        for script in others { controller.addUserScript(script) }
+        controller.removeScriptMessageHandler(forName: Self.handlerName, contentWorld: .page)
+        installed.remove(controller)
     }
 
     private func install(on controller: WKUserContentController) {
@@ -118,15 +169,21 @@ final class AutomationPageCapture: NSObject, WKScriptMessageHandler {
     // MARK: Tabs
 
     /// The tabs automation may reach: those of non-Private spaces (normal
-    /// and pinned) and the favorites of non-Private profiles.
-    static func reachableTabs(in store: TabStore) -> [BrowserTab] {
-        store.spaces.filter { !$0.isIncognito }.flatMap { $0.tabs + $0.pinnedTabs }
-            + store.profiles.filter { !$0.isIncognito }.flatMap(\.favoriteTabs)
+    /// and pinned) and the favorites of non-Private profiles, and with
+    /// `includingPrivate` (the user allows Private access, TASK-228.5) those
+    /// of Private spaces too.
+    static func reachableTabs(in store: TabStore, includingPrivate: Bool) -> [BrowserTab] {
+        store.spaces.filter { includingPrivate || !$0.isIncognito }.flatMap { $0.tabs + $0.pinnedTabs }
+            + store.profiles.filter { includingPrivate || !$0.isIncognito }.flatMap(\.favoriteTabs)
     }
 
     private func tab(for webView: WKWebView) -> BrowserTab? {
+        // A Private tab is cached only while Private access is allowed:
+        // turning it off clears those entries (`privateAccessChanged`).
+        let includingPrivate = AutomationPrivateAccess.isAllowed()
         if let cached = tabsByWebView.object(forKey: webView), cached.webView === webView { return cached }
-        guard let store, let tab = Self.reachableTabs(in: store).first(where: { $0.webView === webView }) else {
+        guard let store, let tab = Self.reachableTabs(in: store, includingPrivate: includingPrivate)
+            .first(where: { $0.webView === webView }) else {
             return nil
         }
         tabsByWebView.setObject(tab, forKey: webView)
@@ -138,7 +195,7 @@ final class AutomationPageCapture: NSObject, WKScriptMessageHandler {
     private func pruneClosedTabs(now: Date = Date()) {
         guard now.timeIntervalSince(lastPrune) > 5, let store else { return }
         lastPrune = now
-        let live = Set(Self.reachableTabs(in: store).map(\.id))
+        let live = Set(Self.reachableTabs(in: store, includingPrivate: AutomationPrivateAccess.isAllowed()).map(\.id))
         buffers = buffers.filter { live.contains($0.key) }
     }
 

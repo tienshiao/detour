@@ -1298,7 +1298,7 @@ class BrowserTab: NSObject {
         // A Quick Detour's page belongs to a profile and no space (TASK-193.1);
         // a quarantine's keeps its own store (TASK-194).
         if let quickDetourProfile {
-            let configuration = Space.makeWebViewConfiguration(for: quickDetourProfile)
+            let configuration = Space.makeWebViewConfiguration(for: quickDetourProfile, inSpace: false)
             if let quarantine { configuration.websiteDataStore = quarantine.dataStore }
             return configuration
         }

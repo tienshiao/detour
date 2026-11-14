@@ -1263,15 +1263,17 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         // MARK: - Automation channel (TASK-228.2)
         // The background's half of `AutomationExtensionChannel`: it parks for
         // the endpoint's commands, acknowledges each one and sends its result.
-        // Only the background context of the verified extension, and never in
-        // the Private profile, which automation does not reach.
+        // Only the background context of the verified extension, and in the
+        // Private profile only while the user allows agents to use Private
+        // windows (TASK-228.5).
         case "automation.awaitCommand", "automation.ack", "automation.result":
             let registered = ExtensionManager.shared.extension(withID: extensionID)
             guard Self.senderIsBackgroundContext(sender, background: registered?.manifest.background) else {
                 replyHandler(nil, "automation: only the background context takes commands")
                 return
             }
-            guard let profile, !profile.isIncognito, let instance = params["instance"] as? String else {
+            guard let profile, !profile.isIncognito || AutomationPrivateAccess.isAllowed(),
+                  let instance = params["instance"] as? String else {
                 replyHandler(["stop": true], nil)
                 return
             }
@@ -1294,10 +1296,12 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         // The polyfill's stub-call counts for the compatibility report
         // (`ExtensionPolyfillStubs.countingModuleJS`), from any context of the
         // verified extension (content scripts do not run the bundle). `stop`
-        // while automation is off, and always in the Private profile, ends
-        // the context's reporting; only registry paths are kept.
+        // while automation is off, and in the Private profile while Private
+        // access is not allowed (TASK-228.5), ends the context's reporting;
+        // only registry paths are kept.
         case ExtensionPolyfillStubs.reportRequestType:
-            guard AutomationExtensionStubCalls.shared.isActive, let profile, !profile.isIncognito else {
+            guard AutomationExtensionStubCalls.shared.isActive, let profile,
+                  !profile.isIncognito || AutomationPrivateAccess.isAllowed() else {
                 replyHandler(["stop": true], nil)
                 return
             }
@@ -1313,7 +1317,8 @@ class ExtensionPolyfillHandler: NSObject, WKScriptMessageHandlerWithReply {
         case "log":
             // The automation endpoint's console (TASK-228.2), before the os_log
             // path's cap: it is bounded by its own ring buffer.
-            if AutomationExtensionConsole.shared.isActive, let profile, !profile.isIncognito {
+            if AutomationExtensionConsole.shared.isActive, let profile,
+               !profile.isIncognito || AutomationPrivateAccess.isAllowed() {
                 AutomationExtensionConsole.shared.record(extensionID: extensionID, profile: profile,
                                                          sender: sender, webView: webView, params: params)
             }

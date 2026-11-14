@@ -245,6 +245,22 @@ nonisolated final class AutomationControllerTests: XCTestCase {
         XCTAssertTrue(AutomationClientStore(directory: directory).records.isEmpty)
     }
 
+    @MainActor func testThePrivateSettingIsSavedAndReadByTheToolsAtEveryCall() async throws {
+        let (controller, _, defaults) = try makeController()
+        _ = try await startTestRun(controller)
+        let tools = try XCTUnwrap(controller.tools)
+        XCTAssertFalse(controller.allowsPrivateInSettings, "off by default")
+        XCTAssertFalse(tools.privateAllowed)
+        controller.setAllowsPrivate(true)
+        XCTAssertTrue(defaults.bool(forKey: AutomationGate.allowPrivateDefaultsKey))
+        XCTAssertTrue(tools.privateAllowed, "the running tools see it at once")
+        controller.setAllowsPrivate(false)
+        XCTAssertFalse(tools.privateAllowed)
+        // A test run turns it on only through the same setting.
+        defaults.set(true, forKey: AutomationGate.allowPrivateDefaultsKey)
+        XCTAssertTrue(tools.privateAllowed)
+    }
+
     @MainActor func testTurningOffWithAPromptUpClosesItAndAnswersTheRequest() async throws {
         let prompter = FakeApprovalPrompter()
         let (controller, _, _) = try makeController(prompter: prompter)

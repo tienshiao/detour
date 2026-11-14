@@ -38,6 +38,11 @@ final class AutomationExtensionConsole {
         buffers[Key(extensionID: extensionID, profileID: profileID)]
     }
 
+    /// Forgets a profile's records (Private access turned off, TASK-228.5).
+    func forget(profileID: UUID) {
+        buffers = buffers.filter { $0.key.profileID != profileID }
+    }
+
     /// Forgets an uninstalled extension's records.
     func forget(extensionID: String) {
         buffers = buffers.filter { $0.key.extensionID != extensionID }
@@ -48,7 +53,7 @@ final class AutomationExtensionConsole {
     /// `sourceURL`, `line`, `column`.
     func record(extensionID: String, profile: Profile, sender: ExtensionPolyfillHandler.PolyfillSender,
                 webView: WKWebView?, params: [String: Any]) {
-        guard isActive, !profile.isIncognito else { return }
+        guard isActive, !profile.isIncognito || AutomationPrivateAccess.isAllowed() else { return }
         let kind = Self.contextKind(extensionID: extensionID, profile: profile, sender: sender, webView: webView)
         // The compatibility report's own probe page is not the extension's.
         guard kind != Self.probeKind else { return }

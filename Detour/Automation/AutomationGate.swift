@@ -60,6 +60,9 @@ nonisolated enum AutomationGate {
 
     /// The user's setting (in the data directory's defaults suite).
     static let enabledDefaultsKey = "AutomationEndpointEnabled"
+    /// Whether agents may use Private windows (TASK-228.5), in the same
+    /// suite; off by default. A test run turns it on only through it too.
+    static let allowPrivateDefaultsKey = "AutomationAllowPrivate"
     /// An optional fixed port for the user's setting (advanced, not in
     /// Settings): it brings back the risk a fixed port has (see above).
     static let portDefaultsKey = "AutomationEndpointPort"

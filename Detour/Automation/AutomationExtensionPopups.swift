@@ -86,4 +86,10 @@ final class AutomationExtensionPopups {
     func closeAll() {
         for key in Array(open.keys) { close(key) }
     }
+
+    /// Closes the endpoint's popups in one profile (Private access turned
+    /// off, TASK-228.5).
+    func close(profileID: UUID) {
+        for key in Array(open.keys) where key.profileID == profileID { close(key) }
+    }
 }

@@ -39,6 +39,11 @@ final class AutomationExtensionStubCalls {
         counts.removeAll()
     }
 
+    /// Forgets a profile's counts (Private access turned off, TASK-228.5).
+    func forget(profileID: UUID) {
+        counts = counts.filter { $0.key.profileID != profileID }
+    }
+
     func forget(extensionID: String) {
         counts = counts.filter { $0.key.extensionID != extensionID }
     }

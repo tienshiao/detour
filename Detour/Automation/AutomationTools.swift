@@ -112,6 +112,9 @@ struct AutomationEnvironment {
     /// grant them permissions without the user's prompt answer `gate_closed`
     /// otherwise (TASK-228.2, AC #7).
     var isTestRun = false
+    /// Whether the user allows agents to use Private windows (TASK-228.5).
+    /// Asked at every check: turning it off refuses again at once.
+    var allowsPrivate: () -> Bool = { AutomationPrivateAccess.isAllowed() }
 
     static var live: AutomationEnvironment {
         AutomationEnvironment(
@@ -122,8 +125,9 @@ struct AutomationEnvironment {
 }
 
 /// The tools of TASK-228.1's first phase: state, selection, navigation and
-/// menu commands. Private windows and spaces are never listed and are refused
-/// by ID (`private_unreachable`).
+/// menu commands. Private windows and spaces are left out of lists and
+/// refused by ID (`private_unreachable`) unless the user allows agents to use
+/// Private windows (`AutomationEnvironment.allowsPrivate`, TASK-228.5).
 final class AutomationTools {
 
     let environment: AutomationEnvironment
@@ -154,12 +158,30 @@ final class AutomationTools {
         environment.windowControllers().filter { !$0.hasClosed }
     }
 
+    /// Whether Private windows, spaces and tabs are reachable now.
+    var privateAllowed: Bool { environment.allowsPrivate() }
+
+    /// The open windows a client may see: Private ones only while allowed.
+    var reachableWindows: [BrowserWindowController] {
+        let allowed = privateAllowed
+        return openWindows.filter { allowed || !$0.isIncognito }
+    }
+
+    /// The spaces a client may see: Private ones only while allowed.
+    var reachableSpaces: [Space] {
+        let allowed = privateAllowed
+        return store.spaces.filter { allowed || !$0.isIncognito }
+    }
+
+    /// A message for a refused Private window, space or tab.
+    static let privateHint = "; the user can allow agents to use Private windows in Detour's Settings"
+
     func window(id: Int) throws -> BrowserWindowController {
         guard let controller = openWindows.first(where: { windowIDs.id(for: $0) == id }) else {
             throw AutomationToolError(.unknownWindow, "No open window \(id)")
         }
-        guard !controller.isIncognito else {
-            throw AutomationToolError(.privateUnreachable, "Window \(id) is a Private window")
+        guard privateAllowed || !controller.isIncognito else {
+            throw AutomationToolError(.privateUnreachable, "Window \(id) is a Private window" + Self.privateHint)
         }
         return controller
     }
@@ -168,15 +190,15 @@ final class AutomationTools {
         guard let space = store.space(withID: id) else {
             throw AutomationToolError(.unknownSpace, "No space \(id.uuidString)")
         }
-        guard !space.isIncognito else {
-            throw AutomationToolError(.privateUnreachable, "Space \(id.uuidString) is Private")
+        guard privateAllowed || !space.isIncognito else {
+            throw AutomationToolError(.privateUnreachable, "Space \(id.uuidString) is Private" + Self.privateHint)
         }
         return space
     }
 
     private func windowsSelecting(_ tabID: UUID?) -> [JSONValue] {
         guard let tabID else { return [] }
-        return openWindows.filter { !$0.isIncognito && $0.selectedTabID == tabID }
+        return reachableWindows.filter { $0.selectedTabID == tabID }
             .map { .int(windowIDs.id(for: $0)) }
     }
 
@@ -186,7 +208,8 @@ final class AutomationTools {
         MCPTool(
             name: "list_windows",
             title: "List windows",
-            description: "Lists Detour's browser windows (Private windows are left out): each one's window_id, "
+            description: "Lists Detour's browser windows (Private windows are left out unless the user allows agents "
+                + "to use them; is_private says which is one): each one's window_id, "
                 + "window_number (its CGWindowID), frame (AppKit's, bottom-left origin), screen_bounds (the window "
                 + "server's, top-left origin, as screencapture takes it), display_id, key/main state, active space "
                 + "and selected tab. window_id is what the other tools take.",
@@ -199,7 +222,7 @@ final class AutomationTools {
             annotations: ["readOnlyHint": true],
             handler: { [self] _ in
                 let windows = openWindows
-                let visible = windows.filter { !$0.isIncognito }
+                let visible = reachableWindows
                 return [
                     "app_active": .bool(NSApp.isActive),
                     "windows": .array(visible.map(describe)),
@@ -224,6 +247,7 @@ final class AutomationTools {
             "is_main": .bool(window?.isMainWindow ?? false),
             "is_visible": .bool(window?.isVisible ?? false),
             "is_miniaturized": .bool(window?.isMiniaturized ?? false),
+            "is_private": .bool(controller.isIncognito),
             "active_space_id": .nullable(controller.activeSpaceID?.uuidString),
             "selected_tab_id": .nullable(controller.selectedTabID?.uuidString),
             "selected_tab_url": .nullable(controller.selectedTab?.url?.absoluteString),
@@ -237,14 +261,14 @@ final class AutomationTools {
         MCPTool(
             name: "list_spaces",
             title: "List spaces",
-            description: "Lists the spaces (Private ones are left out) with their profile, tab counts and the "
-                + "windows showing each one.",
+            description: "Lists the spaces (Private ones are left out unless the user allows agents to use Private "
+                + "windows) with their profile, tab counts and the windows showing each one.",
             inputSchema: MCPSchema.input([]),
             outputSchema: MCPSchema.output(["spaces": MCPSchema.arrayOfObjects("One entry per space")]),
             annotations: ["readOnlyHint": true],
             handler: { [self] _ in
-                let windows = openWindows.filter { !$0.isIncognito }
-                let spaces: [JSONValue] = store.spaces.filter { !$0.isIncognito }.map { space in
+                let windows = reachableWindows
+                let spaces: [JSONValue] = reachableSpaces.map { space in
                     [
                         "space_id": .string(space.id.uuidString),
                         "name": .string(space.name),
@@ -252,6 +276,7 @@ final class AutomationTools {
                         "color": .string(space.colorHex),
                         "profile_id": .string(space.profileID.uuidString),
                         "profile_name": .nullable(space.profile?.name),
+                        "is_private": .bool(space.isIncognito),
                         "pinned_count": .int(space.pinnedEntries.count),
                         "tab_count": .int(space.tabs.count),
                         "shown_in_window_ids": .array(windows.filter { $0.activeSpaceID == space.id }
@@ -420,7 +445,8 @@ final class AutomationTools {
     /// entry, tab) or a live tab's id. `preferred` is searched first, so a
     /// favorite, which every space of its profile shows, resolves there.
     private func locate(_ id: UUID, preferring preferred: Space?) throws -> (Space, SidebarItem) {
-        let candidates = ([preferred].compactMap { $0 } + store.spaces).filter { !$0.isIncognito }
+        let allowed = privateAllowed
+        let candidates = ([preferred].compactMap { $0 } + store.spaces).filter { allowed || !$0.isIncognito }
         for space in candidates {
             if let profile = space.profile,
                let favorite = profile.favorites.first(where: { $0.id == id || $0.tab?.id == id }) {
@@ -436,7 +462,7 @@ final class AutomationTools {
         if store.spaces.contains(where: { space in
             space.isIncognito && (space.tabs.contains { $0.id == id } || space.pinnedEntries.contains { $0.id == id })
         }) {
-            throw AutomationToolError(.privateUnreachable, "Tab \(id.uuidString) is in a Private space")
+            throw AutomationToolError(.privateUnreachable, "Tab \(id.uuidString) is in a Private space" + Self.privateHint)
         }
         throw AutomationToolError(.unknownTab, "No tab or sidebar item \(id.uuidString)")
     }
@@ -450,7 +476,8 @@ final class AutomationTools {
             description: "Opens a URL in a window as if it were typed in the command palette: in a new tab "
                 + "(Cmd+T), or in the selected tab with in_place (Cmd+L). Link Routes apply to a new tab, as they "
                 + "do to typed URLs, so a routed URL can open in another space or window (routed is then true); "
-                + "a route into a Private window is refused with private_unreachable.",
+                + "a route into a Private window is refused with private_unreachable unless the user allows agents to "
+                + "use Private windows, and a route into a quarantine always is.",
             inputSchema: MCPSchema.input([
                 ("window_id", .integer("The window to open in")),
                 ("url", .string("An absolute URL, or a host such as example.com")),
@@ -474,13 +501,17 @@ final class AutomationTools {
                 }
                 let inPlace = try arguments.bool("in_place") ?? false
                 // A route into a Private window would make one reachable from
-                // automation, which it never is: refused, not followed. Only
-                // where `openTypedURL` would route (the same rule it asks).
+                // automation: refused, not followed, unless the user allows
+                // Private windows (TASK-228.5). A quarantine (a Quick Detour
+                // window in the Private profile, which no tool reaches) is
+                // always refused. Only where `openTypedURL` would route (the
+                // same rule it asks).
                 if typedURLIsRoutable(url, isSearch: false, navigatesInPlace: inPlace && controller.selectedTab != nil),
                    let decision = controller.routedTypedDecision(for: url),
-                   decision == .privateWindow || decision == .quarantine {
+                   decision == .quarantine || (decision == .privateWindow && !privateAllowed) {
                     throw AutomationToolError(.privateUnreachable,
-                                              "A Link Route sends \(url.absoluteString) to a Private window")
+                                              "A Link Route sends \(url.absoluteString) to a "
+                                                + (decision == .quarantine ? "quarantine" : "Private window"))
                 }
                 let routed = controller.openTypedURL(url, typed: true, navigateInPlace: inPlace)
                 let after = controller.selectedTabID
@@ -524,8 +555,9 @@ final class AutomationTools {
                     throw AutomationToolError(.unknownMenuItem, "There is no main menu")
                 }
                 let found: (item: NSMenuItem, path: [String])
+                let allowPrivate = privateAllowed
                 if let path {
-                    found = try AutomationMenus.item(atPath: path, in: menu)
+                    found = try AutomationMenus.item(atPath: path, in: menu, allowPrivate: allowPrivate)
                 } else {
                     let (characters, modifiers) = try AutomationMenus.parseKeyEquivalent(key!)
                     found = try AutomationMenus.item(matchingCharacters: characters, modifiers: modifiers, in: menu)
@@ -533,7 +565,7 @@ final class AutomationTools {
                 guard let window = controller.window else {
                     throw AutomationToolError(.unknownWindow, "The window has no NSWindow")
                 }
-                let (action, target) = try AutomationMenus.resolve(found.item, in: window)
+                let (action, target) = try AutomationMenus.resolve(found.item, in: window, allowPrivate: allowPrivate)
                 // From the run loop: see `AutomationInput.runFromRunLoop`.
                 let item = found.item
                 let completed = await AutomationInput.runFromRunLoop(wait: menuActionWait) {
@@ -552,19 +584,22 @@ final class AutomationTools {
 enum AutomationMenus {
 
     /// The item at `path` (titles, compared case-insensitively, with "..."
-    /// matching "…"). Dynamic menus are rebuilt on the way down.
-    static func item(atPath path: [String], in menu: NSMenu) throws -> (item: NSMenuItem, path: [String]) {
+    /// matching "…"). Dynamic menus are rebuilt on the way down. A Private
+    /// window's Window-menu entry only with `allowPrivate`.
+    static func item(atPath path: [String], in menu: NSMenu,
+                     allowPrivate: Bool) throws -> (item: NSMenuItem, path: [String]) {
         guard !path.isEmpty else { throw AutomationToolError(.invalidArguments, "path is empty") }
         var current = menu
         var titles: [String] = []
         for (index, title) in path.enumerated() {
             refresh(current)
             // The Window menu's entry for a Private window bears its page's
-            // title: neither matched nor listed.
+            // title: neither matched nor listed, unless Private is allowed.
+            let hidden: (NSMenuItem) -> Bool = { !allowPrivate && namesPrivateWindow($0) }
             guard let item = current.items.first(where: {
-                !$0.isSeparatorItem && !namesPrivateWindow($0) && titlesMatch(displayTitle($0), title)
+                !$0.isSeparatorItem && !hidden($0) && titlesMatch(displayTitle($0), title)
             }) else {
-                let available = current.items.filter { !$0.isSeparatorItem && !$0.isHidden && !namesPrivateWindow($0) }
+                let available = current.items.filter { !$0.isSeparatorItem && !$0.isHidden && !hidden($0) }
                     .map(displayTitle)
                 throw AutomationToolError(.unknownMenuItem,
                                           "No \"\(title)\" in \(titles.isEmpty ? "the menu bar" : titles.joined(separator: " > ")); "
@@ -603,8 +638,8 @@ enum AutomationMenus {
         return nil
     }
 
-    /// Whether `window` is a Private browser window, which automation never
-    /// reaches.
+    /// Whether `window` is a Private browser window, which automation
+    /// reaches only while the user allows it (TASK-228.5).
     static func isPrivate(_ window: NSWindow?) -> Bool {
         (window?.windowController as? BrowserWindowController)?.isIncognito == true
     }
@@ -640,7 +675,7 @@ enum AutomationMenus {
     /// The action and target the item would be sent to in `window`, checked
     /// with the target's own validation: what AppKit does for the key window,
     /// done for a window that need not be key (Detour need not be active).
-    static func resolve(_ item: NSMenuItem, in window: NSWindow) throws -> (Selector, AnyObject) {
+    static func resolve(_ item: NSMenuItem, in window: NSWindow, allowPrivate: Bool) throws -> (Selector, AnyObject) {
         // Before the action: AppKit gives an item with a submenu the action
         // `submenuAction:`, which only its own menu tracking may send.
         guard item.submenu == nil else {
@@ -652,8 +687,8 @@ enum AutomationMenus {
         guard !item.isHidden else {
             throw AutomationToolError(.menuItemDisabled, "\"\(item.title)\" is hidden")
         }
-        guard !namesPrivateWindow(item) else {
-            throw AutomationToolError(.privateUnreachable, "The item acts on a Private window")
+        guard allowPrivate || !namesPrivateWindow(item) else {
+            throw AutomationToolError(.privateUnreachable, "The item acts on a Private window" + AutomationTools.privateHint)
         }
         guard let target = item.target ?? responderTarget(for: action, in: window) else {
             throw AutomationToolError(.menuItemDisabled, "Nothing in the window handles \"\(item.title)\"")

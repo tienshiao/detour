@@ -118,6 +118,31 @@ final class AutomationController {
     /// The user's setting (what Settings shows).
     var isEnabledInSettings: Bool { defaults.bool(forKey: AutomationGate.enabledDefaultsKey) }
 
+    /// Whether the user allows agents to use Private windows (TASK-228.5),
+    /// read now: every check asks again, so turning it off refuses at once.
+    var allowsPrivateInSettings: Bool { defaults.bool(forKey: AutomationGate.allowPrivateDefaultsKey) }
+
+    /// The Settings checkbox. Turning it off also removes page capture from
+    /// Private pages and forgets their records, stops the Private profile's
+    /// workers' parks and forgets its extension console and stub counts.
+    func setAllowsPrivate(_ allowed: Bool) {
+        defaults.set(allowed, forKey: AutomationGate.allowPrivateDefaultsKey)
+        Self.privateAccessChanged(allowed: allowed)
+        changed()
+    }
+
+    /// What follows a change of the Private setting outside the tools, which
+    /// read it per call.
+    static func privateAccessChanged(allowed: Bool) {
+        AutomationPageCapture.shared.privateAccessChanged(allowed: allowed)
+        guard !allowed else { return }
+        let id = TabStore.incognitoProfileID
+        AutomationExtensionChannel.shared.closeParks(profileID: id)
+        AutomationExtensionConsole.shared.forget(profileID: id)
+        AutomationExtensionStubCalls.shared.forget(profileID: id)
+        AutomationExtensionPopups.shared.close(profileID: id)
+    }
+
     /// The URL clients use, while listening.
     var endpointURL: String? {
         if case .listening(let port) = status { return AutomationCredentials.endpointURL(port: port) }
@@ -215,6 +240,8 @@ final class AutomationController {
             }
             var toolEnvironment = environment()
             toolEnvironment.isTestRun = testRun
+            // The tools read the Private setting from these defaults, per call.
+            toolEnvironment.allowsPrivate = { [defaults] in defaults.bool(forKey: AutomationGate.allowPrivateDefaultsKey) }
             let tools = AutomationTools(environment: toolEnvironment)
             let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
             let server = MCPServer(tools: tools.all, serverVersion: version, instructions: Self.instructions)
@@ -357,6 +384,17 @@ final class AutomationController {
         changed()
         return token
     }
+}
+
+/// Whether automation may reach Private windows, spaces and tabs, menus over
+/// Private windows, and the Private profile's extension contexts
+/// (TASK-228.5): the user's "Allow agents to use Private windows" setting,
+/// off by default. Read at every check, never cached, so turning it off
+/// refuses at once. The tools read it through `AutomationEnvironment`; page
+/// capture, the extension channel, console and stub counts read it here.
+/// Tests replace it.
+enum AutomationPrivateAccess {
+    static var isAllowed: () -> Bool = { AutomationController.shared.allowsPrivateInSettings }
 }
 
 /// What the window's automation indicator says (TASK-228.1, AC #10, #17).

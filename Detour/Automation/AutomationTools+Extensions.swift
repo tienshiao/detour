@@ -12,8 +12,9 @@ import WebKit
 /// Install, uninstall, turning on and off and permission decisions skip the
 /// user's prompts, so they answer `gate_closed` unless the endpoint runs in
 /// the isolated test-run mode (AC #7; whether a Release build ever offers
-/// them is the user's decision). The Private profile is never a target and
-/// its contexts are never reached.
+/// them is the user's decision). The Private profile is never a target of
+/// those; its contexts are reached only while the user allows agents to use
+/// Private windows (TASK-228.5).
 extension AutomationTools {
 
     var extensionTools: [MCPTool] {
@@ -66,7 +67,27 @@ extension AutomationTools {
         }
     }
 
-    /// A normal profile by id. The Private profile is `private_unreachable`.
+    /// A profile whose extension contexts a tool may reach: a normal one,
+    /// or the Private one while the user allows Private access (TASK-228.5).
+    func contextProfile(id: UUID) throws -> Profile {
+        guard let profile = environment.store.profiles.first(where: { $0.id == id }) else {
+            throw AutomationToolError(.unknownProfile, "No profile \(id.uuidString)")
+        }
+        guard privateAllowed || !profile.isIncognito else {
+            throw AutomationToolError(.privateUnreachable, "The Private profile is not reachable" + Self.privateHint)
+        }
+        return profile
+    }
+
+    /// The profiles whose extension contexts a tool may reach now.
+    var contextProfiles: [Profile] {
+        let allowed = privateAllowed
+        return environment.store.profiles.filter { allowed || !$0.isIncognito }
+    }
+
+    /// A normal profile by id, as an install, turn-on or permission target.
+    /// The Private profile is never one (`private_unreachable`), whatever
+    /// the Private setting: those tools skip the user's prompts.
     func normalProfile(id: UUID) throws -> Profile {
         guard let profile = environment.store.profiles.first(where: { $0.id == id }) else {
             throw AutomationToolError(.unknownProfile, "No profile \(id.uuidString)")
@@ -78,14 +99,16 @@ extension AutomationTools {
     }
 
     /// The extension's context in the named profile, or in the only normal
-    /// profile it is on in.
+    /// profile it is on in. The Private profile's (while Private access is
+    /// allowed) only when named, so turning the setting on changes nothing
+    /// for a client that names no profile.
     func resolveExtensionTarget(_ ref: AutomationExtensionRef, profileID: UUID? = nil) throws -> ExtensionTarget {
         if let profileID, let named = ref.profileID, named != profileID {
             throw AutomationToolError(.invalidArguments, "The context names profile \(named.uuidString), profile_id another")
         }
         let ext = try resolveExtension(ref.query)
         if let wanted = ref.profileID ?? profileID {
-            let profile = try normalProfile(id: wanted)
+            let profile = try contextProfile(id: wanted)
             guard let context = profile.extensionContext(for: ext.id) else {
                 throw AutomationToolError(.extensionDisabled,
                                           "\(Self.name(of: ext)) is not on in profile \(profile.name)")
@@ -212,7 +235,7 @@ extension AutomationTools {
             return ["domain": .string(nsError.domain), "code": .int(nsError.code),
                     "message": .string(message(nsError.localizedDescription))]
         }
-        let normalProfiles = environment.store.profiles.filter { !$0.isIncognito }
+        let normalProfiles = contextProfiles
         let ordered = stable ? normalProfiles.sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
             : normalProfiles
         let profiles: [JSONValue] = ordered.map { profile in
@@ -245,10 +268,12 @@ extension AutomationTools {
             }
             return .object(described)
         }
-        // The Private profile's errors are left out with the rest of it.
+        // The Private profile's errors are left out with the rest of it,
+        // unless Private access is allowed.
         let names = Dictionary(normalProfiles.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        let privateAllowed = privateAllowed
         var recorded: [JSONValue] = ExtensionErrorLog.shared.errors(for: ext.id).filter {
-            $0.profileID != TabStore.incognitoProfileID
+            privateAllowed || $0.profileID != TabStore.incognitoProfileID
         }.map { entry in
             var described: [String: JSONValue] = [
                 "source": .string(entry.source),
@@ -705,7 +730,7 @@ extension AutomationTools {
             }
         } else {
             guard let first = environment.windowControllers().first(where: {
-                !$0.hasClosed && !$0.isIncognito && $0.activeSpace?.profileID == target.profile.id
+                !$0.hasClosed && (privateAllowed || !$0.isIncognito) && $0.activeSpace?.profileID == target.profile.id
             }) else {
                 throw AutomationToolError(.unknownWindow, "No window shows a space of profile \(target.profile.name)")
             }

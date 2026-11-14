@@ -38,7 +38,7 @@ extension TabStore {
             // A window the page opened (`createWebViewWith`): WebKit's copy of
             // the opener's configuration, with a user content controller of its
             // own, as `addTab(in:openedWith:)` gives a space's.
-            configuration.userContentController = Space.makeUserContentController(for: profile)
+            configuration.userContentController = Space.makeUserContentController(for: profile, inSpace: false)
             if let quarantine, configuration.websiteDataStore !== quarantine.dataStore {
                 // Never the case for a real opener (the copy carries its
                 // store); should it be, the page still gets no other store.
@@ -46,7 +46,7 @@ extension TabStore {
             }
             tab = BrowserTab(id: id, configuration: configuration)
         } else {
-            let configuration = Space.makeWebViewConfiguration(for: profile)
+            let configuration = Space.makeWebViewConfiguration(for: profile, inSpace: false)
             if let quarantine { configuration.websiteDataStore = quarantine.dataStore }
             tab = BrowserTab(id: id, configuration: configuration)
         }

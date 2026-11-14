@@ -4,8 +4,8 @@ import WebKit
 /// The page inspection tools of TASK-228.4: run JavaScript, read a page's
 /// text, HTML and interactive elements, its console and network records,
 /// wait for something to happen, and wake a sleeping tab. They take any
-/// live tab of a non-Private space (or a favorite), whether or not a window
-/// shows it; see `AutomationPage` for the scripts and
+/// live tab of a non-Private space (or a favorite), and of a Private one
+/// while the user allows it (TASK-228.5), whether or not a window shows it; see `AutomationPage` for the scripts and
 /// `AutomationPageCapture` for the console and network records.
 extension AutomationTools {
 
@@ -22,11 +22,15 @@ extension AutomationTools {
             throw AutomationToolError(.unsupportedContext, "\(value) is not a tab")
         }
         let store = environment.store
+        let allowed = privateAllowed
         let isPrivate = store.spaces.contains { space in
             space.isIncognito && (space.tabs.contains { $0.id == id } || space.pinnedTabs.contains { $0.id == id })
         }
-        if isPrivate { throw AutomationToolError(.privateUnreachable, "Tab \(id.uuidString) is in a Private space") }
-        guard let tab = AutomationPageCapture.reachableTabs(in: store).first(where: { $0.id == id }) else {
+        if isPrivate && !allowed {
+            throw AutomationToolError(.privateUnreachable, "Tab \(id.uuidString) is in a Private space" + Self.privateHint)
+        }
+        guard let tab = AutomationPageCapture.reachableTabs(in: store, includingPrivate: allowed)
+            .first(where: { $0.id == id }) else {
             throw AutomationToolError(.unknownContext, "No open tab \(id.uuidString)")
         }
         return tab
@@ -39,10 +43,10 @@ extension AutomationTools {
         guard let webView = tab.webView else {
             throw AutomationToolError(.tabAsleep, "Tab \(tab.id.uuidString) is asleep; wake it with wake_tab or select_tab")
         }
-        // A web view shown in a Private window is never reachable, whatever
-        // the space says.
-        if AutomationMenus.isPrivate(webView.window) {
-            throw AutomationToolError(.privateUnreachable, "Tab \(tab.id.uuidString) is in a Private window")
+        // A web view shown in a Private window is reachable only while
+        // Private is allowed, whatever the space says.
+        if !privateAllowed && AutomationMenus.isPrivate(webView.window) {
+            throw AutomationToolError(.privateUnreachable, "Tab \(tab.id.uuidString) is in a Private window" + Self.privateHint)
         }
         return (tab, webView)
     }
@@ -360,7 +364,8 @@ extension AutomationTools {
     /// Every loaded extension context's origin host, with its extension id.
     func extensionOriginHosts() -> [String: String] {
         var hosts: [String: String] = [:]
-        for profile in environment.store.profiles where !profile.isIncognito {
+        let allowed = privateAllowed
+        for profile in environment.store.profiles where allowed || !profile.isIncognito {
             for (id, context) in profile.extensionContexts {
                 if let host = context.baseURL.host { hosts[host] = id }
             }

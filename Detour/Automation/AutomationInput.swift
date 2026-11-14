@@ -440,10 +440,11 @@ final class AutomationMenuTracker {
     }
 
     /// A menu's items as `list_menu` reports them.
-    /// A Private window's Window-menu entry is left out (its index skipped).
-    static func describe(_ menu: NSMenu) -> [JSONValue] {
+    /// A Private window's Window-menu entry is left out (its index skipped)
+    /// unless Private is allowed.
+    static func describe(_ menu: NSMenu, allowPrivate: Bool) -> [JSONValue] {
         menu.items.enumerated().compactMap { index, item in
-            if AutomationMenus.namesPrivateWindow(item) { return nil }
+            if !allowPrivate && AutomationMenus.namesPrivateWindow(item) { return nil }
             if item.isSeparatorItem {
                 return ["index": .int(index), "separator": true, "title": ""]
             }
