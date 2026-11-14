@@ -1,6 +1,29 @@
 import XCTest
 import Network
+import Synchronization
 @testable import Detour
+
+/// Reads a raw connection until the server closes it.
+///
+/// `Sendable`: what it saw is behind a `Mutex`; Network.framework calls it on
+/// its own queue.
+nonisolated final class ConnectionWatch: Sendable {
+    private let state = Mutex((received: Data(), closed: false))
+
+    var received: String { state.withLock { String(decoding: $0.received, as: UTF8.self) } }
+    var closed: Bool { state.withLock { $0.closed } }
+
+    func read(_ connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [self] data, _, isComplete, error in
+            if let data { state.withLock { $0.received.append(data) } }
+            if isComplete || error != nil {
+                state.withLock { $0.closed = true }
+                return
+            }
+            read(connection)
+        }
+    }
+}
 
 /// Stands in for the approval panel: records each prompt and answers it when
 /// the test says (or at once, with `autoAnswer`).
@@ -203,6 +226,14 @@ nonisolated final class AutomationClientApprovalTests: XCTestCase {
         XCTAssertNil(AutomationAuthorization.authorizationHeadRefusal(head(json)))
         XCTAssertEqual(AutomationAuthorization.authorizationHeadRefusal(head(json, method: "GET"))?.status, 405)
         XCTAssertEqual(AutomationAuthorization.authorizationHeadRefusal(head(["content-length": "40"]))?.status, 415)
+        XCTAssertNil(AutomationAuthorization.authorizationHeadRefusal(
+            head(["content-type": "Application/JSON; charset=utf-8", "content-length": "40"])))
+        // A type a web page may send without a preflight, naming JSON only in
+        // a parameter: refused.
+        XCTAssertEqual(AutomationAuthorization.authorizationHeadRefusal(
+            head(["content-type": "text/plain;x=application/json", "content-length": "40"]))?.status, 415)
+        XCTAssertEqual(AutomationAuthorization.authorizationHeadRefusal(
+            head(["content-type": "application/jsonx", "content-length": "40"]))?.status, 415)
         XCTAssertEqual(AutomationAuthorization.authorizationHeadRefusal(head(["content-type": "application/json"]))?.status, 411)
         XCTAssertEqual(AutomationAuthorization.authorizationHeadRefusal(
             head(["content-type": "application/json", "transfer-encoding": "chunked"]))?.status, 411)
@@ -375,10 +406,66 @@ nonisolated final class AutomationClientApprovalTests: XCTestCase {
         XCTAssertTrue(prompter.prompts[0].dismissed)
         prompter.prompts[0].respond(.allow)
         XCTAssertTrue(store.records.isEmpty)
-        // Not a denial: the name may ask again at once.
+        // Not a denial the first time: the name may ask again at once.
         prompter.autoAnswer = .allow
         let again = await approvals.handle(Self.authorizeRequest(Self.claude), cancellation: .init())
         XCTAssertEqual(again.response.status, 200)
+    }
+
+    @MainActor func testHangingUpOnAShownPromptTwiceCountsAsADenial() async throws {
+        let prompter = FakeApprovalPrompter()
+        let (approvals, _) = approvals(prompter)
+        for round in 1...2 {
+            let cancellation = AutomationRequestCancellation()
+            let task = Task { await approvals.handle(Self.authorizeRequest(Self.claude), cancellation: cancellation) }
+            try await waitUntil("prompt \(round)") { prompter.prompts.count == round }
+            cancellation.cancel()
+            let status = await task.value.response.status
+            XCTAssertEqual(status, 400)
+        }
+        let third = await approvals.handle(Self.authorizeRequest(Self.claude), cancellation: .init())
+        XCTAssertEqual(third.response.status, 403, "closing and reconnecting cannot keep the panel flashing")
+        XCTAssertEqual(prompter.prompts.count, 2)
+    }
+
+    @MainActor func testADenialHoldsForTheTitleThePromptShowedUnderAnotherName() async throws {
+        let prompter = FakeApprovalPrompter()
+        prompter.autoAnswer = .deny
+        let (approvals, _) = approvals(prompter)
+        let denied = await approvals.handle(Self.authorizeRequest(["client_name": "x1", "client_title": "Claude Code"]),
+                                            cancellation: .init())
+        XCTAssertEqual(denied.response.status, 403)
+        let renamed = await approvals.handle(Self.authorizeRequest(["client_name": "x2", "client_title": "claude code"]),
+                                             cancellation: .init())
+        XCTAssertEqual(renamed.response.status, 403, "a fresh name with the same title is refused without a prompt")
+        let asName = await approvals.handle(Self.authorizeRequest(["client_name": "Claude Code"]), cancellation: .init())
+        XCTAssertEqual(asName.response.status, 403, "and so is the title used as the name")
+        XCTAssertEqual(prompter.prompts.count, 1)
+    }
+
+    @MainActor func testAtMostFivePromptsAreShownInTenMinutesWhateverTheNames() async throws {
+        var now = Date(timeIntervalSince1970: 2_000_000_000)
+        let prompter = FakeApprovalPrompter()
+        prompter.autoAnswer = .deny
+        let (approvals, _) = approvals(prompter, now: { now })
+        for index in 1...AutomationApprovals.maximumPromptsPerWindow {
+            let outcome = await approvals.handle(
+                Self.authorizeRequest(["client_name": .string("n\(index)"), "client_title": .string("T\(index)")]),
+                cancellation: .init())
+            XCTAssertEqual(outcome.response.status, 403)
+            now += 60
+        }
+        let over = await approvals.handle(Self.authorizeRequest(["client_name": "fresh", "client_title": "Fresh"]),
+                                          cancellation: .init())
+        XCTAssertEqual(over.response.status, 429, "rotating name and title does not buy more prompts")
+        XCTAssertNotNil(over.response.header("Retry-After"))
+        XCTAssertEqual(prompter.prompts.count, AutomationApprovals.maximumPromptsPerWindow)
+
+        now += 6 * 60  // the first prompt is now more than ten minutes old
+        prompter.autoAnswer = .allow
+        let later = await approvals.handle(Self.authorizeRequest(["client_name": "fresh", "client_title": "Fresh"]),
+                                           cancellation: .init())
+        XCTAssertEqual(later.response.status, 200)
     }
 
     @MainActor func testTurningOffClosesEveryPromptAndAnswersEveryHeldRequest() async throws {
@@ -467,6 +554,69 @@ nonisolated final class AutomationClientApprovalTests: XCTestCase {
         _ = await initialize(server, client: two)
         server.sessions.endAll(clientID: one.id)
         XCTAssertEqual(server.sessions.orderedSessions.map(\.clientName), ["Cursor"])
+    }
+
+    /// A tool that revokes its caller, for the batch test.
+    @MainActor private final class RevokingTool {
+        var approved: Set<UUID> = []
+        weak var server: MCPServer?
+        var runs = 0
+    }
+
+    @MainActor func testARevocationDuringABatchRefusesTheBatchsLaterMessages() async throws {
+        let one = AutomationClientIdentity(id: UUID(), name: "Claude Code")
+        let state = RevokingTool()
+        state.approved = [one.id]
+        let tool = MCPTool(
+            name: "revoke_me", title: "Revoke me", description: "Revokes the caller, as the user would meanwhile.",
+            inputSchema: MCPSchema.input([]), outputSchema: MCPSchema.output([:]), annotations: [:],
+            handler: { _ in
+                state.runs += 1
+                state.approved.remove(one.id)
+                state.server?.sessions.endAll(clientID: one.id)
+                return [:]
+            })
+        let server = MCPServer(tools: [tool], serverVersion: "1", instructions: "")
+        state.server = server
+        server.isClientApproved = { state.approved.contains($0) }
+        let started = await initialize(server, client: one)
+        let session = try XCTUnwrap(started.header(MCPServer.sessionHeader))
+
+        let call: JSONValue = ["jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                               "params": ["name": "revoke_me", "arguments": [:]]]
+        let batch: JSONValue = .array([call, call, Self.pingMessage])
+        var request = AutomationHTTP.Request(
+            method: "POST", path: "/mcp",
+            headers: ["content-type": "application/json", "mcp-session-id": session], body: batch.serialized())
+        request.client = one
+        let response = await server.handle(request)
+        XCTAssertEqual(response.status, 200)
+        let answers = try XCTUnwrap(try JSONValue.parse(response.body).arrayValue)
+        XCTAssertEqual(answers.count, 3)
+        XCTAssertNotNil(answers[0]["result"], "the first call ran")
+        XCTAssertEqual(answers[1]["error"]?["code"]?.intValue, -32001, "refused once its client was revoked")
+        XCTAssertEqual(answers[2]["error"]?["code"]?.intValue, -32001)
+        XCTAssertEqual(state.runs, 1, "the second call never ran")
+    }
+
+    @MainActor func testAClientAtTheSessionLimitEndsItsOwnOldestSessionNotAnothers() throws {
+        let store = MCPSessionStore()
+        let mine = UUID(), theirs = UUID()
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let other = store.start(clientName: "Cursor", clientVersion: nil, protocolVersion: "2025-06-18", now: start,
+                                clientID: theirs)
+        var first: MCPSessionStore.Session?
+        for index in 1..<MCPSessionStore.maximumSessions {
+            let session = store.start(clientName: "Claude Code", clientVersion: nil, protocolVersion: "2025-06-18",
+                                      now: start + Double(index), clientID: mine)
+            if first == nil { first = session }
+        }
+        XCTAssertEqual(store.sessions.count, MCPSessionStore.maximumSessions)
+        _ = store.start(clientName: "Claude Code", clientVersion: nil, protocolVersion: "2025-06-18",
+                        now: start + 100, clientID: mine)
+        XCTAssertEqual(store.sessions.count, MCPSessionStore.maximumSessions)
+        XCTAssertNotNil(store.sessions[other.id], "another client's least recent session is kept")
+        XCTAssertNil(store.sessions[try XCTUnwrap(first).id], "the client's own least recent one went")
     }
 
     // MARK: Over the socket
@@ -592,6 +742,32 @@ nonisolated final class AutomationClientApprovalTests: XCTestCase {
         let (status, body, _) = try await held.value
         XCTAssertEqual(status, 200, "answered after the 0.3 s deadline")
         XCTAssertNotNil(try JSONValue.parse(body)["token"]?.stringValue)
+    }
+
+    /// A revoked client's open connections close: authorised ones are spared
+    /// by the deadline, so they would otherwise hold their places for good.
+    @MainActor func testOverTheSocketRevokingAClientClosesItsOpenConnections() async throws {
+        let store = AutomationClientStore(directory: nil)
+        let (url, _, _) = try await startEndpoint(store: store, prompter: FakeApprovalPrompter())
+        let endpoint = try XCTUnwrap(endpoints.last)
+        let (token, record) = try store.add(name: "claude-code", title: nil, version: nil, now: Date())
+        let port = try XCTUnwrap(url.port)
+        let body = initializeMessage.jsonString
+        let request = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nContent-Type: application/json\r\n"
+            + "Accept: application/json, text/event-stream\r\nAuthorization: Bearer \(token)\r\n"
+            + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)"
+        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+        connection.start(queue: DispatchQueue(label: "automation-revoke-test"))
+        defer { connection.cancel() }
+        let watch = ConnectionWatch()
+        watch.read(connection)
+        connection.send(content: Data(request.utf8), completion: .idempotent)
+        try await waitUntil("the answer") { watch.received.contains("\r\n\r\n") }
+        XCTAssertTrue(watch.received.hasPrefix("HTTP/1.1 200"), watch.received)
+        XCTAssertFalse(watch.closed, "an authorised connection stays open for the next request")
+
+        endpoint.closeConnections(clientID: record.clientID)
+        try await waitUntil("the connection to close") { watch.closed }
     }
 
     @MainActor func testOverTheSocketAClientThatHangsUpWithdrawsItsRequest() async throws {

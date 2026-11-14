@@ -19,7 +19,8 @@ nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", categor
 /// never authorised, at most `maximumHeldAuthorizations` at once, and the
 /// answer always closes it, so no connection outlives the deadline without
 /// having sent an authorised request except while a prompt it asked for is
-/// up (5 minutes at most). A client that closes its connection meanwhile
+/// up (5 minutes, or up to 10 for a request queued behind another prompt
+/// for its name). A client that closes its connection meanwhile
 /// withdraws its request (`AutomationRequestCancellation`).
 ///
 /// `Sendable`: the listener and connections are Network.framework objects
@@ -39,6 +40,9 @@ nonisolated final class AutomationEndpoint: Sendable {
         /// Connections holding an authorize request (waiting for the user's
         /// answer): spared by `headTimeout`, closed once answered.
         var held: Set<ObjectIdentifier> = []
+        /// The approved client whose token each connection's last authorised
+        /// request carried, so revoking it closes them (TASK-228.5).
+        var clients: [ObjectIdentifier: UUID] = [:]
         var stopped = false
     }
 
@@ -148,6 +152,7 @@ nonisolated final class AutomationEndpoint: Sendable {
                 state.connections.removeAll()
                 state.authorized.removeAll()
                 state.held.removeAll()
+                state.clients.removeAll()
             }
             return Array(state.connections.values)
         }
@@ -177,6 +182,7 @@ nonisolated final class AutomationEndpoint: Sendable {
                     state.connections.removeValue(forKey: id)
                     state.authorized.remove(id)
                     state.held.remove(id)
+                    state.clients.removeValue(forKey: id)
                 }
             default:
                 break
@@ -268,13 +274,28 @@ nonisolated final class AutomationEndpoint: Sendable {
         case .allowed:
             break
         }
-        _ = state.withLock { $0.authorized.insert(ObjectIdentifier(connection)) }
+        state.withLock { state in
+            let id = ObjectIdentifier(connection)
+            state.authorized.insert(id)
+            state.clients[id] = request.client?.id
+        }
         let handler = self.handler
         Task {
             let response = await handler(request)
             self.send(response, on: connection, closing: closing, rest: rest)
         }
         return true
+    }
+
+    /// Closes the connections whose last authorised request carried
+    /// `clientID`'s token (it was revoked). Otherwise they would stay open,
+    /// spared by `headTimeout` as authorised ones are, holding places under
+    /// `maximumConnections` that nothing they send can use.
+    func closeConnections(clientID: UUID) {
+        let closing = state.withLock { state in
+            state.clients.filter { $0.value == clientID }.compactMap { state.connections[$0.key] }
+        }
+        for connection in closing { connection.cancel() }
     }
 
     private func authorize(_ request: AutomationHTTP.Request) -> AutomationAuthorization.Decision {

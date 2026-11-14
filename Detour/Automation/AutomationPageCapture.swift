@@ -98,7 +98,10 @@ final class AutomationPageCapture: NSObject, WKScriptMessageHandler {
     func privateAccessChanged(allowed: Bool) {
         guard isActive, let store else { return }
         if allowed {
+            // The same tabs `reachableTabs` adds for Private: its spaces'
+            // and its profile's favorites.
             let privateTabs = store.spaces.filter(\.isIncognito).flatMap { $0.tabs + $0.pinnedTabs }
+                + store.profiles.filter(\.isIncognito).flatMap(\.favoriteTabs)
             installInLiveTabs(privateTabs)
         } else {
             for controller in installed.allObjects where eligiblePrivate.contains(controller) {

@@ -319,9 +319,14 @@ final class MCPSessionStore {
 
     func start(clientName: String, clientVersion: String?, protocolVersion: String, now: Date,
                clientID: UUID? = nil) -> Session {
-        if sessions.count >= Self.maximumSessions,
-           let oldest = sessions.values.min(by: { $0.lastSeen < $1.lastSeen }) {
-            sessions.removeValue(forKey: oldest.id)
+        if sessions.count >= Self.maximumSessions {
+            // The client's own least recent session goes first, so one
+            // approved client cannot end another's by starting many
+            // (TASK-228.5). A test run's sessions all have no client.
+            let own = sessions.values.filter { $0.clientID == clientID }
+            if let oldest = (own.isEmpty ? Array(sessions.values) : own).min(by: { $0.lastSeen < $1.lastSeen }) {
+                sessions.removeValue(forKey: oldest.id)
+            }
         }
         let session = Session(id: UUID().uuidString, clientName: clientName, clientVersion: clientVersion,
                               protocolVersion: protocolVersion, startedAt: now, lastSeen: now, initialized: false,
@@ -517,6 +522,15 @@ final class MCPServer {
 
         var responses: [JSONValue] = []
         for message in messages {
+            // Asked again before each message: a batch's tool calls are
+            // awaited one by one, and a revocation or a Disconnect while an
+            // earlier one ran must stop the rest (TASK-228.5).
+            guard ownsSession(sessionID, request), request.client.map({ isClientApproved($0.id) }) ?? true else {
+                if let id = message["id"], !id.isNull {
+                    responses.append(Self.errorResponse(id: id, code: -32001, message: "Unknown or ended session"))
+                }
+                continue
+            }
             if let response = await handleMessage(message, sessionID: sessionID) {
                 responses.append(response)
             }

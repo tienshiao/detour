@@ -150,11 +150,12 @@ func saveClientToken(_ token: String, to file: URL) throws {
         return URLSession(configuration: configuration)
     }()
     /// For the authorize request, which Detour holds while its prompt is up
-    /// (up to 5 minutes): longer than that.
+    /// (up to 5 minutes), and before that while another prompt for the same
+    /// name is (up to 5 more): longer than both.
     private let authorizeSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 330
-        configuration.timeoutIntervalForResource = 340
+        configuration.timeoutIntervalForRequest = 630
+        configuration.timeoutIntervalForResource = 640
         configuration.connectionProxyDictionary = [:]
         return URLSession(configuration: configuration)
     }()
@@ -207,7 +208,7 @@ func saveClientToken(_ token: String, to file: URL) throws {
         request.httpMethod = "POST"
         request.httpBody = try JSONSerialization.data(withJSONObject: fields)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 330
+        request.timeoutInterval = 630
         let data: Data, status: Int
         do {
             let (body, response) = try await authorizeSession.data(for: request)

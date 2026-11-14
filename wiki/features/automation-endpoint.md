@@ -198,8 +198,12 @@ Deny prompt once, and gets a token of its own (user decisions,
    answer, so a second process cannot ride on a prompt the user expected.
    At most 3 names are asked about at once (429 beyond). A name denied or
    unanswered in the last 10 minutes is refused without a prompt (403 with
-   `Retry-After`). A client that closes its connection withdraws its
-   request and the panel closes; turning automation off closes every panel
+   `Retry-After`), and so is the title that prompt showed, under any name.
+   A client that closes its connection withdraws its request and the panel
+   closes; the first such hang-up per name is let off (the person may have
+   closed the client), a second within 10 minutes counts as a denial. At
+   most 5 prompts are shown in any 10 minutes, whatever the names (429 with
+   `Retry-After` beyond); turning automation off closes every panel
    and answers every held request 503. An Allow whose answer could not be
    sent (the client went away) is revoked at once, so no approval exists
    whose token nobody holds.
@@ -214,10 +218,11 @@ Deny prompt once, and gets a token of its own (user decisions,
    cannot bring back a revoked client. A malformed `mcp-clients.json`
    approves nobody.
 
-What the rate limits do not stop: a local program can vary the name it
-asks under, so each denial is followed by a new prompt (at most three at
-a time); the user can turn automation off. The name is self-reported, so
-the prompt says so.
+What the rate limits do not stop: a local program that varies both name
+and title still gets up to 5 prompts in 10 minutes, and while it holds the
+budget or the 3 prompt places a real client gets 429 (a local denial of
+service, not access; the user can turn automation off). The name is
+self-reported, so the prompt says so.
 
 Rejected (recorded with the user's decisions, 2026-11-13/14):
 
@@ -897,8 +902,9 @@ test run:
   setting it keeps a token per client: on the client's `initialize` it
   reads `<data dir>/mcp-clients/<SHA-256 of clientInfo.name>.token` (0600 in
   a 0700 folder, opened without following links) or asks for one (see
-  "Approving a client", with a 330 s timeout, longer than the prompt's 5
-  minutes) and saves it. A denial, or a 401 with a token Detour already
+  "Approving a client", with a 630 s timeout, longer than the prompt's 5
+  minutes plus up to 5 more queued behind another prompt for the same
+  name) and saves it. A denial, or a 401 with a token Detour already
   accepted in this run (revoked: the file is deleted), is answered with a
   JSON-RPC error for the rest of the run ("Detour revoked this client's
   access; restart the client to ask again"), never a new prompt. A saved

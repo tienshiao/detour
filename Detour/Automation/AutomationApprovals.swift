@@ -15,6 +15,10 @@ nonisolated struct AutomationApprovalRequest: Equatable, Sendable {
     /// denied lately is refused without one.
     var key: String { name.lowercased() }
 
+    /// What the prompt shows, as a key: a denial holds for it too, so a
+    /// client cannot re-ask under a fresh name with the same title.
+    var displayKey: String { displayName.lowercased() }
+
     static let maximumBodySize = 4096
     static let maximumNameLength = 64
     static let maximumVersionLength = 32
@@ -144,6 +148,14 @@ nonisolated struct AutomationAuthorizeOutcome: Sendable {
 ///   request is refused at once (429).
 /// - A name denied (or not answered) within `denialWindow` (10 minutes) is
 ///   refused without a prompt, so a looping client cannot keep prompting.
+///   The denial holds for the title the prompt showed too, so a client
+///   cannot re-ask under a fresh name with the same title. A client that
+///   hangs up while its prompt is shown is let off once (the person may
+///   have closed it); a second time within `denialWindow` counts as a
+///   denial, so closing and reconnecting cannot keep the panel flashing.
+/// - At most `maximumPromptsPerWindow` prompts are shown in any
+///   `denialWindow`, whatever the names: the bound on a client that rotates
+///   both name and title. Past it, requests get 429 until the window moves.
 /// - A request whose client went away closes its prompt; `stop()` closes
 ///   every prompt and answers every held request 503.
 final class AutomationApprovals {
@@ -151,6 +163,7 @@ final class AutomationApprovals {
     static let maximumPrompts = 3
     static let maximumWaitersPerName = 1
     static let denialWindow: TimeInterval = 10 * 60
+    static let maximumPromptsPerWindow = 5
 
     var promptTimeout: Duration = .seconds(300)
     /// Called after a client was approved (Settings lists the clients).
@@ -182,6 +195,9 @@ final class AutomationApprovals {
         private var turnRefused = false
         var prompt: AutomationApprovalPrompt?
         var timeout: Task<Void, Never>?
+        /// Whether its prompt was put on screen (a withdrawal then counts
+        /// as a denial).
+        var wasShown = false
 
         init(request: AutomationApprovalRequest) {
             self.request = request
@@ -230,6 +246,10 @@ final class AutomationApprovals {
     private var queues: [String: [Pending]] = [:]
     /// When each name was last denied (or not answered).
     private var deniedAt: [String: Date] = [:]
+    /// When each prompt of the last `denialWindow` was shown.
+    private var shownAt: [Date] = []
+    /// When each name last hung up while its prompt was shown.
+    private var withdrawnAt: [String: Date] = [:]
     private var isStopped = false
 
     /// How many prompts are shown (or about to be), and how many wait.
@@ -249,6 +269,7 @@ final class AutomationApprovals {
         }
         let key = request.key
         if let refusal = recentDenial(of: request) { return refusal }
+        if let refusal = promptBudgetRefusal() { return refusal }
         let ahead = queues[key]?.count ?? 0
         if ahead == 0 {
             guard queues.count < Self.maximumPrompts else {
@@ -271,7 +292,7 @@ final class AutomationApprovals {
         if ahead > 0 {
             guard await pending.awaitTurn() else { return Self.response(for: pending.outcome ?? .withdrawn, request) }
             // The prompt ahead was denied: this one is refused with it.
-            if let refusal = recentDenial(of: request) {
+            if let refusal = recentDenial(of: request) ?? promptBudgetRefusal() {
                 pending.resolve(.deny)
                 return refusal
             }
@@ -281,6 +302,9 @@ final class AutomationApprovals {
             let prompt = prompter.present(request) { [weak pending] answer in
                 pending?.resolve(answer == .allow ? .allow : .deny)
             }
+            // Counted once presented, however soon it is answered.
+            pending.wasShown = true
+            shownAt.append(now())
             // A prompter may answer at once (tests): nothing to keep then.
             guard pending.outcome == nil else {
                 prompt.dismiss()
@@ -309,20 +333,46 @@ final class AutomationApprovals {
                 return Self.answer(500, "Detour could not save the approval: \(error)")
             }
         case .deny, .timedOut:
-            deniedAt[key] = now()
+            recordDenial(of: request)
             return Self.response(for: outcome, request)
-        case .withdrawn, .stopped:
+        case .withdrawn:
+            if pending.wasShown {
+                let time = now()
+                if let earlier = withdrawnAt[key], time.timeIntervalSince(earlier) < Self.denialWindow {
+                    recordDenial(of: request)
+                } else {
+                    withdrawnAt[key] = time
+                }
+            }
+            return Self.response(for: outcome, request)
+        case .stopped:
             return Self.response(for: outcome, request)
         }
     }
 
+    private func recordDenial(of request: AutomationApprovalRequest) {
+        let time = now()
+        deniedAt[request.key] = time
+        deniedAt[request.displayKey] = time
+    }
+
+    /// 429 once `maximumPromptsPerWindow` prompts were shown in the last
+    /// `denialWindow`.
+    private func promptBudgetRefusal() -> AutomationAuthorizeOutcome? {
+        let time = now()
+        shownAt.removeAll { time.timeIntervalSince($0) >= Self.denialWindow }
+        guard shownAt.count >= Self.maximumPromptsPerWindow, let oldest = shownAt.first else { return nil }
+        let wait = Int((Self.denialWindow - time.timeIntervalSince(oldest)).rounded(.up))
+        return Self.answer(429, "Detour has asked about clients \(Self.maximumPromptsPerWindow) times lately; "
+                            + "try again in \(max(1, (wait + 59) / 60)) min",
+                           headers: [("Retry-After", "\(max(1, wait))")])
+    }
+
     private func recentDenial(of request: AutomationApprovalRequest) -> AutomationAuthorizeOutcome? {
-        guard let denied = deniedAt[request.key] else { return nil }
-        let elapsed = now().timeIntervalSince(denied)
-        guard elapsed < Self.denialWindow else {
-            deniedAt[request.key] = nil
-            return nil
-        }
+        let time = now()
+        deniedAt = deniedAt.filter { time.timeIntervalSince($0.value) < Self.denialWindow }
+        guard let denied = [request.key, request.displayKey].compactMap({ deniedAt[$0] }).max() else { return nil }
+        let elapsed = time.timeIntervalSince(denied)
         let minutes = Int(((Self.denialWindow - elapsed) / 60).rounded(.up))
         return Self.answer(403, "\(request.name) was denied control of Detour a short while ago; "
                             + "it can ask again in \(minutes) min",

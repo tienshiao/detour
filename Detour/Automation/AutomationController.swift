@@ -360,6 +360,7 @@ final class AutomationController {
     func revoke(clientID: UUID) {
         let removed = clientStore.revoke(clientID: clientID)
         server?.sessions.endAll(clientID: clientID)
+        endpoint?.closeConnections(clientID: clientID)
         if let removed {
             log.notice("Automation: revoked \(removed.displayName, privacy: .public)")
         }

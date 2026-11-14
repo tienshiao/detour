@@ -204,7 +204,8 @@ extension AutomationTools {
             title: "Read a page's console",
             description: "A tab's console.log/info/warn/error/debug calls, uncaught errors (source uncaught) and "
                 + "unhandled promise rejections (source unhandledrejection), from its main frame and subframes "
-                + "(frame_url, main_frame), recorded while automation is on; Private tabs are never recorded. Each "
+                + "(frame_url, main_frame), recorded while automation is on; Private tabs only while the user "
+                + "allows agents to use Private windows. Each "
                 + "entry has a seq that grows per tab: pass the result's next_seq as after_seq to read only newer "
                 + "entries. A tab keeps its newest 1000; dropped counts entries after the cursor that were lost. "
                 + "levels filters (log, info, warn, error, debug). Records survive navigation; a page loaded before "
@@ -247,7 +248,8 @@ extension AutomationTools {
         MCPTool(
             name: "network_requests",
             title: "Read a page's network requests",
-            description: "What a tab's page loaded, recorded while automation is on (never for Private tabs): the "
+            description: "What a tab's page loaded, recorded while automation is on (for Private tabs only while "
+                + "the user allows agents to use Private windows): the "
                 + "navigation and every resource from Resource Timing (source navigation or resource: url, "
                 + "initiator_type, start_ms and duration_ms from the page's time origin, transfer_size, "
                 + "encoded_size, decoded_size, protocol, and status where WebKit reports it), and each fetch and "

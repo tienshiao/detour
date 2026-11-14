@@ -729,9 +729,7 @@ extension AutomationTools {
                                           "Window \(windowID) does not show a space of profile \(target.profile.name)")
             }
         } else {
-            guard let first = environment.windowControllers().first(where: {
-                !$0.hasClosed && (privateAllowed || !$0.isIncognito) && $0.activeSpace?.profileID == target.profile.id
-            }) else {
+            guard let first = reachableWindows.first(where: { $0.activeSpace?.profileID == target.profile.id }) else {
                 throw AutomationToolError(.unknownWindow, "No window shows a space of profile \(target.profile.name)")
             }
             controller = first

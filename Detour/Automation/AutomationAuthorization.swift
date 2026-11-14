@@ -87,7 +87,15 @@ nonisolated enum AutomationAuthorization {
     /// most `AutomationApprovalRequest.maximumBodySize` (no chunked body).
     static func authorizationHeadRefusal(_ head: AutomationHTTP.Request) -> (status: Int, reason: String)? {
         guard head.method == "POST" else { return (405, "Use POST to ask for a token") }
-        guard head.header("content-type")?.lowercased().contains("application/json") == true else {
+        // The media type itself, not a substring: `text/plain;x=application/json`
+        // is one a web page may send without a CORS preflight, so a page on
+        // a loopback origin (which passes the Origin check) could raise the
+        // prompt. `application/json` always takes a preflight, which this
+        // route refuses (405).
+        let mediaType = head.header("content-type")?.split(separator: ";", maxSplits: 1,
+                                                           omittingEmptySubsequences: false).first?
+            .trimmingCharacters(in: .whitespaces).lowercased()
+        guard mediaType == "application/json" else {
             return (415, "Content-Type must be application/json")
         }
         guard head.header("transfer-encoding") == nil, let lengthValue = head.header("content-length"),
