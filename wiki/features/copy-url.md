@@ -167,13 +167,16 @@ shown to the user.[^task-329]
 | regex | `$removeparam=/^at_custom/`, `/…/` patterns | skipped (`regex`: 42 rules); a regex **exception** keeps every parameter of its addresses from the list's rules instead (not from the built-in names) |
 | unknown option | `$app=…`, `$match-case` | block rule skipped (`unsupported`); an exception kept without the option (`widenedExceptions`) |
 | `@@` exceptions | `@@\|\|archive.*^$removeparam`, `@@\|\|eneba.com^$removeparam=utm_source` | bare: keeps every parameter; named: keeps that one, compared without case; `$important` on a block rule is ignored, so an exception still wins (the list has no `$important`) |
+| `$badfilter` | `$removeparam=foo,badfilter` | drops the rule (or exception) it names, as EasyListParser does for the content blocker lists; both counted as `other` |
+| exception for every address | `@@$removeparam=~bar` | refused unless it names a single parameter (it would switch the whole list off) |
 
 List names are compared exactly (raw or percent-decoded: `amp;utm_campaign`,
 `%243p`) and only on a `name=` pair, as AdGuard's tsurlfilter does (its plain
 `$removeparam` becomes an anchored `name=` regex with no `i` flag)[^tsurlfilter]; built-in names stay
 case-insensitive and also match a bare `?name`. Patterns are matched against
-the whole address including its `#fragment`, which a content blocker never
-sees; a substring pattern could match text there (none in the list does). The whole list (2026-11-13) parsed into 2,665
+the address without its `#fragment`, as a request URL (what the list is
+written for) never has one; a single-page app's hash route cannot trigger a
+rule. The whole list (2026-11-13) parsed into 2,665
 rules (96 exceptions, 1 widened), skipping 42 regex, 46 for other request
 types and 1 element-hiding line; each parse logs these counts
 ("Installed adguard-url-tracking from …") under the `content-blocker`
