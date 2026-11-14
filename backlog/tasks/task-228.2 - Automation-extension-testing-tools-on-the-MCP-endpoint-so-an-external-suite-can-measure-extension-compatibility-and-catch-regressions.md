@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-14T01:26:00Z'
+updated_date: '2026-11-14T01:30:00Z'
 labels:
   - tooling
   - automation
@@ -50,4 +51,12 @@ Same gate as 228.1: reachable only with the endpoint turned on, and the test-run
 - [ ] #7 The install and permission-grant tools are refused unless the endpoint runs in the isolated DETOUR_DATA_DIR test-run mode (until the user decides on Release exposure), and Private windows and the Private profile stay unreachable
 - [ ] #8 Tests cover each tool's happy path and its errors (an unknown extension or context, a context that is not open, an invalid CRX or manifest, a timeout), and the gate refusals
 - [ ] #9 The wiki testing-extensions playbook shows an end-to-end run against fixture extensions from TestExtensions/: install, drive a popup and a content script, read the console, and fetch the compatibility report
+- [ ] #10 Extensions are addressed by a stable identifier that survives relaunch and reinstall (extension ID, with lookup by manifest name), and extension contexts by kind plus extension (for example popup of X, worker of X), so a scenario written earlier still resolves. Run-specific tab and window IDs are never required to reach an extension context
+- [ ] #11 The compatibility report and the console and error results are structured and stable in ordering, so a script can diff them against a saved baseline (no timestamps or run-specific IDs in the comparable fields)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-14: the intended workflow is agent-authored scenarios replayed by a script runner in the external test repo, with an agent looking only at failures. Hence ACs #10 and #11: stable addressing and diffable reports. Structured output, error codes and the scripting client come from TASK-228.1 (ACs #12, #13).
+<!-- SECTION:NOTES:END -->

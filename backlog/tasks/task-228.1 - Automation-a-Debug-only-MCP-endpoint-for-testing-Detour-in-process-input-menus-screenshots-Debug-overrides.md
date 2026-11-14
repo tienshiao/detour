@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-14T01:08:00Z'
-updated_date: '2026-11-14T01:26:00Z'
+updated_date: '2026-11-14T01:30:00Z'
 labels:
   - tooling
   - automation
@@ -66,6 +66,8 @@ Known in-process techniques (from TASK-89 and the wiki playbooks):
 - [ ] #9 Tests cover the gate (not listening while off; the test-run switch refused without an isolated DETOUR_DATA_DIR; a Private window refused) and each tool's happy path and error cases (unknown window or tab, no open menu, a selector that matches nothing)
 - [ ] #10 While a client is connected, Detour shows that an agent is connected (visible in every browser window without opening Settings) and the user can disconnect it from there; the indicator goes away when the last client disconnects
 - [ ] #11 Tools that act on page content (input by selector, screenshots of web content) address a target context through an identifier that can later name an extension popup, options page, side panel or service worker, not only a tab. This way TASK-228.2 adds context kinds without changing existing tool signatures
+- [ ] #12 Every tool declares an outputSchema and returns structuredContent (JSON) alongside any text, and failures carry a stable machine-readable error code (for example unknown_window, unknown_context, selector_no_match, no_open_menu, timeout, gate_closed) that tests assert on
+- [ ] #13 A minimal client in the repo (a scripts/ CLI or small module) performs the MCP handshake and session header and calls any tool with JSON arguments, printing the structured result. Scripts, /verify and an external test repo can drive the endpoint with no model in the loop
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -74,4 +76,6 @@ Known in-process techniques (from TASK-89 and the wiki playbooks):
 2026-11-14, user decision: the 'agent connected' indicator, with a way to disconnect, ships in this first slice (moved from TASK-228's AC #3), since Release users can turn the endpoint on.
 
 2026-11-14: TASK-228.2 (extension testing tools for an external compatibility suite) builds on this endpoint. AC #11 was added so the targeting model here does not have to be reworked there.
+
+2026-11-14, user decision: the endpoint must serve deterministic scripts as well as agents. Regression runs replay scenarios without spending tokens, and an agent only writes new scenarios and diagnoses failures. MCP stays the single surface; there is no separate REST API. WebDriver/BiDi and AppleScript (TASK-319) were considered and rejected for this use: WebDriver is a large spec for little gain, and AppleScript handles structured results and async poorly. ACs #12 and #13 were added. The scenario format and runner belong in the external test repo, not in Detour.
 <!-- SECTION:NOTES:END -->
