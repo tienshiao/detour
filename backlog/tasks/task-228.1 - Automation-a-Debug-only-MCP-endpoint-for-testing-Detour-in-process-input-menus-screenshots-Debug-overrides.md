@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-14T01:08:00Z'
-updated_date: '2026-11-14T01:11:00Z'
+updated_date: '2026-11-14T01:26:00Z'
 labels:
   - tooling
   - automation
@@ -16,6 +16,7 @@ references:
   - wiki/playbooks/runtime-verification.md
   - TASK-89
   - TASK-324
+  - TASK-228.2
 parent_task_id: TASK-228
 priority: medium
 ordinal: 392000
@@ -64,10 +65,13 @@ Known in-process techniques (from TASK-89 and the wiki playbooks):
 - [ ] #8 The testing-only tools (Debug overrides such as Reduce Motion) are absent from Release builds (verified on the built product)
 - [ ] #9 Tests cover the gate (not listening while off; the test-run switch refused without an isolated DETOUR_DATA_DIR; a Private window refused) and each tool's happy path and error cases (unknown window or tab, no open menu, a selector that matches nothing)
 - [ ] #10 While a client is connected, Detour shows that an agent is connected (visible in every browser window without opening Settings) and the user can disconnect it from there; the indicator goes away when the last client disconnects
+- [ ] #11 Tools that act on page content (input by selector, screenshots of web content) address a target context through an identifier that can later name an extension popup, options page, side panel or service worker, not only a tab. This way TASK-228.2 adds context kinds without changing existing tool signatures
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-14, user decision: the 'agent connected' indicator, with a way to disconnect, ships in this first slice (moved from TASK-228's AC #3), since Release users can turn the endpoint on.
+
+2026-11-14: TASK-228.2 (extension testing tools for an external compatibility suite) builds on this endpoint. AC #11 was added so the targeting model here does not have to be reworked there.
 <!-- SECTION:NOTES:END -->
