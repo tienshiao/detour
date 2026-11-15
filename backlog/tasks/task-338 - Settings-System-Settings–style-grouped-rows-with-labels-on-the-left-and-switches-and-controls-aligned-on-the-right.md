@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-15T02:08:00Z'
-updated_date: '2026-11-15T04:43:00Z'
+updated_date: '2026-11-15T04:49:00Z'
 labels:
   - settings
   - ui
@@ -120,4 +120,6 @@ Captures: /private/tmp/claude-501/-Users-tma-Projects-browser-MyBrowser/5d738add
 Review (code-review medium --fix over 0b74054..HEAD): 9 findings; fixed 5 (refit on setRows and the button row, re-enabling only what a row disabled, dead General properties, stale Links comment, blank line) and 1 by me (default browser button off instead of hidden); left: description no longer selectable (deliberate), the list container picks up the override on its next updateLayer (tests only).
 
 Found, out of scope: SettingsWindowController refit race on a list pane's first open with open_ui row>0 (a superseded animation's finish clears animationTargetHeight; the subagent saw the window stuck at a mid-animation height); the extension header's icon has no Accessibility name; possibly orphaned WebKit stores from one aborted capture run (DetourVerify-338-before, first try, its folder removed before cleanup).
+
+Phase 2 final pass (after the review fixes, HEAD 4110566): every pane recaptured on the final build (dylib 20:47); every capture the same size as before the review fixes, so the refits did not move; Profiles with another profile selected while the pane is open (after-profiles-row1-light.png) opens at its natural 1008 pt. Allow Again keeps its old accessible name 'Allow Disconnected Agents Again' (AC5). Light and dark captures of every pane and the Increase Contrast captures were looked at. The refit race the subagent saw (open_ui row>0 on a list pane's first open) predates this work: an earlier run on the unconverted Profiles pane opened with row=1 left the window at 671 pt of content, short of the profile's natural height. Also dropped from the notes above: Extensions' per-permission tooltips are gone (names wrap instead of truncating), the extension's name, description and notes are no longer selectable, and the Permissions section is left out when only optional or saved rows exist (PROVISIONAL). The pane commits came before the review ran; its fixes are 11f150e. Status left In Progress for the user's look at the phase 2 choices and at Increase Contrast / Reduce Transparency with the real settings on.
 <!-- SECTION:NOTES:END -->
