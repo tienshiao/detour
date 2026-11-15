@@ -23,7 +23,6 @@ nonisolated final class ProfileSettingsLayoutTests: XCTestCase {
         XCTAssertEqual(ProfileSettingsSection.profile.rows, [.name, .privateNote])
         XCTAssertEqual(ProfileSettingsSection.tabs.rows, [.archiveTabs, .sleepTabs, .perTabIsolation, .isolationWarning])
         XCTAssertEqual(ProfileSettingsSection.userAgent.rows, [.userAgentMode, .customUserAgent, .userAgentPreview])
-        XCTAssertEqual(ProfileSettingsRow.allCases.filter(\.isHelpText), [.privateNote, .isolationWarning, .userAgentPreview])
     }
 
     @MainActor func testNormalProfileWithoutExtensionsHidesOnlyTheExtensionsSection() {
@@ -83,31 +82,5 @@ nonisolated final class ProfileSettingsLayoutTests: XCTestCase {
         state.usesCustomUserAgent = true
         XCTAssertTrue(ProfileSettingsLayout.isVisible(.customUserAgent, in: state))
         XCTAssertTrue(ProfileSettingsLayout.isVisible(.userAgentPreview, in: state))
-    }
-
-    // MARK: - Spacing
-
-    @MainActor func testFirstVisibleRowOfASectionHasNoSpaceAbove() {
-        XCTAssertEqual(ProfileSettingsLayout.spacing(above: .name, in: normal), 0)
-        XCTAssertEqual(ProfileSettingsLayout.spacing(above: .archiveTabs, in: normal), 0)
-        XCTAssertEqual(ProfileSettingsLayout.spacing(above: .externalAppPermissions, in: normal), 0)
-    }
-
-    @MainActor func testRowsAreARowGapApartAndHelpTextSitsCloseToItsControl() {
-        XCTAssertEqual(ProfileSettingsLayout.spacing(above: .sleepTabs, in: normal), SettingsMetrics.rowGap)
-        XCTAssertEqual(ProfileSettingsLayout.spacing(above: .filterLists, in: normal), SettingsMetrics.rowGap)
-        XCTAssertEqual(ProfileSettingsLayout.spacing(above: .userAgentPreview, in: normal), SettingsMetrics.controlToHelp)
-        XCTAssertEqual(ProfileSettingsLayout.spacing(above: .privateNote, in: privateProfile), SettingsMetrics.controlToHelp)
-    }
-
-    @MainActor func testHiddenArchiveRowMovesTheFirstRowSpacingToSleep() {
-        XCTAssertEqual(ProfileSettingsLayout.spacing(above: .sleepTabs, in: privateProfile), 0)
-        XCTAssertNil(ProfileSettingsLayout.spacing(above: .archiveTabs, in: privateProfile))
-    }
-
-    @MainActor func testHiddenRowsHaveNoSpacing() {
-        XCTAssertNil(ProfileSettingsLayout.spacing(above: .privateNote, in: normal))
-        XCTAssertNil(ProfileSettingsLayout.spacing(above: .isolationWarning, in: normal))
-        XCTAssertNil(ProfileSettingsLayout.spacing(above: .extensionSwitches, in: normal))
     }
 }

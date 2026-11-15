@@ -1,6 +1,5 @@
-import CoreGraphics
-
-/// The Profiles pane's sections, in order (TASK-189 part 2).
+/// The Profiles pane's sections, in order (TASK-189 part 2), each a section
+/// of the detail column's grouped form (TASK-338).
 enum ProfileSettingsSection: CaseIterable, Equatable {
     /// The profile's name, with no title: it heads the column, as an account
     /// name heads a System Settings pane, and "Profile" would repeat the pane.
@@ -52,6 +51,11 @@ enum ProfileSettingsSection: CaseIterable, Equatable {
 }
 
 /// One row of the Profiles pane. Each row belongs to exactly one section.
+/// In the form most are a row of their own; `filterLists` and
+/// `extensionSwitches` are a row per list and per installed extension; the
+/// private note is the first section's footnote; the isolation warning is
+/// the warning line of the isolation row and the user agent preview the
+/// help text of the Identify as row.
 enum ProfileSettingsRow: CaseIterable, Equatable {
     case name, privateNote
     case searchEngine, searchSuggestions
@@ -60,15 +64,6 @@ enum ProfileSettingsRow: CaseIterable, Equatable {
     case extensionSwitches
     case userAgentMode, customUserAgent, userAgentPreview
     case externalAppPermissions
-
-    /// A line of help text that belongs to the control above it, so it sits
-    /// `SettingsMetrics.controlToHelp` below it rather than a row gap.
-    var isHelpText: Bool {
-        switch self {
-        case .privateNote, .isolationWarning, .userAgentPreview: return true
-        default: return false
-        }
-    }
 
     /// The section the row is in.
     var section: ProfileSettingsSection {
@@ -87,9 +82,8 @@ struct ProfileSettingsState: Equatable {
     var hasExtensions = false
 }
 
-/// Which sections and rows the Profiles pane shows, and the space above each
-/// row. The view controller holds its rows and sections by these values, never
-/// by grid row numbers.
+/// Which sections and rows the Profiles pane shows. The view controller holds
+/// its form's rows and sections by these values, never by position.
 enum ProfileSettingsLayout {
     static func isVisible(_ row: ProfileSettingsRow, in state: ProfileSettingsState) -> Bool {
         switch row {
@@ -114,15 +108,5 @@ enum ProfileSettingsLayout {
     /// all hidden (External Apps for Private) is hidden with its title.
     static func visibleSections(in state: ProfileSettingsState) -> [ProfileSettingsSection] {
         ProfileSettingsSection.allCases.filter { !visibleRows(of: $0, in: state).isEmpty }
-    }
-
-    /// The space above a row inside its section: none for the first visible
-    /// row (the title or the column's top is above it), `controlToHelp` for
-    /// help text, `rowGap` otherwise. Nil for a hidden row.
-    static func spacing(above row: ProfileSettingsRow, in state: ProfileSettingsState) -> CGFloat? {
-        let rows = visibleRows(of: row.section, in: state)
-        guard let index = rows.firstIndex(of: row) else { return nil }
-        if index == 0 { return 0 }
-        return row.isHelpText ? SettingsMetrics.controlToHelp : SettingsMetrics.rowGap
     }
 }

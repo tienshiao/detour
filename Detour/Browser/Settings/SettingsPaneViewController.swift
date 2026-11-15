@@ -392,60 +392,6 @@ class SettingsBorderedView: NSView {
 /// Search's site searches, Links' routes, the Shortcuts list).
 final class SettingsListContainerView: SettingsBorderedView {}
 
-/// A bordered group of rows (Profiles' filter lists and extension switches,
-/// an extension's permissions). Its height is its rows' height plus the
-/// insets, all required constraints: unlike an `NSBox`, whose content view is
-/// sized by autoresizing, it grows and shrinks with its content (TASK-189).
-/// Rows fill the group's width, so a long name in a row truncates.
-final class SettingsGroupBoxView: SettingsBorderedView {
-    let stack = NSStackView()
-
-    init(rows: [NSView] = []) {
-        super.init(frame: .zero)
-        stack.orientation = .vertical
-        stack.alignment = .width
-        stack.spacing = SettingsMetrics.groupRowGap
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.setHuggingPriority(.required, for: .vertical)
-        addSubview(stack)
-        setRows(rows)
-        let x = SettingsMetrics.groupInsetX, y = SettingsMetrics.groupInsetY
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: y),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: x),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -x),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -y),
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    /// Replaces the group's rows.
-    func setRows(_ rows: [NSView]) {
-        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for row in rows {
-            stack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
-    }
-
-    /// A switch and its name, for a row of a group. The name truncates
-    /// rather than widening the group.
-    static func switchRow(_ toggle: NSSwitch, title: String) -> (row: NSStackView, label: NSTextField) {
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 12)
-        label.lineBreakMode = .byTruncatingTail
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        toggle.setContentCompressionResistancePriority(.required, for: .horizontal)
-        SettingsSwitchRow.name(toggle, by: label)
-        let row = NSStackView(views: [toggle, label])
-        row.orientation = .horizontal
-        row.spacing = 6
-        row.alignment = .centerY
-        return (row, label)
-    }
-}
-
 /// TASK-336's rule for a switch (or any control) and the label that names
 /// it. A form row applies it to its control (TASK-338).
 enum SettingsSwitchRow {

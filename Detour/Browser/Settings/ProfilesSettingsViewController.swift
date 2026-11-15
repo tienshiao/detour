@@ -4,17 +4,12 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
     private var tableView: NSTableView!
     private var archivePopUp: NSPopUpButton!
     private var sleepPopUp: NSPopUpButton!
-    private var isolationWarningLabel: NSTextField!
     private var searchEnginePopUp: NSPopUpButton!
     private var suggestionsSwitch: NSSwitch!
     private var perTabIsolationSwitch: NSSwitch!
     private var userAgentPopUp: NSPopUpButton!
     private var customUserAgentField: NSTextField!
     private var profileNameField: NSTextField!
-    private var privateNoteLabel: NSTextField!
-    /// The note and its Learn more link to the Private Browsing guide.
-    private var privateNoteRow: NSStackView!
-    private var uaPreviewLabel: NSTextField!
     private var adBlockSwitch: NSSwitch!
     private var easyListSwitch: NSSwitch!
     private var easyPrivacySwitch: NSSwitch!
@@ -22,14 +17,20 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
     private var malwareFilterSwitch: NSSwitch!
     private var addButton: NSButton!
     private var deleteButton: NSButton!
-    private var extensionTogglesGroup: SettingsGroupBoxView!
     private var externalAppsLabel: NSTextField!
     private var externalAppsClearButton: NSButton!
 
-    /// Each section's view and each row's grid row, so rows and sections are
-    /// shown and hidden by name (`ProfileSettingsLayout`), never by row number.
-    private var sectionViews: [ProfileSettingsSection: NSView] = [:]
-    private var gridRows: [ProfileSettingsRow: NSGridRow] = [:]
+    /// The detail column's grouped form (TASK-338): each section, and the
+    /// form rows of each `ProfileSettingsRow`, by name, so they are shown and
+    /// hidden by `ProfileSettingsLayout`, never by position. A row that is a
+    /// line of another row (the isolation warning, the user agent preview)
+    /// has no form rows of its own.
+    private(set) var formSections: [ProfileSettingsSection: SettingsFormSection] = [:]
+    private(set) var formRows: [ProfileSettingsRow: [SettingsFormRow]] = [:]
+    /// Per-tab isolation's row; its warning line is `isolationWarning`.
+    private(set) var isolationRow: SettingsFormRow!
+    /// Identify as's row; its help text is `userAgentPreview`.
+    private(set) var userAgentRow: SettingsFormRow!
 
     /// All profiles including the built-in incognito profile.
     private var profiles: [Profile] {
@@ -59,11 +60,6 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
         let rows = tableView.allRowsHeight
         return max(fittingHeight, rows + SettingsMetrics.listBarHeight)
     }
-
-    /// The width of a section's control column: the detail column less the
-    /// label column. Help text and groups fill it.
-    private static let controlColumnInset = SettingsMetrics.labelColumnWidth + SettingsMetrics.labelToControl
-    private static let estimatedControlColumnWidth = SettingsMetrics.detailColumnWidth - controlColumnInset
 
     override func makeBody() -> NSView {
         let container = NSView()
@@ -123,157 +119,13 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
         listContainer.addSubview(buttonStack)
 
-        // Right side: the selected profile's settings, in titled sections.
-        profileNameField = NSTextField()
-        profileNameField.placeholderString = "Profile name"
-        profileNameField.font = .systemFont(ofSize: 13)
-        profileNameField.translatesAutoresizingMaskIntoConstraints = false
-        profileNameField.widthAnchor.constraint(equalToConstant: SettingsMetrics.fieldWidth).isActive = true
-        profileNameField.target = self
-        profileNameField.action = #selector(profileNameChanged)
-
-        privateNoteLabel = SettingsWrappingLabel(wrapping: "This profile is used for Private Windows.",
-                                                 estimatedWidth: Self.estimatedControlColumnWidth)
-        // TASK-292.11: the Private profile is Private Browsing's settings.
-        privateNoteRow = NSStackView(views: [privateNoteLabel, SettingsGuideLink(.privateBrowsing)])
-        privateNoteRow.orientation = .vertical
-        privateNoteRow.alignment = .leading
-        privateNoteRow.spacing = SettingsMetrics.controlToHelp
-        privateNoteLabel.widthAnchor.constraint(equalTo: privateNoteRow.widthAnchor).isActive = true
-
-        searchEnginePopUp = NSPopUpButton()
-        for engine in SearchEngine.allCases {
-            searchEnginePopUp.addItem(withTitle: engine.name)
-        }
-        searchEnginePopUp.target = self
-        searchEnginePopUp.action = #selector(searchEngineChanged)
-
-        suggestionsSwitch = NSSwitch()
-        suggestionsSwitch.target = self
-        suggestionsSwitch.action = #selector(suggestionsToggled)
-
-        archivePopUp = NSPopUpButton()
-        for threshold in ArchiveThreshold.allCases {
-            archivePopUp.addItem(withTitle: thresholdTitle(threshold))
-            archivePopUp.lastItem?.representedObject = threshold
-        }
-        archivePopUp.target = self
-        archivePopUp.action = #selector(archiveThresholdChanged)
-
-        sleepPopUp = NSPopUpButton()
-        for threshold in SleepThreshold.allCases {
-            sleepPopUp.addItem(withTitle: sleepThresholdTitle(threshold))
-            sleepPopUp.lastItem?.representedObject = threshold
-        }
-        sleepPopUp.target = self
-        sleepPopUp.action = #selector(sleepThresholdChanged)
-
-        isolationWarningLabel = SettingsWrappingLabel(
-            wrapping: "Sleeping tabs will lose session data when per-tab isolation is enabled.",
-            estimatedWidth: Self.estimatedControlColumnWidth)
-
-        perTabIsolationSwitch = NSSwitch()
-        perTabIsolationSwitch.target = self
-        perTabIsolationSwitch.action = #selector(perTabIsolationToggled)
-
-        adBlockSwitch = NSSwitch()
-        adBlockSwitch.target = self
-        adBlockSwitch.action = #selector(adBlockToggled)
-
-        easyListSwitch = NSSwitch()
-        easyListSwitch.target = self
-        easyListSwitch.action = #selector(easyListToggled)
-        easyListSwitch.controlSize = .small
-
-        easyPrivacySwitch = NSSwitch()
-        easyPrivacySwitch.target = self
-        easyPrivacySwitch.action = #selector(easyPrivacyToggled)
-        easyPrivacySwitch.controlSize = .small
-
-        easyListCookieSwitch = NSSwitch()
-        easyListCookieSwitch.target = self
-        easyListCookieSwitch.action = #selector(easyListCookieToggled)
-        easyListCookieSwitch.controlSize = .small
-
-        malwareFilterSwitch = NSSwitch()
-        malwareFilterSwitch.target = self
-        malwareFilterSwitch.action = #selector(malwareFilterToggled)
-        malwareFilterSwitch.controlSize = .small
-
-        let filterListGroup = SettingsGroupBoxView(rows: [
-            SettingsGroupBoxView.switchRow(easyListSwitch, title: "EasyList (ads)").row,
-            SettingsGroupBoxView.switchRow(easyPrivacySwitch, title: "EasyPrivacy (trackers)").row,
-            SettingsGroupBoxView.switchRow(easyListCookieSwitch, title: "Cookie notices").row,
-            SettingsGroupBoxView.switchRow(malwareFilterSwitch, title: "Malicious URLs").row,
-        ])
-
-        userAgentPopUp = NSPopUpButton()
-        userAgentPopUp.addItems(withTitles: ["Detour", "Safari", "Custom"])
-        userAgentPopUp.target = self
-        userAgentPopUp.action = #selector(userAgentModeChanged)
-
-        customUserAgentField = NSTextField()
-        customUserAgentField.placeholderString = "Enter custom user agent"
-        customUserAgentField.font = .systemFont(ofSize: 13)
-        customUserAgentField.translatesAutoresizingMaskIntoConstraints = false
-        customUserAgentField.lineBreakMode = .byTruncatingTail
-        customUserAgentField.target = self
-        customUserAgentField.action = #selector(customUserAgentChanged)
-
-        uaPreviewLabel = SettingsWrappingLabel(wrapping: "", estimatedWidth: Self.estimatedControlColumnWidth)
-        uaPreviewLabel.isSelectable = true
-
-        // Extension per-profile toggles
-        extensionTogglesGroup = SettingsGroupBoxView()
-
-        // Remembered "Always allow" decisions for external application links (TASK-84)
-        externalAppsLabel = NSTextField(labelWithString: "")
-        externalAppsLabel.font = .systemFont(ofSize: 13)
-        externalAppsLabel.textColor = .secondaryLabelColor
-        externalAppsClearButton = NSButton(title: "Clear", target: self, action: #selector(clearExternalAppPermissionsClicked))
-        externalAppsClearButton.controlSize = .small
-        let externalAppsRow = NSStackView(views: [externalAppsLabel, externalAppsClearButton])
-        externalAppsRow.orientation = .horizontal
-        externalAppsRow.alignment = .centerY
-        externalAppsRow.spacing = SettingsMetrics.labelToControl
-
-        // Each row's label (nil for none) and control.
-        func cells(for row: ProfileSettingsRow) -> (label: String?, control: NSView) {
-            switch row {
-            case .name: return ("Name", profileNameField)
-            case .privateNote: return (nil, privateNoteRow)
-            case .searchEngine: return ("Search engine", searchEnginePopUp)
-            case .searchSuggestions: return ("Search suggestions", suggestionsSwitch)
-            case .archiveTabs: return ("Archive tabs after", archivePopUp)
-            case .sleepTabs: return ("Sleep tabs after", sleepPopUp)
-            case .perTabIsolation: return ("Per-tab isolation", perTabIsolationSwitch)
-            case .isolationWarning: return (nil, isolationWarningLabel)
-            case .contentBlocking: return ("Block content", adBlockSwitch)
-            case .filterLists: return (nil, filterListGroup)
-            case .extensionSwitches: return (nil, extensionTogglesGroup)
-            case .userAgentMode: return ("Identify as", userAgentPopUp)
-            case .customUserAgent: return ("Custom string", customUserAgentField)
-            case .userAgentPreview: return (nil, uaPreviewLabel)
-            case .externalAppPermissions: return ("Saved permissions", externalAppsRow)
-            }
-        }
-
-        let sectionsStack = NSStackView()
-        sectionsStack.orientation = .vertical
-        sectionsStack.alignment = .leading
-        sectionsStack.spacing = SettingsMetrics.sectionGap
-        sectionsStack.translatesAutoresizingMaskIntoConstraints = false
-        for section in ProfileSettingsSection.allCases {
-            let view = makeSection(section, cells: cells)
-            sectionsStack.addArrangedSubview(view)
-            view.widthAnchor.constraint(equalTo: sectionsStack.widthAnchor).isActive = true
-            sectionViews[section] = view
-        }
-
-        // The sections scroll in a column of their own, so scrolling them
-        // leaves the profile list in place (TASK-211).
+        // Right side: the selected profile's settings, a grouped form
+        // (TASK-338) in a column of its own, so scrolling it leaves the
+        // profile list in place (TASK-211).
+        let form = SettingsForm(sections: ProfileSettingsSection.allCases.map(makeSection),
+                                estimatedWidth: SettingsMetrics.detailColumnWidth)
         let detailDocument = NSView()
-        detailDocument.addSubview(sectionsStack)
+        detailDocument.addSubview(form)
         let detailScroll = makeColumnScrollView(document: detailDocument,
                                                 estimatedWidth: SettingsMetrics.detailColumnWidth)
         container.addSubview(detailScroll)
@@ -302,76 +154,170 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
             detailScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             detailScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
-            sectionsStack.topAnchor.constraint(equalTo: detailDocument.topAnchor),
-            sectionsStack.leadingAnchor.constraint(equalTo: detailDocument.leadingAnchor),
-            sectionsStack.trailingAnchor.constraint(equalTo: detailDocument.trailingAnchor),
-            sectionsStack.bottomAnchor.constraint(equalTo: detailDocument.bottomAnchor),
+            // The column's document is as tall as the form; it scrolls in
+            // its own scroll view, so this does not cap the window.
+            form.topAnchor.constraint(equalTo: detailDocument.topAnchor),
+            form.leadingAnchor.constraint(equalTo: detailDocument.leadingAnchor),
+            form.trailingAnchor.constraint(equalTo: detailDocument.trailingAnchor),
+            form.bottomAnchor.constraint(equalTo: detailDocument.bottomAnchor),
         ])
         return container
     }
 
-    /// A section: its title (if any), then a two-column grid of right-aligned
-    /// labels and controls. Rows are spaced by their top padding
-    /// (`applyRowLayout`), so a hidden row leaves no gap.
-    private func makeSection(_ section: ProfileSettingsSection,
-                             cells: (ProfileSettingsRow) -> (label: String?, control: NSView)) -> NSView {
-        let rows = section.rows.map(cells)
-        let grid = NSGridView(views: rows.map { [$0.label.map(makeLabel) ?? NSGridCell.emptyContentView, $0.control] })
-        grid.translatesAutoresizingMaskIntoConstraints = false
-        grid.rowSpacing = 0
-        grid.columnSpacing = SettingsMetrics.labelToControl
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 0).width = SettingsMetrics.labelColumnWidth
-        grid.column(at: 1).xPlacement = .leading
-        // Labels sit on their control's first baseline; a switch has no text
-        // to share a baseline with, so its label is centred on it instead.
-        grid.rowAlignment = .firstBaseline
-
-        let sectionView = NSStackView()
-        sectionView.orientation = .vertical
-        sectionView.alignment = .leading
-        sectionView.spacing = SettingsMetrics.sectionTitleToRows
-        sectionView.translatesAutoresizingMaskIntoConstraints = false
-        if let title = section.title {
-            let titleView = NSTextField.settingsSectionTitle(title)
-            if let page = section.guidePage {
-                // TASK-292.11: beside the title, which names the feature.
-                let titleRow = NSStackView(views: [titleView, SettingsGuideLink(page, title: "Learn more")])
-                titleRow.orientation = .horizontal
-                titleRow.alignment = .firstBaseline
-                titleRow.spacing = SettingsMetrics.labelToControl
-                sectionView.addArrangedSubview(titleRow)
+    /// A section of the form: its title with the Learn more link to its
+    /// guide (TASK-292.11), and the rows of its `ProfileSettingsRow`s; the
+    /// private note closes the first section as its footnote.
+    private func makeSection(_ section: ProfileSettingsSection) -> SettingsFormSection {
+        var rows: [SettingsFormRow] = []
+        var footnote: SettingsFormRow?
+        for row in section.rows {
+            let made = makeRows(row)
+            formRows[row] = made
+            if row == .privateNote {
+                footnote = made.first
             } else {
-                sectionView.addArrangedSubview(titleView)
+                rows += made
             }
         }
-        sectionView.addArrangedSubview(grid)
-        grid.widthAnchor.constraint(lessThanOrEqualTo: sectionView.widthAnchor).isActive = true
+        let formSection = SettingsFormSection(
+            title: section.title,
+            headerAccessory: section.guidePage.map { SettingsGuideLink($0, title: "Learn more") },
+            rows: rows, footnote: footnote)
+        formSections[section] = formSection
+        return formSection
+    }
 
-        for (index, row) in section.rows.enumerated() {
-            let gridRow = grid.row(at: index)
-            gridRows[row] = gridRow
-            let control = rows[index].control
-            if let toggle = control as? NSSwitch,
-               let label = grid.cell(atColumnIndex: 0, rowIndex: index).contentView as? NSTextField {
-                SettingsSwitchRow.name(toggle, by: label)
+    /// The form rows of one `ProfileSettingsRow`, with their controls. Every
+    /// control writes its property of the selected profile and saves it with
+    /// `TabStore.shared.updateProfile`; the row names it (TASK-336).
+    private func makeRows(_ row: ProfileSettingsRow) -> [SettingsFormRow] {
+        switch row {
+        case .name:
+            profileNameField = NSTextField()
+            profileNameField.placeholderString = "Profile name"
+            profileNameField.font = .systemFont(ofSize: 13)
+            profileNameField.translatesAutoresizingMaskIntoConstraints = false
+            // Before the row reads the field's size.
+            profileNameField.widthAnchor.constraint(equalToConstant: SettingsMetrics.fieldWidth).isActive = true
+            profileNameField.target = self
+            profileNameField.action = #selector(profileNameChanged)
+            return [SettingsFormRow(title: "Name", accessory: .custom(profileNameField))]
+
+        case .privateNote:
+            // TASK-292.11: the Private profile is Private Browsing's settings.
+            let note = SettingsFormRow(footnote: "This profile is used for Private Windows.")
+            note.addLink(SettingsGuideLink(.privateBrowsing))
+            return [note]
+
+        case .searchEngine:
+            searchEnginePopUp = NSPopUpButton()
+            for engine in SearchEngine.allCases {
+                searchEnginePopUp.addItem(withTitle: engine.name)
             }
-            if control is NSSwitch || control is NSStackView {
-                gridRow.rowAlignment = .none
-                gridRow.yPlacement = .center
+            searchEnginePopUp.target = self
+            searchEnginePopUp.action = #selector(searchEngineChanged)
+            return [SettingsFormRow(title: "Search engine", accessory: .popUp(searchEnginePopUp))]
+
+        case .searchSuggestions:
+            suggestionsSwitch = NSSwitch()
+            suggestionsSwitch.target = self
+            suggestionsSwitch.action = #selector(suggestionsToggled)
+            return [SettingsFormRow(title: "Search suggestions", accessory: .toggle(suggestionsSwitch))]
+
+        case .archiveTabs:
+            archivePopUp = NSPopUpButton()
+            for threshold in ArchiveThreshold.allCases {
+                archivePopUp.addItem(withTitle: thresholdTitle(threshold))
+                archivePopUp.lastItem?.representedObject = threshold
             }
-            // Help text and groups take the control column's whole width: help
-            // text wraps at it, and a long extension name truncates inside it.
-            if control is SettingsWrappingLabel || control is SettingsGroupBoxView || control === customUserAgentField
-                || control === privateNoteRow {
-                control.widthAnchor.constraint(equalTo: sectionView.widthAnchor, constant: -Self.controlColumnInset).isActive = true
+            archivePopUp.target = self
+            archivePopUp.action = #selector(archiveThresholdChanged)
+            return [SettingsFormRow(title: "Archive tabs after", accessory: .popUp(archivePopUp))]
+
+        case .sleepTabs:
+            sleepPopUp = NSPopUpButton()
+            for threshold in SleepThreshold.allCases {
+                sleepPopUp.addItem(withTitle: sleepThresholdTitle(threshold))
+                sleepPopUp.lastItem?.representedObject = threshold
             }
-            if control is SettingsGroupBoxView {
-                gridRow.rowAlignment = .none
-                gridRow.yPlacement = .top
+            sleepPopUp.target = self
+            sleepPopUp.action = #selector(sleepThresholdChanged)
+            return [SettingsFormRow(title: "Sleep tabs after", accessory: .popUp(sleepPopUp))]
+
+        case .perTabIsolation:
+            perTabIsolationSwitch = NSSwitch()
+            perTabIsolationSwitch.target = self
+            perTabIsolationSwitch.action = #selector(perTabIsolationToggled)
+            isolationRow = SettingsFormRow(title: "Per-tab isolation", accessory: .toggle(perTabIsolationSwitch))
+            return [isolationRow]
+
+        case .isolationWarning, .userAgentPreview:
+            // Lines of the isolation and Identify as rows.
+            return []
+
+        case .contentBlocking:
+            adBlockSwitch = NSSwitch()
+            adBlockSwitch.target = self
+            adBlockSwitch.action = #selector(adBlockToggled)
+            return [SettingsFormRow(title: "Block content", accessory: .toggle(adBlockSwitch))]
+
+        case .filterLists:
+            // A row per list, off while blocking is off.
+            func filterList(_ title: String, _ action: Selector) -> (NSSwitch, SettingsFormRow) {
+                let toggle = NSSwitch()
+                toggle.target = self
+                toggle.action = action
+                return (toggle, SettingsFormRow(title: title, accessory: .toggle(toggle)))
             }
+            let easyList = filterList("EasyList (ads)", #selector(easyListToggled))
+            let easyPrivacy = filterList("EasyPrivacy (trackers)", #selector(easyPrivacyToggled))
+            let cookies = filterList("Cookie notices", #selector(easyListCookieToggled))
+            let malware = filterList("Malicious URLs", #selector(malwareFilterToggled))
+            easyListSwitch = easyList.0
+            easyPrivacySwitch = easyPrivacy.0
+            easyListCookieSwitch = cookies.0
+            malwareFilterSwitch = malware.0
+            return [easyList.1, easyPrivacy.1, cookies.1, malware.1]
+
+        case .extensionSwitches:
+            // A row per installed extension, made for the selected profile
+            // (`updateExtensionToggles`).
+            return []
+
+        case .userAgentMode:
+            userAgentPopUp = NSPopUpButton()
+            userAgentPopUp.addItems(withTitles: ["Detour", "Safari", "Custom"])
+            userAgentPopUp.target = self
+            userAgentPopUp.action = #selector(userAgentModeChanged)
+            userAgentRow = SettingsFormRow(title: "Identify as", accessory: .popUp(userAgentPopUp))
+            // The preview under it can be selected and copied, as before.
+            userAgentRow.helpLabel.isSelectable = true
+            return [userAgentRow]
+
+        case .customUserAgent:
+            customUserAgentField = NSTextField()
+            customUserAgentField.placeholderString = "Enter custom user agent"
+            customUserAgentField.font = .systemFont(ofSize: 13)
+            customUserAgentField.translatesAutoresizingMaskIntoConstraints = false
+            customUserAgentField.lineBreakMode = .byTruncatingTail
+            // As wide as the name's field, on the right; the whole string is
+            // the preview under Identify as.
+            customUserAgentField.widthAnchor.constraint(equalToConstant: SettingsMetrics.fieldWidth).isActive = true
+            customUserAgentField.target = self
+            customUserAgentField.action = #selector(customUserAgentChanged)
+            return [SettingsFormRow(title: "Custom string", accessory: .custom(customUserAgentField))]
+
+        case .externalAppPermissions:
+            // Remembered "Always allow" decisions for external application
+            // links (TASK-84).
+            externalAppsLabel = NSTextField(labelWithString: "None")
+            externalAppsLabel.font = .systemFont(ofSize: SettingsMetrics.formTitleFontSize)
+            externalAppsLabel.textColor = .secondaryLabelColor
+            externalAppsClearButton = NSButton(title: "Clear", target: self,
+                                               action: #selector(clearExternalAppPermissionsClicked))
+            return [SettingsFormRow(title: "Saved permissions",
+                                    accessory: .value(externalAppsLabel, button: externalAppsClearButton))]
         }
-        return sectionView
     }
 
     /// The selected profile, as far as it decides which rows show.
@@ -385,18 +331,20 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
             hasExtensions: !ExtensionManager.shared.extensions.isEmpty)
     }
 
+    static let isolationWarningText = "Sleeping tabs will lose session data when per-tab isolation is enabled."
+
     /// Shows the rows and sections `ProfileSettingsLayout` gives for the
-    /// selected profile, spaces the rows, and reports the height change.
+    /// selected profile, and the isolation warning, and reports the height
+    /// change.
     private func applyRowLayout() {
         let state = layoutState
-        for row in ProfileSettingsRow.allCases {
-            guard let gridRow = gridRows[row] else { continue }
-            let spacing = ProfileSettingsLayout.spacing(above: row, in: state)
-            gridRow.isHidden = spacing == nil
-            gridRow.topPadding = spacing ?? 0
+        for (row, rows) in formRows {
+            let isVisible = ProfileSettingsLayout.isVisible(row, in: state)
+            for formRow in rows { formRow.isHidden = !isVisible }
         }
+        isolationRow.setWarning(ProfileSettingsLayout.isVisible(.isolationWarning, in: state) ? Self.isolationWarningText : nil)
         let visible = ProfileSettingsLayout.visibleSections(in: state)
-        for (section, view) in sectionViews {
+        for (section, view) in formSections {
             view.isHidden = !visible.contains(section)
         }
         contentHeightDidChange()
@@ -433,16 +381,6 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
     }
 
     // MARK: - Helpers
-
-    private func makeLabel(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 13)
-        label.alignment = .right
-        // The label column is a fixed width ("Search suggestions" fills it
-        // exactly): a longer label truncates rather than being clipped.
-        label.lineBreakMode = .byTruncatingTail
-        return label
-    }
 
     private func thresholdTitle(_ t: ArchiveThreshold) -> String {
         switch t {
@@ -494,14 +432,17 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
         easyListSwitch.state = profile.isEasyListEnabled ? .on : .off
         easyPrivacySwitch.state = profile.isEasyPrivacyEnabled ? .on : .off
         easyListCookieSwitch.state = profile.isEasyListCookieEnabled ? .on : .off
-        easyListSwitch.isEnabled = profile.isAdBlockingEnabled
-        easyPrivacySwitch.isEnabled = profile.isAdBlockingEnabled
-        easyListCookieSwitch.isEnabled = profile.isAdBlockingEnabled
         malwareFilterSwitch.state = profile.isMalwareFilterEnabled ? .on : .off
-        malwareFilterSwitch.isEnabled = profile.isAdBlockingEnabled
+        enableFilterLists(profile.isAdBlockingEnabled)
         updateExternalAppPermissions()
         updateUAPreview()
         updateExtensionToggles()  // also applies the row layout
+    }
+
+    /// The filter lists' rows are off (switch disabled, name dimmed) while
+    /// blocking is off.
+    private func enableFilterLists(_ isEnabled: Bool) {
+        for row in formRows[.filterLists] ?? [] { row.isEnabled = isEnabled }
     }
 
     private func updateExternalAppPermissions() {
@@ -517,48 +458,49 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
         updateExternalAppPermissions()
     }
 
+    /// A row per installed extension in the Extensions section, rebuilt for
+    /// the selected profile; the section hides when none are installed.
     private func updateExtensionToggles() {
         guard let profile = selectedProfile else { return }
-        let installedExts = ExtensionManager.shared.extensions
-
-        // Rebuild toggle rows; the section hides when none are installed.
-        var rows: [NSView] = []
-        for ext in installedExts {
+        var rows: [SettingsFormRow] = []
+        for ext in ExtensionManager.shared.extensions {
             let toggle = NSSwitch()
-            toggle.controlSize = .small
             // The switch shows the profile's own saved choice. While the extension
             // is turned off globally that choice is kept but has no effect, so the
-            // switch is shown disabled (and the name dimmed) rather than hidden:
-            // it tells the user what turning the extension back on will restore.
+            // row is shown disabled (the name dimmed) rather than hidden: it
+            // tells the user what turning the extension back on will restore.
             let isEnabledByProfile = AppDatabase.shared.isExtensionEnabledByProfile(
                 extensionID: ext.id, profileID: profile.id.uuidString)
             toggle.state = isEnabledByProfile ? .on : .off
-            toggle.isEnabled = ext.isEnabled
             toggle.identifier = NSUserInterfaceItemIdentifier(ext.id)
             toggle.target = self
             toggle.action = #selector(extensionToggled(_:))
 
             let resolvedName = ExtensionManager.shared.displayName(for: ext.id)
-            // The name truncates inside the group (TASK-189): the window keeps
-            // its width and the label column beside it keeps its own.
-            let (row, label) = SettingsGroupBoxView.switchRow(toggle, title: resolvedName)
-            label.textColor = ext.isEnabled ? .labelColor : .disabledControlTextColor
+            let row = SettingsFormRow(title: resolvedName,
+                                      help: ext.isEnabled ? nil : Self.extensionOffEverywhereHelp,
+                                      accessory: .toggle(toggle))
+            row.isEnabled = ext.isEnabled
+            var note: String?
             if !ext.isEnabled {
-                let note = "\(resolvedName) is turned off for all profiles in Extensions settings"
-                toggle.toolTip = note
-                label.toolTip = note
+                note = "\(resolvedName) is turned off for all profiles in Extensions settings"
             } else if profile.isIncognito {
                 // The same opt-in as "Allow in Private" in Extensions settings,
                 // so it carries the same warning (TASK-74).
-                let note = "Extensions allowed in Private windows keep their data (storage, caches, cookies) in memory only. It is never written to disk and is cleared when the last Private window closes."
-                toggle.toolTip = note
-                label.toolTip = note
+                note = "Extensions allowed in Private windows keep their data (storage, caches, cookies) in memory only. It is never written to disk and is cleared when the last Private window closes."
             }
+            toggle.toolTip = note
+            row.titleLabel?.toolTip = note
             rows.append(row)
         }
-        extensionTogglesGroup.setRows(rows)
+        formSections[.extensions]?.setRows(rows)
+        formRows[.extensionSwitches] = rows
         applyRowLayout()
     }
+
+    /// The help under an extension turned off for all profiles: why its
+    /// switch is off here.
+    static let extensionOffEverywhereHelp = "Turned off for all profiles in Extensions settings."
 
     @objc private func extensionToggled(_ sender: NSSwitch) {
         guard let profile = selectedProfile,
@@ -567,9 +509,11 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
         ExtensionManager.shared.setEnabled(id: extID, profileID: profile.id, enabled: enabled)
     }
 
+    /// The user agent the profile sends, under Identify as; the row tells
+    /// the pane when its height changes.
     private func updateUAPreview() {
-        uaPreviewLabel.stringValue = selectedProfile?.resolvedUserAgent() ?? ""
-        contentHeightDidChange()
+        let isVisible = ProfileSettingsLayout.isVisible(.userAgentPreview, in: layoutState)
+        userAgentRow.setHelp(isVisible ? selectedProfile?.resolvedUserAgent() : nil)
     }
 
     private func updateButtonStates() {
@@ -638,10 +582,7 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
     @objc private func adBlockToggled() {
         guard let profile = selectedProfile else { return }
         profile.isAdBlockingEnabled = (adBlockSwitch.state == .on)
-        easyListSwitch.isEnabled = profile.isAdBlockingEnabled
-        easyPrivacySwitch.isEnabled = profile.isAdBlockingEnabled
-        easyListCookieSwitch.isEnabled = profile.isAdBlockingEnabled
-        malwareFilterSwitch.isEnabled = profile.isAdBlockingEnabled
+        enableFilterLists(profile.isAdBlockingEnabled)
         TabStore.shared.updateProfile(profile)
         ContentBlockerManager.shared.reapplyRuleLists()
     }

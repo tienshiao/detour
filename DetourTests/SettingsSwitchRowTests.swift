@@ -206,21 +206,13 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
     /// row (a switch row, a group's row) or in its grid row's label column
     /// (Profiles).
     @MainActor private func visibleLabel(of toggle: NSSwitch) -> NSTextField? {
-        // A grouped form's row (TASK-338): its name.
+        // A grouped form's row (TASK-338: every pane): its name.
         if let row = formRow(of: toggle) { return row.titleLabel }
+        // A row laid out by hand (the sidebar popover): its one label.
         if let row = toggle.superview as? NSStackView {
             return row.arrangedSubviews.compactMap { $0 as? NSTextField }.first
         }
-        var view: NSView? = toggle
-        while let current = view, !(current.superview is NSGridView) { view = current.superview }
-        guard let cellView = view, let grid = cellView.superview as? NSGridView else {
-            // A row laid out by hand (the sidebar popover): its one label.
-            return toggle.superview?.subviews.compactMap { $0 as? NSTextField }.first
-        }
-        for index in 0..<grid.numberOfRows where grid.cell(atColumnIndex: 1, rowIndex: index).contentView === cellView {
-            return grid.cell(atColumnIndex: 0, rowIndex: index).contentView as? NSTextField
-        }
-        return nil
+        return toggle.superview?.subviews.compactMap { $0 as? NSTextField }.first
     }
 
     /// What an Accessibility client gets from `view` down: the unignored
@@ -266,8 +258,8 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
                 checked += 1
             }
         }
-        // General's 3, Quick Detour's 2, Profiles' 3 in its grid and 4 filter
-        // lists, Content Blocking's tracking list (TASK-337).
+        // General's 3, Quick Detour's 2, Profiles' 3 and its 4 filter lists,
+        // Content Blocking's tracking list (TASK-337).
         XCTAssertGreaterThanOrEqual(checked, 13)
     }
 
@@ -290,15 +282,23 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
         }
     }
 
-    /// The bordered group's row (Profiles' filter lists and extension
-    /// switches, an extension's permissions).
+    /// TASK-336's rule on its own (a form row applies it to its control):
+    /// the control takes the label's text, or an explicit name, and the
+    /// label's cell leaves the tree. (The bordered group's row and the
+    /// label-then-switch row went with TASK-338.)
     @MainActor func testTheRowHelpersNameTheSwitchAndHideTheLabel() {
-        let grouped = NSSwitch()
-        let (row, label) = SettingsGroupBoxView.switchRow(grouped, title: "Store data locally")
-        XCTAssertEqual(grouped.accessibilityLabel(), "Store data locally")
+        let toggle = NSSwitch()
+        let label = NSTextField(labelWithString: "Enabled")
+        let row = NSStackView(views: [label, toggle])
+        SettingsSwitchRow.name(toggle, by: label)
+        XCTAssertEqual(toggle.accessibilityLabel(), "Enabled")
         // A text field is read through its cell.
         XCTAssertEqual(label.cell?.isAccessibilityElement(), false)
-        XCTAssertFalse(staticTexts(under: row).contains("Store data locally"))
+        XCTAssertEqual(staticTexts(under: row), [])
+        XCTAssertTrue(accessibilityElements(under: row).contains { $0 === toggle })
+        let recorder = NSView()
+        SettingsSwitchRow.name(recorder, by: NSTextField(labelWithString: "Shortcut"), as: "Quick Detour shortcut")
+        XCTAssertEqual(recorder.accessibilityLabel(), "Quick Detour shortcut")
     }
 
     /// The sidebar's page settings popover lays its switches out the same
