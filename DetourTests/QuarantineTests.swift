@@ -15,8 +15,19 @@ nonisolated final class QuarantineTests: XCTestCase {
     private var openedTabs: [(store: TabStore, tab: BrowserTab)] = []
     private var servers: [LoopbackHTTPServer] = []
     private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)?
+    private var savedTrackingFilter: TrackingParameterFilter?
+
+    /// The rules start from the built-in names alone, whatever another suite
+    /// or the test host left installed; a test that wants the downloaded
+    /// filter installs it.
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
+        savedTrackingFilter = TrackingParameters.downloadedFilter
+        TrackingParameters.downloadedFilter = nil
+    }
 
     @MainActor override func tearDown() async throws {
+        TrackingParameters.downloadedFilter = savedTrackingFilter
         for (store, tab) in openedTabs { store.closeQuickDetourTab(tab) }
         openedTabs.removeAll()
         for server in servers { server.stop() }
@@ -49,6 +60,29 @@ nonisolated final class QuarantineTests: XCTestCase {
         XCTAssertEqual(Quarantine.trackingFreeURL(for: URL(string: "https://a.test/p?a=1&&gclid=2")!, httpMethod: "GET",
                                                   isBackForwardOrReload: false),
                        URL(string: "https://a.test/p?a=1")!)
+    }
+
+    /// TASK-329 AC #4 (the user's decision): with the downloaded AdGuard list
+    /// loaded, a quarantine navigation also loses the parameters it names for
+    /// the site, and keeps those its exceptions keep there, a built-in name
+    /// included. Without it (not downloaded, or turned off in Settings), the
+    /// built-in names alone.
+    @MainActor func testTheDownloadedListAppliesToQuarantineNavigationsWhileLoaded() {
+        let amazon = URL(string: "https://www.amazon.de/dp/B0?asc_campaign=fall&utm_source=x&th=1")!
+        let kept = URL(string: "https://www.eneba.com/item?utm_source=partner&gclid=2&id=1")!
+
+        TrackingParameters.downloadedFilter = TrackingParameterFilter(text: TrackingParameterFilterFixture.text)
+        XCTAssertEqual(Quarantine.trackingFreeURL(for: amazon, httpMethod: "GET", isBackForwardOrReload: false),
+                       URL(string: "https://www.amazon.de/dp/B0?th=1")!, "a per-site rule with a wildcard TLD")
+        XCTAssertEqual(Quarantine.trackingFreeURL(for: kept, httpMethod: "GET", isBackForwardOrReload: false),
+                       URL(string: "https://www.eneba.com/item?utm_source=partner&id=1")!,
+                       "the list's exception keeps utm_source on its site")
+
+        TrackingParameters.downloadedFilter = nil
+        XCTAssertEqual(Quarantine.trackingFreeURL(for: amazon, httpMethod: "GET", isBackForwardOrReload: false),
+                       URL(string: "https://www.amazon.de/dp/B0?asc_campaign=fall&th=1")!)
+        XCTAssertEqual(Quarantine.trackingFreeURL(for: kept, httpMethod: "GET", isBackForwardOrReload: false),
+                       URL(string: "https://www.eneba.com/item?id=1")!)
     }
 
     @MainActor func testOtherNavigationsGoThrough() {

@@ -15,9 +15,7 @@ nonisolated final class SettingsFormTests: XCTestCase {
     @MainActor private static let widths: [CGFloat] = [SettingsMetrics.detailColumnWidth - 17, SettingsMetrics.formWidth]
 
     @MainActor private static let longTitle = ContentBlockerSettingsViewController.trackingListTitle
-    @MainActor private static let longHelp = "Copy URL, Copy Link and Share… always leave out common tracking parameters "
-        + "such as utm_source and fbclid. This list adds the ones particular sites use. It changes only the links "
-        + "you copy or share and blocks nothing; it updates with the lists above."
+    @MainActor private static let longHelp = ContentBlockerSettingsViewController.trackingListHelp
 
     // MARK: - Helpers
 

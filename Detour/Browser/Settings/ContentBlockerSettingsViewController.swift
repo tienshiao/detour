@@ -67,8 +67,9 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController {
     }
 
     /// The AdGuard URL Tracking list (TASK-337): app-wide, used only for the
-    /// links Copy URL, Copy Link and Share… hand out, so it is a section of
-    /// its own under the blocking lists rather than one of their rows.
+    /// links Copy URL, Copy Link and Share… hand out and the addresses
+    /// quarantine pages load (TASK-329), so it is a section of its own under
+    /// the blocking lists rather than one of their rows.
     private func makeTrackingListSection() -> SettingsFormSection {
         trackingListSwitch = NSSwitch()
         trackingListSwitch.target = self
@@ -76,9 +77,7 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController {
         trackingListSwitch.setAccessibilityIdentifier("trackingParameterListEnabled")
         let row = SettingsFormRow(
             title: Self.trackingListTitle,
-            help: "Copy URL, Copy Link and Share… always leave out common tracking parameters such as "
-                + "utm_source and fbclid. This list adds the ones particular sites use. It changes only the links "
-                + "you copy or share and blocks nothing; it updates with the lists above.",
+            help: Self.trackingListHelp,
             accessory: .toggle(trackingListSwitch))
         trackingListStatusLabel = NSTextField(labelWithString: "")
         trackingListStatusLabel.font = .systemFont(ofSize: SettingsMetrics.formHelpFontSize)
@@ -91,6 +90,9 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController {
     }
 
     static let trackingListTitle = "Remove tracking parameters with the AdGuard URL Tracking filter"
+    static let trackingListHelp = "Copy URL, Copy Link, Share… and Quarantine always leave out common tracking "
+        + "parameters such as utm_source and fbclid. This list adds the ones particular sites use. It blocks "
+        + "nothing; it updates with the lists above."
 
     /// The status line under the tracking list's switch: what Copy URL uses.
     static func trackingListStatus(isEnabled: Bool, ruleCount: Int?, lastFetch: Date?, now: Date) -> String {

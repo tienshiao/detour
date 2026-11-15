@@ -375,14 +375,22 @@ nonisolated final class TrackingParameterFilterTests: XCTestCase {
         XCTAssertEqual(TrackingParameters.copyableString(for: url), "https://supply.amazon.com/item?id=1")
     }
 
-    /// AC #4 (PROVISIONAL): quarantine navigations keep to the built-in list,
-    /// with the downloaded rules loaded or not.
-    @MainActor func testQuarantineNavigationsUseTheBuiltInListOnly() {
+    /// AC #4 (the user's decision, 2026-11-14): quarantine navigations use
+    /// the downloaded rules as Copy URL does, and the built-in names alone
+    /// while there are none (not downloaded, or the list turned off).
+    @MainActor func testQuarantineNavigationsUseTheDownloadedFilterWhenThereIsOne() {
         let saved = TrackingParameters.downloadedFilter
         defer { TrackingParameters.downloadedFilter = saved }
-        TrackingParameters.downloadedFilter = Self.fixture
-
         let url = URL(string: "https://supply.amazon.com/item?ref_=nav&utm_source=x")!
+
+        TrackingParameters.downloadedFilter = Self.fixture
+        XCTAssertEqual(Quarantine.trackingFreeURL(for: url, httpMethod: "GET", isBackForwardOrReload: false)?.absoluteString,
+                       "https://supply.amazon.com/item")
+        XCTAssertEqual(Quarantine.trackingFreeURL(for: URL(string: "https://supply.amazon.com/item?ref_=nav")!,
+                                                  httpMethod: "GET", isBackForwardOrReload: false)?.absoluteString,
+                       "https://supply.amazon.com/item", "a list-only parameter is reason enough to reload")
+
+        TrackingParameters.downloadedFilter = nil
         XCTAssertEqual(Quarantine.trackingFreeURL(for: url, httpMethod: "GET", isBackForwardOrReload: false)?.absoluteString,
                        "https://supply.amazon.com/item?ref_=nav")
         XCTAssertNil(Quarantine.trackingFreeURL(for: URL(string: "https://supply.amazon.com/item?ref_=nav")!,

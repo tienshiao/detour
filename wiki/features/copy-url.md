@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Copy URL
-description: "Every copy of a page's or tab's address (Edit > Copy URL / Shift-Cmd-C in a browser or Quick Detour window, the faux address bar's and Quick Detour's Copy Link buttons, the dev toolbar's link button, the sidebar tab menu's Copy URL / Copy Link) puts the address on the clipboard without its tracking parameters, through TrackingParameters: the built-in list quarantine pages also use, plus the downloaded AdGuard URL Tracking filter's site-specific $removeparam rules and exceptions (TASK-329: rule forms supported and skipped, fallback, quarantine kept on the built-in list); Share… shares the clean link too; the list's switch in Settings > Content Blocking (TASK-337: off, it is neither fetched nor used; the cache is kept); what is left alone (a page's own Copy Link, Opt-Cmd-click copies into Quick Detour) and why; the loaded URL, history and session keep the original (TASK-326)."
+description: "Every copy of a page's or tab's address (Edit > Copy URL / Shift-Cmd-C in a browser or Quick Detour window, the faux address bar's and Quick Detour's Copy Link buttons, the dev toolbar's link button, the sidebar tab menu's Copy URL / Copy Link) puts the address on the clipboard without its tracking parameters, through TrackingParameters: the built-in list quarantine pages also use, plus the downloaded AdGuard URL Tracking filter's site-specific $removeparam rules and exceptions (TASK-329: rule forms supported and skipped, fallback; quarantine navigations use it too, the user's decision); Share… shares the clean link too; the list's switch in Settings > Content Blocking (TASK-337: off, it is neither fetched nor used; the cache is kept); what is left alone (a page's own Copy Link, Opt-Cmd-click copies into Quick Detour) and why; the loaded URL, history and session keep the original (TASK-326)."
 tags: [links, privacy, clipboard, sidebar, window]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T01:40:00Z }
@@ -42,6 +42,9 @@ sources:
   - id: checks-329
     resource: ../../docs/harness/task329-tracking-filter-checks.py
     title: TASK-329 runtime checks (fixture list served locally, Shift-Cmd-C)
+  - id: checks-329q
+    resource: ../../docs/harness/task329-quarantine-checks.py
+    title: TASK-329 AC #4 runtime checks (a routed link opened in Quarantine, the server's request log)
   - id: adguard-filter
     resource: https://github.com/AdguardTeam/AdguardFilters/tree/master/TrackParamFilter
     title: AdGuard URL Tracking filter sources (GPL-3.0)
@@ -121,8 +124,9 @@ the list changes both.
 
 ## The downloaded filter (TASK-329)
 
-On top of the built-in names, Copy URL and Share… remove what AdGuard's URL
-Tracking filter (filter 17) says to remove for the page's site:
+On top of the built-in names, Copy URL, Share… and quarantine navigations
+remove what AdGuard's URL Tracking filter (filter 17) says to remove for the
+page's site:
 `TrackingParameters.cleanLink(for:)` passes `downloadedFilter` to
 `removing(from:using:)`. The built-in names stay the floor: before the first
 download, offline, after an error response or a text that parses into no
@@ -208,12 +212,20 @@ a shared link that breaks is worse than one that keeps a tag. Without the
 list the built-in names apply everywhere. Alternative: exceptions cancel
 only list rules; one line in `TrackingParameters.removing`.
 
-**Quarantine stays on the built-in list (TASK-329 AC #4, PROVISIONAL: chosen
-by Claude while the user was away, not confirmed):** `Quarantine.trackingFreeURL`
-and `openQuarantine` call `removing(from:)` without the filter. Stripping on
-navigation can break the page (the list is tuned for content blockers that
-also honour its exceptions per request type), while stripping on copy only
-changes the copied text. Alternative: `cleanLink(for:)` in those two calls.
+**Quarantine navigations use the list too (TASK-329 AC #4, the user's
+decision, 2026-11-14):** `Quarantine.trackingFreeURL` and `openQuarantine`
+call `cleanLink(for:)`, so a quarantine page loads without the site
+parameters a copy of it would leave out, and keeps those the list's
+exceptions keep (a built-in name included, as above). With the list off or
+not downloaded they fall back to the built-in names, as copies do. The first
+cut (a provisional choice while the user was away) kept quarantine on the
+built-in names, because stripping on navigation can break a page (the list
+is tuned for content blockers that also honour its exceptions per request
+type) while stripping on copy only changes the copied text; the user chose
+one rule for both. A page that needs a stripped parameter and sends itself
+back to it is let through the second time
+([Quarantine](quarantine.md#link-tracking-parameters),
+`QuarantineTrackingRewrites`).
 
 ## Turning it off (TASK-337)
 
@@ -269,8 +281,8 @@ list again. Three requests in all, each from a step that should make one.
 | `CopyURLTests` | in a real browser window with a private pasteboard: `copyCurrentURL`, the Edit menu item's Shift-Cmd-C binding, the faux address bar button, the sidebar's Copy Link (unselected tab), Copy URL (selected tab) and a pinned tab's, each also checking the tab's URL keeps its parameters |
 | `DevToolbarHostingTests` | the dev toolbar's link button |
 | `QuickDetourWindowTests` | the title bar's Copy Link and `copyCurrentURL` on a loopback page, and the page keeping its address |
-| `QuarantineTests`, `QuarantineWindowTests` | the quarantine navigation rule, which uses the same list |
-| `TrackingParameterFilterTests` | the downloaded filter on the excerpt: counts by kind, global and per-site rules, wildcard TLDs in patterns and `domain=`, `~` domains, substrings, remove-all / all-but, request types, exceptions (bare, named, regex, widened, other types), case, repeats, list spellings, real-world links unchanged, quarantine on the built-in list; `testTheWholeDownloadedList` runs on a downloaded copy when `TEST_RUNNER_TRACKING_FILTER_FILE` names one |
+| `QuarantineTests`, `QuarantineWindowTests` | the quarantine navigation rule, which uses the same list and the downloaded filter: with it loaded a per-site rule and an exception apply, a list-only parameter never reaches a loopback server from the opened link or a click; without it the built-in names alone |
+| `TrackingParameterFilterTests` | the downloaded filter on the excerpt: counts by kind, global and per-site rules, wildcard TLDs in patterns and `domain=`, `~` domains, substrings, remove-all / all-but, request types, exceptions (bare, named, regex, widened, other types), case, repeats, list spellings, real-world links unchanged, quarantine navigations with and without the filter; `testTheWholeDownloadedList` runs on a downloaded copy when `TEST_RUNNER_TRACKING_FILTER_FILE` names one |
 | `TrackingParameterListTests` | the download path with a stub URLProtocol: first download, cache at launch, conditional refresh, offline, error response, a page that is no list, an unreadable cache, Clear Cache & Redownload, the Debug URL override, the test host downloading nothing; the TASK-337 switch: on by default and stored in the list's defaults, off at launch (no request, cache not read, kept), refresh and Clear Cache while off (no request), turning off (rules dropped, cache kept, a response in flight dropped), turning on (cached rules offline plus a conditional fetch; a full one without a cache), the pane's status line |
 | `SettingsSwitchRowTests` (TASK-337 case) | the pane's switch shows and writes the setting and is named by its label (a grouped-form row since TASK-338; `SettingsFormTests` checks its status line keeps its identifier and row) |
 | `CopyURLTests` (TASK-329 cases) | Copy URL, the sidebar's Copy URL and Share… with the filter installed, and without it |
@@ -295,19 +307,29 @@ and Edit > Copy URL copied the address without its host-pattern,
 alert showed.[^checks-329] A pattern matches the address as written, port
 included: `||127.0.0.1/keep/` does not match `127.0.0.1:64903/keep/`.
 
+At runtime for quarantine (2026-11-14, AC #4,
+`docs/harness/task329-quarantine-checks.py`): a Link Route sent a link
+clicked on a `localhost` page to Quarantine (a click to the same host is
+never routed). With the list served, the local server's only request for
+the link was `/probe.html?id=1`: the host rule's `ref_`, the global list
+name `pjclid` and the built-in `utm_source` never reached it. With the
+list's URL answering 404 it was `/probe.html?id=1&ref_=nav&pjclid=7`, the
+built-in names alone.[^checks-329q]
+
 [^task-326]: TASK-326
 [^checks]: docs/harness/task326-copy-url-checks.py
 [^task-329]: TASK-329
 [^task-337]: TASK-337
 [^checks-337]: docs/harness/task337-tracking-list-setting-checks.py
 [^checks-329]: docs/harness/task329-tracking-filter-checks.py
+[^checks-329q]: docs/harness/task329-quarantine-checks.py
 [^adguard-filter]: AdGuard URL Tracking filter sources (GPL-3.0)
 [^adguard-kb]: AdGuard knowledge base, $removeparam and $domain modifiers
 [^tsurlfilter]: tsurlfilter remove-param-modifier.ts (a plain value becomes an anchored name= regex, no i flag)
 
 # Related
 
-- [Quarantine](quarantine.md#link-tracking-parameters): the built-in list removed from a quarantine page's navigations (not the downloaded filter).
+- [Quarantine](quarantine.md#link-tracking-parameters): the same rule (built-in list and downloaded filter) applied to a quarantine page's navigations.
 - [Content blocking](content-blocking.md#lists): the filter-list download path the tracking filter shares.
 - [WebKit privacy protections](../platform/webkit-privacy-protections.md): WebKit's own click-ID filtering, which keeps `utm_*`.
 - [Quick Detour](quick-detour.md): the title bar's Copy Link and the Opt-Cmd-click copy, which is a load, not a clipboard copy.

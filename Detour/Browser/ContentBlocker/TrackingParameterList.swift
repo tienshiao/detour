@@ -6,7 +6,8 @@ nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", categor
 /// The AdGuard URL Tracking filter (filter 17, TASK-329): downloaded and
 /// refreshed with the content blocker's lists, parsed into a
 /// `TrackingParameterFilter` and installed as `TrackingParameters.downloadedFilter`,
-/// which Copy URL and Share… use on top of the built-in names.
+/// which Copy URL, Share… and quarantine navigations use on top of the
+/// built-in names.
 ///
 /// It is not one of `ContentBlockerManager.filterLists`: it is never compiled
 /// into a WebKit rule list and has no profile switch. The manager drives it
@@ -107,9 +108,10 @@ final class TrackingParameterList {
     private var ruleCountKey: String { "ContentBlocker.\(Self.identifier).ruleCount" }
     static let enabledKey = "ContentBlocker.\(identifier).enabled"
 
-    /// Whether Copy URL and Share… use the list, and so whether it is
-    /// fetched (TASK-337). On unless turned off; stored in the data
-    /// directory's content blocker defaults, beside the fetch bookkeeping.
+    /// Whether Copy URL, Share… and quarantine navigations use the list, and
+    /// so whether it is fetched (TASK-337). On unless turned off; stored in
+    /// the data directory's content blocker defaults, beside the fetch
+    /// bookkeeping.
     var isEnabled: Bool { defaults.object(forKey: Self.enabledKey) as? Bool ?? true }
 
     /// Stores the setting. Turning it off stops using the list at once (the

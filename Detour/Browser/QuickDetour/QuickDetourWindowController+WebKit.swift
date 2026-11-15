@@ -60,8 +60,9 @@ extension QuickDetourWindowController: WKNavigationDelegate {
         // A quarantine page goes nowhere with link-tracking parameters: the
         // same address is loaded again without them (TASK-194). WebKit's own
         // link decoration filtering has already taken the click IDs on its
-        // list; this takes the rest (`utm_*`). Not a download or a jump to
-        // an anchor (`trackingFreeURL`), and never in a loop: a page or server
+        // list; this takes the rest (`utm_*`, and the downloaded AdGuard
+        // list's parameters while it is loaded, TASK-329). Not a download or
+        // a jump to an anchor (`trackingFreeURL`), and never in a loop: a page or server
         // that sends the clean address back to its parameters is let through
         // the second time (`trackingRewrites`).
         if isQuarantine, action.targetFrame?.isMainFrame == true {

@@ -25,9 +25,13 @@ nonisolated final class QuarantineWindowTests: XCTestCase {
 
     private var work: Profile!
     private var desk: Space!
+    private var savedTrackingFilter: TrackingParameterFilter?
 
     @MainActor override func setUp() async throws {
         try await super.setUp()
+        // The built-in names alone unless a test installs the downloaded list.
+        savedTrackingFilter = TrackingParameters.downloadedFilter
+        TrackingParameters.downloadedFilter = nil
         appDelegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         quickDetoursBefore = Set(QuickDetourWindowController.openControllers.map(ObjectIdentifier.init))
         browserWindowsBefore = Set(browserWindows().map(ObjectIdentifier.init))
@@ -48,6 +52,7 @@ nonisolated final class QuarantineWindowTests: XCTestCase {
     }
 
     @MainActor override func tearDown() async throws {
+        TrackingParameters.downloadedFilter = savedTrackingFilter
         QuickDetourWindowController.askQuarantineDownload = previousAsk
         for controller in newQuickDetours() {
             controller.closeDisposition = .discard
@@ -133,6 +138,12 @@ nonisolated final class QuarantineWindowTests: XCTestCase {
             <a id="link" href="/probe?id=1&utm_source=newsletter&utm_medium=email">tracked</a></body></html>
             """,
             "/probe?id=1": "<html><head>\(Self.probeTitleScript)</head><body>probe</body></html>",
+            // A parameter only the downloaded list names (TASK-329).
+            "/listed": """
+            <html><head><title>Listed</title></head><body>
+            <a id="link" href="/probe?id=1&pjclid=7">listed</a></body></html>
+            """,
+            "/probe?id=1&pjclid=7": "<html><head><title>Unstripped</title></head><body>unstripped</body></html>",
             "/bounce?utm_source=loop": "<html><head><title>Bounced</title></head><body>bounced</body></html>",
             // A client-side redirect back to the parameters (TASK-194 follow-up).
             "/replace": "<html><head><script>location.replace('/replace?utm_source=loop');</script></head></html>",
@@ -289,6 +300,40 @@ nonisolated final class QuarantineWindowTests: XCTestCase {
 
         XCTAssertEqual(controller.tab?.url?.query, "id=1")
         XCTAssertFalse(server.requestedPaths.contains { $0.contains("utm_") }, "\(server.requestedPaths)")
+    }
+
+    /// TASK-329 AC #4 (the user's decision): with the downloaded list loaded,
+    /// the link a quarantine opens and the links clicked in it lose the
+    /// parameters the list names (`pjclid`, a global rule of the list's, not
+    /// a built-in name) before any request is made.
+    @MainActor func testTheDownloadedListsParametersNeverReachTheServer() async throws {
+        TrackingParameters.downloadedFilter = TrackingParameterFilter(text: TrackingParameterFilterFixture.text)
+        let (server, base) = try await serve()
+
+        let opened = openQuarantine(base + "/probe?id=1&pjclid=7")
+        try await waitForTitle("cookie:no storage:no") { opened.tab }
+        XCTAssertEqual(opened.tab?.url?.query, "id=1")
+        XCTAssertEqual(opened.quarantine?.originalURL?.query, "id=1&pjclid=7", "the window keeps the link as it came")
+
+        let clicked = openQuarantine(base + "/listed")
+        try await waitForTitle("Listed") { clicked.tab }
+        _ = try await XCTUnwrap(clicked.tab?.webView).evaluateJavaScript("document.getElementById('link').click()")
+        try await waitForTitle("cookie:no storage:no") { clicked.tab }
+        XCTAssertEqual(clicked.tab?.url?.query, "id=1")
+
+        XCTAssertFalse(server.requestedPaths.contains { $0.contains("pjclid") }, "\(server.requestedPaths)")
+    }
+
+    /// Without the list (not downloaded, or turned off), the built-in names
+    /// alone: a parameter only the list names goes through.
+    @MainActor func testWithoutTheDownloadedListItsParametersGoThrough() async throws {
+        let (server, base) = try await serve()
+        let controller = openQuarantine(base + "/listed")
+        try await waitForTitle("Listed") { controller.tab }
+        _ = try await XCTUnwrap(controller.tab?.webView).evaluateJavaScript("document.getElementById('link').click()")
+        try await waitForTitle("Unstripped") { controller.tab }
+        XCTAssertEqual(controller.tab?.url?.query, "id=1&pjclid=7")
+        XCTAssertTrue(server.requestedPaths.contains("/probe?id=1&pjclid=7"), "\(server.requestedPaths)")
     }
 
     /// A server that redirects the clean address back to one with tracking

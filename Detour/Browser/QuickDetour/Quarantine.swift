@@ -115,7 +115,9 @@ enum Quarantine {
 
     /// Where a main-frame navigation in a quarantine window should go instead,
     /// nil to let it through: a GET to an http(s) URL carrying tracking
-    /// parameters is loaded again without them. Left alone: back/forward and
+    /// parameters (`TrackingParameters.cleanLink(for:)`: the built-in names,
+    /// and the downloaded filter's rules and exceptions for the address while
+    /// it is loaded) is loaded again without them. Left alone: back/forward and
     /// reloads (the entry is already what it is), anything that is not a GET
     /// (a form post cannot be replayed), a download (loading it again would
     /// drop the link's `download` attribute and its Referer: the file would
@@ -129,10 +131,10 @@ enum Quarantine {
         guard let url, !isBackForwardOrReload, !shouldPerformDownload,
               (httpMethod ?? "GET").uppercased() == "GET",
               !isSameDocument(url, as: currentURL) else { return nil }
-        // The built-in list only, not the downloaded filter (TASK-329 AC #4):
-        // a navigation stripped of a parameter the page needs breaks the page,
-        // while a copy stripped of one only changes the copied text.
-        let stripped = TrackingParameters.removing(from: url)
+        // The built-in list plus the downloaded filter when it is loaded and
+        // on, as Copy URL (the user's decision, TASK-329 AC #4); the built-in
+        // names alone otherwise.
+        let stripped = TrackingParameters.cleanLink(for: url)
         return stripped == url ? nil : stripped
     }
 

@@ -203,11 +203,13 @@ removes click IDs (`gclid`, `gclsrc`, `dclid`, `gbraid`, `wbraid`,
 `_ga` (added by TASK-326) and every `utm_` parameter, names compared without
 case and after percent-decoding, other parameters kept in order with their
 spelling. The list is the one Copy URL uses: a name added for one applies to
-both. Copy URL also applies the downloaded AdGuard URL Tracking filter's
-site rules; quarantine navigations do not (TASK-329 AC #4, provisional:
-stripping a parameter a page needs on navigation breaks the page, while a
-copy only changes the copied text; see
-[Copy URL](copy-url.md#the-downloaded-filter-task-329)).
+both. Quarantine navigations, like Copy URL, also apply the downloaded
+AdGuard URL Tracking filter's site rules and honour its exceptions, which
+keep a parameter on their site even when it is a built-in name
+(`TrackingParameters.cleanLink(for:)`; TASK-329 AC #4, the user's decision
+on 2026-11-14, replacing a provisional built-in-only first cut). With the
+list off in Settings or not downloaded, the built-in names alone; see
+[Copy URL](copy-url.md#the-downloaded-filter-task-329).
 Applied to the link before the window loads it, and to every main-frame
 navigation of the page (`trackingFreeURL`: a GET carrying any is cancelled
 and loaded again without them). Left alone: back/forward, reloads, form
@@ -275,8 +277,8 @@ fingerprint reads, it does not make you anonymous.
 
 | Suite | Covers |
 |---|---|
-| `QuarantineTests` (31) | the parameter rule (lists, order and spelling kept, case, lookalikes, repeated and valueless, fragment, non-web URLs), which navigations are reloaded without them (not a download, not an anchor jump), the rewrite budget (once per address, 8 per user navigation), Safari's user agent, the SPI applied and OR-ed (skipped without it), the Open in rule (every profile, all reloading, the source, most recent, Private and deleted left out, none); the store: a fresh store per quarantine, never the Private or a profile's, a popup sharing it, the Private profile's extension controller, the user agent on the web view, the session released with its last page, no history (real load), no archive, no favicon fetch |
-| `QuarantineWindowTests` (21) | in real windows: the badge and the appearance, the pill switching nothing, never idle-closed, no archive; two quarantines sharing nothing and no Private window's or profile's cookie reaching one (a loopback server recording each request's `Cookie` header); a page's window sharing the quarantine; a clicked link losing its tracking parameters before the request; canvas noise and `screen` (skipped without the SPI); Open in listing every profile's spaces and **AC #3**: a quarantined page that got a `Set-Cookie` and wrote `localStorage`, moved by Open in, loads fresh in the space's store with no `Cookie` header and no storage, and the profile's cookie store has none; downloads asked, cancelled on no (nothing listed, no file) and saved on yes (scoped to the window); Open in asking before cancelling a running download, and cancelling nothing when no tab is placed (a placement seam) or when the page put up a sheet while the question ran; a server redirect and a `location.replace` back to tracking parameters settling; an anchor jump not reloaded; a tracked download link still asked about; a page's timer Cmd+click opening no window |
+| `QuarantineTests` (25) | which navigations are reloaded without tracking parameters (not a download, not an anchor jump), the downloaded AdGuard list's site rules and exceptions applied while it is loaded and the built-in names alone without it (TASK-329), the rewrite budget (once per address, 8 per user navigation), Safari's user agent, the SPI applied and OR-ed (skipped without it), the Open in rule (every profile, all reloading, the source, most recent, Private and deleted left out, none); the store: a fresh store per quarantine, never the Private or a profile's, a popup sharing it, the Private profile's extension controller, the user agent on the web view, the session released with its last page, no history (real load), no archive, no favicon fetch |
+| `QuarantineWindowTests` (24) | in real windows: the badge and the appearance, the pill switching nothing, never idle-closed, no archive; two quarantines sharing nothing and no Private window's or profile's cookie reaching one (a loopback server recording each request's `Cookie` header); a page's window sharing the quarantine; a clicked link losing its tracking parameters before the request; with the downloaded list loaded, a parameter only it names never reaching the server from the opened link or a click, and going through without it (TASK-329); canvas noise and `screen` (skipped without the SPI); Open in listing every profile's spaces and **AC #3**: a quarantined page that got a `Set-Cookie` and wrote `localStorage`, moved by Open in, loads fresh in the space's store with no `Cookie` header and no storage, and the profile's cookie store has none; downloads asked, cancelled on no (nothing listed, no file) and saved on yes (scoped to the window); Open in asking before cancelling a running download, and cancelling nothing when no tab is placed (a placement seam) or when the page put up a sheet while the question ran; a server redirect and a `location.replace` back to tracking parameters settling; an anchor jump not reloaded; a tracked download link still asked about; a page's timer Cmd+click opening no window |
 | `QuickDetourTests` (+1) | `linkClickOpensWindow`: only a link activation with Command and the user's gesture |
 | `LinkRouteResolverTests` (+1) | a Quarantine route skipped in a Private window falls through to the next route (Private Window, a space), all ending in `.stay`, whatever the Default |
 | `LinkRouteResolverTests`, `LinkRoutingEligibilityTests`, `LinkPlacementTests`, `LinkRouteEditorTests` | the rules above, `.openInQuarantine`, the target offered |

@@ -783,8 +783,9 @@ per-profile setting on the Profiles pane, not here.
 Under the buttons, a "Copied Links" section (TASK-337) holds the one
 app-wide switch of the pane: "Remove tracking parameters with the AdGuard
 URL Tracking filter" (`trackingParameterListEnabled`, a form row since
-TASK-338, on by default), help saying it changes only the links Copy URL, Copy Link
-and Share… hand out and blocks nothing, and a status line
+TASK-338, on by default), help saying Copy URL, Copy Link, Share… and
+Quarantine leave out common tracking parameters, that the list adds the
+ones particular sites use, and that it blocks nothing, and a status line
 (`trackingParameterListStatus`: "2,665 rules, updated 3 hr. ago", "Not
 downloaded yet", or "Off: not downloaded or used", from
 `trackingListStatus`, a detail line of its row). It is a section of its

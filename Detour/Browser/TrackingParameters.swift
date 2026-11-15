@@ -1,16 +1,17 @@
 import Foundation
 
 /// Link tracking parameters: the built-in list Detour removes from a link,
-/// and the pure rule that removes them. Used by a quarantine page's
-/// navigations (`Quarantine.trackingFreeURL`, TASK-194: the built-in list
-/// only) and by every Copy URL / Copy Link / Share… of a page or tab
-/// (TASK-326), which copy the clean link (`cleanLink(for:)`: the built-in list
-/// plus the downloaded AdGuard URL Tracking filter, TASK-329) while the page,
-/// history and session keep the address as loaded.
+/// and the pure rule that removes them. Both users take the clean link
+/// (`cleanLink(for:)`: the built-in list plus the downloaded AdGuard URL
+/// Tracking filter, TASK-329): a quarantine page's navigations
+/// (`Quarantine.trackingFreeURL`, TASK-194), and every Copy URL / Copy Link /
+/// Share… of a page or tab (TASK-326), whose page, history and session keep
+/// the address as loaded.
 enum TrackingParameters {
     /// The downloaded tracking filter's rules (`TrackingParameterList`), nil
-    /// until a download or the cached copy has parsed into rules. Copy and
-    /// Share use them on top of `names`; without them they use `names` alone.
+    /// until a download or the cached copy has parsed into rules, and while
+    /// the list is turned off. Copy, Share and quarantine navigations use
+    /// them on top of `names`; without them they use `names` alone.
     static var downloadedFilter: TrackingParameterFilter?
 
     /// Query parameters that only identify a click or a campaign: click IDs
@@ -73,9 +74,10 @@ enum TrackingParameters {
         return components.url ?? url
     }
 
-    /// The link Copy URL / Copy Link / Share… of a page or tab hands out:
-    /// `url` without the built-in list's tracking parameters nor the
-    /// downloaded filter's (`downloadedFilter`), when it has loaded.
+    /// The link Copy URL / Copy Link / Share… of a page or tab hands out, and
+    /// the address a quarantine page loads instead: `url` without the
+    /// built-in list's tracking parameters nor the downloaded filter's
+    /// (`downloadedFilter`), when it has loaded.
     static func cleanLink(for url: URL) -> URL {
         removing(from: url, using: downloadedFilter)
     }
