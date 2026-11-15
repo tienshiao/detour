@@ -335,13 +335,13 @@ browser, browser).[^harness-2]
 
 ### The Settings control
 
-Settings > **Quick Detour** (a pane of its own since TASK-211; before, a section of the Links pane): "Open Quick Detour from any app
-[switch]", under it "Shortcut [⌃⌥⌘F12]" (one sentence with a checkbox,
-"[✓] Open Quick Detour from any app with [⌃⌥⌘F12]", until TASK-328; see
-[Settings](./settings.md#quick-detour)), a warning line under the recorder, and help text saying the
-launcher opens over the app in front and that the same shortcut is File >
-New Quick Detour Window while Detour is in front, also when the hotkey is
-off. TASK-193.5 added the rest of the section
+Settings > **Quick Detour** (a pane of its own since TASK-211; before, a section of the Links pane; a grouped form since TASK-338), section Opening: "Open Quick Detour from any app
+[switch]" with help saying the launcher opens over the app in front, then
+the row "Shortcut [⌃⌥⌘F12]" (one sentence with a checkbox, "[✓] Open Quick
+Detour from any app with [⌃⌥⌘F12]", until TASK-328; see
+[Settings](./settings.md#quick-detour)) with help saying the same shortcut
+is File > New Quick Detour Window while Detour is in front, also when the
+switch above is off, and the row's warning line. TASK-193.5 added the rest
 ([below](#the-settings-section)).
 
 - `ShortcutRecorderView`: a click starts recording ("Type Shortcut", accent
@@ -1127,7 +1127,9 @@ No main-menu counterpart.
 
 ## The Settings section
 
-Settings > Quick Detour, after the hotkey row and its help. These rows and
+Settings > Quick Detour, after the hotkey's Shortcut row (the ⌥⌘-click row
+and the footnote in the Opening section, the idle pop-up in Closing, since
+TASK-338's grouped form). These rows and
 the hotkey's were the last section of the Links pane until TASK-211 moved
 them to a pane of their own (user decision 2026-10-26), next to Links in the
 toolbar, scrolling as one body; see [Settings](./settings.md#quick-detour).
@@ -1141,7 +1143,7 @@ toolbar, scrolling as one body; see [Settings](./settings.md#quick-detour).
   hours), with "They go to the archive, marked auto-closed, and reopen from
   there. The window in front, one playing sound and Private ones stay
   open."
-- A caption: "To open links from other apps in Quick Detour, choose Quick
+- A footnote: "To open links from other apps in Quick Detour, choose Quick
   Detour as a route's Open in, or as the Default, on the Links pane." — no
   switch.
 

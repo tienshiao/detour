@@ -348,9 +348,12 @@ Blocking use it (the pilot); the other panes still lay out their own rows.
 
 The numbers come from a SwiftUI `Form` with `.formStyle(.grouped)` (what
 System Settings is built with) rendered on macOS 26 and measured pixel by
-pixel, checked against the user's screenshot; an AppKit form rendered the
-same way matched it to the pixel (header, row text, fill, separators,
-corners).
+pixel, checked against the user's screenshot. An AppKit form rendered the
+same way gave the same header, first-row text, fill, separator colour and
+corners; further down it drifts by 1 or 2 pt, because its separators
+overlay the rows instead of taking a pixel of their own and its button rows
+are 38 pt where SwiftUI's are 40 (System Settings' Voice and history rows,
+with Tahoe's larger buttons, measure about 44).
 
 | Metric (`SettingsMetrics.form…`) | Value |
 |---|---|
