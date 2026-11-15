@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-15T07:37:00Z'
-updated_date: '2026-11-15T20:50:00Z'
+updated_date: '2026-11-15T21:14:00Z'
 labels:
   - keyboard
   - undo
@@ -69,6 +69,8 @@ Correction and follow-up (2026-11-15, after an advisor pass and a second review)
 - Not measured: a page's window-capture keydown listener that stops propagation would hide the key's report; the dead-web-process case (source only); the docked Web Inspector (source only, unchanged); split panes at runtime.
 
 Final test run on the amended commit: the 16 suites above, 220 tests, 0 failures (PageUndoRoutingTests 9 incl. the shadow-root case).
+
+2026-11-15 user decisions: (1) Quick Detour pages get their own text undo: Edit > Undo/Redo and ⌘Z/⇧⌘Z work in a Quick Detour window (and quarantine) for that page's edits; it makes no sense for them not to. (2) Undo/Redo stay unbindable in Settings > Shortcuts (fixed ⌘Z/⇧⌘Z, as in Safari, Chrome, Firefox and Arc; typing undo in pages relies on them).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
