@@ -20,7 +20,10 @@ What `capture.py` does, in order, and undoes at the end (also on failure or
 Ctrl-C): builds and starts `vdisplay` (a 1600 × 1000 pt @2x display), launches
 the app with a fresh `DetourCapture-<random>` data directory and the endpoint
 on, seeds `demo-world.json` (`seed_world`), sets light appearance, hides the
-connected-agent capsule (`set_debug_override automation_indicator off`), sets
+connected-agent capsule (`set_debug_override automation_indicator off`),
+shows the agent pointer (`set_debug_override agent_pointer on`, TASK-228.11:
+the glide, the press ripple and the typing outline, slower once the world is
+staged; `--no-agent-pointer` leaves it out), sets
 the wallpaper to the site's background (`demo.sh wallpaper F7F2EA`), then for
 each shot places the window mid virtual display (`list_displays`,
 `set_window_frame … activate`), stages it and records. Cleanup: SIGTERM to

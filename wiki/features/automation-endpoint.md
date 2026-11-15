@@ -620,8 +620,11 @@ cursor:
   defaults, read at every call; off hides a pointer on screen). On by
   default for the user. In a test run (`DETOUR_MCP=1` with an isolated data
   directory) it starts off, so scripts and harnesses that never ask for it
-  keep their speed (PROVISIONAL); a client turns it on with
-  `set_debug_override agent_pointer on` (Debug) or the saved setting. The
+  keep their speed (the user's decision, 2026-11-15); a client turns it on
+  with `set_debug_override agent_pointer on` (Debug) or the saved setting.
+  The website capture kit does (`docs/capture/capture.py`; its
+  `--no-agent-pointer` leaves it out), so the site's takes show where each
+  click lands. The
   XCTest host's tools have it off unless a test turns it on
   (`AutomationEnvironment.showsAgentPointer`). The switch is in the
   Automation section, which no input tool reaches.

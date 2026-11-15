@@ -302,6 +302,15 @@ class Capture:
             self.call("set_debug_override", name="automation_indicator", value="off")
         except Exception as error:
             self.log(f"the connected-agent capsule stays (a Release build?): {error}")
+        # The agent pointer (TASK-228.11) is off by default in test runs, so
+        # harness scripts keep their speed; website takes show it, so a viewer
+        # sees where each click lands (the user's decision, 2026-11-15).
+        # --no-agent-pointer leaves it off. Debug builds only, as above.
+        if self.args.agent_pointer:
+            try:
+                self.call("set_debug_override", name="agent_pointer", value="on")
+            except Exception as error:
+                self.log(f"no agent pointer in the takes (a Release build?): {error}")
 
     def find_display(self, display_id):
         for _ in range(20):
@@ -531,6 +540,8 @@ def main():
     parser.add_argument("--wallpaper", default="F7F2EA")
     parser.add_argument("--no-wallpaper", dest="wallpaper", action="store_const", const=None)
     parser.add_argument("--keep", action="store_true")
+    parser.add_argument("--no-agent-pointer", dest="agent_pointer", action="store_false",
+                        help="leave the agent pointer out of the takes (it is shown by default)")
     args = parser.parse_args()
     args.shots = [s for s in args.shots.split(",") if s]
     unknown = [s for s in args.shots if s not in Capture.SHOTS]
