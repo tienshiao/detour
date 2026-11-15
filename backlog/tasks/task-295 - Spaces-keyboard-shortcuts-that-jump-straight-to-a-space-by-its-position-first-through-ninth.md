@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T07:38:00Z'
-updated_date: '2026-11-15T00:02:00Z'
+updated_date: '2026-11-15T00:08:00Z'
 labels:
   - spaces
   - menus
@@ -83,6 +83,13 @@ After the code review's fix: 18 suites, 302 tests, 0 failures: SpaceJumpTests 15
 ## Code review (code-review medium --fix)
 
 No correctness bugs. Fixed: the space title format shared by both item loops; the checkmark test rewritten readably. Left: macOS shortcuts re-read per pane reload (cheap); layoutCharacter on a real layout (settled by the runtime capture: rows 1–6 marked); on a layout whose digit row is shifted the 'Used by macOS' mark (by character) and the recorder's refusal (by key code) can disagree (recorded in the wiki).
+
+## Runtime, second run (post-review build 16:01, DETOUR_DATA_DIR=DetourVerify-295b)
+
+- With a page's <input> focused (fixture page from docs/harness/task327, served on loopback), a posted ⌃8 switched the key window to S8 and typed nothing into the field.
+- The unfiltered Settings > Shortcuts pane (and filtered by Navigate, Develop) showed no 'Used by macOS' mark on any existing default; only Switch to Space 1–6 carry it here.
+- Cleaned up as before (app by pid, fixture server, defaults keys, data-dir suite).
+- Searched DetourTests, scripts and docs/capture for other users of the per-space items (selectSpaceFromMenu, switchToSpace, the 7000 tag, Spaces-menu lookups): none depend on the first nine being space.switch items. New files (SpaceJump.swift, SpaceJumpTests.swift): other checkouts need xcodegen generate.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
