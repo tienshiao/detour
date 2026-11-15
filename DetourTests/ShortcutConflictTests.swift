@@ -119,6 +119,8 @@ nonisolated final class ShortcutConflictTests: XCTestCase {
         XCTAssertEqual(problem(shortcut(kVK_Tab, [.control])), .usedByDetour("switching to a recent tab"))
         XCTAssertEqual(problem(shortcut(kVK_ANSI_Z, [.command], "z")), .usedByDetour("undoing in a page"),
                        "BrowserWebView takes ⌘Z before any menu")
+        XCTAssertEqual(problem(shortcut(kVK_ANSI_Z, [.command, .shift], "z")), .usedByDetour("redoing in a page"),
+                       "and ⇧⌘Z (TASK-333)")
         XCTAssertNil(problem(shortcut(kVK_ANSI_Z, [.command, .option], "z")))
     }
 

@@ -300,12 +300,14 @@ enum HotKeyShortcutValidation {
     ]
 
     /// The keys `BrowserWebView.performKeyEquivalent` takes from a page
-    /// before any menu sees them (it compares the character): a menu
-    /// shortcut on them would never fire while a page has the keys. Only ⌘Z:
-    /// its ⇧⌘Z branch compares `charactersIgnoringModifiers`, which is "Z"
-    /// with Shift held, so it never matches (Redo's own item holds ⇧⌘Z).
+    /// before any menu sees them (it compares the character,
+    /// `BrowserWebView.browserUndoKey`): a menu shortcut on them would never
+    /// fire while a page has the keys. ⌘Z and ⇧⌘Z (the latter matched only
+    /// since TASK-333). In the live menu Edit > Undo and Redo hold them and
+    /// are named first; these name them where no menu is checked.
     private static let pageShortcuts: [HeldShortcut] = [
         HeldShortcut(character: "z", modifiers: [.command], name: "undoing in a page"),
+        HeldShortcut(character: "z", modifiers: [.command, .shift], name: "redoing in a page"),
     ]
 
     /// macOS's own that no app's menu can take and that `CopySymbolicHotKeys`

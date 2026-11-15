@@ -39,7 +39,7 @@ extension BrowserCommands {
     /// Undo/Redo. The alternative is to let them be changed too.
     static let fixedShortcuts: [CommandID: String] = {
         let editsText = "It edits the text of the field in focus, on the same keys as in every Mac app."
-        let undoesInPages = "Undo and Redo stay on ⌘Z and ⇧⌘Z: ⌘Z also undoes the browser's actions while a page has the keys, outside any menu."
+        let undoesInPages = "Undo and Redo stay on ⌘Z and ⇧⌘Z: they also undo and redo the browser's actions while a page has the keys, outside any menu."
         return [cut.id: editsText, copy.id: editsText, paste.id: editsText, selectAll.id: editsText,
                 undo.id: undoesInPages, redo.id: undoesInPages]
     }()

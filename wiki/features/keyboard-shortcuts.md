@@ -8,6 +8,9 @@ status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T00:00:00Z }
 stale_after: 2027-06-01T00:00:00Z
 sources:
+  - id: task-333
+    resource: backlog:TASK-333
+    title: "Pages: Shift+Cmd+Z (Redo) in a page is never matched by BrowserWebView's interception"
   - id: task-327
     resource: backlog:TASK-327
     title: "Keyboard shortcuts: assign and customize the shortcuts of browser commands in Settings"
@@ -124,9 +127,9 @@ not on a binding change).
 | Check for Updates… | listed only in a run that starts Sparkle |
 
 Not bindable at all, because no menu item carries them: the Control+Tab
-recent-tab switcher (an event monitor), ⌘Z inside a page
-(`BrowserWebView.performKeyEquivalent` takes it first for the browser's
-undo), Escape for Peek, the find bar's keys, the sidebar's and page's
+recent-tab switcher (an event monitor), ⌘Z and ⇧⌘Z inside a page
+(`BrowserWebView.performKeyEquivalent` takes them first for the browser's
+undo and redo), Escape for Peek, the find bar's keys, the sidebar's and page's
 context menus, the Dock menu.
 
 ## Which keys are refused
@@ -152,9 +155,14 @@ unchanged) and `.appShortcut` (a command). In order:
    it either way): "⌥⌘N is the Quick Detour shortcut (Settings > Quick
    Detour)."
 5. **Detour's keys outside menus**: Control-Tab and Shift-Control-Tab; for
-   a command also ⌘Z ("undoing in a page"). `BrowserWebView`'s ⇧⌘Z branch
-   compares `charactersIgnoringModifiers` with "z", which is "Z" while
-   Shift is held, so it never fires; Redo's own item holds ⇧⌘Z.
+   a command also ⌘Z ("undoing in a page") and ⇧⌘Z ("redoing in a page").
+   Until TASK-333 `BrowserWebView`'s ⇧⌘Z branch compared
+   `charactersIgnoringModifiers` with "z", which is "Z" while Shift is held,
+   so it never fired and ⇧⌘Z was not reserved; it now matches through
+   `BrowserWebView.browserUndoKey` (case and Caps Lock ignored). In the
+   live menu Edit > Undo and Redo hold both keys and rule 3 names them
+   first, so the pane says "used by Edit > Redo"; rule 5 is what holds
+   them where no menu is checked.
 6. **macOS's that no symbolic hotkey lists** (commands only): ⌘Tab, ⇧⌘Tab,
    ⌥⌘⎋ (Force Quit), ⌃⌘Q (Lock Screen), ⇧⌘Q and ⌥⇧⌘Q (Log Out).
 7. **Enabled macOS shortcuts** (`CopySymbolicHotKeys`, the Fn bit ignored).

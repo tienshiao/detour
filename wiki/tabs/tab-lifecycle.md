@@ -242,10 +242,23 @@ another space) deliberately does not call it.
 - **Reopen Closed Tab** (Cmd+Shift+T) takes the newest plain-close record of
   the active space, deletes it and inserts the rebuilt tab at
   `min(sortOrder, count)`, snapped out of any split that now spans that index.
-- **Undo** (Cmd+Z) is `TabStore.undoManager`, shared by all windows. A web view
-  routes Cmd+Z to the browser undo unless the page has an editable element
-  focused (`BrowserWebView.performKeyEquivalent`, fed by the
-  `editableFieldFocus` script message).
+- **Undo** (Cmd+Z) and **Redo** (Shift+Cmd+Z) are `TabStore.undoManager`,
+  shared by all windows. A web view takes both for the browser's undo and
+  redo, before the page sees them, unless the page has an editable element
+  focused (`BrowserWebView.performKeyEquivalent` and `browserUndoKey`, fed by
+  the `editableFieldFocus` script message). Shift+Cmd+Z was never matched
+  until TASK-333 (the character is "Z" with Shift held); it reached the Edit
+  menu's Redo after the page instead.
+- While a page's field is focused the keys go to the page and then the Edit
+  menu, whose Undo and Redo send `browserUndo:`/`browserRedo:`, which run
+  `TabStore.undoManager`, not the page's text undo. Observed 2026-11-14
+  (Debug build, real key events): with a closed tab on the stack, Cmd+Z in a
+  page `<input>` after typing reopened the tab and did not undo the text;
+  with nothing on the browser's stack it did nothing in an `<input>` or a
+  contenteditable, although WebKit held the contenteditable's edit
+  (`document.execCommand('undo')` there undid it). Shift+Cmd+Z in an
+  `<input>` or a contenteditable with a redo pending re-closed the tab. Which
+  undo manager holds WebKit's edits was not determined.
 - An undone close posts `.tabRestoredByUndo`; windows on that space select the
   tab. It rejoins its split if the partner is still an ungrouped normal tab.
 - A close undo does nothing once its record is gone (restored from the archive
