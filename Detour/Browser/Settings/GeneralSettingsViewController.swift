@@ -10,13 +10,10 @@ class GeneralSettingsViewController: SettingsPaneViewController {
     private var automationSwitch: NSSwitch!
     private var automationStatus: SettingsFormRow!
     private var automationSection: SettingsFormSection!
-    private var automationButtons: [NSButton] = []
     private var tokenButtons: [NSButton] = []
     private var allowAgainRow: SettingsFormRow!
-    private var allowAgainButton: NSButton!
     private var privateSwitch: NSSwitch!
     private var clientsSection: SettingsFormSection!
-    private var clientsForm: SettingsForm!
     /// What the client rows show now, so a change rebuilds them only when
     /// something changed (the window resizes with them).
     private var shownClients: [AutomationClientRecord]?
@@ -68,7 +65,7 @@ class GeneralSettingsViewController: SettingsPaneViewController {
             help: "Off, agents cannot see or use Private windows, their tabs or menus, or the Private "
                 + "profile's extensions. Turning it off takes effect at once.",
             accessory: .toggle(privateSwitch))
-        allowAgainButton = NSButton(title: "Allow Again", target: self, action: #selector(allowDisconnectedAgents))
+        let allowAgainButton = NSButton(title: "Allow Again", target: self, action: #selector(allowDisconnectedAgents))
         allowAgainButton.bezelStyle = .rounded
         allowAgainRow = SettingsFormRow(
             title: "Disconnected agents",
@@ -89,10 +86,9 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         // A test run's shared token only (TASK-228.5): the user's endpoint
         // has none, each client getting its own through the helper.
         tokenButtons = [copyToken, resetToken]
-        automationButtons = [copyCommand, copyConfig, copyToken, resetToken]
         automationSection = SettingsFormSection(
             title: "Automation", rows: [automationRow, privateRow, allowAgainRow], footnote: automationStatus,
-            buttons: automationButtons)
+            buttons: [copyCommand, copyConfig, copyToken, resetToken])
         // The automation endpoint's input tools refuse views in here (TASK-228.7).
         automationSection.identifier = AutomationWindows.automationSettingsIdentifier
 
@@ -100,13 +96,13 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         clientsSection = SettingsFormSection(title: "Allowed Clients", rows: [])
         clientsSection.identifier = AutomationWindows.automationSettingsIdentifier
 
-        clientsForm = SettingsForm(sections: [
+        let form = SettingsForm(sections: [
             SettingsFormSection(title: "Default Browser", rows: [browserRow]),
             SettingsFormSection(title: "Peek", rows: [peekRow]),
             automationSection,
             clientsSection,
         ])
-        return formBody(clientsForm)
+        return formBody(form)
     }
 
     override func viewWillAppear() {
@@ -153,15 +149,14 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         let allowHidden = controller.blockedClientNames.isEmpty
         let tokenButtonsHidden = controller.usesClientApproval
         let clientsHidden = !controller.usesClientApproval
-        var changed = automationSection.isButtonRowHidden != buttonsHidden || allowAgainRow.isHidden != allowHidden
-            || clientsSection.isHidden != clientsHidden
+        // The button row and the client rows refit the pane themselves.
+        let changed = allowAgainRow.isHidden != allowHidden || clientsSection.isHidden != clientsHidden
         automationSection.isButtonRowHidden = buttonsHidden
         allowAgainRow.isHidden = allowHidden
         for button in tokenButtons { button.isHidden = tokenButtonsHidden }
         clientsSection.isHidden = clientsHidden
         let clients = clientsHidden ? [] : controller.approvedClients
         if clients != shownClients {
-            changed = changed || clients.count != (shownClients?.count ?? -1)
             shownClients = clients
             rebuildClientRows(clients)
         }
@@ -291,14 +286,14 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         PeekSettings.shared.isEnabled = peekSwitch.state == .on
     }
 
-    /// The row's value: the app that opens web links now, and the button
-    /// only while it is another one.
+    /// The row's value: the app that opens web links now; the button is off
+    /// while it is Detour (hidden, the row would keep a button row's height).
     private func updateStatus() {
         let handler = NSWorkspace.shared.urlForApplication(toOpen: URL(string: "https://example.com")!)
         let isDetour = handler?.path == Bundle.main.bundleURL.path
         statusLabel.stringValue = isDetour ? "Detour" : handler.map { FileManager.default.displayName(atPath: $0.path) }
             .map { ($0 as NSString).deletingPathExtension } ?? ""
-        defaultBrowserButton.isHidden = isDetour
+        defaultBrowserButton.isEnabled = !isDetour
     }
 
     @objc private func setAsDefaultBrowser() {

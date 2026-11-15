@@ -150,6 +150,7 @@ final class SettingsFormSection: NSView {
                 endsAtGroup.isActive = false
                 endsAtButtons.isActive = true
             }
+            enclosingSettingsPane?.contentHeightDidChange()
         }
     }
 
@@ -175,6 +176,9 @@ final class SettingsFormSection: NSView {
         let width = group.bounds.width > 0 ? group.bounds.width : estimatedWidth
         for row in rows { row.estimateWidth(groupWidth: width) }
         group.setRows(rows)
+        // Rows came, went or changed: the pane refits, as a row's own help
+        // or warning change does.
+        enclosingSettingsPane?.contentHeightDidChange()
     }
 }
 
@@ -229,7 +233,6 @@ final class SettingsFormGroupView: NSView {
         }
         needsDisplay = true
     }
-
 
     override func layout() {
         super.layout()
@@ -554,14 +557,34 @@ final class SettingsFormRow: NSView {
         didSet {
             guard isEnabled != oldValue else { return }
             titleLabel?.textColor = isEnabled ? .labelColor : .tertiaryLabelColor
-            func setEnabled(_ view: NSView) {
-                if let control = view as? NSControl { control.isEnabled = isEnabled }
-                if let recorder = view as? ShortcutRecorderView { recorder.isEnabled = isEnabled }
-                view.subviews.forEach(setEnabled)
+            // Turning the row on again re-enables only what turning it off
+            // disabled: a control the pane disabled itself (a Clear with
+            // nothing to clear) stays off.
+            guard !isEnabled else {
+                for control in rowDisabledControls { control.isEnabled = true }
+                for recorder in rowDisabledRecorders { recorder.isEnabled = true }
+                rowDisabledControls = []
+                rowDisabledRecorders = []
+                return
             }
-            if let accessoryView { setEnabled(accessoryView) }
+            func disable(_ view: NSView) {
+                if let control = view as? NSControl, control.isEnabled {
+                    control.isEnabled = false
+                    rowDisabledControls.append(control)
+                }
+                if let recorder = view as? ShortcutRecorderView, recorder.isEnabled {
+                    recorder.isEnabled = false
+                    rowDisabledRecorders.append(recorder)
+                }
+                view.subviews.forEach(disable)
+            }
+            if let accessoryView { disable(accessoryView) }
         }
     }
+
+    /// What `isEnabled = false` turned off, for turning it back on.
+    private var rowDisabledControls: [NSControl] = []
+    private var rowDisabledRecorders: [ShortcutRecorderView] = []
 
     // MARK: - Content under the name
 

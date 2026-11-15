@@ -510,7 +510,7 @@ across several panes). Copy URL has no guide page.
 A grouped form since TASK-338. **Default Browser**: the row "Default web
 browser" with the app that opens web links now (asked with
 `https://example.com`: "Detour", or the other app's name) and "Set as
-Default Browser", shown only while it is another app, which calls
+Default Browser", turned off while it is Detour, which calls
 `NSWorkspace.setDefaultApplication(at:toOpenURLsWithScheme:)` for `http` and
 `https`. **Peek** (TASK-307): the switch "Open links from pinned tabs and
 favorites in a Peek" (`PeekSettings`, app-wide, on by default) with the help

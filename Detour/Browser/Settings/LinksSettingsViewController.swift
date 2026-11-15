@@ -28,7 +28,6 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
     /// the blocked space deletion points to it.
     private var defaultRow: SettingsFormRow!
     private var defaultPopUp: NSPopUpButton!
-    /// The Default row ends below its pop-up, or below its warning.
     /// A row's height without a warning line (measured from a laid-out cell).
     private var routeRowHeight: CGFloat = 100
     /// The width the row heights were last worked out for.

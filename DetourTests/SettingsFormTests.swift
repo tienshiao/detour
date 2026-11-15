@@ -430,6 +430,18 @@ nonisolated final class SettingsFormTests: XCTestCase {
         XCTAssertEqual(row.titleLabel?.textColor, .labelColor)
     }
 
+    /// Turning a row back on leaves a control the pane disabled itself off.
+    @MainActor func testReenablingARowKeepsAControlThePaneDisabled() throws {
+        let value = NSTextField(labelWithString: "None")
+        let clear = NSButton(title: "Clear", target: nil, action: nil)
+        clear.isEnabled = false
+        let row = SettingsFormRow(title: "Saved permissions", accessory: .value(value, button: clear))
+        row.isEnabled = false
+        row.isEnabled = true
+        XCTAssertFalse(clear.isEnabled)
+        XCTAssertTrue(value.isEnabled)
+    }
+
     /// A button row is 44 pt, as System Settings' (10 pt above and below a
     /// 24 pt button); a value with a button too.
     @MainActor func testButtonRowsAreSystemSettingsHeight() throws {
