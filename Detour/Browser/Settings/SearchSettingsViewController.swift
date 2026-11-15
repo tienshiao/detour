@@ -320,10 +320,12 @@ final class SiteSearchForm: NSView, NSTextFieldDelegate {
         keywordField.stringValue = original?.keyword ?? ""
         addressField.stringValue = original?.urlTemplate ?? ""
 
+        let names = ["Name", "Keyword", "Address"]
+        let labels = names.map { Self.label("\($0):") }
         let grid = NSGridView(views: [
-            [Self.label("Name:"), nameField],
-            [Self.label("Keyword:"), keywordField],
-            [Self.label("Address:"), addressField],
+            [labels[0], nameField],
+            [labels[1], keywordField],
+            [labels[2], addressField],
         ])
         grid.rowSpacing = 8
         grid.columnSpacing = 8
@@ -337,9 +339,11 @@ final class SiteSearchForm: NSView, NSTextFieldDelegate {
             field.translatesAutoresizingMaskIntoConstraints = false
             field.widthAnchor.constraint(equalToConstant: 270).isActive = true
         }
-        nameField.setAccessibilityLabel("Name")
-        keywordField.setAccessibilityLabel("Keyword")
-        addressField.setAccessibilityLabel("Address")
+        // Each field is named by its label, without the colon, and the label
+        // is not read before it as text of its own (TASK-342).
+        for (label, (field, name)) in zip(labels, zip([nameField, keywordField, addressField], names)) {
+            SettingsSwitchRow.name(field, by: label, as: name)
+        }
         nameField.nextKeyView = keywordField
         keywordField.nextKeyView = addressField
 

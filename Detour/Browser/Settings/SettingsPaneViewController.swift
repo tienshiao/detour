@@ -411,9 +411,19 @@ enum SettingsSwitchRow {
 
     /// Takes a label out of the Accessibility tree. A text field's element
     /// is its cell (the view already reports itself ignored), so it is the
-    /// cell that has to be ignored: on the field alone the text stays.
-    private static func hideFromAccessibility(_ label: NSTextField) {
+    /// cell that has to be ignored: on the field alone the text stays. Also
+    /// for text a control already says (a shortcut recorder's shortcut,
+    /// TASK-342).
+    static func hideFromAccessibility(_ label: NSTextField) {
         label.cell?.setAccessibilityElement(false)
+    }
+
+    /// Takes a decorative image out of the Accessibility tree (a symbol's
+    /// default description, "link" or "notifications", says nothing about
+    /// the setting): on the view and on its cell, as for a label.
+    static func hideFromAccessibility(_ image: NSImageView) {
+        image.setAccessibilityElement(false)
+        image.cell?.setAccessibilityElement(false)
     }
 }
 

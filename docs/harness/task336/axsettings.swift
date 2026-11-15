@@ -11,7 +11,13 @@
 //                                         a control named the same) and UNNAMED (switches without a name)
 //   axsettings pane <pid> <title>      -> presses the toolbar item <title>
 //   axsettings pressnamed <pid> <name>  -> presses the first button of that name in any window
+//   axsettings choose <pid> <pop-up> <item> -> picks an item of a pop-up in the Settings window (TASK-342)
 //   axsettings popover <pid>           -> the same reading for the sidebar settings popover's window, if open
+// TASK-342: `reading` also ends with CONTROLS: every pop-up, field, button, link and recorder with its name,
+// UNNAMED ones (images included; the window's own buttons and scroll bar parts left out), LABELS READ TOO (a
+// text next to a control, or in the same container, whose name is that text, "Name:" and "Name" alike; a
+// stated, more specific name such as "About Detour shortcut" beside "About Detour" is not caught) and READ TWICE (a control whose value or name is
+// also a static text inside it).
 
 import AppKit
 import ApplicationServices
@@ -131,6 +137,63 @@ func reading(_ window: AXUIElement) {
         }
     }
     print("UNNAMED SWITCHES: \(unnamed)  DUPLICATES: \(dupes)")
+    controlChecks(out)
+}
+
+// TASK-342: every control type, not only switches.
+let controlRoles: Set<String> = ["AXButton", "AXCheckBox", "AXPopUpButton", "AXTextField", "AXSearchField",
+                                 "AXComboBox", "AXRadioButton", "AXRadioGroup", "AXSlider", "AXMenuButton", "AXLink",
+                                 "AXImage"]
+/// A label as a sighted user reads it: "Name:" and "Name" are the same label.
+func normalized(_ text: String) -> String {
+    var t = text.trimmingCharacters(in: .whitespaces).lowercased()
+    while t.hasSuffix(":") { t.removeLast() }
+    return t
+}
+/// The static texts under an element, its own subtree only.
+func childTexts(_ e: AXUIElement, depth: Int = 6) -> [String] {
+    guard depth > 0 else { return [] }
+    return children(e).flatMap { c -> [String] in
+        (str(c, kAXRoleAttribute) == "AXStaticText" ? [str(c, kAXValueAttribute) ?? ""] : []) + childTexts(c, depth: depth - 1)
+    }
+}
+func controlChecks(_ out: [AXUIElement]) {
+    print("CONTROLS")
+    var unnamed = 0, nearDupes = 0, twice = 0
+    for (i, e) in out.enumerated() {
+        let role = str(e, kAXRoleAttribute) ?? ""
+        guard controlRoles.contains(role) else { continue }
+        let n = name(e)
+        let id = str(e, kAXIdentifierAttribute).map { " id=\($0)" } ?? ""
+        print("  \(role) \"\(n ?? "")\"\(id)")
+        // A text field with a placeholder is still unnamed: VoiceOver reads the placeholder only while it is empty.
+        // The window's own buttons (close, minimize, zoom) and a scroll bar's parts are AppKit's.
+        let sub = str(e, kAXSubroleAttribute) ?? ""
+        if n == nil, ["AXCloseButton", "AXMinimizeButton", "AXZoomButton", "AXFullScreenButton",
+                      "AXIncrementPage", "AXDecrementPage", "AXIncrementArrow", "AXDecrementArrow"].contains(sub) {
+            print("    (\(sub), AppKit's)"); continue
+        }
+        if n == nil { unnamed += 1; print("    UNNAMED\(sub.isEmpty ? "" : " " + sub)") }
+        // A label read on its own next to the control it labels (normalized: "Name:" is "Name"): the stops
+        // right before and after it, and every text in the same container (a row whose labels are read after
+        // its controls, as Links' route rows were).
+        if let n {
+            var nearby = [i - 1, i + 1].filter { out.indices.contains($0) && str(out[$0], kAXRoleAttribute) == "AXStaticText" }
+                .map { str(out[$0], kAXValueAttribute) ?? "" }
+            if let parent = attr(e, kAXParentAttribute), CFGetTypeID(parent) == AXUIElementGetTypeID() {
+                nearby += childTexts(parent as! AXUIElement, depth: 3)
+            }
+            for text in Set(nearby) where !text.isEmpty && normalized(text) == normalized(n) {
+                nearDupes += 1; print("    LABEL READ TOO: \"\(text)\"")
+            }
+        }
+        // Its value (or name) again as a text inside it.
+        let value = str(e, kAXValueAttribute)
+        for text in childTexts(e) where !text.isEmpty && (text == value || text == n) {
+            twice += 1; print("    READ TWICE: \"\(text)\" (value/name and child text)")
+        }
+    }
+    print("UNNAMED CONTROLS: \(unnamed)  LABELS READ TOO: \(nearDupes)  READ TWICE: \(twice)")
 }
 
 let args = CommandLine.arguments
@@ -173,6 +236,34 @@ case "pressnamed":
     for w in attr(app, kAXWindowsAttribute) as? [AXUIElement] ?? [] { look(w, 0) }
     print(pressed ? "pressed \(args[3])" : "no button \(args[3])")
     if !pressed { exit(1) }
+case "choose":
+    // TASK-342: picks item args[4] of the first pop-up named args[3] in the Settings window (opens its menu,
+    // presses the item).
+    guard args.count >= 5, let w = settingsWindow(pid) else { print("usage: axsettings choose <pid> <pop-up> <item>"); exit(2) }
+    var popUp: AXUIElement?
+    func find(_ e: AXUIElement, _ d: Int) {
+        if popUp != nil || d > 30 { return }
+        if str(e, kAXRoleAttribute) == "AXPopUpButton", name(e) == args[3] { popUp = e; return }
+        for c in children(e) { find(c, d + 1) }
+    }
+    find(w, 0)
+    guard let popUp else { print("no pop-up \(args[3])"); exit(1) }
+    AXUIElementPerformAction(popUp, kAXPressAction as CFString)
+    usleep(500_000)
+    var chosen = false
+    for menu in children(popUp) where str(menu, kAXRoleAttribute) == "AXMenu" {
+        for item in children(menu) where str(item, kAXTitleAttribute) == args[4] {
+            chosen = AXUIElementPerformAction(item, kAXPressAction as CFString) == .success
+        }
+    }
+    if !chosen {
+        // Close the menu it opened, so the next command finds the window as it was.
+        for menu in children(popUp) where str(menu, kAXRoleAttribute) == "AXMenu" {
+            AXUIElementPerformAction(menu, kAXCancelAction as CFString)
+        }
+    }
+    print(chosen ? "chose \(args[4])" : "no item \(args[4])")
+    if !chosen { exit(1) }
 case "pane":
     guard args.count >= 4, let w = settingsWindow(pid) else { print("no Settings window"); exit(1) }
     let wanted = args[3]

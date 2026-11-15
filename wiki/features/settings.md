@@ -88,9 +88,12 @@ sources:
   - id: task-336
     resource: backlog:TASK-336
     title: "Settings: switches have one accessible name and VoiceOver reads each setting once"
+  - id: task-342
+    resource: backlog:TASK-342
+    title: "Settings: pop-ups, text fields and pickers have one accessible name, like the switches"
   - id: task336-axsettings
     resource: ../../docs/harness/task336/axsettings.swift
-    title: TASK-336 Accessibility reader for the Settings window (reading order, switch names, duplicates)
+    title: TASK-336 Accessibility reader for the Settings window (reading order, switch names, duplicates; since TASK-342 every control)
   - id: task-338
     resource: backlog:TASK-338
     title: "Settings: System Settings–style grouped rows, with labels on the left and switches and controls aligned on the right"
@@ -460,12 +463,49 @@ label could not serve as one. Measured with an Accessibility client over
 every pane (`docs/harness/task336/axsettings.swift`), before and after:
 General's 3 and Quick Detour's 2 duplicates gone, Profiles' 8 and an
 extension's 23 unnamed switches named, the popover's 3 duplicates gone,
-every `AXIdentifier` unchanged. Not changed, because they are not switches:
-labels beside a pop-up or grid already named the same (Links' "Open other
-links in", Quick Detour's idle pop-up, Spaces' Emoji and Color) and unnamed
-pop-ups and fields beside a grid label (Profiles, Spaces); the Shortcuts
-pane's recorders are named "<command> shortcut" inside a row titled by the
-command.
+every `AXIdentifier` unchanged.
+
+**Every control (TASK-342).** The same rule now holds for every control
+type, not only switches: each pop-up, field, search field, button, grid,
+image, link and recorder has a name, and no label is read separately
+from the control it names.[^task-342] TASK-338's form rows had already
+fixed most of what TASK-336 left (Links' "Open other links in", Quick
+Detour's idle pop-up, Spaces' Name, Emoji, Profile and Color, Profiles'
+Name, Search engine, Archive and Sleep tabs after, Identify as and Custom
+string, Quick Detour's "Shortcut" row naming its recorder "Quick Detour
+shortcut"), as the reader showed at runtime. What was still read twice
+or unnamed, and how it was fixed:
+
+- A shortcut recorder's shortcut was its value and again its inner label's
+  text: the inner label's cell is out of the tree
+  (`SettingsSwitchRow.hideFromAccessibility`), so VoiceOver reads "Zoom In
+  shortcut, ⌘+" once. While it records, its value is what it shows ("Type
+  Shortcut", or the modifiers held), since the label no longer says it.
+- A Shortcuts row read its command's title and then the recorder named
+  "<command> shortcut": the title is hidden and the recorder, with the more
+  specific name, carries the row. The row's note ("Used by macOS", "Set in
+  System Settings") stays text.
+- The Shortcuts search field had no name (a placeholder is not one): named
+  "Search Commands", its placeholder.
+- A Link Route row read its line labels (URL, From app, Open in) and their
+  symbols ("link", "notifications", an unnamed image) after its controls,
+  which already carried the names ("URL condition", "Pattern", "From app",
+  "Open in"): labels and symbols are out of the tree.
+- The site search sheet read "Name:", "Keyword:", "Address:" before fields
+  named Name, Keyword and Address: the labels are hidden.
+
+A value row (General's "Default web browser", Profiles' "Saved
+permissions", Content Blocking's lists) is name, value and an optional
+button, all read: there is no control to carry the name. Measured with the
+reader extended to every control (CONTROLS, UNNAMED CONTROLS, LABELS READ
+TOO, READ TWICE, and `choose` to pick a pop-up item), over every pane,
+Profiles' Private, a user profile and a custom user agent, Spaces, Links
+with routes and a new route, Search's Add and Edit sheets and Extensions
+with API Explorer: before, Links 4 labels read again and 2 unnamed images,
+Quick Detour 1 and Shortcuts 3 visible shortcuts read twice, Shortcuts' search
+field unnamed, each sheet's 3 labels read again; after, none. The one hit
+left, "Add Site Search" text beside the pane's button of that name, is the
+sheet's own title. Every `AXIdentifier` unchanged.
 
 | Pane | Content height (examples measured 2026-10-24) | Opened by |
 |---|---|---|
@@ -932,7 +972,10 @@ Shortcut row right under the hotkey switch's, the Peek and ⌥⌘-click
 switches showing and writing their settings; since TASK-336 every switch in
 every pane and in the page popover named by the label beside it, and the
 Accessibility tree, walked as a client gets it, holding each switch and not
-its label); `SettingsFormTests` the grouped form (every control on one
+its label; since TASK-342 every control of every type named, no text in
+the tree reading a control's name again, and a recorder's shortcut read
+once, over every pane, a user profile with a custom user agent, a route
+row, the site search sheet and Shortcuts rows of each kind); `SettingsFormTests` the grouped form (every control on one
 right edge and every name on one left edge at 443 and 700 pt, long names
 and help wrapping before the control with no overlap, controls on the
 name's first line, row, section and form heights, hidden rows and sections
@@ -989,6 +1032,7 @@ suites.
 [^task-336]: TASK-336
 [^task-337]: TASK-337
 [^task-338]: TASK-338
+[^task-342]: TASK-342
 [^task-340]: TASK-340
 [^task211-harness]: TASK-211 harness
 [^survey-harness]: TASK-189 survey harness

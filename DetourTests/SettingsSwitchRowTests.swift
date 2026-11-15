@@ -283,6 +283,145 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
         }
     }
 
+    // MARK: - Every control (TASK-342)
+
+    /// The roles an Accessibility client stops on as controls.
+    private static let controlRoles: Set<NSAccessibility.Role> = [
+        .button, .checkBox, .popUpButton, .textField, .radioButton, .radioGroup, .image, .link, .comboBox,
+        .slider, .menuButton,
+    ]
+
+    private static let scrollBarParts: Set<NSAccessibility.Subrole> = [
+        .incrementArrow, .decrementArrow, .incrementPage, .decrementPage,
+    ]
+
+    /// "Name:" and "Name" are the same label to a sighted user.
+    private static func normalized(_ text: String) -> String {
+        var text = text.trimmingCharacters(in: .whitespaces).lowercased()
+        while text.hasSuffix(":") { text.removeLast() }
+        return text
+    }
+
+    /// The name an Accessibility client reads for an element: its title, else
+    /// its label (axsettings' rule, without the title UI element no row uses).
+    /// A control is read through its cell, and the cell answers with the
+    /// control's label (what the running app's Accessibility shows), which a
+    /// cell asked in process does not forward: so the control's too.
+    @MainActor private func accessibleName(_ element: any NSAccessibilityProtocol) -> String? {
+        var names = [element.accessibilityTitle(), element.accessibilityLabel()]
+        if let control = (element as? NSCell)?.controlView {
+            names += [control.accessibilityTitle(), control.accessibilityLabel()]
+        }
+        return names.compactMap { $0 }.first { !$0.isEmpty }
+    }
+
+    /// Every control `view` shows an Accessibility client has a name, and no
+    /// text of the same tree reads that name again ("Name:" beside a field
+    /// named Name); a shortcut recorder says its shortcut once, as its value.
+    /// Returns how many controls it checked.
+    @MainActor @discardableResult
+    private func assertEveryControlIsNamedOnce(in view: NSView, _ place: String,
+                                               file: StaticString = #filePath, line: UInt = #line) -> Int {
+        let elements = accessibilityElements(under: view)
+        let texts = Set(staticTexts(under: view).map(Self.normalized))
+        var checked = 0
+        for element in elements {
+            guard let role = element.accessibilityRole(), Self.controlRoles.contains(role) else { continue }
+            // A scroll bar's arrows and page areas are AppKit's own.
+            let subrole = element.accessibilitySubrole()
+            if let subrole, Self.scrollBarParts.contains(subrole) { continue }
+            let what = "\(place): \(role.rawValue) \(subrole?.rawValue ?? "") \(element.accessibilityIdentifier())"
+            guard let name = accessibleName(element) else {
+                XCTFail("\(what) has no accessible name", file: file, line: line)
+                continue
+            }
+            XCTAssertFalse(texts.contains(Self.normalized(name)), "\(what): \"\(name)\" is also read as text",
+                           file: file, line: line)
+            checked += 1
+        }
+        for recorder in ([view] + descendants(of: view)).compactMap({ $0 as? ShortcutRecorderView }) {
+            XCTAssertEqual(staticTexts(under: recorder), [], "\(place): the recorder's shortcut is read once",
+                           file: file, line: line)
+        }
+        return checked
+    }
+
+    /// Every pane as it first shows, and the states it shows later: a
+    /// profile of the user's (its Name field) with a custom user agent,
+    /// route rows, the site search sheet, Shortcuts rows of each kind.
+    /// Extensions with an extension installed are checked by
+    /// SettingsProfilesExtensionsFormTests' header test and at runtime.
+    @MainActor func testEveryControlInEveryPaneHasOneAccessibleName() throws {
+        var checked = 0
+        for pane in try panesWithSwitches() {
+            checked += assertEveryControlIsNamedOnce(in: pane.view, "\(type(of: pane))")
+        }
+
+        let profile = TabStore.shared.addProfile(name: "AX Test \(UUID().uuidString.prefix(6))")
+        addTeardownBlock { @MainActor in
+            TabStore.shared.forceRemoveProfile(id: profile.id)
+            AppDatabase.shared.deleteProfile(id: profile.id.uuidString)
+        }
+        profile.userAgentMode = .custom
+        profile.customUserAgent = "Test Agent/1.0"
+        let profiles = laidOut(ProfilesSettingsViewController())
+        profiles.viewWillAppear()
+        let table = try XCTUnwrap(descendants(of: profiles.view).compactMap { $0 as? NSTableView }.first)
+        let listed = TabStore.shared.profiles.filter { !$0.isIncognito || $0.id == TabStore.incognitoProfileID }
+        let index = try XCTUnwrap(listed.firstIndex { $0.id == profile.id })
+        table.deselectAll(nil)
+        table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        profiles.view.layoutSubtreeIfNeeded()
+        let fields = descendants(of: profiles.view).compactMap { $0 as? NSTextField }.filter(\.isEditable)
+        XCTAssertEqual(Set(fields.compactMap { $0.accessibilityLabel() }), ["Name", "Custom string"])
+        checked += assertEveryControlIsNamedOnce(in: profiles.view, "Profiles (a custom user agent)")
+
+        // A route row: its line labels (URL, From app, Open in) and their
+        // symbols are not read after the controls they label.
+        let route = LinkRouteCellView()
+        XCTAssertEqual(assertEveryControlIsNamedOnce(in: route, "a route row"), 6,
+                       "drag handle, URL condition, Pattern, Remove Route, From app, Open in")
+        XCTAssertEqual(staticTexts(under: route), [])
+
+        let form = SiteSearchForm(store: SiteSearchStore(database: try AppDatabase(dbQueue: DatabaseQueue())),
+                                  editing: nil)
+        XCTAssertEqual(assertEveryControlIsNamedOnce(in: form, "the site search sheet"), 3)
+        XCTAssertEqual([form.nameField, form.keywordField, form.addressField].map { $0.accessibilityLabel() },
+                       ["Name", "Keyword", "Address"])
+
+        for (state, id) in [
+            (ShortcutRowState(title: "Zoom In", shortcut: "⌘+", kind: .editable(overridden: true)), BrowserCommands.zoomIn.id),
+            (ShortcutRowState(title: "Reload Page", shortcut: nil, kind: .editable(overridden: false)), BrowserCommands.reload.id),
+            (ShortcutRowState(title: "Undo", shortcut: "⌘Z", kind: .fixed("Fixed")), BrowserCommands.undo.id),
+            (ShortcutRowState(title: "Hide Detour", shortcut: "⌘H", kind: .systemSettings), BrowserCommands.hide.id),
+            (ShortcutRowState(title: "New \(QuickDetour.displayName) Window", shortcut: "⌥⌘N", kind: .quickDetour),
+             BrowserCommands.newQuickDetourWindow.id),
+        ] {
+            let row = ShortcutRowView(identifier: NSUserInterfaceItemIdentifier("row"))
+            row.show(state, commandID: id)
+            assertEveryControlIsNamedOnce(in: row, "the \(state.title) row")
+            // The row is read as its recorder ("Zoom In shortcut, ⌘+"), not
+            // its title and then the recorder.
+            XCTAssertFalse(staticTexts(under: row).contains(state.title), state.title)
+            XCTAssertEqual(row.recorder.accessibilityLabel(), "\(state.title) shortcut")
+            XCTAssertEqual(row.recorder.accessibilityValue() as? String, state.shortcut ?? "none")
+        }
+        XCTAssertGreaterThan(checked, 40, "the walk reaches the panes' controls")
+    }
+
+    /// The Shortcuts pane's search field is named by its placeholder; the
+    /// Quick Detour recorder keeps its more specific name and its
+    /// identifier.
+    @MainActor func testTheShortcutsSearchFieldAndTheQuickDetourRecorderAreNamed() throws {
+        let shortcuts = laidOut(ShortcutsSettingsViewController(store: ShortcutBindingStore(defaults: throwawayDefaults())))
+        let search = try XCTUnwrap(control("shortcutsSearch", in: shortcuts) as? NSSearchField)
+        XCTAssertEqual(search.accessibilityLabel(), "Search Commands")
+        let quickDetour = laidOut(QuickDetourSettingsViewController())
+        let recorder = try XCTUnwrap(control("quickDetourHotKeyShortcut", in: quickDetour) as? ShortcutRecorderView)
+        XCTAssertEqual(recorder.accessibilityLabel(), "\(QuickDetour.displayName) shortcut")
+        XCTAssertEqual(staticTexts(under: recorder), [])
+    }
+
     /// TASK-336's rule on its own (a form row applies it to its control):
     /// the control takes the label's text, or an explicit name, and the
     /// label's cell leaves the tree. (The bordered group's row and the

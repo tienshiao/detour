@@ -940,6 +940,11 @@ final class LinkRouteCellView: NSTableCellView {
         stack.orientation = .horizontal
         stack.spacing = 4
         stack.alignment = .centerY
+        // The line's controls carry its name ("URL condition", "Pattern",
+        // "From app", "Open in"): the label and its symbol are not read again
+        // after them (TASK-342).
+        SettingsSwitchRow.hideFromAccessibility(label)
+        SettingsSwitchRow.hideFromAccessibility(image)
         return (stack, label)
     }
 

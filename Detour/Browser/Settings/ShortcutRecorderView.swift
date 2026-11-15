@@ -106,6 +106,9 @@ final class ShortcutRecorderView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel("Shortcut")
+        // The shortcut is the recorder's value; its text is not read again
+        // as a child (TASK-342).
+        SettingsSwitchRow.hideFromAccessibility(label)
         updateLabel()
     }
 
@@ -147,7 +150,10 @@ final class ShortcutRecorderView: NSView {
             label.stringValue = placeholder
             label.textColor = isEnabled ? .secondaryLabelColor : .tertiaryLabelColor
         }
-        setAccessibilityValue(shortcutLabel ?? "none")
+        // While recording, the value is what the recorder shows ("Type
+        // Shortcut", or the modifiers held): its label is out of the
+        // Accessibility tree (TASK-342), so this is the only place it is read.
+        setAccessibilityValue(isRecording ? label.stringValue : (shortcutLabel ?? "none"))
     }
 
     // MARK: - Recording

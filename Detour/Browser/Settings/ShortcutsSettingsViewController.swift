@@ -215,6 +215,8 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
         searchField.target = self
         searchField.action = #selector(searchChanged)
         searchField.setAccessibilityIdentifier("shortcutsSearch")
+        // A search field is not named by its placeholder (TASK-342).
+        searchField.setAccessibilityLabel(searchField.placeholderString)
         container.addSubview(searchField)
 
         restoreDefaultsButton = NSButton(title: "Restore Defaults", target: self, action: #selector(restoreDefaults))
@@ -617,7 +619,10 @@ final class ShortcutRowView: NSTableCellView {
         recorder.endRecording()
         recorder.shortcutLabel = state.shortcut
         recorder.setAccessibilityIdentifier("shortcut.\(id.rawValue)")
-        recorder.setAccessibilityLabel("\(state.title) shortcut")
+        // The recorder carries the row's name ("Zoom In shortcut", more
+        // specific than the title), so the title is not read before it as
+        // text of its own (TASK-342).
+        SettingsSwitchRow.name(recorder, by: titleLabel, as: "\(state.title) shortcut")
         resetButton.setAccessibilityIdentifier("shortcutReset.\(id.rawValue)")
         resetButton.setAccessibilityLabel("Restore the default shortcut of \(state.title)")
         noteLabel.isHidden = true
