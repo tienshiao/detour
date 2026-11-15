@@ -19,8 +19,10 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private var panes: [NSToolbarItem.Identifier: SettingsPaneViewController] = [:]
     /// The toolbar's panes, in order.
     static let paneOrder: [NSToolbarItem.Identifier] = [
-        generalID, spacesID, linksID, quickDetourID, profilesID, searchID, shortcutsID, extensionsID,
-        contentBlockerID,
+        // By topic (the user, TASK-347): profiles and the spaces that use
+        // them; where links open; search; what pages may do; the keyboard.
+        generalID, profilesID, spacesID, linksID, quickDetourID, searchID, extensionsID, contentBlockerID,
+        shortcutsID,
     ]
 
     /// The Quick Detour pane's name (`showPane(named:)`): Settings > Shortcuts

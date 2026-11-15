@@ -1,14 +1,16 @@
 import XCTest
 @testable import Detour
 
-/// The Settings window's height rule (TASK-189): open at the pane's natural
-/// height, capped to the screen; drag between the pane's minimum and that height.
+/// The Settings window's height rule (TASK-189, TASK-347): open at the pane's
+/// natural height, but no taller than the design maximum (720) or the screen;
+/// drag between the pane's minimum and its natural height capped to the screen.
 nonisolated final class SettingsPaneHeightTests: XCTestCase {
     // A 1000-point visible frame with 80 points of title bar and toolbar
     // leaves 1000 - 80 - 80 (screen margin) = 840 points of content.
     private let screen: CGFloat = 1000
     private let chrome: CGFloat = 80
     private let cap: CGFloat = 840
+    private let design: CGFloat = 720   // SettingsMetrics.designMaximumContentHeight (checked below)
 
     @MainActor private func fit(_ natural: CGFloat, minimum: CGFloat? = nil) -> SettingsPaneHeight {
         SettingsPaneHeight.fit(natural: natural, minimum: minimum, screenUsableHeight: screen, chromeHeight: chrome)
@@ -18,6 +20,10 @@ nonisolated final class SettingsPaneHeightTests: XCTestCase {
 
     @MainActor func testCapLeavesTheScreenMarginAndTheChrome() {
         XCTAssertEqual(SettingsPaneHeight.cap(screenUsableHeight: screen, chromeHeight: chrome), cap)
+    }
+
+    @MainActor func testTheDesignMaximumIs720() {
+        XCTAssertEqual(SettingsMetrics.designMaximumContentHeight, design)
     }
 
     @MainActor func testCapNeverFallsBelowTheFloor() {
@@ -31,8 +37,12 @@ nonisolated final class SettingsPaneHeightTests: XCTestCase {
         XCTAssertEqual(fit(160), SettingsPaneHeight(initial: 160, minHeight: 160, maxHeight: 160))
     }
 
-    @MainActor func testTallPaneIsFixedAtTheCapAndScrolls() {
-        XCTAssertEqual(fit(1200), SettingsPaneHeight(initial: cap, minHeight: cap, maxHeight: cap))
+    @MainActor func testTallPaneOpensAtTheDesignMaximumAndDragsToTheCap() {
+        XCTAssertEqual(fit(1200), SettingsPaneHeight(initial: design, minHeight: design, maxHeight: cap))
+    }
+
+    @MainActor func testPaneBetweenTheDesignMaximumAndTheCapDragsToItsNaturalHeight() {
+        XCTAssertEqual(fit(780), SettingsPaneHeight(initial: design, minHeight: design, maxHeight: 780))
     }
 
     @MainActor func testFractionalNaturalHeightRoundsUpSoNothingIsCut() {
@@ -49,8 +59,14 @@ nonisolated final class SettingsPaneHeightTests: XCTestCase {
         XCTAssertEqual(fit(250, minimum: 400), SettingsPaneHeight(initial: 400, minHeight: 400, maxHeight: 400))
     }
 
-    @MainActor func testTallListPaneIsCappedAndStillShrinksToItsMinimum() {
-        XCTAssertEqual(fit(1500, minimum: 400), SettingsPaneHeight(initial: cap, minHeight: 400, maxHeight: cap))
+    @MainActor func testTallListPaneOpensAtTheDesignMaximumAndStillShrinksToItsMinimum() {
+        // Shortcuts: every row is about 1,800 pt.
+        XCTAssertEqual(fit(1800, minimum: 400), SettingsPaneHeight(initial: design, minHeight: 400, maxHeight: cap))
+    }
+
+    @MainActor func testTheDesignMaximumNeverOpensAWindowTallerThanTheScreen() {
+        let f = SettingsPaneHeight.fit(natural: 1800, minimum: 400, screenUsableHeight: 600, chromeHeight: chrome)
+        XCTAssertEqual(f, SettingsPaneHeight(initial: 440, minHeight: 400, maxHeight: 440))
     }
 
     @MainActor func testMinimumAboveTheCapComesDownToTheCap() {
@@ -100,7 +116,11 @@ nonisolated final class SettingsPaneHeightTests: XCTestCase {
                     XCTAssertLessThanOrEqual(s.maxHeight, SettingsPaneHeight.cap(screenUsableHeight: screenHeight, chromeHeight: chrome))
                 }
                 XCTAssertLessThanOrEqual(f.minHeight, f.maxHeight, "natural \(natural) minimum \(String(describing: minimum))")
-                XCTAssertEqual(f.initial, f.maxHeight, "the window opens at its tallest allowed height")
+                XCTAssertLessThanOrEqual(f.minHeight, f.initial)
+                XCTAssertLessThanOrEqual(f.initial, f.maxHeight)
+                XCTAssertLessThanOrEqual(f.initial, max(design, f.minHeight), "opens no taller than the design maximum")
+                XCTAssertEqual(f.initial, min(f.maxHeight, max(design, f.minHeight)),
+                               "opens at its natural height up to the design maximum")
                 XCTAssertLessThanOrEqual(f.maxHeight, cap)
             }
         }
@@ -126,6 +146,26 @@ nonisolated final class SettingsPaneHeightTests: XCTestCase {
     @MainActor func testShortenedWindowIsPulledIntoTheNewBounds() {
         let old = fit(700, minimum: 400), new = fit(420, minimum: 400)
         XCTAssertEqual(SettingsPaneHeight.refit(current: 600, from: old, to: new), 420)
+    }
+
+    @MainActor func testWindowAtTheDesignMaximumStaysThereWhenATallPaneGrows() {
+        let old = fit(1700, minimum: 400), new = fit(1760, minimum: 400)
+        XCTAssertEqual(SettingsPaneHeight.refit(current: design, from: old, to: new), design)
+    }
+
+    @MainActor func testWindowAtTheDesignMaximumShrinksWithAPaneThatFallsBelowIt() {
+        let old = fit(900, minimum: 400), new = fit(600, minimum: 400)
+        XCTAssertEqual(SettingsPaneHeight.refit(current: design, from: old, to: new), 600)
+    }
+
+    @MainActor func testWindowDraggedFullyOpenFollowsThePane() {
+        let old = fit(780, minimum: 400), new = fit(800, minimum: 400)
+        XCTAssertEqual(SettingsPaneHeight.refit(current: 780, from: old, to: new), 800)
+    }
+
+    @MainActor func testWindowDraggedPartlyOpenKeepsItsHeight() {
+        let old = fit(900, minimum: 400), new = fit(940, minimum: 400)
+        XCTAssertEqual(SettingsPaneHeight.refit(current: 800, from: old, to: new), 800)
     }
 
     @MainActor func testFixedPaneFollowsItsNewHeight() {

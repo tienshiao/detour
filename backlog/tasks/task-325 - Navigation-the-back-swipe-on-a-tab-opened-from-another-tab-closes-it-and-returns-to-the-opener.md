@@ -3,11 +3,11 @@ id: TASK-325
 title: >-
   Navigation: the back swipe on a tab opened from another tab closes it and
   returns to the opener
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T06:21:00Z'
-updated_date: '2026-11-14T21:13:00Z'
+updated_date: '2026-11-15T22:57:00Z'
 labels:
   - feature
 dependencies: []
@@ -32,13 +32,13 @@ The swipe should do what the Back button does. Once the child tab has its own hi
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 On a tab opened from another tab with no back history, a two-finger back swipe closes the tab and selects the tab that opened it, the same result as the Back button
-- [ ] #2 A tab with back history still navigates back on the swipe; it closes to its opener only once it is on its first page
-- [ ] #3 The swipe follows the fingers and can be cancelled: releasing it without completing it leaves the tab open and selected
+- [x] #1 On a tab opened from another tab with no back history, a two-finger back swipe closes the tab and selects the tab that opened it, the same result as the Back button
+- [x] #2 A tab with back history still navigates back on the swipe; it closes to its opener only once it is on its first page
+- [x] #3 The swipe follows the fingers and can be cancelled: releasing it without completing it leaves the tab open and selected
 - [x] #4 With no opener to return to (no parentID, or the opener has been closed), the swipe on a tab with no back history does nothing, as today
 - [x] #5 A child tab in a split, a Peek, and Quick Detour behave as the Back button already does for them, and the decision for each is recorded in the task
 - [x] #6 The closed child tab can be reopened with Reopen Closed Tab like any closed tab
-- [ ] #7 The rule for when a back swipe closes to the opener is covered by unit tests; the gesture itself is checked in the running app with /verify
+- [x] #7 The rule for when a back swipe closes to the opener is covered by unit tests; the gesture itself is checked in the running app with /verify
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -150,6 +150,8 @@ Follow-up 2026-11-14 (after the first commit):
 - Cmd+[ finding reworded: observed (Navigate > Back disabled on a child with no back item while the page has the keyboard); likely cause WKWebView's own goBack: action (declared in WKWebView.h) ahead of the window controller in the responder chain; not checked on a baseline build.
 - Behaviour change to the Back button itself: its core now selects the opener before closing the child (settlingSelectionForClose), instead of closing first (which selected a neighbour, possibly waking it) and then selecting the opener. Same end state; the activation order differs and the closing child gets a switcher preview as it leaves.
 - Left on disk: four WebKit website-data-store folders from the first runtime runs (12:29-12:31, before the check script cleaned its stores); later runs clean up after themselves.
+
+2026-11-15: the user checked the back swipe by hand on a real trackpad and reports it works well (the owed hand check for ACs #1-#3 and #7).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

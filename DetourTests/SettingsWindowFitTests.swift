@@ -46,11 +46,16 @@ nonisolated final class SettingsWindowFitTests: XCTestCase {
         window.contentLayoutRect.height
     }
 
-    /// The pane's full height by the height rule.
-    @MainActor private func fullHeight(of pane: SettingsPaneViewController, in window: NSWindow) -> CGFloat {
+    /// The pane's fit by the height rule.
+    @MainActor private func fit(of pane: SettingsPaneViewController, in window: NSWindow) -> SettingsPaneHeight {
         SettingsPaneHeight.fit(natural: pane.naturalContentHeight, minimum: pane.minimumContentHeight,
                                screenUsableHeight: 2000,
-                               chromeHeight: window.frame.height - contentHeight(window)).initial
+                               chromeHeight: window.frame.height - contentHeight(window))
+    }
+
+    /// The height the pane opens at.
+    @MainActor private func openingHeight(of pane: SettingsPaneViewController, in window: NSWindow) -> CGFloat {
+        fit(of: pane, in: window).initial
     }
 
     /// Switch to Profiles (animation 1), a refit to the same height while it
@@ -70,7 +75,7 @@ nonisolated final class SettingsWindowFitTests: XCTestCase {
 
         XCTAssertTrue(controller.showPane(named: "profiles"))
         let pane = try XCTUnwrap(window.contentViewController as? SettingsPaneViewController)
-        let full = fullHeight(of: pane, in: window)
+        let full = openingHeight(of: pane, in: window)
         XCTAssertEqual(animator.pending.count, 1, "the switch animates")
         XCTAssertNotEqual(contentHeight(window), full, accuracy: 1, "halfway")
 
@@ -89,7 +94,7 @@ nonisolated final class SettingsWindowFitTests: XCTestCase {
         for index in 1..<animator.pending.count { animator.end(index, in: window) }
 
         XCTAssertEqual(contentHeight(window), full, accuracy: 0.5, "the window ends at the pane's height")
-        XCTAssertEqual(window.contentMaxSize.height, full, accuracy: 0.5)
+        XCTAssertEqual(window.contentMaxSize.height, fit(of: pane, in: window).maxHeight, accuracy: 0.5)
     }
 
     /// A refit that really comes after the animation (nothing in flight) and
@@ -105,7 +110,7 @@ nonisolated final class SettingsWindowFitTests: XCTestCase {
         for index in animator.pending.indices { animator.end(index, in: window) }
         animator.pending.removeAll()
         let pane = try XCTUnwrap(window.contentViewController as? SettingsPaneViewController)
-        let full = fullHeight(of: pane, in: window)
+        let full = openingHeight(of: pane, in: window)
         XCTAssertEqual(contentHeight(window), full, accuracy: 0.5)
 
         // The user drags it 100 pt shorter; a refit keeps that.

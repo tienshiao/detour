@@ -1,7 +1,7 @@
 ---
 type: Component
 title: Settings window
-description: "The Settings window and its nine panes (General, Spaces, Links, Quick Detour, Profiles, Search, Shortcuts, Extensions, Content Blocking): what each one edits, how changes reach TabStore, the shared metrics and pane container (one scrolling body, or since TASK-211 a list and detail column fixed to the pane and scrolling on their own), the System Settings–style grouped form (TASK-338, on Quick Detour and Content Blocking so far), the height rule (natural height, capped to the screen, resizable in height only) and the layout traps met on the way."
+description: "The Settings window and its nine panes (General, Profiles, Spaces, Links, Quick Detour, Search, Extensions, Content Blocking, Shortcuts): what each one edits, how changes reach TabStore, the shared metrics and pane container (one scrolling body, or since TASK-211 a list and detail column fixed to the pane and scrolling on their own), the System Settings–style grouped form (TASK-338, on Quick Detour and Content Blocking so far), the height rule (natural height, opening no taller than 720 pt or the screen, resizable in height only) and the layout traps met on the way."
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
@@ -149,9 +149,13 @@ the current page. See
   root view also holds a required `width == 740`, so no content can widen
   the window (a long extension name used to stretch it to 1104). Full screen
   is off (`.fullScreenNone`), tabbing disallowed.[^task-189]
-- The nine view controllers (in toolbar order: General, Spaces, Links,
-  Quick Detour, Profiles, Search, Shortcuts, Extensions, Content Blocking;
-  `SettingsWindowController.paneOrder`) are created once in `init` and kept in `panes`;
+- The nine view controllers (in toolbar order: General, Profiles, Spaces,
+  Links, Quick Detour, Search, Extensions, Content Blocking, Shortcuts;
+  `SettingsWindowController.paneOrder`; ordered by topic since TASK-347, the
+  user's choice: profiles beside the spaces that use them, where links open,
+  search, what pages may do, and the keyboard last. Before it the order was
+  General, Spaces, Links, Quick Detour, Profiles, Search, Shortcuts,
+  Extensions, Content Blocking) are created once in `init` and kept in `panes`;
   switching swaps `window.contentViewController` at the current size, then
   `fitWindow` animates to the new pane's height with the top edge fixed (moved
   only as far as needed to stay on the screen).
@@ -164,17 +168,27 @@ is a pure function returning content heights `(initial, minHeight, maxHeight)`:
 
 - `cap` = the window's screen's `visibleFrame` height minus the title bar and
   toolbar minus 80 (`SettingsMetrics.screenMargin`), never below 200.
-- `initial = maxHeight = min(max(natural, minimum ?? natural), cap)` and
-  `minHeight = min(minimum ?? natural, cap)`. The window opens at the pane's
-  natural height; the user drags between the two bounds; past the cap the
-  pane scrolls.
-- List panes (Spaces, Links, Profiles, Extensions) have a minimum of 400
+- `maxHeight = min(max(natural, minimum ?? natural), cap)`; `initial =
+  min(maxHeight, max(720, minimum ?? 0))` (720 is
+  `SettingsMetrics.designMaximumContentHeight`, TASK-347); `minHeight =
+  min(minimum ?? natural, cap, initial)`. The window opens at the pane's
+  natural height but no taller than 720 pt of content (or the screen's cap),
+  so a long pane such as Shortcuts no longer opens as tall as the screen; the
+  user drags between `minHeight` and `maxHeight`, so the window can still be
+  made as tall as the content or the screen allows; below the natural height
+  the pane scrolls. A fixed pane taller than 720 (none today) opens at 720
+  and drags to its natural height. 720 lets a normal profile's Profiles pane
+  (709) open whole. Before TASK-347 `initial` was `maxHeight`: Shortcuts
+  (about 1,800 pt of rows) opened at the screen's cap, which the user found
+  unbounded.
+- List panes (Spaces, Links, Profiles, Search, Shortcuts, Extensions) have a minimum of 400
   (`listPaneMinimumHeight`); General, Quick Detour and Content Blocking use
   their natural height, so they are fixed. A list pane shorter than 400 is
   fixed at 400.
 - `refit(current:from:to:)` is for a change while the pane is shown: a window
-  still at its old full height follows to the new one; one the user dragged
-  shorter keeps its height, clamped into the new bounds.
+  still at its old opening height follows to the new one, one dragged all
+  the way open follows to the new maximum, and one the user dragged
+  elsewhere keeps its height, clamped into the new bounds.
 - A pane switch always re-fits (no height is stored per pane). The window also
   re-fits on `NSWindow.didChangeScreenNotification` and
   `NSApplication.didChangeScreenParametersNotification`, so moving it to a
@@ -183,8 +197,9 @@ is a pure function returning content heights `(initial, minHeight, maxHeight)`:
 - `screenUsableHeightOverride` replaces the screen height in the rule; it is
   an injection point for a harness, nil in the app.
 
-Tested by `SettingsPaneHeightTests` (20 cases, including short laptop
-screens where the 400 minimum comes down to the cap).
+Tested by `SettingsPaneHeightTests` (27 cases, including short laptop
+screens where the 400 minimum comes down to the cap, and the 720 design
+maximum against tall fixed and list panes and refits).
 
 ### The pane container
 
@@ -460,7 +475,7 @@ command.
 | Quick Detour | 457, fixed (TASK-338's grouped form with the Debug build's warning line and the Learn more link, 2026-11-14; 317 with TASK-328's rows) | toolbar only |
 | Profiles | 630 (Private) / 709 (a normal profile) to 1218 (custom UA, warning, 15 extensions); 1047 for Private with 14 extensions (2026-10-27) | toolbar only |
 | Extensions | 400 (none, or one small extension) to 1092 (22 permissions, 4 hosts, 6 optional) | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
-| Shortcuts | 400 minimum; every row (about 1,800 pt) is its natural height, so it opens at the screen's cap | toolbar only |
+| Shortcuts | 400 minimum; every row is about 1,800 pt, so it opens at the 720 design maximum (TASK-347; at the screen's cap before) and scrolls; it can be dragged taller up to the cap | toolbar only |
 | Content Blocking | 554, fixed (TASK-338's grouped form: four list rows, the footnote, the buttons, Tracking Parameters (named Copied Links until 2026-11-15), 2026-11-14; 379 with the table and TASK-337's section) | toolbar only |
 
 TASK-189 part 1 moved every pane into the container and rebuilt General,
@@ -901,7 +916,7 @@ body below the description at every height from the 200 pt floor to 900,
 each scrolling without moving the other, the detail document as tall as its
 content, the natural height from the detail content or the rows and never
 from the window, a scrolling body still one scroll view, which panes take
-which form, the toolbar order with Quick Detour after Links, the Quick
+which form, the toolbar order (TASK-347's by-topic order), the Quick
 Detour pane's natural height, Links fitting the 400 pt minimum, and the end
 anchoring of `SettingsColumnScrollView`); `LinkRouteEditorTests` the Links pane's rules (target
 menus, drag destination, warnings, drafts); `ProfileSettingsLayoutTests` the Profiles sections and which

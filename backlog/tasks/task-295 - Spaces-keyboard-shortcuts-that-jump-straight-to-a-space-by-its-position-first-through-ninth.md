@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T07:38:00Z'
-updated_date: '2026-11-15T07:37:00Z'
+updated_date: '2026-11-15T22:57:00Z'
 labels:
   - spaces
   - menus
@@ -92,6 +92,8 @@ No correctness bugs. Fixed: the space title format shared by both item loops; th
 - Searched DetourTests, scripts and docs/capture for other users of the per-space items (selectSpaceFromMenu, switchToSpace, the 7000 tag, Spaces-menu lookups): none depend on the first nine being space.switch items. New files (SpaceJump.swift, SpaceJumpTests.swift): other checkouts need xcodegen generate.
 
 2026-11-14 user decision: keep ⌃1–⌃9 as the defaults (matches Arc). On the user's Mac Mission Control holds ⌃1–⌃6; the user turns those off in System Settings or rebinds in Settings > Shortcuts, which already marks them 'Used by macOS'. ⌘1–⌘9 rejected.
+
+2026-11-15: the user rebound the first two space jumps to ⌘1 and ⌘2 in Settings > Shortcuts and used them by hand: they switch spaces (physical key presses, with a custom binding). Only AC #7 (the website's Spaces guide at release) remains.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

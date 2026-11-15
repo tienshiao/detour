@@ -37,6 +37,11 @@ enum SettingsMetrics {
     /// The smallest content height of a pane with a master list; other panes
     /// use their natural height as their minimum.
     static let listPaneMinimumHeight: CGFloat = 400
+    /// The tallest content height a pane opens at, whatever the screen
+    /// (TASK-347): a taller pane scrolls, and the user can drag the window
+    /// taller, up to the screen's cap. Tall enough that a normal profile's
+    /// Profiles pane (709) opens whole.
+    static let designMaximumContentHeight: CGFloat = 720
     /// How far the tallest window stays short of the screen's usable height.
     static let screenMargin: CGFloat = 80
     /// The smallest content height the screen cap can come down to, so a

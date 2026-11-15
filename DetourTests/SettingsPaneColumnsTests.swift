@@ -327,11 +327,11 @@ nonisolated final class SettingsPaneColumnsTests: XCTestCase {
 
     // MARK: - The real panes
 
-    @MainActor func testQuickDetourHasAPaneOfItsOwnAfterLinks() {
+    @MainActor func testThePanesAreOrderedByTopic() {
         XCTAssertEqual(SettingsWindowController.paneOrder.map(\.rawValue),
-                       ["general", "spaces", "links", "quickdetour", "profiles", "search", "shortcuts", "extensions",
-                        "contentblocker"],
-                       "Search (TASK-287) sits after Profiles, where each profile's default engine is; Shortcuts (TASK-327) after it")
+                       ["general", "profiles", "spaces", "links", "quickdetour", "search", "extensions", "contentblocker",
+                        "shortcuts"],
+                       "by topic (TASK-347): Profiles beside Spaces, Links beside Quick Detour, Shortcuts last")
     }
 
     @MainActor func testPanesWithAListScrollTheirColumnsAndTheOthersScrollAsOneBody() throws {
