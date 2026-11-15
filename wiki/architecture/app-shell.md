@@ -170,8 +170,10 @@ Dynamic items are tagged (`spacesMenuTag`, `extensionMenuTag`,
 are still built by their own builders, with the actions of the registry's
 parameterised commands (`space.switch`, `extension.show-popup`,
 `extension.options`, `extension.inspect-offscreen`,
-`extension.reload-unpacked`) and no identifier. The Dock menu's two items
-are not built from the registry.
+`extension.reload-unpacked`) and no identifier. Which extensions the
+Extensions menu lists and which of their items are live is
+`ExtensionMenuItems`, which the command palette's chip shares (TASK-320
+AC #3). The Dock menu's two items are not built from the registry.
 
 The **Help menu** is last and is registered as `NSApp.helpMenu`, which is
 what makes macOS add its menu search field (Shift-Cmd-/). It is built in

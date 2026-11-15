@@ -246,9 +246,11 @@ running app.[^task-137]
 
 ## UI restrictions in a Private window
 
-Disabled or hidden: switching space (menu, shortcuts and swipe), the add
-space button, editing the space, pinning, the Archived Tabs page and its
-menu items, and Move to Space. The sidebar shows only the window's own
+Disabled or hidden: switching space (menu, shortcuts, swipe and the
+palette's Switch to Space), the add space button, editing the space,
+pinning, the Archived Tabs page and its menu items, and Move to Space (the
+sidebar's and the palette's; TASK-320 AC #3). The palette's Split with Tab
+lists only the window's own tabs. The sidebar shows only the window's own
 space, and `tabStoreDidUpdateSpaces` never switches a Private window to
 another space.
 

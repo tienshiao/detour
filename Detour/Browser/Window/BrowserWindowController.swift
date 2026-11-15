@@ -4054,6 +4054,10 @@ extension BrowserWindowController: CommandPaletteDelegate {
                                                controller: self) {
             NSSound.beep()
         }
+        // Again once a choice has run, as after switching to a tab: Split
+        // with Tab re-hosts the selected tab's web view in the split, which
+        // leaves nothing focused (measured), and a move selects another tab.
+        if argument != nil { restoreWebContentFocus() }
     }
 }
 

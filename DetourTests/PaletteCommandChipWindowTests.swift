@@ -150,6 +150,7 @@ nonisolated final class PaletteCommandChipWindowTests: XCTestCase {
         XCTAssertTrue(reading.tabs.contains { $0.id == tabs[0].id }, "moved")
         XCTAssertFalse(home.tabs.contains { $0.id == tabs[0].id })
         XCTAssertEqual(wc.selectedTabID, tabs[1].id, "the selection settles on the tab left behind")
+        XCTAssertTrue(wc.window?.firstResponder === tabs[1].webView, "the page has the keys, as after any command")
         XCTAssertEqual(store.undoManager.undoActionName, "Move to Space", "the sidebar's move, with its undo")
     }
 
@@ -217,6 +218,8 @@ nonisolated final class PaletteCommandChipWindowTests: XCTestCase {
         let index = try XCTUnwrap(home.tabs.firstIndex { $0.id == tabs[0].id })
         XCTAssertEqual(home.tabs[index + 1].id, tabs[2].id, "to its right, as Split with Next Tab")
         XCTAssertEqual(wc.selectedTabID, tabs[0].id)
+        XCTAssertTrue(wc.window?.firstResponder === tabs[0].webView,
+                      "the focused pane has the keys: the split re-hosts its web view, which drops focus")
     }
 
     /// The choices were read when the chip opened; one gone by Return (the

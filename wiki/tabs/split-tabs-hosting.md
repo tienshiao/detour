@@ -223,6 +223,7 @@ wake would resurrect a partner the user deliberately closed.
 | Option+click a link, or the link menu's Open Link in Split View | `openLinkInSplit`: new pane on the right, focused (see below) |
 | The Peek's Open in Split View button | `openPeekInSplitView`: the Peek's web view becomes the right pane, focused ([Peek](./peek.md)) |
 | Context menu "Split with Next Tab" | `createSplit` with the next tab on the right |
+| The command palette's Split with Tab (TASK-320 AC #3) | the chosen tab of the space (unpinned, in no split) through `didRequestCreateSplit`, on the right of the selected one ([command palette](../features/command-palette.md#a-commands-chip)) |
 
 **Content-area drops.** `SplitDropZoneView` is a transparent overlay that exists
 only while a *local sidebar tab drag* is live: the sidebar's drag-session

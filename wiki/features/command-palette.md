@@ -401,11 +401,21 @@ is no longer offered.
 
 **Running.** `commandPalette(_:didRequestCommand:argument:)`: the owner
 dismisses the palette (focus back to the page, as for any command), then
-`CommandDispatch.perform(_:argument:in:controller:)` builds the command's
-item with the value as `representedObject`, as the menu items that run it
-carry it, validates it with the controller's rule and sends it. A choice
-gone stale meanwhile does what its menu item would (a refused move shows its
-hint).
+`CommandDispatch.performFromPalette` checks the choice against the window's
+choices now (a tab closed or a space deleted since the chip opened is
+refused with a beep) and `perform(_:argument:in:controller:)` builds the
+command's item with the value as `representedObject`, as the menu items
+that run it carry it, validates it with the controller's rule and sends it.
+Then the browser window restores the page's focus once more, as after
+switching to a tab: Split with Tab re-hosts the selected tab's web view in
+the split, which left nothing focused (measured at runtime: the endpoint's
+`press_key` found no focused view; `testSplitWithTab…` fails without it).
+
+**Spaces of other profiles.** PROVISIONAL (chosen while the user was away):
+a normal window's Switch to Space and Move Tab to Space list every normal
+profile's spaces, as the Spaces menu and the sidebar's Move to do (the row
+names the other profile); the alternative is the window's profile only,
+as the palette's open-tab and history rows are (TASK-209).
 
 # Edge cases
 

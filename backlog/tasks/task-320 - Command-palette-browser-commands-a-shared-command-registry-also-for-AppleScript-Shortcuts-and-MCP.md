@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-10T09:38:00Z'
-updated_date: '2026-11-15T08:21:00Z'
+updated_date: '2026-11-15T08:30:00Z'
 labels:
   - command-palette
   - automation
@@ -179,6 +179,20 @@ Runtime (/verify, Debug build 00:04, DETOUR_DATA_DIR=DetourVerify-320chip, endpo
 - Cleaned up: the app stopped by pid; its NSWindow Frame / NSSplitView keys, its defaults suite and data folder deleted.
 
 Code review (code-review medium --fix over 084197b..HEAD): 9 findings. Fixed: a choice gone stale by Return did nothing silently (now refused with a beep, performFromPalette, new test); dead chip state removed; the chip's title follows a re-scoped palette; a window with no space lists no extension; emoji icons cached; the two owners' duplicated dispatch folded into performFromPalette. Kept by decision: Move Tab to Space hides spaces the store would refuse (the brief: refused choices are not listed; the action's doc corrected); the profile list without a consumer (the lead's call). Left: choices are computed again on entry and on Return (canMoveTab reads the database only for extension pages).
+
+## After the review: smoke /verify on the reviewed build, a focus fix (2026-11-15)
+
+The checkpoint commits (b77eb8c, 200e0c0, 3187099) were made before code review and /verify; 5edf4ab holds the review fixes, and the first /verify ran on the build before them. So /verify ran again on the reviewed build (DETOUR_DATA_DIR=DetourVerify-320chip2 and -320chip3, same seeded world):
+- Focus after a chip command, read through press_key's target: after Move Tab to Space, Switch to Space (twice) the page (BrowserWebView) had the keys; after Split with Tab NOTHING had focus ('Nothing in window 1 has keyboard focus'): the split re-hosts the selected tab's web view after the palette's dismissal gave it focus. Fixed: the browser window restores the page's focus again after a chip command runs, as after switching to a tab. Rerun on the fixed build: BrowserWebView after the split. New assertions in PaletteCommandChipWindowTests (the page has the keys after Move and after Split); the Split one fails without the fix (checked by commenting it out).
+- Site search's chip (now PaletteChipView with a stack view, width cap 200 instead of 180): yt + cats shows YouTube with the same 8 pt sides and no symbol.
+- Extension commands end to end: API Explorer installed for the Personal profile (install_extension, test run); >show ext + Return: chip Show Extension Popup listing API Explorer with its icon; Return with the window key (set_window_frame activate) opened its popup at the faux address bar, as the Extensions menu item does. In the background (no key window) the action does nothing, as its menu item's AppDelegate.extensionMenuClicked reads the key window (not changed here).
+- Correction to the earlier note: the endpoint's click not reaching the palette table's action was measured on this branch's build only (a plain command row too), not on main.
+- A row click was checked with a real HID click (CGEvent, Detour activated and its window brought front with set_window_frame).
+Cleaned up: apps stopped by pid; defaults keys, suites and data folders of DetourVerify-320chip, -320chip2, -320chip3 deleted.
+
+PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): a normal window's Switch to Space and Move Tab to Space list every normal profile's spaces, as the Spaces menu and the sidebar's Move to do (the row names the other profile). Alternative: the window's profile only, as the palette's open-tab and history rows are (TASK-209); a one-line filter in CommandChoices.
+
+Tests after the fix: PaletteCommandChipWindowTests 8, PaletteCommandChipTests 15, PaletteCommandWindowTests 9, CommandPaletteFocusTests 4, all passing.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
@@ -188,7 +202,7 @@ Built the shared command registry, moved the main menu onto it, and made the pal
 
 - Registry (Detour/Commands): every main-menu command has a stable hand-written ID, title, aliases, symbol, default key equivalent, typed parameters, the window kinds that answer it, and an availability rule and contextual title over a lazy CommandContext. Both validateMenuItem implementations answer the registry's rule; the menu is built from it (MainMenuCharacterizationTests unchanged); CommandDispatch is shared by the key-equivalent fast path, run_menu_item and the palette.
 - Palette commands: rows rank in after the verbatim row (3+ characters, at most 2) or alone after '>' (the user's decision, 2026-11-14); Return dismisses the palette and runs the command through its menu item, sent to the window's controller; unavailable commands are not offered, by the menu's rule, in normal, Private, Quick Detour and quarantine windows.
-- AC #3 (the user's choice of a chip, 2026-11-14): Switch to Space, Move Tab to Space, Split with Tab (both new) and the extension popup and options commands put their chip in the field; the field filters the window's choices (Spaces menu order, the sidebar's Move to and split rules, never a Private window's space, Private windows only their own tabs); Return runs the command on the choice through the path its menu or sidebar item takes; Backspace and Escape leave the chip as site search does. A command with no choice in the window is not offered. A profile list is built but no command takes a profile yet.
-- Verification: affected suites at 5edf4ab, 552 tests, 0 failures; runtime through the endpoint with real key events: Move Tab to Space and Switch to Space through the chip, the chip in light and dark, Backspace and two-step Escape, a Private window offering no space commands and splitting only its own tabs; a row click via a real HID click (the endpoint's click does not reach the palette's table action, for any row).
-- Provisional and left for the user: new IDs tab.move-to-space and tab.split-with, titles without ellipsis, Develop's per-extension items not in the palette, the split side. Not on the registry yet: context menus, the Dock menu, keys outside menus.
+- AC #3 (the user's choice of a chip, 2026-11-14): Switch to Space, Move Tab to Space, Split with Tab (both new) and the extension popup and options commands put their chip in the field; the field filters the window's choices (Spaces menu order, the sidebar's Move to and split rules, never a Private window's space, Private windows only their own tabs); Return runs the command on the choice through the path its menu or sidebar item takes, then the page gets the keys back; Backspace and Escape leave the chip as site search does. A command with no choice in the window is not offered. A profile list is built but no command takes a profile yet.
+- Verification: affected suites at 5edf4ab, 552 tests, 0 failures, plus the chip and focus suites after the focus fix; runtime through the endpoint with key events: Move Tab to Space, Switch to Space, Split with Tab and Show Extension Popup through the chip, the chip in light and dark, Backspace and two-step Escape, focus after each command, a Private window offering no space commands and splitting only its own tabs; a row click via a real HID click.
+- Provisional and left for the user: other profiles' spaces in a normal window's lists (as the menus), new IDs tab.move-to-space and tab.split-with, titles without ellipsis, Develop's per-extension items not in the palette, the split side. Not on the registry yet: context menus, the Dock menu, keys outside menus.
 <!-- SECTION:FINAL_SUMMARY:END -->
