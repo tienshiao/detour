@@ -758,8 +758,10 @@ class BrowserWindowController: NSWindowController {
 
     /// Move Tab to Space (TASK-320 AC #3; the palette's chip gives the space
     /// as `representedObject`): the selected tab, or its pinned entry, goes
-    /// to that space by the sidebar's own Move to path, refusals and their
-    /// hint included.
+    /// to that space by the sidebar's own Move to path. The palette lists
+    /// only spaces the store would take the tab to; a move refused all the
+    /// same (the profile changed meanwhile) explains itself as the
+    /// sidebar's does.
     @objc func moveSelectedTabToSpace(_ sender: NSMenuItem) {
         guard let spaceID = sender.representedObject as? UUID, let space = activeSpace,
               let tabID = selectedTab?.id else { return }
@@ -3635,13 +3637,17 @@ extension BrowserWindowController: CommandContext {
             }
             return CommandChoices.splitWithTab(tabs: tabs, selectedTabID: selectedTab?.id)
         case BrowserCommands.showExtensionPopup.id:
-            let extensions = ExtensionMenuItems.extensions(inProfile: activeSpace?.profileID)
+            // The window's profile's only; with no space, none (the menu's
+            // list for no key window is every profile's).
+            guard let profileID = activeSpace?.profileID else { return [] }
+            let extensions = ExtensionMenuItems.extensions(inProfile: profileID)
             return CommandChoices.extensions(Self.extensionFacts(extensions)) { id in
                 extensions.first { $0.id == id }.map(ExtensionMenuItems.hasPopup) ?? false
             }
         case BrowserCommands.extensionOptions.id:
+            guard let profileID = activeSpace?.profileID else { return [] }
             let profile = activeSpace?.profile
-            let extensions = ExtensionMenuItems.extensions(inProfile: activeSpace?.profileID)
+            let extensions = ExtensionMenuItems.extensions(inProfile: profileID)
             return CommandChoices.extensions(Self.extensionFacts(extensions)) { id in
                 extensions.first { $0.id == id }.map { ExtensionMenuItems.hasOptions($0, in: profile) } ?? false
             }
@@ -4042,14 +4048,12 @@ extension BrowserWindowController: CommandPaletteDelegate {
     func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID, argument: CommandArgument?) {
         dismissCommandPalette()
         guard let window, let command = BrowserCommands.command(withID: id) else { return }
-        let ran = if let argument {
-            CommandDispatch.perform(command, argument: argument, in: window, controller: self)
-        } else {
-            CommandDispatch.perform(command, in: window, menu: NSApp.mainMenu, controller: self)
+        // Refused (state changed since the row was offered, or the choice is
+        // gone): a beep, as a disabled menu item's key equivalent gives.
+        if !CommandDispatch.performFromPalette(command, argument: argument, in: window, menu: NSApp.mainMenu,
+                                               controller: self) {
+            NSSound.beep()
         }
-        // Refused (state changed since the row was offered): a beep, as a
-        // disabled menu item's key equivalent gives.
-        if !ran { NSSound.beep() }
     }
 }
 

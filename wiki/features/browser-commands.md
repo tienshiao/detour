@@ -5,7 +5,7 @@ description: "The command registry (TASK-320): every main-menu command defined o
 resource: ../../Detour/Commands/BrowserCommands.swift
 tags: [commands, menus, command-palette, automation, keyboard]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T00:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T09:00:00Z }
 sources:
   - id: task-320
     resource: backlog:TASK-320
@@ -31,6 +31,12 @@ sources:
   - id: palette-commands
     resource: ../../Detour/Browser/CommandPalette/PaletteCommands.swift
     title: PaletteCommands.swift
+  - id: command-choices
+    resource: ../../Detour/Commands/CommandChoices.swift
+    title: CommandChoices.swift (the choices of parameterised commands, TASK-320 AC #3)
+  - id: extension-menu-items
+    resource: ../../Detour/Extensions/UI/ExtensionMenuItems.swift
+    title: ExtensionMenuItems.swift (the Extensions menu's live items, shared with the palette)
   - id: web-view
     resource: ../../Detour/Browser/Window/BrowserWebView.swift
     title: "BrowserWebView.swift (goBack: and goForward: handed to the controller, TASK-331)"
@@ -80,7 +86,8 @@ user's shortcuts are stored by command ID over its defaults.
 | `aliases` | Other names the palette matches (`refresh` for Reload Page). |
 | `symbol` | An SF Symbol for the palette row. |
 | `keyEquivalent: KeyEquivalent?` | The built-in shortcut, spelled as `NSMenuItem` spells it (an uppercase key implies Shift; function keys are AppKit's private-use characters). The live item can differ: the Quick Detour item follows its hotkey setting, the others the user's shortcut (`ShortcutBindingStore`, TASK-327), and any item a System Settings App Shortcut names shows macOS's ([keyboard shortcuts](./keyboard-shortcuts.md)). |
-| `parameters: [CommandParameter]` | What it acts on besides its window: space, tab, profile, URL, position, extension. A command with one is never offered in the palette yet (`PalettePresence.needsParameter`). |
+| `parameters: [CommandParameter]` | What it acts on besides its window: space, tab, profile, URL, position, extension. One with a list to choose from (space, tab, profile, extension: `hasChoiceList`) is asked for in the palette with a chip (TASK-320 AC #3, [command palette](./command-palette.md#a-commands-chip)); a URL or a position cannot be, and such a command stays out (`PalettePresence.needsParameter`; none is declared). |
+| `paletteTitle` | The palette's title when the menu's says too little outside its submenu ("Show Extension Popup" for the submenu's "Show Popup"); `titleInPalette` is it or `title`. |
 | `action`, `tag` | The selector its menu item sends, and the item's tag (Help's items name their page by it). |
 | `responder: CommandResponder` | Who answers it, which is also how its item is targeted (below). |
 | `rule`, `contextualTitle` | Its availability, and the title validation gives its item, over a `CommandContext`. |
@@ -99,9 +106,11 @@ The responders:
 
 `CommandContext` is a protocol of the facts rules read about a window:
 `commandWindowKind` (normal, private, quickDetour, quarantine), whether a tab
-is selected, has an address, is pinned, whether a Peek is up, back/forward
+is selected, has an address, is pinned, is in a split, whether a Peek is up, back/forward
 history, undo state, closed tabs to reopen, archived tabs, a next or
-previous space, a row for Next/Previous Tab, and Cmd+O's destination. The
+previous space, a row for Next/Previous Tab, and Cmd+O's destination; and
+`commandChoices(for:)`, the values a parameterised command can run on in
+the window (`CommandChoices`, default none). The
 window controllers implement it, each fact computed only when a rule asks
 for it (menu validation runs per item, and some facts read the session
 database). Facts a kind of window lacks default to false, so a controller
@@ -129,6 +138,10 @@ included:
   Detour). The registry says so through `kinds`;
   `BrowserCommandRegistryTests.testEachCommandIsAnsweredByTheRespondersItDeclares`
   checks `kinds` against `instancesRespond(to:)`.
+- Move Tab to Space needs a normal window, a selected tab, and no split
+  (the sidebar has no Move to on a split row; a pinned entry moves). Split
+  with Tab needs a selected unpinned tab in no split, in a normal or Private
+  window. Switch to Space needs a normal window, as its Spaces menu items.
 - Next Tab and Previous Tab are both enabled by `tabNavigationTarget(…,
   offset: 1)`; the stops wrap, so that is whether there is another row.
 - Pin/Unpin Tab is retitled only when a tab is selected outside a Private
@@ -209,6 +222,15 @@ which sends the action from the command's **live** menu item (found by
 identifier) so the action gets the sender, tag and target a click gives it.
 Given a `controller`, a window-controller command it implements is sent to
 it rather than resolved along the chain; the palette passes its owner.
+`perform(_:argument:in:controller:)` runs a parameterised command on a value
+(TASK-320 AC #3): an item built from the command with the value as
+`representedObject`, as the menu items that run it carry it (a Spaces menu
+item, the sidebar's Move to submenu, an extension's submenu), sent to the
+controller (or the app delegate for an explicit target) and validated
+there. `performFromPalette` is what both palette owners call: a choice is
+first checked against the window's `commandChoices(for:)` now (the chip read
+them when it opened), and a gone one is refused, which the owner answers
+with a beep.
 The key-equivalent fast path and `AutomationMenus.resolve` (`run_menu_item`)
 use the same two helpers; before, each had its own copy.
 
@@ -220,7 +242,10 @@ A palette over a browser window or a Quick Detour gets
 time when typed text matches them, by `PaletteCommands.resolve`:
 `isAvailable(in:)` (the menu item's rule), `title(in:)` and the live item's
 shortcut (`CommandDispatch.keyEquivalentLabel`); the updater's only while
-Sparkle's own validation enables its live item. Running one is
+Sparkle's own validation enables its live item. A parameterised command is
+offered only when its rule holds and `commandChoices(for:)` has a value;
+its row has no shortcut, and choosing it puts its chip in the field
+([command palette](./command-palette.md#a-commands-chip)). Running one is
 `CommandDispatch.perform(…, controller:)` from the window after the palette
 is dismissed: a window controller's command goes to that controller, whose
 rule offered it, not to whatever answers first along the chain (below).
@@ -280,9 +305,14 @@ menus in `TabSidebarViewController`, the favourites bar, the archive page),
 the page's context menu additions (`BrowserWebView.willOpenMenu`), the Quick
 Detour title bar's menus, the Dock menu, and keys handled outside menus
 (the Control+Tab switcher, Escape for Peek, the find bar, the Undo and Redo
-interception in `BrowserWebView`). Commands with no menu item at all
-(duplicate, mute, sleep, split, move to space, new or rename space) do not
-exist as commands yet.
+interception in `BrowserWebView`). Two commands have no menu item and are
+reached from the palette only (TASK-320 AC #3): `tab.move-to-space` (Move
+Tab to Space, the sidebar's Move to path for the selected tab) and
+`tab.split-with` (Split with Tab, the sidebar's create-split path); they sit
+in `menus` under Spaces and File, and Settings > Shortcuts leaves them out
+as parameterised. Others with no menu item at all (duplicate, mute, sleep,
+separate a split, new or rename space) do not exist as commands yet. No
+command takes a profile; `CommandChoices.profiles` is ready for one.
 
 # Invariants
 
@@ -337,7 +367,8 @@ exist as commands yet.
   uniqueness; every main-menu item is a command with its key equivalent,
   mask, tag and title; every parameterless command has an item; each
   command's responder agrees with `instancesRespond(to:)`; parameterised
-  commands are kept out of the palette; the availability rules and
+  commands with a list are offered (the Develop menu's per-extension ones
+  are not, a URL one could not be), and the chip commands' rules; the availability rules and
   contextual titles over a fake context for every window kind; a context
   that leaves facts out fails closed; key equivalents shown as menus show
   them; validation of an item the registry did not build.

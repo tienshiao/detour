@@ -72,9 +72,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// nil. While set, the chip names the command, the field filters its
     /// choices and the rows are those choices only.
     private(set) var activeCommandChip: PaletteChip.CommandState?
-    /// The chip's command as its row offered it, and its choices in the
-    /// window, read once when the chip is entered.
-    private var commandChipCommand: PaletteCommand?
+    /// The chip's command's choices in the window, read when the chip is
+    /// entered (and again when the window's scope changes under it).
     private var commandChipChoices: [CommandChoice] = []
 
     /// The site searches the palette offers (TASK-287); tests pass a store
@@ -393,8 +392,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             // the space the window shows): read them again, or leave the chip
             // as Backspace would when the command is no longer offered here.
             if let command = resolvedCommand(state.commandID) {
-                commandChipCommand = command
                 commandChipChoices = commandSource?.choices(state.commandID) ?? []
+                chip.title = command.title
                 chip.setFill(spaceColor, animated: false)
             } else {
                 leaveCommandChip(restoring: state)
@@ -958,7 +957,6 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         localSuggestionGeneration &+= 1
         let entered = PaletteChip.enter(command.id, typedText: userTypedText)
         activeCommandChip = entered.state
-        commandChipCommand = command
         commandChipChoices = choices
         declinedSiteSearchKeyword = nil
         siteSearchOffer = nil
@@ -987,7 +985,6 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private func endCommandChip() {
         guard activeCommandChip != nil else { return }
         activeCommandChip = nil
-        commandChipCommand = nil
         commandChipChoices = []
         hideChip()
     }
@@ -1026,10 +1023,15 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         updateSuggestions(CommandChoices.filtered(filter, in: commandChipChoices).map { .commandChoice($0) })
     }
 
+    /// Space emoji drawn as row icons, kept: rows are reconfigured on every
+    /// keystroke of the filter.
+    private static var emojiImages: [String: NSImage] = [:]
+
     /// A space's emoji drawn as a row's 16 pt icon.
     private static func emojiImage(_ emoji: String) -> NSImage {
+        if let image = emojiImages[emoji] { return image }
         let size = NSSize(width: 16, height: 16)
-        return NSImage(size: size, flipped: false) { rect in
+        let image = NSImage(size: size, flipped: false) { rect in
             let text = emoji as NSString
             let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13)]
             let textSize = text.size(withAttributes: attributes)
@@ -1037,6 +1039,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
                       withAttributes: attributes)
             return true
         }
+        emojiImages[emoji] = image
+        return image
     }
 
     // MARK: - Site search (TASK-287)

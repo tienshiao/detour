@@ -85,6 +85,7 @@ enum SuggestionItem {
     case siteSearch(name:query:url:)             // site-search mode's row (TASK-287)
     case siteSearchHint(id:name:fieldText:)       // "Search <name>" with a Tab badge
     case command(PaletteCommand)                  // a browser command (TASK-320)
+    case commandChoice(CommandChoice)             // a value for the command in the chip (TASK-320 AC #3)
 }
 ```
 
@@ -92,6 +93,9 @@ Command rows are not the provider's: the view ranks them in on the main
 thread from its command source and inserts them after the verbatim row in
 both passes (`PaletteRows.insertingCommands`), so the instant and the late
 pass show the same ones. See [command palette](./command-palette.md#browser-commands).
+Choice rows replace the whole list while a command's chip is in the field:
+no provider pass, history, search suggestion or filler runs then (see
+[command palette](./command-palette.md#a-commands-chip)).
 
 For a non-empty query `localSuggestions(for:historySpaceIDs:tabs:allowAutocomplete:currentTabID:)`
 returns, in order, capped at `maxSuggestions` (12):

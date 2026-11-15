@@ -96,6 +96,25 @@ enum CommandDispatch {
         return NSApp.sendAction(action, to: target, from: item)
     }
 
+    /// What a palette's owner runs when a command row, or a choice in a
+    /// command's chip (TASK-320 AC #3), is activated: the command in
+    /// `window`, sent to `controller` when it answers it. A choice is first
+    /// checked against the window's choices now (`commandChoices(for:)`):
+    /// they were read when the chip opened, and the store may have changed
+    /// since (the chosen tab closed, the space deleted in another window); the
+    /// actions return nothing, so a stale value is refused here. False,
+    /// doing nothing, when refused: the caller beeps, as a disabled menu
+    /// item's key equivalent does.
+    @discardableResult
+    static func performFromPalette(_ command: BrowserCommand, argument: CommandArgument?, in window: NSWindow,
+                                   menu: NSMenu?, controller: some AnyObject & CommandContext) -> Bool {
+        guard let argument else { return perform(command, in: window, menu: menu, controller: controller) }
+        guard controller.commandChoices(for: command.id).contains(where: { $0.argument == argument }) else {
+            return false
+        }
+        return perform(command, argument: argument, in: window, controller: controller)
+    }
+
     /// Runs a parameterised command on `argument` in `window` (TASK-320
     /// AC #3) as the item that runs it in a menu does: one item per value,
     /// built from the command and carrying the value as `representedObject`

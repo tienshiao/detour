@@ -209,9 +209,16 @@ scope, so it shows the search row and filler only; nothing about a site
 search is recorded anywhere, and the visit itself follows the window's own
 rules.
 
-The chip (`SiteSearchChipView`) sits between the magnifying glass and the
-field; the field's leading constraint swaps between the icon and the chip.
-The placeholder becomes "Search *name*" and is put back on leaving.
+The chip (`PaletteChipView`, `SiteSearchChipView` until TASK-320) sits
+between the magnifying glass and the field; the field's leading constraint
+swaps between the icon and the chip. The placeholder becomes "Search *name*"
+and is put back on leaving. A command that asks for its space, tab or
+extension uses the same chip, with the command's symbol before its title,
+and leaves it by the same rules (`PaletteChip`: Backspace at the start puts
+back the entered text and the query, Escape leaves then dismisses, a Cmd+L
+palette dismisses at once); see [command palette](./command-palette.md#a-commands-chip).
+While a command's chip is up, neither Space after a keyword nor Tab enters
+a site search: the field is the command's filter.
 
 ### The chip's color
 

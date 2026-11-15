@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Command palette
-description: "The overlay used for URL entry, tab switching, history, web search and browser commands: its two modes, how it is opened and dismissed, inline completion, command rows and the > list, keyboard handling, and how focus returns to the page."
+description: "The overlay used for URL entry, tab switching, history, web search and browser commands: its two modes, how it is opened and dismissed, inline completion, command rows and the > list, a command's chip that asks for its space, tab or extension, keyboard handling, and how focus returns to the page."
 tags: [command-palette, navigation, keyboard, focus, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T22:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T09:00:00Z }
 sources:
   - id: palette-view
     resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
@@ -60,6 +60,18 @@ sources:
   - id: palette-commands
     resource: ../../Detour/Browser/CommandPalette/PaletteCommands.swift
     title: PaletteCommands.swift
+  - id: palette-chip
+    resource: ../../Detour/Browser/CommandPalette/PaletteChip.swift
+    title: PaletteChip.swift (the chip's enter, Backspace and Escape rules)
+  - id: command-choices
+    resource: ../../Detour/Commands/CommandChoices.swift
+    title: CommandChoices.swift (what a parameterised command may run on, the filter)
+  - id: chip-tests
+    resource: ../../DetourTests/PaletteCommandChipTests.swift
+    title: PaletteCommandChipTests.swift
+  - id: chip-window-tests
+    resource: ../../DetourTests/PaletteCommandChipWindowTests.swift
+    title: PaletteCommandChipWindowTests.swift
 ---
 
 # What it does
@@ -206,7 +218,7 @@ the pure functions of `PaletteSelection` (`initialRow`, `row(afterMoving:)`,
 | Return | activates the selected row; with none, submits the field's text; with none and a blank field, does nothing. The field has no target/action: Return never leaves this method |
 | Tab | when the typed text is a [site search](./site-search.md) keyword, or the field is or completes to a site search's host, or (no completion) starts its name or host, enters that site search (before the completion). Otherwise accepts the inline completion (the suffix becomes typed text). Consumed even with no completion, so focus never leaves the open palette |
 | Backspace | with a completion still selected, removes only the completion and suppresses autocomplete for the next change; otherwise deletes as usual |
-| Escape | prefilled palette (Cmd+L, address bar click): dismiss at once. Otherwise staged: leave site-search mode and clear the field, or drop the completion, then clear the text, then dismiss |
+| Escape | prefilled palette (Cmd+L, address bar click): dismiss at once. Otherwise staged (`PaletteChip.escapeAction`): leave site-search mode or a command's chip and clear the field, or drop the completion, then clear the text, then dismiss |
 | Space | a keyword followed by one space enters its site search (`controlTextDidChange`, since typing never reaches this method) |
 
 Which row is selected after a list rebuild depends on what the list is:
@@ -328,11 +340,72 @@ disabled menu key equivalent does.
 
 Not offered in the palette: New Tab and Open Location… (they open the
 palette), Undo and Redo (they act on whatever had focus), AppKit's text,
-window and application items, and every command that needs a parameter
-(switch to a space, an extension's popup or options). PROVISIONAL (chosen
-while the user was away): commands are both ranked in among the URL rows
-and listed alone after `>`; the alternatives were only after a prefix, or
-always mixed in. The thresholds (3 characters, 2 rows) are guesses.
+window and application items, Develop's per-extension items (the Develop
+menu lists every profile's extensions, the palette only its window
+profile's), and a command whose parameter has no list (a URL, a position;
+none is declared). Commands that need a space, a tab or an extension ask
+for it with a chip (below). Decided by the user (2026-11-14): commands are
+both ranked in among the URL rows (3 characters or more, at most 2 rows,
+below the typed row) and listed alone after `>`; the alternatives were only
+after a prefix, or always mixed in.
+
+## A command's chip
+
+A command that needs a space, a tab or an extension asks for it in the
+field, as a [site search](./site-search.md) asks for its query (TASK-320
+AC #3, the user's choice on 2026-11-14 over a nested list and typed
+arguments such as `>move work`).
+
+| Command | Choices (`CommandChoices`, from the window's controller) | Runs |
+|---|---|---|
+| Switch to Space (`space.switch`) | What the Spaces menu offers: every space of a normal profile in Settings › Spaces order, another profile's too (its row names the profile), but the window's own. None in a Private window | `selectSpaceFromMenu(_:)`, as a Spaces menu item |
+| Move Tab to Space (`tab.move-to-space`) | What the sidebar's Move to offers (every normal space; nothing from a Private window, TASK-38), but the tab's own space and any space the store would refuse the tab (`canMoveTab` / `canMovePinnedEntry`: a page the profile cannot serve). Not for a tab in a split (the sidebar has no Move to on a split row) | `moveSelectedTabToSpace(_:)` → the sidebar's `didRequestMoveTabAt` path: selection settles first, refusals explain themselves, one Move to Space undo |
+| Split with Tab (`tab.split-with`) | The window space's unpinned tabs in no split, in sidebar order, but the selected one; in a Private window its own tabs only. Not for a pinned tab or one in a split | `splitSelectedTabWith(_:)` → the sidebar's create-split path, the chosen tab to the right (Split with Next Tab for any tab) |
+| Show Extension Popup, Extension Options (`extension.show-popup`, `extension.options`) | The extensions the Extensions menu lists for the window's profile whose item is live there (`ExtensionMenuItems`: a declared popup, never read through `popupWebView`, TASK-55; an options page and a context in the profile, TASK-103). None in a Quick Detour | The submenu item's action on the app delegate |
+
+A profile list (`CommandChoices.profiles`: normal profiles, none from a
+Private window) is built and tested but no command takes a profile yet.
+
+**Offered** only when the window's rule holds (the same `isAvailable(in:)`
+as the menu) **and** there is a choice: Move Tab to Space with one space,
+Switch to Space in a Private window and Split with Tab in a one-tab space
+are not listed (`PaletteCommands.resolve`). The rows show the command's
+symbol and title, no shortcut.
+
+**Entering.** Return on the row (row 0 of a `>` list, or arrowed to among
+the URL rows) or a click on it: the chip (`PaletteChipView`, the site
+search's, with the command's symbol before its title, in the space's color)
+goes before the field, the field is emptied, its placeholder says "Choose a
+space" (a tab, an extension), and the rows are the command's choices, read
+once from the owner (`PaletteCommandSource.choices`), the first selected.
+What the user had typed (`>move`, or `move to` before arrowing, never the
+row's title the field showed) is kept in `PaletteChip.CommandState`.
+
+**In the mode.** The field filters the choices (`CommandChoices.filtered`:
+a title that starts with the words, then one whose words they start, then a
+title or address that contains the text; the list's order breaks ties).
+Arrows move the selection and leave the field alone, as in the `>` list.
+Return runs the command on the selected choice; with none (nothing matches)
+it does nothing: the text is never a search or an address. No history pass,
+no search suggestions (the filter never reaches the search engine), no
+inline completion, no filler. Space after a keyword and Tab do not enter a
+site search, and a filter starting with `>` stays a filter.
+
+**Leaving**, exactly as a site search: Backspace with the caret at the start
+puts back the entered text (then a space and the filter, if any), the caret
+after it; Escape leaves the chip and clears the field, and the next Escape
+dismisses; a Cmd+L palette dismisses at once. Cmd+T over the palette leaves
+it. If the window changes under the open palette (`reloadSuggestions`), the
+choices are read again, and the chip goes as by Backspace when the command
+is no longer offered.
+
+**Running.** `commandPalette(_:didRequestCommand:argument:)`: the owner
+dismisses the palette (focus back to the page, as for any command), then
+`CommandDispatch.perform(_:argument:in:controller:)` builds the command's
+item with the value as `representedObject`, as the menu items that run it
+carry it, validates it with the controller's rule and sends it. A choice
+gone stale meanwhile does what its menu item would (a refused move shows its
+hint).
 
 # Edge cases
 
@@ -368,9 +441,24 @@ always mixed in. The thresholds (3 characters, 2 rows) are guesses.
   it), Return with no match doing nothing, each matched command resolved
   once, and `>` as text without a source. Command rows can push the last
   history or tab matches past the 12-row cap (`compose`).
+- `CommandChoicesTests` - each command's choices (the window's own space,
+  Private windows, another profile's space, the store's refusals, split
+  partners, profiles, extensions), the filter's order, and the chip's rules
+  (entering, Backspace, Escape) (TASK-320 AC #3).
+- `PaletteCommandChipTests` - a real palette over a fake source: Return on a
+  parameterised command enters its chip (from `>` and from the URL rows),
+  typing filters, arrows keep the field, Return runs on the choice or does
+  nothing, no history or searches, keywords, `>` and Tab stay the filter,
+  Backspace (empty, with a filter, at its start, after arrowing) and Escape
+  (two steps; a Cmd+L palette at once).
+- `PaletteCommandChipWindowTests` - real windows: Move Tab to Space (a tab
+  and a pinned entry; not for a split), Switch to Space and Split with Tab
+  through the chip; a normal window never lists a Private window's space; a
+  Private window offers neither space command and splits only its own tabs.
 - `PaletteCommandWindowTests` - real windows: a normal, a Private, a Quick
   Detour and a quarantine window's `>` list is exactly the palette commands
-  its main menu enables there; Return pins and unpins the tab through the
+  its main menu enables there (and the parameterised ones whose rule holds
+  and that have a choice); Return pins and unpins the tab through the
   menu item and the palette is gone; Next Tab and Back reach the
   controller (Back closes a child tab to its opener); a Quick Detour's Copy
   URL runs in it.

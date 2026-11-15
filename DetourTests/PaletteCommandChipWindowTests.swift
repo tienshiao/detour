@@ -219,6 +219,20 @@ nonisolated final class PaletteCommandChipWindowTests: XCTestCase {
         XCTAssertEqual(wc.selectedTabID, tabs[0].id)
     }
 
+    /// The choices were read when the chip opened; one gone by Return (the
+    /// tab closed meanwhile) is refused, with a beep, not run on nothing.
+    @MainActor func testAChoiceGoneBeforeReturnIsRefused() throws {
+        let (wc, tabs) = windowOnHome(tabs: 3)
+        try enterChip(BrowserCommands.splitWithTab, typing: "split with", in: wc)
+        try type("tab2", in: wc)
+        XCTAssertEqual(choices(wc), [.tab(tabs[2].id)])
+        store.closeTab(id: tabs[2].id, in: home)
+        try pressReturn(in: wc)
+        XCTAssertNil(wc.commandPaletteView)
+        XCTAssertNil(tabs[0].splitGroupID, "nothing split")
+        XCTAssertEqual(wc.selectedTabID, tabs[0].id)
+    }
+
     // MARK: - A Private window
 
     @MainActor func testAPrivateWindowOffersNoSpaceCommandsAndSplitsOnlyItsOwnTabs() throws {
