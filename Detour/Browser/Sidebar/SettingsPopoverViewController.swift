@@ -210,7 +210,9 @@ class SettingsPopoverViewController: NSViewController {
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(label)
-        control.setAccessibilityLabel(title)
+        // One element for VoiceOver, as Settings' switch rows (TASK-336): the
+        // switch carries the name, the label is not read again.
+        SettingsSwitchRow.name(control, by: label)
         control.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(control)
         NSLayoutConstraint.activate([

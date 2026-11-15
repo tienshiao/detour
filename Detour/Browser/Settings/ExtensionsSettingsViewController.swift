@@ -307,6 +307,7 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
 
         let enabledLabel = NSTextField(labelWithString: "Enabled")
         enabledLabel.font = .systemFont(ofSize: 13)
+        SettingsSwitchRow.name(enabledSwitch, by: enabledLabel)
 
         let enabledRow = NSStackView(views: [enabledLabel, enabledSwitch])
         enabledRow.orientation = .horizontal
@@ -345,6 +346,7 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         let privateLabel = NSTextField(labelWithString: "Allow in Private")
         privateLabel.font = .systemFont(ofSize: 13)
         privateLabel.textColor = ext.isEnabled ? .labelColor : .disabledControlTextColor
+        SettingsSwitchRow.name(privateSwitch, by: privateLabel)
 
         let privateRow = NSStackView(views: [privateLabel, privateSwitch])
         privateRow.orientation = .horizontal

@@ -5,7 +5,7 @@ description: "The Settings window and its nine panes (General, Spaces, Links, Qu
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T23:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T01:10:00Z }
 sources:
   - id: task-211
     resource: backlog:TASK-211
@@ -85,6 +85,12 @@ sources:
   - id: switch-row-tests
     resource: ../../DetourTests/SettingsSwitchRowTests.swift
     title: SettingsSwitchRowTests.swift
+  - id: task-336
+    resource: backlog:TASK-336
+    title: "Settings: switches have one accessible name and VoiceOver reads each setting once"
+  - id: task336-axsettings
+    resource: ../../docs/harness/task336/axsettings.swift
+    title: TASK-336 Accessibility reader for the Settings window (reading order, switch names, duplicates)
   - id: task-327
     resource: backlog:TASK-327
     title: "Keyboard shortcuts: assign and customize the shortcuts of browser commands in Settings"
@@ -285,11 +291,34 @@ the label's (8 pt between alignment rects; a label's frame is 2 pt wider on
 each side), the same centre line. A click on a label does nothing, on every
 pane: the labels are plain text fields, as they were on Profiles and
 Extensions before (making them toggle the switch was the alternative).
-`SettingsSwitchRow` gives the switch the label's text as its accessibility
-label; the five converted switches keep the identifiers the checkboxes had
+The five converted switches keep the identifiers the checkboxes had
 (`peekEnabled`, `automationEnabled`, `automationAllowPrivate`,
-`quickDetourHotKeyEnabled`, `quickDetourOptionCommandClick`). The switches
-on Profiles and Extensions have no accessible name yet.
+`quickDetourHotKeyEnabled`, `quickDetourOptionCommandClick`).
+
+**Accessibility (TASK-336).** Each switch and its label are one element:
+`SettingsSwitchRow.name(_:by:)` gives the switch the label's text as its
+accessibility label and takes the label out of the Accessibility tree, so
+VoiceOver reads "<label>, switch, on" once. All three forms go through it
+(`SettingsSwitchRow.make`, `SettingsGroupBoxView.switchRow`, the Profiles
+grid's switch rows, Extensions' Enabled and Allow in Private), and so does
+the sidebar's page settings popover (`makeSwitchRow`).[^task-336] Before, a TASK-328 row was a static
+text followed by a switch of the same name (read twice), and the Profiles
+and Extensions switches had no name at all (read as "switch"). A text
+field's Accessibility element is its cell, so the label is hidden on the
+cell: on the field alone the text stayed in the tree (seen in the running
+app and in a unit probe; see [AppKit gotchas](../platform/appkit-gotchas.md#accessibility)).
+The label is not the switch's title UI element: that would keep the label
+in the tree as text of its own, read before the switch, and an ignored
+label could not serve as one. Measured with an Accessibility client over
+every pane (`docs/harness/task336/axsettings.swift`), before and after:
+General's 3 and Quick Detour's 2 duplicates gone, Profiles' 8 and an
+extension's 23 unnamed switches named, the popover's 3 duplicates gone,
+every `AXIdentifier` unchanged. Not changed, because they are not switches:
+labels beside a pop-up or grid already named the same (Links' "Open other
+links in", Quick Detour's idle pop-up, Spaces' Emoji and Color) and unnamed
+pop-ups and fields beside a grid label (Profiles, Spaces); the Shortcuts
+pane's recorders are named "<command> shortcut" inside a row titled by the
+command.
 
 | Pane | Content height (examples measured 2026-10-24) | Opened by |
 |---|---|---|
@@ -662,7 +691,10 @@ natural height counting it); `SettingsSwitchRowTests` the switch rows (no
 pane has a checkbox, the five converted settings are switches named by
 their labels, each 8 pt after its label and centred on it, the labels plain
 text, the Shortcut row under the hotkey switch, the Peek and ⌥⌘-click
-switches showing and writing their settings). The panes have no other UI tests; their layout is
+switches showing and writing their settings; since TASK-336 every switch in
+every pane and in the page popover named by the label beside it, and the
+Accessibility tree, walked as a client gets it, holding each switch and not
+its label). The panes have no other UI tests; their layout is
 checked at runtime with the TASK-189 survey harness (every pane and state,
 light and dark, frames measured; pane switches, drags, the cap and a real
 second screen; uninstalling the only extension through the pane; a run with
@@ -693,5 +725,6 @@ suites.
 [^task-189]: TASK-189
 [^task-211]: TASK-211
 [^task-328]: TASK-328
+[^task-336]: TASK-336
 [^task211-harness]: TASK-211 harness
 [^survey-harness]: TASK-189 survey harness

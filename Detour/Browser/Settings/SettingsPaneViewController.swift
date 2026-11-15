@@ -431,6 +431,7 @@ final class SettingsGroupBoxView: SettingsBorderedView {
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         toggle.setContentCompressionResistancePriority(.required, for: .horizontal)
+        SettingsSwitchRow.name(toggle, by: label)
         let row = NSStackView(views: [toggle, label])
         row.orientation = .horizontal
         row.spacing = 6
@@ -443,8 +444,8 @@ final class SettingsGroupBoxView: SettingsBorderedView {
 /// Quick Detour; TASK-328): its label, then the switch 8 pt after it, centred
 /// on each other, as the Extensions pane's Enabled and Allow in Private rows
 /// are. The label is a plain text field, so a click on it does nothing, as
-/// on every other switch row in Settings; the switch takes the label's text
-/// as its accessible name, since a switch has no title of its own.
+/// on every other switch row in Settings; the switch is named by it
+/// (`name(_:by:)`), since a switch has no title of its own.
 enum SettingsSwitchRow {
     static func make(_ toggle: NSSwitch, title: String) -> NSStackView {
         let label = NSTextField(labelWithString: title)
@@ -452,7 +453,7 @@ enum SettingsSwitchRow {
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         toggle.setContentCompressionResistancePriority(.required, for: .horizontal)
-        toggle.setAccessibilityLabel(title)
+        name(toggle, by: label)
         let row = NSStackView(views: [label, toggle])
         row.orientation = .horizontal
         row.alignment = .centerY
@@ -460,6 +461,25 @@ enum SettingsSwitchRow {
         row.setHuggingPriority(.required, for: .horizontal)
         row.translatesAutoresizingMaskIntoConstraints = false
         return row
+    }
+
+    /// Makes a switch and the label beside it one setting for Accessibility
+    /// (TASK-336): the switch takes the label's text as its name and the
+    /// label leaves the Accessibility tree, so VoiceOver reads "<label>,
+    /// switch, on" once instead of the label and then a switch of the same
+    /// name (or, unnamed, just "switch"). Not the label as the switch's title
+    /// UI element: that keeps the label in the tree as text of its own, read
+    /// before the switch. Every switch in Settings goes through this.
+    static func name(_ toggle: NSSwitch, by label: NSTextField) {
+        toggle.setAccessibilityLabel(label.stringValue)
+        hideFromAccessibility(label)
+    }
+
+    /// Takes a label out of the Accessibility tree. A text field's element
+    /// is its cell (the view already reports itself ignored), so it is the
+    /// cell that has to be ignored: on the field alone the text stays.
+    private static func hideFromAccessibility(_ label: NSTextField) {
+        label.cell?.setAccessibilityElement(false)
     }
 }
 

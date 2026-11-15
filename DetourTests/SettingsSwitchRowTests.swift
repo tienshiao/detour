@@ -186,6 +186,127 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
         XCTAssertTrue(recorder.frame.width > 0)
     }
 
+    // MARK: - Accessibility (TASK-336)
+
+    /// The text beside a switch that names it on screen: the label in its
+    /// row (a switch row, a group's row) or in its grid row's label column
+    /// (Profiles).
+    @MainActor private func visibleLabel(of toggle: NSSwitch) -> NSTextField? {
+        if let row = toggle.superview as? NSStackView {
+            return row.arrangedSubviews.compactMap { $0 as? NSTextField }.first
+        }
+        var view: NSView? = toggle
+        while let current = view, !(current.superview is NSGridView) { view = current.superview }
+        guard let cellView = view, let grid = cellView.superview as? NSGridView else {
+            // A row laid out by hand (the sidebar popover): its one label.
+            return toggle.superview?.subviews.compactMap { $0 as? NSTextField }.first
+        }
+        for index in 0..<grid.numberOfRows where grid.cell(atColumnIndex: 1, rowIndex: index).contentView === cellView {
+            return grid.cell(atColumnIndex: 0, rowIndex: index).contentView as? NSTextField
+        }
+        return nil
+    }
+
+    /// What an Accessibility client gets from `view` down: the unignored
+    /// elements AppKit hands out, as VoiceOver walks them.
+    @MainActor private func accessibilityElements(under view: NSView) -> [any NSAccessibilityProtocol] {
+        func walk(_ element: any NSAccessibilityProtocol) -> [any NSAccessibilityProtocol] {
+            let children = (element.accessibilityChildren() ?? []).compactMap { $0 as? any NSAccessibilityProtocol }
+            return children + children.flatMap(walk)
+        }
+        return walk(view)
+    }
+
+    /// The static texts of that tree, by their text.
+    @MainActor private func staticTexts(under view: NSView) -> [String] {
+        accessibilityElements(under: view)
+            .filter { $0.accessibilityRole() == .staticText }
+            .compactMap { ($0.accessibilityValue() as? String) ?? ($0 as? NSCell)?.stringValue }
+    }
+
+    /// Each pane as it first shows, Profiles with a profile selected (its
+    /// grid's switches and filter-list group). Extension switches need an
+    /// installed extension and are checked at runtime.
+    @MainActor private func panesWithSwitches() throws -> [SettingsPaneViewController] {
+        let panes = try allPanes()
+        for pane in panes {
+            _ = laidOut(pane)
+            pane.viewWillAppear()
+            pane.view.layoutSubtreeIfNeeded()
+        }
+        return panes
+    }
+
+    /// Every switch has an accessible name, and it is the text shown beside
+    /// it: VoiceOver says what the screen says.
+    @MainActor func testEverySwitchIsNamedByTheLabelBesideIt() throws {
+        var checked = 0
+        for pane in try panesWithSwitches() {
+            for toggle in descendants(of: pane.view).compactMap({ $0 as? NSSwitch }) {
+                let place = "\(type(of: pane)) \(toggle.accessibilityIdentifier())"
+                let label = try XCTUnwrap(visibleLabel(of: toggle), "\(place): a label beside it")
+                XCTAssertFalse(label.stringValue.isEmpty, place)
+                XCTAssertEqual(toggle.accessibilityLabel(), label.stringValue, place)
+                checked += 1
+            }
+        }
+        // General's 3, Quick Detour's 2, Profiles' 3 in its grid and 4 filter lists.
+        XCTAssertGreaterThanOrEqual(checked, 12)
+    }
+
+    /// The setting is one element: the switch, named; its label is not also
+    /// read as text of its own. The walk does see other text (a section
+    /// title), so an empty result is not a walk that sees nothing.
+    @MainActor func testTheAccessibilityTreeHasEachSwitchOnceAndNotItsLabel() throws {
+        for pane in try panesWithSwitches() {
+            let switches = descendants(of: pane.view).compactMap { $0 as? NSSwitch }
+            guard !switches.isEmpty else { continue }
+            let elements = accessibilityElements(under: pane.view)
+            let texts = staticTexts(under: pane.view)
+            XCTAssertFalse(texts.isEmpty, "\(type(of: pane)): the walk reaches the pane's text")
+            for toggle in switches where !toggle.isHiddenOrHasHiddenAncestor {
+                let name = try XCTUnwrap(toggle.accessibilityLabel(), "\(type(of: pane))")
+                XCTAssertTrue(elements.contains { $0 === toggle }, "\(name): the switch is in the tree")
+                XCTAssertEqual(toggle.accessibilitySubrole(), .switch, name)
+                XCTAssertFalse(texts.contains(name), "\(type(of: pane)): \"\(name)\" is read as text too")
+            }
+        }
+    }
+
+    /// The bordered group's row (Profiles' filter lists and extension
+    /// switches, an extension's permissions) and the switch row helper.
+    @MainActor func testTheRowHelpersNameTheSwitchAndHideTheLabel() {
+        let grouped = NSSwitch()
+        let (row, label) = SettingsGroupBoxView.switchRow(grouped, title: "Store data locally")
+        XCTAssertEqual(grouped.accessibilityLabel(), "Store data locally")
+        // A text field is read through its cell.
+        XCTAssertEqual(label.cell?.isAccessibilityElement(), false)
+        XCTAssertFalse(staticTexts(under: row).contains("Store data locally"))
+
+        let plain = NSSwitch()
+        let switchRow = SettingsSwitchRow.make(plain, title: "Enabled")
+        XCTAssertEqual(plain.accessibilityLabel(), "Enabled")
+        XCTAssertEqual(staticTexts(under: switchRow), [])
+        XCTAssertTrue(accessibilityElements(under: switchRow).contains { $0 === plain })
+    }
+
+    /// The sidebar's page settings popover lays its switches out the same
+    /// way (label, then switch) and reads them once too.
+    @MainActor func testThePagePopoverReadsEachSwitchOnce() throws {
+        let popover = SettingsPopoverViewController()
+        popover.host = "example.com"
+        popover.isDevModeAvailable = true
+        let switches = descendants(of: popover.view).compactMap { $0 as? NSSwitch }
+        XCTAssertEqual(switches.count, 3, "content blocking, picture in picture, dev mode")
+        let texts = staticTexts(under: popover.view)
+        XCTAssertFalse(texts.isEmpty)
+        for toggle in switches {
+            let label = try XCTUnwrap(visibleLabel(of: toggle))
+            XCTAssertEqual(toggle.accessibilityLabel(), label.stringValue)
+            XCTAssertFalse(texts.contains(label.stringValue), label.stringValue)
+        }
+    }
+
     // MARK: - Stored values
 
     @MainActor func testThePeekSwitchShowsAndWritesItsSetting() throws {

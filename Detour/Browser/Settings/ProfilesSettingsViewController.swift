@@ -352,6 +352,10 @@ class ProfilesSettingsViewController: SettingsPaneViewController, NSTableViewDat
             let gridRow = grid.row(at: index)
             gridRows[row] = gridRow
             let control = rows[index].control
+            if let toggle = control as? NSSwitch,
+               let label = grid.cell(atColumnIndex: 0, rowIndex: index).contentView as? NSTextField {
+                SettingsSwitchRow.name(toggle, by: label)
+            }
             if control is NSSwitch || control is NSStackView {
                 gridRow.rowAlignment = .none
                 gridRow.yPlacement = .center

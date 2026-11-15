@@ -1,10 +1,10 @@
 ---
 type: Platform Quirk
 title: AppKit gotchas
-description: A collection of AppKit behaviours that cost debugging time in Detour — first responder and key-view loop, split and stack view layout, hit testing, table views under a drag session, popovers — each with where it bit and what to do instead.
+description: A collection of AppKit behaviours that cost debugging time in Detour — first responder and key-view loop, split and stack view layout, hit testing, table views under a drag session, popovers, Accessibility — each with where it bit and what to do instead.
 tags: [appkit, platform, focus, layout, drag-and-drop, hit-testing]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T00:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T01:10:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-322
@@ -106,6 +106,9 @@ sources:
   - id: notes-inprocess
     resource: "Agent session notes, 2026-09-19 (not in the repository)"
     title: In-process UI verification notes
+  - id: task-336
+    resource: backlog:TASK-336
+    title: "Settings: switches have one accessible name and VoiceOver reads each setting once"
   - id: task-315
     resource: backlog:TASK-315
     title: "Windows: find what keeps a closed browser window's controller in memory"
@@ -205,6 +208,13 @@ Related.
 | An `NSButton` with a `contentTintColor` draws its template image the same when disabled as when enabled.[^task-322] | The Quick Detour back button looked clickable on the first page | Set the tint from the enabled state (`QuickDetourTitleBar.setCanGoBack`: secondary vs quaternary label colour) |
 | `contentView.cacheDisplay(in:to:)` renders web content but leaves the sidebar blank.[^notes-harness] | Capturing the sidebar for verification | Render the sidebar's layer instead; see [in-process UI automation](../playbooks/in-process-ui-automation.md) |
 
+# Accessibility
+
+| Behavior | Where it bit | Do instead |
+|---|---|---|
+| A text field's Accessibility element is its cell: `NSTextField.isAccessibilityElement()` is already false, and a view's `accessibilityChildren()` lists the `NSTextFieldCell`. `setAccessibilityElement(false)` on the field changes nothing; the text stays in the tree.[^task-336] | A switch's label hidden on the field was still read as text beside the named switch, in the running app and in a unit test (TASK-336) | Hide it on the cell: `label.cell?.setAccessibilityElement(false)` (`SettingsSwitchRow.hideFromAccessibility`). A test that walks `accessibilityChildren()` sees what a client sees, cells included |
+| `NSSwitch` is reported as `AXButton` with subrole `AXSwitch` (macOS 26), not `AXCheckBox`.[^task-336] | An Accessibility reader looking for check boxes found no switches | Match on the subrole |
+
 # Windows
 
 | Behavior | Where it bit | Do instead |
@@ -266,3 +276,4 @@ from a probe or a measurement.
 [^task-186-3]: Dev mode: capture buttons in the dev toolbar
 [^task-189]: Settings: fix the window's spacing and clipping
 [^task-314]: Window: a closed browser window can be re-shown by a link placement, with its sidebar deaf to the store
+[^task-336]: Settings: switches have one accessible name and VoiceOver reads each setting once
