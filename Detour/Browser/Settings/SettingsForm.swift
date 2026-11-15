@@ -46,16 +46,21 @@ final class SettingsForm: NSView {
 }
 
 /// One section of a `SettingsForm`: an optional header (13 pt semibold, on
-/// the rows' text edge), the group of rows with an optional footnote row at
-/// its end, and optional buttons under the group, on its right edge, that
-/// act on the whole group.
+/// the rows' text edge) with an optional accessory after it (a "Learn more"
+/// link), the group of rows with an optional footnote row at its end, and
+/// optional buttons under the group, on its right edge, that act on the
+/// whole group.
 final class SettingsFormSection: NSView {
     let titleLabel: NSTextField?
+    /// What follows the header on its baseline, nil for none.
+    let headerAccessory: NSView?
     let group: SettingsFormGroupView
     /// The buttons under the group, nil for none.
     let buttonRow: NSStackView?
 
-    init(title: String? = nil, rows: [SettingsFormRow], footnote: SettingsFormRow? = nil, buttons: [NSButton] = []) {
+    init(title: String? = nil, headerAccessory: NSView? = nil, rows: [SettingsFormRow],
+         footnote: SettingsFormRow? = nil, buttons: [NSButton] = []) {
+        self.headerAccessory = title == nil ? nil : headerAccessory
         group = SettingsFormGroupView(rows: rows + (footnote.map { [$0] } ?? []))
         if let title {
             let label = NSTextField(labelWithString: title)
@@ -94,6 +99,16 @@ final class SettingsFormSection: NSView {
             ]
             above = titleLabel.bottomAnchor
             gap = SettingsMetrics.formHeaderToGroup
+            if let headerAccessory {
+                headerAccessory.translatesAutoresizingMaskIntoConstraints = false
+                addSubview(headerAccessory)
+                constraints += [
+                    headerAccessory.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor,
+                                                             constant: SettingsMetrics.labelToControl),
+                    headerAccessory.firstBaselineAnchor.constraint(equalTo: titleLabel.firstBaselineAnchor),
+                    headerAccessory.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -insetX),
+                ]
+            }
         }
         addSubview(group)
         constraints += [
@@ -166,22 +181,6 @@ final class SettingsFormGroupView: NSView {
 
     var rows: [SettingsFormRow] { stack.arrangedSubviews.compactMap { $0 as? SettingsFormRow } }
 
-    /// The group's fill: black on light, white on dark, at about 3%, as
-    /// System Settings' groups measure (`quaternarySystemFill`, 2.7%, came
-    /// out a level lighter).
-    static let fillColor = NSColor(name: "SettingsFormGroupFill") { appearance in
-        NSColor(white: appearance.isDark ? 1 : 0, alpha: 0.031)
-    }
-
-    /// Increase Contrast, read from the appearance: AppKit swaps in the
-    /// high-contrast appearances when it is on, and redraws the views.
-    private var increasesContrast: Bool {
-        let match = effectiveAppearance.bestMatch(from: [
-            .aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
-        ])
-        return match == .accessibilityHighContrastAqua || match == .accessibilityHighContrastDarkAqua
-            || NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-    }
 
     override func layout() {
         super.layout()
@@ -197,9 +196,9 @@ final class SettingsFormGroupView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let radius = SettingsMetrics.formGroupCornerRadius
         let shape = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
-        Self.fillColor.setFill()
+        SettingsGroupStyle.fillColor.setFill()
         shape.fill()
-        if increasesContrast {
+        if SettingsGroupStyle.increasesContrast(effectiveAppearance) {
             let border = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: radius - 0.5,
                                       yRadius: radius - 0.5)
             border.lineWidth = 1
@@ -221,6 +220,33 @@ final class SettingsFormGroupView: NSView {
                                           options: .alignAllEdgesNearest)
             NSBezierPath(rect: line).fill()
         }
+    }
+}
+
+/// The look every group shares: a form's groups and the lists drawn as
+/// groups (`SettingsListContainerView`).
+enum SettingsGroupStyle {
+    /// Black on light, white on dark, at about 3%, as System Settings' groups
+    /// measure (`quaternarySystemFill`, 2.7%, came out a level lighter).
+    static let fillColor = NSColor(name: "SettingsFormGroupFill") { appearance in
+        NSColor(white: appearance.isDark ? 1 : 0, alpha: 0.031)
+    }
+
+    /// Replaces the system's Increase Contrast for a test or a capture
+    /// harness: a process cannot turn it on for itself (an
+    /// `accessibilityHighContrast…` appearance resolves to the plain one
+    /// while the setting is off). Nil follows the system.
+    static var increaseContrastOverride: Bool?
+
+    /// Increase Contrast: the high-contrast appearance AppKit swaps in when
+    /// it is on (and redraws), or the workspace's flag.
+    static func increasesContrast(_ appearance: NSAppearance) -> Bool {
+        if let increaseContrastOverride { return increaseContrastOverride }
+        let match = appearance.bestMatch(from: [
+            .aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
+        ])
+        return match == .accessibilityHighContrastAqua || match == .accessibilityHighContrastDarkAqua
+            || NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
     }
 }
 
@@ -300,6 +326,9 @@ final class SettingsFormRow: NSView {
         var control: NSView?
         var baselineAligned = false
         var nameControl = false
+        // A push button keeps 10 pt above and below it, as in System
+        // Settings (a 44 pt row); other controls 7.
+        var controlInsetY = SettingsMetrics.formControlInsetY
         var size = NSSize.zero
         switch accessory {
         case .none:
@@ -316,6 +345,7 @@ final class SettingsFormRow: NSView {
         case .button(let button):
             control = button
             baselineAligned = true
+            controlInsetY = SettingsMetrics.formButtonInsetY
         case .value(let value, let button):
             value.translatesAutoresizingMaskIntoConstraints = false
             let views: [NSView] = [value] + (button.map { [$0] } ?? [])
@@ -329,6 +359,7 @@ final class SettingsFormRow: NSView {
             stack.setHuggingPriority(.required, for: .horizontal)
             control = stack
             baselineAligned = true
+            if button != nil { controlInsetY = SettingsMetrics.formButtonInsetY }
         case .shortcut(let recorder):
             control = recorder
             baselineAligned = true
@@ -376,7 +407,6 @@ final class SettingsFormRow: NSView {
             control.setContentHuggingPriority(.required, for: .horizontal)
             control.setContentCompressionResistancePriority(.required, for: .horizontal)
             addSubview(control)
-            let controlInsetY = SettingsMetrics.formControlInsetY
             constraints += [
                 control.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -insetX),
                 column.trailingAnchor.constraint(equalTo: control.leadingAnchor,
@@ -436,6 +466,24 @@ final class SettingsFormRow: NSView {
         let text = children.filter { !isAccessory($0) }
         let afterName = text.firstIndex { view(of: $0) === titleLabel }.map { $0 + 1 } ?? 0
         return Array(text[..<afterName]) + accessory + Array(text[afterName...])
+    }
+
+    // MARK: - Enabled
+
+    /// Off, the control is disabled and the name dimmed (a filter list while
+    /// blocking is off, an extension turned off everywhere). The help stays
+    /// as it is: it says why.
+    var isEnabled = true {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            titleLabel?.textColor = isEnabled ? .labelColor : .tertiaryLabelColor
+            func setEnabled(_ view: NSView) {
+                if let control = view as? NSControl { control.isEnabled = isEnabled }
+                if let recorder = view as? ShortcutRecorderView { recorder.isEnabled = isEnabled }
+                view.subviews.forEach(setEnabled)
+            }
+            if let accessoryView { setEnabled(accessoryView) }
+        }
     }
 
     // MARK: - Content under the name

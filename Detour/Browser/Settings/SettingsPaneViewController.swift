@@ -353,10 +353,12 @@ extension NSTableView {
     }
 }
 
-/// A rounded view with a 1 pt separator-coloured border. The border is drawn
-/// in `updateLayer`, so it is resolved again whenever the appearance changes
-/// (a `CGColor` set once keeps the appearance it was created in and
-/// disappeared in dark mode, TASK-189 defect 9).
+/// A view drawn as a grouped form's group (TASK-338): the 12 pt rounded
+/// fill of `SettingsFormGroupView`, its content clipped to the shape, and a
+/// border under Increase Contrast. Drawn in `updateLayer`, so the colours
+/// are resolved again whenever the appearance changes (a `CGColor` set once
+/// keeps the appearance it was created in, TASK-189 defect 9). Until
+/// TASK-338 it was a 4 pt rounded 1 pt separator border.
 class SettingsBorderedView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -370,9 +372,12 @@ class SettingsBorderedView: NSView {
 
     override func updateLayer() {
         guard let layer else { return }
-        layer.borderWidth = 1
-        layer.cornerRadius = SettingsMetrics.listCornerRadius
+        layer.cornerRadius = SettingsMetrics.formGroupCornerRadius
+        layer.masksToBounds = true
+        let border = SettingsGroupStyle.increasesContrast(effectiveAppearance)
+        layer.borderWidth = border ? 1 : 0
         effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer.backgroundColor = SettingsGroupStyle.fillColor.cgColor
             layer.borderColor = NSColor.separatorColor.cgColor
         }
     }
@@ -383,7 +388,8 @@ class SettingsBorderedView: NSView {
     }
 }
 
-/// The bordered box around a master list (Spaces, Profiles, Extensions).
+/// The group around a list (Spaces, Profiles and Extensions' master lists,
+/// Search's site searches, Links' routes, the Shortcuts list).
 final class SettingsListContainerView: SettingsBorderedView {}
 
 /// A bordered group of rows (Profiles' filter lists and extension switches,
@@ -532,10 +538,12 @@ extension NSView {
 
 extension NSTextField {
     /// A section's title in a Settings pane, styled like System Settings'
-    /// group headers.
+    /// group headers (13 pt semibold, a form section's header since
+    /// TASK-338). Over a group it sits `SettingsMetrics.formRowInsetX` in,
+    /// on the rows' text.
     static func settingsSectionTitle(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 12, weight: .semibold)
+        label.font = .systemFont(ofSize: SettingsMetrics.formTitleFontSize, weight: .semibold)
         label.textColor = .labelColor
         label.translatesAutoresizingMaskIntoConstraints = false
         return label

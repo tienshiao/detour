@@ -402,4 +402,70 @@ nonisolated final class SettingsFormTests: XCTestCase {
         XCTAssertEqual(Pane.totalsText(activeRules: 156_372, activity: ""), "156,372 active rules")
         XCTAssertEqual(Pane.totalsText(activeRules: 0, activity: "Updating 2 lists…"), "No active rules. Updating 2 lists…")
     }
+
+    // MARK: - Phase 2 additions
+
+    /// A header's accessory (a Learn more link) follows the title on its
+    /// baseline.
+    @MainActor func testAHeaderAccessoryFollowsTheTitle() throws {
+        let link = SettingsGuideLink(.tabArchiving, title: "Learn more")
+        let section = SettingsFormSection(title: "Tabs", headerAccessory: link, rows: [SettingsFormRow(title: "One")])
+        let (_, host) = laidOut([section], width: SettingsMetrics.formWidth)
+        let title = try XCTUnwrap(section.titleLabel)
+        XCTAssertEqual(placed(link, in: host).minX - placed(title, in: host).maxX, SettingsMetrics.labelToControl,
+                       accuracy: 0.5)
+        let baseline = { (view: NSView) in view.convert(view.bounds, to: host).minY + view.firstBaselineOffsetFromTop }
+        XCTAssertEqual(baseline(link), baseline(title), accuracy: 0.5)
+    }
+
+    /// A row turned off disables its control and dims its name.
+    @MainActor func testADisabledRowDimsItsNameAndDisablesItsControl() throws {
+        let toggle = NSSwitch()
+        let row = SettingsFormRow(title: "EasyList", accessory: .toggle(toggle))
+        row.isEnabled = false
+        XCTAssertFalse(toggle.isEnabled)
+        XCTAssertEqual(row.titleLabel?.textColor, .tertiaryLabelColor)
+        row.isEnabled = true
+        XCTAssertTrue(toggle.isEnabled)
+        XCTAssertEqual(row.titleLabel?.textColor, .labelColor)
+    }
+
+    /// A button row is 44 pt, as System Settings' (10 pt above and below a
+    /// 24 pt button); a value with a button too.
+    @MainActor func testButtonRowsAreSystemSettingsHeight() throws {
+        let button = NSButton(title: "Clear…", target: nil, action: nil)
+        let row = SettingsFormRow(title: "History", accessory: .button(button))
+        let value = SettingsFormRow(title: "Voice", accessory: .value(NSTextField(labelWithString: "American"),
+                                                                      button: NSButton(title: "Select…", target: nil,
+                                                                                       action: nil)))
+        _ = laidOut([SettingsFormSection(rows: [row, value])], width: SettingsMetrics.formWidth)
+        XCTAssertEqual(row.frame.height, button.frame.height + 2 * SettingsMetrics.formButtonInsetY, accuracy: 0.5)
+        XCTAssertEqual(value.frame.height, row.frame.height, accuracy: 0.5)
+    }
+
+    /// Under Increase Contrast a group and a list drawn as one get a border
+    /// (the override stands in for the system setting, which a process
+    /// cannot turn on for itself).
+    @MainActor func testIncreaseContrastBordersTheGroups() throws {
+        defer { SettingsGroupStyle.increaseContrastOverride = nil }
+        func leftEdge(contrast: Bool) throws -> NSColor {
+            SettingsGroupStyle.increaseContrastOverride = contrast
+            let group = SettingsFormGroupView(rows: [SettingsFormRow(title: "One")])
+            group.frame = NSRect(x: 0, y: 0, width: 200, height: 36)
+            group.layoutSubtreeIfNeeded()
+            let rep = try XCTUnwrap(group.bitmapImageRepForCachingDisplay(in: group.bounds))
+            group.cacheDisplay(in: group.bounds, to: rep)
+            return try XCTUnwrap(rep.colorAt(x: 0, y: rep.pixelsHigh / 2))
+        }
+        XCTAssertGreaterThan(try leftEdge(contrast: true).alphaComponent, try leftEdge(contrast: false).alphaComponent + 0.03)
+
+        let list = SettingsListContainerView()
+        SettingsGroupStyle.increaseContrastOverride = true
+        list.updateLayer()
+        XCTAssertEqual(list.layer?.borderWidth, 1)
+        SettingsGroupStyle.increaseContrastOverride = false
+        list.updateLayer()
+        XCTAssertEqual(list.layer?.borderWidth, 0)
+        XCTAssertEqual(list.layer?.cornerRadius, SettingsMetrics.formGroupCornerRadius)
+    }
 }

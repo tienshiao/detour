@@ -75,8 +75,10 @@ enum SettingsMetrics {
     static let formRowInsetX: CGFloat = 10
     /// A row's text from the row's top and bottom.
     static let formRowInsetY: CGFloat = 10
-    /// A control from the row's top and bottom, at least.
+    /// A control from the row's top and bottom, at least; a push button 10
+    /// (System Settings' button rows are 44 pt, its pop-up rows 38).
     static let formControlInsetY: CGFloat = 7
+    static let formButtonInsetY: CGFloat = 10
     /// The text column's end to the control.
     static let formLabelToControl: CGFloat = 16
     /// A row's name to its help text, and between the lines under it.
