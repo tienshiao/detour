@@ -365,7 +365,9 @@ nonisolated final class SettingsPaneColumnsTests: XCTestCase {
         pane.view.layoutSubtreeIfNeeded()
         let natural = pane.naturalContentHeight
         XCTAssertGreaterThan(natural, 150, "the shortcut, ⌥⌘-click, idle and caption rows")
-        XCTAssertLessThan(natural, SettingsMetrics.listPaneMinimumHeight)
+        // A grouped form since TASK-338 (about 450 pt): System Settings'
+        // rows and section gaps are roomier than the 317 pt of TASK-328's.
+        XCTAssertLessThan(natural, 600)
     }
 
     @MainActor func testTheLinksPaneDoesNotNeedMoreThanTheListMinimum() throws {

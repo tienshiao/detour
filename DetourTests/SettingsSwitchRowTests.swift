@@ -109,27 +109,30 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
 
     // MARK: - The converted rows
 
+    /// General's switches are regular (TASK-328's rows); Quick Detour's are
+    /// in a grouped form (TASK-338), mini as System Settings' are.
     @MainActor func testTheConvertedSettingsAreSwitchesNamedByTheirLabels() throws {
-        let cases: [(SettingsPaneViewController, [(String, String)])] = [
-            (GeneralSettingsViewController(), Self.generalSwitches),
-            (QuickDetourSettingsViewController(), Self.quickDetourSwitches),
+        let cases: [(SettingsPaneViewController, [(String, String)], NSControl.ControlSize)] = [
+            (GeneralSettingsViewController(), Self.generalSwitches, .regular),
+            (QuickDetourSettingsViewController(), Self.quickDetourSwitches, .mini),
         ]
-        for (pane, switches) in cases {
+        for (pane, switches, size) in cases {
             _ = laidOut(pane)
             for (identifier, title) in switches {
                 let toggle = try XCTUnwrap(control(identifier, in: pane) as? NSSwitch, "\(identifier) is a switch")
                 XCTAssertEqual(toggle.accessibilityLabel(), title, identifier)
-                XCTAssertEqual(toggle.controlSize, .regular, identifier)
+                XCTAssertEqual(toggle.controlSize, size, identifier)
             }
         }
     }
 
     /// The label first, the switch 8 pt after it and centred on it, the
     /// label at the body's leading edge, as the Extensions pane's Enabled row.
+    /// (Quick Detour's rows are a grouped form since TASK-338:
+    /// `testQuickDetoursControlsShareTheFormsRightEdge`.)
     @MainActor func testEachSwitchSitsAfterItsLabelAtTheBodysLeadingEdge() throws {
         let cases: [(SettingsPaneViewController, [(String, String)])] = [
             (laidOut(GeneralSettingsViewController()), Self.generalSwitches),
-            (laidOut(QuickDetourSettingsViewController()), Self.quickDetourSwitches),
         ]
         for (pane, switches) in cases {
             // The body's leading edge: the pane margin.
@@ -158,7 +161,7 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
                                  (laidOut(QuickDetourSettingsViewController()), Self.quickDetourSwitches)] {
             for (identifier, _) in switches {
                 let toggle = try XCTUnwrap(control(identifier, in: pane) as? NSSwitch)
-                let label = try XCTUnwrap((toggle.superview as? NSStackView)?.arrangedSubviews.first as? NSTextField)
+                let label = try XCTUnwrap(visibleLabel(of: toggle))
                 XCTAssertFalse(label.isEditable, identifier)
                 XCTAssertFalse(label.isSelectable, identifier)
                 XCTAssertNil(label.action, identifier)
@@ -166,24 +169,46 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
         }
     }
 
-    /// The hotkey's recorder is a row of its own under the switch, labelled
-    /// "Shortcut" on its baseline; it stays usable with the hotkey off (it is
-    /// also the menu item's shortcut).
+    /// The hotkey's recorder is the row right under the switch's, in the
+    /// same group (TASK-338), titled "Shortcut" on its baseline and named
+    /// "Quick Detour shortcut" as before; it stays usable with the hotkey
+    /// off (it is also the menu item's shortcut).
     @MainActor func testTheShortcutRecorderIsARowBelowTheHotKeySwitch() throws {
         let pane = laidOut(QuickDetourSettingsViewController())
         let toggle = try XCTUnwrap(control("quickDetourHotKeyEnabled", in: pane) as? NSSwitch)
         let recorder = try XCTUnwrap(control("quickDetourHotKeyShortcut", in: pane) as? ShortcutRecorderView)
-        let row = try XCTUnwrap(toggle.superview)
-        let rowFrame = placed(row, in: pane)
-        let recorderFrame = placed(recorder, in: pane)
-        // The pane's view is not flipped: below means a smaller y.
-        XCTAssertEqual(rowFrame.minY - recorderFrame.maxY, SettingsMetrics.rowGap, accuracy: 0.5)
-        let label = try XCTUnwrap(descendants(of: pane.view).compactMap { $0 as? NSTextField }
-            .first { $0.stringValue == "Shortcut" })
-        let labelFrame = placed(label, in: pane)
-        XCTAssertEqual(labelFrame.minX, rowFrame.minX, accuracy: 0.5)
-        XCTAssertEqual(recorderFrame.minX - labelFrame.maxX, SettingsMetrics.labelToControl, accuracy: 0.5)
+        let switchRow = try XCTUnwrap(formRow(of: toggle))
+        let recorderRow = try XCTUnwrap(formRow(of: recorder))
+        XCTAssertEqual(recorderRow.superview, switchRow.superview, "one group")
+        XCTAssertEqual(placed(switchRow, in: pane).minY, placed(recorderRow, in: pane).maxY, accuracy: 0.5,
+                       "right under it (the pane's view is not flipped)")
+        XCTAssertEqual(recorderRow.titleLabel?.stringValue, "Shortcut")
+        XCTAssertEqual(recorder.accessibilityLabel(), "\(QuickDetour.displayName) shortcut")
+        XCTAssertEqual(placed(try XCTUnwrap(recorderRow.titleLabel), in: pane).minX,
+                       placed(try XCTUnwrap(switchRow.titleLabel), in: pane).minX, accuracy: 0.5)
+        XCTAssertEqual(placed(recorder, in: pane).maxX, placed(toggle, in: pane).maxX, accuracy: 0.5)
+        XCTAssertTrue(recorder.isEnabled, "the pane never turns it off")
         XCTAssertTrue(recorder.frame.width > 0)
+    }
+
+    /// Quick Detour's controls (two switches, the recorder, the idle pop-up)
+    /// end on one right edge, and their names start on one left edge.
+    @MainActor func testQuickDetoursControlsShareTheFormsRightEdge() throws {
+        let pane = laidOut(QuickDetourSettingsViewController())
+        let controls = try ["quickDetourHotKeyEnabled", "quickDetourHotKeyShortcut", "quickDetourOptionCommandClick",
+                            "quickDetourIdleTimeout"].map { try XCTUnwrap(control($0, in: pane), $0) }
+        let rights = controls.map { placed($0, in: pane).maxX }
+        let lefts = try controls.map { placed(try XCTUnwrap(formRow(of: $0)?.titleLabel), in: pane).minX }
+        let body = pane.view.bounds.width - SettingsMetrics.paneMargin
+        for right in rights { XCTAssertEqual(right, body - SettingsMetrics.formRowInsetX, accuracy: 0.5) }
+        for left in lefts { XCTAssertEqual(left, SettingsMetrics.paneMargin + SettingsMetrics.formRowInsetX, accuracy: 0.5) }
+    }
+
+    /// The form row a control sits in.
+    @MainActor private func formRow(of view: NSView) -> SettingsFormRow? {
+        var current = view.superview
+        while let candidate = current, !(candidate is SettingsFormRow) { current = candidate.superview }
+        return current as? SettingsFormRow
     }
 
     // MARK: - Accessibility (TASK-336)
@@ -192,6 +217,8 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
     /// row (a switch row, a group's row) or in its grid row's label column
     /// (Profiles).
     @MainActor private func visibleLabel(of toggle: NSSwitch) -> NSTextField? {
+        // A grouped form's row (TASK-338): its name.
+        if let row = formRow(of: toggle) { return row.titleLabel }
         if let row = toggle.superview as? NSStackView {
             return row.arrangedSubviews.compactMap { $0 as? NSTextField }.first
         }

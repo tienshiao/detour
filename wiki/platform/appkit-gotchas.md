@@ -106,6 +106,9 @@ sources:
   - id: notes-inprocess
     resource: "Agent session notes, 2026-09-19 (not in the repository)"
     title: In-process UI verification notes
+  - id: task-338
+    resource: backlog:TASK-338
+    title: "Settings: System Settings–style grouped rows, with labels on the left and switches and controls aligned on the right"
   - id: task-336
     resource: backlog:TASK-336
     title: "Settings: switches have one accessible name and VoiceOver reads each setting once"
@@ -147,6 +150,8 @@ Related.
 | Auto Layout constraints on a `WKWebView`'s container break the docked Web Inspector. | Web view hosting | Web view containers are frame-based: `container.frame = contentContainerView.bounds`, and split panes sit in an `NSSplitView`, which frames its children directly. A throwaway spike on 2026-07-11 confirmed the inspector docks inside a pane and survives divider moves.[^design] See [split tabs hosting](../tabs/split-tabs-hosting.md) |
 | `NSStackView.edgeInsets` on the **cross axis** are hugging-priority constraints only. In a height-constrained column the bottom inset silently collapses while the top survives.[^task-113] | Update banner in the Extensions settings pane: the button sat on the border | Add your own required constraints for insets that must hold; pin the content's bottom to the container. Measure in the running app rather than judging by eye |
 | An `NSBox` with `boxType = .separator` has no intrinsic width. In a horizontal `NSStackView` given only a height, it can be stretched to take the stack's slack and turns into a horizontal line; with one separator in the dev toolbar it happened to stay narrow, with two (TASK-186.3) one stretched to 473 pt and pulled the link button to the URL.[^task-186-3] | Dev toolbar trailing groups | Constrain both dimensions (`addTrailingGroup` gives each separator width 1, height 14); the frame is then about 5 pt wide around a 1 pt alignment rect |
+| A mini or small `NSSwitch` reports the regular size (54 × 24 on macOS 26) from `intrinsicContentSize` until it sits directly in a window's view tree, and keeps the first size it reported: setting `controlSize` or `invalidateIntrinsicContentSize()` later changes nothing until AppKit lays it out in a window, where it becomes 36 × 16 (mini). Measured with standalone probes, Nov 14 2026.[^task-338] | Settings' grouped form: a pane's rows are built and measured before the pane is in the window, so a row measured a 24 pt switch and came out 2 pt taller than in the window | Read the size once from a switch in a window that is never shown and fix the switch to it with constraints (`SettingsFormRow.switchSize`) |
+| `NSStackView` ignores `setContentHuggingPriority`; its own `setHuggingPriority(_:for:)` only keeps its spacing tight. Arranged views with the default 250 hugging still stretch when something pulls the stack wider.[^task-338] | A value and its button in a form row stretched to 390 pt, the button with them | Give the arranged views required hugging themselves |
 | `NSBox`'s content view is sized by autoresizing, so the box does not grow to an Auto Layout content's fitting height.[^task-113] | Same banner | A plain layer-backed container (`TintedBannerView`) |
 | A window's content view whose constraints cap its height (content pinned top and bottom with required `==`, nothing that stretches, inside a scroll view's document that must be at least the visible height) gives the window a maximum size: AppKit resizes the window to it the moment the view becomes `contentViewController`'s view, with no animation.[^task-189] | Settings: shrinking onto the Content Blocking pane snapped instead of animating | Pin the last item with `<=` plus a low-priority `==`, or let something in the column stretch |
 | Setting `contentMaxSize` below the window's current content height (or `contentMinSize` above it) resizes the window at once.[^task-189] | Settings window, setting a pane's bounds before animating to its height | Widen the bounds to cover the current height, animate, then set the final bounds in the completion |
@@ -277,3 +282,4 @@ from a probe or a measurement.
 [^task-189]: Settings: fix the window's spacing and clipping
 [^task-314]: Window: a closed browser window can be re-shown by a link placement, with its sidebar deaf to the store
 [^task-336]: Settings: switches have one accessible name and VoiceOver reads each setting once
+[^task-338]: Settings: System Settings–style grouped rows

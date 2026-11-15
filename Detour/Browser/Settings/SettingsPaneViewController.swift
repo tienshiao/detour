@@ -469,9 +469,12 @@ enum SettingsSwitchRow {
     /// switch, on" once instead of the label and then a switch of the same
     /// name (or, unnamed, just "switch"). Not the label as the switch's title
     /// UI element: that keeps the label in the tree as text of its own, read
-    /// before the switch. Every switch in Settings goes through this.
-    static func name(_ toggle: NSSwitch, by label: NSTextField) {
-        toggle.setAccessibilityLabel(label.stringValue)
+    /// before the switch. Every switch in Settings goes through this, and so
+    /// does every control a form row names (TASK-338: a pop-up, a shortcut
+    /// recorder), with `name` when its accessible name says more than the
+    /// label ("Quick Detour shortcut" beside "Shortcut").
+    static func name(_ control: NSView, by label: NSTextField, as name: String? = nil) {
+        control.setAccessibilityLabel(name ?? label.stringValue)
         hideFromAccessibility(label)
     }
 
@@ -511,10 +514,13 @@ final class SettingsWrappingLabel: NSTextField {
         guard newSize.width > 1, abs(newSize.width - preferredMaxLayoutWidth) > 0.5 else { return }
         preferredMaxLayoutWidth = newSize.width
         invalidateIntrinsicContentSize()
-        enclosingPane?.contentHeightDidChange()
+        enclosingSettingsPane?.contentHeightDidChange()
     }
+}
 
-    private var enclosingPane: SettingsPaneViewController? {
+extension NSView {
+    /// The Settings pane this view is in, found up the responder chain.
+    var enclosingSettingsPane: SettingsPaneViewController? {
         var responder: NSResponder? = self
         while let next = responder {
             if let pane = next as? SettingsPaneViewController { return pane }

@@ -1,7 +1,7 @@
 ---
 type: Component
 title: Settings window
-description: "The Settings window and its nine panes (General, Spaces, Links, Quick Detour, Profiles, Search, Shortcuts, Extensions, Content Blocking): what each one edits, how changes reach TabStore, the shared metrics and pane container (one scrolling body, or since TASK-211 a list and detail column fixed to the pane and scrolling on their own), the height rule (natural height, capped to the screen, resizable in height only) and the layout traps met on the way."
+description: "The Settings window and its nine panes (General, Spaces, Links, Quick Detour, Profiles, Search, Shortcuts, Extensions, Content Blocking): what each one edits, how changes reach TabStore, the shared metrics and pane container (one scrolling body, or since TASK-211 a list and detail column fixed to the pane and scrolling on their own), the System Settings–style grouped form (TASK-338, on Quick Detour and Content Blocking so far), the height rule (natural height, capped to the screen, resizable in height only) and the layout traps met on the way."
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
@@ -91,6 +91,15 @@ sources:
   - id: task336-axsettings
     resource: ../../docs/harness/task336/axsettings.swift
     title: TASK-336 Accessibility reader for the Settings window (reading order, switch names, duplicates)
+  - id: task-338
+    resource: backlog:TASK-338
+    title: "Settings: System Settings–style grouped rows, with labels on the left and switches and controls aligned on the right"
+  - id: form
+    resource: ../../Detour/Browser/Settings/SettingsForm.swift
+    title: SettingsForm.swift (the grouped form)
+  - id: form-tests
+    resource: ../../DetourTests/SettingsFormTests.swift
+    title: SettingsFormTests.swift
   - id: task-337
     resource: backlog:TASK-337
     title: "Content blocking: a setting for the AdGuard URL Tracking list, so Detour does not fetch it when it is off"
@@ -273,6 +282,96 @@ their control's first baseline (`rowAlignment = .firstBaseline`); a row
 whose control has no text (the colour well, a switch) is centred instead. A
 section title is 12 pt semibold, like System Settings' group headers.
 
+### The grouped form (TASK-338)
+
+System Settings' look, at the user's request (Nov 14 2026, with a
+screenshot of System Settings > Apple Intelligence & Siri as the
+reference): a bold header over an inset rounded group, one row per
+setting with its name on the left and its control on the right, hairlines
+between the rows, help text under the name, a footnote row closing the
+group and buttons for the whole group under it on the
+right.[^task-338] `SettingsForm.swift` holds it; Quick Detour and Content
+Blocking use it (the pilot); the other panes still lay out their own rows.
+
+- `SettingsForm(sections:estimatedWidth:)`: the sections in a vertical
+  stack 30 pt apart (a hidden section leaves no gap). A pane hands it to
+  `formBody(_:)`, which pins it to the body's top and sides with `<=` plus
+  `bottomHug` at the bottom, as every scrolling body must. Under the pane's
+  description or Learn more link it starts 8 pt lower (20 pt under the
+  link), so the link does not read as the first section's.
+- `SettingsFormSection(title:rows:footnote:buttons:)`: the header (13 pt
+  semibold, on the rows' text edge), 10 pt, the group, and the buttons 10
+  pt under it, ending on the group's right edge (not the rows' inset: that
+  is where System Settings puts them).
+- `SettingsFormGroupView`: the rows in a stack with no spacing (a hidden row
+  leaves no gap and no separator). It draws in `draw(_:)`, so its colours
+  follow the appearance: a 12 pt rounded fill of black or white at 3.1%
+  (247 on the light window's 255, 37 on the dark one's 30, as measured;
+  `quaternarySystemFill` is 2.7% and comes out a level lighter), and between
+  the visible rows a hairline inset 10 pt on each side, one device pixel of
+  the separator colour at half strength on a 1x screen and full on a 2x one
+  (System Settings draws half a point). Under Increase Contrast (the
+  appearance's high-contrast variants) it adds a 1 pt separator-coloured
+  border.
+- `SettingsFormRow(title:help:accessory:accessibilityName:)`, or
+  `SettingsFormRow(footnote:)`: a text column (the 13 pt name, 11 pt
+  secondary help, `addDetail` lines such as a status, a `setWarning` line
+  with the orange triangle, `addLink` Learn more links; 3 pt apart, hidden
+  ones collapse) ending 16 pt before the control, which ends 10 pt from the
+  group's edge. Text keeps 10 pt from the row's top and bottom and the
+  control at least 7, and the row hugs its content (a priority-740 zero
+  height, above a body's stretch), so a one-line switch row is 36 pt and a
+  pop-up row 38, as in System Settings. The accessory is `.toggle` (made
+  mini, 36 × 16, centred on the name's first line), `.popUp`, `.button`,
+  `.value(text, button:)`, `.shortcut` (all on the name's first baseline)
+  or `.custom` (centred). Help text under a control taller than the name's
+  line starts below the control (System Settings' Keyboard shortcut row).
+- **Accessibility, built in.** A row names a switch, pop-up, shortcut
+  recorder or custom control by its title, or by `accessibilityName` where
+  that says more ("Quick Detour shortcut" beside "Shortcut"), through
+  `SettingsSwitchRow.name(_:by:as:)`, and the title leaves the tree, so
+  VoiceOver reads the setting once. A button keeps its own title, a value
+  is text of its own and a custom container is not an element, so those
+  rows keep their title. The row orders its Accessibility children so the
+  control comes right after its name (first when the name is hidden) and
+  before the help: AppKit lists them in subview order, which read the help
+  before the switch (seen with the TASK-336 reader in the running app).
+- **Refits.** `setHelp` and `setWarning` call the pane's
+  `contentHeightDidChange()` when they change something
+  (`NSView.enclosingSettingsPane`), since a wrapping label reports only
+  width changes; Content Blocking's details and footnote and Quick Detour's
+  warning rely on it.
+- **Widths.** The rows wrap at `estimatedWidth` (the body's 700 pt by
+  default; a detail column passes its own) less the control until they are
+  laid out, so the pane's first natural-height measurement is the laid-out
+  height (`testTheFirstMeasurementIsTheLaidOutHeight`, at 443 and 700 pt).
+
+The numbers come from a SwiftUI `Form` with `.formStyle(.grouped)` (what
+System Settings is built with) rendered on macOS 26 and measured pixel by
+pixel, checked against the user's screenshot; an AppKit form rendered the
+same way matched it to the pixel (header, row text, fill, separators,
+corners).
+
+| Metric (`SettingsMetrics.form…`) | Value |
+|---|---|
+| Header | 13 pt semibold, 10 pt above the group |
+| Between sections | 30 (group or its buttons to the next header) |
+| Group | the body's width, corner radius 12 |
+| Row insets | 10 at the sides (text, control and separators), 10 above and below the text, 7 at least for a control |
+| Name, help | 13 pt, 11 pt secondary, 3 pt apart |
+| Text column to control | 16 |
+| Buttons under a group | 10 below it, 8 apart |
+
+Two things AppKit does not give. **Pop-ups** stay the standard bordered
+`NSPopUpButton`: System Settings' borderless value with a round chevron
+button is SwiftUI's own cell (`SwiftUIPopupButtonCell`), with no AppKit API
+(borderless, every bezel style and the macOS 26 border shapes were tried).
+**A mini `NSSwitch` reports its regular size (54 × 24) until it is in a
+window, and keeps the size it first reported**; the pane is built and
+measured before it is in one. The row reads the real size once from a
+switch in a window that is never shown (`SettingsFormRow.switchSize`) and
+fixes the switch to it; see [AppKit gotchas](../platform/appkit-gotchas.md#layout).
+
 ### Switch rows
 
 Every on/off setting in the window is an `NSSwitch` (TASK-328, at the
@@ -283,11 +382,13 @@ in one of three forms:
 | Form | Where | Layout |
 |---|---|---|
 | Label column | Profiles (`ProfileSettingsLayout` grid) | the label right-aligned in the 124 pt column, the regular switch 8 pt after it, centred on it |
-| Label, then switch | Extensions (Enabled, Allow in Private), General, Quick Detour (`SettingsSwitchRow.make`) | the 13 pt label at the column's leading edge, the regular switch 8 pt after it, centred on it |
+| Label, then switch | Extensions (Enabled, Allow in Private), General (`SettingsSwitchRow.make`) | the 13 pt label at the column's leading edge, the regular switch 8 pt after it, centred on it |
+| Form row | Quick Detour, Content Blocking (`SettingsFormRow`, TASK-338) | the 13 pt name at the group's text edge, the mini switch on the group's right edge, centred on the name's first line |
 | Switch, then name | a bordered group (Profiles' filter lists and extension switches, an extension's permissions; `SettingsGroupBoxView.switchRow`) | a small or mini switch, the 12 pt name 6 pt after it |
 
-General and Quick Detour have no label column, and their labels are
-sentences too long for one, so they take the second form. Measured with
+General and Quick Detour had no label column, and their labels are
+sentences too long for one, so they took the second form (Quick Detour is
+a form since TASK-338). Measured with
 Accessibility on Nov 14 2026, their rows match Extensions' Enabled and
 Profiles' Search suggestions exactly: a 56 × 26 switch, its frame 6 pt after
 the label's (8 pt between alignment rects; a label's frame is 2 pt wider on
@@ -328,11 +429,11 @@ command.
 | General | about 394 with automation off, 428 on in a test run (its four copy buttons), fixed (TASK-328 switch rows, 2026-11-14; the window's height less the 88 pt title bar and toolbar) | Detour > Settings… (Cmd+,), which opens whatever pane was last shown |
 | Spaces | 400 minimum; 628 with 19 spaces | the sidebar's add-space and edit-space actions (`showSpacesPane(selectSpaceID:)`), the Spaces menu's Manage Spaces… (`openSpacesSettings`) |
 | Links | 400 minimum (no routes); 743 with 5 routes (measured before the Quick Detour section came and went); capped (1242 on a 1410 pt screen) with 12 routes, then the route list scrolls (177 pt of list at 400, 129 pt at a 352 pt cap, 2026-10-27) | toolbar; Open Links Settings… in the blocked space-deletion alert (`showLinksPane(highlightingSpaceID:)`) |
-| Quick Detour | about 317, fixed (with the Debug build's warning line and the Learn more link; TASK-328's switch rows and Shortcut row, 2026-11-14) | toolbar only |
+| Quick Detour | 457, fixed (TASK-338's grouped form with the Debug build's warning line and the Learn more link, 2026-11-14; 317 with TASK-328's rows) | toolbar only |
 | Profiles | 630 (Private) / 709 (a normal profile) to 1218 (custom UA, warning, 15 extensions); 1047 for Private with 14 extensions (2026-10-27) | toolbar only |
 | Extensions | 400 (none, or one small extension) to 1092 (22 permissions, 4 hosts, 6 optional) | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
 | Shortcuts | 400 minimum; every row (about 1,800 pt) is its natural height, so it opens at the screen's cap | toolbar only |
-| Content Blocking | 243, fixed (plus its Learn more link line, TASK-292.11), and since TASK-337 the Copied Links section under the buttons | toolbar only |
+| Content Blocking | 554, fixed (TASK-338's grouped form: four list rows, the footnote, the buttons, Copied Links, 2026-11-14; 379 with the table and TASK-337's section) | toolbar only |
 
 TASK-189 part 1 moved every pane into the container and rebuilt General,
 Content Blocking and Spaces on the metrics; part 2 rebuilt Profiles (titled
@@ -445,22 +546,30 @@ pane by TASK-211 (user decision 2026-10-26: Links keeps the routes and the
 Default only). The toolbar item sits after Links, labelled
 `QuickDetour.displayName` with the SF Symbol `macwindow.on.rectangle` (a
 window over another: the launcher opens over the app in front). No master
-list, so it scrolls as one body, like General; no description and no
-section title (the toolbar names it). Top to bottom, below its Learn more
-link (TASK-292.11):
+list, so it scrolls as one body, like General; no description (the
+toolbar names it). Since TASK-338 a [grouped form](#the-grouped-form-task-338)
+of two sections, below its Learn more link (TASK-292.11):
 
-- "Open Quick Detour from any app [switch]", then "Shortcut" and the
-  shortcut recorder (`ShortcutRecorderView`) on a row of their own, a
-  warning line when the shortcut is refused or not registered (a Debug
-  build says it does not register without `DETOUR_GLOBAL_HOTKEY=1`), and
-  help text (TASK-193.2; see
-  [the Settings control](./quick-detour.md#the-settings-control)).
-- "Open links and sidebar tabs in Quick Detour with ⌥⌘-click [switch]" and its help,
-  the idle auto-close pop-up ("Close Quick Detour windows not used for
-  [Never, 1 hour, 6 hours, 12 hours, 1 day]", 6 hours by default) and its
-  help, and a caption pointing links from other apps to a route's Open in
-  or the Default "on the Links pane" (TASK-193.5; see
+- **Opening**: "Open Quick Detour from any app [switch]" with what the
+  launcher does; "Shortcut [⌥⌘N]" (the `ShortcutRecorderView`, named
+  "Quick Detour shortcut") with the help saying it is also File > New Quick
+  Detour Window, also when the switch above is off, and the row's warning
+  line when the shortcut is refused or not registered (a Debug build says
+  it does not register without `DETOUR_GLOBAL_HOTKEY=1`) (TASK-193.2; see
+  [the Settings control](./quick-detour.md#the-settings-control)); "Open
+  links and sidebar tabs in Quick Detour with ⌥⌘-click [switch]" and its
+  help; and a footnote pointing links from other apps to a route's Open in
+  or the Default "on the Links pane".
+- **Closing**: the idle auto-close pop-up ("Close Quick Detour windows not
+  used for [Never, 1 hour, 6 hours, 12 hours, 1 day]", 6 hours by default)
+  and its help (TASK-193.5; see
   [the Settings section](./quick-detour.md#the-settings-section)).
+
+The hotkey's help was one paragraph under the warning; in the form its
+first sentence (the launcher) is the switch's help and its second (the
+menu item) the Shortcut row's. The section titles are new. (Both
+PROVISIONAL, chosen by Claude while the user was away; the alternative is
+one untitled group.)[^task-338]
 
 Until TASK-328 the hotkey was one sentence, "[✓] Open Quick Detour from
 any app with [⌥⌘N]". With a switch, which follows its label, the sentence
@@ -587,24 +696,30 @@ result of the last update check and the set of checks still running.
 
 ## Content Blocking
 
-A table of the four filter lists (name, parsed rules, compiled rules, status,
-last fetch), a total of active rules, "Update All Now" and "Clear Cache &
-Redownload". The table is sized to its header and rows (`updateTableHeight`),
-so there are no empty striped rows under the four lists and the pane is
-exactly as tall as its content; the alternative, letting the table fill a
-fixed pane, left 28 pt of empty stripes. It refreshes on `.contentBlockerStatusDidChange` and
-`.contentBlockerRulesDidChange`. Which lists are *enabled* is a per-profile
-setting on the Profiles pane, not here.
+A [grouped form](#the-grouped-form-task-338) since TASK-338. **Filter
+Lists**: one row per list, its status on the right ("Active" in green, "Not
+loaded", "Updating…": `filterListStatus`) and under its name the rules in
+the list, the rules compiled and the last fetch ("74,713 rules, 74,713
+active, updated 12 sec. ago", "Never updated": `filterListDetail`); a
+footnote with the total of active rules and what is being fetched
+(`totalsText`); "Clear Cache & Redownload" and "Update All Now" under the
+group. Until then the lists were a five-column table sized to its rows
+(name, In List, Active, Status, Last Updated), with the total and the
+buttons under it; the rows keep all five, in words. (PROVISIONAL, chosen by
+Claude while the user was away; the alternative is the table inside the
+group as a custom row.) The rows refresh on `.contentBlockerStatusDidChange`
+and `.contentBlockerRulesDidChange`. Which lists are *enabled* is a
+per-profile setting on the Profiles pane, not here.
 
 Under the buttons, a "Copied Links" section (TASK-337) holds the one
 app-wide switch of the pane: "Remove tracking parameters with the AdGuard
-URL Tracking filter" (`trackingParameterListEnabled`, a `SettingsSwitchRow`,
-on by default), help saying it changes only the links Copy URL, Copy Link
+URL Tracking filter" (`trackingParameterListEnabled`, a form row since
+TASK-338, on by default), help saying it changes only the links Copy URL, Copy Link
 and Share… hand out and blocks nothing, and a status line
 (`trackingParameterListStatus`: "2,665 rules, updated 3 hr. ago", "Not
 downloaded yet", or "Off: not downloaded or used", from
-`trackingListStatus`). It is a section of its own rather than a fifth row
-of the table, which lists what blocks content. The switch calls
+`trackingListStatus`, a detail line of its row). It is a section of its
+own rather than a fifth list, since the lists are what blocks content. The switch calls
 `ContentBlockerManager.setTrackingParameterListEnabled`; what off does is on
 [Copy URL](./copy-url.md#the-downloaded-filter-task-329). The buttons carry
 identifiers (`contentBlockerUpdateAll`, `contentBlockerClearCache`) for
@@ -706,12 +821,20 @@ Help menu's guide index, which links each pane has, a click handing its URL
 to the opener, the link under the description or in its place, and the
 natural height counting it); `SettingsSwitchRowTests` the switch rows (no
 pane has a checkbox, the five converted settings are switches named by
-their labels, each 8 pt after its label and centred on it, the labels plain
-text, the Shortcut row under the hotkey switch, the Peek and ⌥⌘-click
+their labels, General's each 8 pt after its label and centred on it and
+Quick Detour's on the form's right edge, the labels plain text, the
+Shortcut row right under the hotkey switch's, the Peek and ⌥⌘-click
 switches showing and writing their settings; since TASK-336 every switch in
 every pane and in the page popover named by the label beside it, and the
 Accessibility tree, walked as a client gets it, holding each switch and not
-its label). The panes have no other UI tests; their layout is
+its label); `SettingsFormTests` the grouped form (every control on one
+right edge and every name on one left edge at 443 and 700 pt, long names
+and help wrapping before the control with no overlap, controls on the
+name's first line, row, section and form heights, hidden rows and sections
+taking no room, the first measurement equal to the laid-out height for the
+form and the two pilot panes, each control named by its row and read once,
+the warning line) and the Content Blocking rows, buttons and texts. The
+panes have no other UI tests; their layout is
 checked at runtime with the TASK-189 survey harness (every pane and state,
 light and dark, frames measured; pane switches, drags, the cap and a real
 second screen; uninstalling the only extension through the pane; a run with
@@ -744,5 +867,6 @@ suites.
 [^task-328]: TASK-328
 [^task-336]: TASK-336
 [^task-337]: TASK-337
+[^task-338]: TASK-338
 [^task211-harness]: TASK-211 harness
 [^survey-harness]: TASK-189 survey harness

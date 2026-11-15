@@ -52,4 +52,36 @@ enum SettingsMetrics {
     /// The smallest content height the screen cap can come down to, so a
     /// tiny or misreported screen still leaves a usable window.
     static let minimumCappedHeight: CGFloat = 200
+
+    // MARK: Grouped form (TASK-338)
+    // Measured on macOS 26 from a SwiftUI grouped `Form` (what System
+    // Settings is built with) and from a System Settings screenshot.
+
+    /// A form's width in a pane's body.
+    static let formWidth: CGFloat = windowWidth - 2 * paneMargin
+    /// A row's name and a section's header; help text and footnotes.
+    static let formTitleFontSize: CGFloat = 13
+    static let formHelpFontSize: CGFloat = 11
+    /// From a group (or the buttons under it) to the next section's header.
+    static let formSectionGap: CGFloat = 30
+    /// Added to `descriptionToBody` above a form: its first header sits 20
+    /// pt under the pane's description or Learn more link.
+    static let formBelowPaneHeader: CGFloat = 8
+    /// From a section's header to its group.
+    static let formHeaderToGroup: CGFloat = 10
+    static let formGroupCornerRadius: CGFloat = 12
+    /// A row's text and its control from the group's sides; the separators
+    /// are inset as far.
+    static let formRowInsetX: CGFloat = 10
+    /// A row's text from the row's top and bottom.
+    static let formRowInsetY: CGFloat = 10
+    /// A control from the row's top and bottom, at least.
+    static let formControlInsetY: CGFloat = 7
+    /// The text column's end to the control.
+    static let formLabelToControl: CGFloat = 16
+    /// A row's name to its help text, and between the lines under it.
+    static let formTitleToHelp: CGFloat = 3
+    /// From a group to the buttons under it, and between those buttons.
+    static let formGroupToButtons: CGFloat = 10
+    static let formButtonGap: CGFloat = 8
 }

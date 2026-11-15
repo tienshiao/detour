@@ -1,16 +1,22 @@
 import AppKit
 
-class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableViewDataSource, NSTableViewDelegate {
-    private var tableView: NSTableView!
+/// Settings > Content Blocking: the four filter lists, each a row with its
+/// status on the right and its rule counts and last update under its name, a
+/// footnote with the total and what is being fetched, the buttons that
+/// update or redownload every list, and the Copied Links section (TASK-337).
+/// A grouped form (TASK-338); until then the lists were a five-column table.
+/// Which lists block content is set per profile, on the Profiles pane.
+class ContentBlockerSettingsViewController: SettingsPaneViewController {
     private var updateButton: NSButton!
-    private var statusLabel: NSTextField!
-    private var totalRulesLabel: NSTextField!
+    /// One row per filter list, in `filterLists` order, and its status value.
+    private(set) var listRows: [(row: SettingsFormRow, status: NSTextField)] = []
+    /// The total of active rules and what is being fetched.
+    private(set) var totalsFootnote: SettingsFormRow!
+    /// "Updating…", "Clearing cache…" while a fetch runs, else empty.
+    private var activity = ""
     /// The tracking-parameter list's switch and status line (TASK-337).
     private(set) var trackingListSwitch: NSSwitch!
     private(set) var trackingListStatusLabel: NSTextField!
-    /// The table is exactly as tall as its header and rows: no empty striped
-    /// rows below the four lists (TASK-189 defect 16).
-    private var tableHeight: NSLayoutConstraint!
 
     private let manager = ContentBlockerManager.shared
     private let filterLists = ContentBlockerManager.filterLists
@@ -34,146 +40,54 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableV
     override var guidePage: GuidePage? { .contentBlocker }
 
     override func makeBody() -> NSView {
-        let container = NSView()
-        let spacing = SettingsMetrics.rowGap
-
-        // Table view
-        // Sized to its rows, so it never scrolls itself; a scroll over it
-        // reaches the pane's scroll view.
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = false
-        scrollView.verticalScrollElasticity = .none
-        scrollView.borderType = .bezelBorder
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-
-        tableView = NSTableView()
-        tableView.headerView = NSTableHeaderView()
-        tableView.rowHeight = 28
-        tableView.style = .plain
-        tableView.usesAlternatingRowBackgroundColors = true
-        tableView.dataSource = self
-        tableView.delegate = self
-
-        let nameCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
-        nameCol.title = "Filter List"
-        nameCol.width = 160
-        nameCol.minWidth = 100
-        tableView.addTableColumn(nameCol)
-
-        let parsedCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("parsed"))
-        parsedCol.title = "In List"
-        parsedCol.width = 70
-        parsedCol.minWidth = 50
-        tableView.addTableColumn(parsedCol)
-
-        let compiledCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("compiled"))
-        compiledCol.title = "Active"
-        compiledCol.width = 70
-        compiledCol.minWidth = 50
-        tableView.addTableColumn(compiledCol)
-
-        let statusCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("status"))
-        statusCol.title = "Status"
-        statusCol.width = 80
-        statusCol.minWidth = 60
-        tableView.addTableColumn(statusCol)
-
-        let updatedCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("updated"))
-        updatedCol.title = "Last Updated"
-        updatedCol.width = 110
-        updatedCol.minWidth = 80
-        tableView.addTableColumn(updatedCol)
-
-        scrollView.documentView = tableView
-        container.addSubview(scrollView)
-        tableHeight = scrollView.heightAnchor.constraint(equalToConstant: 160)
-
-        // Bottom bar
-        updateButton = NSButton(title: "Update All Now", target: self, action: #selector(updateAllClicked))
-        updateButton.bezelStyle = .rounded
-        updateButton.setAccessibilityIdentifier("contentBlockerUpdateAll")
-        updateButton.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(updateButton)
+        listRows = filterLists.map { list in
+            // The widest status it shows, so the row's text column is
+            // estimated at the width it will have.
+            let status = NSTextField(labelWithString: Self.filterListStatus(isRefreshing: false, isCompiled: false).text)
+            status.font = .systemFont(ofSize: SettingsMetrics.formTitleFontSize)
+            status.textColor = .secondaryLabelColor
+            // One line of details until the first update, so the pane's
+            // first measurement already has the rows' height.
+            return (SettingsFormRow(title: list.name, help: " ", accessory: .value(status, button: nil)), status)
+        }
+        totalsFootnote = SettingsFormRow(footnote: " ")
 
         let clearButton = NSButton(title: "Clear Cache & Redownload", target: self, action: #selector(clearCacheClicked))
         clearButton.bezelStyle = .rounded
         clearButton.setAccessibilityIdentifier("contentBlockerClearCache")
-        clearButton.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(clearButton)
+        updateButton = NSButton(title: "Update All Now", target: self, action: #selector(updateAllClicked))
+        updateButton.bezelStyle = .rounded
+        updateButton.setAccessibilityIdentifier("contentBlockerUpdateAll")
 
-        statusLabel = NSTextField(labelWithString: "")
-        statusLabel.font = .systemFont(ofSize: 11)
-        statusLabel.textColor = .secondaryLabelColor
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(statusLabel)
-
-        totalRulesLabel = NSTextField(labelWithString: "")
-        totalRulesLabel.font = .systemFont(ofSize: 11)
-        totalRulesLabel.textColor = .secondaryLabelColor
-        totalRulesLabel.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(totalRulesLabel)
-
-        let trackingSection = makeTrackingListSection()
-        container.addSubview(trackingSection)
-
-        NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            tableHeight,
-
-            updateButton.topAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: spacing),
-            updateButton.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-
-            trackingSection.topAnchor.constraint(equalTo: updateButton.bottomAnchor, constant: SettingsMetrics.sectionGap),
-            trackingSection.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            trackingSection.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            trackingSection.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
-            bottomHug(trackingSection.bottomAnchor, container.bottomAnchor),
-
-            clearButton.trailingAnchor.constraint(equalTo: updateButton.leadingAnchor, constant: -SettingsMetrics.labelToControl),
-            clearButton.firstBaselineAnchor.constraint(equalTo: updateButton.firstBaselineAnchor),
-
-            totalRulesLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            totalRulesLabel.firstBaselineAnchor.constraint(equalTo: updateButton.firstBaselineAnchor),
-
-            statusLabel.leadingAnchor.constraint(equalTo: totalRulesLabel.trailingAnchor, constant: 12),
-            statusLabel.firstBaselineAnchor.constraint(equalTo: updateButton.firstBaselineAnchor),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: clearButton.leadingAnchor, constant: -12),
-        ])
-        statusLabel.lineBreakMode = .byTruncatingTail
-        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        return container
+        return formBody(SettingsForm(sections: [
+            SettingsFormSection(title: "Filter Lists", rows: listRows.map(\.row), footnote: totalsFootnote,
+                                buttons: [clearButton, updateButton]),
+            makeTrackingListSection(),
+        ]))
     }
 
     /// The AdGuard URL Tracking list (TASK-337): app-wide, used only for the
     /// links Copy URL, Copy Link and Share… hand out, so it is a section of
-    /// its own under the blocking lists rather than a row of their table.
-    private func makeTrackingListSection() -> NSView {
-        let title = NSTextField.settingsSectionTitle("Copied Links")
+    /// its own under the blocking lists rather than one of their rows.
+    private func makeTrackingListSection() -> SettingsFormSection {
         trackingListSwitch = NSSwitch()
         trackingListSwitch.target = self
         trackingListSwitch.action = #selector(trackingListToggled)
         trackingListSwitch.setAccessibilityIdentifier("trackingParameterListEnabled")
-        let row = SettingsSwitchRow.make(trackingListSwitch, title: Self.trackingListTitle)
-        let help = SettingsWrappingLabel(
-            wrapping: "Copy URL, Copy Link and Share… always leave out common tracking parameters such as "
+        let row = SettingsFormRow(
+            title: Self.trackingListTitle,
+            help: "Copy URL, Copy Link and Share… always leave out common tracking parameters such as "
                 + "utm_source and fbclid. This list adds the ones particular sites use. It changes only the links "
                 + "you copy or share and blocks nothing; it updates with the lists above.",
-            estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin)
+            accessory: .toggle(trackingListSwitch))
         trackingListStatusLabel = NSTextField(labelWithString: "")
-        trackingListStatusLabel.font = .systemFont(ofSize: 11)
+        trackingListStatusLabel.font = .systemFont(ofSize: SettingsMetrics.formHelpFontSize)
         trackingListStatusLabel.textColor = .secondaryLabelColor
+        trackingListStatusLabel.lineBreakMode = .byTruncatingTail
+        trackingListStatusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         trackingListStatusLabel.setAccessibilityIdentifier("trackingParameterListStatus")
-
-        let section = NSStackView(views: [title, row, help, trackingListStatusLabel])
-        section.orientation = .vertical
-        section.alignment = .leading
-        section.spacing = SettingsMetrics.controlToHelp
-        section.setCustomSpacing(SettingsMetrics.sectionTitleToRows, after: title)
-        section.translatesAutoresizingMaskIntoConstraints = false
-        help.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-        return section
+        row.addDetail(trackingListStatusLabel)
+        return SettingsFormSection(title: "Copied Links", rows: [row])
     }
 
     static let trackingListTitle = "Remove tracking parameters with the AdGuard URL Tracking filter"
@@ -182,13 +96,15 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableV
     static func trackingListStatus(isEnabled: Bool, ruleCount: Int?, lastFetch: Date?, now: Date) -> String {
         guard isEnabled else { return "Off: not downloaded or used" }
         guard let ruleCount else { return "Not downloaded yet" }
-        let rules = "\(ruleCountFormatter.string(from: NSNumber(value: ruleCount)) ?? "\(ruleCount)") rules"
+        let rules = "\(formatted(ruleCount)) rules"
         guard let lastFetch else { return rules }
-        // At least a second ago: the formatter reads no difference, or a fetch
-        // recorded a moment after `now`, as "in 0s".
-        let updated = relativeDateFormatter.localizedString(
-            fromTimeInterval: min(lastFetch.timeIntervalSince(now), -1))
-        return "\(rules), updated \(updated)"
+        return "\(rules), \(updatedText(lastFetch, now: now))"
+    }
+
+    /// "updated 3 hr. ago". At least a second ago: the formatter reads no
+    /// difference, or a fetch recorded a moment after `now`, as "in 0s".
+    private static func updatedText(_ lastFetch: Date, now: Date) -> String {
+        "updated \(relativeDateFormatter.localizedString(fromTimeInterval: min(lastFetch.timeIntervalSince(now), -1)))"
     }
 
     private func updateTrackingListRow() {
@@ -207,24 +123,10 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableV
         updateTrackingListRow()
     }
 
-    /// Header plus every row plus the bezel's two border points.
-    private func updateTableHeight() {
-        tableView.tile()
-        let header = tableView.headerView?.frame.height ?? 0
-        let rows = tableView.allRowsHeight
-        let height = ceil(header + rows + 2)
-        if tableHeight.constant != height {
-            tableHeight.constant = height
-            contentHeightDidChange()
-        }
-    }
-
     override func viewWillAppear() {
         super.viewWillAppear()
-        tableView.reloadData()
-        updateTableHeight()
-        updateTotalRules()
-        updateStatusLabel()
+        updateListRows()
+        updateActivity()
         updateTrackingListRow()
 
         NotificationCenter.default.addObserver(self, selector: #selector(statusDidChange),
@@ -243,132 +145,91 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableV
 
     @objc private func updateAllClicked() {
         updateButton.isEnabled = false
-        statusLabel.stringValue = "Updating..."
+        activity = "Updating…"
         manager.forceRefreshAll()
+        updateFootnote()
     }
 
     @objc private func clearCacheClicked() {
         updateButton.isEnabled = false
-        statusLabel.stringValue = "Clearing cache..."
+        activity = "Clearing cache…"
         manager.clearCacheAndRedownload()
-        tableView.reloadData()
-        updateTotalRules()
+        updateListRows()
     }
 
     @objc private func statusDidChange() {
-        tableView.reloadData()
-        updateTotalRules()
-        updateStatusLabel()
+        updateListRows()
+        updateActivity()
         updateTrackingListRow()
-
-        if manager.refreshingIdentifiers.isEmpty {
-            updateButton.isEnabled = true
-            statusLabel.stringValue = ""
-        }
     }
 
-    private func updateTotalRules() {
-        var total = 0
-        for list in filterLists {
-            if let count = manager.compiledRuleCount(for: list.identifier) {
-                total += count
-            }
+    // MARK: - The lists
+
+    /// Each list's status and details, and the footnote's total.
+    private func updateListRows() {
+        let now = Date()
+        for (list, item) in zip(filterLists, listRows) {
+            let status = Self.filterListStatus(isRefreshing: manager.refreshingIdentifiers.contains(list.identifier),
+                                               isCompiled: manager.isCompiled(identifier: list.identifier))
+            item.status.stringValue = status.text
+            item.status.textColor = status.isActive ? .systemGreen : .secondaryLabelColor
+            item.row.setHelp(Self.filterListDetail(parsed: manager.parsedRuleCount(for: list.identifier),
+                                                   compiled: manager.compiledRuleCount(for: list.identifier),
+                                                   lastFetch: manager.lastFetchDate(for: list.identifier), now: now))
         }
-        if total > 0 {
-            let formatted = Self.ruleCountFormatter.string(from: NSNumber(value: total)) ?? "\(total)"
-            totalRulesLabel.stringValue = "\(formatted) active rules"
-        } else {
-            totalRulesLabel.stringValue = "No active rules"
-        }
+        updateFootnote()
     }
 
-    private func updateStatusLabel() {
+    private func updateActivity() {
         let refreshing = manager.refreshingIdentifiers.count
         if refreshing > 0 {
-            statusLabel.stringValue = "Updating \(refreshing) list\(refreshing == 1 ? "" : "s")..."
+            activity = "Updating \(refreshing) list\(refreshing == 1 ? "" : "s")…"
             updateButton.isEnabled = false
-        }
-    }
-
-    // MARK: - NSTableViewDataSource
-
-    func numberOfRows(in tableView: NSTableView) -> Int {
-        filterLists.count
-    }
-
-    // MARK: - NSTableViewDelegate
-
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let list = filterLists[row]
-        let colID = tableColumn?.identifier.rawValue ?? ""
-        let cellID = NSUserInterfaceItemIdentifier("CB_\(colID)")
-
-        let cell: NSTableCellView
-        if let reused = tableView.makeView(withIdentifier: cellID, owner: nil) as? NSTableCellView {
-            cell = reused
         } else {
-            cell = NSTableCellView()
-            cell.identifier = cellID
-
-            let label = NSTextField(labelWithString: "")
-            label.font = .systemFont(ofSize: 12)
-            label.translatesAutoresizingMaskIntoConstraints = false
-            label.lineBreakMode = .byTruncatingTail
-            cell.addSubview(label)
-            cell.textField = label
-
-            NSLayoutConstraint.activate([
-                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
-                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
+            // A fetch that ended while the pane was hidden (its observers
+            // are off then) leaves no "Updating…" and no disabled button.
+            activity = ""
+            updateButton.isEnabled = true
         }
-
-        let label = cell.textField!
-
-        switch colID {
-        case "name":
-            label.stringValue = list.name
-        case "parsed":
-            if let count = manager.parsedRuleCount(for: list.identifier) {
-                label.stringValue = Self.ruleCountFormatter.string(from: NSNumber(value: count)) ?? "\(count)"
-            } else {
-                label.stringValue = "—"
-            }
-            label.textColor = .secondaryLabelColor
-        case "compiled":
-            if let count = manager.compiledRuleCount(for: list.identifier) {
-                label.stringValue = Self.ruleCountFormatter.string(from: NSNumber(value: count)) ?? "\(count)"
-            } else {
-                label.stringValue = "—"
-            }
-            label.textColor = .labelColor
-        case "status":
-            if manager.refreshingIdentifiers.contains(list.identifier) {
-                label.stringValue = "Updating..."
-                label.textColor = .secondaryLabelColor
-            } else if manager.isCompiled(identifier: list.identifier) {
-                label.stringValue = "Active"
-                label.textColor = .systemGreen
-            } else {
-                label.stringValue = "Not loaded"
-                label.textColor = .secondaryLabelColor
-            }
-        case "updated":
-            if let date = manager.lastFetchDate(for: list.identifier) {
-                label.stringValue = Self.relativeDateFormatter.localizedString(for: date, relativeTo: Date())
-            } else {
-                label.stringValue = "Never"
-            }
-            label.textColor = .secondaryLabelColor
-        default:
-            break
-        }
-
-        return cell
+        updateFootnote()
     }
 
-    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        false
+    private func updateFootnote() {
+        let total = filterLists.compactMap { manager.compiledRuleCount(for: $0.identifier) }.reduce(0, +)
+        totalsFootnote.setHelp(Self.totalsText(activeRules: total, activity: activity))
+    }
+
+    /// A list's status, on the right of its row: what the table's Status
+    /// column said.
+    static func filterListStatus(isRefreshing: Bool, isCompiled: Bool) -> (text: String, isActive: Bool) {
+        if isRefreshing { return ("Updating…", false) }
+        return isCompiled ? ("Active", true) : ("Not loaded", false)
+    }
+
+    /// A list's details, under its name: the rules in the list, the rules
+    /// compiled into WebKit's content rules, and when it was last fetched
+    /// (the table's In List, Active and Last Updated columns).
+    static func filterListDetail(parsed: Int?, compiled: Int?, lastFetch: Date?, now: Date) -> String {
+        var parts: [String] = []
+        if let parsed { parts.append("\(formatted(parsed)) rules") }
+        if let compiled { parts.append("\(formatted(compiled)) active") }
+        if let lastFetch {
+            parts.append(updatedText(lastFetch, now: now))
+        } else {
+            parts.append("never updated")
+        }
+        let text = parts.joined(separator: ", ")
+        return text.prefix(1).uppercased() + text.dropFirst()
+    }
+
+    /// The footnote under the lists: the active rules in total, and what is
+    /// being fetched.
+    static func totalsText(activeRules: Int, activity: String) -> String {
+        let total = activeRules > 0 ? "\(formatted(activeRules)) active rules" : "No active rules"
+        return activity.isEmpty ? total : "\(total). \(activity)"
+    }
+
+    private static func formatted(_ count: Int) -> String {
+        ruleCountFormatter.string(from: NSNumber(value: count)) ?? "\(count)"
     }
 }
