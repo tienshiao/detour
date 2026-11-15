@@ -174,6 +174,160 @@ nonisolated final class TrackingParameterListTests: XCTestCase {
         XCTAssertNotNil(installed.last ?? nil)
     }
 
+    // MARK: - The Settings switch (TASK-337)
+
+    @MainActor func testTheListIsOnByDefaultAndTheSettingIsStoredInItsDefaults() {
+        XCTAssertTrue(makeList().isEnabled)
+        makeList().setEnabled(false)
+        XCTAssertEqual(defaults.object(forKey: TrackingParameterList.enabledKey) as? Bool, false)
+        XCTAssertEqual(TrackingParameterList.enabledKey, "ContentBlocker.adguard-url-tracking.enabled")
+        XCTAssertFalse(makeList().isEnabled, "a list on the same data directory's defaults reads it")
+    }
+
+    /// Off at launch: no request, and the cached rules are not used, even
+    /// with a refresh due; the cache stays for when it is turned on.
+    @MainActor func testOffAtLaunchNothingIsFetchedOrUsed() async throws {
+        try Self.fixture.write(to: cacheFile)
+        defaults.set(now.addingTimeInterval(-2 * 86400), forKey: "ContentBlocker.adguard-url-tracking.lastFetch")
+        defaults.set(false, forKey: TrackingParameterList.enabledKey)
+        TrackingListStubProtocol.respond(status: 200, body: Self.fixture, etag: "\"v1\"")
+        let list = makeList()
+
+        await list.loadAtLaunch()
+
+        XCTAssertTrue(TrackingListStubProtocol.requests.isEmpty)
+        XCTAssertTrue(installed.isEmpty, "Copy URL keeps the built-in names alone")
+        XCTAssertNil(list.counts)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cacheFile.path))
+    }
+
+    /// Update Now while off: no request.
+    @MainActor func testARefreshWhileOffMakesNoRequest() async {
+        defaults.set(false, forKey: TrackingParameterList.enabledKey)
+        TrackingListStubProtocol.respond(status: 200, body: Self.fixture, etag: "\"v1\"")
+        let list = makeList()
+
+        let conditional = await list.refresh()
+        let full = await list.refresh(conditional: false)
+
+        XCTAssertEqual(conditional, .off)
+        XCTAssertEqual(full, .off)
+        XCTAssertTrue(TrackingListStubProtocol.requests.isEmpty)
+        XCTAssertTrue(installed.isEmpty)
+    }
+
+    /// Clear Cache & Redownload while off clears the list like the others
+    /// but downloads nothing (PROVISIONAL, TASK-337).
+    @MainActor func testClearingWhileOffDeletesTheCacheWithoutARequest() async throws {
+        TrackingListStubProtocol.respond(status: 200, body: Self.fixture, etag: "\"v1\"")
+        let list = makeList()
+        await list.loadAtLaunch()
+        list.setEnabled(false)
+        TrackingListStubProtocol.reset()
+        TrackingListStubProtocol.respond(status: 200, body: Self.fixture, etag: "\"v2\"")
+
+        await list.clearCacheAndRedownload()
+
+        XCTAssertTrue(TrackingListStubProtocol.requests.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cacheFile.path))
+        XCTAssertNil(defaults.string(forKey: "ContentBlocker.adguard-url-tracking.etag"))
+        XCTAssertNil(installed.last ?? nil)
+        XCTAssertFalse(list.isEnabled, "clearing leaves the setting alone")
+    }
+
+    /// Turning it off stops using the list at once; the cached text and its
+    /// bookkeeping stay, so turning it on again works offline.
+    @MainActor func testTurningOffStopsUsingTheListAndKeepsItsCache() async throws {
+        TrackingListStubProtocol.respond(status: 200, body: Self.fixture, etag: "\"v1\"")
+        let list = makeList()
+        await list.loadAtLaunch()
+        XCTAssertNotNil(installed.last ?? nil)
+
+        list.setEnabled(false)
+
+        XCTAssertEqual(installed.count, 2)
+        XCTAssertNil(installed.last ?? nil, "the built-in names alone")
+        XCTAssertNil(list.counts)
+        XCTAssertEqual(try Data(contentsOf: cacheFile), Self.fixture)
+        XCTAssertEqual(defaults.string(forKey: "ContentBlocker.adguard-url-tracking.etag"), "\"v1\"")
+    }
+
+    /// A download already in flight when the list is turned off is neither
+    /// used nor cached.
+    @MainActor func testAResponseInFlightWhenTurnedOffIsDropped() async throws {
+        TrackingListStubProtocol.respond(status: 200, body: Self.fixture, etag: "\"v1\"")
+        TrackingListStubProtocol.holdReplies()
+        let list = makeList()
+        let refresh = Task { await list.refresh(conditional: false) }
+        for _ in 0..<200 where TrackingListStubProtocol.requests.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(TrackingListStubProtocol.requests.count, 1, "the request is in flight")
+
+        list.setEnabled(false)
+        TrackingListStubProtocol.releaseReplies()
+        let outcome = await refresh.value
+
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertEqual(installed.count, 1)
+        XCTAssertNil(installed.last ?? nil, "only turning it off installed anything: nothing")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cacheFile.path))
+        XCTAssertNil(defaults.object(forKey: "ContentBlocker.adguard-url-tracking.lastFetch"))
+    }
+
+    /// Turned on again offline: the cached rules are back in use, and a
+    /// fetch (conditional on the cached text) was tried.
+    @MainActor func testTurningOnUsesTheCacheOfflineAndFetches() async throws {
+        TrackingListStubProtocol.respond(status: 200, body: Self.fixture, etag: "\"v1\"")
+        let list = makeList()
+        await list.loadAtLaunch()
+        list.setEnabled(false)
+        TrackingListStubProtocol.fail(with: URLError(.notConnectedToInternet))
+
+        list.setEnabled(true)
+        await list.turnedOn()
+
+        XCTAssertEqual(installed.last??.counts.supported, 30)
+        XCTAssertEqual(list.counts?.supported, 30)
+        XCTAssertEqual(TrackingListStubProtocol.requests.count, 2, "launch, then turning it on")
+        XCTAssertEqual(TrackingListStubProtocol.requests.last?.value(forHTTPHeaderField: "If-None-Match"), "\"v1\"")
+    }
+
+    /// Turned on with no cache (cleared while off): downloaded in full.
+    @MainActor func testTurningOnWithoutACacheDownloadsInFull() async throws {
+        defaults.set(false, forKey: TrackingParameterList.enabledKey)
+        defaults.set("\"stale\"", forKey: "ContentBlocker.adguard-url-tracking.etag")
+        TrackingListStubProtocol.respond(status: 200, body: Self.fixture, etag: "\"v2\"")
+        let list = makeList()
+
+        list.setEnabled(true)
+        await list.turnedOn()
+
+        XCTAssertEqual(TrackingListStubProtocol.requests.count, 1)
+        XCTAssertNil(TrackingListStubProtocol.requests.first?.value(forHTTPHeaderField: "If-None-Match"))
+        XCTAssertEqual(installed.last??.counts.supported, 30)
+        XCTAssertEqual(try Data(contentsOf: cacheFile), Self.fixture)
+    }
+
+    /// The pane's status line under the switch.
+    @MainActor func testTheSettingsStatusLine() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        typealias Pane = ContentBlockerSettingsViewController
+        XCTAssertEqual(Pane.trackingListStatus(isEnabled: false, ruleCount: 2665, lastFetch: now, now: now),
+                       "Off: not downloaded or used")
+        XCTAssertEqual(Pane.trackingListStatus(isEnabled: true, ruleCount: nil, lastFetch: nil, now: now),
+                       "Not downloaded yet")
+        XCTAssertEqual(Pane.trackingListStatus(isEnabled: true, ruleCount: 2665, lastFetch: nil, now: now),
+                       "2,665 rules")
+        let status = Pane.trackingListStatus(isEnabled: true, ruleCount: 2665,
+                                             lastFetch: now.addingTimeInterval(-3 * 3600), now: now)
+        XCTAssertTrue(status.hasPrefix("2,665 rules, updated "), status)
+        XCTAssertTrue(status.contains("3"), status)
+        let justNow = Pane.trackingListStatus(isEnabled: true, ruleCount: 1, lastFetch: now.addingTimeInterval(0.5),
+                                              now: now)
+        XCTAssertFalse(justNow.contains("in "), "a fetch a moment ahead of the clock is not in the future: \(justNow)")
+    }
+
     // MARK: - The list's address
 
     @MainActor func testTheListURLAndItsDebugOverride() {
@@ -201,6 +355,16 @@ nonisolated final class TrackingParameterListTests: XCTestCase {
 nonisolated private final class TrackingListStubProtocol: URLProtocol {
     private enum Reply { case response(status: Int, body: Data, etag: String?), error(URLError) }
     private static let state = Mutex<(reply: Reply?, recorded: [URLRequest])>((nil, []))
+    /// While held, a reply waits for `releaseReplies()` (a response in flight).
+    private static let held = Mutex(false)
+    private static let release = DispatchSemaphore(value: 0)
+
+    static func holdReplies() { held.withLock { $0 = true } }
+
+    static func releaseReplies() {
+        held.withLock { $0 = false }
+        release.signal()
+    }
 
     static var requests: [URLRequest] { state.withLock { $0.recorded } }
 
@@ -214,6 +378,7 @@ nonisolated private final class TrackingListStubProtocol: URLProtocol {
 
     static func reset() {
         state.withLock { $0 = (nil, []) }
+        held.withLock { $0 = false }
     }
 
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "tracking-list.test" }
@@ -225,6 +390,9 @@ nonisolated private final class TrackingListStubProtocol: URLProtocol {
             state.recorded.append(request)
             return state.reply
         }
+        // On URLSession's own thread, so waiting here holds only this load.
+        // Timed, so a test that fails before releasing cannot hang the loader.
+        if Self.held.withLock({ $0 }) { _ = Self.release.wait(timeout: .now() + 10) }
         switch reply {
         case .response(let status, let body, let etag)?:
             var headers = ["Content-Type": "text/plain; charset=utf-8"]

@@ -250,8 +250,9 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
                 checked += 1
             }
         }
-        // General's 3, Quick Detour's 2, Profiles' 3 in its grid and 4 filter lists.
-        XCTAssertGreaterThanOrEqual(checked, 12)
+        // General's 3, Quick Detour's 2, Profiles' 3 in its grid and 4 filter
+        // lists, Content Blocking's tracking list (TASK-337).
+        XCTAssertGreaterThanOrEqual(checked, 13)
     }
 
     /// The setting is one element: the switch, named; its label is not also
@@ -321,6 +322,27 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
         toggle.state = .off
         XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(toggle.action), to: toggle.target, from: toggle))
         XCTAssertFalse(PeekSettings.shared.isEnabled)
+    }
+
+    /// Content Blocking's tracking-parameter list switch (TASK-337). The test
+    /// host stores the setting without fetching.
+    @MainActor func testTheTrackingListSwitchShowsAndWritesItsSetting() throws {
+        let list = ContentBlockerManager.shared.trackingParameterList
+        let saved = list.isEnabled
+        addTeardownBlock { @MainActor in list.setEnabled(saved) }
+        list.setEnabled(true)
+        let pane = laidOut(ContentBlockerSettingsViewController())
+        pane.viewWillAppear()
+        let toggle = try XCTUnwrap(control("trackingParameterListEnabled", in: pane) as? NSSwitch)
+        XCTAssertEqual(toggle.state, .on, "on by default")
+        XCTAssertEqual(toggle.accessibilityLabel(), ContentBlockerSettingsViewController.trackingListTitle)
+        toggle.state = .off
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(toggle.action), to: toggle.target, from: toggle))
+        XCTAssertFalse(list.isEnabled)
+        XCTAssertEqual(pane.trackingListStatusLabel.stringValue, "Off: not downloaded or used")
+        toggle.state = .on
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(toggle.action), to: toggle.target, from: toggle))
+        XCTAssertTrue(list.isEnabled)
     }
 
     @MainActor func testTheOptionCommandClickSwitchShowsAndWritesItsSetting() throws {

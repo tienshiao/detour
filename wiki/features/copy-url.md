@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Copy URL
-description: "Every copy of a page's or tab's address (Edit > Copy URL / Shift-Cmd-C in a browser or Quick Detour window, the faux address bar's and Quick Detour's Copy Link buttons, the dev toolbar's link button, the sidebar tab menu's Copy URL / Copy Link) puts the address on the clipboard without its tracking parameters, through TrackingParameters: the built-in list quarantine pages also use, plus the downloaded AdGuard URL Tracking filter's site-specific $removeparam rules and exceptions (TASK-329: rule forms supported and skipped, fallback, quarantine kept on the built-in list); Share… shares the clean link too; what is left alone (a page's own Copy Link, Opt-Cmd-click copies into Quick Detour) and why; the loaded URL, history and session keep the original (TASK-326)."
+description: "Every copy of a page's or tab's address (Edit > Copy URL / Shift-Cmd-C in a browser or Quick Detour window, the faux address bar's and Quick Detour's Copy Link buttons, the dev toolbar's link button, the sidebar tab menu's Copy URL / Copy Link) puts the address on the clipboard without its tracking parameters, through TrackingParameters: the built-in list quarantine pages also use, plus the downloaded AdGuard URL Tracking filter's site-specific $removeparam rules and exceptions (TASK-329: rule forms supported and skipped, fallback, quarantine kept on the built-in list); Share… shares the clean link too; the list's switch in Settings > Content Blocking (TASK-337: off, it is neither fetched nor used; the cache is kept); what is left alone (a page's own Copy Link, Opt-Cmd-click copies into Quick Detour) and why; the loaded URL, history and session keep the original (TASK-326)."
 tags: [links, privacy, clipboard, sidebar, window]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T20:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T01:40:00Z }
 sources:
   - id: task-326
     resource: backlog:TASK-326
@@ -24,6 +24,12 @@ sources:
   - id: checks
     resource: ../../docs/harness/task326-copy-url-checks.py
     title: TASK-326 runtime checks through the automation endpoint
+  - id: task-337
+    resource: backlog:TASK-337
+    title: "Content blocking: a setting for the AdGuard URL Tracking list, so Detour does not fetch it when it is off"
+  - id: checks-337
+    resource: ../../docs/harness/task337-tracking-list-setting-checks.py
+    title: TASK-337 runtime checks (request log of a local list server, the switch pressed through Accessibility)
   - id: task-329
     resource: backlog:TASK-329
     title: "Links: strip tracking parameters with the AdGuard URL Tracking filter in addition to the built-in list"
@@ -137,7 +143,7 @@ shown to the user.[^task-329]
   Redownload with the content blocker's bookkeeping (ETag, `lastFetch`,
   24 hours, the data directory's `ContentBlocker/adguard-url-tracking.txt`).
   It is not one of `filterLists`: it is never compiled into a WebKit rule
-  list and has no Settings row or switch. Text is parsed off the main thread
+  list; its switch is in Settings > Content Blocking (below). Text is parsed off the main thread
   (`Task.detached`, about 40 ms for the whole list in a Debug build) and
   cached only once it parsed into rules, so a captive portal's page never
   replaces a good cache. Tickets keep an older text (the cache read at
@@ -209,6 +215,43 @@ navigation can break the page (the list is tuned for content blockers that
 also honour its exceptions per request type), while stripping on copy only
 changes the copied text. Alternative: `cleanLink(for:)` in those two calls.
 
+## Turning it off (TASK-337)
+
+Settings > Content Blocking > Copied Links has a switch for the list, on by
+default (`TrackingParameterList.isEnabled`, the defaults key
+`ContentBlocker.adguard-url-tracking.enabled` in the data directory's content
+blocker suite, beside the list's fetch bookkeeping).[^task-337] The gate is in
+`TrackingParameterList`, not the manager, so the tests reach it (the
+manager's own gate is the test host's, `downloadsTrackingParameterList`):
+
+| While off | What happens |
+|---|---|
+| Launch (`loadAtLaunch`) | nothing: no request, and the cached text is not even read, so Copy URL uses the built-in names alone |
+| Update Now (`refresh`) | `.off`, no request |
+| Clear Cache & Redownload | the cached text, ETag, `lastFetch` and rule count are deleted like the other lists', and nothing is downloaded |
+| Turning it off (`setEnabled(false)`) | the rules in use are dropped at once (`install(nil)`) and every ticket taken so far is superseded, so a download already in flight is neither installed nor cached |
+| Turning it on (`setEnabled(true)`, then `turnedOn()`) | the cached rules are installed, then the list is fetched: conditional on the cached text's ETag, in full when there is no cache. Offline, the cached rules stay in use |
+
+**The cache is kept while off (PROVISIONAL: chosen by Claude while the user
+was away, not confirmed by the user).** Turning the list on again then works
+offline and costs a 304. Alternative: delete the cached text when it is
+turned off (a one-line change in `setEnabled`), so an off list leaves nothing
+on disk. Clear Cache & Redownload while off deletes it, since that is what
+the button says, but downloads nothing; turning the list on then downloads
+it in full.
+
+Checked at runtime (2026-11-14, `docs/harness/task337-tracking-list-setting-checks.py`:
+a local server logging every request for the list through
+`DETOUR_TRACKING_FILTER_URL`, the switch and buttons pressed through
+Accessibility, one data directory over two launches).[^checks-337] On by
+default, the list was requested once at launch and cached, and Shift-Cmd-C
+left out its site parameters. Off, Shift-Cmd-C kept them (built-in names
+only), and Update All Now, a relaunch and Clear Cache & Redownload made no
+request for it (Clear Cache deleted its text). With the server answering
+503, turning it on made one request and the cached rules were in use
+again; turning it on after the clear made one full request and cached the
+list again. Three requests in all, each from a step that should make one.
+
 # Edge cases
 
 - A non-web address (`detour://history`, `mailto:`, `file:`) is copied
@@ -228,7 +271,8 @@ changes the copied text. Alternative: `cleanLink(for:)` in those two calls.
 | `QuickDetourWindowTests` | the title bar's Copy Link and `copyCurrentURL` on a loopback page, and the page keeping its address |
 | `QuarantineTests`, `QuarantineWindowTests` | the quarantine navigation rule, which uses the same list |
 | `TrackingParameterFilterTests` | the downloaded filter on the excerpt: counts by kind, global and per-site rules, wildcard TLDs in patterns and `domain=`, `~` domains, substrings, remove-all / all-but, request types, exceptions (bare, named, regex, widened, other types), case, repeats, list spellings, real-world links unchanged, quarantine on the built-in list; `testTheWholeDownloadedList` runs on a downloaded copy when `TEST_RUNNER_TRACKING_FILTER_FILE` names one |
-| `TrackingParameterListTests` | the download path with a stub URLProtocol: first download, cache at launch, conditional refresh, offline, error response, a page that is no list, an unreadable cache, Clear Cache & Redownload, the Debug URL override, the test host downloading nothing |
+| `TrackingParameterListTests` | the download path with a stub URLProtocol: first download, cache at launch, conditional refresh, offline, error response, a page that is no list, an unreadable cache, Clear Cache & Redownload, the Debug URL override, the test host downloading nothing; the TASK-337 switch: on by default and stored in the list's defaults, off at launch (no request, cache not read, kept), refresh and Clear Cache while off (no request), turning off (rules dropped, cache kept, a response in flight dropped), turning on (cached rules offline plus a conditional fetch; a full one without a cache), the pane's status line |
+| `SettingsSwitchRowTests` (TASK-337 case) | the pane's switch shows and writes the setting and is named by its label |
 | `CopyURLTests` (TASK-329 cases) | Copy URL, the sidebar's Copy URL and Share… with the filter installed, and without it |
 
 At runtime (2026-11-14, `docs/harness/task326-copy-url-checks.py` through
@@ -254,6 +298,8 @@ included: `||127.0.0.1/keep/` does not match `127.0.0.1:64903/keep/`.
 [^task-326]: TASK-326
 [^checks]: docs/harness/task326-copy-url-checks.py
 [^task-329]: TASK-329
+[^task-337]: TASK-337
+[^checks-337]: docs/harness/task337-tracking-list-setting-checks.py
 [^checks-329]: docs/harness/task329-tracking-filter-checks.py
 [^adguard-filter]: AdGuard URL Tracking filter sources (GPL-3.0)
 [^adguard-kb]: AdGuard knowledge base, $removeparam and $domain modifiers

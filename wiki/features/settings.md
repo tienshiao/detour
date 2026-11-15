@@ -5,7 +5,7 @@ description: "The Settings window and its nine panes (General, Spaces, Links, Qu
 resource: ../../Detour/Browser/Settings
 tags: [settings, appkit, profiles, spaces, layout]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T01:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T01:40:00Z }
 sources:
   - id: task-211
     resource: backlog:TASK-211
@@ -91,6 +91,9 @@ sources:
   - id: task336-axsettings
     resource: ../../docs/harness/task336/axsettings.swift
     title: TASK-336 Accessibility reader for the Settings window (reading order, switch names, duplicates)
+  - id: task-337
+    resource: backlog:TASK-337
+    title: "Content blocking: a setting for the AdGuard URL Tracking list, so Detour does not fetch it when it is off"
   - id: task-327
     resource: backlog:TASK-327
     title: "Keyboard shortcuts: assign and customize the shortcuts of browser commands in Settings"
@@ -329,7 +332,7 @@ command.
 | Profiles | 630 (Private) / 709 (a normal profile) to 1218 (custom UA, warning, 15 extensions); 1047 for Private with 14 extensions (2026-10-27) | toolbar only |
 | Extensions | 400 (none, or one small extension) to 1092 (22 permissions, 4 hosts, 6 optional) | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
 | Shortcuts | 400 minimum; every row (about 1,800 pt) is its natural height, so it opens at the screen's cap | toolbar only |
-| Content Blocking | 243, fixed (plus its Learn more link line, TASK-292.11) | toolbar only |
+| Content Blocking | 243, fixed (plus its Learn more link line, TASK-292.11), and since TASK-337 the Copied Links section under the buttons | toolbar only |
 
 TASK-189 part 1 moved every pane into the container and rebuilt General,
 Content Blocking and Spaces on the metrics; part 2 rebuilt Profiles (titled
@@ -593,6 +596,20 @@ fixed pane, left 28 pt of empty stripes. It refreshes on `.contentBlockerStatusD
 `.contentBlockerRulesDidChange`. Which lists are *enabled* is a per-profile
 setting on the Profiles pane, not here.
 
+Under the buttons, a "Copied Links" section (TASK-337) holds the one
+app-wide switch of the pane: "Remove tracking parameters with the AdGuard
+URL Tracking filter" (`trackingParameterListEnabled`, a `SettingsSwitchRow`,
+on by default), help saying it changes only the links Copy URL, Copy Link
+and Share… hand out and blocks nothing, and a status line
+(`trackingParameterListStatus`: "2,665 rules, updated 3 hr. ago", "Not
+downloaded yet", or "Off: not downloaded or used", from
+`trackingListStatus`). It is a section of its own rather than a fifth row
+of the table, which lists what blocks content. The switch calls
+`ContentBlockerManager.setTrackingParameterListEnabled`; what off does is on
+[Copy URL](./copy-url.md#the-downloaded-filter-task-329). The buttons carry
+identifiers (`contentBlockerUpdateAll`, `contentBlockerClearCache`) for
+Accessibility-driven checks.[^task-337]
+
 # Gotchas
 
 - **A required equality to the body's bottom caps the window.** If a body's
@@ -726,5 +743,6 @@ suites.
 [^task-211]: TASK-211
 [^task-328]: TASK-328
 [^task-336]: TASK-336
+[^task-337]: TASK-337
 [^task211-harness]: TASK-211 harness
 [^survey-harness]: TASK-189 survey harness

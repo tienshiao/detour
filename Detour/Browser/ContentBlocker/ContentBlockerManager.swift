@@ -147,7 +147,10 @@ class ContentBlockerManager {
         ruleStore.removeRetiredLists(withPrefix: "content-blocker-whitelist-")
 
         if downloadsTrackingParameterList {
-            Task { await trackingParameterList.loadAtLaunch() }
+            Task {
+                await trackingParameterList.loadAtLaunch()
+                postStatusChange()
+            }
         }
 
         // For each list, try to look up compiled rules first, then fetch if needed
@@ -348,7 +351,25 @@ class ContentBlockerManager {
             fetchAndCompile(list: list, refresh: refreshes.begin(list.identifier))
         }
         if includingTrackingParameterList && downloadsTrackingParameterList {
-            Task { await trackingParameterList.refresh() }
+            Task {
+                await trackingParameterList.refresh()
+                postStatusChange()
+            }
+        }
+        postStatusChange()
+    }
+
+    /// Settings > Content Blocking's switch for the tracking-parameter list
+    /// (TASK-337). Off takes effect at once; on loads the cached rules and
+    /// fetches. The test host only stores the setting.
+    func setTrackingParameterListEnabled(_ enabled: Bool) {
+        guard enabled != trackingParameterList.isEnabled else { return }
+        trackingParameterList.setEnabled(enabled)
+        if enabled && downloadsTrackingParameterList {
+            Task {
+                await trackingParameterList.turnedOn()
+                postStatusChange()
+            }
         }
         postStatusChange()
     }
@@ -386,7 +407,10 @@ class ContentBlockerManager {
         // Re-fetch everything
         forceRefreshAll(includingTrackingParameterList: false)
         if downloadsTrackingParameterList {
-            Task { await trackingParameterList.clearCacheAndRedownload() }
+            Task {
+                await trackingParameterList.clearCacheAndRedownload()
+                postStatusChange()
+            }
         }
     }
 

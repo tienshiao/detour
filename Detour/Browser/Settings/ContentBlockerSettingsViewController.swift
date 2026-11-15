@@ -5,6 +5,9 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableV
     private var updateButton: NSButton!
     private var statusLabel: NSTextField!
     private var totalRulesLabel: NSTextField!
+    /// The tracking-parameter list's switch and status line (TASK-337).
+    private(set) var trackingListSwitch: NSSwitch!
+    private(set) var trackingListStatusLabel: NSTextField!
     /// The table is exactly as tall as its header and rows: no empty striped
     /// rows below the four lists (TASK-189 defect 16).
     private var tableHeight: NSLayoutConstraint!
@@ -88,11 +91,13 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableV
         // Bottom bar
         updateButton = NSButton(title: "Update All Now", target: self, action: #selector(updateAllClicked))
         updateButton.bezelStyle = .rounded
+        updateButton.setAccessibilityIdentifier("contentBlockerUpdateAll")
         updateButton.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(updateButton)
 
         let clearButton = NSButton(title: "Clear Cache & Redownload", target: self, action: #selector(clearCacheClicked))
         clearButton.bezelStyle = .rounded
+        clearButton.setAccessibilityIdentifier("contentBlockerClearCache")
         clearButton.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(clearButton)
 
@@ -108,6 +113,9 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableV
         totalRulesLabel.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(totalRulesLabel)
 
+        let trackingSection = makeTrackingListSection()
+        container.addSubview(trackingSection)
+
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: container.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -116,8 +124,12 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableV
 
             updateButton.topAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: spacing),
             updateButton.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            updateButton.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
-            bottomHug(updateButton.bottomAnchor, container.bottomAnchor),
+
+            trackingSection.topAnchor.constraint(equalTo: updateButton.bottomAnchor, constant: SettingsMetrics.sectionGap),
+            trackingSection.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            trackingSection.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            trackingSection.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+            bottomHug(trackingSection.bottomAnchor, container.bottomAnchor),
 
             clearButton.trailingAnchor.constraint(equalTo: updateButton.leadingAnchor, constant: -SettingsMetrics.labelToControl),
             clearButton.firstBaselineAnchor.constraint(equalTo: updateButton.firstBaselineAnchor),
@@ -132,6 +144,67 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableV
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return container
+    }
+
+    /// The AdGuard URL Tracking list (TASK-337): app-wide, used only for the
+    /// links Copy URL, Copy Link and Share… hand out, so it is a section of
+    /// its own under the blocking lists rather than a row of their table.
+    private func makeTrackingListSection() -> NSView {
+        let title = NSTextField.settingsSectionTitle("Copied Links")
+        trackingListSwitch = NSSwitch()
+        trackingListSwitch.target = self
+        trackingListSwitch.action = #selector(trackingListToggled)
+        trackingListSwitch.setAccessibilityIdentifier("trackingParameterListEnabled")
+        let row = SettingsSwitchRow.make(trackingListSwitch, title: Self.trackingListTitle)
+        let help = SettingsWrappingLabel(
+            wrapping: "Copy URL, Copy Link and Share… always leave out common tracking parameters such as "
+                + "utm_source and fbclid. This list adds the ones particular sites use. It changes only the links "
+                + "you copy or share and blocks nothing; it updates with the lists above.",
+            estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin)
+        trackingListStatusLabel = NSTextField(labelWithString: "")
+        trackingListStatusLabel.font = .systemFont(ofSize: 11)
+        trackingListStatusLabel.textColor = .secondaryLabelColor
+        trackingListStatusLabel.setAccessibilityIdentifier("trackingParameterListStatus")
+
+        let section = NSStackView(views: [title, row, help, trackingListStatusLabel])
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = SettingsMetrics.controlToHelp
+        section.setCustomSpacing(SettingsMetrics.sectionTitleToRows, after: title)
+        section.translatesAutoresizingMaskIntoConstraints = false
+        help.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        return section
+    }
+
+    static let trackingListTitle = "Remove tracking parameters with the AdGuard URL Tracking filter"
+
+    /// The status line under the tracking list's switch: what Copy URL uses.
+    static func trackingListStatus(isEnabled: Bool, ruleCount: Int?, lastFetch: Date?, now: Date) -> String {
+        guard isEnabled else { return "Off: not downloaded or used" }
+        guard let ruleCount else { return "Not downloaded yet" }
+        let rules = "\(ruleCountFormatter.string(from: NSNumber(value: ruleCount)) ?? "\(ruleCount)") rules"
+        guard let lastFetch else { return rules }
+        // At least a second ago: the formatter reads no difference, or a fetch
+        // recorded a moment after `now`, as "in 0s".
+        let updated = relativeDateFormatter.localizedString(
+            fromTimeInterval: min(lastFetch.timeIntervalSince(now), -1))
+        return "\(rules), updated \(updated)"
+    }
+
+    private func updateTrackingListRow() {
+        let list = manager.trackingParameterList
+        trackingListSwitch.state = list.isEnabled ? .on : .off
+        // The rules in use, or, while the cached text is still being read
+        // (at launch, just turned on), the count recorded when it was.
+        let ruleCount = list.counts?.supported ?? manager.parsedRuleCount(for: TrackingParameterList.identifier)
+        trackingListStatusLabel.stringValue = Self.trackingListStatus(
+            isEnabled: list.isEnabled, ruleCount: ruleCount,
+            lastFetch: manager.lastFetchDate(for: TrackingParameterList.identifier), now: Date())
+    }
+
+    @objc private func trackingListToggled() {
+        manager.setTrackingParameterListEnabled(trackingListSwitch.state == .on)
+        updateTrackingListRow()
     }
 
     /// Header plus every row plus the bezel's two border points.
@@ -152,6 +225,7 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableV
         updateTableHeight()
         updateTotalRules()
         updateStatusLabel()
+        updateTrackingListRow()
 
         NotificationCenter.default.addObserver(self, selector: #selector(statusDidChange),
                                                name: .contentBlockerStatusDidChange, object: nil)
@@ -185,6 +259,7 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController, NSTableV
         tableView.reloadData()
         updateTotalRules()
         updateStatusLabel()
+        updateTrackingListRow()
 
         if manager.refreshingIdentifiers.isEmpty {
             updateButton.isEnabled = true

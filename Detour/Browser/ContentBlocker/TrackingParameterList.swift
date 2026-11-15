@@ -9,12 +9,18 @@ nonisolated private let log = Logger(subsystem: "com.detourbrowser.mac", categor
 /// which Copy URL and Share… use on top of the built-in names.
 ///
 /// It is not one of `ContentBlockerManager.filterLists`: it is never compiled
-/// into a WebKit rule list and has no Settings row or profile switch. The
-/// manager drives it from the same places (`initialize`, `forceRefreshAll`,
+/// into a WebKit rule list and has no profile switch. The manager drives it
+/// from the same places (`initialize`, `forceRefreshAll`,
 /// `clearCacheAndRedownload`) with the same bookkeeping: the text cached as
 /// `<identifier>.txt` in the data directory's content blocker folder, the
 /// `ContentBlocker.<identifier>.etag` / `.lastFetch` / `.ruleCount` defaults,
 /// a conditional refresh once 24 hours have passed.
+///
+/// Settings > Content Blocking turns it off (TASK-337, `isEnabled`, on by
+/// default). Off, it is neither fetched nor used, whatever asks (launch,
+/// Update Now, Clear Cache & Redownload): every path checks the setting
+/// here, not in the manager, so the tests reach the gate. Its cached text
+/// stays on disk, so turning it on again works offline.
 ///
 /// Every way it can fail falls back quietly: before the first download,
 /// offline, on an error response or a text that parses into no rule, the
@@ -56,8 +62,10 @@ final class TrackingParameterList {
         /// not overwritten.
         case empty
         /// Text older than rules already in use, or read before Clear Cache &
-        /// Redownload: dropped.
+        /// Redownload or before the list was turned off: dropped.
         case superseded
+        /// The list is turned off: no request was made.
+        case off
     }
 
     let url: URL
@@ -97,10 +105,45 @@ final class TrackingParameterList {
     private var etagKey: String { "ContentBlocker.\(Self.identifier).etag" }
     private var lastFetchKey: String { "ContentBlocker.\(Self.identifier).lastFetch" }
     private var ruleCountKey: String { "ContentBlocker.\(Self.identifier).ruleCount" }
+    static let enabledKey = "ContentBlocker.\(identifier).enabled"
+
+    /// Whether Copy URL and Share… use the list, and so whether it is
+    /// fetched (TASK-337). On unless turned off; stored in the data
+    /// directory's content blocker defaults, beside the fetch bookkeeping.
+    var isEnabled: Bool { defaults.object(forKey: Self.enabledKey) as? Bool ?? true }
+
+    /// Stores the setting. Turning it off stops using the list at once (the
+    /// built-in names alone) and drops any text asked for before, so a
+    /// download already in flight is neither installed nor cached; the
+    /// cached text and its bookkeeping stay. Turning it on loads nothing by
+    /// itself: `turnedOn()` does, so the test host can store the setting
+    /// without fetching.
+    func setEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: Self.enabledKey)
+        guard !enabled else { return }
+        supersededTicket = lastTicket
+        counts = nil
+        install(nil)
+    }
+
+    /// After `setEnabled(true)`: the cached rules, then a fetch (conditional
+    /// on the cached text's ETag; in full without a usable cache). Offline,
+    /// the cached rules stay in use.
+    func turnedOn() async {
+        await load(refreshAfterCache: { true })
+    }
 
     /// Launch: the rules from the cached text, then a download when there is
-    /// no usable cache (in full) or a refresh is due (conditional).
+    /// no usable cache (in full) or a refresh is due (conditional). Nothing,
+    /// not even the cache, while the list is off.
     func loadAtLaunch() async {
+        await load(refreshAfterCache: { self.isDue })
+    }
+
+    /// The cached rules, then a full download without a usable cache, or a
+    /// conditional one when `refreshAfterCache` says so.
+    private func load(refreshAfterCache: () -> Bool) async {
+        guard isEnabled else { return }
         let ticket = takeTicket()
         let cacheFile = cacheFile
         let cached = await Task.detached(priority: .utility) { () -> TrackingParameterFilter? in
@@ -114,8 +157,9 @@ final class TrackingParameterList {
         }
         if installIfNewest(cached, ticket: ticket) { logCounts(cached.counts, source: "cache") }
         // A Clear Cache & Redownload during the cache read runs its own
-        // download; a second one here would only repeat it.
-        if ticket > supersededTicket, isDue { await refresh() }
+        // download; a second one here would only repeat it. Turned off
+        // during the read: no download.
+        if ticket > supersededTicket, refreshAfterCache() { await refresh() }
     }
 
     /// Whether 24 hours have passed since the last fetch (or there was none).
@@ -129,6 +173,10 @@ final class TrackingParameterList {
     /// and installed and cached when it gives rules.
     @discardableResult
     func refresh(conditional: Bool = true) async -> Outcome {
+        guard isEnabled else {
+            log.info("Not fetching \(Self.identifier, privacy: .public): turned off in Settings")
+            return .off
+        }
         var request = URLRequest.withSafariUserAgent(url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         if conditional, let etag = defaults.string(forKey: etagKey) {
@@ -182,7 +230,8 @@ final class TrackingParameterList {
 
     /// Clear Cache & Redownload: drops the rules in use (the built-in names
     /// alone until the download parses), the cached text and the bookkeeping,
-    /// refuses text read before now, and downloads the list in full.
+    /// refuses text read before now, and downloads the list in full. While
+    /// the list is off it is cleared like the others but not downloaded.
     func clearCacheAndRedownload() async {
         supersededTicket = lastTicket
         try? FileManager.default.removeItem(at: cacheFile)
@@ -198,7 +247,7 @@ final class TrackingParameterList {
     }
 
     private func installIfNewest(_ filter: TrackingParameterFilter, ticket: Int) -> Bool {
-        guard ticket > supersededTicket, ticket > installedTicket else { return false }
+        guard isEnabled, ticket > supersededTicket, ticket > installedTicket else { return false }
         installedTicket = ticket
         counts = filter.counts
         defaults.set(filter.counts.supported, forKey: ruleCountKey)
