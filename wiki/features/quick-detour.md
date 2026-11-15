@@ -139,7 +139,10 @@ host text alone before). Several windows can be open at once. Cmd+W,
 Cmd+F (Escape closes the find bar), zoom, Back/Forward (Cmd+[ / Cmd+], the
 mouse back button), Reload, Copy URL and the Web Inspector work as in a
 browser window. Cmd+Z in a page is the page's: the browser undo stack is the
-browser windows' (`BrowserWebView.performKeyEquivalent`).
+browser windows', and Edit > Undo and Redo answer only in a browser window
+(`CommandWindowKind.browserWindows`), so a key the page leaves does nothing
+more here: measured in TASK-345 (typing in a Quick Detour page's input
+stayed after ⌘Z, Edit > Undo disabled), which did not change it.
 
 The window is a normal-level window, 900 × 640 points by default (minimum
 480 × 320), centred, each later one cascading 22 points down and right of the

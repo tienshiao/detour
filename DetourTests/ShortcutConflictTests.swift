@@ -127,10 +127,10 @@ nonisolated final class ShortcutConflictTests: XCTestCase {
 
     @MainActor func testDetoursKeysOutsideMenusAreRefused() {
         XCTAssertEqual(problem(shortcut(kVK_Tab, [.control])), .usedByDetour("switching to a recent tab"))
-        XCTAssertEqual(problem(shortcut(kVK_ANSI_Z, [.command], "z")), .usedByDetour("undoing in a page"),
-                       "BrowserWebView takes ⌘Z before any menu")
-        XCTAssertEqual(problem(shortcut(kVK_ANSI_Z, [.command, .shift], "z")), .usedByDetour("redoing in a page"),
-                       "and ⇧⌘Z (TASK-333)")
+        // TASK-345: a page gets ⌘Z and ⇧⌘Z first, then the menu; nothing
+        // holds them outside it (Edit > Undo and Redo do, in the real menu bar).
+        XCTAssertNil(problem(shortcut(kVK_ANSI_Z, [.command], "z")))
+        XCTAssertNil(problem(shortcut(kVK_ANSI_Z, [.command, .shift], "z")))
         XCTAssertNil(problem(shortcut(kVK_ANSI_Z, [.command, .option], "z")))
     }
 
@@ -160,6 +160,9 @@ nonisolated final class ShortcutConflictTests: XCTestCase {
         }
         XCTAssertEqual(problem(shortcut(kVK_ANSI_T, [.command], "t"), for: BrowserCommands.reload), .usedByMenu("File > New Tab"))
         XCTAssertEqual(problem(shortcut(kVK_ANSI_C, [.command], "c"), for: BrowserCommands.reload), .usedByMenu("Edit > Copy"))
+        XCTAssertEqual(problem(shortcut(kVK_ANSI_Z, [.command], "z"), for: BrowserCommands.reload), .usedByMenu("Edit > Undo"))
+        XCTAssertEqual(problem(shortcut(kVK_ANSI_Z, [.command, .shift], "z"), for: BrowserCommands.reload),
+                       .usedByMenu("Edit > Redo"))
         XCTAssertEqual(problem(shortcut(kVK_ANSI_Q, [.command], "q"), for: BrowserCommands.reload), .usedByMenu("Detour > Quit Detour"))
         XCTAssertEqual(problem(shortcut(kVK_RightArrow, [.command, .option]), for: BrowserCommands.reload),
                        .usedByMenu("Spaces > Next Space"))

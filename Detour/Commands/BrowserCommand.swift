@@ -198,8 +198,15 @@ protocol CommandContext {
     var pageCanGoBack: Bool { get }
     var pageCanGoForward: Bool { get }
     var isPeekShowing: Bool { get }
-    /// An editable field in the page has focus: Undo and Redo are the page's.
+    /// The focused page (the window's first responder) has an editable
+    /// element focused: Undo and Redo are the page's (TASK-345).
     var isEditingPageText: Bool { get }
+    /// That page's own undo stack.
+    var canUndoPageEdit: Bool { get }
+    var canRedoPageEdit: Bool { get }
+    /// "Undo Typing", or "Undo" with nothing to undo.
+    var pageUndoTitle: String { get }
+    var pageRedoTitle: String { get }
     var canUndoBrowserAction: Bool { get }
     var canRedoBrowserAction: Bool { get }
     /// "Undo Close Tab", or "Undo" with nothing to undo.
@@ -230,6 +237,10 @@ extension CommandContext {
     var pageCanGoForward: Bool { false }
     var isPeekShowing: Bool { false }
     var isEditingPageText: Bool { false }
+    var canUndoPageEdit: Bool { false }
+    var canRedoPageEdit: Bool { false }
+    var pageUndoTitle: String { "Undo" }
+    var pageRedoTitle: String { "Redo" }
     var canUndoBrowserAction: Bool { false }
     var canRedoBrowserAction: Bool { false }
     var browserUndoTitle: String { "Undo" }

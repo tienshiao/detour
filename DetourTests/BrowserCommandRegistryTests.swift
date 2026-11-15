@@ -12,6 +12,10 @@ private struct Context: CommandContext {
     var pageCanGoForward = false
     var isPeekShowing = false
     var isEditingPageText = false
+    var canUndoPageEdit = false
+    var canRedoPageEdit = false
+    var pageUndoTitle = "Undo"
+    var pageRedoTitle = "Redo"
     var canUndoBrowserAction = false
     var canRedoBrowserAction = false
     var browserUndoTitle = "Undo"
@@ -311,9 +315,22 @@ nonisolated final class BrowserCommandRegistryTests: XCTestCase {
         let closed = context(.normal) { $0.canUndoBrowserAction = true; $0.browserUndoTitle = "Undo Close Tab" }
         XCTAssertTrue(BrowserCommands.undo.isAvailable(in: closed))
         XCTAssertEqual(BrowserCommands.undo.title(in: closed), "Undo Close Tab")
-        let editing = context(.normal) { $0.isEditingPageText = true; $0.browserRedoTitle = "Redo Close Tab" }
-        XCTAssertTrue(BrowserCommands.redo.isAvailable(in: editing))
+        // TASK-345: while editing, the page's stack and title, never the browser's.
+        let editing = context(.normal) {
+            $0.isEditingPageText = true
+            $0.canUndoBrowserAction = true; $0.browserUndoTitle = "Undo Close Tab"
+            $0.canRedoBrowserAction = true; $0.browserRedoTitle = "Redo Close Tab"
+        }
+        XCTAssertFalse(BrowserCommands.undo.isAvailable(in: editing), "nothing on the page's stack")
+        XCTAssertFalse(BrowserCommands.redo.isAvailable(in: editing))
+        XCTAssertEqual(BrowserCommands.undo.title(in: editing), "Undo")
         XCTAssertEqual(BrowserCommands.redo.title(in: editing), "Redo")
+        let typed = context(.normal) {
+            $0.isEditingPageText = true; $0.canUndoPageEdit = true; $0.pageUndoTitle = "Undo Typing"
+        }
+        XCTAssertTrue(BrowserCommands.undo.isAvailable(in: typed))
+        XCTAssertEqual(BrowserCommands.undo.title(in: typed), "Undo Typing")
+        XCTAssertFalse(BrowserCommands.redo.isAvailable(in: typed))
     }
 
     @MainActor func testOpenInSpaceIsThePeeksInABrowserWindowAndThePagesInAQuickDetour() {

@@ -310,8 +310,9 @@ harnesses are applied as patches; see
 # Gotchas
 
 - Edit > Undo is `browserUndo`, not AppKit's `undo:`. The window controller
-  retitles it from `TabStore.undoManager`, and it is the page's own text undo
-  only while an editable field is focused.
+  retitles it from `TabStore.undoManager`, or from the focused page's own
+  undo manager while an editable element in that page has focus, and runs
+  that one (TASK-345, [A page's key equivalents and its undo](../platform/page-key-equivalents-and-undo.md)).
 - "Toggle Sidebar" is Cmd+S and "Pin/Unpin Tab" is Cmd+D; both displace
   shortcuts a web app might expect.
 - The `extensionsDidChangeNotification` handler does not assume the main

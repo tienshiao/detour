@@ -309,8 +309,7 @@ enum HotKeyShortcutValidation {
         }
         // A Carbon hotkey takes the key before Detour's own event monitors
         // see it; a menu key equivalent comes after them.
-        let nonMenu = rules == .appShortcut ? nonMenuShortcuts + pageShortcuts : nonMenuShortcuts
-        if let use = nonMenu.first(where: { $0.matches(shortcut) }) {
+        if let use = nonMenuShortcuts.first(where: { $0.matches(shortcut) }) {
             return .usedByDetour(use.name)
         }
         if rules == .appShortcut, let reserved = reservedSystemShortcuts.first(where: { $0.matches(shortcut) }) {
@@ -347,16 +346,10 @@ enum HotKeyShortcutValidation {
         HeldShortcut(keyCode: kVK_Tab, modifiers: [.control, .shift], name: "switching to a recent tab"),
     ]
 
-    /// The keys `BrowserWebView.performKeyEquivalent` takes from a page
-    /// before any menu sees them (it compares the character,
-    /// `BrowserWebView.browserUndoKey`): a menu shortcut on them would never
-    /// fire while a page has the keys. ⌘Z and ⇧⌘Z (the latter matched only
-    /// since TASK-333). In the live menu Edit > Undo and Redo hold them and
-    /// are named first; these name them where no menu is checked.
-    private static let pageShortcuts: [HeldShortcut] = [
-        HeldShortcut(character: "z", modifiers: [.command], name: "undoing in a page"),
-        HeldShortcut(character: "z", modifiers: [.command, .shift], name: "redoing in a page"),
-    ]
+    // Cmd+Z and Shift+Cmd+Z are not held outside menus: a page gets them
+    // first, then Edit > Undo and Redo, which hold them in the menu (rule 3)
+    // and stay on them (`BrowserCommands.fixedShortcuts`). Until TASK-345
+    // `BrowserWebView` took them before the page and they were listed here.
 
     /// macOS's own that no app's menu can take and that `CopySymbolicHotKeys`
     /// does not list: the app switcher, Force Quit, and the Apple menu's.

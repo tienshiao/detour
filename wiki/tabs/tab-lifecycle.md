@@ -48,6 +48,9 @@ sources:
   - id: task-193-5
     resource: backlog:TASK-193.5
     title: "Quick Detour: Opt-Cmd-click entry points, links from other apps, and auto-archive"
+  - id: task-345
+    resource: backlog:TASK-345
+    title: "Undo and redo: a page gets ⌘Z and ⇧⌘Z first, and Edit › Undo/Redo reach the page's own undo while editing"
   - id: task-185
     resource: backlog:TASK-185
     title: "Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section"
@@ -242,23 +245,22 @@ another space) deliberately does not call it.
 - **Reopen Closed Tab** (Cmd+Shift+T) takes the newest plain-close record of
   the active space, deletes it and inserts the rebuilt tab at
   `min(sortOrder, count)`, snapped out of any split that now spans that index.
-- **Undo** (Cmd+Z) and **Redo** (Shift+Cmd+Z) are `TabStore.undoManager`,
-  shared by all windows. A web view takes both for the browser's undo and
-  redo, before the page sees them, unless the page has an editable element
-  focused (`BrowserWebView.performKeyEquivalent` and `browserUndoKey`, fed by
-  the `editableFieldFocus` script message). Shift+Cmd+Z was never matched
-  until TASK-333 (the character is "Z" with Shift held); it reached the Edit
-  menu's Redo after the page instead.
-- While a page's field is focused the keys go to the page and then the Edit
-  menu, whose Undo and Redo send `browserUndo:`/`browserRedo:`, which run
-  `TabStore.undoManager`, not the page's text undo. Observed 2026-11-14
-  (Debug build, real key events): with a closed tab on the stack, Cmd+Z in a
-  page `<input>` after typing reopened the tab and did not undo the text;
-  with nothing on the browser's stack it did nothing in an `<input>` or a
-  contenteditable, although WebKit held the contenteditable's edit
-  (`document.execCommand('undo')` there undid it). Shift+Cmd+Z in an
-  `<input>` or a contenteditable with a redo pending re-closed the tab. Which
-  undo manager holds WebKit's edits was not determined.
+- **Undo** (Cmd+Z) and **Redo** (Shift+Cmd+Z) of tab actions are
+  `TabStore.undoManager`, shared by all windows. Since TASK-345 a page gets
+  both keys first: a page that handles them (`preventDefault`, as canvas web
+  apps do) keeps them, and one it leaves reaches Edit > Undo or Redo, once
+  (WebKit re-sends unhandled keys to AppKit; see
+  [A page's key equivalents and its undo](../platform/page-key-equivalents-and-undo.md)).
+  Edit > Undo and Redo (`browserUndo:`/`browserRedo:`) run the focused
+  page's own undo while an editable element in it has focus (the web view is
+  the window's first responder and its `editableFieldFocus` flag is set;
+  titled from the page, "Undo Typing"), and `TabStore.undoManager` otherwise,
+  focus in the palette or the find bar included. Each `BrowserWebView` keeps
+  its page's edits on its own undo manager, which WebKit empties when the
+  view leaves the window (a tab switch).[^task-345] Before TASK-345 the
+  web view took both keys for the browser's undo before the page whenever
+  the browser had something to undo, and in a field the menu then ran the
+  browser's undo, not the page's (TASK-333 measured it).
 - An undone close posts `.tabRestoredByUndo`; windows on that space select the
   tab. It rejoins its split if the partner is still an ungrouped normal tab.
 - A close undo does nothing once its record is gone (restored from the archive
@@ -317,3 +319,4 @@ skipped.
 [^task-85]: target=_blank links in a pinned tab or favourite open in a Peek
 [^task-119]: Archived Tabs page; close undos skip consumed records
 [^task-185]: Peek: add an Open in Split View button; splitting from a favourite or pinned tab opens the split in the normal section
+[^task-345]: Undo and redo: a page gets ⌘Z and ⇧⌘Z first, and Edit › Undo/Redo reach the page's own undo while editing

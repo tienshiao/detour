@@ -60,7 +60,7 @@ The class is split across extension files under
 | `+WKUIDelegate.swift` | `WKUIDelegate` | `window.open`, `window.close`, JavaScript dialogs, file upload, media capture permission, return from Picture in Picture. |
 | `+ExternalApps.swift` | — | Confirming non-HTTP URL schemes ([external apps](../features/external-apps.md)). |
 | `+RecentTabSwitcher.swift` | — | Control+Tab MRU overlay ([tab switching](../tabs/tab-switching.md)). |
-| `BrowserWebView.swift` | `WKWebView` subclass | Pane focus on `becomeFirstResponder`, Cmd+Z routing, mouse button 3 = back, link context menu items. |
+| `BrowserWebView.swift` | `WKWebView` subclass | Pane focus on `becomeFirstResponder`, the page's own undo manager and editing flag (TASK-345), mouse button 3 = back, link context menu items. |
 
 `WKExtensionWindowConformance.swift` (in `Detour/Extensions/Runtime/`) makes the
 controller a `WKWebExtensionWindow`.
@@ -151,7 +151,8 @@ safety net for a web view with no content. The single-owner mechanics are on
 
 `wireOwnedWebView` makes the window the `navigationDelegate` and `uiDelegate`
 of a web view it hosts and registers itself for the `linkHover` and
-`editableFieldFocus` script messages. Two consequences:
+`editableFieldFocus` script messages (a Peek's page gets `editableFieldFocus`
+only, from `claimPeekWebView`, TASK-345). Two consequences:
 
 - The handlers go through `WeakScriptMessageHandler`.
   `userContentController.add(_:name:)` retains what it is given, and until

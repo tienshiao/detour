@@ -1,0 +1,29 @@
+<!doctype html><html><head><title>Undo fixture</title>
+<style>body{font:15px sans-serif;margin:30px} #canvas{width:300px;height:120px;background:#cde;outline:2px solid #789;margin:10px 0}
+#ce{border:1px solid #888;min-height:30px;padding:4px;margin:10px 0} p{margin:10px 0}</style></head><body>
+<p id="blank">Blank paragraph (click here for body focus)</p>
+<div id="canvas" tabindex="0">canvas-style: handles Cmd+Z itself</div>
+<input id="inp" type="text" value="">
+<div id="ce" contenteditable="true"></div>
+<p><a id="qdlink" href="/undo.html?autofocus=1">This page, for a Quick Detour</a></p>
+<pre id="out"></pre>
+<script>
+// ?swallow: the page stops every focusout at window capture, so Detour's
+// focus script never hears one (TASK-345: proves the Cmd+Z report's order).
+if (location.search.includes('swallow')) window.addEventListener('focusout', e => e.stopImmediatePropagation(), true);
+window.keyLog = []; window.canvasUndo = 0; window.canvasRedo = 0;
+document.addEventListener('keydown', e => {
+  if (!e.metaKey) return;
+  const a = document.activeElement;
+  keyLog.push((e.shiftKey ? 'shift+' : '') + 'cmd+' + e.key.toLowerCase() + '@' + (a ? (a.id || a.tagName) : '-'));
+}, true);
+document.getElementById('canvas').addEventListener('keydown', e => {
+  if (e.metaKey && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) canvasRedo++; else canvasUndo++; }
+});
+// Report the input's value to the server's request log, for pages the
+// endpoint cannot run script in (a Quick Detour window).
+const beacon = () => { new Image().src = '/log?inp=' + encodeURIComponent(document.getElementById('inp') ? document.getElementById('inp').value : '(gone)') + '&t=' + Date.now(); };
+document.getElementById('inp').addEventListener('input', beacon);
+document.addEventListener('keyup', beacon);
+if (location.search.includes('autofocus')) document.getElementById('inp').focus();
+</script></body></html>

@@ -80,68 +80,34 @@ class BrowserWebView: WKWebView {
         return (action == back ? BrowserCommands.back : BrowserCommands.forward).isAvailable(in: controller)
     }
 
-    // MARK: - Undo/Redo
+    // MARK: - Undo/Redo (TASK-345)
 
     /// True when the user is focused on an editable element (input, textarea, contentEditable).
-    /// Set via a JS focus/blur message handler.
+    /// Set by the `editableFieldFocus` script (focus changes, page loads, and
+    /// Cmd+Z itself; `Space.editableFieldFocusScript`). While it is, and this view is
+    /// the window's first responder, Edit > Undo and Redo run this page's
+    /// undo (`BrowserWindowController.undoTarget`).
     var isEditingWebContent = false
 
-    /// The keys `performKeyEquivalent` takes for the browser's undo.
-    enum BrowserUndoKey: Equatable {
-        case undo, redo
-    }
+    /// This page's own undo stack. WebKit registers the page's edits with the
+    /// view's `undoManager` (`WebViewImpl::registerEditCommand`) and runs the
+    /// page's `execCommand('undo')` on it; inherited, that was the window's
+    /// (measured: TASK-345), shared by both panes of a split and by the
+    /// window's own text fields, so one page's undo could reach the other
+    /// pane's edits or a field's. WebKit still drops the page's edits whenever the view moves into or
+    /// out of a window (`viewWillMoveToWindow` -> `clearAllEditCommands`):
+    /// after a tab switch the page has nothing to undo.
+    private let pageUndoManager = UndoManager()
 
-    /// Cmd+Z is undo and Shift+Cmd+Z redo. With Shift held
-    /// `charactersIgnoringModifiers` is "Z", which the redo branch once
-    /// compared with "z" and so never matched (TASK-333): the character is
-    /// compared without case, and Caps Lock is ignored, as menus ignore it.
-    static func browserUndoKey(modifiers: NSEvent.ModifierFlags, charactersIgnoringModifiers: String?) -> BrowserUndoKey? {
-        guard charactersIgnoringModifiers?.lowercased() == "z" else { return nil }
-        switch modifiers.intersection(.deviceIndependentFlagsMask).subtracting(.capsLock) {
-        case .command: return .undo
-        case [.command, .shift]: return .redo
-        default: return nil
-        }
-    }
+    override var undoManager: UndoManager? { pageUndoManager }
 
-    /// Which of the browser's undo and redo `key` runs here before the page
-    /// sees it: none while an editable element has focus, and none with
-    /// nothing to undo or redo.
-    static func takenBrowserUndoKey(_ key: BrowserUndoKey?, isEditing: Bool,
-                                    canUndo: Bool, canRedo: Bool) -> BrowserUndoKey? {
-        guard !isEditing, let key else { return nil }
-        switch key {
-        case .undo: return canUndo ? .undo : nil
-        case .redo: return canRedo ? .redo : nil
-        }
-    }
-
-    /// Outside an editable element, Cmd+Z and Shift+Cmd+Z undo and redo the
-    /// browser's actions (close tab, move tab, etc.) when there is one, before
-    /// the page sees the key. Otherwise the page gets the key, and then the
-    /// Edit menu, whose Undo and Redo also run the browser's undo, not the
-    /// page's text undo (wiki/tabs/tab-lifecycle.md).
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        // The browser undo stack is the browser windows' (tabs, spaces); a
-        // Quick Detour window has none of its own to undo (TASK-193.1).
-        guard window?.windowController is BrowserWindowController else {
-            return super.performKeyEquivalent(with: event)
-        }
-        let undoManager = TabStore.shared.undoManager
-        let key = Self.browserUndoKey(modifiers: event.modifierFlags,
-                                      charactersIgnoringModifiers: event.charactersIgnoringModifiers)
-        switch Self.takenBrowserUndoKey(key, isEditing: isEditingWebContent,
-                                        canUndo: undoManager.canUndo, canRedo: undoManager.canRedo) {
-        case .undo?:
-            undoManager.undo()
-            return true
-        case .redo?:
-            undoManager.redo()
-            return true
-        case nil:
-            return super.performKeyEquivalent(with: event)
-        }
-    }
+    // Cmd+Z and Shift+Cmd+Z are not taken here (TASK-345): with this view
+    // first responder, WebKit's `performKeyEquivalent` sends the key to the
+    // page; one the page does not handle comes back through
+    // `-[NSApp sendEvent:]` (`WebViewImpl::doneWithKeyEvent`), and on that
+    // pass WebKit hands it straight to AppKit, so the main menu's Edit > Undo
+    // or Redo gets it, once. An override here would see the key on both
+    // passes and could not tell them apart.
 
     override func otherMouseDown(with event: NSEvent) {
         // Mouse button 3 = back button

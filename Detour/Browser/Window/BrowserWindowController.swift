@@ -1444,7 +1444,8 @@ class BrowserWindowController: NSWindowController {
     }
 
     /// Script message handlers this controller registers on every owned pane webview.
-    private static let ownedScriptHandlerNames = ["linkHover", "editableFieldFocus"]
+    private static let editableFieldFocusHandlerName = "editableFieldFocus"
+    private static let ownedScriptHandlerNames = ["linkHover", editableFieldFocusHandlerName]
 
     /// Wake a sleeping split member alongside the focused pane, mirroring the
     /// wake path in `selectTab`. Guards on the missing webView rather than
@@ -1532,7 +1533,11 @@ class BrowserWindowController: NSWindowController {
         for name in Self.ownedScriptHandlerNames {
             ucc.removeScriptMessageHandler(forName: name)
         }
-        (webView as? BrowserWebView)?.isEditingWebContent = false
+        // `isEditingWebContent` is kept: the page keeps its DOM focus when
+        // the tab is switched away or moves to another window, and no focusin
+        // comes when it is shown again. Cleared here, Cmd+Z in a field still
+        // focused after a tab switch ran the browser's undo (TASK-345). Undo
+        // routing reads it only while the web view is first responder.
     }
 
     private func postOwnershipChanged(tabIDs: [UUID], focusedID: UUID, snapshot: NSImage?) {
@@ -3092,6 +3097,12 @@ class BrowserWindowController: NSWindowController {
     private func claimPeekWebView(_ webView: WKWebView) {
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        // Edit > Undo in a Peek's field is the Peek page's own (TASK-345),
+        // which needs its editing flag. Not `linkHover`: the status bar is
+        // the window's page's. Weakly, as for owned pages (TASK-315).
+        let ucc = webView.configuration.userContentController
+        ucc.removeScriptMessageHandler(forName: Self.editableFieldFocusHandlerName)
+        ucc.add(WeakScriptMessageHandler(self), name: Self.editableFieldFocusHandlerName)
     }
 
     /// Re-presents the selected tab's peek overlay after it was hidden (tab
@@ -3546,12 +3557,59 @@ class BrowserWindowController: NSWindowController {
 // MARK: - NSMenuItemValidation
 
 extension BrowserWindowController: NSMenuItemValidation {
+    /// Edit > Undo, and Cmd+Z once a page has left it (TASK-345): the
+    /// focused page's own undo while an editable element in it has focus,
+    /// else the browser's.
     @objc func browserUndo(_ sender: Any?) {
-        store.undoManager.undo()
+        guard let undoManager = editUndoManager, undoManager.canUndo else { return }
+        undoManager.undo()
     }
 
     @objc func browserRedo(_ sender: Any?) {
-        store.undoManager.redo()
+        guard let undoManager = editUndoManager, undoManager.canRedo else { return }
+        undoManager.redo()
+    }
+
+    /// Whose undo Edit > Undo and Redo run (TASK-345).
+    enum UndoTarget: Equatable {
+        /// The focused page's own (its edits), never the browser's list.
+        case page
+        /// `TabStore.undoManager`: closed and moved tabs, and the like.
+        case browser
+    }
+
+    /// `focusedPageIsEditing`: nil when no page is the window's first
+    /// responder (focus in the palette, the find bar), else whether an
+    /// editable element in it has focus. A page with none focused had the key
+    /// first and left it, so the browser's undo runs. `isKeyWindow`: whether
+    /// this window has the keys (or no window does: a menu command sent to it
+    /// with the app in the background). When another window has them
+    /// (Settings, an extension's popup), Edit > Undo falls through to this
+    /// window as the main one, and must not undo typing in a page the user
+    /// is not in.
+    static func undoTarget(focusedPageIsEditing: Bool?, isKeyWindow: Bool) -> UndoTarget {
+        focusedPageIsEditing == true && isKeyWindow ? .page : .browser
+    }
+
+    /// The page web view that has the window's keys, if any.
+    private var focusedPageWebView: BrowserWebView? {
+        window?.firstResponder as? BrowserWebView
+    }
+
+    /// The page whose own undo Edit > Undo runs now, if any. Its editing flag
+    /// alone is not enough: it stays set when the keys move out of the page
+    /// with a field focused (no focusout), so the web view must also have the keys.
+    private var editingPageWebView: BrowserWebView? {
+        guard let webView = focusedPageWebView else { return nil }
+        let isKeyWindow = NSApp.keyWindow.map { $0 === window } ?? true
+        guard Self.undoTarget(focusedPageIsEditing: webView.isEditingWebContent,
+                              isKeyWindow: isKeyWindow) == .page else { return nil }
+        return webView
+    }
+
+    private var editUndoManager: UndoManager? {
+        if let page = editingPageWebView { return page.undoManager }
+        return store.undoManager
     }
 
     /// The registry's rule for the item's command, in this window, after
@@ -3579,9 +3637,12 @@ extension BrowserWindowController: CommandContext {
 
     var isPeekShowing: Bool { peekOverlayView != nil }
 
-    var isEditingPageText: Bool {
-        (selectedTab?.webView as? BrowserWebView)?.isEditingWebContent ?? false
-    }
+    var isEditingPageText: Bool { editingPageWebView != nil }
+
+    var canUndoPageEdit: Bool { editingPageWebView?.undoManager?.canUndo ?? false }
+    var canRedoPageEdit: Bool { editingPageWebView?.undoManager?.canRedo ?? false }
+    var pageUndoTitle: String { editingPageWebView?.undoManager?.undoMenuItemTitle ?? "Undo" }
+    var pageRedoTitle: String { editingPageWebView?.undoManager?.redoMenuItemTitle ?? "Redo" }
 
     var canUndoBrowserAction: Bool { store.undoManager.canUndo }
     var canRedoBrowserAction: Bool { store.undoManager.canRedo }

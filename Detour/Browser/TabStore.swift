@@ -311,10 +311,22 @@ class Space {
     """
 
     /// Tracks focus/blur on editable elements (input, textarea, contentEditable)
-    /// and posts to `editableFieldFocus` so native undo routing can adapt.
+    /// and posts to `editableFieldFocus` so native undo routing can adapt
+    /// (`BrowserWindowController.undoTarget`). The frame a Cmd+Z goes to also
+    /// reports on the key itself, ahead of the page's document listeners: its
+    /// message reaches the app before WebKit hands an unhandled key to Edit >
+    /// Undo (one connection, in order; measured with a page that swallows
+    /// focusout, TASK-345), so the key is routed by where focus is then,
+    /// whatever focusin/focusout missed (an element removed while focused,
+    /// focus moving between frames, a tab switched away and back).
     private static let editableFieldFocusScript = """
     (function() {
         function isEditable(el) {
+            // A field inside a shadow root (web components) leaves its host as
+            // the document's activeElement.
+            while (el && el.shadowRoot && el.shadowRoot.activeElement) {
+                el = el.shadowRoot.activeElement;
+            }
             if (!el || el === document.body) return false;
             var tag = el.tagName;
             if (tag === 'TEXTAREA') return true;
@@ -326,12 +338,35 @@ class Space {
             if (el.isContentEditable) return true;
             return false;
         }
-        document.addEventListener('focusin', function() {
-            window.webkit.messageHandlers.editableFieldFocus.postMessage(isEditable(document.activeElement));
-        });
+        function report() {
+            try {
+                window.webkit.messageHandlers.editableFieldFocus.postMessage(isEditable(document.activeElement));
+            } catch (e) {}
+        }
+        document.addEventListener('focusin', report);
         document.addEventListener('focusout', function() {
-            window.webkit.messageHandlers.editableFieldFocus.postMessage(false);
+            try {
+                window.webkit.messageHandlers.editableFieldFocus.postMessage(false);
+            } catch (e) {}
         });
+        // On the window, capturing: ahead of the page's document listeners.
+        // `code` too: with Command held, some layouts report another `key`.
+        window.addEventListener('keydown', function(e) {
+            if (!e.metaKey) return;
+            if ((e.key || '').toLowerCase() !== 'z' && e.code !== 'KeyZ') return;
+            report();
+        }, true);
+        // Leaving a document with a field focused fires no focusout, so the
+        // flag would stay set on the next page and keep Edit > Undo on the
+        // page's (empty) stack (TASK-345): the top document reports its own
+        // state when it loads, when it comes back from the back/forward cache,
+        // and when the page gets the keys again (a tab shown again, whose
+        // messages went nowhere while no window hosted it).
+        if (window === window.top) {
+            report();
+            window.addEventListener('pageshow', function(e) { if (e.persisted) report(); });
+            window.addEventListener('focus', report);
+        }
     })();
     """
 
