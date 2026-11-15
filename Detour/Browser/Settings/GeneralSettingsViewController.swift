@@ -67,6 +67,8 @@ class GeneralSettingsViewController: SettingsPaneViewController {
             accessory: .toggle(privateSwitch))
         let allowAgainButton = NSButton(title: "Allow Again", target: self, action: #selector(allowDisconnectedAgents))
         allowAgainButton.bezelStyle = .rounded
+        // Its name before TASK-338, when it stood alone under the switches.
+        allowAgainButton.setAccessibilityLabel("Allow Disconnected Agents Again")
         allowAgainRow = SettingsFormRow(
             title: "Disconnected agents",
             help: "Agents you disconnected cannot connect until you allow them again.",

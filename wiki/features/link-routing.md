@@ -761,8 +761,8 @@ section of the Spaces pane), after Arc's sheet in `docs/air-traffic-control/`.
 | Part | What it shows |
 |---|---|
 | Description | What Link Routes do ("Link Routes open links in the space you choose: …"), that routes are tried from the top and the first match decides, and that rows drag. |
-| Routes | A "Routes" title with **New Route** at the trailing edge, then a bordered list: one row per route, three lines (`URL [kind ▾] [pattern] ⊖`, `From app [app ▾]`, `↳ Open in [target ▾]`), a drag handle at the left, and, when the row has a problem, a fourth line: an orange triangle and the whole warning, wrapping, under Open in. No routes: one centred line in the box. |
-| Default | "Open other links in [target ▾]" and a caption: it applies to every link no route matches (from other apps, typed in a new tab, clicked to another site), and Most Recent Space opens a link from another app in the space in front and leaves a typed or clicked link where it is. |
+| Routes | A "Routes" header with **New Route** at the trailing edge, then a list drawn as a form group (TASK-338): one row per route, three lines (`URL [kind ▾] [pattern] ⊖`, `From app [app ▾]`, `↳ Open in [target ▾]`), a drag handle at the left, and, when the row has a problem, a fourth line: an orange triangle and the whole warning, wrapping, under Open in. No routes: one centred line in the box. |
+| Default | A form section (TASK-338): the row "Open other links in [target ▾]" with its warning line, tinted when the blocked deletion points to it, and a caption as the group's footnote with the Quarantine guide: it applies to every link no route matches (from other apps, typed in a new tab, clicked to another site), and Most Recent Space opens a link from another app in the space in front and leaves a typed or clicked link where it is. |
 
 The route list fills the pane's height and scrolls its own rows; the Default
 and its caption stay at the bottom (TASK-211). The Quick Detour section that

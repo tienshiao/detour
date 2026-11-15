@@ -238,7 +238,7 @@ Limits:
 
 `ShortcutsSettingsViewController` (toolbar item "Shortcuts", symbol
 `keyboard`, after Search): description, a search field and Restore Defaults,
-then one bordered list (a column pane: the list fills the pane and scrolls
+then one list drawn as a form group (TASK-338; a column pane: the list fills the pane and scrolls
 on its own, 400 pt minimum), then the warning line.
 
 - `ShortcutList.items` (pure): menu headings as floating group rows, each

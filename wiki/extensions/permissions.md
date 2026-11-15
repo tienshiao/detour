@@ -506,7 +506,7 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 - [Profile.swift](../../Detour/Browser/Profile.swift) — the restore.
 - [ExtensionManager.swift](../../Detour/Extensions/Runtime/ExtensionManager.swift) — prompts, Settings toggles, `nativeHostAccess`.
 - [ExtensionPermissionRecord.swift](../../Detour/Extensions/Storage/Models/ExtensionPermissionRecord.swift) and `AppDatabase` — storage.
-- `ExtensionsSettingsViewController` — the rows: required, `Optional:`, `Requested sites:`, `Site access:` ([Settings](../features/settings.md)).
+- `ExtensionsSettingsViewController` — the rows, in form sections since TASK-338: Permissions, Optional Permissions, Requested Sites, Site Access ([Settings](../features/settings.md)).
 - Tests: `ExtensionPermissionRestoreTests` (context level, and `permissions.remove` from a real extension page), `ExtensionPermissionTests` (database level), `NativeMessagingEnforcementTests` (real fake-host spawns); optional polyfill-gated permissions in a real context in `ExtensionHistoryScopeTests` (with `permissions.request` / `contains` / `remove` of `history` and `management`, section 7) and `ExtensionNotificationOrderingTests`.
 
 # Related
