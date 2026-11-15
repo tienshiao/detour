@@ -5,7 +5,7 @@ description: "AppDelegate and main.swift — launch and termination, window crea
 resource: ../../Detour/App/AppDelegate.swift
 tags: [architecture, app, menus, sparkle, startup]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T23:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T00:00:00Z }
 sources:
   - id: task-320
     resource: backlog:TASK-320
@@ -43,6 +43,12 @@ sources:
   - id: task-55
     resource: backlog:TASK-55
     title: Building the Extensions menu must not load extension popups
+  - id: task-295
+    resource: backlog:TASK-295
+    title: "Spaces: keyboard shortcuts that jump straight to a space by its position (first through ninth)"
+  - id: spike-295
+    resource: ../../docs/harness/task295/hidden-items.swift
+    title: "TASK-295 spike: hidden, disabled and delegate-answered menu items under real Control+digit events (macOS 26, 2026-11-14)"
   - id: task-41
     resource: backlog:TASK-41
     title: Stop the test host writing the production app's UserDefaults and starting Sparkle
@@ -143,7 +149,7 @@ pass unchanged.
 | Edit | Undo/Redo (the **browser** undo manager), Cut/Copy/Copy URL/Paste, Find | No |
 | View | Toggle Sidebar, Reload, zoom | No |
 | Navigate | Back/Forward, Previous/Next Tab, Show All History, Archived Tabs | No |
-| Spaces | Next/Previous Space, one item per space, Manage Spaces… | `menuNeedsUpdate` |
+| Spaces | Next/Previous Space, the first nine spaces (static items on ⌃1–⌃9, titled and hidden on open, TASK-295; see [browser commands](../features/browser-commands.md#spaces-by-position-task-295)), one item per later space, Manage Spaces… | `menuNeedsUpdate` |
 | Extensions | One submenu per enabled extension (Show Popup, Options…), then three static items | `menuNeedsUpdate` |
 | Develop | Web Inspector, Load Unpacked Extension…, per-extension inspect and reload items | Rebuilt on a notification |
 | Window | Minimize, Zoom | No |
@@ -208,6 +214,11 @@ assumed:[^task-56]
 | `false` | Skips `menuNeedsUpdate` but still scans the menu's existing items itself, with its own keyboard-layout handling and validation. Not a veto. |
 | `true` | Performs the returned action on the returned target with **no validation of its own**. |
 
+A `true` also has AppKit send the action with the **menu**, not the item,
+as sender (measured with a delegate answering a hidden item), so an action
+reached this way must not read its sender's tag or represented
+object.[^spike-295]
+
 So the matcher is a fast path that errs towards `false`, and the `true` path
 re-implements AppKit's enable decision (`CommandDispatch.isEnabled`:
 `validateMenuItem`, else `validateUserInterfaceItem`, else `isEnabled`; the
@@ -221,9 +232,14 @@ verified.[^task-56]
 Invariants the tests pin against the real main menu:
 
 - Only **Spaces** and **Extensions** have a delegate.
-- Every built-in shortcut in a delegate-driven menu is a static,
-  layout-independent function key (the arrow keys `\u{F702}` /
-  `\u{F703}`). A user's own shortcut (TASK-327) on a static item there
+- Every shortcut in a delegate-driven menu is on a static item the
+  registry built, whose action no other command shares. The built-in ones
+  are Next/Previous Space's arrow keys (`\u{F702}` / `\u{F703}`) and the
+  nine position items' ⌃1–⌃9 (TASK-295), digits the matcher answers on a
+  layout that types them unshifted (elsewhere it misses and AppKit's own
+  matching decides). Hidden position items keep their key equivalents
+  (`allowsKeyEquivalentWhenHidden`), and the matcher matches them as AppKit
+  does. A user's own shortcut (TASK-327) on a static item there
   (Manage Spaces…, Add Extensions…) can be a letter; the matcher reads the
   live items and answers it, and a press it does not model is a miss that
   AppKit matches itself ([keyboard shortcuts](../features/keyboard-shortcuts.md)).
@@ -314,3 +330,4 @@ with them), `BrowserCommandRegistryTests`, `ExtensionMenuPopupDecisionTests`,
 - [Build and test](../playbooks/build-and-test.md) — how the environment switches reach a test run.
 
 [^task-56]: Implement menuHasKeyEquivalent so key presses stop rebuilding the Spaces and Extensions menus
+[^spike-295]: TASK-295 spike: hidden, disabled and delegate-answered menu items under real Control+digit events (macOS 26, 2026-11-14)

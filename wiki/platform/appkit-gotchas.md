@@ -4,7 +4,7 @@ title: AppKit gotchas
 description: A collection of AppKit behaviours that cost debugging time in Detour — first responder and key-view loop, split and stack view layout, hit testing, table views under a drag session, popovers — each with where it bit and what to do instead.
 tags: [appkit, platform, focus, layout, drag-and-drop, hit-testing]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T02:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T00:00:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-322
@@ -49,6 +49,9 @@ sources:
   - id: task-39
     resource: backlog:TASK-39
     title: Collapsing the sidebar by dragging its divider leaves Toggle Sidebar out of sync
+  - id: spike-295
+    resource: ../../docs/harness/task295/hidden-items.swift
+    title: "TASK-295 spike: hidden, disabled and delegate-answered menu items under real Control+digit events (macOS 26, 2026-11-14)"
   - id: task-56
     resource: backlog:TASK-56
     title: Implement menuHasKeyEquivalent so key presses stop rebuilding the Spaces, Extensions and Develop menus
@@ -130,6 +133,7 @@ Related.
 | A popover's window has no window controller, so its responder chain ends at the popover window itself: web view → content view controller → popover window → beep. This is TASK-77's analysis from the code; which object receives the fall-through has not been confirmed at runtime.[^task-77] | Extension popups: keys the popup page declines still beep. `ExtensionPopoverController` has no key handling. An override of `noResponderFor` on the view controller would not be reached | Confirm the terminating responder first (a breakpoint on `NSBeep`), then end the chain there with `keyWasDeclinedByWebContent` |
 | Esc reaches a responder as a raw `keyDown` or as `cancelOperation(_:)`, depending on how AppKit interprets the event. | Esc-closes-Peek | Override both |
 | An `NSMenuDelegate` that does not implement `menuHasKeyEquivalent` gets `menuNeedsUpdate` on **every** key-equivalent dispatch. Returning `false` from it is not a veto (AppKit scans the existing items itself); returning `true` is trusted with no validation.[^task-56] | Spaces and Extensions menus were rebuilt on every Cmd+key press | `MenuKeyEquivalentMatcher`; see [app shell](../architecture/app-shell.md) |
+| When `menuHasKeyEquivalent` returns `true`, AppKit sends the action with the `NSMenu` as sender, not the matched item. A **hidden** item takes no key equivalent unless `allowsKeyEquivalentWhenHidden` is set (then AppKit fires it, item as sender). A key equivalent matched by a **disabled** item is not handled (`performKeyEquivalent` returns false), so the key goes on to the first responder, which can beep. The delegate is asked for Control+digit presses too.[^spike-295] | TASK-295's Spaces position items: a shared action reading the item's tag would get the menu; an empty position must swallow its key | One action per item reached through the fast path; keep an empty position's item enabled with nothing to do, hidden with `allowsKeyEquivalentWhenHidden` |
 
 # Layout
 
@@ -239,6 +243,7 @@ from a probe or a measurement.
 
 [^task-39]: Collapsing the sidebar by dragging its divider leaves Toggle Sidebar out of sync
 [^task-56]: Implement menuHasKeyEquivalent so key presses stop rebuilding the Spaces, Extensions and Develop menus
+[^spike-295]: TASK-295 spike: hidden, disabled and delegate-answered menu items under real Control+digit events (macOS 26, 2026-11-14)
 [^task-76]: Keys a web page declines reach the end of the responder chain and play the unhandled-key beep
 [^task-77]: Keys the extension popup page declines still play the unhandled-key beep
 [^task-113]: Check for and install extension updates

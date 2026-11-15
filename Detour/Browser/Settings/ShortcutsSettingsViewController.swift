@@ -56,12 +56,19 @@ struct ShortcutRowState: Equatable {
     /// "⇧⌘T"; nil for none.
     let shortcut: String?
     let kind: Kind
+    /// An editable row's shortcut is an enabled macOS shortcut (System
+    /// Settings > Keyboard > Keyboard Shortcuts), which takes the key before
+    /// Detour sees it: ⌃1–⌃9 when Mission Control's "Switch to Desktop N" is
+    /// on (TASK-295). The row says so; the recorder stays enabled.
+    var isTakenByMacOS = false
 
     /// - Parameters:
     ///   - systemShortcut: the App Shortcut macOS gives its item, if any.
     ///   - quickDetourShortcut: the Quick Detour hotkey's setting.
+    ///   - macOSShortcuts: the enabled macOS shortcuts, as the menu key
+    ///     equivalents they take (`SystemHotKey.menuKeyEquivalent`).
     static func make(for command: BrowserCommand, store: ShortcutBindingStore, systemShortcut: KeyEquivalent?,
-                     quickDetourShortcut: HotKeyShortcut?) -> ShortcutRowState {
+                     quickDetourShortcut: HotKeyShortcut?, macOSShortcuts: [KeyEquivalent] = []) -> ShortcutRowState {
         switch command.bindability {
         case .quickDetourPane:
             return ShortcutRowState(title: command.title, shortcut: quickDetourShortcut?.displayString,
@@ -73,8 +80,10 @@ struct ShortcutRowState: Equatable {
             return ShortcutRowState(title: command.title, shortcut: command.keyEquivalent?.displayString,
                                     kind: .fixed(reason))
         case .bindable, .notListed:
-            return ShortcutRowState(title: command.title, shortcut: store.keyEquivalent(for: command.id)?.displayString,
-                                    kind: .editable(overridden: store.isOverridden(command.id)))
+            let key = store.keyEquivalent(for: command.id)
+            return ShortcutRowState(title: command.title, shortcut: key?.displayString,
+                                    kind: .editable(overridden: store.isOverridden(command.id)),
+                                    isTakenByMacOS: key.map { key in macOSShortcuts.contains { $0.isSameShortcut(as: key) } } ?? false)
         }
     }
 
@@ -104,7 +113,11 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
     private let includesUpdater: Bool
     private let quickDetourShortcut: () -> HotKeyShortcut?
     private let systemHotKeys: () -> [SystemHotKey]
+    private let systemHotKeyCharacter: (UInt16) -> String
     private let systemShortcut: (CommandID) -> KeyEquivalent?
+    /// The enabled macOS shortcuts as menu key equivalents, read once per
+    /// reload (rows are marked with them, TASK-295).
+    private var macOSShortcuts: [KeyEquivalent] = []
 
     private(set) var tableView: NSTableView!
     private(set) var searchField: NSSearchField!
@@ -135,6 +148,9 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
     ///   - mainMenu: the menu bar conflicts are searched in.
     ///   - includesUpdater: whether Check for Updates… is listed (only a run
     ///     that starts Sparkle has the item).
+    ///   - systemHotKeyCharacter: the character a key code types, for
+    ///     matching macOS's shortcuts with the commands'; by default the
+    ///     current layout's.
     ///   - systemShortcut: the App Shortcut macOS gives a command's item;
     ///     by default read from the live item.
     init(store: ShortcutBindingStore = .shared,
@@ -142,12 +158,14 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
          includesUpdater: Bool = AppDelegate.startsUpdater,
          quickDetourShortcut: @escaping () -> HotKeyShortcut? = { QuickDetourHotKey.shared.settings.shortcut },
          systemHotKeys: @escaping () -> [SystemHotKey] = { HotKeyShortcutValidation.currentSystemHotKeys() },
+         systemHotKeyCharacter: @escaping (UInt16) -> String = { SystemHotKey.layoutCharacter(forKeyCode: $0) },
          systemShortcut: ((CommandID) -> KeyEquivalent?)? = nil) {
         self.store = store
         self.mainMenu = mainMenu
         self.includesUpdater = includesUpdater
         self.quickDetourShortcut = quickDetourShortcut
         self.systemHotKeys = systemHotKeys
+        self.systemHotKeyCharacter = systemHotKeyCharacter
         self.systemShortcut = systemShortcut ?? { id in
             ShortcutRowState.systemShortcut(of: CommandDispatch.menuItem(for: id, in: mainMenu()))
         }
@@ -313,6 +331,7 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
         reloadPending = false
         listedQuery = query
         items = ShortcutList.items(in: BrowserCommands.menus, query: query, includes: includes)
+        macOSShortcuts = systemHotKeys().compactMap { $0.menuKeyEquivalent(character: systemHotKeyCharacter) }
         tableView.reloadData()
         emptyLabel.stringValue = items.isEmpty ? "No commands match “\(query)”." : ""
         emptyLabel.isHidden = !items.isEmpty
@@ -334,7 +353,7 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
 
     func rowState(for command: BrowserCommand) -> ShortcutRowState {
         ShortcutRowState.make(for: command, store: store, systemShortcut: systemShortcut(command.id),
-                              quickDetourShortcut: quickDetourShortcut())
+                              quickDetourShortcut: quickDetourShortcut(), macOSShortcuts: macOSShortcuts)
     }
 
     /// Why `shortcut` cannot be `id`'s, or nil.
@@ -589,6 +608,7 @@ final class ShortcutRowView: NSTableCellView {
         resetButton.setAccessibilityIdentifier("shortcutReset.\(id.rawValue)")
         resetButton.setAccessibilityLabel("Restore the default shortcut of \(state.title)")
         noteLabel.isHidden = true
+        noteLabel.textColor = .secondaryLabelColor
         quickDetourLink.isHidden = true
         resetButton.isHidden = true
         toolTip = nil
@@ -600,6 +620,12 @@ final class ShortcutRowView: NSTableCellView {
                 resetButton.toolTip = "Restore \(builtIn)"
             } else {
                 resetButton.toolTip = "Restore: no shortcut"
+            }
+            if state.isTakenByMacOS {
+                noteLabel.stringValue = Self.takenByMacOSNote
+                noteLabel.textColor = .systemOrange
+                noteLabel.isHidden = false
+                toolTip = Self.takenByMacOSToolTip(state.shortcut ?? "")
             }
         case .systemSettings:
             recorder.isEnabled = false
@@ -613,6 +639,12 @@ final class ShortcutRowView: NSTableCellView {
             recorder.isEnabled = false
             toolTip = reason
         }
+    }
+
+    static let takenByMacOSNote = "Used by macOS"
+
+    static func takenByMacOSToolTip(_ shortcut: String) -> String {
+        "macOS takes \(shortcut) before Detour sees it (System Settings > Keyboard > Keyboard Shortcuts; ⌃1 to ⌃9 are Mission Control's Switch to Desktop when turned on). Turn it off there, or record another shortcut."
     }
 
     @objc private func resetClicked() { onReset?() }

@@ -5,7 +5,7 @@ description: "The command registry (TASK-320): every main-menu command defined o
 resource: ../../Detour/Commands/BrowserCommands.swift
 tags: [commands, menus, command-palette, automation, keyboard]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T23:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T00:00:00Z }
 sources:
   - id: task-320
     resource: backlog:TASK-320
@@ -34,6 +34,15 @@ sources:
   - id: task-327
     resource: backlog:TASK-327
     title: "Keyboard shortcuts: assign and customize the shortcuts of browser commands in Settings"
+  - id: task-295
+    resource: backlog:TASK-295
+    title: "Spaces: keyboard shortcuts that jump straight to a space by its position (first through ninth)"
+  - id: space-jump
+    resource: ../../Detour/Browser/SpaceJump.swift
+    title: SpaceJump.swift (position to space)
+  - id: space-jump-tests
+    resource: ../../DetourTests/SpaceJumpTests.swift
+    title: SpaceJumpTests.swift
 ---
 
 # Role
@@ -127,14 +136,50 @@ item in a window that need not be key, `HotKeyShortcutValidation` skips the
 Quick Detour item by its action, `updateSpacesMenu` finds Manage Spaces… by
 action, and Cut, Copy and Paste need the responder chain.
 
-The dynamic items (one per space, the extension submenus, Develop's inspect
-and reload items) keep their builders and tags and carry no identifier;
-their actions come from the parameterised commands `space.switch`,
-`extension.show-popup`, `extension.options`, `extension.inspect-offscreen`
-and `extension.reload-unpacked`. The TASK-56 `menuHasKeyEquivalent` fast
-path is unchanged; it matches the live items, so it sees the user's
-shortcuts, which can put a letter on a static item of the Spaces or
+The dynamic items (one per space after the ninth, the extension submenus,
+Develop's inspect and reload items) keep their builders and tags and carry
+no identifier; their actions come from the parameterised commands
+`space.switch`, `extension.show-popup`, `extension.options`,
+`extension.inspect-offscreen` and `extension.reload-unpacked`. The TASK-56
+`menuHasKeyEquivalent` fast path matches the live items, so it sees the
+user's shortcuts, which can put a letter on a static item of the Spaces or
 Extensions menu.
+
+## Spaces by position (TASK-295)
+
+The first nine spaces are reached by nine parameterless commands,
+`space.jump-1` to `space.jump-9` ("Switch to Space 1" …, ⌃1–⌃9 by default,
+PROVISIONAL[^task-295]), not by the parameterised `space.switch`. Their
+items are static: `setupMainMenu` adds them after Previous Space's
+separator, so their shortcuts work before the Spaces menu is first opened
+(a dynamic item would only exist after that). When the menu opens,
+`updateSpacesMenu` titles item N with the emoji and name of the space now at
+position N in Settings › Spaces order (`TabStore.nonIncognitoSpaces`), puts
+the key window's checkmark on it, and hides it when there is no space
+there; spaces after the ninth get the dynamic `space.switch` items.
+
+- **Resolved when it runs.** `BrowserWindowController.jumpToSpace(position:)`
+  asks `SpaceJump.target(ofPosition:in:)` (pure) for the space at that
+  position now, so adding, deleting or reordering spaces changes what a
+  shortcut opens with no rebuild; the menu's titles catch up when it opens.
+- **One action per position** (`jumpToSpace1:` … `jumpToSpace9:`), not a
+  shared action with the position on the item's tag: a hit on the fast path
+  is sent with the menu, not the item, as sender (measured, see
+  [AppKit gotchas](../platform/appkit-gotchas.md)).
+- **The rule is only the window kind** (`commandWindowKind == .normal`), not
+  "a space exists at N". A key equivalent matched by a disabled item is not
+  handled (measured), so the key goes on to the first responder and can
+  beep; an enabled command with nothing to do swallows it. Empty positions
+  are hidden with `allowsKeyEquivalentWhenHidden`, so AppKit still fires
+  them (measured) and `MenuKeyEquivalentMatcher` matches them too.
+- **Private windows** answer the actions but the rule disables them (as
+  Next/Previous Space); **Quick Detour and quarantine** windows do not
+  implement them (they have no spaces sidebar), so the items are disabled
+  there.
+- **Not in the palette**: the title names a position, not a space.
+- Listed and bindable in Settings › Shortcuts like any parameterless
+  command; a row whose key macOS holds says "Used by macOS"
+  ([keyboard shortcuts](./keyboard-shortcuts.md)).
 
 `BrowserCommands.menus` lists the commands under the title of the bar menu
 that holds their item (the application menu as "Detour"); `all` is their
@@ -237,6 +282,9 @@ exist as commands yet.
   Updates… only in a run that starts Sparkle).
 - An ID, once shipped, is never renamed or reused: user shortcuts are
   stored by it (TASK-327).
+- No two commands share an action where a key equivalent can reach them
+  through the fast path (the Spaces menu's nine position commands each have
+  their own).
 - `BrowserCommands.menus` lists each command under the bar menu that holds
   its item (`ShortcutMenuTests.testTheRegistrysMenusAreTheMenuBarsMenus`).
 - A command's `kinds` are exactly the controllers that implement its action.
@@ -277,8 +325,15 @@ exist as commands yet.
   contextual titles over a fake context for every window kind; a context
   that leaves facts out fails closed; key equivalents shown as menus show
   them; validation of an item the registry did not build.
+- `SpaceJumpTests` (TASK-295): the position mapping (fewer than nine, more
+  than nine, exactly nine, a reorder, positions outside 1–9), the nine
+  commands, the real Spaces menu (static items, titles, hidden empty
+  positions still matched, spaces after the ninth), adds, a reorder and a
+  delete changing what a press opens with no rebuild, only the window it
+  runs in switching, Private windows, a rebinding.
 - `MainMenuCharacterizationTests`: written against the menu as it was built
-  item by item (commit 0b52c8c) and unchanged since: the whole menu's
+  item by item (commit 0b52c8c), changed since only by TASK-295's nine
+  Spaces items (whose titles the menu sets when it opens): the whole menu's
   structure, the enablement and retitles of every item Detour answers in a
   normal window with a page, one with nothing selected, a Private window, a
   Quick Detour and a quarantine; the registry's rule equal to the real
@@ -292,3 +347,5 @@ exist as commands yet.
 - [Automation endpoint (MCP)](./automation-endpoint.md) - `run_menu_item`.
 - [Quick Detour](./quick-detour.md) - its window's commands, and the hotkey that sets the item's key equivalent.
 - [Keyboard shortcuts](./keyboard-shortcuts.md) - the user's shortcuts over the registry's defaults, Settings > Shortcuts.
+
+[^task-295]: TASK-295

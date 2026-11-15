@@ -272,6 +272,79 @@ nonisolated final class ShortcutsSettingsPaneTests: XCTestCase {
         XCTAssertNotNil(copy.toolTip)
     }
 
+    // MARK: - Shortcuts macOS takes first (TASK-295)
+
+    /// ⌃1–⌃6 as Mission Control's "Switch to Desktop N" holds them when
+    /// turned on: key codes and Carbon modifiers, as `CopySymbolicHotKeys`
+    /// reports them; the characters come from a fixed table, not the layout.
+    @MainActor private static let missionControl: [SystemHotKey] = [
+        SystemHotKey(keyCode: UInt16(kVK_ANSI_1), carbonModifiers: UInt32(controlKey)),
+        SystemHotKey(keyCode: UInt16(kVK_ANSI_2), carbonModifiers: UInt32(controlKey)),
+    ]
+    @MainActor private static let characters: [UInt16: String] = [UInt16(kVK_ANSI_1): "1", UInt16(kVK_ANSI_2): "2"]
+
+    @MainActor func testAMacOSShortcutBecomesTheMenuKeyItTakes() {
+        let hotKey = SystemHotKey(keyCode: UInt16(kVK_ANSI_1), carbonModifiers: UInt32(controlKey))
+        XCTAssertEqual(hotKey.menuKeyEquivalent(character: { Self.characters[$0] ?? "" }), KeyEquivalent("1", [.control]))
+        let arrow = SystemHotKey(keyCode: UInt16(kVK_LeftArrow), carbonModifiers: UInt32(controlKey))
+        XCTAssertEqual(arrow.menuKeyEquivalent(character: { _ in "" }), KeyEquivalent("\u{F702}", [.control]),
+                       "a key named by its code")
+        XCTAssertNil(SystemHotKey(keyCode: 0x7F, carbonModifiers: UInt32(controlKey)).menuKeyEquivalent(character: { _ in "" }),
+                     "a key with no name")
+    }
+
+    @MainActor func testARowWhoseShortcutMacOSTakesSaysSo() throws {
+        let store = makeStore()
+        let first = BrowserCommands.jumpToSpace[0]
+        let macOS = Self.missionControl.compactMap { $0.menuKeyEquivalent(character: { Self.characters[$0] ?? "" }) }
+        let held = ShortcutRowState.make(for: first, store: store, systemShortcut: nil,
+                                         quickDetourShortcut: .quickDetourDefault, macOSShortcuts: macOS)
+        XCTAssertEqual(held, ShortcutRowState(title: "Switch to Space 1", shortcut: "⌃1", kind: .editable(overridden: false),
+                                              isTakenByMacOS: true))
+        let free = ShortcutRowState.make(for: BrowserCommands.jumpToSpace[2], store: store, systemShortcut: nil,
+                                         quickDetourShortcut: .quickDetourDefault, macOSShortcuts: macOS)
+        XCTAssertFalse(free.isTakenByMacOS, "⌃3 is not in the list")
+
+        // Rebound off the key macOS holds: no longer marked.
+        store.setKeyEquivalent(KeyEquivalent("1", [.command, .control]), for: first.id)
+        XCTAssertFalse(ShortcutRowState.make(for: first, store: store, systemShortcut: nil,
+                                             quickDetourShortcut: .quickDetourDefault, macOSShortcuts: macOS).isTakenByMacOS)
+    }
+
+    @MainActor func testThePaneMarksTheRowAndKeepsItsRecorder() throws {
+        let store = makeStore()
+        let pane = ShortcutsSettingsViewController(store: store, includesUpdater: false,
+                                                   quickDetourShortcut: { .quickDetourDefault },
+                                                   systemHotKeys: { Self.missionControl },
+                                                   systemHotKeyCharacter: { Self.characters[$0] ?? "" },
+                                                   systemShortcut: { _ in nil })
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: SettingsMetrics.windowWidth, height: 700),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = pane
+        pane.view.layoutSubtreeIfNeeded()
+        addTeardownBlock { window.close() }
+
+        let held = try row(BrowserCommands.jumpToSpace[1].id, in: pane, query: "switch to space")
+        XCTAssertEqual(held.recorder.shortcutLabel, "⌃2")
+        XCTAssertFalse(held.noteLabel.isHidden)
+        XCTAssertEqual(held.noteLabel.stringValue, ShortcutRowView.takenByMacOSNote)
+        XCTAssertTrue(held.recorder.isEnabled, "it can be rebound here")
+        XCTAssertEqual(held.toolTip, ShortcutRowView.takenByMacOSToolTip("⌃2"))
+
+        let free = try row(BrowserCommands.jumpToSpace[6].id, in: pane, query: "switch to space")
+        XCTAssertTrue(free.noteLabel.isHidden, "⌃7 is free")
+        XCTAssertNil(free.toolTip)
+    }
+
+    @MainActor func testTheSpacePositionsAreListedUnderSpaces() {
+        let items = everything()
+        let spaces = try? XCTUnwrap(items.firstIndex(of: .menu("Spaces")))
+        XCTAssertEqual(Array(items[(spaces ?? 0) + 1...(spaces ?? 0) + 11]),
+                       [.command(BrowserCommands.nextSpace.id), .command(BrowserCommands.previousSpace.id)]
+                       + BrowserCommands.jumpToSpace.map { .command($0.id) })
+    }
+
     @MainActor func testASearchWithNoMatchSaysSo() throws {
         let (pane, _) = makePane(store: makeStore())
         pane.searchField.stringValue = "xyzzy"

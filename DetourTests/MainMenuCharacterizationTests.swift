@@ -275,6 +275,15 @@ nonisolated final class MainMenuCharacterizationTests: XCTestCase {
         "Next Space | ⌥⌘U+F703 | nextSpace: | nil | 0",
         "Previous Space | ⌥⌘U+F702 | previousSpace: | nil | 0",
         "---",
+        "Switch to Space 1 | ⌃1 | jumpToSpace1: | nil | 0",
+        "Switch to Space 2 | ⌃2 | jumpToSpace2: | nil | 0",
+        "Switch to Space 3 | ⌃3 | jumpToSpace3: | nil | 0",
+        "Switch to Space 4 | ⌃4 | jumpToSpace4: | nil | 0",
+        "Switch to Space 5 | ⌃5 | jumpToSpace5: | nil | 0",
+        "Switch to Space 6 | ⌃6 | jumpToSpace6: | nil | 0",
+        "Switch to Space 7 | ⌃7 | jumpToSpace7: | nil | 0",
+        "Switch to Space 8 | ⌃8 | jumpToSpace8: | nil | 0",
+        "Switch to Space 9 | ⌃9 | jumpToSpace9: | nil | 0",
         "Manage Spaces… | ⌘ | openSpacesSettings: | nil | 0",
         "[Extensions]",
         "Add Extensions… | ⌘ | openChromeWebStore | nil | 0",
@@ -330,6 +339,15 @@ nonisolated final class MainMenuCharacterizationTests: XCTestCase {
         "Navigate › clearArchivedTabs:",
         "Spaces › nextSpace:",
         "Spaces › previousSpace:",
+        "Spaces › jumpToSpace1:",
+        "Spaces › jumpToSpace2:",
+        "Spaces › jumpToSpace3:",
+        "Spaces › jumpToSpace4:",
+        "Spaces › jumpToSpace5:",
+        "Spaces › jumpToSpace6:",
+        "Spaces › jumpToSpace7:",
+        "Spaces › jumpToSpace8:",
+        "Spaces › jumpToSpace9:",
         "Spaces › openSpacesSettings:",
         "Extensions › openChromeWebStore",
         "Extensions › showExtensionsSettings",
@@ -362,19 +380,25 @@ nonisolated final class MainMenuCharacterizationTests: XCTestCase {
 
     /// What a Quick Detour and a quarantine do not answer (no such action on
     /// their controller) or disable (no history to go back or forward in).
-    private static let quickDetourOff: Set<String> = [
+    private static let quickDetourOff = Set([
         "File › newTab:", "File › reopenClosedTab:", "File › togglePinTab:", "Edit › browserUndo:",
         "Edit › browserRedo:", "View › toggleSidebarMode:", "Navigate › goBack:", "Navigate › goForward:",
         "Navigate › selectPreviousTab:", "Navigate › selectNextTab:", "Navigate › showHistory:",
         "Navigate › showArchivedTabs:", "Navigate › clearArchivedTabs:", "Spaces › nextSpace:",
         "Spaces › previousSpace:", "Spaces › openSpacesSettings:",
-    ]
+    ] + spaceJumps)
+
+    /// Spaces › the first nine spaces (TASK-295): answered only in a normal window.
+    private static let spaceJumps: [String] = (1...9).map { "Spaces › jumpToSpace\($0):" }
 
     // MARK: - Structure
 
     @MainActor func testTheMainMenuHasEveryItemItHadBeforeTheRegistry() throws {
         let menu = try XCTUnwrap(NSApp.mainMenu)
-        let retitled: Set<String> = ["togglePinTab:", "browserUndo:", "browserRedo:", "openInDefaultSpace:"]
+        // Validation retitles these; the Spaces menu titles its position
+        // items with the space at each position when it opens (TASK-295).
+        let retitled = Set(["togglePinTab:", "browserUndo:", "browserRedo:", "openInDefaultSpace:"]
+            + (1...9).map { "jumpToSpace\($0):" })
         let lines = Self.structure(of: menu).map { line -> String in
             let fields = line.components(separatedBy: " | ")
             guard fields.count == 5, retitled.contains(fields[2]) else { return line }
@@ -418,10 +442,11 @@ nonisolated final class MainMenuCharacterizationTests: XCTestCase {
         let wc = try privateWindowWithPage()
         spin()
         XCTAssertEqual(Self.enablement(in: try XCTUnwrap(wc.window)), expected(
-            off: ["File › reopenClosedTab:", "File › togglePinTab:", "File › openInDefaultSpace:",
-                  "Edit › browserUndo:", "Edit › browserRedo:", "Navigate › selectPreviousTab:",
-                  "Navigate › selectNextTab:", "Navigate › showArchivedTabs:", "Navigate › clearArchivedTabs:",
-                  "Spaces › nextSpace:", "Spaces › previousSpace:", "Spaces › openSpacesSettings:"],
+            off: Set(["File › reopenClosedTab:", "File › togglePinTab:", "File › openInDefaultSpace:",
+                      "Edit › browserUndo:", "Edit › browserRedo:", "Navigate › selectPreviousTab:",
+                      "Navigate › selectNextTab:", "Navigate › showArchivedTabs:", "Navigate › clearArchivedTabs:",
+                      "Spaces › nextSpace:", "Spaces › previousSpace:", "Spaces › openSpacesSettings:"]
+                      + Self.spaceJumps),
             retitled: Self.browserTitles))
     }
 

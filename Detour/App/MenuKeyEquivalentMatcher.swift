@@ -29,7 +29,10 @@ enum MenuKeyEquivalentMatcher {
     /// The first item in `items` that answers `event`, or nil when none does.
     ///
     /// Separators, hidden items and items with no action are never a match:
-    /// AppKit could not dispatch to them.
+    /// AppKit could not dispatch to them. A hidden item that allows its key
+    /// equivalent while hidden (`allowsKeyEquivalentWhenHidden`: the Spaces
+    /// menu's position items with no space, TASK-295) is one, as AppKit
+    /// fires it (measured).
     static func item(matching event: NSEvent, in items: [NSMenuItem]) -> NSMenuItem? {
         guard let characters = event.charactersIgnoringModifiers else { return nil }
         return item(matchingCharacters: characters, modifiers: event.modifierFlags, in: items)
@@ -48,7 +51,8 @@ enum MenuKeyEquivalentMatcher {
             // The dynamic items have no key equivalent at all, so that is the
             // test that rejects almost everything.
             guard !item.keyEquivalent.isEmpty,
-                  !item.isSeparatorItem, !item.isHidden, item.action != nil else { return false }
+                  !item.isSeparatorItem, !item.isHidden || item.allowsKeyEquivalentWhenHidden,
+                  item.action != nil else { return false }
             return matches(item, characters: characters, modifiers: eventModifiers)
         }
     }

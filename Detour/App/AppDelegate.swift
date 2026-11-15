@@ -945,6 +945,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         add(commands.nextSpace, to: spacesMenu)
         add(commands.previousSpace, to: spacesMenu)
         spacesMenu.addItem(.separator())
+        // The first nine spaces' items (TASK-295), static so their shortcuts
+        // work before the menu is first opened. `updateSpacesMenu` titles
+        // them and hides positions with no space; a hidden one keeps its key
+        // equivalent (AppKit fires it, measured) so the press is swallowed
+        // rather than falling through to the page.
+        for command in commands.jumpToSpace {
+            add(command, to: spacesMenu).allowsKeyEquivalentWhenHidden = true
+        }
         add(commands.manageSpaces, to: spacesMenu)
         spacesMenuItem.submenu = spacesMenu
 
@@ -1139,8 +1147,14 @@ extension AppDelegate: NSMenuDelegate {
     /// equivalent; `MenuKeyEquivalentMatcherTests` asserts it on the real
     /// menus). Whether older AppKit trusts `false` outright is not verified,
     /// which is why the matcher stays as the belt to that braces: every
-    /// built-in shortcut left in these menus is a layout-independent function
-    /// key it matches exactly. A user's binding (TASK-327) on one of their
+    /// built-in shortcut left in these menus is on a static item: the arrow
+    /// keys of Next/Previous Space, which it matches exactly, and the nine
+    /// position items' ⌃1–⌃9 (TASK-295), digits it matches on a layout that
+    /// types them unshifted (on one that does not, such as French AZERTY, it
+    /// misses and AppKit's own matching decides; not measured). Each position
+    /// item has its own action, because a `true` here has AppKit send the
+    /// action with the menu, not the item, as sender (measured, TASK-295).
+    /// A user's binding (TASK-327) on one of their
     /// static items (Manage Spaces…, Add Extensions…) can be a letter: the
     /// matcher reads the live items, so it answers that too, and a press it
     /// does not model (a layout-dependent character) is a miss AppKit then
@@ -1178,19 +1192,33 @@ extension AppDelegate: NSMenuDelegate {
             .forEach { menu.removeItem($0) }
 
         let spaces = TabStore.shared.nonIncognitoSpaces
-        guard !spaces.isEmpty else { return }
-
         let activeID = keyBrowserWindowController?.activeSpaceID
 
-        // Static layout is: [Next, Previous, separator, "Manage Spaces…"].
-        // Insert the dynamic space items + a trailing separator before "Manage Spaces…".
+        // The first nine spaces are the static position items (TASK-295):
+        // titled with the space they open now, hidden where there is none.
+        for (index, command) in BrowserCommands.jumpToSpace.enumerated() {
+            guard let item = menu.items.first(where: { $0.identifier?.rawValue == command.id.rawValue }) else { continue }
+            let space = SpaceJump.target(ofPosition: index + 1, in: spaces)
+            let title = space.map(Self.spacesMenuTitle) ?? command.title
+            // Retitled only on a change: AppKit re-applies App Shortcuts on
+            // every retitle (TASK-327).
+            if item.title != title { item.title = title }
+            item.state = space.map { $0.id == activeID } == true ? .on : .off
+            item.isHidden = space == nil
+        }
+
+        guard !spaces.isEmpty else { return }
+
+        // Static layout is: [Next, Previous, separator, the nine position
+        // items, "Manage Spaces…"]. Insert the items of the spaces after the
+        // ninth (the parameterised `space.switch` command, no shortcut) and a
+        // trailing separator before "Manage Spaces…".
         let manageIndex = menu.items.firstIndex(where: { $0.action == BrowserCommands.manageSpaces.action }) ?? menu.items.count
         var insertAt = manageIndex
 
-        for space in spaces {
-            let title = "\(space.emoji) \(space.name)"
+        for space in SpaceJump.unnumbered(spaces) {
             // The parameterised `space.switch` command, one item per space.
-            let item = NSMenuItem(title: title, action: BrowserCommands.switchToSpace.action, keyEquivalent: "")
+            let item = NSMenuItem(title: Self.spacesMenuTitle(space), action: BrowserCommands.switchToSpace.action, keyEquivalent: "")
             item.representedObject = space.id
             item.tag = AppDelegate.spacesMenuTag
             item.state = (space.id == activeID) ? .on : .off
@@ -1202,6 +1230,9 @@ extension AppDelegate: NSMenuDelegate {
         separator.tag = AppDelegate.spacesMenuTag
         menu.insertItem(separator, at: insertAt)
     }
+
+    /// A space's Spaces-menu title: its emoji and name.
+    private static func spacesMenuTitle(_ space: Space) -> String { "\(space.emoji) \(space.name)" }
 
     private func updateExtensionsMenu(_ menu: NSMenu) {
         // Remove previous dynamic extension items

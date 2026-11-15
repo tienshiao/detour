@@ -5,7 +5,7 @@ description: "Where Detour's shortcuts are defined (the command registry's defau
 resource: ../../Detour/Commands/ShortcutBindings.swift
 tags: [keyboard, menus, settings, commands]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T23:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T00:00:00Z }
 stale_after: 2027-06-01T00:00:00Z
 sources:
   - id: task-327
@@ -23,6 +23,9 @@ sources:
   - id: recorder
     resource: ../../Detour/Browser/Settings/ShortcutRecorderView.swift
     title: ShortcutRecorderView.swift
+  - id: task-295
+    resource: backlog:TASK-295
+    title: "Spaces: keyboard shortcuts that jump straight to a space by its position (first through ninth)"
   - id: spike
     resource: ../../docs/harness/task327
     title: "TASK-327 spikes (standalone AppKit programs building a menu in code, run with -NSUserKeyEquivalents as a launch argument; menu matching from real CGEvents; macOS 26, 2026-11-14) and the Accessibility helper for driving Settings"
@@ -79,7 +82,7 @@ never writes the production app's. One key, `CommandShortcuts`:
   one key, the first command's in menu order wins), then defaults whose key
   no override took. A new default landing on a key the user already gave
   another command is therefore unassigned rather than doubled (TASK-295's
-  space shortcuts will add defaults).
+  ⌃1–⌃9 for the Spaces menu's position commands were added this way).
 - Commands are keyed by `CommandID`, which is why the IDs are never renamed.
 
 ## Applying
@@ -173,6 +176,16 @@ on its own, 400 pt minimum), then the warning line.
   ("Set in System Settings", recorder disabled, showing macOS's shortcut),
   `quickDetour` (disabled, "Change in Quick Detour Settings" link),
   `fixed(reason)` (disabled, the reason as tooltip).
+- A row whose effective shortcut an enabled macOS shortcut holds says
+  "Used by macOS" in orange, with a tooltip naming System Settings >
+  Keyboard > Keyboard Shortcuts (and Mission Control's Switch to Desktop for
+  ⌃1–⌃9); its recorder stays enabled (TASK-295). The pane reads
+  `CopySymbolicHotKeys` once per reload and turns each key code into the
+  menu key it takes with the current layout's character
+  (`SystemHotKey.menuKeyEquivalent(character:)`, `layoutCharacter(forKeyCode:)`
+  through a synthesized key event, nothing posted); both are injected in
+  tests. Before, the list was only consulted when recording, so a built-in
+  shortcut macOS held looked like any other.
 - A row: title, the note, `ShortcutRecorderView` (placeholder "None"; a
   disabled one shows its shortcut as dimmed text with no box), and a reset
   button shown once the shortcut differs from the built-in one. A reset
@@ -259,6 +272,23 @@ for the app. To try one at runtime, pass it as a launch argument; never
 
   So ⌥ alone is refused for a command; the Quick Detour hotkey, a Carbon
   hotkey that takes the key before any app, still allows it.
+- **⌃1–⌃9 and Mission Control** (TASK-295). Mission Control's "Switch to
+  Desktop N" takes ⌃N before any app when it is turned on in System
+  Settings. On the user's Mac `CopySymbolicHotKeys` reported ⌃1–⌃6 enabled
+  and ⌃7–⌃9 disabled (2026-11-14), and the pane marked rows 1–6 "Used by
+  macOS".[^task-295] Key events posted to Detour's pid
+  (`CGEventPostToPid`) skip the system's hotkeys, so ⌃2 posted that way
+  switched spaces in the runtime check; what a physical press of ⌃1–⌃6 does
+  there was not tried (it may switch the desktop). The digits are layout
+  characters: on a layout that types them shifted (French AZERTY),
+  `MenuKeyEquivalentMatcher` misses and AppKit's own matching decides (not
+  measured). The "Used by macOS" mark compares the layout's character for
+  the system shortcut's key code with the row's key, while the recorder's
+  refusal compares key codes, so on such a layout the two can disagree.
+- **Space names as titles.** The Spaces menu titles its position items with
+  the space's emoji and name when it opens, so an App Shortcut written for
+  "Switch to Space 1" applies only until then, and one written for a space's
+  name follows that name to whatever position it is at.
 - **One title for two commands.** The row "Open Quick Detour in Space" is
   the registry's title for Cmd+O, which is also Open Peek in New Tab in a
   browser window: one item, one shortcut.
@@ -285,10 +315,13 @@ for the app. To try one at runtime, pass it as a launch argument; never
   item untouched, the palette column, a context menu hint, the fast path
   answering a binding in the Extensions and Spaces menus, the registry's
   menus equal to the bar's.
+- `SpaceJumpTests` (TASK-295): a rebinding of a position command reaches
+  its item and the Spaces menu's matching, and reset gives ⌃N back.
 - `ShortcutsSettingsPaneTests`: grouping, parameterised commands left out,
   Check for Updates…, search; row states; recording, refusing with the
   holder named, clearing, a function key alone, reset, Restore Defaults,
-  disabled rows, an empty search.
+  disabled rows, an empty search; a macOS shortcut turned into the menu key
+  it takes, the "Used by macOS" row state and note (TASK-295).
 
 # Related
 
@@ -299,4 +332,5 @@ for the app. To try one at runtime, pass it as a launch argument; never
 - [Command palette](./command-palette.md) - the shortcut column.
 
 [^task-327]: TASK-327
+[^task-295]: TASK-295
 [^spike]: NSUserKeyEquivalents spikes

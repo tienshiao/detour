@@ -154,7 +154,7 @@ nonisolated final class PaletteCommandsTests: XCTestCase {
         for source in [browser, quick] {
             XCTAssertTrue(candidateIDs(source).isDisjoint(with: [
                 "tab.new", "location.open", "edit.undo", "edit.copy", "app.quit", "window.minimize",
-                "space.switch", "extension.show-popup",
+                "space.switch", "extension.show-popup", "space.jump-1", "space.jump-9",
             ]))
         }
     }

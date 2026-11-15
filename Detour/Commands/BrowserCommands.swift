@@ -225,7 +225,47 @@ enum BrowserCommands {
         action: #selector(BrowserWindowController.previousSpace(_:)),
         responder: .windowController(CommandWindowKind.browserWindows), symbol: "arrow.left",
         rule: { $0.commandWindowKind == .normal && $0.hasPreviousSpace })
-    /// One Spaces-menu item per space, titled with its emoji and name.
+    /// Spaces › the first nine spaces (TASK-295): one static item per
+    /// position, which `AppDelegate.updateSpacesMenu` titles with the space
+    /// at that position (Settings › Spaces order) and hides when there is
+    /// none. The space is resolved when the command runs
+    /// (`SpaceJump.target(ofPosition:in:)`), so adding, deleting or
+    /// reordering spaces needs no menu rebuild.
+    ///
+    /// Each position has its own action: a hit on the TASK-56 key-equivalent
+    /// fast path is sent with the menu, not the item, as sender (measured), so
+    /// the position cannot travel on the item. The rule is only the window
+    /// kind, not "a space exists at N": an enabled command with nothing to do
+    /// swallows the key, a disabled one lets it fall through to the page.
+    ///
+    /// Default keys ⌃1–⌃9, as Arc's. PROVISIONAL (chosen by Claude while the
+    /// user was away): macOS's Mission Control "Switch to Desktop N" takes
+    /// ⌃N first when it is turned on; Settings › Shortcuts says so on the row.
+    static let jumpToSpace: [BrowserCommand] = {
+        // IDs are API: written out, never derived.
+        let positions: [(CommandID, Selector)] = [
+            ("space.jump-1", #selector(BrowserWindowController.jumpToSpace1(_:))),
+            ("space.jump-2", #selector(BrowserWindowController.jumpToSpace2(_:))),
+            ("space.jump-3", #selector(BrowserWindowController.jumpToSpace3(_:))),
+            ("space.jump-4", #selector(BrowserWindowController.jumpToSpace4(_:))),
+            ("space.jump-5", #selector(BrowserWindowController.jumpToSpace5(_:))),
+            ("space.jump-6", #selector(BrowserWindowController.jumpToSpace6(_:))),
+            ("space.jump-7", #selector(BrowserWindowController.jumpToSpace7(_:))),
+            ("space.jump-8", #selector(BrowserWindowController.jumpToSpace8(_:))),
+            ("space.jump-9", #selector(BrowserWindowController.jumpToSpace9(_:))),
+        ]
+        return positions.enumerated().map { index, entry in
+            let position = index + 1
+            return BrowserCommand(
+                entry.0, "Switch to Space \(position)", key: KeyEquivalent("\(position)", [.control]),
+                action: entry.1, responder: .windowController(CommandWindowKind.browserWindows),
+                aliases: ["jump to space", "go to space"], symbol: "\(position).square",
+                palette: .notOffered("names a position, not a space; the Spaces menu shows which space it is"),
+                rule: { $0.commandWindowKind == .normal })
+        }
+    }()
+    /// One Spaces-menu item per space after the ninth, titled with its emoji
+    /// and name (the first nine are `jumpToSpace`'s items).
     static let switchToSpace = BrowserCommand(
         "space.switch", "Switch to Space", action: #selector(BrowserWindowController.selectSpaceFromMenu(_:)),
         responder: .windowController(CommandWindowKind.browserWindows), parameters: [.space],
@@ -316,7 +356,7 @@ enum BrowserCommands {
         CommandMenu(title: "View", commands: [toggleSidebar, reload, actualSize, zoomIn, zoomOut]),
         CommandMenu(title: "Navigate", commands: [back, forward, previousTab, nextTab, showHistory, showArchivedTabs,
                                                   clearArchivedTabs]),
-        CommandMenu(title: "Spaces", commands: [nextSpace, previousSpace, switchToSpace, manageSpaces]),
+        CommandMenu(title: "Spaces", commands: [nextSpace, previousSpace] + jumpToSpace + [switchToSpace, manageSpaces]),
         CommandMenu(title: "Extensions", commands: [showExtensionPopup, extensionOptions, addExtensions,
                                                     manageExtensions, checkForExtensionUpdates]),
         CommandMenu(title: "Develop", commands: [webInspector, loadUnpackedExtension, inspectExtensionOffscreen,

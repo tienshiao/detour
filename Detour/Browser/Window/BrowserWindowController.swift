@@ -728,6 +728,29 @@ class BrowserWindowController: NSWindowController {
         }
     }
 
+    // Spaces › the first nine spaces (TASK-295). One action per position:
+    // the key-equivalent fast path sends the action with the menu as sender,
+    // so the position cannot come from the item.
+    @objc func jumpToSpace1(_ sender: Any?) { jumpToSpace(position: 1) }
+    @objc func jumpToSpace2(_ sender: Any?) { jumpToSpace(position: 2) }
+    @objc func jumpToSpace3(_ sender: Any?) { jumpToSpace(position: 3) }
+    @objc func jumpToSpace4(_ sender: Any?) { jumpToSpace(position: 4) }
+    @objc func jumpToSpace5(_ sender: Any?) { jumpToSpace(position: 5) }
+    @objc func jumpToSpace6(_ sender: Any?) { jumpToSpace(position: 6) }
+    @objc func jumpToSpace7(_ sender: Any?) { jumpToSpace(position: 7) }
+    @objc func jumpToSpace8(_ sender: Any?) { jumpToSpace(position: 8) }
+    @objc func jumpToSpace9(_ sender: Any?) { jumpToSpace(position: 9) }
+
+    /// Shows the space at `position` in Settings › Spaces order, as its
+    /// Spaces menu item does; nothing when there is no space there (the
+    /// shortcut is still swallowed: its command stays enabled) or in a
+    /// Private window, which has no other space.
+    func jumpToSpace(position: Int) {
+        guard !isIncognito,
+              let space = SpaceJump.target(ofPosition: position, in: store.nonIncognitoSpaces) else { return }
+        tabSidebar.animateToSpace(id: space.id)
+    }
+
     @objc func selectSpaceFromMenu(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID else { return }
         tabSidebar.animateToSpace(id: id)

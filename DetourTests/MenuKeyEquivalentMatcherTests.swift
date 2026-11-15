@@ -151,6 +151,18 @@ nonisolated final class MenuKeyEquivalentMatcherTests: XCTestCase {
                                                    in: [item]))
     }
 
+    @MainActor func testAHiddenItemThatKeepsItsKeyEquivalentMatches() {
+        // The Spaces menu's position items with no space (TASK-295): AppKit
+        // fires a hidden item that allows it (measured), so the matcher does too.
+        let item = NSMenuItem(title: "Switch to Space 7",
+                              action: #selector(BrowserWindowController.jumpToSpace7(_:)), keyEquivalent: "7")
+        item.keyEquivalentModifierMask = [.control]
+        item.isHidden = true
+        item.allowsKeyEquivalentWhenHidden = true
+        XCTAssertTrue(MenuKeyEquivalentMatcher.item(matching: keyEvent("7", [.control]), in: [item]) === item)
+        XCTAssertNil(MenuKeyEquivalentMatcher.item(matching: keyEvent("7", [.command]), in: [item]))
+    }
+
     @MainActor func testTheFirstMatchWins() {
         let first = NSMenuItem(title: "First",
                                action: #selector(BrowserWindowController.reloadPage(_:)),
@@ -190,12 +202,17 @@ nonisolated final class MenuKeyEquivalentMatcherTests: XCTestCase {
     }
 
     /// The invariant `AppDelegate.menuHasKeyEquivalent` relies on: after a
-    /// rebuild, every shortcut in a delegate-driven menu is a static,
-    /// Command-bearing, layout-independent function key the matcher answers —
-    /// no dynamic item (space, extension) carries one, since such an item
-    /// would only exist after the menu had been opened once and would be
-    /// dispatched without an `NSMenuItem` sender.
-    @MainActor func testEveryShortcutInADelegateDrivenMenuIsAStaticFunctionKeyTheMatcherAnswers() throws {
+    /// rebuild, every shortcut in a delegate-driven menu is on a static item
+    /// the registry built (its command's identifier, no `representedObject`)
+    /// whose action no other command shares, and the matcher answers a press
+    /// of it. No dynamic item (a space after the ninth, an extension) carries
+    /// one: such an item would only exist after the menu had been opened
+    /// once, and a fast-path hit is sent with the menu, not the item, as
+    /// sender (measured, TASK-295), so the action must not need the item.
+    /// The built-in shortcuts there are Next/Previous Space's arrow keys and
+    /// the nine position items' ⌃1–⌃9 (TASK-295).
+    @MainActor func testEveryShortcutInADelegateDrivenMenuIsOnAStaticItemWithAnActionOfItsOwn() throws {
+        ShortcutBindingStore.shared.resetAll()
         let delegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         let menus = delegateDrivenMenus()
         XCTAssertFalse(menus.isEmpty)
@@ -204,21 +221,26 @@ nonisolated final class MenuKeyEquivalentMatcherTests: XCTestCase {
             delegate.menuNeedsUpdate(menu)
             let shortcuts = menu.items.filter { !$0.keyEquivalent.isEmpty }
             for item in shortcuts {
-                let scalars = Array(item.keyEquivalent.unicodeScalars)
-                XCTAssertEqual(scalars.count, 1, "\(menu.title) › \(item.title)")
-                XCTAssertTrue((0xF700...0xF8FF).contains(scalars.first?.value ?? 0),
-                              "\(menu.title) › \(item.title) is not a function-key equivalent")
-                XCTAssertTrue(item.keyEquivalentModifierMask.contains(.command),
-                              "\(menu.title) › \(item.title) has no Command modifier")
-                XCTAssertNil(item.representedObject, "\(menu.title) › \(item.title) looks dynamic")
+                let label = "\(menu.title) › \(item.title)"
+                XCTAssertNil(item.representedObject, "\(label) looks dynamic")
+                let id = try XCTUnwrap(item.identifier?.rawValue, "\(label) is not the registry's")
+                let command = try XCTUnwrap(BrowserCommands.command(withID: CommandID(rawValue: id)), label)
+                XCTAssertEqual(command.action, item.action, label)
+                XCTAssertEqual(BrowserCommands.all.filter { $0.action == item.action }.count, 1,
+                               "\(label) shares its action: a fast-path hit could not tell them apart")
+                XCTAssertTrue(item.keyEquivalentModifierMask.contains(.command)
+                              || item.keyEquivalentModifierMask.contains(.control), "\(label) has no ⌘ or ⌃")
 
                 // A real function-key press also carries `.function`.
-                let event = keyEvent(item.keyEquivalent, item.keyEquivalentModifierMask.union(.function))
+                let isFunctionKey = item.keyEquivalent.unicodeScalars.allSatisfy { (0xF700...0xF8FF).contains($0.value) }
+                let event = keyEvent(item.keyEquivalent,
+                                     isFunctionKey ? item.keyEquivalentModifierMask.union(.function)
+                                         : item.keyEquivalentModifierMask)
                 XCTAssertTrue(MenuKeyEquivalentMatcher.item(matching: event, in: menu.items) === item,
-                              "\(menu.title) › \(item.title) is not answered by the matcher")
+                              "\(label) is not answered by the matcher")
             }
         }
-        XCTAssertEqual(Set(menus.flatMap { $0.items }.filter { !$0.keyEquivalent.isEmpty }.map(\.title)),
-                       ["Next Space", "Previous Space"])
+        XCTAssertEqual(Set(menus.flatMap { $0.items }.filter { !$0.keyEquivalent.isEmpty }.compactMap(\.identifier?.rawValue)),
+                       Set(["space.next", "space.previous"] + (1...9).map { "space.jump-\($0)" }))
     }
 }

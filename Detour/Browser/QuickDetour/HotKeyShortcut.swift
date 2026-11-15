@@ -190,6 +190,27 @@ enum HotKeyShortcutRules: Equatable {
 struct SystemHotKey: Equatable {
     let keyCode: UInt16
     let carbonModifiers: UInt32
+
+    /// The menu key equivalent a press of it matches (TASK-295: Settings ›
+    /// Shortcuts marks a command whose shortcut macOS takes first), with the
+    /// key's character from `character` (`layoutCharacter(forKeyCode:)` for
+    /// the current layout's); nil for a key with no name.
+    func menuKeyEquivalent(character: (UInt16) -> String) -> KeyEquivalent? {
+        let shortcut = HotKeyShortcut(keyCode: keyCode, modifiers: HotKeyShortcut.modifiers(fromCarbon: carbonModifiers),
+                                      character: character(keyCode))
+        guard shortcut.hasKeyName else { return nil }
+        return shortcut.menuKeyEquivalent
+    }
+
+    /// The character `keyCode` types with no modifiers on the current
+    /// layout, as `HotKeyShortcut(event:)` reads a press ("" for a key named
+    /// by its code, such as F5 or an arrow). Building a key event posts
+    /// nothing.
+    static func layoutCharacter(forKeyCode keyCode: UInt16) -> String {
+        guard let cgEvent = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(keyCode), keyDown: true),
+              let event = NSEvent(cgEvent: cgEvent) else { return "" }
+        return HotKeyShortcut(event: event).character
+    }
 }
 
 enum HotKeyShortcutValidation {

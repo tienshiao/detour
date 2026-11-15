@@ -52,7 +52,10 @@ nonisolated final class BrowserCommandRegistryTests: XCTestCase {
         "find.show", "find.next", "find.previous",
         "sidebar.toggle", "page.reload", "page.zoom-reset", "page.zoom-in", "page.zoom-out",
         "page.back", "page.forward", "tab.previous", "tab.next", "history.show", "archive.show", "archive.clear",
-        "space.next", "space.previous", "space.switch", "space.manage",
+        "space.next", "space.previous",
+        "space.jump-1", "space.jump-2", "space.jump-3", "space.jump-4", "space.jump-5", "space.jump-6",
+        "space.jump-7", "space.jump-8", "space.jump-9",
+        "space.switch", "space.manage",
         "extension.show-popup", "extension.options", "extensions.add", "extensions.manage",
         "extensions.check-for-updates",
         "develop.web-inspector", "develop.load-unpacked-extension", "extension.inspect-offscreen",
@@ -231,7 +234,7 @@ nonisolated final class BrowserCommandRegistryTests: XCTestCase {
         }
         for command in [BrowserCommands.nextSpace, BrowserCommands.previousSpace, BrowserCommands.manageSpaces,
                         BrowserCommands.switchToSpace, BrowserCommands.showArchivedTabs,
-                        BrowserCommands.clearArchivedTabs] {
+                        BrowserCommands.clearArchivedTabs] + BrowserCommands.jumpToSpace {
             XCTAssertTrue(command.isAvailable(in: context(.normal, everything)), "\(command.id)")
             XCTAssertFalse(command.isAvailable(in: context(.private, everything)), "\(command.id)")
         }
