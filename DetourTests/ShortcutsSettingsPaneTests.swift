@@ -230,6 +230,30 @@ nonisolated final class ShortcutsSettingsPaneTests: XCTestCase {
         XCTAssertFalse(pane.restoreDefaultsButton.isEnabled)
     }
 
+    /// A refusal's warning line takes its own height at the pane's bottom,
+    /// and the list keeps the rest (found at runtime in TASK-343: the line
+    /// was only held above the bottom, nothing gave the list a height, and
+    /// it collapsed to nothing while a refusal showed).
+    @MainActor func testTheListKeepsItsHeightWhileARefusalShows() throws {
+        let store = makeStore()
+        let (pane, _) = makePane(store: store)
+        func descendants(of view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap(descendants) }
+        let list = try XCTUnwrap(descendants(of: pane.view).first { $0 is SettingsListContainerView })
+        let container = try XCTUnwrap(list.superview)
+        let before = list.frame.height
+        XCTAssertGreaterThan(before, 300)
+        store.setKeyEquivalent(nil, for: BrowserCommands.closeTab.id)
+        store.setKeyEquivalent(KeyEquivalent("w"), for: BrowserCommands.reload.id)
+        pane.reload()
+        pane.reset(BrowserCommands.closeTab.id)
+        pane.view.layoutSubtreeIfNeeded()
+        XCTAssertFalse(pane.warningLabel.isHidden)
+        let line = pane.warningLabel.frame
+        XCTAssertGreaterThan(list.frame.height, before - line.height - 20, "the list gives up only the line's room")
+        XCTAssertEqual(container.isFlipped ? container.bounds.maxY - line.maxY : line.minY, 0, accuracy: 3,
+                       "the line sits at the pane's bottom")
+    }
+
     /// Close Tab cleared, its ⌘W given to Reload: resetting Close Tab would
     /// leave it with no shortcut (Reload's override wins), so it is refused.
     @MainActor func testAResetOntoAKeyAnotherBindingHoldsIsRefused() throws {

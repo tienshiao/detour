@@ -69,4 +69,19 @@ struct KeyboardLayout {
     static func currentShiftedCharacter(forKeyCode keyCode: UInt16) -> String {
         current()?.character(forKeyCode: keyCode, shift: true) ?? ""
     }
+
+    /// The keys that type `character` with no modifier, in key-code order
+    /// (TASK-343): a saved shortcut names its character, not its key, so the
+    /// key is looked up to ask what Shift gives it. Usually one ("=" is the
+    /// US "=" key and the keypad's "="); none for a character typed only with
+    /// Shift or Option ("+" on US) or a key named by its code. Virtual key
+    /// codes run 0 to 0x7F.
+    func keyCodes(typing character: String) -> [UInt16] {
+        guard !character.isEmpty else { return [] }
+        return (0...UInt16(0x7F)).filter { self.character(forKeyCode: $0, shift: false) == character }
+    }
+
+    /// Posted (distributed) when the user picks another input source, so
+    /// another keyboard layout may be in use (TASK-343).
+    static let selectionDidChangeNotification = Notification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String)
 }

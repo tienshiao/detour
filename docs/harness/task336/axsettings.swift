@@ -12,6 +12,7 @@
 //   axsettings pane <pid> <title>      -> presses the toolbar item <title>
 //   axsettings pressnamed <pid> <name>  -> presses the first button of that name in any window
 //   axsettings choose <pid> <pop-up> <item> -> picks an item of a pop-up in the Settings window (TASK-342)
+//   axsettings search <pid> <text>     -> types into the window's search field (TASK-343)
 //   axsettings popover <pid>           -> the same reading for the sidebar settings popover's window, if open
 // TASK-342: `reading` also ends with CONTROLS: every pop-up, field, button, link and recorder with its name,
 // UNNAMED ones (images included; the window's own buttons and scroll bar parts left out), LABELS READ TOO (a
@@ -264,6 +265,22 @@ case "choose":
     }
     print(chosen ? "chose \(args[4])" : "no item \(args[4])")
     if !chosen { exit(1) }
+case "search":
+    // TASK-343: types args[3] into the Settings window's first search field (sets its value, then confirms,
+    // so the field's action and text-change callback run) and leaves the list filtered.
+    guard args.count >= 4, let w = settingsWindow(pid) else { print("usage: axsettings search <pid> <text>"); exit(2) }
+    var field: AXUIElement?
+    func find(_ e: AXUIElement, _ d: Int) {
+        if field != nil || d > 30 { return }
+        if str(e, kAXSubroleAttribute) == "AXSearchField" { field = e; return }
+        for c in children(e) { find(c, d + 1) }
+    }
+    find(w, 0)
+    guard let field else { print("no search field"); exit(1) }
+    AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+    let set = AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, args[3] as CFString)
+    AXUIElementPerformAction(field, kAXConfirmAction as CFString)
+    print(set == .success ? "searched \(args[3])" : "could not set the field (\(set.rawValue))")
 case "pane":
     guard args.count >= 4, let w = settingsWindow(pid) else { print("no Settings window"); exit(1) }
     let wanted = args[3]

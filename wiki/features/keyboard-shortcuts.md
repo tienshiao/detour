@@ -38,6 +38,9 @@ sources:
   - id: task-335
     resource: backlog:TASK-335
     title: "Shortcuts: detect conflicts between a shifted key and its character (⇧⌘= and Zoom In ⌘+)"
+  - id: task-343
+    resource: backlog:TASK-343
+    title: "Shortcuts: Reset and saved bindings are checked for shifted-key conflicts too"
   - id: spike-335
     resource: ../../docs/harness/task335
     title: "TASK-335 spikes: AppKit's matching of shifted-character items from real CGEvents, UCKeyTranslate on installed layouts (macOS 26, 2026-11-14)"
@@ -232,9 +235,32 @@ Limits:
   where it types "с" with no modifier, and the recording reads the
   unmodified character; what AppKit matches there was not measured, and
   neither recorder models it.
-- Resetting a row (`reset(_:)`) and the resolver still compare keys by
-  character, so a reset of Zoom In while another command holds ⇧⌘= is
-  not refused. Only recording is covered.
+- Saved shortcuts are checked too (TASK-343).[^task-343] A saved shortcut
+  names a character, not a key, so `KeyboardLayout.keyCodes(typing:)` finds
+  the keys that type it with no modifier and
+  `KeyEquivalent.shiftedKeyEquivalents(on:)` asks the recorders' rule
+  (`HotKeyShortcut.shiftedKeyEquivalent`) for each: one mapping for a
+  recorded keystroke and a saved key equivalent. ⇧⌘= is ⌘+'s keystroke on
+  US and French (different keys); ⇧⌘à is Actual Size's ⌘0 on French and
+  no keystroke on US; ⇧⌘/ is ⌘?'s on US, none on French (it types "/"
+  with Shift).
+  - A row's reset (`reset(_:)`) is refused, with both shortcuts and the
+    holder named ("⌘+ and ⇧⌘= are one keystroke on this keyboard, and ⇧⌘=
+    is now Reload Page's shortcut. Change that one first."), when the
+    built-in shortcut and another command's binding are one keystroke in
+    either direction (`ShortcutBindingStore.command(sharingKeystrokeWith:)`),
+    after the exact-holder check.
+  - Two saved shortcuts on one keystroke (`ShortcutResolution
+    .sameKeystrokeConflicts`, over the effective keys) keep both: the
+    resolver drops nothing for them, AppKit fires the Shift-held, exact one
+    and the other only from a key typing its character alone (the keypad's
+    "+"; TASK-335's measurement). They are logged at launch and on every
+    input source change (`AppDelegate`, category `shortcuts`, through the
+    distributed `kTISNotifySelectedKeyboardInputSourceChanged`,
+    `KeyboardLayout.selectionDidChangeNotification`), and the pane reloads
+    on that notification and marks both rows (below). Before, a pair saved
+    before TASK-335 or colliding only on a layout chosen since was never
+    re-checked.
 
 ## The pane
 
@@ -261,6 +287,19 @@ on its own, 400 pt minimum), then the warning line.
   posted, and for one held with Shift also its shifted character, so a
   macOS ⇧⌘= marks Zoom In's ⌘+, TASK-335); all are injected in tests. Before, the list was only consulted when recording, so a built-in
   shortcut macOS held looked like any other.
+- A row whose shortcut is one keystroke with another command's on this
+  layout (TASK-343) says "Same key as <other>" in orange, the "Used by
+  macOS" note's look, with a tooltip naming both shortcuts and the command
+  the keystroke runs ("⌘+ and Reload Page's ⇧⌘= are one keystroke on this
+  keyboard, which runs Reload Page. Record another shortcut for one of
+  them."); both rows of the pair are marked, and macOS's note wins when a
+  row has both. PROVISIONAL (chosen by Claude): the row note rather than a
+  line under the list or a dialog.
+- The warning line under the list (a refused recording or reset) sits on
+  the pane's bottom and the list takes the rest. Until TASK-343 the line
+  was only held above the bottom and nothing gave the list a height, so the
+  list collapsed to nothing while a refusal showed (seen at runtime on the
+  reset refusal; the TASK-327 exact-holder refusal did the same).
 - A row: title, the note, `ShortcutRecorderView` (placeholder "None"; a
   disabled one shows its shortcut as dimmed text with no box), and a reset
   button shown once the shortcut differs from the built-in one. A reset
@@ -408,7 +447,17 @@ for the app. To try one at runtime, pass it as a launch argument; never
   the US and French layouts' characters through `UCKeyTranslate`, ⇧⌘=
   refused for ⌘+ and ⇧⌘/ for ⌘?, ⌘=, ⌘/, ⌥⇧⌘= and ⇧⌘T not, the exact
   item named first, the French layout's "+", the Quick Detour recorder's
-  rules, the real menu's Zoom In.
+  rules, the real menu's Zoom In; saved shortcuts (TASK-343): a saved key
+  equivalent's shifted equivalents on US and French (the keypad-only "+",
+  ⇧⌘à, ⇧⌘/ on French, ⌥⇧⌘=, letters, no layout), a saved ⇧⌘= found with
+  Zoom In on both layouts and both kept, ⇧⌘à on French only, both rows
+  marked and macOS's note first, the marks following a posted input source
+  change, Zoom In's and Actual Size's resets refused (US and French; US
+  lets Actual Size's through), the holder found in either direction.
+  The layout-change test posts on a center of its own
+  (`layoutChangeCenter`), not the system's distributed one.
+  `ShortcutsSettingsPaneTests.testTheListKeepsItsHeightWhileARefusalShows`:
+  the list keeps its height under a refusal's line.
 - `ShortcutMenuTests` (the real menu bar and the shared store, restored):
   a binding reaches the item and AppKit's matching, clearing, a shortcut
   for a command with none and Restore Defaults, reset, the Quick Detour
@@ -437,4 +486,5 @@ for the app. To try one at runtime, pass it as a launch argument; never
 [^task-295]: TASK-295
 [^task-334]: TASK-334
 [^spike-335]: TASK-335 spikes
+[^task-343]: TASK-343
 [^spike]: NSUserKeyEquivalents spikes

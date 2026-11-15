@@ -160,6 +160,51 @@ struct HotKeyShortcut: Equatable, Hashable {
     }
 }
 
+extension KeyEquivalent {
+    /// The other key equivalents a keystroke matching this one fires on
+    /// `layout` (TASK-343): for each key that types this one's character with
+    /// no modifier, the recorders' rule (`HotKeyShortcut.shiftedKeyEquivalent`,
+    /// TASK-335) with that key's shifted character. A saved shortcut names
+    /// its character, not its key, so this is the same answer the recorder
+    /// gets for the keystroke: ⇧⌘= also fires ⌘+ on US and French layouts
+    /// (on different keys), ⇧⌘& fires ⌘1 on French and is no keystroke at
+    /// all on US. Empty without Shift, for a letter, without layout data.
+    func shiftedKeyEquivalents(on layout: KeyboardLayout?) -> [KeyEquivalent] {
+        guard let layout else { return [] }
+        let spelled = normalized
+        guard spelled.modifiers.contains(.shift) else { return [] }
+        var result: [KeyEquivalent] = []
+        for keyCode in layout.keyCodes(typing: spelled.key) {
+            let pressed = HotKeyShortcut(keyCode: keyCode, modifiers: spelled.modifiers, character: spelled.key)
+            if let shifted = pressed.shiftedKeyEquivalent(
+                shiftedCharacter: layout.character(forKeyCode: keyCode, shift: true)),
+               !result.contains(where: { $0.isSameShortcut(as: shifted) }) {
+                result.append(shifted)
+            }
+        }
+        return result
+    }
+
+    /// Whether one keystroke fires both this and `other`: the same shortcut,
+    /// or one is the other's shifted character (`shiftedEquivalents`, such
+    /// as `currentShiftedEquivalents`).
+    func firesOnSameKeystroke(as other: KeyEquivalent,
+                              shiftedEquivalents: (KeyEquivalent) -> [KeyEquivalent]) -> Bool {
+        isSameShortcut(as: other)
+            || shiftedEquivalents(self).contains { $0.isSameShortcut(as: other) }
+            || shiftedEquivalents(other).contains { $0.isSameShortcut(as: self) }
+    }
+
+    /// The layout in use's shifted equivalents, the default the store and
+    /// the Shortcuts pane read (tests pass an installed layout's).
+    static func currentShiftedEquivalents(_ key: KeyEquivalent) -> [KeyEquivalent] {
+        // Only a Shift-held shortcut has any: the layout is not looked up for
+        // the others (most of a pane reload's shortcuts).
+        guard key.normalized.modifiers.contains(.shift) else { return [] }
+        return key.shiftedKeyEquivalents(on: KeyboardLayout.current())
+    }
+}
+
 /// Why a shortcut cannot be the Quick Detour hotkey.
 enum HotKeyShortcutProblem: Equatable {
     /// Neither Command, Option nor Control: a global shortcut on a plain or

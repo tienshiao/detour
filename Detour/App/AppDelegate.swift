@@ -24,6 +24,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var quickDetourMenuItem: NSMenuItem?
     /// Applies the user's shortcuts to the menu bar when they change (TASK-327).
     private var shortcutBindingsObserver: NSObjectProtocol?
+    private var keyboardLayoutObserver: NSObjectProtocol?
 
     /// Whether this process is the XCTest host (the test runner injects
     /// `XCTest*` variables into the app it launches).
@@ -91,6 +92,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         shortcutBindingsObserver = NotificationCenter.default.addMainObserver(
             forName: ShortcutBindingStore.didChangeNotification, object: ShortcutBindingStore.shared) { _ in
             ShortcutBindingStore.shared.apply(to: NSApp.mainMenu)
+        }
+        // Two saved shortcuts that are one keystroke on this keyboard layout
+        // (TASK-343: saved before the recorder refused them, or colliding on
+        // a layout chosen since): logged now and on every layout change;
+        // Settings > Shortcuts marks them. Both keep their shortcuts.
+        ShortcutBindingStore.shared.reportSameKeystrokeConflicts()
+        keyboardLayoutObserver = DistributedNotificationCenter.default().addMainObserver(
+            forName: KeyboardLayout.selectionDidChangeNotification, object: nil) { _ in
+            ShortcutBindingStore.shared.reportSameKeystrokeConflicts()
         }
 
         // The Quick Detour hotkey (TASK-193.2): the menu item mirrors the

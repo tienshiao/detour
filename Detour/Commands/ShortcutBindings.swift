@@ -1,4 +1,7 @@
 import AppKit
+import os
+
+private let log = Logger(subsystem: "com.detourbrowser.mac", category: "shortcuts")
 
 // TASK-327: the user's shortcuts for the registry's commands. The built-in
 // shortcut of each command stays in the registry (`BrowserCommand.keyEquivalent`);
@@ -81,6 +84,32 @@ enum ShortcutResolution {
         }
         return result
     }
+
+    /// The commands whose shortcuts fire on one keystroke although they are
+    /// different key equivalents (TASK-343): one holds Shift and a key whose
+    /// shifted character, on the keyboard layout, is the other's key with the
+    /// other modifiers (⇧⌘= and ⌘+ on a US layout). The recorder refuses such
+    /// a pair (TASK-335), but a binding saved before it, or one that collides
+    /// only on the layout chosen since, is still there. Both keep their
+    /// shortcuts (nothing is dropped): AppKit fires the exact one, the
+    /// Shift-held binding, and the other is reached only from a key that
+    /// types its character without Shift (measured, TASK-335). Each command
+    /// of a pair maps to the other; `keys` in menu order, the first pair
+    /// found wins for a command in two.
+    static func sameKeystrokeConflicts(of keys: [(id: CommandID, key: KeyEquivalent)],
+                                       shiftedEquivalents: (KeyEquivalent) -> [KeyEquivalent])
+        -> [CommandID: CommandID] {
+        var result: [CommandID: CommandID] = [:]
+        for held in keys {
+            for shifted in shiftedEquivalents(held.key) {
+                guard let other = keys.first(where: { $0.id != held.id && $0.key.isSameShortcut(as: shifted) })
+                else { continue }
+                if result[held.id] == nil { result[held.id] = other.id }
+                if result[other.id] == nil { result[other.id] = held.id }
+            }
+        }
+        return result
+    }
 }
 
 /// The user's shortcuts, stored in the data directory's defaults suite
@@ -157,6 +186,56 @@ final class ShortcutBindingStore {
     /// The command other than `id` whose shortcut is `key` now, if any.
     func command(holding key: KeyEquivalent, except id: CommandID) -> BrowserCommand? {
         commands.first { $0.id != id && keyEquivalent(for: $0.id)?.isSameShortcut(as: key) == true }
+    }
+
+    /// The command other than `id`, and its shortcut, that fires on the
+    /// keystroke `key` fires on through a shifted character (TASK-343:
+    /// resetting Zoom In to ⌘+ while another command holds ⇧⌘=), if any.
+    func command(sharingKeystrokeWith key: KeyEquivalent, except id: CommandID,
+                 shiftedEquivalents: (KeyEquivalent) -> [KeyEquivalent] = { KeyEquivalent.currentShiftedEquivalents($0) })
+        -> (command: BrowserCommand, key: KeyEquivalent)? {
+        // `key`'s own equivalents are read once, not once per command.
+        let keyShifted = shiftedEquivalents(key)
+        let equivalents: (KeyEquivalent) -> [KeyEquivalent] = { $0 == key ? keyShifted : shiftedEquivalents($0) }
+        for command in commands where command.id != id {
+            guard let held = keyEquivalent(for: command.id), !held.isSameShortcut(as: key),
+                  held.firesOnSameKeystroke(as: key, shiftedEquivalents: equivalents) else { continue }
+            return (command, held)
+        }
+        return nil
+    }
+
+    /// The saved shortcuts that fire on one keystroke on the layout
+    /// (`ShortcutResolution.sameKeystrokeConflicts`): each command of a pair
+    /// mapped to the other. Read again for each layout, never cached: the
+    /// layout can change under the same bindings.
+    func sameKeystrokeConflicts(
+        shiftedEquivalents: (KeyEquivalent) -> [KeyEquivalent] = { KeyEquivalent.currentShiftedEquivalents($0) }
+    ) -> [CommandID: CommandID] {
+        let keys = commands.compactMap { command in keyEquivalent(for: command.id).map { (id: command.id, key: $0) } }
+        return ShortcutResolution.sameKeystrokeConflicts(of: keys, shiftedEquivalents: shiftedEquivalents)
+    }
+
+    /// Logs each pair `sameKeystrokeConflicts` finds (TASK-343): at launch
+    /// and when the keyboard layout changes (`AppDelegate`). Settings >
+    /// Shortcuts marks both rows; nothing is changed or dropped here.
+    @discardableResult
+    func reportSameKeystrokeConflicts(
+        shiftedEquivalents: (KeyEquivalent) -> [KeyEquivalent] = { KeyEquivalent.currentShiftedEquivalents($0) }
+    ) -> [CommandID: CommandID] {
+        let conflicts = sameKeystrokeConflicts(shiftedEquivalents: shiftedEquivalents)
+        var reported: Set<CommandID> = []
+        for command in commands {
+            guard let other = conflicts[command.id], !reported.contains(command.id) else { continue }
+            reported.formUnion([command.id, other])
+            let keys = [command.id, other].map { keyEquivalent(for: $0)?.displayString ?? "" }
+            log.notice("""
+                Shortcuts \(command.id.rawValue, privacy: .public) (\(keys[0], privacy: .public)) and \
+                \(other.rawValue, privacy: .public) (\(keys[1], privacy: .public)) are one keystroke on this \
+                keyboard layout; both kept, marked in Settings > Shortcuts
+                """)
+        }
+        return conflicts
     }
 
     // MARK: - Writing

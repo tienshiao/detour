@@ -295,4 +295,180 @@ nonisolated final class ShortcutConflictTests: XCTestCase {
                        .usedByMenuAsShifted(path: "View > Zoom In", shortcut: "⌘+"))
         XCTAssertNil(problem(shortcut(kVK_ANSI_Equal, [.shift, .command], "="), for: BrowserCommands.zoomIn.id, menu: menu))
     }
+
+    // MARK: - Saved shortcuts on one keystroke (TASK-343)
+
+    @MainActor private static func shiftedEquivalents(on layout: KeyboardLayout?) -> (KeyEquivalent) -> [KeyEquivalent] {
+        { $0.shiftedKeyEquivalents(on: layout) }
+    }
+
+    @MainActor private func throwawayStore() throws -> ShortcutBindingStore {
+        let suite = "ShortcutConflictTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return ShortcutBindingStore(defaults: defaults)
+    }
+
+    @MainActor private func pane(_ store: ShortcutBindingStore, layout: @escaping () -> KeyboardLayout?,
+                                 layoutChangeCenter: NotificationCenter = NotificationCenter())
+        -> ShortcutsSettingsViewController {
+        let pane = ShortcutsSettingsViewController(store: store, mainMenu: { self.shiftedCharacterMenu() },
+                                                   includesUpdater: false, quickDetourShortcut: { .quickDetourDefault },
+                                                   systemHotKeys: { [] },
+                                                   systemHotKeyShiftedCharacter: { layout()?.character(forKeyCode: $0, shift: true) ?? "" },
+                                                   shiftedEquivalents: { $0.shiftedKeyEquivalents(on: layout()) },
+                                                   layoutChangeCenter: layoutChangeCenter)
+        _ = pane.view
+        return pane
+    }
+
+    /// The saved-shortcut side of TASK-335's mapping: a key equivalent names
+    /// a character, so the keys typing it are looked up, and the recorder's
+    /// rule asked for each.
+    @MainActor func testASavedShortcutsShiftedEquivalentFollowsTheLayout() throws {
+        let us = try XCTUnwrap(Self.us)
+        let french = try XCTUnwrap(Self.french)
+        XCTAssertTrue(us.keyCodes(typing: "=").contains(UInt16(kVK_ANSI_Equal)))
+        XCTAssertEqual(us.keyCodes(typing: "+"), [UInt16(kVK_ANSI_KeypadPlus)], "only the keypad types + without Shift")
+        let shiftEqual = KeyEquivalent("=", [.shift, .command])
+        XCTAssertEqual(shiftEqual.shiftedKeyEquivalents(on: us), [KeyEquivalent("+", [.command])])
+        // French: "=" and "+" share the key in the US "/" place.
+        XCTAssertEqual(shiftEqual.shiftedKeyEquivalents(on: french), [KeyEquivalent("+", [.command])])
+        XCTAssertEqual(KeyEquivalent("/", [.shift, .command]).shiftedKeyEquivalents(on: us), [KeyEquivalent("?", [.command])])
+        XCTAssertEqual(KeyEquivalent("/", [.shift, .command]).shiftedKeyEquivalents(on: french), [],
+                       "French types / with Shift: no key types it alone")
+        // French digits are the shifted characters: ⇧⌘à is ⌘0's keystroke.
+        XCTAssertEqual(KeyEquivalent("à", [.shift, .command]).shiftedKeyEquivalents(on: french), [KeyEquivalent("0", [.command])])
+        XCTAssertEqual(KeyEquivalent("à", [.shift, .command]).shiftedKeyEquivalents(on: us), [])
+        // Not a shifted character: no Shift, another modifier set, a letter.
+        XCTAssertEqual(KeyEquivalent("=", [.command]).shiftedKeyEquivalents(on: us), [])
+        XCTAssertEqual(KeyEquivalent("=", [.option, .shift, .command]).shiftedKeyEquivalents(on: us),
+                       [KeyEquivalent("+", [.option, .command])], "⌥⇧⌘= is ⌥⌘+'s keystroke, not ⌘+'s")
+        XCTAssertEqual(KeyEquivalent("T", [.command]).shiftedKeyEquivalents(on: us), [], "⇧⌘T is only itself")
+        XCTAssertEqual(shiftEqual.shiftedKeyEquivalents(on: nil), [])
+        XCTAssertTrue(KeyEquivalent("+").firesOnSameKeystroke(as: shiftEqual, shiftedEquivalents: Self.shiftedEquivalents(on: us)))
+        XCTAssertTrue(shiftEqual.firesOnSameKeystroke(as: KeyEquivalent("+"), shiftedEquivalents: Self.shiftedEquivalents(on: us)))
+        XCTAssertFalse(KeyEquivalent("+").firesOnSameKeystroke(as: KeyEquivalent("="), shiftedEquivalents: Self.shiftedEquivalents(on: us)))
+    }
+
+    /// Reload Page saved on ⇧⌘= (before TASK-335's recorder check, say):
+    /// with Zoom In's ⌘+ that is one keystroke, found on US and French, and
+    /// both commands keep their shortcuts.
+    @MainActor func testASavedPairOnOneKeystrokeIsFoundAndBothAreKept() throws {
+        let store = try throwawayStore()
+        store.setKeyEquivalent(KeyEquivalent("=", [.shift, .command]), for: BrowserCommands.reload.id)
+        let pair: [CommandID: CommandID] = [BrowserCommands.reload.id: BrowserCommands.zoomIn.id,
+                                            BrowserCommands.zoomIn.id: BrowserCommands.reload.id]
+        XCTAssertEqual(store.sameKeystrokeConflicts(shiftedEquivalents: Self.shiftedEquivalents(on: Self.us)), pair)
+        XCTAssertEqual(store.sameKeystrokeConflicts(shiftedEquivalents: Self.shiftedEquivalents(on: Self.french)), pair)
+        XCTAssertEqual(store.reportSameKeystrokeConflicts(shiftedEquivalents: Self.shiftedEquivalents(on: Self.us)), pair)
+        XCTAssertEqual(store.keyEquivalent(for: BrowserCommands.reload.id), KeyEquivalent("=", [.shift, .command]))
+        XCTAssertEqual(store.keyEquivalent(for: BrowserCommands.zoomIn.id), KeyEquivalent("+"), "not dropped")
+        XCTAssertEqual(store.sameKeystrokeConflicts(shiftedEquivalents: { _ in [] }), [:], "no layout data")
+    }
+
+    /// A pair on one layout only: ⇧⌘à is Actual Size's ⌘0 on French, and
+    /// no keystroke of a US keyboard.
+    @MainActor func testASavedPairCanCollideOnOneLayoutOnly() throws {
+        let store = try throwawayStore()
+        store.setKeyEquivalent(KeyEquivalent("à", [.shift, .command]), for: BrowserCommands.reload.id)
+        XCTAssertEqual(store.sameKeystrokeConflicts(shiftedEquivalents: Self.shiftedEquivalents(on: Self.french)),
+                       [BrowserCommands.reload.id: BrowserCommands.actualSize.id,
+                        BrowserCommands.actualSize.id: BrowserCommands.reload.id])
+        XCTAssertEqual(store.sameKeystrokeConflicts(shiftedEquivalents: Self.shiftedEquivalents(on: Self.us)), [:])
+    }
+
+    /// Settings > Shortcuts marks both rows, naming the other command and
+    /// which of the two the keystroke runs (the Shift-held, exact one).
+    @MainActor func testThePaneMarksBothRowsOfAPair() throws {
+        let store = try throwawayStore()
+        store.setKeyEquivalent(KeyEquivalent("=", [.shift, .command]), for: BrowserCommands.reload.id)
+        let pane = pane(store, layout: { Self.us })
+        let reload = try XCTUnwrap(BrowserCommands.command(withID: BrowserCommands.reload.id))
+        let zoomIn = try XCTUnwrap(BrowserCommands.command(withID: BrowserCommands.zoomIn.id))
+        XCTAssertEqual(pane.rowState(for: reload).sameKeystroke,
+                       .init(otherTitle: "Zoom In", otherShortcut: "⌘+", runner: "Reload Page"))
+        XCTAssertEqual(pane.rowState(for: zoomIn).sameKeystroke,
+                       .init(otherTitle: "Reload Page", otherShortcut: "⇧⌘=", runner: "Reload Page"))
+        XCTAssertNil(pane.rowState(for: try XCTUnwrap(BrowserCommands.command(withID: BrowserCommands.newTab.id))).sameKeystroke)
+
+        let row = ShortcutRowView(identifier: NSUserInterfaceItemIdentifier("row"))
+        row.show(pane.rowState(for: zoomIn), commandID: zoomIn.id)
+        XCTAssertFalse(row.noteLabel.isHidden)
+        XCTAssertEqual(row.noteLabel.stringValue, "Same key as Reload Page")
+        XCTAssertEqual(row.toolTip, "⌘+ and Reload Page's ⇧⌘= are one keystroke on this keyboard, which runs Reload Page. Record another shortcut for one of them.")
+        // macOS's mark comes first: it takes the key before either.
+        var taken = pane.rowState(for: zoomIn)
+        taken.isTakenByMacOS = true
+        row.show(taken, commandID: zoomIn.id)
+        XCTAssertEqual(row.noteLabel.stringValue, ShortcutRowView.takenByMacOSNote)
+    }
+
+    /// The rows follow the keyboard layout: marked on French for ⇧⌘à, not
+    /// on US, and marked again when the layout changes (the input source
+    /// change notification reloads the pane). Posted on a private center:
+    /// the distributed one would reach every app on the Mac.
+    @MainActor func testThePaneMarksAgainWhenTheLayoutChanges() throws {
+        let store = try throwawayStore()
+        store.setKeyEquivalent(KeyEquivalent("à", [.shift, .command]), for: BrowserCommands.reload.id)
+        var layout = Self.us
+        let center = NotificationCenter()
+        let pane = pane(store, layout: { layout }, layoutChangeCenter: center)
+        XCTAssertEqual(pane.sameKeystrokeConflicts, [:])
+        layout = Self.french
+        center.post(name: KeyboardLayout.selectionDidChangeNotification, object: nil)
+        // After the reload the pane's observer scheduled on the main queue.
+        let marked = expectation(description: "reloaded on the layout change")
+        DispatchQueue.main.async { marked.fulfill() }
+        wait(for: [marked], timeout: 10)
+        XCTAssertEqual(pane.sameKeystrokeConflicts[BrowserCommands.reload.id], BrowserCommands.actualSize.id)
+    }
+
+    /// Resetting Zoom In to ⌘+ while Reload Page holds ⇧⌘= is refused with
+    /// the holder named, as recording ⇧⌘= is; on French too, and on French
+    /// only for Actual Size's ⌘0 against ⇧⌘à.
+    @MainActor func testAResetOntoAnotherBindingsKeystrokeIsRefused() throws {
+        for layout in [Self.us, Self.french] {
+            let store = try throwawayStore()
+            store.setKeyEquivalent(KeyEquivalent("=", [.option, .command]), for: BrowserCommands.zoomIn.id)
+            store.setKeyEquivalent(KeyEquivalent("=", [.shift, .command]), for: BrowserCommands.reload.id)
+            let pane = pane(store, layout: { layout })
+            pane.reset(BrowserCommands.zoomIn.id)
+            XCTAssertEqual(store.override(for: BrowserCommands.zoomIn.id), .key(KeyEquivalent("=", [.option, .command])),
+                           "kept")
+            XCTAssertFalse(pane.warningLabel.isHidden)
+            XCTAssertEqual(pane.warningLabel.stringValue,
+                           "⌘+ and ⇧⌘= are one keystroke on this keyboard, and ⇧⌘= is now Reload Page's shortcut. Change that one first.")
+            // Reload Page back to ⌘R: the reset goes through.
+            pane.reset(BrowserCommands.reload.id)
+            pane.reset(BrowserCommands.zoomIn.id)
+            XCTAssertFalse(store.hasOverrides)
+            XCTAssertTrue(pane.warningLabel.isHidden)
+        }
+
+        for (layout, refused) in [(Self.french, true), (Self.us, false)] {
+            let store = try throwawayStore()
+            store.setKeyEquivalent(KeyEquivalent("0", [.option, .command]), for: BrowserCommands.actualSize.id)
+            store.setKeyEquivalent(KeyEquivalent("à", [.shift, .command]), for: BrowserCommands.reload.id)
+            let pane = pane(store, layout: { layout })
+            pane.reset(BrowserCommands.actualSize.id)
+            XCTAssertEqual(store.isOverridden(BrowserCommands.actualSize.id), refused)
+            XCTAssertEqual(pane.warningLabel.isHidden, !refused)
+        }
+    }
+
+    /// The other direction: a default holding Shift on a key whose shifted
+    /// character another binding has (⇧⌘[ against ⌘{).
+    @MainActor func testTheStoreFindsTheHolderInEitherDirection() throws {
+        let store = try throwawayStore()
+        store.setKeyEquivalent(KeyEquivalent("{", [.command]), for: BrowserCommands.reload.id)
+        let shared = store.command(sharingKeystrokeWith: KeyEquivalent("[", [.shift, .command]),
+                                   except: BrowserCommands.back.id,
+                                   shiftedEquivalents: Self.shiftedEquivalents(on: Self.us))
+        XCTAssertEqual(shared?.command.id, BrowserCommands.reload.id)
+        XCTAssertEqual(shared?.key, KeyEquivalent("{", [.command]))
+        XCTAssertNil(store.command(sharingKeystrokeWith: KeyEquivalent("[", [.command]), except: BrowserCommands.back.id,
+                                   shiftedEquivalents: Self.shiftedEquivalents(on: Self.us)),
+                     "⌘[ is not ⌘{'s keystroke")
+    }
 }

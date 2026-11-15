@@ -61,14 +61,33 @@ struct ShortcutRowState: Equatable {
     /// Detour sees it: ⌃1–⌃9 when Mission Control's "Switch to Desktop N" is
     /// on (TASK-295). The row says so; the recorder stays enabled.
     var isTakenByMacOS = false
+    /// Another command's shortcut fires on the same keystroke through a
+    /// shifted character on this keyboard layout (TASK-343): a binding
+    /// saved before the recorder refused such pairs, or one the layout
+    /// chosen since makes collide. Both rows say so; neither is dropped.
+    var sameKeystroke: SameKeystroke?
+
+    struct SameKeystroke: Equatable {
+        /// The other command's title and shortcut ("Zoom In", "⌘+").
+        let otherTitle: String
+        let otherShortcut: String
+        /// The command the keystroke runs: the one holding Shift, whose key
+        /// equivalent matches the press exactly (TASK-335's measurement).
+        let runner: String
+    }
 
     /// - Parameters:
     ///   - systemShortcut: the App Shortcut macOS gives its item, if any.
     ///   - quickDetourShortcut: the Quick Detour hotkey's setting.
     ///   - macOSShortcuts: the enabled macOS shortcuts, as the menu key
     ///     equivalents they take (`SystemHotKey.menuKeyEquivalents`).
+    ///   - sameKeystroke: the command sharing this one's keystroke, if any
+    ///     (`ShortcutBindingStore.sameKeystrokeConflicts`), and the layout's
+    ///     shifted equivalents, to say which of the two the keystroke runs.
     static func make(for command: BrowserCommand, store: ShortcutBindingStore, systemShortcut: KeyEquivalent?,
-                     quickDetourShortcut: HotKeyShortcut?, macOSShortcuts: [KeyEquivalent] = []) -> ShortcutRowState {
+                     quickDetourShortcut: HotKeyShortcut?, macOSShortcuts: [KeyEquivalent] = [],
+                     sameKeystroke: BrowserCommand? = nil,
+                     shiftedEquivalents: (KeyEquivalent) -> [KeyEquivalent] = { _ in [] }) -> ShortcutRowState {
         switch command.bindability {
         case .quickDetourPane:
             return ShortcutRowState(title: command.title, shortcut: quickDetourShortcut?.displayString,
@@ -81,9 +100,16 @@ struct ShortcutRowState: Equatable {
                                     kind: .fixed(reason))
         case .bindable, .notListed:
             let key = store.keyEquivalent(for: command.id)
-            return ShortcutRowState(title: command.title, shortcut: key?.displayString,
-                                    kind: .editable(overridden: store.isOverridden(command.id)),
-                                    isTakenByMacOS: key.map { key in macOSShortcuts.contains { $0.isSameShortcut(as: key) } } ?? false)
+            var state = ShortcutRowState(title: command.title, shortcut: key?.displayString,
+                                         kind: .editable(overridden: store.isOverridden(command.id)),
+                                         isTakenByMacOS: key.map { key in macOSShortcuts.contains { $0.isSameShortcut(as: key) } } ?? false)
+            if let key, let other = sameKeystroke, let otherKey = store.keyEquivalent(for: other.id) {
+                // The Shift-held one is the exact match for the press.
+                let runsThisOne = shiftedEquivalents(key).contains { $0.isSameShortcut(as: otherKey) }
+                state.sameKeystroke = SameKeystroke(otherTitle: other.title, otherShortcut: otherKey.displayString ?? "",
+                                                    runner: runsThisOne ? command.title : other.title)
+            }
+            return state
         }
     }
 
@@ -116,9 +142,18 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
     private let systemHotKeyCharacter: (UInt16) -> String
     private let systemHotKeyShiftedCharacter: (UInt16) -> String
     private let systemShortcut: (CommandID) -> KeyEquivalent?
+    private let shiftedEquivalents: (KeyEquivalent) -> [KeyEquivalent]
+    /// Where the keyboard layout change notification is observed: the
+    /// distributed center (tests pass their own, not to post system-wide).
+    private let layoutChangeCenter: NotificationCenter
     /// The enabled macOS shortcuts as menu key equivalents, read once per
     /// reload (rows are marked with them, TASK-295).
     private var macOSShortcuts: [KeyEquivalent] = []
+    /// The commands whose shortcuts share a keystroke on the layout, read
+    /// once per reload (TASK-343): each mapped to the other.
+    private(set) var sameKeystrokeConflicts: [CommandID: CommandID] = [:]
+    /// The keyboard layout change observer (a distributed notification).
+    private var layoutObserver: NSObjectProtocol?
 
     private(set) var tableView: NSTableView!
     private(set) var searchField: NSSearchField!
@@ -128,6 +163,10 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
     private(set) var warningLabel: SettingsWrappingLabel!
     private var listBottomToBody: NSLayoutConstraint!
     private var listBottomToWarning: NSLayoutConstraint!
+    /// The warning line on the body's bottom while it shows, so the list
+    /// takes the rest (TASK-343: with the line only held above the bottom,
+    /// nothing gave the list a height and it collapsed while a refusal showed).
+    private var warningToBody: NSLayoutConstraint!
 
     private(set) var items: [ShortcutList.Item] = []
     /// The command whose recorder records, while one does.
@@ -159,6 +198,12 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
     ///     current layout's.
     ///   - systemShortcut: the App Shortcut macOS gives a command's item;
     ///     by default read from the live item.
+    ///   - shiftedEquivalents: the other key equivalents a shortcut's
+    ///     keystroke fires on the layout (TASK-343: a reset, and two saved
+    ///     shortcuts on one keystroke); by default the current layout's.
+    ///   - layoutChangeCenter: the center posting
+    ///     `KeyboardLayout.selectionDidChangeNotification`; by default the
+    ///     distributed one.
     init(store: ShortcutBindingStore = .shared,
          mainMenu: @escaping () -> NSMenu? = { NSApp.mainMenu },
          includesUpdater: Bool = AppDelegate.startsUpdater,
@@ -168,7 +213,9 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
          systemHotKeyShiftedCharacter: @escaping (UInt16) -> String = {
              KeyboardLayout.currentShiftedCharacter(forKeyCode: $0)
          },
-         systemShortcut: ((CommandID) -> KeyEquivalent?)? = nil) {
+         systemShortcut: ((CommandID) -> KeyEquivalent?)? = nil,
+         shiftedEquivalents: @escaping (KeyEquivalent) -> [KeyEquivalent] = { KeyEquivalent.currentShiftedEquivalents($0) },
+         layoutChangeCenter: NotificationCenter = DistributedNotificationCenter.default()) {
         self.store = store
         self.mainMenu = mainMenu
         self.includesUpdater = includesUpdater
@@ -179,6 +226,8 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
         self.systemShortcut = systemShortcut ?? { id in
             ShortcutRowState.systemShortcut(of: CommandDispatch.menuItem(for: id, in: mainMenu()))
         }
+        self.shiftedEquivalents = shiftedEquivalents
+        self.layoutChangeCenter = layoutChangeCenter
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -188,6 +237,7 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
     /// the main thread in practice, and the teardown hops there otherwise.
     isolated deinit {
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        if let layoutObserver { layoutChangeCenter.removeObserver(layoutObserver) }
     }
 
     override var paneDescription: String? {
@@ -273,6 +323,7 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
         listBottomToBody = listContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         listBottomToWarning = warningLabel.topAnchor.constraint(equalTo: listContainer.bottomAnchor,
                                                                 constant: LinkRouteCellView.lineGap)
+        warningToBody = warningLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         NSLayoutConstraint.activate([
             searchField.topAnchor.constraint(equalTo: container.topAnchor),
             searchField.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -308,6 +359,12 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
             observers.append(NotificationCenter.default.addMainObserver(forName: name, object: object) { [weak self] _ in
                 self?.scheduleReload()
             })
+        }
+        // Another keyboard layout can make two saved shortcuts one keystroke
+        // (TASK-343), or stop doing so: the rows are marked again.
+        layoutObserver = layoutChangeCenter.addMainObserver(
+            forName: KeyboardLayout.selectionDidChangeNotification, object: nil) { [weak self] _ in
+            self?.scheduleReload()
         }
         reload()
         return container
@@ -346,6 +403,7 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
         macOSShortcuts = systemHotKeys().flatMap {
             $0.menuKeyEquivalents(character: systemHotKeyCharacter, shiftedCharacter: systemHotKeyShiftedCharacter)
         }
+        sameKeystrokeConflicts = store.sameKeystrokeConflicts(shiftedEquivalents: shiftedEquivalents)
         tableView.reloadData()
         emptyLabel.stringValue = items.isEmpty ? "No commands match “\(query)”." : ""
         emptyLabel.isHidden = !items.isEmpty
@@ -367,7 +425,9 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
 
     func rowState(for command: BrowserCommand) -> ShortcutRowState {
         ShortcutRowState.make(for: command, store: store, systemShortcut: systemShortcut(command.id),
-                              quickDetourShortcut: quickDetourShortcut(), macOSShortcuts: macOSShortcuts)
+                              quickDetourShortcut: quickDetourShortcut(), macOSShortcuts: macOSShortcuts,
+                              sameKeystroke: sameKeystrokeConflicts[command.id].flatMap(BrowserCommands.command(withID:)),
+                              shiftedEquivalents: shiftedEquivalents)
     }
 
     /// Why `shortcut` cannot be `id`'s, or nil.
@@ -388,11 +448,11 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
         LinkRouteCellView.setWarning(refusal, icon: warningIcon, label: warningLabel)
         // Off first, so the two are never on together.
         if refusal == nil {
-            listBottomToWarning.isActive = false
+            NSLayoutConstraint.deactivate([listBottomToWarning, warningToBody])
             listBottomToBody.isActive = true
         } else {
             listBottomToBody.isActive = false
-            listBottomToWarning.isActive = true
+            NSLayoutConstraint.activate([listBottomToWarning, warningToBody])
         }
         if shown != refusal { contentHeightDidChange() }
     }
@@ -434,19 +494,37 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
 
     /// Back to the built-in shortcut, unless another command's binding now
     /// holds it: the reset would leave this one with none (an override wins
-    /// over a default), so it is refused with the holder named.
+    /// over a default), so it is refused with the holder named. Also refused
+    /// when the built-in shortcut and another command's binding are one
+    /// keystroke on this keyboard through a shifted character (TASK-343:
+    /// Zoom In's ⌘+ while another command holds ⇧⌘=), as recording it is.
     func reset(_ id: CommandID) {
         endRecording()
-        if let builtIn = BrowserCommands.command(withID: id)?.keyEquivalent,
-           let holder = store.command(holding: builtIn, except: id) {
-            NSSound.beep()
-            refusal = "\(builtIn.displayString ?? "") is now \(holder.title)'s shortcut. Change that one first."
-            updateWarning()
-            return
+        if let builtIn = BrowserCommands.command(withID: id)?.keyEquivalent {
+            if let holder = store.command(holding: builtIn, except: id) {
+                refuseReset("\(builtIn.displayString ?? "") is now \(holder.title)'s shortcut. Change that one first.")
+                return
+            }
+            if let shared = store.command(sharingKeystrokeWith: builtIn, except: id,
+                                          shiftedEquivalents: shiftedEquivalents) {
+                refuseReset(Self.sameKeystrokeRefusal(builtIn: builtIn, held: shared.key, holder: shared.command.title))
+                return
+            }
         }
         refusal = nil
         updateWarning()
         store.reset(id)
+    }
+
+    private func refuseReset(_ message: String) {
+        NSSound.beep()
+        refusal = message
+        updateWarning()
+    }
+
+    static func sameKeystrokeRefusal(builtIn: KeyEquivalent, held: KeyEquivalent, holder: String) -> String {
+        "\(builtIn.displayString ?? "") and \(held.displayString ?? "") are one keystroke on this keyboard, and "
+            + "\(held.displayString ?? "") is now \(holder)'s shortcut. Change that one first."
     }
 
     private func recordingChanged(_ recording: Bool, command id: CommandID) {
@@ -644,6 +722,12 @@ final class ShortcutRowView: NSTableCellView {
                 noteLabel.textColor = .systemOrange
                 noteLabel.isHidden = false
                 toolTip = Self.takenByMacOSToolTip(state.shortcut ?? "")
+            } else if let same = state.sameKeystroke {
+                // macOS's mark first: it takes the key before either command.
+                noteLabel.stringValue = Self.sameKeystrokeNote(same)
+                noteLabel.textColor = .systemOrange
+                noteLabel.isHidden = false
+                toolTip = Self.sameKeystrokeToolTip(same, shortcut: state.shortcut ?? "")
             }
         case .systemSettings:
             recorder.isEnabled = false
@@ -660,6 +744,15 @@ final class ShortcutRowView: NSTableCellView {
     }
 
     static let takenByMacOSNote = "Used by macOS"
+
+    static func sameKeystrokeNote(_ same: ShortcutRowState.SameKeystroke) -> String {
+        "Same key as \(same.otherTitle)"
+    }
+
+    static func sameKeystrokeToolTip(_ same: ShortcutRowState.SameKeystroke, shortcut: String) -> String {
+        "\(shortcut) and \(same.otherTitle)'s \(same.otherShortcut) are one keystroke on this keyboard, which runs "
+            + "\(same.runner). Record another shortcut for one of them."
+    }
 
     static func takenByMacOSToolTip(_ shortcut: String) -> String {
         "macOS takes \(shortcut) before Detour sees it (System Settings > Keyboard > Keyboard Shortcuts; ⌃1 to ⌃9 are Mission Control's Switch to Desktop when turned on). Turn it off there, or record another shortcut."
