@@ -134,7 +134,7 @@ not on a binding change).
 |---|---|
 | Every parameterless main-menu command, AppKit's application and window items included (Hide, Quit, Minimize, Zoom) | `bindable` |
 | New Quick Detour Window | `quickDetourPane`: listed read-only, with a link to that pane |
-| Undo, Redo, Cut, Copy, Paste, Select All | `fixed`: listed read-only, the reason as tooltip (PROVISIONAL[^task-327]) |
+| Undo, Redo, Cut, Copy, Paste, Select All | `fixed`: listed read-only, the reason as tooltip (Undo and Redo: the user's decision, 2026-11-15, TASK-345; the text commands still PROVISIONAL[^task-327]) |
 | Parameterised commands (a space, an extension) | `notListed` |
 | Check for Updates… | listed only in a run that starts Sparkle |
 

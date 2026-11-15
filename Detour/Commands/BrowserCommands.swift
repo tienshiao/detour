@@ -116,16 +116,18 @@ enum BrowserCommands {
 
     /// The browser's undo (`TabStore.undoManager`), or the focused page's
     /// own undo while an editable element in it has focus, never both
-    /// (TASK-345). A page gets Cmd+Z first; this runs when it leaves it.
+    /// (TASK-345). A page gets Cmd+Z first; this runs when it leaves it. A
+    /// Quick Detour window has only its page's undo (no browser undo there,
+    /// TASK-193.1).
     static let undo = BrowserCommand(
         "edit.undo", "Undo", key: KeyEquivalent("z"), action: #selector(BrowserWindowController.browserUndo(_:)),
-        responder: .windowController(CommandWindowKind.browserWindows),
+        responder: .windowController(CommandWindowKind.every),
         palette: .notOffered("acts on whatever had focus; Reopen Closed Tab is the palette's undo for tabs"),
         rule: { $0.isEditingPageText ? $0.canUndoPageEdit : $0.canUndoBrowserAction },
         contextualTitle: { $0.isEditingPageText ? $0.pageUndoTitle : $0.browserUndoTitle })
     static let redo = BrowserCommand(
         "edit.redo", "Redo", key: KeyEquivalent("Z"), action: #selector(BrowserWindowController.browserRedo(_:)),
-        responder: .windowController(CommandWindowKind.browserWindows),
+        responder: .windowController(CommandWindowKind.every),
         palette: .notOffered("acts on whatever had focus"),
         rule: { $0.isEditingPageText ? $0.canRedoPageEdit : $0.canRedoBrowserAction },
         contextualTitle: { $0.isEditingPageText ? $0.pageRedoTitle : $0.browserRedoTitle })

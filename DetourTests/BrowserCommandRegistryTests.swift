@@ -331,6 +331,18 @@ nonisolated final class BrowserCommandRegistryTests: XCTestCase {
         XCTAssertTrue(BrowserCommands.undo.isAvailable(in: typed))
         XCTAssertEqual(BrowserCommands.undo.title(in: typed), "Undo Typing")
         XCTAssertFalse(BrowserCommands.redo.isAvailable(in: typed))
+
+        // A Quick Detour or quarantine: only the page's (TASK-345), never a
+        // browser undo (it has none, TASK-193.1).
+        for kind in [CommandWindowKind.quickDetour, .quarantine] {
+            XCTAssertFalse(BrowserCommands.undo.isAvailable(in: context(kind)))
+            XCTAssertTrue(BrowserCommands.undo.isAvailable(in: context(kind) {
+                $0.isEditingPageText = true; $0.canUndoPageEdit = true
+            }), "\(kind)")
+            XCTAssertTrue(BrowserCommands.redo.isAvailable(in: context(kind) {
+                $0.isEditingPageText = true; $0.canRedoPageEdit = true
+            }), "\(kind)")
+        }
     }
 
     @MainActor func testOpenInSpaceIsThePeeksInABrowserWindowAndThePagesInAQuickDetour() {

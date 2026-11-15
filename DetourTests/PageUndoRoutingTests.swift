@@ -13,8 +13,14 @@ nonisolated final class PageUndoRoutingTests: XCTestCase {
 
     private var controller: BrowserWindowController?
     private var looseWindow: NSWindow?
+    private var quickControllers: [QuickDetourWindowController] = []
+    /// Kept for the run: WebKit traps when a profile that hosted pages is
+    /// released while its processes wind down (as QuickDetourWindowTests).
+    @MainActor private static var retainedProfiles: [Profile] = []
 
     @MainActor override func tearDown() async throws {
+        for quick in quickControllers { quick.close() }
+        quickControllers.removeAll()
         controller?.window?.close()
         controller = nil
         looseWindow?.close()
@@ -43,6 +49,13 @@ nonisolated final class PageUndoRoutingTests: XCTestCase {
         // has them (the test host is usually in the background).
         try XCTSkipIf(NSApp.keyWindow.map { $0 !== wc.window } ?? false, "another window has the keys")
 
+        seedBrowserUndo(counter)
+        return (wc, webView)
+    }
+
+    /// One action on the browser's undo stack (`TabStore.undoManager`) that
+    /// counts its undo.
+    @MainActor private func seedBrowserUndo(_ counter: Counter) {
         let undoManager = TabStore.shared.undoManager
         undoManager.removeAllActions()
         undoManager.groupsByEvent = false
@@ -51,7 +64,6 @@ nonisolated final class PageUndoRoutingTests: XCTestCase {
         undoManager.setActionName("Close Tab")
         undoManager.endUndoGrouping()
         XCTAssertTrue(undoManager.canUndo)
-        return (wc, webView)
     }
 
     /// One action on `webView`'s own undo stack, standing for a page edit.
@@ -169,6 +181,78 @@ nonisolated final class PageUndoRoutingTests: XCTestCase {
         }
         XCTAssertEqual(browser.undone, 0)
         XCTAssertTrue(TabStore.shared.undoManager.canUndo)
+    }
+
+    // MARK: - A Quick Detour window
+
+    /// A Quick Detour (or quarantine) window has only its page's undo:
+    /// Edit > Undo and Redo run the page's edits while a field in it has
+    /// focus, and never reach `TabStore`'s list (TASK-193.1), which here has
+    /// a close to undo.
+    @MainActor private func checkQuickDetourUndo(quarantine: Bool) async throws {
+        let browser = Counter()
+        seedBrowserUndo(browser)
+
+        let profile = Profile(name: "Page Undo \(UUID().uuidString.prefix(4))", isIncognito: true)
+        Self.retainedProfiles.append(profile)
+        let base = try XCTUnwrap(URL(string: "http://127.0.0.1:1/"))
+        let quick = QuickDetourWindowController(profile: profile, sourceSpace: nil,
+                                                quarantine: quarantine ? QuarantineSession(originalURL: base) : nil)
+        quickControllers.append(quick)
+        quick.showWindow(nil)
+        XCTAssertEqual(quick.commandWindowKind, quarantine ? .quarantine : .quickDetour)
+        try XCTSkipIf(NSApp.keyWindow.map { $0 !== quick.window } ?? false, "another window has the keys")
+        let webView = try XCTUnwrap(quick.tab?.webView as? BrowserWebView)
+        try await loadHTMLStringAndWait(webView, html: "<input id=i><p>text</p>", baseURL: base)
+        quick.window?.makeFirstResponder(webView)
+
+        func validated(_ command: BrowserCommand) -> (NSMenuItem, Bool) {
+            let item = NSMenuItem(title: command.title, action: command.action, keyEquivalent: "")
+            return (item, quick.validateMenuItem(item))
+        }
+        var (item, enabled) = validated(BrowserCommands.undo)
+        XCTAssertFalse(enabled, "no field focused: no browser undo in a Quick Detour")
+        XCTAssertEqual(item.title, "Undo")
+
+        _ = try await webView.evaluateJavaScript("document.getElementById('i').focus(); 0")
+        try await waitUntil("the page to report its field") { webView.isEditingWebContent }
+        XCTAssertTrue(quick.isEditingPageText)
+        (item, enabled) = validated(BrowserCommands.undo)
+        XCTAssertFalse(enabled, "nothing on the page's stack")
+
+        let page = Counter()
+        try registerPageEdit(on: webView, page)
+        (item, enabled) = validated(BrowserCommands.undo)
+        XCTAssertTrue(enabled)
+        XCTAssertEqual(item.title, "Undo Typing")
+        quick.browserUndo(item)
+        XCTAssertEqual(page.undone, 1)
+        (item, enabled) = validated(BrowserCommands.redo)
+        XCTAssertTrue(enabled)
+        XCTAssertEqual(item.title, "Redo Typing")
+        quick.browserRedo(item)
+        XCTAssertEqual(page.redone, 1)
+
+        // The keys out of the page: nothing to undo here at all. The window's
+        // chain stops at its controller, so Edit > Undo cannot fall through
+        // to a browser window's (`TabStore`'s list) as the main window's.
+        let window = try XCTUnwrap(quick.window)
+        window.makeFirstResponder(nil)
+        XCTAssertFalse(validated(BrowserCommands.undo).1)
+        for command in [BrowserCommands.undo, BrowserCommands.redo] {
+            XCTAssertTrue(CommandDispatch.responderTarget(for: command.action, in: window) === quick, "\(command.id)")
+        }
+        quick.browserUndo(nil)
+        XCTAssertEqual(browser.undone, 0, "TabStore's list is never reached from a Quick Detour")
+        XCTAssertTrue(TabStore.shared.undoManager.canUndo)
+    }
+
+    @MainActor func testAQuickDetourFieldIsItsPagesUndoAndNothingElse() async throws {
+        try await checkQuickDetourUndo(quarantine: false)
+    }
+
+    @MainActor func testAQuarantineFieldIsItsPagesUndoAndNothingElse() async throws {
+        try await checkQuickDetourUndo(quarantine: true)
     }
 
     // MARK: - The focus script

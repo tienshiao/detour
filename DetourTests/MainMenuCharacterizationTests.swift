@@ -450,18 +450,23 @@ nonisolated final class MainMenuCharacterizationTests: XCTestCase {
             retitled: Self.browserTitles))
     }
 
+    /// Undo and Redo answer in a Quick Detour too since TASK-345 (the page's
+    /// own undo), so validation titles them; off with no field focused.
+    private static let quickDetourTitles = ["File › openInDefaultSpace:": "Open in 📌 Menu Pin",
+                                            "Edit › browserUndo:": "Undo", "Edit › browserRedo:": "Redo"]
+
     @MainActor func testEnablementInAQuickDetour() throws {
         let controller = quickDetour()
         spin(0.2)
         XCTAssertEqual(Self.enablement(in: try XCTUnwrap(controller.window)), expected(
-            off: Self.quickDetourOff, retitled: ["File › openInDefaultSpace:": "Open in 📌 Menu Pin"]))
+            off: Self.quickDetourOff, retitled: Self.quickDetourTitles))
     }
 
     @MainActor func testEnablementInAQuarantine() throws {
         let controller = quarantine()
         spin(0.2)
         XCTAssertEqual(Self.enablement(in: try XCTUnwrap(controller.window)), expected(
-            off: Self.quickDetourOff, retitled: ["File › openInDefaultSpace:": "Open in 📌 Menu Pin"]))
+            off: Self.quickDetourOff, retitled: Self.quickDetourTitles))
     }
 
     // MARK: - The registry's rule is the menu's (TASK-320 AC #4)

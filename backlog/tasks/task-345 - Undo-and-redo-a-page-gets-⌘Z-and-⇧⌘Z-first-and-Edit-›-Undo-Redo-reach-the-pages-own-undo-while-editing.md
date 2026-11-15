@@ -3,11 +3,11 @@ id: TASK-345
 title: >-
   Undo and redo: a page gets ⌘Z and ⇧⌘Z first, and Edit › Undo/Redo reach the
   page's own undo while editing
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-15T07:37:00Z'
-updated_date: '2026-11-15T21:14:00Z'
+updated_date: '2026-11-15T21:25:00Z'
 labels:
   - keyboard
   - undo
@@ -30,7 +30,7 @@ Decided 2026-11-14 by the user after TASK-333. Today BrowserWebView takes ⌘Z a
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 With no editable element focused, ⌘Z / ⇧⌘Z reach the page first; Detour's undo or redo runs only when the page does not handle the key (no preventDefault), and runs once
-- [ ] #2 With an editable element focused (input, textarea, contenteditable), Edit > Undo / Redo and ⌘Z / ⇧⌘Z undo and redo the page's edit, never Detour's list, and the menu titles say so (or stay generic)
+- [x] #2 With an editable element focused (input, textarea, contenteditable), Edit > Undo / Redo and ⌘Z / ⇧⌘Z undo and redo the page's edit, never Detour's list, and the menu titles say so (or stay generic)
 - [x] #3 With focus outside the page (sidebar, palette), Detour's undo and redo work as today
 - [x] #4 TASK-327's shortcut reservations match the new routing
 - [x] #5 Tests cover the routing decision; checked at runtime with a canvas-style fixture that handles ⌘Z itself, a plain input and contenteditable
@@ -71,14 +71,20 @@ Correction and follow-up (2026-11-15, after an advisor pass and a second review)
 Final test run on the amended commit: the 16 suites above, 220 tests, 0 failures (PageUndoRoutingTests 9 incl. the shadow-root case).
 
 2026-11-15 user decisions: (1) Quick Detour pages get their own text undo: Edit > Undo/Redo and ⌘Z/⇧⌘Z work in a Quick Detour window (and quarantine) for that page's edits; it makes no sense for them not to. (2) Undo/Redo stay unbindable in Settings > Shortcuts (fixed ⌘Z/⇧⌘Z, as in Safari, Chrome, Firefox and Arc; typing undo in pages relies on them).
+
+Follow-up (user decisions 2026-11-15): (1) Quick Detour pages get their own text undo; (2) Undo/Redo stay unbindable (comment and wiki now record it as the user's decision).
+Implementation: Undo/Redo answer in every window kind (responder .windowController(.every)). QuickDetourWindowController implements browserUndo:/browserRedo: and the page-undo facts (isEditingPageText, canUndo/RedoPageEdit, page titles) through BrowserWebView.editingPage(in:), the rule browser windows use (now shared: BrowserWebView field, flag set, window key or none); it has no browser undo, so outside a field Undo/Redo are disabled and TabStore's list is never reached (it answers the action itself, so the menu no longer falls through to a browser window). The Quick Detour page is a BrowserTab's BrowserWebView (own undo manager) whose user content controller already had the editableFieldFocus script and handler; nothing to add there.
+Tests: PageUndoRoutingTests +2 (a real Quick Detour window and a real quarantine: disabled with no field, disabled with an empty page stack, 'Undo Typing'/'Redo Typing' run the page's, the action resolves to the Quick Detour controller through its own chain, TabStore's close untouched); BrowserCommandRegistryTests (quickDetour/quarantine rule); MainMenuCharacterizationTests (Undo/Redo now retitled, still off, in a Quick Detour and a quarantine). Run: 18 suites (the 16 earlier plus QuickDetourExtensionTests, QuarantineTests) 265 tests, 0 failures, before the review's test/helper edits; after them PageUndoRoutingTests 11, MainMenuCharacterizationTests 10, BrowserCommandRegistryTests 23, QuickDetourWindowTests 16: 60, 0 failures.
+Runtime (Debug 13:23, DetourVerify-345f seeded with docs/harness/task345/world.json: a Link Route to quarantine; AutomationAllowPrivate on in that run's own defaults suite; drive.py quickundo): Quick Detour (Open Link in Quick Detour) and quarantine (a target=_blank link the route sends there; a same-host plain click is not routed): typed 'qd' in the focused input; real Cmd+Z -> '', Shift+Cmd+Z -> 'qd'; Edit > Undo/Redo (run_menu_item) titled 'Undo Typing'/'Redo Typing' undid and redid it; the browser window's closed tabs stayed closed. Detour was activated twice on purpose (once per window, both keys posted in that one activation); the quarantine window also brought Detour forward itself when it opened.
+Review (medium --fix): no correctness bug; applied: a test that the action resolves to the Quick Detour controller (no fall-through), one editingPageUndoManager property, a shared seedBrowserUndo test helper. Not fixed (pre-existing, outside this change): the Quick Detour launcher panel does not answer browserUndo:, so Cmd+Z in its field reaches the main browser window and can reopen a closed tab.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-A page now gets Cmd+Z and Shift+Cmd+Z first. BrowserWebView no longer takes them before the page: WebKit sends a Cmd key to the focused page and re-sends one the page leaves through NSApp.sendEvent, so Edit > Undo/Redo get it once (no delegate callback exists; read in WebKit's source and measured). In a browser window, Edit > Undo/Redo run the focused page's own undo while an editable element in it has focus (the web view is first responder, the window has the keys), titled from the page ('Undo Typing') and disabled when the page has nothing, never Detour's list; otherwise TabStore's undo, focus in the palette or find bar included. Each BrowserWebView has its own undo manager (WebKit's edits were on the window's). The focus script also reports on load, window focus and Cmd+Z itself (its message arrives before WebKit's 'not handled': measured), follows shadow roots, and a Peek's page now reports too. TASK-327: Cmd+Z/Shift+Cmd+Z are no longer reserved outside menus; Edit > Undo/Redo hold them and stay fixed.
+A page gets Cmd+Z and Shift+Cmd+Z first. BrowserWebView no longer takes them: WebKit sends a Cmd key to the focused page and re-sends one the page leaves through NSApp.sendEvent, so Edit > Undo/Redo get it once (no delegate callback exists; read in WebKit's source and measured). Edit > Undo/Redo run the focused page's own undo while an editable element in it has focus (web view first responder, window key), titled from the page ('Undo Typing') and disabled when it has nothing, never Detour's list; otherwise TabStore's undo in a browser window (palette and find bar included) and nothing in a Quick Detour or quarantine window, which now have their page's text undo (the user's decision). Each BrowserWebView has its own undo manager; the focus script also reports on load, window focus and Cmd+Z itself, follows shadow roots, and a Peek's page reports too. TASK-327: Cmd+Z/Shift+Cmd+Z are no longer reserved outside menus; Undo/Redo stay fixed (the user's decision).
 
-Tests: PageUndoRoutingTests (9, new, replacing BrowserUndoKeyTests) and the registry, shortcut, menu, Peek, Quick Detour and window suites: 220 tests, 0 failures. Runtime on the final build with real key events, a fixture (preventDefault canvas, input, contenteditable) and closed tabs on the list: every focus case for Cmd+Z, Shift+Cmd+Z and the Edit menu items behaved as specified, Detour's undo running exactly once when the page left the key.
+Tests: PageUndoRoutingTests (11) and the registry, shortcut, menu, Peek, Quick Detour, quarantine and window suites: 265 tests, 0 failures. Runtime with real key events: every focus case in browser windows, a Quick Detour and a quarantine behaved as specified, Detour's undo running exactly once when the page left the key.
 
-Open (AC #2 unchecked, task In Progress): in a Quick Detour window Cmd+Z in a field reaches the page and nothing more (measured; Edit > Undo/Redo answer only in browser windows); whether Quick Detour pages should get their own text undo is the user's decision. Also: WebKit empties a page's undo when its view leaves the window, so after a tab switch the page has nothing to undo (Edit > Undo disabled, Detour's list untouched).
+Known, unchanged: WebKit empties a page's undo when its view leaves the window (a tab switch); the Quick Detour launcher panel's Cmd+Z still reaches the main browser window's undo; the docked Web Inspector leaves Cmd+Z to the browser's undo.
 <!-- SECTION:FINAL_SUMMARY:END -->

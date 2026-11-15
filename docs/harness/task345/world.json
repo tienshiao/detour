@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "profiles": [{"name": "Main"}],
+  "spaces": [{"name": "Main", "emoji": "🧪", "color": "007AFF", "profile": "Main"}],
+  "link_routes": [{"match": "contains", "pattern": "qrt=1", "target": "quarantine"}],
+  "active_space": "Main"
+}

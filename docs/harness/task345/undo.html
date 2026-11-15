@@ -6,6 +6,7 @@
 <input id="inp" type="text" value="">
 <div id="ce" contenteditable="true"></div>
 <p><a id="qdlink" href="/undo.html?autofocus=1">This page, for a Quick Detour</a></p>
+<p><a id="qrtlink" target="_blank" href="/undo.html?autofocus=1&amp;qrt=1">This page, routed to a quarantine (world.json's route)</a></p>
 <pre id="out"></pre>
 <script>
 // ?swallow: the page stops every focusout at window capture, so Detour's
@@ -24,6 +25,7 @@ document.getElementById('canvas').addEventListener('keydown', e => {
 // endpoint cannot run script in (a Quick Detour window).
 const beacon = () => { new Image().src = '/log?inp=' + encodeURIComponent(document.getElementById('inp') ? document.getElementById('inp').value : '(gone)') + '&t=' + Date.now(); };
 document.getElementById('inp').addEventListener('input', beacon);
+document.addEventListener('keydown', e => { if (e.metaKey) setTimeout(beacon, 300); });
 document.addEventListener('keyup', beacon);
 if (location.search.includes('autofocus')) document.getElementById('inp').focus();
 </script></body></html>

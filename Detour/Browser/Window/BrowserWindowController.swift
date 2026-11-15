@@ -3591,21 +3591,8 @@ extension BrowserWindowController: NSMenuItemValidation {
         focusedPageIsEditing == true && isKeyWindow ? .page : .browser
     }
 
-    /// The page web view that has the window's keys, if any.
-    private var focusedPageWebView: BrowserWebView? {
-        window?.firstResponder as? BrowserWebView
-    }
-
-    /// The page whose own undo Edit > Undo runs now, if any. Its editing flag
-    /// alone is not enough: it stays set when the keys move out of the page
-    /// with a field focused (no focusout), so the web view must also have the keys.
-    private var editingPageWebView: BrowserWebView? {
-        guard let webView = focusedPageWebView else { return nil }
-        let isKeyWindow = NSApp.keyWindow.map { $0 === window } ?? true
-        guard Self.undoTarget(focusedPageIsEditing: webView.isEditingWebContent,
-                              isKeyWindow: isKeyWindow) == .page else { return nil }
-        return webView
-    }
+    /// The page whose own undo Edit > Undo runs now, if any.
+    private var editingPageWebView: BrowserWebView? { BrowserWebView.editingPage(in: window) }
 
     private var editUndoManager: UndoManager? {
         if let page = editingPageWebView { return page.undoManager }

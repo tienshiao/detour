@@ -204,6 +204,64 @@ if mode == "quick":
     print("QD after the menu:", repr(last_value()), "browser tabs", ntabs(), flush=True)
     print("SUMMARY", sum(1 for r in results if r[1]), "passed,", sum(1 for r in results if not r[1]), "failed")
 
+if mode == "quickundo":
+    # TASK-345 follow-up: a Quick Detour and a quarantine window each get
+    # their page's own undo, and never TabStore's list. Run in a data
+    # directory seeded with world.json (its quarantine route) and with
+    # AutomationAllowPrivate on in its defaults suite (a quarantine is a
+    # Private window to the endpoint). Detour is activated once per window.
+    import re
+    log_path = os.environ["HTTP_LOG"]
+    def values():
+        return re.findall(r"GET /log\?inp=([^&]*)&", open(log_path).read())
+    activations = 0
+    if not fixture_ctx():
+        call("open_url", window_id=1, url=BASE + "/undo.html"); time.sleep(1.5)
+    for n in ("a", "b"):
+        call("open_url", window_id=1, url=f"{BASE}/{n}.html"); time.sleep(1.0)
+        call("run_menu_item", window_id=1, path=["File", "Close Tab"]); time.sleep(0.5)
+    ctx = fixture_ctx()
+    n0 = ntabs()
+    only = os.environ.get("QUICKUNDO_ONLY")
+    for kind, link in (("quick_detour", None), ("quarantine", "#qrtlink")):
+        if only and kind != only: continue
+        before = {w["window_id"] for w in call("list_windows")["windows"]}
+        call("select_tab", window_id=1, id=ctx.split(":")[1]); time.sleep(0.4)
+        if link is None:
+            call("click", context=ctx, selector="#qdlink", button="right"); time.sleep(0.5)
+            call("choose_menu_item", title="Open Link in Quick Detour")
+        else:
+            call("click", context=ctx, selector=link)
+        time.sleep(2.5)
+        new = [w for w in call("list_windows")["windows"] if w["window_id"] not in before]
+        check(f"{kind}: a window opened", len(new) == 1 and new[0]["kind"] == kind, new)
+        if not new: continue
+        wid = new[0]["window_id"]
+        call("type_text", window_id=wid, text="qd"); time.sleep(0.8)
+        typed = values()[-1] if values() else None
+        sb = [w for w in call("list_windows")["windows"] if w["window_id"] == wid][0]["screen_bounds"]
+        r = call("set_window_frame", window_id=wid, x=sb["x"], y=sb["y"], width=sb["width"], height=sb["height"], activate=True)
+        activations += 1
+        time.sleep(0.3)
+        subprocess.run([AXDRIVE, "key", str(PID), "6", "cmd"], check=True, stdout=subprocess.DEVNULL); time.sleep(0.8)
+        after_undo = values()[-1]
+        subprocess.run([AXDRIVE, "key", str(PID), "6", "cmd,shift"], check=True, stdout=subprocess.DEVNULL); time.sleep(0.8)
+        after_redo = values()[-1]
+        w = [x for x in call("list_windows")["windows"] if x["window_id"] == wid][0]
+        print(f"{kind}: typed={typed!r} after Cmd+Z={after_undo!r} after Shift+Cmd+Z={after_redo!r} key={w['is_key']} active={call('list_windows')['app_active']}", flush=True)
+        check(f"{kind}: ⌘Z undid the page's typing", typed == "qd" and after_undo == "", (typed, after_undo))
+        check(f"{kind}: ⇧⌘Z redid it", after_redo == "qd", after_redo)
+        m1 = call("run_menu_item", window_id=wid, key="cmd+z"); time.sleep(0.6)
+        v1 = values()[-1]
+        m2 = call("run_menu_item", window_id=wid, key="cmd+shift+z"); time.sleep(0.6)
+        v2 = values()[-1]
+        check(f"{kind}: Edit > Undo / Redo (menu) are the page's", v1 == "" and v2 == "qd", (m1.get("title"), v1, m2.get("title"), v2))
+        print(f"{kind}: menu titles {m1.get('title')!r} / {m2.get('title')!r}", flush=True)
+        check(f"{kind}: TabStore's list untouched", ntabs() == n0, (n0, ntabs()))
+        call("run_menu_item", window_id=wid, key="cmd+w"); time.sleep(0.8)
+    print("activations:", activations)
+    print("SUMMARY", sum(1 for r in results if r[1]), "passed,", sum(1 for r in results if not r[1]), "failed")
+
 if mode == "find":
     ctx = fixture_ctx()
     # a fresh close on Detour's list (real Cmd+W)

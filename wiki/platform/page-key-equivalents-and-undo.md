@@ -103,7 +103,9 @@ every menu shortcut, not only undo.
   contenteditable reached the page and changed nothing, and Edit > Undo was
   "Undo", disabled (Detour's list untouched, as AC #2 of TASK-345 wants).
 - Edit > Undo in Detour is `browserUndo:`, not AppKit's `undo:`. Its target
-  is decided by `BrowserWindowController.undoTarget`: the focused page's own
+  is decided by `BrowserWindowController.undoTarget` (through
+  `BrowserWebView.editingPage(in:)`, which Quick Detour windows use too, with
+  no browser undo behind it): the focused page's own
   undo when the window's first responder is a `BrowserWebView` whose
   `isEditingWebContent` is set (the `editableFieldFocus` script message),
   else `TabStore.undoManager`; never the page while another window (Settings,
@@ -148,10 +150,12 @@ left the page's text alone; with the focused `<input>` removed by the page,
 ⌘Z reached the page and then reopened exactly one tab. Clicking the sidebar's tab list does not take the
 keys from the page (the list never takes focus, TASK-174), so ⌘Z then is the
 page's. In a Quick Detour window (opened with Open Link in Quick Detour, its
-input focused, typed into), ⌘Z reached the page and nothing else happened:
-the typing stayed and the browser window's closed tab stayed closed; Edit >
-Undo is disabled there ("Nothing in the window handles Undo"): Undo and Redo
-answer only in browser windows (`CommandWindowKind.browserWindows`).
+input focused, typed into) ⌘Z reached the page and nothing else happened
+before the follow-up (Edit > Undo answered only in browser windows); since
+it, a Quick Detour and a quarantine window (opened by a Link Route from a
+`target=_blank` link; a plain same-host click is not routed) run their
+page's own undo the same way, titled "Undo Typing"/"Redo Typing", with the
+browser's closed tabs left closed.
 
 Two traps met on the way: posting keys while the person at the Mac had
 another app in front left Detour inactive, and the re-sent key then did

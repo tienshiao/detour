@@ -1239,6 +1239,23 @@ extension QuickDetourWindowController: WKScriptMessageHandler {
 // MARK: - NSMenuItemValidation
 
 extension QuickDetourWindowController: NSMenuItemValidation {
+    /// Edit > Undo and Redo, and Cmd+Z / Shift+Cmd+Z once the page has left
+    /// them (TASK-345): the page's own undo while an editable element in it
+    /// has focus, and nothing else. A Quick Detour has no browser undo
+    /// (TASK-193.1); `TabStore`'s list is never reached from here.
+    @objc func browserUndo(_ sender: Any?) {
+        guard let undoManager = editingPageUndoManager, undoManager.canUndo else { return }
+        undoManager.undo()
+    }
+
+    @objc func browserRedo(_ sender: Any?) {
+        guard let undoManager = editingPageUndoManager, undoManager.canRedo else { return }
+        undoManager.redo()
+    }
+
+    /// The undo of this window's page while a field in it has the keys.
+    private var editingPageUndoManager: UndoManager? { BrowserWebView.editingPage(in: window)?.undoManager }
+
     /// The registry's rule for the item's command, in this window, after
     /// retitling it (TASK-320). Items that are no command (the title bar's
     /// own menus) are enabled.
@@ -1251,9 +1268,15 @@ extension QuickDetourWindowController: NSMenuItemValidation {
 
 /// The facts the registry's rules read, about this window (TASK-320). A Quick
 /// Detour has one page, no spaces and no browser undo; those facts keep the
-/// protocol's false.
+/// protocol's false. Its page's own undo is the page's (TASK-345).
 extension QuickDetourWindowController: CommandContext {
     var commandWindowKind: CommandWindowKind { isQuarantine ? .quarantine : .quickDetour }
+
+    var isEditingPageText: Bool { BrowserWebView.editingPage(in: window) != nil }
+    var canUndoPageEdit: Bool { editingPageUndoManager?.canUndo ?? false }
+    var canRedoPageEdit: Bool { editingPageUndoManager?.canRedo ?? false }
+    var pageUndoTitle: String { editingPageUndoManager?.undoMenuItemTitle ?? "Undo" }
+    var pageRedoTitle: String { editingPageUndoManager?.redoMenuItemTitle ?? "Redo" }
     var hasSelectedTab: Bool { tab != nil }
     var selectedTabHasURL: Bool { tab?.url != nil }
     var pageCanGoBack: Bool { tab?.canGoBack ?? false }

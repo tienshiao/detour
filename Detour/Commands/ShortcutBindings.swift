@@ -34,9 +34,10 @@ extension BrowserCommand {
 }
 
 extension BrowserCommands {
-    /// The commands whose shortcut stays as it is, and why. PROVISIONAL
-    /// (chosen by Claude while the user was away): Edit's text commands and
-    /// Undo/Redo. The alternative is to let them be changed too.
+    /// The commands whose shortcut stays as it is, and why. Undo/Redo: the
+    /// user's decision (2026-11-15, TASK-345). Edit's text commands:
+    /// PROVISIONAL (chosen by Claude while the user was away); the
+    /// alternative is to let them be changed too.
     static let fixedShortcuts: [CommandID: String] = {
         let editsText = "It edits the text of the field in focus, on the same keys as in every Mac app."
         let undoesInPages = "Undo and Redo stay on ⌘Z and ⇧⌘Z: a page gets these keys first, and those it leaves come to Undo and Redo, which undo the page's typing or the browser's actions."

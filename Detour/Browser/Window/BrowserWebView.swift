@@ -101,6 +101,19 @@ class BrowserWebView: WKWebView {
 
     override var undoManager: UndoManager? { pageUndoManager }
 
+    /// The page in `window` whose own undo Edit > Undo and Redo run now, if
+    /// any (`BrowserWindowController.undoTarget`), in a browser window or a
+    /// Quick Detour one. Its editing flag alone is not enough: it stays set
+    /// when the keys move out of the page with a field focused (no
+    /// focusout), so the web view must also have the window's keys.
+    static func editingPage(in window: NSWindow?) -> BrowserWebView? {
+        guard let window, let webView = window.firstResponder as? BrowserWebView else { return nil }
+        let isKeyWindow = NSApp.keyWindow.map { $0 === window } ?? true
+        guard BrowserWindowController.undoTarget(focusedPageIsEditing: webView.isEditingWebContent,
+                                                 isKeyWindow: isKeyWindow) == .page else { return nil }
+        return webView
+    }
+
     // Cmd+Z and Shift+Cmd+Z are not taken here (TASK-345): with this view
     // first responder, WebKit's `performKeyEquivalent` sends the key to the
     // page; one the page does not handle comes back through

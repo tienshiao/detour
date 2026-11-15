@@ -139,10 +139,17 @@ host text alone before). Several windows can be open at once. Cmd+W,
 Cmd+F (Escape closes the find bar), zoom, Back/Forward (Cmd+[ / Cmd+], the
 mouse back button), Reload, Copy URL and the Web Inspector work as in a
 browser window. Cmd+Z in a page is the page's: the browser undo stack is the
-browser windows', and Edit > Undo and Redo answer only in a browser window
-(`CommandWindowKind.browserWindows`), so a key the page leaves does nothing
-more here: measured in TASK-345 (typing in a Quick Detour page's input
-stayed after ⌘Z, Edit > Undo disabled), which did not change it.
+browser windows' and is never reached from here (TASK-193.1). Since TASK-345
+(the user's decision) Edit > Undo and Redo, and the ⌘Z / ⇧⌘Z the page
+leaves, run the page's own undo while an editable element in it has focus
+(its web view first responder, the window key), titled from the page
+("Undo Typing") and disabled when it has nothing; with no field focused they
+are disabled. The same holds in a quarantine. `QuickDetourWindowController`
+answers `browserUndo:`/`browserRedo:` itself, through
+`BrowserWebView.editingPage(in:)`, so the menu never falls through to a
+browser window. Measured with real keys: typing in a Quick Detour's and a
+quarantine's input, ⌘Z / ⇧⌘Z and Edit > Undo / Redo undid and redid it,
+and the browser window's closed tabs stayed closed.
 
 The window is a normal-level window, 900 × 640 points by default (minimum
 480 × 320), centred, each later one cascading 22 points down and right of the
