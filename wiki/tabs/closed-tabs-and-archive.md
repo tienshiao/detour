@@ -4,8 +4,14 @@ title: Closed tabs and the Archived Tabs page
 description: What a closed-tab record holds, how Reopen Closed Tab, the close undos and the Archived Tabs page each consume it, how archived records differ from plain closes, and closed Quick Detours filed under their profile's scope (TASK-193.5).
 tags: [tabs, closed-tabs, archive, undo, sidebar]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T19:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T00:45:00Z }
 sources:
+  - id: task-332
+    resource: backlog:TASK-332
+    title: "Tabs: Reopen Closed Tab restores a child tab's link to its opener"
+  - id: opener-tests
+    resource: ../../DetourTests/ClosedTabOpenerTests.swift
+    title: ClosedTabOpenerTests.swift
   - id: task-307
     resource: backlog:TASK-307
     title: "Peek: Cmd+O opens the Peek as a tab, a setting turns Peek off, and Shift+Cmd+T / Cmd+Z reopen a closed Peek"
@@ -14,7 +20,7 @@ sources:
     title: TabStore.swift (closeTab, reopenClosedTab, archiveEntries, restoreClosedTab)
   - id: database
     resource: ../../Detour/Storage/Database.swift
-    title: Database.swift (closed tab stack, migrations v15 and v16)
+    title: Database.swift (closed tab stack, migrations v15, v16, v23 and v26)
   - id: record
     resource: ../../Detour/Storage/Models/ClosedTabRecord.swift
     title: ClosedTabRecord.swift
@@ -80,8 +86,8 @@ no such page.
 
 `ClosedTabRecord` holds `tabID` (the closed tab's UUID), `spaceID`, `url`,
 `title`, `faviconURL`, `interactionState` (the back/forward list, a blob),
-`sortOrder` (the index the tab was closed at), `archivedAt`, `closedAt` and
-`extensionID`.
+`sortOrder` (the index the tab was closed at), `archivedAt`, `closedAt`,
+`extensionID`, `peekHostTabID` (a closed Peek's host, below) and `parentID`.
 
 - `id` is `AUTOINCREMENT`. Newest-first order is `id DESC`, never a timestamp.
 - **`archivedAt` is the archive marker.** Set by the
@@ -92,6 +98,11 @@ no such page.
   For an archive the two stamps are equal. Both members of a split closed
   together share one `closedAt`. Rows older than v16 without `archivedAt` have
   nil and are listed last, by id.
+- **`parentID`** (v26) is the tab the closed tab was opened from
+  (`BrowserTab.parentID`), written by `closeTab` and `closeSplitGroup` (so
+  by Cmd+W, the Back button's and the back swipe's close to the opener, and
+  both kinds of archive). Nil for a root tab, a Peek, a Quick Detour and
+  every row before v26, which reopen unlinked as before.[^task-332]
 - `ClosedTabSummary` is the same row **without the blob**. Menu validation, the
   reopen scan and listings read summaries; the full row is fetched only for the
   one record being reopened.
@@ -153,6 +164,15 @@ rebuilds the tab with `restoredTab`, and inserts it at `min(sortOrder, count)`
 snapped out of any split group. The tab comes back **unsplit** and with a
 **new UUID**.
 
+It comes back **linked to its opener** when the record's `parentID` names a
+tab that is still an opener the Back button resolves in the space it reopens
+into (`Space.openerTab(id:)`, the rule `parentTab(for:)` uses: a normal tab of
+the space or a live pinned tab). Otherwise `parentID` stays nil: an opener
+closed (a reopened opener is a new tab with a new id, so "reopen the opener,
+then the child" does not relink them), archived, moved to another space, or
+asleep in a pinned slot. The link is set before the insert is announced, so
+the window's back-swipe mode sees it at once.[^task-332]
+
 `AppDatabase.popClosedTab(spaceID:)` still exists and ignores `archivedAt`, but
 nothing in the app calls it; only `AppDatabaseTests` does.
 
@@ -168,6 +188,10 @@ rebuilding it checks `AppDatabase.hasClosedTab(tabID:)`:
 - incognito closes push no record and always undo;
 - in "Close Both Splits", a member whose record is gone stays closed and the
   other comes back alone, as a plain tab.
+
+The undo restores `parentID` from what it captured, without the reopen
+check: `parentTab(for:)` resolves it when used, so a link to a tab that is
+gone does nothing. Incognito closes rely on this alone (no record).[^task-332]
 
 A manual archive is undone under the name "Archive Tab", and its redo re-closes
 with the same `archivedAt`, so a redone archive stays an archive.[^task-115]
@@ -232,7 +256,8 @@ styling; the bar itself rides off with the first space's page.[^notes]
 `QuickDetourArchiveTests` and `QuickDetourArchiveWindowTests` (closed Quick
 Detours: TASK-193.5), `ArchivedTabRestoreTests` (listing, restore position and space, extension
 rules, delete, clear, the notification, the undo-after-consume cases),
-`ArchiveListLayoutTests` (buckets, sort, search, filter), `TabStoreTests`
+`ArchiveListLayoutTests` (buckets, sort, search, filter), `ClosedTabOpenerTests`
+(the opener link: written, kept, dropped per case, v26), `TabStoreTests`
 ("Archive vs close records", reopen ordering), `AppDatabaseTests` (index, v16
 backfill, `testClosedTabRecordsAreNeverEvictedByCount`), `SidebarPageStripTests`.
 
@@ -247,6 +272,13 @@ headers, a search narrowing to one row, a click restoring into the other space
 and switching the window there, and swipes in both directions. Not exercised at
 runtime: the Clear Archive sheet, the Filter menu, a disabled-extension
 row.[^task-119]
+
+Runtime check for the opener link (TASK-332, `docs/harness/task332-reopen-opener-checks.py`
+through the automation endpoint): a `target=_blank` child closed with Cmd+W
+writes its opener's id; reopened, it closes to the opener by Cmd+[ with the
+page focused, by a back swipe's completion (scripted tracker) and by the
+sidebar's Back button; with the opener closed too, the reopened child has no
+opener, keeps WebKit's gesture and Cmd+[ leaves it open.[^task-332]
 
 # Related
 
@@ -263,3 +295,4 @@ row.[^task-119]
 [^task-118]: Closed-tab records expire with history and are cleared by history deletion
 [^task-119]: Archived Tabs page before the first space in the sidebar
 [^notes]: Closed tabs / archive work stream notes
+[^task-332]: Tabs: Reopen Closed Tab restores a child tab's link to its opener

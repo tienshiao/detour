@@ -23,6 +23,11 @@ struct ClosedTabRecord: Codable, FetchableRecord, PersistableRecord {
     /// reopening brings it back as that tab's Peek while the tab is open, else
     /// as a tab. Nil for a closed tab.
     var peekHostTabID: String? = nil
+    /// The id of the tab this one was opened from (`BrowserTab.parentID`) when
+    /// it closed (TASK-332, v26). Reopening keeps the link only while that tab
+    /// is still the opener the Back button resolves (`Space.openerTab(id:)`).
+    /// Nil for a root tab, a Peek, a Quick Detour, and every row before v26.
+    var parentID: String? = nil
 }
 
 /// A closedTab row without its interactionState blob — what menu validation,

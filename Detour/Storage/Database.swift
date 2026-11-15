@@ -1500,6 +1500,13 @@ nonisolated struct AppDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v26") { db in
+            // TASK-332: a closed tab remembers the tab it was opened from, so
+            // a reopened child closes to its opener again (Back, Cmd+[, the
+            // back swipe). Nil for every row before it, which reopen as before.
+            try db.alter(table: "closedTab") { t in t.add(column: "parentID", .text) }
+        }
+
         return migrator
     }
 

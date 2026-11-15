@@ -146,6 +146,16 @@ class Space {
         selectedTabID.flatMap { displayableTab(id: $0) } ?? pinnedTabs.first ?? tabs.first
     }
 
+    /// The tab with `id` as the opener a child tab of this space closes to
+    /// (the Back button, Cmd+[, the back swipe): a normal tab of the space or
+    /// a live pinned tab. Nil for a closed, archived or moved tab, an asleep
+    /// pinned entry, a favourite, or a tab of another space. The one rule
+    /// both the window (`parentTab(for:)`) and Reopen Closed Tab use
+    /// (TASK-332).
+    func openerTab(id: UUID) -> BrowserTab? {
+        tabs.first { $0.id == id } ?? pinnedEntries.lazy.compactMap(\.tab).first { $0.id == id }
+    }
+
     var color: NSColor {
         NSColor(hex: colorHex) ?? .controlAccentColor
     }
@@ -2804,7 +2814,8 @@ class TabStore {
                 archivedAt: archivedAt?.timeIntervalSince1970,
                 // A manual/timer archive's close and archive stamps coincide.
                 closedAt: (archivedAt ?? Date()).timeIntervalSince1970,
-                extensionID: tabExtensionID
+                extensionID: tabExtensionID,
+                parentID: tabParentID?.uuidString
             )
             appDB.pushClosedTab(record)
         }
@@ -3722,7 +3733,8 @@ class TabStore {
                     sortOrder: index,
                     archivedAt: nil,
                     closedAt: closedAt,
-                    extensionID: snapshot.extensionID
+                    extensionID: snapshot.extensionID,
+                    parentID: snapshot.parentID?.uuidString
                 )
                 appDB.pushClosedTab(record)
             }
@@ -4907,6 +4919,13 @@ class TabStore {
             interactionState: record.interactionState,
             page: page, in: space
         ) else { return nil }
+        // Back to its opener only while that tab is still the opener the Back
+        // button resolves in this space; a closed (and so re-minted on
+        // reopen), archived or moved opener leaves no dangling link
+        // (TASK-332). Set before the insert, which observers read.
+        tab.parentID = record.parentID
+            .flatMap(UUID.init(uuidString:))
+            .flatMap { space.openerTab(id: $0)?.id }
 
         let insertionIndex = snappedToSplitGroupBoundary(
             min(record.sortOrder, space.tabs.count),

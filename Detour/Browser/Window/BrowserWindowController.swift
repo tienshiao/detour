@@ -2525,8 +2525,7 @@ class BrowserWindowController: NSWindowController {
 
     func parentTab(for tab: BrowserTab) -> BrowserTab? {
         guard let parentID = tab.parentID else { return nil }
-        return currentTabs.first { $0.id == parentID }
-            ?? activeSpace?.pinnedEntries.compactMap(\.tab).first { $0.id == parentID }
+        return activeSpace?.openerTab(id: parentID)
     }
 
     func navigateBackOrCloseChildTab() {
