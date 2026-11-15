@@ -6,6 +6,9 @@ tags: [extensions, permissions, security, webkit]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
 sources:
+  - id: task-339
+    resource: backlog:TASK-339
+    title: "Extensions settings: every permission has a readable name (no raw 'privacy' or 'favicon')"
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
     title: Profile.swift (loadExtensionContext, applySavedHostAccessDecisions)
@@ -195,6 +198,18 @@ Every switch can be turned off, a required permission's too: the pane asks
 host row it does not set the one key: it clears the key from the context and
 re-runs `applySavedHostAccessDecisions`, so the live state is exactly what the
 next launch would restore.
+
+Each switch reads as `ExtensionPermissionDescriptions.describe`, as the
+install and request prompts do: a sentence per permission ("Store data
+locally"). Every permission Detour knows has one of its own: WebKit's
+`WKWebExtension.Permission` constants, the ones the polyfill implements or
+stands in for (`privacy`, `favicon` among them, which showed their raw names
+until TASK-339) and `background`; `ExtensionPermissionDescriptionsTests`
+walks that list. Any other reads as its name made legible ("tabGroups" is
+"Tab groups", "system.display" "System display"), never the raw manifest
+string. `management.getPermissionWarningsByManifest` keeps returning an
+unknown permission's manifest name, as before (the window's legible form is
+not API output).[^task-339]
 
 ## The extension's own permissions.remove
 
@@ -530,3 +545,4 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 [^task-261]: Extensions: management.getSelf and getAll leave out permissions granted at runtime
 [^task-277]: Tests: cover native host quit refusal and the SIGTERM path, keep the host sweep to the test's own hosts, and route the injected clock through the permission gates
 [^task-276]: Docs: fix the permission-scope and notification-ordering descriptions the review found wrong
+[^task-339]: TASK-339

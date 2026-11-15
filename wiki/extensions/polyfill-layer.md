@@ -357,8 +357,9 @@ off the extension in Settings. `permissions.request` prompts for `history` and
 refused without asking.[^task-267]
 
 `getPermissionWarningsByManifest(manifestStr)` returns the lines Detour's
-install prompt shows for the manifest: its required permissions, each through
-`ExtensionPermissionDescriptions.describe`, then its `host_permissions`
+install prompt shows for the manifest: its required permissions, each by its
+description (an unknown one by its manifest name, where the window shows the
+name made legible, TASK-339), then its `host_permissions`
 (`<all_urls>` reads "All websites"). It leaves out `optional_permissions`, as
 Chrome does. `ExtensionPermissionDescriptions.warnings` builds the list, and
 the prompt's `formatForAlert` uses the same host wording.
