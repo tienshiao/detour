@@ -320,8 +320,9 @@ first responder along the chain: with the page focused, `WKWebView`'s own
 `goBack:`/`goForward:` are ahead of the controller (and `NSWindow` declares
 `selectNextTab:`/`selectPreviousTab:` for window tabbing, though a Detour
 window was not seen to take them). So the palette's
-Back can close a tab to its opener (TASK-325), which Cmd+[ with the page
-focused does not. A command refused at that point (its state changed since
+Back can close a tab to its opener (TASK-325); since TASK-331 Cmd+[ with the
+page focused does too (`BrowserWebView` hands `goBack:` to the controller).
+A command refused at that point (its state changed since
 the row was offered; rows are resolved once per showing) beeps, as a
 disabled menu key equivalent does.
 

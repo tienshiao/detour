@@ -44,6 +44,42 @@ class BrowserWebView: WKWebView {
         super.scrollWheel(with: event)
     }
 
+    // MARK: - Back and Forward (TASK-331)
+
+    /// `WKWebView` has its own `goBack:` and `goForward:` actions, enabled by
+    /// WebKit's back list, and while the page has the keys it is ahead of the
+    /// window controller in the responder chain: Navigate > Back (Cmd+[, or
+    /// whatever key the user bound) on a tab opened from another one, with no
+    /// back item, found it disabled instead of closing the tab to its opener.
+    /// In a browser window both go to the controller, which acts on the
+    /// focused pane (this view, once first responder) or an open Peek, and
+    /// are enabled by its rule. A Quick Detour window keeps WebKit's.
+    /// The hand-off stays the last thing these do: Back can close the tab
+    /// that owns this view.
+    override func goBack(_ sender: Any?) {
+        guard let controller = window?.windowController as? BrowserWindowController else {
+            return super.goBack(sender)
+        }
+        controller.goBack(sender)
+    }
+
+    override func goForward(_ sender: Any?) {
+        guard let controller = window?.windowController as? BrowserWindowController else {
+            return super.goForward(sender)
+        }
+        controller.goForward(sender)
+    }
+
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        let back = #selector(goBack(_:)), forward = #selector(goForward(_:))
+        guard let controller = window?.windowController as? BrowserWindowController,
+              let action = item.action, action == back || action == forward else {
+            return super.validateUserInterfaceItem(item)
+        }
+        if let menuItem = item as? NSMenuItem { return controller.validateMenuItem(menuItem) }
+        return (action == back ? BrowserCommands.back : BrowserCommands.forward).isAvailable(in: controller)
+    }
+
     // MARK: - Undo/Redo
 
     /// True when the user is focused on an editable element (input, textarea, contentEditable).

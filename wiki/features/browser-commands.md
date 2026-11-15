@@ -31,6 +31,15 @@ sources:
   - id: palette-commands
     resource: ../../Detour/Browser/CommandPalette/PaletteCommands.swift
     title: PaletteCommands.swift
+  - id: web-view
+    resource: ../../Detour/Browser/Window/BrowserWebView.swift
+    title: "BrowserWebView.swift (goBack: and goForward: handed to the controller, TASK-331)"
+  - id: back-forward-tests
+    resource: ../../DetourTests/BackForwardResponderTests.swift
+    title: BackForwardResponderTests.swift
+  - id: task-331
+    resource: backlog:TASK-331
+    title: "Navigation: Cmd+[ and Cmd+] with the page focused go through Detour's Back and Forward"
   - id: task-327
     resource: backlog:TASK-327
     title: "Keyboard shortcuts: assign and customize the shortcuts of browser commands in Settings"
@@ -300,17 +309,24 @@ exist as commands yet.
 - Titles that validation sets (Pin/Unpin Tab, Undo/Redo, Cmd+O) live on the
   shared main-menu items, so what an item says depends on the last window
   that validated it. Tests key items by action, not title.
-- Back and Forward with the page focused reach `WKWebView`'s own `goBack:`
-  and `goForward:` first (they are in the responder chain ahead of the
-  controller), as found in TASK-325. `NSWindow` also declares
+- Back and Forward with the page focused resolve to `WKWebView`'s own
+  `goBack:` and `goForward:` (WKWebView.h's `WKIBActions`, enabled by
+  WebKit's back list), which are in the responder chain ahead of the
+  controller (found in TASK-325, confirmed on a build from before it in
+  TASK-331). Until TASK-331 that made Navigate › Back, by Cmd+[, any key a
+  user bound or a click, disabled on a child tab with no back item while
+  the page had the keys. `BrowserWebView` now overrides both actions and
+  their `validateUserInterfaceItem` in a browser window and hands them to
+  the controller (its rule, its focused pane or Peek); a Quick Detour
+  keeps WebKit's (`BackForwardResponderTests`). Any other `WKWebView`
+  action a command shares would need the same: `reload:` does not, since
+  Reload Page's action is `reloadPage:`. `NSWindow` also declares
   `selectNextTab:`/`selectPreviousTab:` (window tabbing); a Detour window
   was not seen to take them (the menu's resolution from the window follows
-  the controller's rule). The registry's
-  rule is the controller's: the characterization and agreement tests
-  resolve from the window itself as first responder, and the palette sends
-  window-controller commands to the controller. That is where the palette
-  and the menu can differ: the palette's Back on a child tab with no
-  history closes it to its opener; Cmd+[ with the page focused does not.
+  the controller's rule). The registry's rule is the controller's: the
+  characterization and agreement tests resolve from the window itself as
+  first responder, and the palette sends window-controller commands to the
+  controller.
 - AppKit adds items of its own to the Edit menu (Writing Tools, AutoFill,
   Start Dictation…, Emoji & Symbols) and the Window menu; they are not
   commands, and the tests leave them out.

@@ -173,11 +173,10 @@ enum BrowserCommands {
 
     /// Always enabled in a browser window, whose Back can also close a tab to
     /// the tab it was opened from (TASK-325); a Quick Detour's needs history.
-    /// The palette sends it to the controller (`CommandDispatch.perform`'s
-    /// `controller:`), not to the page's `WKWebView`, whose own `goBack:` is
-    /// ahead of the controller in the responder chain while the page has the
-    /// keys (TASK-325), so the palette's Back can also close a tab to its
-    /// opener, which Cmd+[ with the page focused does not.
+    /// With the page focused the item resolves to the page's `WKWebView`,
+    /// whose own `goBack:` is ahead of the controller in the responder chain;
+    /// `BrowserWebView` hands it, and its validation, to the controller
+    /// (TASK-331), so Cmd+[ there does what the palette's Back does.
     static let back = BrowserCommand(
         "page.back", "Back", key: KeyEquivalent("["), action: #selector(BrowserWindowController.goBack(_:)),
         responder: .windowController(CommandWindowKind.every),

@@ -70,7 +70,8 @@ enum CommandDispatch {
     /// implements ahead of the responder chain: the palette offers such a
     /// command by that controller's rule, and a responder in front of it can
     /// implement the same action and take it (`WKWebView`'s `goBack:` and
-    /// `goForward:` while the page has the keys, TASK-325). `NSWindow` also
+    /// `goForward:` while the page has the keys, TASK-325, which
+    /// `BrowserWebView` now hands to the controller, TASK-331). `NSWindow` also
     /// declares `selectNextTab:` and `selectPreviousTab:` (window tabbing);
     /// a Detour window was not seen to take them (the menu's resolution from
     /// the window follows the controller's rule), but nothing then can.

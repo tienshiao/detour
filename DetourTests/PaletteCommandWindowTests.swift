@@ -229,9 +229,9 @@ nonisolated final class PaletteCommandWindowTests: XCTestCase {
 
     /// With the page focused, `WKWebView`'s own `goBack:` is ahead of the
     /// controller in the responder chain, and has no history item to go back
-    /// to on a tab opened from another (TASK-325). The palette's Back goes
-    /// to the controller, whose rule offered it, so it closes the tab to its
-    /// opener.
+    /// to on a tab opened from another (TASK-325; `BrowserWebView` hands it to
+    /// the controller since TASK-331). The palette's Back goes to the
+    /// controller, whose rule offered it, so it closes the tab to its opener.
     @MainActor func testBackFromThePaletteClosesAChildTabToItsOpener() throws {
         let (wc, opener) = windowWithPage()
         let child = store.addTab(in: space, url: URL(string: "https://palette-commands.invalid/child")!,
