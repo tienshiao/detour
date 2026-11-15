@@ -156,6 +156,13 @@ class Space {
         tabs.first { $0.id == id } ?? pinnedEntries.lazy.compactMap(\.tab).first { $0.id == id }
     }
 
+    /// `id` while `openerTab(id:)` still resolves it, else nil: the opener
+    /// link a tab coming back (Reopen Closed Tab, a close undo) keeps
+    /// (TASK-332).
+    func liveOpenerID(_ id: UUID?) -> UUID? {
+        id.flatMap { openerTab(id: $0)?.id }
+    }
+
     var color: NSColor {
         NSColor(hex: colorHex) ?? .controlAccentColor
     }
@@ -2850,7 +2857,11 @@ class TabStore {
                     interactionState: stateData,
                     extensionID: tabExtensionID, in: space
                 ) else { return }
-                restored.parentID = tabParentID
+                // Back to its opener only while the Back button still
+                // resolves it here, as Reopen Closed Tab does (TASK-332):
+                // an opener closed, archived or moved meanwhile leaves no
+                // dangling link. Set before the insert, which observers read.
+                restored.parentID = space.liveOpenerID(tabParentID)
                 let insertAt: Int
                 // Rejoin the split if the partner is still an ungrouped normal tab.
                 if let partnerID = splitPartnerID,
@@ -3774,7 +3785,10 @@ class TabStore {
             let newGroupID = UUID()
             var restoredFirst: BrowserTab?
             for (snapshot, restored) in rebuilt {
-                restored.parentID = snapshot.parentID
+                // As for a lone close's undo (TASK-332). The other member is
+                // a new tab now, so a pane opened from its partner comes back
+                // unlinked.
+                restored.parentID = space.liveOpenerID(snapshot.parentID)
                 if rejoinsSplit {
                     restored.splitGroupID = newGroupID
                     restored.splitFraction = fraction
@@ -4923,9 +4937,7 @@ class TabStore {
         // button resolves in this space; a closed (and so re-minted on
         // reopen), archived or moved opener leaves no dangling link
         // (TASK-332). Set before the insert, which observers read.
-        tab.parentID = record.parentID
-            .flatMap(UUID.init(uuidString:))
-            .flatMap { space.openerTab(id: $0)?.id }
+        tab.parentID = space.liveOpenerID(record.parentID.flatMap(UUID.init(uuidString:)))
 
         let insertionIndex = snappedToSplitGroupBoundary(
             min(record.sortOrder, space.tabs.count),

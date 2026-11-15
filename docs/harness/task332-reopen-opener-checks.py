@@ -13,6 +13,9 @@ task325-swipe-checks.py.
   3. Closed again, then the opener closed too: Reopen Closed Tab twice brings
      back the opener (a new tab) and then the child with no opener: WebKit's
      gesture, and Cmd+[ leaves it open.
+  4. Undo Close Tab (the user's decision, 2026-11-14): a child closed and
+     undone comes back to its open opener; closed with its opener after it
+     and both undone, it comes back with no opener.
 
 Needs a Debug build and the sandbox off (it launches an app). Usage:
 
@@ -218,6 +221,64 @@ def main():
         still = any(t["tab_id"] == orphan for t in tabs())
         check("Cmd+[ leaves the orphan open", still and selected()["selected_tab_id"] == orphan,
               f"open {still}, selected {selected()['selected_tab_url']}")
+
+        # 4. Undo Close Tab follows the same rule (the user's decision,
+        # 2026-11-14): the opener while it is still open, none once it closed.
+        call("select_tab", window_id=1, id=new_opener)
+        wait_selected_url("/opener.html")
+        time.sleep(0.5)
+        call("click", context=ctx(new_opener), selector="#blank")
+        wait_selected_url("/child.html")
+        time.sleep(1)
+        child2 = selected()["selected_tab_id"]
+
+        def undo_close():
+            # A restored page that takes the keyboard makes Edit > Undo the
+            # page's (titled plain "Undo", TASK-345): a click on the
+            # sidebar's empty area below the rows hands the keyboard back.
+            try:
+                call("run_menu_item", window_id=1, path=["Edit", "Undo Close Tab"])
+            except RuntimeError as error:
+                print(f"  Edit menu while undoing: {error}")
+                call("run_menu_item", window_id=1, path=["Edit", "Undo"])
+            time.sleep(0.8)
+
+        def child_tab():
+            return next((t for t in tabs() if (t.get("url") or "").endswith("/child.html")), None)
+
+        call("run_menu_item", window_id=1, path=["File", "Close Tab"])
+        wait(lambda: not any(t["tab_id"] == child2 for t in tabs()))
+        undo_close()
+        undone = wait(child_tab)
+        p = pane(undone["tab_id"]) if undone else None
+        if undone and p is None:
+            call("select_tab", window_id=1, id=undone["tab_id"])
+            time.sleep(0.5)
+            p = pane(undone["tab_id"])
+        check("Undo Close Tab brings the child back to its open opener",
+              p and p["opener_id"] == new_opener and p["own_swipe"], p)
+
+        # Close the child, then the opener, then undo both: the opener comes
+        # back as a new tab, the child with no opener.
+        call("select_tab", window_id=1, id=undone["tab_id"])
+        wait_selected_url("/child.html")
+        call("run_menu_item", window_id=1, path=["File", "Close Tab"])
+        wait(lambda: child_tab() is None)
+        call("select_tab", window_id=1, id=new_opener)
+        wait_selected_url("/opener.html")
+        call("run_menu_item", window_id=1, path=["File", "Close Tab"])
+        wait(lambda: not any(t["tab_id"] == new_opener for t in tabs()))
+        undo_close()
+        undo_close()
+        undone = wait(child_tab)
+        if undone:
+            call("select_tab", window_id=1, id=undone["tab_id"])
+            wait_selected_url("/child.html")
+            time.sleep(0.5)
+        p = pane(undone["tab_id"]) if undone else None
+        check("Undo Close Tab twice after closing child then opener: the child has no opener",
+              p and p["opener_id"] is None and not p["own_swipe"], p)
+        shoot("4-undo-orphan")
 
         active = call("list_windows")["app_active"]
         check("Detour stayed in the background", active is False, f"app_active={active}")

@@ -228,7 +228,7 @@ nonisolated final class ClosedTabOpenerTests: XCTestCase {
     }
 
     /// A Private space writes no record, so its children never reopen; the
-    /// close undo restores the link from what it captured, as before.
+    /// close undo restores the captured link while the opener is still open.
     @MainActor func testPrivateChildWritesNoRecordAndItsUndoKeepsTheOpener() throws {
         let f = try makeFixture()
         let privateSpace = f.store.addIncognitoSpace()
@@ -240,6 +240,114 @@ nonisolated final class ClosedTabOpenerTests: XCTestCase {
 
         let restored = try XCTUnwrap(privateSpace.tabs.first { $0.url?.absoluteString == "https://child.example/" })
         XCTAssertEqual(restored.parentID, opener.id)
+        f.store.removeIncognitoSpace(id: privateSpace.id)
+    }
+
+    // MARK: - Undo Close Tab keeps the link only while the opener is open
+
+    /// The user's decision (2026-11-14): a close undo filters the captured
+    /// link through `Space.openerTab(id:)`, as Reopen Closed Tab does.
+    @MainActor func testUndoCloseOfAChildWhoseOpenerIsStillOpenKeepsIt() throws {
+        let f = try makeFixture()
+        let (opener, child) = addOpenerAndChild(in: f.spaceA)
+        inUndoGroup(f.store) { f.store.closeTab(id: child.id, in: f.spaceA) }
+
+        f.store.undoManager.undo()
+
+        let restored = try XCTUnwrap(f.spaceA.tabs.first { $0.url?.absoluteString == "https://child.example/" })
+        XCTAssertEqual(restored.parentID, opener.id)
+    }
+
+    /// Close the child, then its opener, then undo both: the opener comes
+    /// back as a new tab (a new id), so the child comes back unlinked rather
+    /// than naming a tab that is gone.
+    @MainActor func testUndoCloseOfAChildWhoseOpenerWasClosedSinceHasNone() throws {
+        let f = try makeFixture()
+        let (opener, child) = addOpenerAndChild(in: f.spaceA)
+        inUndoGroup(f.store) { f.store.closeTab(id: child.id, in: f.spaceA) }
+        inUndoGroup(f.store) { f.store.closeTab(id: opener.id, in: f.spaceA) }
+
+        f.store.undoManager.undo()
+        let restoredOpener = try XCTUnwrap(f.spaceA.tabs.first { $0.url?.absoluteString == "https://opener.example/" })
+        XCTAssertNotEqual(restoredOpener.id, opener.id, "precondition: the opener is a new tab")
+        f.store.undoManager.undo()
+
+        let restored = try XCTUnwrap(f.spaceA.tabs.first { $0.url?.absoluteString == "https://child.example/" })
+        XCTAssertNil(restored.parentID)
+    }
+
+    /// The opener closed for good (no undo of its own) before the child's
+    /// close is undone.
+    @MainActor func testUndoCloseOfAChildWhoseOpenerIsGoneHasNone() throws {
+        let f = try makeFixture()
+        let (opener, child) = addOpenerAndChild(in: f.spaceA)
+        inUndoGroup(f.store) { f.store.closeTab(id: child.id, in: f.spaceA) }
+        f.store.closeTab(id: opener.id, in: f.spaceA, registersUndo: false)
+
+        f.store.undoManager.undo()
+
+        let restored = try XCTUnwrap(f.spaceA.tabs.first { $0.url?.absoluteString == "https://child.example/" })
+        XCTAssertNil(restored.parentID)
+    }
+
+    /// Undo Close Both Splits: a member keeps its opener while it is open,
+    /// and comes back unlinked once it has closed.
+    @MainActor func testUndoCloseOfASplitKeepsOnlyAnOpenerStillOpen() throws {
+        for openerCloses in [false, true] {
+            let f = try makeFixture()
+            let opener = makeTab("https://opener.example/", in: f.spaceA)
+            let left = makeTab("https://left.example/", in: f.spaceA, parent: opener)
+            // The right pane was opened from the left one.
+            let right = makeTab("https://right.example/", in: f.spaceA, parent: left)
+            let other = makeTab("https://other.example/", in: f.spaceA)
+            let groupID = UUID()
+            left.splitGroupID = groupID
+            right.splitGroupID = groupID
+            f.spaceA.tabs.append(contentsOf: [opener, left, right, other])
+
+            inUndoGroup(f.store) { f.store.closeSplitGroup(groupID: groupID, in: f.spaceA) }
+            if openerCloses { f.store.closeTab(id: opener.id, in: f.spaceA, registersUndo: false) }
+            f.store.undoManager.undo()
+
+            let restoredLeft = try XCTUnwrap(f.spaceA.tabs.first { $0.url?.absoluteString == "https://left.example/" })
+            let restoredRight = try XCTUnwrap(f.spaceA.tabs.first { $0.url?.absoluteString == "https://right.example/" })
+            XCTAssertNotNil(restoredLeft.splitGroupID, "precondition: the split came back")
+            XCTAssertEqual(restoredLeft.parentID, openerCloses ? nil : opener.id, "opener closed: \(openerCloses)")
+            XCTAssertNil(restoredRight.parentID, "its partner comes back as a new tab")
+        }
+    }
+
+    /// The pinned cases of the same rule on the undo path: a live pinned
+    /// opener is kept; an asleep one leaves no link.
+    @MainActor func testUndoCloseOfAChildOfAPinnedOpenerKeepsItOnlyWhileLive() throws {
+        enum Case: CaseIterable { case livePinned, asleepPinned }
+        for c in Case.allCases {
+            let f = try makeFixture()
+            let (opener, child) = addOpenerAndChild(in: f.spaceA)
+            inUndoGroup(f.store) { f.store.pinTab(id: opener.id, in: f.spaceA) }
+            inUndoGroup(f.store) { f.store.closeTab(id: child.id, in: f.spaceA) }
+            if c == .asleepPinned { f.store.closePinnedTab(id: opener.id, in: f.spaceA, undoable: false) }
+
+            f.store.undoManager.undo()
+
+            let restored = try XCTUnwrap(f.spaceA.tabs.first { $0.url?.absoluteString == "https://child.example/" }, "\(c)")
+            XCTAssertEqual(restored.parentID, c == .livePinned ? opener.id : nil, "\(c)")
+        }
+    }
+
+    /// A Private close undo follows the same rule: an opener closed since
+    /// leaves no link.
+    @MainActor func testPrivateUndoCloseOfAChildWhoseOpenerIsGoneHasNone() throws {
+        let f = try makeFixture()
+        let privateSpace = f.store.addIncognitoSpace()
+        let (opener, child) = addOpenerAndChild(in: privateSpace)
+        inUndoGroup(f.store) { f.store.closeTab(id: child.id, in: privateSpace) }
+        f.store.closeTab(id: opener.id, in: privateSpace, registersUndo: false)
+
+        f.store.undoManager.undo()
+
+        let restored = try XCTUnwrap(privateSpace.tabs.first { $0.url?.absoluteString == "https://child.example/" })
+        XCTAssertNil(restored.parentID)
         f.store.removeIncognitoSpace(id: privateSpace.id)
     }
 

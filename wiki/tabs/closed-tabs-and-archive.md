@@ -4,7 +4,7 @@ title: Closed tabs and the Archived Tabs page
 description: What a closed-tab record holds, how Reopen Closed Tab, the close undos and the Archived Tabs page each consume it, how archived records differ from plain closes, and closed Quick Detours filed under their profile's scope (TASK-193.5).
 tags: [tabs, closed-tabs, archive, undo, sidebar]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T00:45:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T08:05:00Z }
 sources:
   - id: task-332
     resource: backlog:TASK-332
@@ -189,9 +189,24 @@ rebuilding it checks `AppDatabase.hasClosedTab(tabID:)`:
 - in "Close Both Splits", a member whose record is gone stays closed and the
   other comes back alone, as a plain tab.
 
-The undo restores `parentID` from what it captured, without the reopen
-check: `parentTab(for:)` resolves it when used, so a link to a tab that is
-gone does nothing. Incognito closes rely on this alone (no record).[^task-332]
+The undo restores the `parentID` it captured only while
+`Space.openerTab(id:)` still resolves it in the space, the rule Reopen
+Closed Tab uses (the user's decision, 2026-11-14): an opener closed,
+archived, moved or asleep in a pinned slot meanwhile leaves no link. Close
+the child, then its opener, and undo both: the opener comes back as a new
+tab (a new id), so the child comes back unlinked. In "Close Both Splits"
+each member is checked the same way; a pane opened from its partner comes
+back unlinked, the partner being a new tab too. Incognito closes (no
+record) follow the same rule. Before, the undo restored the link unchecked
+and left `parentTab(for:)` to ignore a dangling one. The one rule is
+`Space.liveOpenerID(_:)`, which the two undos and Reopen Closed Tab
+call.[^task-332] Checked at runtime on 2026-11-15
+(`docs/harness/task332-reopen-opener-checks.py`, step 4): a child closed
+and undone came back closing to its open opener; closed with its opener
+after it and both undone, it came back with no opener and WebKit's gesture.
+In that run Edit's Undo item was titled plain "Undo" (beside "Redo Close
+Tab") once the restored page had the keyboard, so the script falls back to
+it (see TASK-345).
 
 A manual archive is undone under the name "Archive Tab", and its redo re-closes
 with the same `archivedAt`, so a redone archive stays an archive.[^task-115]
@@ -257,7 +272,7 @@ styling; the bar itself rides off with the first space's page.[^notes]
 Detours: TASK-193.5), `ArchivedTabRestoreTests` (listing, restore position and space, extension
 rules, delete, clear, the notification, the undo-after-consume cases),
 `ArchiveListLayoutTests` (buckets, sort, search, filter), `ClosedTabOpenerTests`
-(the opener link: written, kept, dropped per case, v26), `TabStoreTests`
+(the opener link: written, kept, dropped per case on reopen and on a close undo, v26), `TabStoreTests`
 ("Archive vs close records", reopen ordering), `AppDatabaseTests` (index, v16
 backfill, `testClosedTabRecordsAreNeverEvictedByCount`), `SidebarPageStripTests`.
 

@@ -4,7 +4,7 @@ title: Back swipe to the opener
 description: "On a tab opened from another tab, with no back history, the two-finger back swipe does what the Back button does — closes the tab and selects its opener — through Detour's own swipe (WebKit's needs a back item): when a pane's web view is in that mode, how a swipe starts from the scrolls the page did not use, the veneer that shows during it, the decisions per case (splits, Peek, pinned tabs, Quick Detour), and what is verified only by hand."
 tags: [tabs, navigation, gestures, webkit, split]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T00:45:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T08:05:00Z }
 sources:
   - id: rules
     resource: ../../Detour/Browser/Window/NavigationSwipe.swift
@@ -161,6 +161,7 @@ an unrelated tab.
 | Quick Detour | Unchanged: WebKit's gesture, history only | Its Back is history only and its tab has no opener |
 | Pinned tab or favourite with a `parentID` | WebKit's gesture; never swiped closed | `TabStore.closeTab` closes normal tabs only. The Back button on a pinned child still selects the opener without closing it (behaviour before TASK-325) |
 | Reopened child | Closes to its opener again while that tab is still an opener `Space.openerTab` resolves (the record carries `parentID` since v26); with the opener closed, archived, moved or asleep meanwhile, no opener and WebKit's gesture | The record is the tab's only life after closing (TASK-332) |
+| Child brought back by Undo Close Tab (or Undo Close Both Splits) | The same rule: its captured opener only while `Space.openerTab` resolves it; an opener closed since (even if its own close was undone first: a new tab) leaves no opener | One rule for every way a closed tab comes back (the user's decision on TASK-332, 2026-11-14) |
 
 # Edge cases
 

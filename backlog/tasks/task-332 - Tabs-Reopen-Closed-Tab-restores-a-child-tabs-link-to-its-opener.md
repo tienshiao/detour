@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T23:45:00Z'
-updated_date: '2026-11-15T07:37:00Z'
+updated_date: '2026-11-15T08:03:00Z'
 labels:
   - tabs
 dependencies: []
@@ -42,6 +42,8 @@ Found 2026-11-14 in TASK-325. A tab opened from another tab carries parentID, wh
 5. Tests (TabStore level): round trip, closed / archived / moved / Private opener, split close, undo, v25 -> v26 migration keeps old rows reopening.
 6. /verify: fixture page, open a child via a target=_blank link, close, reopen, Back closes to the opener; again after closing the opener.
 7. Wiki: closed-tabs-and-archive + back-swipe-to-opener (Reopened child row), session-database migration list; log line.
+
+(2026-11-14 user decision) closeTab's and closeSplitGroup's undo closures set restored.parentID = captured.flatMap { space.openerTab(id:)?.id } at undo time. ClosedTabOpenerTests: opener still open (kept), opener closed then both undone (nil), opener closed for good (nil), split undo with the opener open/closed. Wiki closed-tabs-and-archive.md, back-swipe-to-opener.md.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -55,10 +57,12 @@ Runtime (/verify, Debug build, isolated DETOUR_DATA_DIR, automation endpoint, do
 Review (/code-review medium --fix): plan step 4 corrected to say the undos are unchecked; openerTab searches the pinned entries lazily; the reviewer also switched moveTab's undo to openerTab (relinks a live pinned opener too), which I reverted as out of scope (reported).
 
 2026-11-14 user decision: Undo Close Tab filters the restored opener link through Space.openerTab like Reopen Closed Tab (keep it only if the opener is still open in the same space). Implementation follows.
+
+2026-11-14/15 implemented the user's decision: closeTab's and closeSplitGroup's undo closures restore parentID through Space.liveOpenerID(_:) (new: openerTab(id:)'s id or nil; reopenClosedTabRecord uses it too), resolved at undo time. Tests: ClosedTabOpenerTests 21 (new: undo with the opener still open; child then opener closed and both undone; opener closed for good; split undo with the opener open/closed and a pane opened from its partner; a live vs asleep pinned opener; a Private undo after the opener closed), plus ArchivedTabRestoreTests 20, ClosedPeekTests 11, ExtensionPageUndoTests 20, MoveTabToSpaceTests 31, SplitOpeningTests 20, SplitTabTests 63, TabStoreTests 40, UndoAfterDeleteSpaceTests 8 = 234, 0 failures. Runtime (docs/harness/task332-reopen-opener-checks.py with a new step 4, Debug build dylib 00:01, isolated data dir removed): all earlier checks pass again; Undo Close Tab brought a child back to its open opener (opener_id, own swipe); child then opener closed and both undone: the child came back with opener_id null and WebKit's gesture. Observed: with the restored page holding the keyboard, Edit's Undo item read plain 'Undo' beside 'Redo Close Tab', so the script falls back to Edit > Undo (TASK-345's area, not changed here). Code review (medium --fix): 5 findings; fixed: the filter written three times (now Space.liveOpenerID), missing pinned and Private undo tests (added). Kept: an undone opener's close gives it a new id, so its still-open children lose their link (pre-existing, changes undo identity); Move to Space's undo uses home.tabs.contains rather than openerTab (pinned opener not counted; out of scope); no undo test for a moved opener (the move's own undo reverses first).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Closed-tab records now carry the tab a closed tab was opened from (closedTab.parentID, migration v26), written by closeTab and closeSplitGroup. Reopen Closed Tab and the Archived Tabs page restore the link only when Space.openerTab(id:) — the Back button's rule, now shared with BrowserWindowController.parentTab(for:) — resolves it in the space the tab reopens into, so a reopened child closes to its opener again by Back, Cmd+[ and the back swipe, and an opener that was closed, archived, moved, or is asleep in a pinned slot leaves no link. Older rows reopen unlinked. Tests: ClosedTabOpenerTests (15) plus neighbouring suites, 0 failures; runtime check docs/harness/task332-reopen-opener-checks.py passed 9/9. Not checked: a real trackpad swipe, the palette's Back. Close undos still restore their captured link unchecked (harmless, resolved at use).
+Closed-tab records now carry the tab a closed tab was opened from (closedTab.parentID, migration v26), written by closeTab and closeSplitGroup. Reopen Closed Tab, the Archived Tabs page and (the user's decision, 2026-11-14) Undo Close Tab and Undo Close Both Splits restore the link only when Space.openerTab(id:) — the Back button's rule, shared with BrowserWindowController.parentTab(for:) through Space.liveOpenerID — resolves it in the space the tab comes back into, so a child closes to its opener again by Back, Cmd+[ and the back swipe, and an opener that was closed (even one whose own close was undone first: a new tab), archived, moved, or is asleep in a pinned slot leaves no link. Older rows reopen unlinked. Tests: ClosedTabOpenerTests (21) plus neighbouring suites, 0 failures; runtime check docs/harness/task332-reopen-opener-checks.py passed (reopen and undo paths). Not checked: a real trackpad swipe, the palette's Back. Follow-up candidates: an undone opener's children lose their link (new id); Move to Space's undo uses its own opener rule.
 <!-- SECTION:FINAL_SUMMARY:END -->
