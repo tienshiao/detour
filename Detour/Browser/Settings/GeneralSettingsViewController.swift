@@ -62,8 +62,9 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         privateSwitch.setAccessibilityIdentifier("automationAllowPrivate")
         let privateRow = SettingsFormRow(
             title: "Allow agents to use Private windows",
-            help: "Off, agents cannot see or use Private windows, their tabs or menus, or the Private "
-                + "profile's extensions. Turning it off takes effect at once.",
+            help: "Off, agents cannot see or use Private windows (Private Quick Detour and Quarantine "
+                + "windows included), their tabs or menus, or the Private profile's extensions. Turning it off takes "
+                + "effect at once.",
             accessory: .toggle(privateSwitch))
         let allowAgainButton = NSButton(title: "Allow Again", target: self, action: #selector(allowDisconnectedAgents))
         allowAgainButton.bezelStyle = .rounded

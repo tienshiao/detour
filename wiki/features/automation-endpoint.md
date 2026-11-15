@@ -4,7 +4,7 @@ title: Automation endpoint (MCP)
 description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2, TASK-228.3, TASK-228.5, TASK-228.7, TASK-228.8): how it is turned on, who may connect (Host, Origin, a test run's shared token, per-client tokens the user approves in Detour's own prompt, and the rejected alternatives), the Private-window opt-in, the HTTP and MCP layers, the tools and their stable error codes, the window kinds a window_id names (browser, Quick Detour, quarantine, Settings) and who reaches which, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the per-extension compatibility report (static scan of chrome.* references checked in the live worker and a probe page, the stub registry and its call counts, API-naming runtime errors, unsupported manifest keys and permissions, worker failures) and the stable output for diffing against a baseline, capture staging (a demo world seeded from a fixture file and its format, displays and exact window placement read back from the window server, paced typing, Debug UI on demand, the test-run guard on Arc's folder, who takes the focus), the connected-agent indicator and disconnecting (revoking an approved client), the bundled stdio helper and where it keeps each client's token, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, a shared item retitled per window, a table's hit test that follows the current event, AppKit controls that track a click only through the window's routing, a switch's pill, renumbered posted events, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host, a window's open animation, focus during captures)."
 tags: [automation, mcp, testing, security]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T12:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T08:10:00Z }
 sources:
   - id: automation-dir
     resource: ../../Detour/Automation
@@ -264,8 +264,10 @@ its defaults), page capture and the extension channel, console and stub
 counts through `AutomationPrivateAccess.isAllowed`. Turning it off refuses
 again from the next call.
 
-- **Off**: Private windows and spaces are left out of `list_windows`
-  (`hidden_private_windows` counts them) and `list_spaces`, and refused by
+- **Off**: Private windows (Private browser windows, Quick Detour windows on
+  the Private profile and quarantine windows, TASK-228.7) and spaces are
+  left out of `list_windows` (`hidden_private_windows` counts them) and
+  `list_spaces`, and refused by
   id (`private_unreachable`, whose message says the user can allow it).
   Menus stay out too: a menu that opened over a Private window (the
   person's context menu there, or the menu bar while one is in front and
@@ -290,17 +292,26 @@ again from the next call.
   finishes, as one does after Disconnect, Revoke or Turn Off.
 - **Never, whatever the setting**: the Private profile as a target of
   `install_extension`, `set_extension_enabled` or a permission (those skip
-  the user's prompts); a route into a quarantine; Private Quick Detour
-  windows and quarantine windows, which since TASK-228.7 are addressable
-  windows (see "Windows of every kind") but are left out of `list_windows`,
-  counted in `hidden_private_windows` and refused by id, as are menus over
-  them and the Window menu's entries for them. This is PROVISIONAL (chosen
-  while the user was away): the documented model said their pages are never
-  reached, so the new window tools kept that rather than widening it. The
-  alternative, treating them as Private browser windows are (reachable
-  while the setting is on), is one value:
-  `AutomationWindows.privateQuickDetourAccess`. Page capture never goes into
-  Quick Detour pages either way. Its extension contexts follow the
+  the user's prompts); a route into a quarantine (`open_url` never opens
+  one); page capture in Quick Detour and quarantine pages, which are not
+  tabs of a space and so no page tool's context. Private Quick Detour and
+  quarantine windows themselves are no longer here: since the user's
+  decision on TASK-228.7 (2026-11-14) they follow the setting as Private
+  browser windows do (`AutomationWindows.privateQuickDetourAccess =
+  .privateOptIn`), through the one predicate every path asks: off, they
+  are left out of `list_windows`, counted in `hidden_private_windows` and
+  refused by id, as are menus over them, the Window menu's entries for
+  them, `set_window_frame` by id or `window_number`, and an extension
+  popup over one; on, they are listed (`is_private: true`) and take
+  screenshots, input and menu commands like any Quick Detour. The first cut
+  (provisional, while the user was away) kept them unreachable whatever
+  the setting. Checked at runtime on 2026-11-15
+  (`docs/harness/task228-7-private-quick-detour-checks.py`, the setting
+  from a launch argument): a quarantine opened by a routed click was left
+  out of `list_windows` and refused by `screenshot` and `hit_test` by id
+  with the setting off, and listed (`kind: quarantine`, `is_private: true`)
+  and captured with it on.
+  The Private profile's extension contexts follow the
   setting but only when named (`popup:<ext>@<Private profile id>`): a
   client that names no profile resolves exactly as before. Its workers that
   were answered `stop` while the setting was off park only at their next
@@ -414,7 +425,7 @@ would build Settings and all its panes.
 |---|---|---|---|
 | `browser` | yes | yes (`part: sidebar` too) | yes |
 | `quick_detour` | yes; a window point over the page reaches its web view | yes | `unsupported_window` |
-| `quarantine`, or a Quick Detour on the Private profile | `private_unreachable` whatever the setting (PROVISIONAL, see "Private windows") | the same | the same |
+| `quarantine`, or a Quick Detour on the Private profile | as `quick_detour` while the user allows agents to use Private windows, `private_unreachable` otherwise (see "Private windows") | the same | `unsupported_window` while allowed, `private_unreachable` otherwise |
 | `settings` | test runs only (`gate_closed` on the user's endpoint); never in the Automation section | yes, on any endpoint | `unsupported_window` |
 
 A Quick Detour's page is not a tab of a space, so its `selected_tab_id` is
@@ -446,7 +457,11 @@ check errs towards refusing. A window's reach is the strictest along its whole
 chain of sheets and child windows (`AutomationWindows.ancestry`), so a
 popover on a popover of a Private Quick Detour is refused as the window
 is. Extension pages (`popup:`, `options:`) take the same window check as
-tabs, and input by `context` asks the same predicate.
+tabs, and input by `context` asks the same predicate. Input by `context`
+into a popup opened over a Quick Detour or quarantine window answers
+`not_displayed`, though: `resolve(context:)` looks for the popup's parent
+among browser windows only (a known gap, found in the TASK-228.7 review;
+the window itself takes input by `window_id`).
 
 Checks written before TASK-228.7 work around these limits.
 `docs/harness/task326-copy-url-checks.py` right-clicks a sidebar row's
@@ -1389,9 +1404,11 @@ next request 401, bad heads refused before the body, a held request
 outliving the 10 s deadline while an idle connection does not and the held
 limit, a client hanging up) and `AutomationWindowKindsTests` (TASK-228.7: Quick Detour and
 Settings windows listed with their kind and stable ids; Private Quick
-Detour and quarantine windows hidden and refused by every window tool, by
-their Window-menu entries and in a menu opened over them, whatever the
-setting; a Quick Detour's screenshot, a hit test and click into its page,
+Detour and quarantine windows hidden and refused by every window tool
+(`set_window_frame` by id and number too), by their Window-menu entries
+and in a menu opened over them while Private is off, and listed, reached
+by screenshot, hit test, click, `set_window_frame`, the Window menu and a
+command while it is on; a Quick Detour's screenshot, a hit test and click into its page,
 a command closing it through its own responder chain, and
 `unsupported_window` from the tools for spaces and tabs; Settings seen on
 any endpoint, input refused outside a test run, and in a test run refused

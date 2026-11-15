@@ -1,5 +1,8 @@
 # Wiki Update Log
 
+## 2026-11-15
+* **Update**: TASK-228.7 (the user's decision) — [Automation endpoint (MCP)](features/automation-endpoint.md) ("Private windows", "Windows of every kind", tests): Private Quick Detour and quarantine windows now follow "Allow agents to use Private windows" as Private browser windows do (`AutomationWindows.privateQuickDetourAccess = .privateOptIn`): off, hidden and refused by every path the one predicate covers; on, listed with `is_private: true` and reachable like any Quick Detour. Still never: a route into a quarantine from `open_url`, page capture in Quick Detour pages, the Private profile as an install target.
+
 ## 2026-11-14
 * **Update**: TASK-332 (the user's decision) — [Closed tabs and the Archived Tabs page](tabs/closed-tabs-and-archive.md) (close undo, tests) and [Back swipe to the opener](tabs/back-swipe-to-opener.md) (decisions per case): Undo Close Tab and Undo Close Both Splits keep the captured `parentID` only while `Space.openerTab(id:)` still resolves it, as Reopen Closed Tab does; an opener closed since (even one whose own close was undone first, a new tab) leaves no link.
 * **Update**: TASK-326 (user decision) — [Copy URL](features/copy-url.md) (entry-point table, decision, tests) and [Dev mode](features/dev-mode.md) (toolbar Copy row): the dev toolbar's link button copies its pane's address as loaded, tracking parameters included (`copyURL(_:asLoaded: true)`); every other entry point still strips.

@@ -6,9 +6,11 @@ import AppKit
 /// Detour, quarantine and Settings windows are listed with their kind and
 /// keep their ids; run_menu_item, screenshot and the input tools take them,
 /// while the tools for spaces and tabs answer `unsupported_window`. A Private
-/// Quick Detour and a quarantine window are left out and refused whatever the
-/// Private setting (PROVISIONAL, `AutomationWindows.privateQuickDetourAccess`),
-/// and so are menus over them and the Window menu's entries for them.
+/// Quick Detour and a quarantine window follow "Allow agents to use Private
+/// windows" as Private browser windows do (the user's decision,
+/// `AutomationWindows.privateQuickDetourAccess`): left out and refused while
+/// it is off, and so are menus over them and the Window menu's entries for
+/// them; listed and reachable while it is on.
 /// Settings takes input only in a test run, and never in its Automation
 /// section.
 nonisolated final class AutomationWindowKindsTests: XCTestCase {
@@ -175,10 +177,22 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
             let kinds = Dictionary(uniqueKeysWithValues: listed.compactMap { entry in
                 entry["window_id"]?.intValue.map { ($0, entry["kind"]?.stringValue ?? "") }
             })
-            XCTAssertEqual(kinds, [f.id(f.browser): "browser", f.id(f.quickDetour): "quick_detour",
-                                   f.id(settings): "settings"],
-                           "the Private Quick Detour and the quarantine are left out (allowed: \(allowed))")
-            XCTAssertEqual(content["hidden_private_windows"], 2)
+            if allowed {
+                XCTAssertEqual(kinds, [f.id(f.browser): "browser", f.id(f.quickDetour): "quick_detour",
+                                       f.id(f.privateQuickDetour): "quick_detour", f.id(f.quarantine): "quarantine",
+                                       f.id(settings): "settings"],
+                               "with Private windows allowed, the Private Quick Detour and the quarantine are listed")
+                XCTAssertEqual(content["hidden_private_windows"], 0)
+                for controller in [f.privateQuickDetour, f.quarantine] {
+                    let entry = try XCTUnwrap(listed.first { $0["window_id"]?.intValue == f.id(controller) })
+                    XCTAssertEqual(entry["is_private"], true)
+                }
+            } else {
+                XCTAssertEqual(kinds, [f.id(f.browser): "browser", f.id(f.quickDetour): "quick_detour",
+                                       f.id(settings): "settings"],
+                               "the Private Quick Detour and the quarantine are left out while Private is off")
+                XCTAssertEqual(content["hidden_private_windows"], 2)
+            }
             let quick = try XCTUnwrap(listed.first { $0["kind"] == "quick_detour" })
             XCTAssertEqual(quick["is_private"], false)
             XCTAssertEqual(quick["selected_tab_url"], "https://kinds.invalid/quick")
@@ -193,42 +207,105 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
         XCTAssertEqual(Set(before).count, 3)
     }
 
-    @MainActor func testPrivateQuickDetourAndQuarantineWindowsAreRefusedWhateverTheSetting() async throws {
+    /// Off: refused by every window tool, their Window-menu entries neither
+    /// matched nor listed.
+    @MainActor func testPrivateQuickDetourAndQuarantineWindowsAreRefusedWhilePrivateIsOff() async throws {
         let f = try makeFixture()
-        XCTAssertEqual(AutomationWindows.privateQuickDetourAccess, .never,
-                       "PROVISIONAL: change this test with the setting if they come to follow the opt-in")
-        for allowed in [false, true] {
-            f.setting.allowed = allowed
-            for controller in [f.privateQuickDetour, f.quarantine] {
-                let id: JSONValue = .int(f.id(controller))
-                for (tool, arguments) in [
-                    ("screenshot", ["window_id": id, "include_image": false]),
-                    ("hit_test", ["window_id": id, "x": 10, "y": 10]),
-                    ("click", ["window_id": id, "x": 10, "y": 10]),
-                    ("press_key", ["window_id": id, "key": "escape"]),
-                    ("run_menu_item", ["window_id": id, "path": ["File", "Close Window"]]),
-                    ("list_tabs", ["window_id": id]),
-                ] as [(String, JSONValue)] {
-                    let refused = try await code(f.server, tool, arguments)
-                    XCTAssertEqual(refused, "private_unreachable", "\(tool) allowed: \(allowed)")
-                }
+        XCTAssertEqual(AutomationWindows.privateQuickDetourAccess, .privateOptIn,
+                       "the user's decision: they follow the Private setting")
+        f.setting.allowed = false
+        for controller in [f.privateQuickDetour, f.quarantine] {
+            let id: JSONValue = .int(f.id(controller))
+            for (tool, arguments) in [
+                ("screenshot", ["window_id": id, "include_image": false]),
+                ("hit_test", ["window_id": id, "x": 10, "y": 10]),
+                ("click", ["window_id": id, "x": 10, "y": 10]),
+                ("press_key", ["window_id": id, "key": "escape"]),
+                ("run_menu_item", ["window_id": id, "path": ["File", "Close Window"]]),
+                ("list_tabs", ["window_id": id]),
+            ] as [(String, JSONValue)] {
+                let refused = try await code(f.server, tool, arguments)
+                XCTAssertEqual(refused, "private_unreachable", tool)
             }
-            // The Window menu's entries for them are neither matched nor listed.
-            let message = try await call(f.server, "run_menu_item", ["window_id": .int(f.id(f.browser)),
-                                                                    "path": ["Window", "Quarantined Page"]])
-            XCTAssertEqual(message.content["error"]?["code"], "unknown_menu_item")
-            let windowMenu = try XCTUnwrap(f.tools.environment.mainMenu()?.items.last?.submenu)
-            XCTAssertEqual(AutomationMenuTracker.describe(windowMenu, allowPrivate: allowed)
-                .compactMap { $0["title"]?.stringValue }, ["Quick Page"])
+            let (testRunTools, testRun) = testRunServer(f)
+            let frame: [String: JSONValue] = ["x": 40, "y": 80, "width": 500, "height": 400]
+            let selectors: [[String: JSONValue]] = [["window_id": .int(testRunTools.windowIDs.id(for: controller))],
+                                                    ["window_number": .int(try XCTUnwrap(controller.window).windowNumber)]]
+            for selector in selectors {
+                let refused = try await code(testRun, "set_window_frame", .object(frame.merging(selector) { $1 }))
+                XCTAssertEqual(refused, "private_unreachable", "set_window_frame \(selector.keys.sorted())")
+            }
         }
-        XCTAssertEqual(AutomationWindows.access(of: f.quarantine.window), .never)
-        XCTAssertEqual(AutomationWindows.access(of: f.privateQuickDetour.window), .never)
+        // The Window menu's entries for them are neither matched nor listed.
+        let message = try await call(f.server, "run_menu_item", ["window_id": .int(f.id(f.browser)),
+                                                                "path": ["Window", "Quarantined Page"]])
+        XCTAssertEqual(message.content["error"]?["code"], "unknown_menu_item")
+        let windowMenu = try XCTUnwrap(f.tools.environment.mainMenu()?.items.last?.submenu)
+        XCTAssertEqual(AutomationMenuTracker.describe(windowMenu, allowPrivate: false)
+            .compactMap { $0["title"]?.stringValue }, ["Quick Page"])
+        XCTAssertEqual(AutomationWindows.access(of: f.quarantine.window), .privateOptIn)
+        XCTAssertEqual(AutomationWindows.access(of: f.privateQuickDetour.window), .privateOptIn)
         XCTAssertEqual(AutomationWindows.access(of: f.quickDetour.window), .open)
     }
 
-    @MainActor func testAMenuOpenedOverAPrivateQuickDetourIsRefused() async throws {
+    /// On: reachable as a Quick Detour is (screenshot, hit_test and a click
+    /// into the page, set_window_frame by id and by number, the Window
+    /// menu's entries, a menu command), the tools for spaces and tabs still
+    /// `unsupported_window`.
+    @MainActor func testPrivateQuickDetourAndQuarantineWindowsAreReachableWhilePrivateIsOn() async throws {
         let f = try makeFixture()
         f.setting.allowed = true
+        let (testRunTools, testRun) = testRunServer(f)
+        for controller in [f.privateQuickDetour, f.quarantine] {
+            let id: JSONValue = .int(f.id(controller))
+            let shot = try await ok(f.server, "screenshot", ["window_id": id, "include_image": false])
+            let content = try XCTUnwrap(controller.window?.contentView)
+            XCTAssertEqual(shot["width"]?.intValue, Int(content.bounds.width.rounded()))
+            let webView = try XCTUnwrap(controller.tab?.webView)
+            let point = try contentCentre(of: webView)
+            let hit = try await ok(f.server, "hit_test", ["window_id": id, "x": point["x"]!, "y": point["y"]!])
+            XCTAssertEqual(hit["target"], "web_view")
+            let clicked = try await ok(f.server, "click", ["window_id": id, "x": point["x"]!, "y": point["y"]!])
+            XCTAssertEqual(clicked["target"], "web_view")
+            let refused = try await code(f.server, "list_tabs", ["window_id": id])
+            XCTAssertEqual(refused, "unsupported_window", "a Quick Detour's page is no tab of a space")
+            let window = try XCTUnwrap(controller.window)
+            let frame: [String: JSONValue] = ["x": 40, "y": 80, "width": 720, "height": 480]
+            let selectors: [[String: JSONValue]] = [["window_id": .int(testRunTools.windowIDs.id(for: controller))],
+                                                    ["window_number": .int(window.windowNumber)]]
+            for selector in selectors {
+                _ = try await ok(testRun, "set_window_frame", .object(frame.merging(selector) { $1 }))
+                XCTAssertEqual(window.frame.size, NSSize(width: 720, height: 480), "set_window_frame \(selector.keys.sorted())")
+            }
+        }
+        // The Window menu's entries for them are listed and run.
+        let windowMenu = try XCTUnwrap(f.tools.environment.mainMenu()?.items.last?.submenu)
+        XCTAssertEqual(AutomationMenuTracker.describe(windowMenu, allowPrivate: true)
+            .compactMap { $0["title"]?.stringValue }, ["Quick Page", "Private Quick Page", "Quarantined Page"])
+        let entry = try await ok(f.server, "run_menu_item", ["window_id": .int(f.id(f.browser)),
+                                                            "path": ["Window", "Quarantined Page"]])
+        XCTAssertEqual(entry["completed"], true)
+
+        // A command goes to the Private Quick Detour's own responder chain.
+        f.privateQuickDetour.closeDisposition = .discard
+        let ran = try await ok(f.server, "run_menu_item", ["window_id": .int(f.id(f.privateQuickDetour)),
+                                                          "path": ["File", "Close Window"]])
+        XCTAssertEqual(ran["completed"], true)
+        let deadline = Date().addingTimeInterval(3)
+        while QuickDetourWindowController.openControllers.contains(where: { $0 === f.privateQuickDetour })
+            && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertFalse(QuickDetourWindowController.openControllers.contains { $0 === f.privateQuickDetour }, "it closed")
+
+        // Turned off again: refused at once.
+        f.setting.allowed = false
+        let refused = try await code(f.server, "screenshot", ["window_id": .int(f.id(f.quarantine)), "include_image": false])
+        XCTAssertEqual(refused, "private_unreachable")
+    }
+
+    @MainActor func testAMenuOpenedOverAQuarantineFollowsThePrivateSetting() async throws {
+        let f = try makeFixture()
         let window = try XCTUnwrap(f.quarantine.window)
         let menu = NSMenu(title: "Quarantine Menu")
         menu.addItem(NSMenuItem(title: "Item", action: nil, keyEquivalent: ""))
@@ -243,11 +320,16 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
         NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
         defer { NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menu) }
         XCTAssertTrue(AutomationMenuTracker.shared.topMenu === menu, "the tracker took the menu")
-        XCTAssertEqual(AutomationMenuTracker.shared.access(of: menu), .never)
+        XCTAssertEqual(AutomationMenuTracker.shared.access(of: menu), .privateOptIn)
+        f.setting.allowed = false
         let refused = try await code(f.server, "list_menu", ["timeout_ms": 500])
-        XCTAssertEqual(refused, "private_unreachable", "even with Private windows allowed")
+        XCTAssertEqual(refused, "private_unreachable", "with Private windows off")
         let chosen = try await code(f.server, "choose_menu_item", ["title": "Item", "timeout_ms": 500])
         XCTAssertEqual(chosen, "private_unreachable")
+        f.setting.allowed = true
+        let listed = try await ok(f.server, "list_menu", ["timeout_ms": 500])
+        XCTAssertEqual(listed["items"]?.arrayValue?.compactMap { $0["title"]?.stringValue }, ["Item"],
+                       "with Private windows allowed: \(listed.jsonString)")
     }
 
     // MARK: Quick Detour windows
@@ -326,7 +408,7 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
 
     @MainActor func testAHitTestBeforeThePersonsMenuOpensDoesNotOpenItUp() async throws {
         let f = try makeFixture()
-        f.setting.allowed = true
+        f.setting.allowed = false
         let quarantineWindow = try XCTUnwrap(f.quarantine.window)
         // The person right-clicks the quarantine's page; WebKit's menu opens
         // some time later, and an agent's hit_test runs in between.
@@ -338,12 +420,13 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
         menu.addItem(NSMenuItem(title: "Item", action: nil, keyEquivalent: ""))
         NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
         defer { NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menu) }
-        XCTAssertEqual(AutomationMenuTracker.shared.access(of: menu), .never)
+        XCTAssertEqual(AutomationMenuTracker.shared.access(of: menu), .privateOptIn,
+                       "noted as over the quarantine, not the hit-tested browser window")
         let refused = try await code(f.server, "choose_menu_item", ["title": "Item", "timeout_ms": 500])
         XCTAssertEqual(refused, "private_unreachable")
     }
 
-    @MainActor func testAWindowHangingOffAChildOfAPrivateQuickDetourIsAsUnreachable() throws {
+    @MainActor func testAWindowHangingOffAChildOfAPrivateQuickDetourIsReachedAsItIs() throws {
         let f = try makeFixture()
         let quarantineWindow = try XCTUnwrap(f.quarantine.window)
         let rect = NSRect(x: 0, y: 0, width: 40, height: 40)
@@ -359,7 +442,7 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
             grandchild.orderOut(nil)
             child.orderOut(nil)
         }
-        XCTAssertEqual(AutomationWindows.access(of: grandchild), .never, "a popover on a popover of the quarantine")
+        XCTAssertEqual(AutomationWindows.access(of: grandchild), .privateOptIn, "a popover on a popover of the quarantine")
         XCTAssertEqual(AutomationWindows.access(of: f.browser.window), .open)
     }
 
@@ -482,6 +565,10 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
     /// (TASK-228.8), and is refused on the user's endpoint.
     @MainActor func testASettingsPopUpOpensForATestRunsClick() async throws {
         let f = try makeFixture(settings: true)
+        // The fixture's quarantine can be the key window while the test host
+        // is active, and the tracker then notes the pop-up's menu as over a
+        // Private window: allowed here, so only the Settings gates count.
+        f.setting.allowed = true
         let settings = try XCTUnwrap(f.settings)
         settings.showPane(named: "quickdetour")
         let settingsWindow = try await settledWindow(settings)

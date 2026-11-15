@@ -191,9 +191,9 @@ final class AutomationTools {
                 .filter { !($0.controller is BrowserWindowController) }
     }
 
-    /// The window `window_id` names, of any kind. A Private one only while
-    /// the user allows it; a Private Quick Detour or quarantine window as
-    /// `AutomationWindows.privateQuickDetourAccess` says.
+    /// The window `window_id` names, of any kind. A Private one (a Private
+    /// browser window, a Private Quick Detour or a quarantine window) only
+    /// while the user allows it (`AutomationWindows.access(of:)`).
     func anyWindow(id: Int) throws -> AutomationWindow {
         guard let found = addressableWindows.first(where: { windowIDs.id(for: $0.controller) == id }) else {
             throw AutomationToolError(.unknownWindow, "No open window \(id)")
@@ -260,8 +260,8 @@ final class AutomationTools {
             name: "list_windows",
             title: "List windows",
             description: "Lists Detour's windows with their kind: browser, quick_detour, quarantine and settings "
-                + "(Private windows are left out unless the user allows agents to use them; Private Quick Detour and "
-                + "quarantine windows are always left out; is_private says which is one): each one's window_id, "
+                + "(Private windows, Private Quick Detour and quarantine windows included, are left out unless the "
+                + "user allows agents to use Private windows; is_private says which is one): each one's window_id, "
                 + "window_number (its CGWindowID), frame (AppKit's, bottom-left origin), screen_bounds (the window "
                 + "server's, top-left origin, as screencapture takes it), display_id, key/main state, active space "
                 + "and selected tab (a Quick Detour's page). window_id is what the other tools take; the tools for "
@@ -563,8 +563,11 @@ final class AutomationTools {
                 // A route into a Private window would make one reachable from
                 // automation: refused, not followed, unless the user allows
                 // Private windows (TASK-228.5). A quarantine (a Quick Detour
-                // window in the Private profile, which no tool reaches) is
-                // always refused. Only where `openTypedURL` would route (the
+                // window in the Private profile with a store of its own) is
+                // always refused here, whatever the setting, though an open
+                // one is reachable while Private is allowed (TASK-228.7) and
+                // a click on a routed link in a page still opens one. Only
+                // where `openTypedURL` would route (the
                 // same rule it asks).
                 if typedURLIsRoutable(url, isSearch: false, navigatesInPlace: inPlace && controller.selectedTab != nil),
                    let decision = controller.routedTypedDecision(for: url),

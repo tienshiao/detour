@@ -13,7 +13,9 @@ nonisolated enum AutomationWindowKind: String, Sendable {
 
 /// Whether a client may reach a window, a menu opened over it, or a page in
 /// it. A window is open to every client, Private only while the user allows
-/// agents to use Private windows (TASK-228.5), or never reached.
+/// agents to use Private windows (TASK-228.5: Private browser windows, and
+/// since the user's decision on TASK-228.7 Private Quick Detour and
+/// quarantine windows), or never reached (no window kind is, today).
 nonisolated enum AutomationWindowAccess: Int, Comparable, Sendable {
     case open
     case privateOptIn
@@ -67,13 +69,14 @@ struct AutomationWindow {
 /// and the Window menu's entries all agree.
 enum AutomationWindows {
 
-    /// How a Private Quick Detour window or a quarantine window is reached.
-    /// PROVISIONAL (TASK-228.7, chosen while the user was away): never,
-    /// whatever the setting, as the documented model has said since
-    /// TASK-228.5 ("the Private profile's Quick Detour and quarantine pages"
-    /// are never reached). The alternative, `.privateOptIn`, would treat them
-    /// as Private browser windows are; switching is this one value.
-    static let privateQuickDetourAccess: AutomationWindowAccess = .never
+    /// How a Private Quick Detour window or a quarantine window is reached:
+    /// as Private browser windows are, only while the user allows agents to
+    /// use Private windows (the user's decision on TASK-228.7, 2026-11-14,
+    /// replacing a provisional `.never`). Every path asks this through
+    /// `access(of:)`: list_windows, refusal by window_id, menus opened over
+    /// the window, the Window menu's entries, set_window_frame, page and
+    /// extension-popup resolution, and input by context.
+    static let privateQuickDetourAccess: AutomationWindowAccess = .privateOptIn
 
     /// The identifier of Settings > General's Automation section. No input
     /// tool reaches a view inside it, so no agent turns on Private access,
