@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Automation endpoint (MCP)
-description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2, TASK-228.3, TASK-228.5, TASK-228.7): how it is turned on, who may connect (Host, Origin, a test run's shared token, per-client tokens the user approves in Detour's own prompt, and the rejected alternatives), the Private-window opt-in, the HTTP and MCP layers, the tools and their stable error codes, the window kinds a window_id names (browser, Quick Detour, quarantine, Settings) and who reaches which, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the per-extension compatibility report (static scan of chrome.* references checked in the live worker and a probe page, the stub registry and its call counts, API-naming runtime errors, unsupported manifest keys and permissions, worker failures) and the stable output for diffing against a baseline, capture staging (a demo world seeded from a fixture file and its format, displays and exact window placement read back from the window server, paced typing, Debug UI on demand, the test-run guard on Arc's folder, who takes the focus), the connected-agent indicator and disconnecting (revoking an approved client), the bundled stdio helper and where it keeps each client's token, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, a shared item retitled per window, a table's hit test that follows the current event, renumbered posted events, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host, a window's open animation, focus during captures)."
+description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2, TASK-228.3, TASK-228.5, TASK-228.7, TASK-228.8): how it is turned on, who may connect (Host, Origin, a test run's shared token, per-client tokens the user approves in Detour's own prompt, and the rejected alternatives), the Private-window opt-in, the HTTP and MCP layers, the tools and their stable error codes, the window kinds a window_id names (browser, Quick Detour, quarantine, Settings) and who reaches which, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the per-extension compatibility report (static scan of chrome.* references checked in the live worker and a probe page, the stub registry and its call counts, API-naming runtime errors, unsupported manifest keys and permissions, worker failures) and the stable output for diffing against a baseline, capture staging (a demo world seeded from a fixture file and its format, displays and exact window placement read back from the window server, paced typing, Debug UI on demand, the test-run guard on Arc's folder, who takes the focus), the connected-agent indicator and disconnecting (revoking an approved client), the bundled stdio helper and where it keeps each client's token, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, a shared item retitled per window, a table's hit test that follows the current event, AppKit controls that track a click only through the window's routing, a switch's pill, renumbered posted events, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host, a window's open animation, focus during captures)."
 tags: [automation, mcp, testing, security]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T12:00:00Z }
@@ -81,6 +81,9 @@ sources:
   - id: windows
     resource: ../../Detour/Automation/AutomationWindows.swift
     title: AutomationWindows.swift (window kinds, who reaches which, Settings' Automation section)
+  - id: task-228-8
+    resource: backlog:TASK-228.8
+    title: "Automation: a click from the endpoint toggles a switch and opens a pop-up in Settings"
   - id: webkit-manifest
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
     title: "WebKit, WebExtension.cpp (the manifest keys it reads, supportedPermissions)"
@@ -345,7 +348,7 @@ tool's schema to hold it.
 | `select_tab` | Selects an item as a row click does | Switches the window's space first; wakes a dormant pinned entry or favourite; `dormant_refused` when its extension keeps it dormant. |
 | `open_url` | The palette's typed-URL path (`openTypedURL`): a new tab, or `in_place` | Link Routes apply as for a typed URL; `routed` says the URL went elsewhere. |
 | `run_menu_item` | A main-menu command by path or key equivalent, sent to that window's responder chain and validated there; any kind of window | Works with Detour in the background, where there is no key window. Each menu on a path is validated for the named window before it is matched (TASK-228.7), so a title that changes with the window is the one it shows there ("File > Unpin Tab" while that window's tab is pinned, whichever window validated the shared item last). |
-| `click` | A click by element (`context` + CSS `selector`), by page point (`context` + CSS-pixel `x`, `y`) or by window point (`window_id` of any kind + `x`, `y`, the content's top-left origin); `button` left/right, `modifiers`, `count` 2 for a double click | Closes an open menu first. `completed` false: the click opened a menu or an alert that is still open. A right click on a sidebar row's label or icon opens the row's menu (TASK-228.7; see Traps). |
+| `click` | A click by element (`context` + CSS `selector`), by page point (`context` + CSS-pixel `x`, `y`) or by window point (`window_id` of any kind + `x`, `y`, the content's top-left origin); `button` left/right, `modifiers`, `count` 2 for a double click | Closes an open menu first. `completed` false: the click opened a menu or an alert that is still open. A right click on a sidebar row's label or icon opens the row's menu (TASK-228.7; see Traps). A switch toggles and a pop-up opens (TASK-228.8): aim at the centre of the frame `hit_test` gives. |
 | `type_text` | Key presses for `text` into a tab's page (after clicking `selector`, if given) or a window's focused control; `interval_ms` paces them | US key codes; other characters as key presses with no physical key. |
 | `press_key` | One key with modifiers (`return`, `shift+tab`, `cmd+a`) | A Cmd key goes through the target's key equivalents (`handled`); menu commands are `run_menu_item`. |
 | `hit_test` | What a click at a window point would reach: view class, accessibility role and label, frame; any kind of window, Settings on any endpoint | Read-only; aims `click` without a screenshot. Hit-tests as AppKit's dispatch does, with the press as the current event: a sidebar row's label reports `DraggableTableView`. |
@@ -478,6 +481,29 @@ reaches each kind of target:
   run-loop mode of its own, so no other tool's pending run-loop work runs
   inside the call), as in AppKit's own dispatch. See the trap on sidebar rows. Checked at runtime with Detour in the background:
   the sidebar's Add Space button opened the space editor.
+- **A left press on a view that takes a first click** goes through the
+  window's own routing instead (`NSWindow.sendEvent`, press and then, if
+  still queued, the release), because AppKit's own controls track a click
+  with gesture recognizers that only that routing feeds (see Traps).[^task-228-8]
+  `AutomationInput.deliversThroughWindow` decides, inside the run-loop body:
+  the view's class has no `mouseDown` of its own between it and AppKit
+  (such a view tracks the press itself, and is not even asked about a first
+  click: Quick Detour's title-bar buttons read that question as "this press
+  activates the window" and then drop the press), it accepts first mouse for the press, it does not delay window
+  ordering for it (a sidebar row does), and the window's hit test, with the
+  press current, still finds the very view the tool checked (so the press
+  never reaches a view the Settings gates did not see). Any other view, and
+  every right click, keeps the direct route: the window drops a press on a
+  view that does not take a first click while Detour is in the background or
+  the window is not key, and most of Detour's own views do not. Checked at
+  runtime in a test run: Settings > General's Peek switch toggles both ways
+  (its stored `PeekEnabled` changes), Settings > Quick Detour's pop-up opens
+  (`list_menu` lists it) and `choose_menu_item` changes the stored value;
+  the sidebar's Back button (a `HoverButton`) still goes back with Detour in
+  the background, and the app stays inactive. One difference from direct
+  delivery: with Detour active, a routed click in a window that is not key
+  makes that window key, as a person's click does (between two browser
+  windows that also moves the web view ownership; not covered by a test).
 - **Every event goes out from `RunLoop.main.perform`**, as `run_menu_item`'s
   actions do (see Traps): a native context menu runs its whole tracking loop
   inside `rightMouseDown`, so the click answers `completed: false` after
@@ -1096,7 +1122,8 @@ In a test run, Claude Code can also connect directly:
   dispatch does, which a view acting on `mouseUp` such as the faux address
   bar's buttons needs): `AutomationInput.sameTime` compares within a microsecond, and
   the input tools' own mouse events are made at least 10 µs apart so they
-  stay told apart (`isSynthetic`). The test host also moves the location.
+  stay told apart (`isSynthetic`). Its location and window come back as
+  they were posted (checked in the test host, TASK-228.8).
   Every event the endpoint takes off the queue itself is taken in a
   run-loop mode of its own, never a common one, where `nextEvent` would run
   main-actor jobs and other tools' run-loop bodies inside the caller.
@@ -1136,11 +1163,33 @@ In a test run, Claude Code can also connect directly:
   hit test in the window found `NSMenuHighlightView`, and Escape sent to the
   window's first responder does not reach a tracking menu. Input tools close
   open menus first; `close_menu` closes one on its own.
-- **The test host moves posted events.** A native control's tracking loop
-  reads the queued mouse-up, which in the XCTest host comes back with its
-  location moved, so a button's action never fires there.
-  `AutomationInputTests` checks that the view gets the mouse-down; the
-  action is checked in the running app.
+- **AppKit's own controls ignore a press handed to `mouseDown`.** On this
+  macOS (26, November 2026) `NSSwitch`, `NSButton` and `NSPopUpButton`, not
+  subclassed, track a click with an `NSControlGestureRecognizer` that
+  `NSWindow.sendEvent` feeds. Their `mouseDown(with:)` returns in about a
+  millisecond without a tracking loop (an `nextEvent` swizzle in the test
+  host saw none), so the queued release was still there, went to
+  `mouseUp(with:)`, and nothing happened: a Settings switch never toggled
+  and a pop-up never opened (TASK-228.8). A subclass that overrides
+  `mouseDown` still tracks the old way (`_overridesRequireMouseDownFallback`,
+  private), which is why `HoverButton` subclasses and test doubles worked.
+  Through `window.sendEvent`, press and release, the recognizer begins on
+  the press and the control acts on the release, with Detour inactive and
+  the window not key. An earlier note here said the test host moves posted
+  events' locations and that this was why a button's action never fired
+  there; probes showed the location unchanged, and the cause was this.
+- **A switch acts only for a press on its pill.** `NSSwitch`'s view is wider
+  than the pill it draws; a press at the view's left edge (inside its
+  bounds, so `hit_test` reports `NSSwitch`) fails its own track hit test
+  (`_hitTestForTrackMouseEvent:`, private, answered 0) and the recognizer
+  does not begin, at runtime as a person's would not. Aim at the frame's
+  centre that `hit_test` returns. Scanning for the first point that hits the
+  switch made the first runtime checks of this fix look like failures.
+- **A left click on a sidebar row does not select its tab through the
+  endpoint**, before or after TASK-228.8 (the row keeps the direct route;
+  through the window its press ran no tracking loop either). Not
+  investigated further: `select_tab` selects a row's item as a row click
+  does.
 - **In-app captures cannot draw window-server materials.** `cacheDisplay`
   draws the content view (web content included, even with Detour in the
   background) but leaves the sidebar blank, so the sidebar is drawn again
@@ -1269,7 +1318,9 @@ session and a split, kept-alive request over a real socket),
 `AutomationInputTests` (trusted clicks by selector, by page and by window
 point, modifier and double clicks, typing in order with US codes, Return,
 a page's context menu listed and closed, a native view's mouse-down with no
-mouse-up left queued, a native context menu chosen from, a right click on a
+mouse-up left queued, a native context menu chosen from, an `NSSwitch`
+toggled both ways and an `NSPopUpButton` opened, listed and chosen from with
+the window not key, when a press goes through the window, a right click on a
 sidebar row's label and icon opening the row's menu, and the input errors),
 `AutomationCaptureTests` (window, sidebar and page PNGs as image content
 and on disk, scale 2, the page's own colours from WebKit's snapshot, light
@@ -1379,3 +1430,4 @@ its contexts following the setting).[^tests][^approval-tests]
 [^approvals]: AutomationApprovals.swift, AutomationClients.swift and AutomationApprovalPanel.swift (the authorize route, the client store, the prompt)
 [^approval-tests]: AutomationClientApprovalTests and AutomationPrivateAccessTests
 [^task-228-7]: Automation: run_menu_item and right clicks match what the user sees (live titles, row labels), and Quick Detour windows and Settings can be addressed
+[^task-228-8]: Automation: a click from the endpoint toggles a switch and opens a pop-up in Settings

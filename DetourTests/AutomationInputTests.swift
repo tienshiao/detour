@@ -256,6 +256,23 @@ nonisolated final class AutomationInputTests: XCTestCase {
         override func mouseUp(with event: NSEvent) { ups.append(event) }
     }
 
+    /// Takes a first click and delays window ordering, as a sidebar row does.
+    @MainActor private final class DelayingView: NSView {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func shouldDelayWindowOrdering(for event: NSEvent) -> Bool { true }
+    }
+
+    /// Takes a first click and tracks its own press, as Quick Detour's
+    /// title-bar buttons do; counts how often it is asked.
+    @MainActor private final class TrackingFirstClickView: NSView {
+        var firstMouseQueries = 0
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+            firstMouseQueries += 1
+            return true
+        }
+        override func mouseDown(with event: NSEvent) {}
+    }
+
     @MainActor private final class MenuView: NSView {
         var contextMenu: NSMenu?
         override func menu(for event: NSEvent) -> NSMenu? { contextMenu }
@@ -272,11 +289,9 @@ nonisolated final class AutomationInputTests: XCTestCase {
         let f = try await makeFixture()
         let content = try XCTUnwrap(f.window.window?.contentView)
         let receiver = Receiver()
-        // The view under the point gets the mouse-down itself. Whether a
-        // control's tracking loop then finds the queued mouse-up is checked in
-        // the running app (an NSButton's action fires, Detour in the
-        // background): in the test host a posted event comes back from the
-        // queue with its location moved (wiki: in-process UI automation).
+        // A view that does not accept a first click gets the mouse-down
+        // itself (the window would drop it while Detour is in the background);
+        // AppKit's controls are covered by the switch and pop-up test below.
         let clickView = ClickView(frame: NSRect(x: content.bounds.midX - 60, y: content.bounds.midY - 15, width: 120, height: 30))
         content.addSubview(clickView)
         let (bx, by) = try contentCentre(of: clickView)
@@ -319,6 +334,91 @@ nonisolated final class AutomationInputTests: XCTestCase {
         let (chosen, chooseError) = try await call(f, "choose_menu_item", ["title": "First"])
         XCTAssertFalse(chooseError, chosen.jsonString)
         try await waitUntil("the menu item's action", timeout: 3) { receiver.actions == ["chosen"] }
+        try await waitUntil("the menu to close", timeout: 3) { AutomationMenuTracker.shared.topMenu == nil }
+    }
+
+    /// AppKit's own controls take a click as a person's (TASK-228.8): a
+    /// switch toggles and a pop-up opens its menu. They track a click with
+    /// gesture recognizers that only the window's routing feeds, so the press
+    /// and release go through `NSWindow.sendEvent`; handed to the control's
+    /// `mouseDown` they did nothing. The window is not key and the test host
+    /// is not active, as with Detour in the background.
+    @MainActor func testASwitchTogglesAndAPopUpOpensItsMenu() async throws {
+        let f = try await makeFixture()
+        let content = try XCTUnwrap(f.window.window?.contentView)
+        let receiver = Receiver()
+        let toggle = NSSwitch(frame: NSRect(x: content.bounds.midX - 20, y: content.bounds.midY - 60, width: 40, height: 22))
+        toggle.target = receiver
+        toggle.action = #selector(Receiver.chosen(_:))
+        let popUp = NSPopUpButton(frame: NSRect(x: content.bounds.midX - 80, y: content.bounds.midY, width: 160, height: 26),
+                                  pullsDown: false)
+        popUp.addItems(withTitles: ["One", "Two", "Three"])
+        let popUpReceiver = Receiver()
+        popUp.target = popUpReceiver
+        popUp.action = #selector(Receiver.chosen(_:))
+        content.addSubview(toggle)
+        content.addSubview(popUp)
+        defer {
+            toggle.removeFromSuperview()
+            popUp.removeFromSuperview()
+        }
+
+        let (sx, sy) = try contentCentre(of: toggle)
+        let (hit, _) = try await call(f, "hit_test", ["window_id": .int(f.windowID), "x": .double(sx), "y": .double(sy)])
+        XCTAssertEqual(hit["view"], "NSSwitch")
+        XCTAssertEqual(toggle.state, .off)
+        let (clicked, isError) = try await call(f, "click", ["window_id": .int(f.windowID), "x": .double(sx), "y": .double(sy)])
+        XCTAssertFalse(isError, clicked.jsonString)
+        XCTAssertEqual(clicked["view"], "NSSwitch")
+        XCTAssertEqual(clicked["completed"], true)
+        XCTAssertEqual(toggle.state, .on, "the switch toggled")
+        XCTAssertEqual(receiver.actions, ["chosen"], "and sent its action")
+        _ = try await call(f, "click", ["window_id": .int(f.windowID), "x": .double(sx), "y": .double(sy)])
+        XCTAssertEqual(toggle.state, .off, "a second click toggles it back")
+        XCTAssertNil(NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .eventTracking, dequeue: false),
+                     "no mouse-up is left queued")
+
+        // Through the window only while its hit test still finds the view
+        // the tool checked, and only for a view that takes a first click.
+        let window = try XCTUnwrap(f.window.window)
+        let centre = toggle.convert(NSPoint(x: toggle.bounds.midX, y: toggle.bounds.midY), to: nil)
+        let press = try XCTUnwrap(AutomationInput.mouseEvent(.leftMouseDown, at: centre, in: window, modifiers: [],
+                                                             clickCount: 1))
+        XCTAssertTrue(AutomationInput.deliversThroughWindow(press, to: toggle, in: window))
+        let cover = ClickView(frame: toggle.frame.insetBy(dx: -4, dy: -4))
+        content.addSubview(cover)
+        XCTAssertFalse(AutomationInput.deliversThroughWindow(press, to: toggle, in: window),
+                       "a view now over it would get the press, so it goes to the checked view directly")
+        XCTAssertFalse(AutomationInput.deliversThroughWindow(press, to: cover, in: window),
+                       "a view that takes no first click gets the press directly")
+        cover.removeFromSuperview()
+        let rowLike = DelayingView(frame: toggle.frame.insetBy(dx: -4, dy: -4))
+        content.addSubview(rowLike)
+        XCTAssertFalse(AutomationInput.deliversThroughWindow(press, to: rowLike, in: window),
+                       "a view that delays window ordering (a sidebar row) keeps the direct route")
+        rowLike.removeFromSuperview()
+        let tracking = TrackingFirstClickView(frame: toggle.frame.insetBy(dx: -4, dy: -4))
+        content.addSubview(tracking)
+        XCTAssertFalse(AutomationInput.deliversThroughWindow(press, to: tracking, in: window),
+                       "a view with its own mouseDown keeps the direct route")
+        XCTAssertEqual(tracking.firstMouseQueries, 0, "and is not asked whether it takes a first click")
+        tracking.removeFromSuperview()
+
+        let (px, py) = try contentCentre(of: popUp)
+        let (opened, openError) = try await call(f, "click", ["window_id": .int(f.windowID), "x": .double(px), "y": .double(py)])
+        let (listed, listError) = try await call(f, "list_menu", ["timeout_ms": 3000])
+        let titles = listed["items"]?.arrayValue?.compactMap { $0["title"]?.stringValue } ?? []
+        let (chosen, chooseError) = try await call(f, "choose_menu_item", ["title": "Two"])
+        // Closed before any unwrap can throw, so a failure leaves no menu open.
+        await AutomationMenuTracker.shared.closeAll()
+        XCTAssertFalse(openError, opened.jsonString)
+        XCTAssertEqual(opened["view"], "NSPopUpButton")
+        XCTAssertEqual(opened["menu_open"], true, "the pop-up's menu is open: \(opened.jsonString)")
+        XCTAssertFalse(listError, listed.jsonString)
+        XCTAssertEqual(titles, ["One", "Two", "Three"])
+        XCTAssertFalse(chooseError, chosen.jsonString)
+        try await waitUntil("the pop-up's action", timeout: 3) { popUpReceiver.actions == ["chosen"] }
+        XCTAssertEqual(popUp.titleOfSelectedItem, "Two")
         try await waitUntil("the menu to close", timeout: 3) { AutomationMenuTracker.shared.topMenu == nil }
     }
 

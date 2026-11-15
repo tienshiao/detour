@@ -11,9 +11,12 @@ import WebKit
 ///   short pause, `mouseUp(with:)`) as a person's click. The same click posted
 ///   through `NSApp.postEvent` is swallowed by an inactive app (only a
 ///   Cmd-click gets through).
-/// - A native control's `mouseDown(with:)` runs its own tracking loop, which
-///   reads the matching mouse-up from the app's event queue: the mouse-up is
-///   posted first, then the mouse-down is handed to the view under the point.
+/// - A native view gets the press with the mouse-up already posted to the
+///   app's event queue, where a tracking loop (`NSCell.trackMouse`, a view's
+///   own `nextEvent` loop) finds it. A left press on a view that accepts a
+///   first click goes through the window's own routing (`NSWindow.sendEvent`),
+///   press and release: AppKit's controls track a click with gesture
+///   recognizers only that routing feeds (`deliversThroughWindow`).
 /// - Keys go to the target's `keyDown(with:)`; a character with no US key
 ///   goes as a key press with no physical key, so it stays in order.
 enum AutomationInput {
@@ -217,6 +220,49 @@ enum AutomationInput {
         hitView(at: point, in: window, button: button, modifiers: modifiers).map(target(for:))
     }
 
+    /// Whether a left press on `view` (the view the tool hit-tested and
+    /// checked) goes through the window's own routing, `NSWindow.sendEvent`,
+    /// rather than to `view.mouseDown` directly. AppKit's own controls
+    /// (`NSSwitch`, `NSButton`, `NSPopUpButton`, not subclassed) track a click
+    /// with gesture recognizers that only that routing feeds: their
+    /// `mouseDown` returns at once and runs no tracking loop, so a switch
+    /// handed the press never toggled and a pop-up never opened (TASK-228.8).
+    /// A subclass that overrides `mouseDown` still tracks the old way.
+    ///
+    /// Only when `view` accepts a first click: the window drops a press on a
+    /// view that does not while Detour is in the background or the window is
+    /// not key, and the endpoint's clicks work in the background. Such views
+    /// (most of Detour's own) keep getting the press directly. And only when
+    /// the window's hit test, with `press` current as during dispatch, still
+    /// finds `view`, so the press never reaches a view the tool did not
+    /// check (Settings' Automation section). Not for a view that delays
+    /// window ordering for the press (a sidebar row, so it can be dragged out
+    /// of a background window): through the window, the sidebar's table ran
+    /// no tracking loop for the press, so such a view keeps the direct route
+    /// it had before. Never for a view whose class overrides `mouseDown`
+    /// (it tracks the press itself, and some of Detour's read
+    /// `acceptsFirstMouse` as "this press activates the window", so it is
+    /// not asked: Quick Detour's title-bar buttons drop such a press).
+    static func deliversThroughWindow(_ press: NSEvent, to view: NSView, in window: NSWindow) -> Bool {
+        guard !overridesMouseDown(view), view.acceptsFirstMouse(for: press),
+              !view.shouldDelayWindowOrdering(for: press),
+              let frameView = window.contentView?.superview ?? window.contentView else { return false }
+        return frameView.hitTest(press.locationInWindow) === view
+    }
+
+    /// Whether `view`'s class, or a class between it and AppKit's own, has a
+    /// `mouseDown(with:)` of its own.
+    static func overridesMouseDown(_ view: NSView) -> Bool {
+        let appKit = Bundle(for: NSView.self)
+        let viewClass: AnyClass = Swift.type(of: view)
+        var appKitClass: AnyClass = viewClass
+        while Bundle(for: appKitClass) != appKit, let superclass = class_getSuperclass(appKitClass) {
+            appKitClass = superclass
+        }
+        let selector = #selector(NSView.mouseDown(with:))
+        return class_getMethodImplementation(viewClass, selector) != class_getMethodImplementation(appKitClass, selector)
+    }
+
     /// Moves keyboard focus to `view` as a person's left click does (NSWindow
     /// does it in `sendEvent`, which a mouse-down handed to the view skips),
     /// unless focus is already inside it.
@@ -257,31 +303,43 @@ enum AutomationInput {
                 }
                 guard upReturned else { return false }
             case .view(let view):
-                // The control's tracking loop finds the mouse-up in the queue.
+                // A tracking loop finds the mouse-up in the queue.
                 NSApp.postEvent(up, atStart: false)
                 let returned = await runFromRunLoop(wait: wait) {
                     announce(down, in: window)
                     // Current while it is handled, as in AppKit's dispatch.
                     makeCurrent(down)
+                    var routed = false
                     if button == .left {
+                        // Decided before focus moves, which can put a field
+                        // editor over the view and change the hit test.
+                        routed = deliversThroughWindow(down, to: view, in: window)
                         focus(view, in: window)
-                        view.mouseDown(with: down)
+                        if routed { window.sendEvent(down) } else { view.mouseDown(with: down) }
                     } else {
                         view.rightMouseDown(with: down)
                     }
-                    // A view that runs no tracking loop leaves the mouse-up
+                    // A press that ran no tracking loop leaves the mouse-up
                     // queued; the window would later hand it to another view.
-                    // It goes to this view instead, as AppKit's dispatch
-                    // sends a release to the view that took the press (a
-                    // view that acts on mouseUp, such as the faux address
-                    // bar's buttons). Found by its time: posting renumbers an
-                    // event (and the test host moves its location). In
-                    // `privateMode`, so no other work runs inside this body.
+                    // It goes where AppKit's dispatch sends a release: through
+                    // the window on that route (to the view that took the
+                    // press and to the gesture recognizers tracking it),
+                    // otherwise to this view (a view that acts on mouseUp,
+                    // such as the faux address bar's buttons). Found by its
+                    // time: posting renumbers an event. Taken in
+                    // `privateMode`, so no other work runs inside this body;
+                    // taking it makes it the current event.
                     let mask: NSEvent.EventTypeMask = button == .left ? .leftMouseUp : .rightMouseUp
                     if let left = NSApp.nextEvent(matching: mask, until: .distantPast, inMode: privateMode, dequeue: false),
-                       sameTime(left.timestamp, up.timestamp) {
-                        _ = NSApp.nextEvent(matching: mask, until: .distantPast, inMode: privateMode, dequeue: true)
-                        if button == .left { view.mouseUp(with: up) } else { view.rightMouseUp(with: up) }
+                       sameTime(left.timestamp, up.timestamp),
+                       let taken = NSApp.nextEvent(matching: mask, until: .distantPast, inMode: privateMode, dequeue: true) {
+                        if routed {
+                            window.sendEvent(taken)
+                        } else if button == .left {
+                            view.mouseUp(with: up)
+                        } else {
+                            view.rightMouseUp(with: up)
+                        }
                     }
                 }
                 guard returned else { return false }

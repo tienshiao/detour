@@ -449,8 +449,16 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
         // A test run clicks and types there, except in the Automation section.
         let (testRunTools, testRun) = testRunServer(f)
         let testRunID: JSONValue = .int(testRunTools.windowIDs.id(for: settings))
+        let otherBefore = otherSwitch.state
+        // The click changes the stored setting; a failure between the two
+        // clicks must not leave it changed for the rest of the run.
+        let peekBefore = PeekSettings.shared.isEnabled
+        defer { PeekSettings.shared.isEnabled = peekBefore }
         let clicked = try await ok(testRun, "click", ["window_id": testRunID, "x": other["x"]!, "y": other["y"]!])
         XCTAssertEqual(clicked["view"], "NSSwitch")
+        XCTAssertNotEqual(otherSwitch.state, otherBefore, "the switch toggled, as with a person's click (TASK-228.8)")
+        _ = try await ok(testRun, "click", ["window_id": testRunID, "x": other["x"]!, "y": other["y"]!])
+        XCTAssertEqual(otherSwitch.state, otherBefore, "and back")
         for control in [automationSwitch, privateSwitch] {
             let point = try contentCentre(of: control)
             let before = control.state
@@ -468,5 +476,33 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
         let ran = try await ok(testRun, "run_menu_item", ["window_id": testRunID, "path": ["File", "Close Window"]])
         XCTAssertEqual(ran["completed"], true)
         XCTAssertEqual(settings.window?.isVisible, false, "the command went to Settings' own window")
+    }
+
+    /// A pop-up in Settings opens for a test run's click as for a person's
+    /// (TASK-228.8), and is refused on the user's endpoint.
+    @MainActor func testASettingsPopUpOpensForATestRunsClick() async throws {
+        let f = try makeFixture(settings: true)
+        let settings = try XCTUnwrap(f.settings)
+        settings.showPane(named: "quickdetour")
+        let settingsWindow = try await settledWindow(settings)
+        let popUp = try XCTUnwrap(views(NSPopUpButton.self, in: try XCTUnwrap(settingsWindow.contentView))
+            .first { $0.accessibilityIdentifier() == "quickDetourIdleTimeout" })
+        let point = try contentCentre(of: popUp)
+        let refused = try await code(f.server, "click", ["window_id": .int(f.id(settings)),
+                                                         "x": point["x"]!, "y": point["y"]!])
+        XCTAssertEqual(refused, "gate_closed")
+
+        let (testRunTools, testRun) = testRunServer(f)
+        let id: JSONValue = .int(testRunTools.windowIDs.id(for: settings))
+        let (clicked, clickError) = try await call(testRun, "click", ["window_id": id, "x": point["x"]!, "y": point["y"]!])
+        let (listed, listError) = try await call(testRun, "list_menu", ["timeout_ms": 3000])
+        // Closed before any unwrap can throw, so a failure leaves no menu open.
+        await AutomationMenuTracker.shared.closeAll()
+        XCTAssertFalse(clickError, clicked.jsonString)
+        XCTAssertEqual(clicked["view"], "NSPopUpButton")
+        XCTAssertEqual(clicked["menu_open"], true, clicked.jsonString)
+        XCTAssertFalse(listError, listed.jsonString)
+        let titles = listed["items"]?.arrayValue?.compactMap { $0["title"]?.stringValue } ?? []
+        XCTAssertEqual(titles, popUp.itemTitles, "the pop-up's own menu")
     }
 }
