@@ -54,6 +54,7 @@ Each feature has a guide on [detourbrowser.com](https://detourbrowser.com/featur
 - **Session restore**: tabs come back after a relaunch with their scroll position and form state.
 - **Downloads** with progress, reveal in Finder, and history across launches.
 - **Audio**: tabs playing sound show a mute button.
+- **DRM streaming**: protected video plays through FairPlay, the DRM built into WebKit and used by Safari, so Apple TV+ works.
 - **Find in page** (⌘F), a link status bar, and a sidebar you can hide (⌘S).
 - **Automatic updates** through Sparkle.
 
