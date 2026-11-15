@@ -109,11 +109,11 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
 
     // MARK: - The converted rows
 
-    /// General's switches are regular (TASK-328's rows); Quick Detour's are
-    /// in a grouped form (TASK-338), mini as System Settings' are.
+    /// General's and Quick Detour's switches are in grouped forms (TASK-338),
+    /// mini as System Settings' are.
     @MainActor func testTheConvertedSettingsAreSwitchesNamedByTheirLabels() throws {
         let cases: [(SettingsPaneViewController, [(String, String)], NSControl.ControlSize)] = [
-            (GeneralSettingsViewController(), Self.generalSwitches, .regular),
+            (GeneralSettingsViewController(), Self.generalSwitches, .mini),
             (QuickDetourSettingsViewController(), Self.quickDetourSwitches, .mini),
         ]
         for (pane, switches, size) in cases {
@@ -126,30 +126,19 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
         }
     }
 
-    /// The label first, the switch 8 pt after it and centred on it, the
-    /// label at the body's leading edge, as the Extensions pane's Enabled row.
-    /// (Quick Detour's rows are a grouped form since TASK-338:
-    /// `testQuickDetoursControlsShareTheFormsRightEdge`.)
-    @MainActor func testEachSwitchSitsAfterItsLabelAtTheBodysLeadingEdge() throws {
-        let cases: [(SettingsPaneViewController, [(String, String)])] = [
-            (laidOut(GeneralSettingsViewController()), Self.generalSwitches),
-        ]
-        for (pane, switches) in cases {
-            // The body's leading edge: the pane margin.
-            let leading = pane.view.bounds.minX + SettingsMetrics.paneMargin
-            for (identifier, title) in switches {
-                let toggle = try XCTUnwrap(control(identifier, in: pane) as? NSSwitch)
-                let row = try XCTUnwrap(toggle.superview as? NSStackView, identifier)
-                let label = try XCTUnwrap(row.arrangedSubviews.first as? NSTextField, identifier)
-                XCTAssertEqual(label.stringValue, title)
-                let labelFrame = placed(label, in: pane)
-                let switchFrame = placed(toggle, in: pane)
-                XCTAssertEqual(labelFrame.minX, leading, accuracy: 0.5, "\(identifier): the label starts the row")
-                XCTAssertEqual(switchFrame.minX - labelFrame.maxX, SettingsMetrics.labelToControl, accuracy: 0.5,
-                               "\(identifier): the switch follows its label")
-                XCTAssertEqual(switchFrame.midY, labelFrame.midY, accuracy: 0.5, "\(identifier): centred on the label")
-                XCTAssertGreaterThan(labelFrame.width, 0, "\(identifier): the label is not squeezed to nothing")
-            }
+    /// General's switches (TASK-338: a grouped form) end on the form's right
+    /// edge, centred on their names' first line, and the names start on its
+    /// text edge. (Quick Detour's: `testQuickDetoursControlsShareTheFormsRightEdge`.)
+    @MainActor func testGeneralsSwitchesShareTheFormsRightEdge() throws {
+        let pane = laidOut(GeneralSettingsViewController())
+        let right = pane.view.bounds.width - SettingsMetrics.paneMargin - SettingsMetrics.formRowInsetX
+        let left = SettingsMetrics.paneMargin + SettingsMetrics.formRowInsetX
+        for (identifier, title) in Self.generalSwitches {
+            let toggle = try XCTUnwrap(control(identifier, in: pane) as? NSSwitch)
+            let label = try XCTUnwrap(formRow(of: toggle)?.titleLabel, identifier)
+            XCTAssertEqual(label.stringValue, title)
+            XCTAssertEqual(placed(toggle, in: pane).maxX, right, accuracy: 0.5, identifier)
+            XCTAssertEqual(placed(label, in: pane).minX, left, accuracy: 0.5, identifier)
         }
     }
 
@@ -302,7 +291,7 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
     }
 
     /// The bordered group's row (Profiles' filter lists and extension
-    /// switches, an extension's permissions) and the switch row helper.
+    /// switches, an extension's permissions).
     @MainActor func testTheRowHelpersNameTheSwitchAndHideTheLabel() {
         let grouped = NSSwitch()
         let (row, label) = SettingsGroupBoxView.switchRow(grouped, title: "Store data locally")
@@ -310,12 +299,6 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
         // A text field is read through its cell.
         XCTAssertEqual(label.cell?.isAccessibilityElement(), false)
         XCTAssertFalse(staticTexts(under: row).contains("Store data locally"))
-
-        let plain = NSSwitch()
-        let switchRow = SettingsSwitchRow.make(plain, title: "Enabled")
-        XCTAssertEqual(plain.accessibilityLabel(), "Enabled")
-        XCTAssertEqual(staticTexts(under: switchRow), [])
-        XCTAssertTrue(accessibilityElements(under: switchRow).contains { $0 === plain })
     }
 
     /// The sidebar's page settings popover lays its switches out the same

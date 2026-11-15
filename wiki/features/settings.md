@@ -290,8 +290,15 @@ reference): a bold header over an inset rounded group, one row per
 setting with its name on the left and its control on the right, hairlines
 between the rows, help text under the name, a footnote row closing the
 group and buttons for the whole group under it on the
-right.[^task-338] `SettingsForm.swift` holds it; Quick Detour and Content
-Blocking use it (the pilot); the other panes still lay out their own rows.
+right.[^task-338] `SettingsForm.swift` holds it. Quick Detour and Content
+Blocking were the pilot (approved by the user on Nov 14 2026, with its
+provisional choices); phase 2 put every pane's settings in it: General,
+Spaces' and Profiles' and Extensions' detail columns, Links' Default. The
+lists (the master lists, Search's site searches, Links' routes, the
+Shortcuts list) stay lists, drawn as groups: `SettingsListContainerView`
+(a `SettingsBorderedView`) has the group's fill, radius and Increase
+Contrast border and clips its rows, and a list's title is a 13 pt semibold
+header on the rows' text edge (`settingsSectionTitle`, 12 pt before).
 
 - `SettingsForm(sections:estimatedWidth:)`: the sections in a vertical
   stack 30 pt apart (a hidden section leaves no gap). A pane hands it to
@@ -299,10 +306,14 @@ Blocking use it (the pilot); the other panes still lay out their own rows.
   `bottomHug` at the bottom, as every scrolling body must. Under the pane's
   description or Learn more link it starts 8 pt lower (20 pt under the
   link), so the link does not read as the first section's.
-- `SettingsFormSection(title:rows:footnote:buttons:)`: the header (13 pt
-  semibold, on the rows' text edge), 10 pt, the group, and the buttons 10
-  pt under it, ending on the group's right edge (not the rows' inset: that
-  is where System Settings puts them).
+- `SettingsFormSection(title:headerAccessory:rows:footnote:buttons:)`: the
+  header (13 pt semibold, on the rows' text edge) with an optional
+  accessory 8 pt after it on its baseline (Profiles' "Learn more"), 10 pt,
+  the group, and the buttons 10 pt under it, ending on the group's right
+  edge (not the rows' inset: that is where System Settings puts them).
+  `isButtonRowHidden` takes the buttons and their room away (General's
+  copy buttons while automation is off); `group.setRows` replaces the rows
+  (General's allowed clients).
 - `SettingsFormGroupView`: the rows in a stack with no spacing (a hidden row
   leaves no gap and no separator). It draws in `draw(_:)`, so its colours
   follow the appearance: a 12 pt rounded fill of black or white at 3.1%
@@ -311,17 +322,25 @@ Blocking use it (the pilot); the other panes still lay out their own rows.
   the visible rows a hairline inset 10 pt on each side, one device pixel of
   the separator colour at half strength on a 1x screen and full on a 2x one
   (System Settings draws half a point). Under Increase Contrast (the
-  appearance's high-contrast variants) it adds a 1 pt separator-coloured
-  border.
+  appearance's high-contrast variants, or the workspace's flag) it adds a
+  1 pt separator-coloured border, and it clips its rows to its shape.
+  `SettingsGroupStyle` holds the fill and the contrast rule for it and the
+  lists, with `increaseContrastOverride` for tests and capture harnesses: a
+  process cannot turn Increase Contrast on for itself, and
+  `NSAppearance(named: .accessibilityHighContrastAqua)` resolves to plain
+  Aqua while the setting is off (measured: same name, same colours).
 - `SettingsFormRow(title:help:accessory:accessibilityName:)`, or
   `SettingsFormRow(footnote:)`: a text column (the 13 pt name, 11 pt
   secondary help, `addDetail` lines such as a status, a `setWarning` line
   with the orange triangle, `addLink` Learn more links; 3 pt apart, hidden
   ones collapse) ending 16 pt before the control, which ends 10 pt from the
   group's edge. Text keeps 10 pt from the row's top and bottom and the
-  control at least 7, and the row hugs its content (a priority-740 zero
-  height, above a body's stretch), so a one-line switch row is 36 pt and a
-  pop-up row 38, as in System Settings. The accessory is `.toggle` (made
+  control at least 7 (a push button, or a value with one, 10), and the row
+  hugs its content (a priority-740 zero height, above a body's stretch), so
+  a one-line switch row is 36 pt, a pop-up row 38 and a button row 44, as
+  in System Settings. `isEnabled` off disables the control and dims the
+  name (Profiles' filter lists while blocking is off); `isHighlighted`
+  tints the row with the accent colour (Links' Default). The accessory is `.toggle` (made
   mini, 36 × 16, centred on the name's first line), `.popUp`, `.button`,
   `.value(text, button:)`, `.shortcut` (all on the name's first baseline)
   or `.custom` (centred). Help text under a control taller than the name's
@@ -351,16 +370,16 @@ System Settings is built with) rendered on macOS 26 and measured pixel by
 pixel, checked against the user's screenshot. An AppKit form rendered the
 same way gave the same header, first-row text, fill, separator colour and
 corners; further down it drifts by 1 or 2 pt, because its separators
-overlay the rows instead of taking a pixel of their own and its button rows
-are 38 pt where SwiftUI's are 40 (System Settings' Voice and history rows,
-with Tahoe's larger buttons, measure about 44).
+overlay the rows instead of taking a pixel of their own. Button rows were 38
+pt in the pilot (SwiftUI's render: 40); phase 2 made them 44, as System
+Settings' Voice and history rows measure.
 
 | Metric (`SettingsMetrics.form…`) | Value |
 |---|---|
 | Header | 13 pt semibold, 10 pt above the group |
 | Between sections | 30 (group or its buttons to the next header) |
 | Group | the body's width, corner radius 12 |
-| Row insets | 10 at the sides (text, control and separators), 10 above and below the text, 7 at least for a control |
+| Row insets | 10 at the sides (text, control and separators), 10 above and below the text, 7 at least for a control, 10 for a push button |
 | Name, help | 13 pt, 11 pt secondary, 3 pt apart |
 | Text column to control | 16 |
 | Buttons under a group | 10 below it, 8 apart |
@@ -485,25 +504,38 @@ across several panes). Copy URL has no guide page.
 
 ## General
 
-Two sections. **Default Browser**: "Set as Default Browser", which calls
+A grouped form since TASK-338. **Default Browser**: the row "Default web
+browser" with the app that opens web links now (asked with
+`https://example.com`: "Detour", or the other app's name) and "Set as
+Default Browser", shown only while it is another app, which calls
 `NSWorkspace.setDefaultApplication(at:toOpenURLsWithScheme:)` for `http` and
-`https`, and reports the current state by asking which application would open
-`https://example.com`. **Peek** (TASK-307): the switch "Open links from
-pinned tabs and favorites in a Peek" (`PeekSettings`, app-wide, on by
-default) with the help "Off, links to other sites from pinned tabs and
-favorites open in new tabs. Shift-click still opens a Peek." The stack is
-pinned to the body's full width so the help wraps at the pane's width
+`https`. **Peek** (TASK-307): the switch "Open links from pinned tabs and
+favorites in a Peek" (`PeekSettings`, app-wide, on by default) with the help
+"Off, links to other sites from pinned tabs and favorites open in new tabs.
+Shift-click still opens a Peek." and the Peek guide
 ([Peek](../tabs/peek.md#when-a-link-opens-in-a-peek)).
 **Automation** (TASK-228): the switches "Let AI agents and scripts control
 Detour (MCP)" and "Allow agents to use Private windows", each with its help,
-then the endpoint's status line, the copy buttons (shown while it listens)
-and the allowed clients; see [automation endpoint](./automation-endpoint.md).
-The Private switch is not disabled while automation is off: it is a saved
-choice of its own, read at every check.
+the row "Disconnected agents [Allow Again]" while any are blocked, the
+endpoint's status as the group's footnote, and the copy buttons under the
+group (shown while it listens; Copy Token and Reset Token… in a test run
+only); **Allowed Clients**: a row per client (its name, when it was allowed
+and last used, Revoke), or "None yet", shown wherever clients are approved
+one by one; see [automation endpoint](./automation-endpoint.md). Both
+sections carry `AutomationWindows.automationSettingsIdentifier`, so the
+endpoint's input tools refuse every view in them (TASK-228.7). The Private
+switch is not disabled while automation is off: it is a saved choice of its
+own, read at every check.
 
 ## Spaces
 
 A list of the non-incognito spaces with name, emoji, colour and profile.
+The selected space's settings are one form group in the detail column
+(TASK-338): Name (the field), Emoji (the curated grid and All Emoji…),
+Profile and Color (the curated colours), each control on the group's right
+edge; the emoji and colour grids take their row's name and the names leave
+the Accessibility tree, so each is read once (before, "Emoji" and "Color"
+were read as a label and again as the grid).
 Edits go through `TabStore.updateSpace(id:name:emoji:colorHex:profileID:)`;
 rows can be dragged to reorder (`TabStore.moveSpace(from:to:)`).
 
@@ -520,9 +552,13 @@ rows can be dragged to reorder (`TabStore.moveSpace(from:to:)`).
 
 ## Links
 
-The link routes and the Default: "Routes" with New Route beside
-it, one bordered list of three-line rows (URL, From app, Open in), then the
-Default and its caption. Not a master list with a detail column: every route
+The link routes and the Default: "Routes" (a section header on the rows'
+text edge) with New Route beside it, one list drawn as a form group of
+three-line rows (URL, From app, Open in), then the Default as a form
+section (TASK-338): the row "Open other links in [pop-up]" with its warning
+line, tinted when the blocked space deletion points to it
+(`SettingsFormRow.isHighlighted`), and the caption with the Quarantine
+guide as the group's footnote. Not a master list with a detail column: every route
 is edited in place, as in Arc's sheet. Since TASK-211 the list fills the
 pane's height between "Routes" and the Default, and its rows scroll inside
 it (a `SettingsColumnScrollView`, so a list scrolled to its end stays at its
@@ -639,19 +675,25 @@ Private" on the Extensions pane; see
 ## Search
 
 The site searches, one app-wide list (TASK-287): Name, Keyword and Address
-columns in one bordered list pane with a +, −, pencil bar; add and edit in an
+columns in one list drawn as a form group under the "Site Search" header
+(TASK-338), with a +, −, pencil bar; add and edit in an
 `NSAlert` sheet holding `SiteSearchForm`, whose Save is off while the store
 would refuse the entry. Details on [site search](./site-search.md).
 
 ## Shortcuts
 
 Every menu command with its shortcut (TASK-327): a description, a search
-field and Restore Defaults on one line, then one bordered list that fills
-the pane (a column pane, 400 pt minimum; the list scrolls on its own) with
+field and Restore Defaults on one line, then one list drawn as a form
+group that fills the pane (a column pane, 400 pt minimum; the list scrolls on its own) with
 the menus as floating group rows and a row per command (title, a note when
 it is set elsewhere, the shortcut recorder, a reset button once it differs
 from the built-in one), then a warning line under the list for a refused
-shortcut. No Learn more link: the website's shortcuts page (Help >
+shortcut. The list stays a table inside the group rather than a form's rows
+(TASK-338, PROVISIONAL, chosen by Claude while the user was away): about a
+hundred commands under floating menu headers, filtered as the search field is
+typed in, are a list to scan and search, and a hundred form rows would be as
+many views laid out at once; the alternative is a form section per menu. No
+Learn more link: the website's shortcuts page (Help >
 Keyboard Shortcuts, `HelpLinks.keyboardShortcuts`, not a `GuidePage`) does
 not cover customizing them yet. What it lists, what it refuses and how the shortcuts apply
 are on [keyboard shortcuts](./keyboard-shortcuts.md).

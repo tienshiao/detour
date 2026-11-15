@@ -1,103 +1,82 @@
 import AppKit
 
+/// Settings > General: the default browser, Peek and Automation, as a grouped
+/// form (TASK-338). The Automation and Allowed Clients sections carry the
+/// identifier the automation endpoint's input tools refuse (TASK-228.7).
 class GeneralSettingsViewController: SettingsPaneViewController {
     private var defaultBrowserButton: NSButton!
     private var statusLabel: NSTextField!
     private var peekSwitch: NSSwitch!
     private var automationSwitch: NSSwitch!
-    private var automationStatus: NSTextField!
-    private var automationButtons: NSStackView!
+    private var automationStatus: SettingsFormRow!
+    private var automationSection: SettingsFormSection!
+    private var automationButtons: [NSButton] = []
     private var tokenButtons: [NSButton] = []
+    private var allowAgainRow: SettingsFormRow!
     private var allowAgainButton: NSButton!
     private var privateSwitch: NSSwitch!
-    private var privateHelp: NSTextField!
-    private var clientsTitle: NSTextField!
-    private var clientsList: NSStackView!
+    private var clientsSection: SettingsFormSection!
+    private var clientsForm: SettingsForm!
     /// What the client rows show now, so a change rebuilds them only when
     /// something changed (the window resizes with them).
     private var shownClients: [AutomationClientRecord]?
     private var automationObserver: (any NSObjectProtocol)?
-    private static let textWidth = SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin
 
     override func makeBody() -> NSView {
-        let body = NSView()
-
-        let sectionLabel = NSTextField.settingsSectionTitle("Default Browser")
-
+        // Default Browser: which app opens links, and the button to make it Detour.
         statusLabel = NSTextField(labelWithString: "")
-        statusLabel.font = .systemFont(ofSize: 13)
+        statusLabel.font = .systemFont(ofSize: SettingsMetrics.formTitleFontSize)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
         defaultBrowserButton = NSButton(title: "Set as Default Browser", target: self, action: #selector(setAsDefaultBrowser))
         defaultBrowserButton.bezelStyle = .rounded
-
-        let row = NSStackView(views: [defaultBrowserButton, statusLabel])
-        row.orientation = .horizontal
-        row.alignment = .firstBaseline
-        row.spacing = SettingsMetrics.labelToControl
-
-        let browserSection = NSStackView(views: [sectionLabel, row])
-        browserSection.orientation = .vertical
-        browserSection.alignment = .leading
-        browserSection.spacing = SettingsMetrics.sectionTitleToRows
+        let browserRow = SettingsFormRow(title: "Default web browser",
+                                         accessory: .value(statusLabel, button: defaultBrowserButton))
 
         // Peek (TASK-307): app-wide.
-        let peekTitle = NSTextField.settingsSectionTitle("Peek")
         peekSwitch = NSSwitch()
         peekSwitch.target = self
         peekSwitch.action = #selector(peekSwitchChanged)
         peekSwitch.setAccessibilityIdentifier("peekEnabled")
-        let peekRow = SettingsSwitchRow.make(peekSwitch, title: "Open links from pinned tabs and favorites in a Peek")
-        let peekHelp = SettingsWrappingLabel(
-            wrapping: "Off, links to other sites from pinned tabs and favorites open in new tabs. Shift-click still opens a Peek.",
-            estimatedWidth: Self.textWidth)
+        let peekRow = SettingsFormRow(
+            title: "Open links from pinned tabs and favorites in a Peek",
+            help: "Off, links to other sites from pinned tabs and favorites open in new tabs. Shift-click still opens a Peek.",
+            accessory: .toggle(peekSwitch))
         // TASK-292.11: the Peek guide, under the help that explains it.
-        let peekRows = NSStackView(views: [peekRow, peekHelp, SettingsGuideLink(.peek)])
-        peekRows.orientation = .vertical
-        peekRows.alignment = .leading
-        peekRows.spacing = SettingsMetrics.controlToHelp
-        let peekSection = NSStackView(views: [peekTitle, peekRows])
-        peekSection.orientation = .vertical
-        peekSection.alignment = .leading
-        peekSection.spacing = SettingsMetrics.sectionTitleToRows
+        peekRow.addLink(SettingsGuideLink(.peek))
 
         // Automation (TASK-228.1): the MCP endpoint, off by default.
-        let automationTitle = NSTextField.settingsSectionTitle("Automation")
         automationSwitch = NSSwitch()
         automationSwitch.target = self
         automationSwitch.action = #selector(automationSwitchChanged)
         automationSwitch.setAccessibilityIdentifier("automationEnabled")
-        let automationRow = SettingsSwitchRow.make(automationSwitch,
-                                                   title: "Let AI agents and scripts control Detour (MCP)")
-        let automationHelp = SettingsWrappingLabel(
-            wrapping: "While this is on, an MCP client you allow, such as Claude Code, can read your pages and act "
+        let automationRow = SettingsFormRow(
+            title: "Let AI agents and scripts control Detour (MCP)",
+            help: "While this is on, an MCP client you allow, such as Claude Code, can read your pages and act "
                 + "in them as you, signed in to your sites. The first time a client connects, Detour asks you to "
                 + "allow it. Each window shows which agent is connected; disconnecting it revokes its access. Set "
                 + "clients up with the commands below: they run Detour's helper, which finds Detour and keeps the "
                 + "client's access itself.",
-            estimatedWidth: Self.textWidth)
+            accessory: .toggle(automationSwitch))
         privateSwitch = NSSwitch()
         privateSwitch.target = self
         privateSwitch.action = #selector(privateSwitchChanged)
         privateSwitch.setAccessibilityIdentifier("automationAllowPrivate")
-        let privateRow = SettingsSwitchRow.make(privateSwitch, title: "Allow agents to use Private windows")
-        privateHelp = SettingsWrappingLabel(
-            wrapping: "Off, agents cannot see or use Private windows, their tabs or menus, or the Private "
+        let privateRow = SettingsFormRow(
+            title: "Allow agents to use Private windows",
+            help: "Off, agents cannot see or use Private windows, their tabs or menus, or the Private "
                 + "profile's extensions. Turning it off takes effect at once.",
-            estimatedWidth: Self.textWidth)
-        clientsTitle = NSTextField(labelWithString: "Allowed clients")
-        clientsTitle.font = .systemFont(ofSize: 12, weight: .semibold)
-        clientsList = NSStackView()
-        clientsList.orientation = .vertical
-        clientsList.alignment = .leading
-        clientsList.spacing = 4
-        automationStatus = NSTextField(labelWithString: "")
-        automationStatus.font = .systemFont(ofSize: 12)
-        automationStatus.textColor = .secondaryLabelColor
-        automationStatus.isSelectable = true
-        automationStatus.lineBreakMode = .byTruncatingMiddle
+            accessory: .toggle(privateSwitch))
+        allowAgainButton = NSButton(title: "Allow Again", target: self, action: #selector(allowDisconnectedAgents))
+        allowAgainButton.bezelStyle = .rounded
+        allowAgainRow = SettingsFormRow(
+            title: "Disconnected agents",
+            help: "Agents you disconnected cannot connect until you allow them again.",
+            accessory: .button(allowAgainButton))
+        automationStatus = SettingsFormRow(footnote: " ")
+        automationStatus.helpLabel.isSelectable = true
+
         let copyCommand = NSButton(title: "Copy Claude Code Command", target: self, action: #selector(copyClaudeCommand))
         copyCommand.toolTip = "claude mcp add with Detour's helper, which finds the address and token itself"
         let copyConfig = NSButton(title: "Copy MCP Config", target: self, action: #selector(copyMCPConfig))
@@ -106,55 +85,28 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         copyToken.toolTip = "For a client that connects to the address itself (advanced): the address changes each "
             + "time Detour starts, so the helper commands are the lasting setup"
         let resetToken = NSButton(title: "Reset Token…", target: self, action: #selector(resetToken))
-        allowAgainButton = NSButton(title: "Allow Disconnected Agents Again", target: self,
-                                    action: #selector(allowDisconnectedAgents))
-        for button in [copyCommand, copyConfig, copyToken, resetToken, allowAgainButton!] { button.bezelStyle = .rounded }
+        for button in [copyCommand, copyConfig, copyToken, resetToken] { button.bezelStyle = .rounded }
         // A test run's shared token only (TASK-228.5): the user's endpoint
         // has none, each client getting its own through the helper.
         tokenButtons = [copyToken, resetToken]
-        automationButtons = NSStackView(views: [copyCommand, copyConfig, copyToken, resetToken])
-        automationButtons.orientation = .horizontal
-        automationButtons.spacing = SettingsMetrics.labelToControl
-        let automationRows = NSStackView(views: [automationRow, automationHelp, privateRow, privateHelp,
-                                                 automationStatus, automationButtons, allowAgainButton,
-                                                 clientsTitle, clientsList])
-        automationRows.orientation = .vertical
-        automationRows.alignment = .leading
-        automationRows.spacing = SettingsMetrics.controlToHelp
-        // The Private switch and the client list are their own groups.
-        for view in [automationHelp, privateHelp, automationStatus, automationButtons, allowAgainButton!] as [NSView] {
-            automationRows.setCustomSpacing(SettingsMetrics.rowGap, after: view)
-        }
-        let automationSection = NSStackView(views: [automationTitle, automationRows])
-        automationSection.orientation = .vertical
-        automationSection.alignment = .leading
-        automationSection.spacing = SettingsMetrics.sectionTitleToRows
+        automationButtons = [copyCommand, copyConfig, copyToken, resetToken]
+        automationSection = SettingsFormSection(
+            title: "Automation", rows: [automationRow, privateRow, allowAgainRow], footnote: automationStatus,
+            buttons: automationButtons)
         // The automation endpoint's input tools refuse views in here (TASK-228.7).
         automationSection.identifier = AutomationWindows.automationSettingsIdentifier
 
-        let stack = NSStackView(views: [browserSection, peekSection, automationSection])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = SettingsMetrics.sectionGap
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        body.addSubview(stack)
+        // The allowed clients: a row each, rebuilt when they change.
+        clientsSection = SettingsFormSection(title: "Allowed Clients", rows: [])
+        clientsSection.identifier = AutomationWindows.automationSettingsIdentifier
 
-        // The body ends at the last row, so the pane's natural height ends one
-        // margin below it (defect 14).
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: body.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: body.leadingAnchor),
-            // Full width, so the Peek help wraps at the pane's width.
-            stack.trailingAnchor.constraint(equalTo: body.trailingAnchor),
-            peekHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            automationHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            privateHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            clientsList.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            automationStatus.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: body.bottomAnchor),
-            bottomHug(stack.bottomAnchor, body.bottomAnchor),
+        clientsForm = SettingsForm(sections: [
+            SettingsFormSection(title: "Default Browser", rows: [browserRow]),
+            SettingsFormSection(title: "Peek", rows: [peekRow]),
+            automationSection,
+            clientsSection,
         ])
-        return body
+        return formBody(clientsForm)
     }
 
     override func viewWillAppear() {
@@ -178,34 +130,35 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         // The saved setting too: after a failed start the switch stays on
         // (the endpoint will try again at launch) until the user turns it off.
         automationSwitch.state = controller.status.isOn || controller.isEnabledInSettings ? .on : .off
+        let status: String
         switch controller.status {
         case .off:
-            automationStatus.stringValue = "Off."
+            status = "Off."
         case .starting:
-            automationStatus.stringValue = "Starting…"
+            status = "Starting…"
         case .listening(let port):
             let count = controller.sessions.count
             let agents = count == 0 ? "no agent connected" : count == 1 ? "1 agent connected" : "\(count) agents connected"
             // The address only for a test run, whose clients may connect to
             // it with the shared token; the user's clients use the helper.
-            automationStatus.stringValue = controller.usesClientApproval
+            status = controller.usesClientApproval
                 ? "On, \(agents)."
                 : "On at \(AutomationCredentials.endpointURL(port: port)) (until Detour quits), \(agents)."
         case .failed(let reason):
-            automationStatus.stringValue = "Could not start: \(reason)"
+            status = "Could not start: \(reason)"
         }
+        automationStatus.setHelp(status)
         privateSwitch.state = controller.allowsPrivateInSettings ? .on : .off
         let buttonsHidden = !controller.status.isOn
         let allowHidden = controller.blockedClientNames.isEmpty
         let tokenButtonsHidden = controller.usesClientApproval
         let clientsHidden = !controller.usesClientApproval
-        var changed = automationButtons.isHidden != buttonsHidden || allowAgainButton.isHidden != allowHidden
-            || clientsTitle.isHidden != clientsHidden
-        automationButtons.isHidden = buttonsHidden
-        allowAgainButton.isHidden = allowHidden
+        var changed = automationSection.isButtonRowHidden != buttonsHidden || allowAgainRow.isHidden != allowHidden
+            || clientsSection.isHidden != clientsHidden
+        automationSection.isButtonRowHidden = buttonsHidden
+        allowAgainRow.isHidden = allowHidden
         for button in tokenButtons { button.isHidden = tokenButtonsHidden }
-        clientsTitle.isHidden = clientsHidden
-        clientsList.isHidden = clientsHidden
+        clientsSection.isHidden = clientsHidden
         let clients = clientsHidden ? [] : controller.approvedClients
         if clients != shownClients {
             changed = changed || clients.count != (shownClients?.count ?? -1)
@@ -217,49 +170,28 @@ class GeneralSettingsViewController: SettingsPaneViewController {
     }
 
     /// One row per allowed client: its name, when it was allowed and last
-    /// used, and Revoke.
+    /// used under it, and Revoke.
     private func rebuildClientRows(_ clients: [AutomationClientRecord]) {
-        for row in clientsList.arrangedSubviews {
-            clientsList.removeArrangedSubview(row)
-            row.removeFromSuperview()
-        }
         guard !clients.isEmpty else {
-            let empty = NSTextField(labelWithString: "None yet. A client asks the first time it connects.")
-            empty.font = .systemFont(ofSize: 12)
-            empty.textColor = .secondaryLabelColor
-            clientsList.addArrangedSubview(empty)
+            clientsSection.group.setRows([SettingsFormRow(footnote: "None yet. A client asks the first time it connects.")])
             return
         }
         let dates = DateFormatter()
         dates.dateStyle = .medium
         dates.timeStyle = .short
         let now = Date()
-        for client in clients {
-            let name = NSTextField(labelWithString: client.displayName)
-            name.font = .systemFont(ofSize: 12)
-            name.lineBreakMode = .byTruncatingTail
-            name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            var detail = "allowed \(dates.string(from: client.created))"
+        clientsSection.group.setRows(clients.map { client in
+            var detail = "Allowed \(dates.string(from: client.created))"
             if let used = client.lastUsed { detail += ", last used \(AutomationIndicator.age(of: used, now: now))" }
-            if client.title != nil { detail = "\(client.name), " + detail }
-            let info = NSTextField(labelWithString: detail)
-            info.font = .systemFont(ofSize: 11)
-            info.textColor = .secondaryLabelColor
-            info.lineBreakMode = .byTruncatingTail
-            info.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            if client.title != nil { detail = "\(client.name). " + detail }
             let revoke = NSButton(title: "Revoke", target: self, action: #selector(revokeClient(_:)))
             revoke.bezelStyle = .rounded
-            revoke.controlSize = .small
             revoke.identifier = NSUserInterfaceItemIdentifier(client.clientID.uuidString)
             revoke.setAccessibilityLabel("Revoke \(client.displayName)")
             revoke.toolTip = "\(client.displayName) loses access at once; it has to ask you again to reconnect."
-            let row = NSStackView(views: [name, info, revoke])
-            row.orientation = .horizontal
-            row.alignment = .firstBaseline
-            row.spacing = SettingsMetrics.labelToControl
-            row.setHuggingPriority(.defaultLow, for: .horizontal)
-            clientsList.addArrangedSubview(row)
-        }
+            return SettingsFormRow(title: client.displayName, help: detail, accessory: .button(revoke))
+        })
+        clientsSection.estimateWidth(SettingsMetrics.formWidth)
     }
 
     @objc private func revokeClient(_ sender: NSButton) {
@@ -360,20 +292,14 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         PeekSettings.shared.isEnabled = peekSwitch.state == .on
     }
 
+    /// The row's value: the app that opens web links now, and the button
+    /// only while it is another one.
     private func updateStatus() {
-        if isDefaultBrowser() {
-            statusLabel.stringValue = "Detour is your default browser."
-            defaultBrowserButton.isEnabled = false
-        } else {
-            statusLabel.stringValue = ""
-            defaultBrowserButton.isEnabled = true
-        }
-    }
-
-    private func isDefaultBrowser() -> Bool {
-        guard let defaultHandler = NSWorkspace.shared.urlForApplication(toOpen: URL(string: "https://example.com")!)
-        else { return false }
-        return defaultHandler.path == Bundle.main.bundleURL.path
+        let handler = NSWorkspace.shared.urlForApplication(toOpen: URL(string: "https://example.com")!)
+        let isDetour = handler?.path == Bundle.main.bundleURL.path
+        statusLabel.stringValue = isDetour ? "Detour" : handler.map { FileManager.default.displayName(atPath: $0.path) }
+            .map { ($0 as NSString).deletingPathExtension } ?? ""
+        defaultBrowserButton.isHidden = isDetour
     }
 
     @objc private func setAsDefaultBrowser() {

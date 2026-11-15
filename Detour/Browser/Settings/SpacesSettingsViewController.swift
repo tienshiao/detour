@@ -9,7 +9,8 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
     private var allEmojiButton: NSButton!
     private var profilePopUp: NSPopUpButton!
     private var colorGrid: SpaceChoiceGridView!
-    private var gridView: NSGridView!
+    /// The selected space's settings: a grouped form (TASK-338).
+    private var detailForm: SettingsForm!
     private var addButton: NSButton!
     private var deleteButton: NSButton!
     private var profileIDs: [UUID] = []
@@ -144,30 +145,21 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
         colorGrid.translatesAutoresizingMaskIntoConstraints = false
         colorGrid.widthAnchor.constraint(equalToConstant: SettingsMetrics.fieldWidth).isActive = true
 
-        gridView = NSGridView(views: [
-            [makeLabel("Name"), nameField],           // row 0
-            [makeLabel("Emoji"), emojiStack],           // row 1
-            [makeLabel("Profile"), profilePopUp],      // row 2
-            [makeLabel("Color"), colorGrid],            // row 3
-        ])
-        gridView.translatesAutoresizingMaskIntoConstraints = false
-        gridView.rowSpacing = SettingsMetrics.rowGap
-        gridView.columnSpacing = SettingsMetrics.labelToControl
-        gridView.column(at: 0).xPlacement = .trailing
-        gridView.column(at: 0).width = SettingsMetrics.labelColumnWidth
-        gridView.column(at: 1).xPlacement = .leading
-        // Labels sit on their control's text baseline (defect 6). The emoji
-        // and colour grids have no text, so their labels sit at their top
-        // and middle instead.
-        gridView.rowAlignment = .firstBaseline
-        gridView.row(at: 1).rowAlignment = .none
-        gridView.row(at: 1).yPlacement = .top
-        gridView.row(at: 3).rowAlignment = .none
-        gridView.row(at: 3).yPlacement = .center
+        // One group: Name, Emoji, Profile and Color, each named by its row.
+        let nameRow = SettingsFormRow(title: "Name", accessory: .custom(nameField))
+        let emojiRow = SettingsFormRow(title: "Emoji", accessory: .custom(emojiStack))
+        let profileRow = SettingsFormRow(title: "Profile", accessory: .popUp(profilePopUp))
+        let colorRow = SettingsFormRow(title: "Color", accessory: .custom(colorGrid))
+        // The stack around the emoji grid is no element of its own: the grid
+        // takes the row's name, as the colour grid does.
+        if let title = emojiRow.titleLabel { SettingsSwitchRow.name(emojiGrid, by: title) }
+        if let title = colorRow.titleLabel { SettingsSwitchRow.name(colorGrid, by: title) }
+        detailForm = SettingsForm(sections: [SettingsFormSection(rows: [nameRow, emojiRow, profileRow, colorRow])],
+                                  estimatedWidth: SettingsMetrics.detailColumnWidth)
 
         // The grid scrolls on its own in a window too short for it (TASK-211).
         let detailDocument = NSView()
-        detailDocument.addSubview(gridView)
+        detailDocument.addSubview(detailForm)
         let detailScroll = makeColumnScrollView(document: detailDocument,
                                                 estimatedWidth: SettingsMetrics.detailColumnWidth)
         container.addSubview(detailScroll)
@@ -197,10 +189,10 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
             detailScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             detailScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
-            gridView.topAnchor.constraint(equalTo: detailDocument.topAnchor),
-            gridView.leadingAnchor.constraint(equalTo: detailDocument.leadingAnchor),
-            gridView.trailingAnchor.constraint(lessThanOrEqualTo: detailDocument.trailingAnchor),
-            gridView.bottomAnchor.constraint(equalTo: detailDocument.bottomAnchor),
+            detailForm.topAnchor.constraint(equalTo: detailDocument.topAnchor),
+            detailForm.leadingAnchor.constraint(equalTo: detailDocument.leadingAnchor),
+            detailForm.trailingAnchor.constraint(equalTo: detailDocument.trailingAnchor),
+            detailForm.bottomAnchor.constraint(equalTo: detailDocument.bottomAnchor),
         ])
         return container
     }
@@ -245,13 +237,6 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
     }
 
     // MARK: - Helpers
-
-    private func makeLabel(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 13)
-        label.alignment = .right
-        return label
-    }
 
     private func reloadProfileMenu() {
         profilePopUp.removeAllItems()

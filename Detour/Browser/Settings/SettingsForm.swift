@@ -116,7 +116,7 @@ final class SettingsFormSection: NSView {
             group.leadingAnchor.constraint(equalTo: leadingAnchor),
             group.trailingAnchor.constraint(equalTo: trailingAnchor),
         ]
-        var bottom = group.bottomAnchor
+        endsAtGroup = bottomAnchor.constraint(equalTo: group.bottomAnchor)
         if let buttonRow {
             addSubview(buttonRow)
             constraints += [
@@ -125,10 +125,32 @@ final class SettingsFormSection: NSView {
                 buttonRow.trailingAnchor.constraint(equalTo: trailingAnchor),
                 buttonRow.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor),
             ]
-            bottom = buttonRow.bottomAnchor
+            endsAtButtons = bottomAnchor.constraint(equalTo: buttonRow.bottomAnchor)
         }
-        constraints.append(bottomAnchor.constraint(equalTo: bottom))
+        constraints.append(endsAtButtons ?? endsAtGroup)
         NSLayoutConstraint.activate(constraints)
+    }
+
+    private var endsAtGroup: NSLayoutConstraint!
+    private var endsAtButtons: NSLayoutConstraint?
+
+    /// Hides the buttons under the group and the room they take (General's
+    /// copy buttons while automation is off). Hiding a button alone keeps
+    /// the row; hide the row when none is left.
+    var isButtonRowHidden: Bool {
+        get { buttonRow?.isHidden ?? true }
+        set {
+            guard let buttonRow, let endsAtButtons, newValue != buttonRow.isHidden else { return }
+            buttonRow.isHidden = newValue
+            // Off first, so the two are never on together.
+            if newValue {
+                endsAtButtons.isActive = false
+                endsAtGroup.isActive = true
+            } else {
+                endsAtGroup.isActive = false
+                endsAtButtons.isActive = true
+            }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -154,6 +176,10 @@ final class SettingsFormGroupView: NSView {
     init(rows: [SettingsFormRow]) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        // Rows are clipped to the rounded shape (a highlighted first or last row).
+        wantsLayer = true
+        layer?.cornerRadius = SettingsMetrics.formGroupCornerRadius
+        layer?.masksToBounds = true
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.distribution = .fill
@@ -180,6 +206,19 @@ final class SettingsFormGroupView: NSView {
     override var isFlipped: Bool { true }
 
     var rows: [SettingsFormRow] { stack.arrangedSubviews.compactMap { $0 as? SettingsFormRow } }
+
+    /// Replaces the rows (a list that changes: General's allowed clients).
+    func setRows(_ rows: [SettingsFormRow]) {
+        for row in stack.arrangedSubviews {
+            stack.removeArrangedSubview(row)
+            row.removeFromSuperview()
+        }
+        for row in rows {
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        needsDisplay = true
+    }
 
 
     override func layout() {
@@ -405,7 +444,9 @@ final class SettingsFormRow: NSView {
         if let control, let titleLabel {
             control.translatesAutoresizingMaskIntoConstraints = false
             control.setContentHuggingPriority(.required, for: .horizontal)
-            control.setContentCompressionResistancePriority(.required, for: .horizontal)
+            // Its own compression resistance (750 for a control) beats the
+            // text column's (250), and a pop-up capped in width can still
+            // truncate its title (Spaces' Profile).
             addSubview(control)
             constraints += [
                 control.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -insetX),
@@ -466,6 +507,20 @@ final class SettingsFormRow: NSView {
         let text = children.filter { !isAccessory($0) }
         let afterName = text.firstIndex { view(of: $0) === titleLabel }.map { $0 + 1 } ?? 0
         return Array(text[..<afterName]) + accessory + Array(text[afterName...])
+    }
+
+    // MARK: - Highlight
+
+    /// Tints the row with the accent colour: the row a pane points the user
+    /// to (Links' Default, from the blocked space deletion).
+    var isHighlighted = false {
+        didSet { if isHighlighted != oldValue { needsDisplay = true } }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard isHighlighted else { return }
+        NSColor.controlAccentColor.withAlphaComponent(0.14).setFill()
+        bounds.fill(using: .sourceOver)
     }
 
     // MARK: - Enabled

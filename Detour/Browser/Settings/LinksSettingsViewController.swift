@@ -24,13 +24,11 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
     private var tableScroll: NSScrollView!
     private var listHeight: NSLayoutConstraint!
     private var emptyLabel: NSTextField!
-    private var defaultRow: LinkRouteHighlightView!
+    /// The Default: a form row (TASK-338) with its warning line, tinted when
+    /// the blocked space deletion points to it.
+    private var defaultRow: SettingsFormRow!
     private var defaultPopUp: NSPopUpButton!
-    private var defaultWarningIcon: NSImageView!
-    private var defaultWarningLabel: NSTextField!
     /// The Default row ends below its pop-up, or below its warning.
-    private var defaultBottomAtPopUp: NSLayoutConstraint!
-    private var defaultBottomAtWarning: NSLayoutConstraint!
     /// A row's height without a warning line (measured from a laid-out cell).
     private var routeRowHeight: CGFloat = 100
     /// The width the row heights were last worked out for.
@@ -122,36 +120,22 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         box.addSubview(emptyLabel)
 
-        let defaultTitle = NSTextField.settingsSectionTitle("Default")
-        container.addSubview(defaultTitle)
-
-        defaultRow = LinkRouteHighlightView()
-        container.addSubview(defaultRow)
-        let defaultLabel = NSTextField(labelWithString: "Open other links in")
-        defaultLabel.font = .systemFont(ofSize: 13)
-        defaultLabel.translatesAutoresizingMaskIntoConstraints = false
+        // The Default (TASK-338: a form section at the pane's bottom): the
+        // pop-up's row, its warning line, and the caption with the Quarantine
+        // guide as the group's footnote, across the group's width.
         defaultPopUp = NSPopUpButton()
-        defaultPopUp.translatesAutoresizingMaskIntoConstraints = false
         defaultPopUp.target = self
         defaultPopUp.action = #selector(defaultTargetChanged)
-        defaultPopUp.setAccessibilityLabel("Open other links in")
         defaultPopUp.widthAnchor.constraint(equalToConstant: 220).isActive = true
         defaultPopUp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        defaultWarningIcon = LinkRouteCellView.makeWarning().icon
-        // Below the pop-up and wrapping, like a route's warning: the space
-        // beside the pop-up is too narrow for the longer messages.
-        defaultWarningLabel = SettingsWrappingLabel(wrapping: "", estimatedWidth: SettingsMetrics.windowWidth
-            - 2 * SettingsMetrics.paneMargin - 2 * LinkRouteHighlightView.insetX - 300)
-        defaultWarningLabel.isHidden = true
-        for view in [defaultLabel, defaultPopUp!, defaultWarningIcon!, defaultWarningLabel!] { defaultRow.addSubview(view) }
-
-        let caption = SettingsWrappingLabel(
-            wrapping: "For every link no route matches: links from other apps, addresses typed in a new tab, and links clicked to another site. Most Recent Space opens a link from another app in the space in front and leaves a typed or clicked link where it is. Quick Detour and Quarantine take links from other apps; a route to Quarantine also takes the clicked links it matches, except in Private windows. Quarantine opens the link in a throwaway window with no cookies of yours: Open in moves it to a space.",
-            estimatedWidth: SettingsMetrics.windowWidth - 2 * SettingsMetrics.paneMargin)
-        container.addSubview(caption)
+        defaultRow = SettingsFormRow(title: "Open other links in", accessory: .popUp(defaultPopUp))
+        let caption = SettingsFormRow(
+            footnote: "For every link no route matches: links from other apps, addresses typed in a new tab, and links clicked to another site. Most Recent Space opens a link from another app in the space in front and leaves a typed or clicked link where it is. Quick Detour and Quarantine take links from other apps; a route to Quarantine also takes the clicked links it matches, except in Private windows. Quarantine opens the link in a throwaway window with no cookies of yours: Open in moves it to a space.")
         // TASK-292.11: the caption is where the pane explains Quarantine.
-        let quarantineLink = SettingsGuideLink(.quarantine)
-        container.addSubview(quarantineLink)
+        caption.addLink(SettingsGuideLink(.quarantine))
+        let defaultSection = SettingsFormSection(title: "Default", rows: [defaultRow], footnote: caption)
+        defaultSection.estimateWidth(SettingsMetrics.formWidth)
+        container.addSubview(defaultSection)
 
         // The list asks for the height of all its rows, weakly: in a window
         // shorter than that it gives way and its rows scroll. Below the
@@ -160,20 +144,17 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
         listHeight.priority = .defaultLow
         let listFloor = box.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.emptyListHeight)
         listFloor.priority = NSLayoutConstraint.Priority(490)
-        defaultBottomAtPopUp = defaultPopUp.bottomAnchor.constraint(equalTo: defaultRow.bottomAnchor,
-                                                                    constant: -LinkRouteHighlightView.insetY)
-        defaultBottomAtWarning = defaultWarningLabel.bottomAnchor.constraint(equalTo: defaultRow.bottomAnchor,
-                                                                             constant: -LinkRouteHighlightView.insetY)
         let inset: CGFloat = 1  // inside the box's border
         NSLayoutConstraint.activate([
             // The list takes the height the title above it and the Default
             // below it leave: it fills the pane at every window height.
             newRouteButton.topAnchor.constraint(equalTo: container.topAnchor),
             newRouteButton.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            routesTitle.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            // On the rows' text, as a form section's header.
+            routesTitle.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: SettingsMetrics.formRowInsetX),
             routesTitle.centerYAnchor.constraint(equalTo: newRouteButton.centerYAnchor),
 
-            box.topAnchor.constraint(equalTo: newRouteButton.bottomAnchor, constant: SettingsMetrics.sectionTitleToRows),
+            box.topAnchor.constraint(equalTo: newRouteButton.bottomAnchor, constant: SettingsMetrics.formHeaderToGroup),
             box.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             box.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             listHeight,
@@ -188,34 +169,10 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
             emptyLabel.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 16),
             emptyLabel.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -16),
 
-            defaultTitle.topAnchor.constraint(equalTo: box.bottomAnchor, constant: SettingsMetrics.sectionGap),
-            defaultTitle.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-
-            defaultRow.topAnchor.constraint(equalTo: defaultTitle.bottomAnchor, constant: SettingsMetrics.sectionTitleToRows),
-            defaultRow.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            defaultRow.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-
-            defaultPopUp.topAnchor.constraint(equalTo: defaultRow.topAnchor, constant: LinkRouteHighlightView.insetY),
-            defaultBottomAtPopUp,
-            defaultLabel.leadingAnchor.constraint(equalTo: defaultRow.leadingAnchor, constant: LinkRouteHighlightView.insetX),
-            defaultLabel.firstBaselineAnchor.constraint(equalTo: defaultPopUp.firstBaselineAnchor),
-            defaultPopUp.leadingAnchor.constraint(equalTo: defaultLabel.trailingAnchor, constant: SettingsMetrics.labelToControl),
-            defaultWarningIcon.leadingAnchor.constraint(equalTo: defaultPopUp.leadingAnchor),
-            defaultWarningIcon.centerYAnchor.constraint(equalTo: defaultWarningLabel.topAnchor,
-                                                        constant: LinkRouteCellView.warningFirstLineCenter),
-            defaultWarningLabel.leadingAnchor.constraint(equalTo: defaultWarningIcon.trailingAnchor,
-                                                         constant: LinkRouteCellView.warningIconGap),
-            defaultWarningLabel.topAnchor.constraint(equalTo: defaultPopUp.bottomAnchor, constant: LinkRouteCellView.lineGap),
-            defaultWarningLabel.trailingAnchor.constraint(equalTo: defaultRow.trailingAnchor,
-                                                          constant: -LinkRouteHighlightView.insetX),
-
-            caption.topAnchor.constraint(equalTo: defaultRow.bottomAnchor, constant: SettingsMetrics.controlToHelp),
-            caption.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: LinkRouteHighlightView.insetX),
-            caption.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-
-            quarantineLink.topAnchor.constraint(equalTo: caption.bottomAnchor, constant: SettingsMetrics.controlToHelp),
-            quarantineLink.leadingAnchor.constraint(equalTo: caption.leadingAnchor),
-            quarantineLink.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            defaultSection.topAnchor.constraint(equalTo: box.bottomAnchor, constant: SettingsMetrics.formSectionGap),
+            defaultSection.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            defaultSection.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            defaultSection.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         return container
     }
@@ -373,12 +330,8 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
         let message = problem.flatMap {
             linkRouteProblemMessage([$0], kind: nil, isSaved: true, hasUnsavedChanges: false)
         }
-        LinkRouteCellView.setWarning(message, icon: defaultWarningIcon, label: defaultWarningLabel)
-        if defaultBottomAtWarning.isActive != (message != nil) {
-            defaultBottomAtPopUp.isActive = message == nil
-            defaultBottomAtWarning.isActive = message != nil
-            contentHeightDidChange()
-        }
+        // The row refits the pane when the warning comes or goes.
+        defaultRow.setWarning(message)
         defaultRow.isHighlighted = isHighlighted(store.defaultTarget)
     }
 
@@ -796,28 +749,6 @@ private final class LinkRouteRowView: NSTableRowView {
             let y = isFlipped ? bounds.minY : bounds.maxY - 1
             NSRect(x: bounds.minX + 10, y: y, width: bounds.width - 20, height: 1).fill()
         }
-    }
-}
-
-/// The Default's row: tinted like a highlighted route row.
-final class LinkRouteHighlightView: NSView {
-    static let insetX: CGFloat = 8
-    static let insetY: CGFloat = 4
-
-    var isHighlighted = false { didSet { if isHighlighted != oldValue { needsDisplay = true } } }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        translatesAutoresizingMaskIntoConstraints = false
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard isHighlighted else { return }
-        NSColor.controlAccentColor.withAlphaComponent(0.14).setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: SettingsMetrics.listCornerRadius,
-                     yRadius: SettingsMetrics.listCornerRadius).fill()
     }
 }
 

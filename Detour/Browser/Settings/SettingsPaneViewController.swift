@@ -446,29 +446,9 @@ final class SettingsGroupBoxView: SettingsBorderedView {
     }
 }
 
-/// An on/off setting outside a bordered group and a label column (General,
-/// Quick Detour; TASK-328): its label, then the switch 8 pt after it, centred
-/// on each other, as the Extensions pane's Enabled and Allow in Private rows
-/// are. The label is a plain text field, so a click on it does nothing, as
-/// on every other switch row in Settings; the switch is named by it
-/// (`name(_:by:)`), since a switch has no title of its own.
+/// TASK-336's rule for a switch (or any control) and the label that names
+/// it. A form row applies it to its control (TASK-338).
 enum SettingsSwitchRow {
-    static func make(_ toggle: NSSwitch, title: String) -> NSStackView {
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 13)
-        label.lineBreakMode = .byTruncatingTail
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        toggle.setContentCompressionResistancePriority(.required, for: .horizontal)
-        name(toggle, by: label)
-        let row = NSStackView(views: [label, toggle])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = SettingsMetrics.labelToControl
-        row.setHuggingPriority(.required, for: .horizontal)
-        row.translatesAutoresizingMaskIntoConstraints = false
-        return row
-    }
-
     /// Makes a switch and the label beside it one setting for Accessibility
     /// (TASK-336): the switch takes the label's text as its name and the
     /// label leaves the Accessibility tree, so VoiceOver reads "<label>,

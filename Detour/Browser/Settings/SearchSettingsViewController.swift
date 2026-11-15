@@ -56,7 +56,7 @@ final class SearchSettingsViewController: SettingsPaneViewController, NSTableVie
         let title = NSTextField.settingsSectionTitle("Site Search").fittingSize.height
         let header = tableView.headerView?.frame.height ?? 0
         let rows = CGFloat(max(entries.count, 1)) * SettingsMetrics.listRowHeight
-        return max(fittingHeight, title + SettingsMetrics.sectionTitleToRows + header + rows
+        return max(fittingHeight, title + SettingsMetrics.formHeaderToGroup + header + rows
                    + SettingsMetrics.listBarHeight + 2)
     }
 
@@ -130,9 +130,10 @@ final class SearchSettingsViewController: SettingsPaneViewController, NSTableVie
 
         NSLayoutConstraint.activate([
             title.topAnchor.constraint(equalTo: container.topAnchor),
-            title.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            // On the rows' text, as a form section's header (TASK-338).
+            title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: SettingsMetrics.formRowInsetX),
 
-            listContainer.topAnchor.constraint(equalTo: title.bottomAnchor, constant: SettingsMetrics.sectionTitleToRows),
+            listContainer.topAnchor.constraint(equalTo: title.bottomAnchor, constant: SettingsMetrics.formHeaderToGroup),
             listContainer.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             listContainer.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             listContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor),
