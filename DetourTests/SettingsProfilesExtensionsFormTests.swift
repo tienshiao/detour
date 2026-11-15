@@ -430,6 +430,30 @@ nonisolated final class SettingsProfilesExtensionsFormTests: XCTestCase {
         assertSharedEdges(form, in: pane, "pending")
     }
 
+    /// The header's icon is decorative: Accessibility meets the extension's
+    /// name, not an unnamed image before it (TASK-338).
+    @MainActor func testTheHeaderIconIsNotReadAsAnUnnamedImage() throws {
+        let ext = try install(#"{"manifest_version": 3, "name": "Bare", "version": "1.0"}"#)
+        ExtensionManager.shared.extensions = [ext]
+        let pane = laidOut(ExtensionsSettingsViewController())
+        func walk(_ element: any NSAccessibilityProtocol) -> [any NSAccessibilityProtocol] {
+            let children = (element.accessibilityChildren() ?? []).compactMap { $0 as? any NSAccessibilityProtocol }
+            return children + children.flatMap(walk)
+        }
+        let header = try XCTUnwrap(try form(in: pane).sections.first?.rows.first)
+        let elements = walk(header)
+        XCTAssertFalse(elements.contains { $0.accessibilityRole() == .image }, "no image element in the header")
+        XCTAssertTrue(elements.contains { ($0.accessibilityValue() as? String) == "Bare" || ($0 as? NSCell)?.stringValue == "Bare" },
+                      "the name is read")
+        // Nor the list row's icon, before the same name. Both icons exist
+        // (so the walk below is not vacuous) and neither is an element.
+        let icons = descendants(of: pane.view).compactMap { $0 as? NSImageView }
+        XCTAssertGreaterThanOrEqual(icons.count, 2, "the header's and the list row's icons")
+        XCTAssertTrue(icons.allSatisfy { !$0.isAccessibilityElement() }, "every icon is decorative")
+        let listElements = walk(pane.view).filter { $0.accessibilityRole() == .image }
+        XCTAssertEqual(listElements.count, 0, "no unnamed image anywhere in the pane")
+    }
+
     @MainActor func testAnExtensionWithoutPermissionsSaysSo() throws {
         let ext = try install(#"{"manifest_version": 3, "name": "Bare", "version": "1.0"}"#)
         ExtensionManager.shared.extensions = [ext]

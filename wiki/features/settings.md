@@ -727,7 +727,10 @@ too), as tall as its content:
 - a top group, as System Settings' Wi-Fi pane opens: a header row
   (`SettingsFormRow(content:)`: the icon, the 13 pt bold name, the version
   and the description, "Settings…" on the right edge level with the icon,
-  added after the text so VoiceOver reads the name first), the source row
+  added after the text so VoiceOver reads the name first; the icon, here and
+  in the list's rows, is decorative and out of the Accessibility tree, on the
+  view and its cell, since the name follows it: it was read as an unnamed
+  image), the source row
   ("Loaded unpacked" or "Installed from…", the folder or the last check as a
   one-line detail, Reload or Check for Updates) and the staged update's row
   with Install Now;

@@ -322,6 +322,11 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
         let iconView = NSImageView()
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.image = ext.icon ?? NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil)
+        // Decorative: the name read right after it says which extension
+        // this is (an unnamed image before, TASK-338). Hidden on the view and
+        // its cell, as a text field's element is its cell.
+        iconView.setAccessibilityElement(false)
+        iconView.cell?.setAccessibilityElement(false)
         header.addSubview(iconView)
 
         // "Settings…" opens the extension's options page (TASK-103). Hidden when
@@ -1022,6 +1027,9 @@ class ExtensionsSettingsViewController: SettingsPaneViewController, NSTableViewD
             let iconView = NSImageView()
             iconView.translatesAutoresizingMaskIntoConstraints = false
             iconView.tag = 10
+            // Decorative, as the detail header's: the name follows it.
+            iconView.setAccessibilityElement(false)
+            iconView.cell?.setAccessibilityElement(false)
             cell.addSubview(iconView)
 
             let nameLabel = NSTextField(labelWithString: "")
