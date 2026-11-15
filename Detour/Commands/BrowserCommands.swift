@@ -69,6 +69,17 @@ enum BrowserCommands {
             guard context.hasSelectedTab, context.commandWindowKind == .normal else { return nil }
             return context.selectedTabIsPinned ? "Unpin Tab" : "Pin Tab"
         })
+    /// Split with Tab (TASK-320 AC #3): forms a split of the selected tab and
+    /// the chosen one, as the sidebar's Split with Next Tab does for the next
+    /// row (`tabSidebar(_:didRequestCreateSplit:withTabID:edge:)`, the chosen
+    /// tab moving to the right of the selected one). No menu item: the
+    /// palette asks for the tab (`CommandChoices.splitWithTab`). A split is
+    /// formed from unpinned tabs in no split, in a Private window too.
+    static let splitWithTab = BrowserCommand(
+        "tab.split-with", "Split with Tab", action: #selector(BrowserWindowController.splitSelectedTabWith(_:)),
+        responder: .windowController(CommandWindowKind.browserWindows),
+        aliases: ["split view", "side by side"], symbol: "rectangle.split.2x1", parameters: [.tab],
+        rule: { $0.hasSelectedTab && !$0.selectedTabIsPinned && !$0.selectedTabIsInSplit })
     static let newWindow = BrowserCommand(
         "window.new", "New Window", key: KeyEquivalent("n"),
         action: #selector(AppDelegate.createNewWindow as (AppDelegate) -> () -> Void),
@@ -264,11 +275,25 @@ enum BrowserCommands {
         }
     }()
     /// One Spaces-menu item per space after the ninth, titled with its emoji
-    /// and name (the first nine are `jumpToSpace`'s items).
+    /// and name (the first nine are `jumpToSpace`'s items). In the palette
+    /// it asks for the space (TASK-320 AC #3): what the Spaces menu offers,
+    /// but the window's own (`CommandChoices.switchToSpace`).
     static let switchToSpace = BrowserCommand(
         "space.switch", "Switch to Space", action: #selector(BrowserWindowController.selectSpaceFromMenu(_:)),
-        responder: .windowController(CommandWindowKind.browserWindows), parameters: [.space],
+        responder: .windowController(CommandWindowKind.browserWindows),
+        aliases: ["go to space", "change space"], symbol: "square.stack.3d.up", parameters: [.space],
         rule: { $0.commandWindowKind == .normal })
+    /// Move Tab to Space (TASK-320 AC #3): moves the selected tab or pinned
+    /// entry as the sidebar's Move to submenu does
+    /// (`tabSidebar(_:didRequestMoveTabAt:isPinned:toSpaceID:)`, TASK-38).
+    /// No menu item: the palette asks for the space
+    /// (`CommandChoices.moveTabToSpace`). Never from a Private window, and
+    /// not for a split (the sidebar offers Move to on neither).
+    static let moveTabToSpace = BrowserCommand(
+        "tab.move-to-space", "Move Tab to Space", action: #selector(BrowserWindowController.moveSelectedTabToSpace(_:)),
+        responder: .windowController(CommandWindowKind.browserWindows),
+        aliases: ["send tab to space"], symbol: "arrow.right.square", parameters: [.space],
+        rule: { $0.commandWindowKind == .normal && $0.hasSelectedTab && !$0.selectedTabIsInSplit })
     static let manageSpaces = BrowserCommand(
         "space.manage", "Manage Spaces…", action: #selector(BrowserWindowController.openSpacesSettings(_:)),
         responder: .windowController(CommandWindowKind.browserWindows),
@@ -278,14 +303,17 @@ enum BrowserCommands {
     // MARK: - Extensions
 
     /// "Show Popup" in an extension's submenu; disabled (no action) when it
-    /// has no popup.
+    /// has no popup. The palette lists the extensions whose item is live in
+    /// the window's profile (`ExtensionMenuItems`); a Quick Detour has none.
     static let showExtensionPopup = BrowserCommand(
         "extension.show-popup", "Show Popup", action: #selector(AppDelegate.extensionMenuClicked(_:)),
-        responder: .appDelegate(explicitTarget: true), parameters: [.extension])
+        responder: .appDelegate(explicitTarget: true), aliases: ["extension popup", "open extension"],
+        symbol: "puzzlepiece.extension", parameters: [.extension], paletteTitle: "Show Extension Popup")
     /// "Options…" in an extension's submenu, in the key window's profile (TASK-103).
     static let extensionOptions = BrowserCommand(
         "extension.options", "Options…", action: #selector(AppDelegate.extensionOptionsMenuClicked(_:)),
-        responder: .appDelegate(explicitTarget: true), parameters: [.extension])
+        responder: .appDelegate(explicitTarget: true), aliases: ["extension settings", "extension preferences"],
+        symbol: "puzzlepiece.extension", parameters: [.extension], paletteTitle: "Extension Options")
     static let addExtensions = BrowserCommand(
         "extensions.add", "Add Extensions…", action: #selector(AppDelegate.openChromeWebStore),
         responder: .appDelegate(explicitTarget: false),
@@ -313,12 +341,14 @@ enum BrowserCommands {
     static let inspectExtensionOffscreen = BrowserCommand(
         "extension.inspect-offscreen", "Inspect Offscreen Document",
         action: #selector(AppDelegate.inspectExtensionOffscreen(_:)),
-        responder: .appDelegate(explicitTarget: true), parameters: [.extension])
+        responder: .appDelegate(explicitTarget: true), parameters: [.extension],
+        palette: .notOffered(developExtensionItem))
     /// Develop > Reload "<name>", per unpacked extension (TASK-113).
     static let reloadUnpackedExtension = BrowserCommand(
         "extension.reload-unpacked", "Reload Unpacked Extension",
         action: #selector(AppDelegate.reloadUnpackedExtension(_:)),
-        responder: .appDelegate(explicitTarget: true), parameters: [.extension])
+        responder: .appDelegate(explicitTarget: true), parameters: [.extension],
+        palette: .notOffered(developExtensionItem))
 
     // MARK: - Window
 
@@ -348,14 +378,15 @@ enum BrowserCommands {
     static let menus: [CommandMenu] = [
         CommandMenu(title: "Detour", commands: [about, checkForUpdates, settings, hide, hideOthers, showAll, quit]),
         CommandMenu(title: "File", commands: [newTab, openLocation, closeTab, reopenClosedTab, togglePin,
-                                              newWindow, newPrivateWindow, newQuickDetourWindow, openInSpace,
+                                              splitWithTab, newWindow, newPrivateWindow, newQuickDetourWindow, openInSpace,
                                               importFromArc]),
         CommandMenu(title: "Edit", commands: [undo, redo, cut, copy, copyURL, paste, selectAll, find, findNext,
                                               findPrevious]),
         CommandMenu(title: "View", commands: [toggleSidebar, reload, actualSize, zoomIn, zoomOut]),
         CommandMenu(title: "Navigate", commands: [back, forward, previousTab, nextTab, showHistory, showArchivedTabs,
                                                   clearArchivedTabs]),
-        CommandMenu(title: "Spaces", commands: [nextSpace, previousSpace] + jumpToSpace + [switchToSpace, manageSpaces]),
+        CommandMenu(title: "Spaces", commands: [nextSpace, previousSpace] + jumpToSpace + [switchToSpace, moveTabToSpace,
+                                                                                manageSpaces]),
         CommandMenu(title: "Extensions", commands: [showExtensionPopup, extensionOptions, addExtensions,
                                                     manageExtensions, checkForExtensionUpdates]),
         CommandMenu(title: "Develop", commands: [webInspector, loadUnpackedExtension, inspectExtensionOffscreen,
@@ -407,6 +438,8 @@ enum BrowserCommands {
 
     private static let appKitItem = "AppKit's own application and window item"
     private static let textItem = "edits the text of whatever field has focus"
+    private static let developExtensionItem =
+        "the Develop menu lists every profile's extensions; the palette lists only its window profile's"
 }
 
 extension HelpLinks {

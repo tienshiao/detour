@@ -102,7 +102,7 @@ enum PaletteRows {
         switch item {
         case .historyResult(let url, _, _), .openTab(_, _, let url, _, _), .siteSearch(_, _, let url):
             return url
-        case .searchInput, .searchSuggestion, .siteSearchHint, .command:
+        case .searchInput, .searchSuggestion, .siteSearchHint, .command, .commandChoice:
             return nil
         }
     }

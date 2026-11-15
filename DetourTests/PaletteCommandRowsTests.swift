@@ -23,7 +23,9 @@ nonisolated final class PaletteCommandRowsTests: XCTestCase {
         func commandPalette(_ palette: CommandPaletteView, didSubmitSearch query: String) { events.append(.search(query)) }
         func commandPalette(_ palette: CommandPaletteView, didSubmitSiteSearch url: URL) {}
         func commandPaletteDidDismiss(_ palette: CommandPaletteView) { events.append(.dismissed) }
-        func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID) { events.append(.command(id)) }
+        func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID, argument: CommandArgument?) {
+            events.append(.command(id))
+        }
     }
 
     private var window: NSWindow?

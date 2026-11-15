@@ -1237,15 +1237,10 @@ extension AppDelegate: NSMenuDelegate {
             .filter { $0.tag == AppDelegate.extensionMenuTag }
             .forEach { menu.removeItem($0) }
 
-        // Get extensions enabled for the current profile
+        // Get extensions enabled for the current profile (the palette lists
+        // the same, `ExtensionMenuItems`, TASK-320).
         let keyProfile = keyBrowserWindowController?.activeSpace?.profile
-        let profileExtensions: [WebExtension]
-        if let wc = keyBrowserWindowController,
-           let profileID = wc.activeSpace?.profileID {
-            profileExtensions = ExtensionManager.shared.enabledExtensions(for: profileID)
-        } else {
-            profileExtensions = ExtensionManager.shared.enabledExtensions
-        }
+        let profileExtensions = ExtensionMenuItems.extensions(inProfile: keyBrowserWindowController?.activeSpace?.profileID)
 
         guard !profileExtensions.isEmpty else { return }
 
@@ -1261,14 +1256,10 @@ extension AppDelegate: NSMenuDelegate {
             // no longer runs on key-equivalent dispatch — `menuHasKeyEquivalent`
             // answers that (TASK-56) — but the guard stays: no rebuild, on open
             // or otherwise, may load popups.
-            let hasPopup = ExtensionMenuPopupDecision.hasPopup(
-                action: ExtensionManager.shared.context(for: ext.id)?.action(for: nil),
-                manifestDefaultPopup: ext.manifest.action?.defaultPopup
-            )
+            let hasPopup = ExtensionMenuItems.hasPopup(ext)
             // Options live in the key window's profile (TASK-103): offered only
             // when that profile holds a context to serve the page.
-            let hasOptions = ExtensionOptionsPageEntry.hasOptionsPage(ext.manifest)
-                && keyProfile?.extensionContext(for: ext.id) != nil
+            let hasOptions = ExtensionMenuItems.hasOptions(ext, in: keyProfile)
 
             // The menu autoenables, so a nil action is what disables an item.
             // The parameterised `extension.show-popup` and `extension.options`

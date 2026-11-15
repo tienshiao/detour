@@ -8,16 +8,17 @@ protocol CommandPaletteDelegate: AnyObject {
     func commandPalette(_ palette: CommandPaletteView, didSubmitSiteSearch url: URL)
     func commandPaletteDidDismiss(_ palette: CommandPaletteView)
     func commandPalette(_ palette: CommandPaletteView, didRequestSwitchToTab tabID: UUID, in spaceID: UUID)
-    /// A command row was activated (TASK-320): the owner dismisses the
-    /// palette and runs the command in its window as its menu item.
-    func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID)
+    /// A command row was activated (TASK-320), or a choice for the command in
+    /// the field's chip (`argument`, AC #3): the owner dismisses the palette
+    /// and runs the command in its window as its menu item does.
+    func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID, argument: CommandArgument?)
 }
 
 extension CommandPaletteDelegate {
     func commandPalette(_ palette: CommandPaletteView, didSubmitSearch query: String) {}
     func commandPalette(_ palette: CommandPaletteView, didRequestSwitchToTab tabID: UUID, in spaceID: UUID) {}
     /// Only an owner that gives the palette a `commandSource` gets command rows.
-    func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID) {}
+    func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID, argument: CommandArgument?) {}
 }
 
 class CommandPaletteTextField: NSTextField {
@@ -67,6 +68,14 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// The command rows ranked in for the current typed query, kept so the
     /// instant and the late passes show the same ones.
     private var commandRows: [SuggestionItem] = []
+    /// The command whose argument the field is choosing (TASK-320 AC #3), or
+    /// nil. While set, the chip names the command, the field filters its
+    /// choices and the rows are those choices only.
+    private(set) var activeCommandChip: PaletteChip.CommandState?
+    /// The chip's command as its row offered it, and its choices in the
+    /// window, read once when the chip is entered.
+    private var commandChipCommand: PaletteCommand?
+    private var commandChipChoices: [CommandChoice] = []
 
     /// The site searches the palette offers (TASK-287); tests pass a store
     /// over their own database.
@@ -90,10 +99,12 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// last built for the typed text), kept while the user arrows through
     /// the list so the row and Tab stay as they were.
     private var siteSearchOffer: (entry: SiteSearch, fieldText: String)?
-    /// The placeholder to put back when site-search mode ends.
-    private var placeholderOutsideSiteSearch: String?
-    /// Internal so tests can read its fill (TASK-290).
-    let siteSearchChip = SiteSearchChipView()
+    /// The placeholder to put back when the chip goes.
+    private var placeholderOutsideChip: String?
+    /// The chip before the field: a site search's name (TASK-287) or a
+    /// command waiting for its argument (TASK-320 AC #3). Internal so tests
+    /// can read it (TASK-290).
+    let chip = PaletteChipView()
     private var textFieldLeadingToIcon: NSLayoutConstraint!
     private var textFieldLeadingToChip: NSLayoutConstraint!
 
@@ -205,9 +216,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         textField.translatesAutoresizingMaskIntoConstraints = false
         box.addSubview(textField)
 
-        siteSearchChip.isHidden = true
-        siteSearchChip.translatesAutoresizingMaskIntoConstraints = false
-        box.addSubview(siteSearchChip)
+        chip.isHidden = true
+        chip.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(chip)
 
         // Separator
         separator.boxType = .separator
@@ -249,10 +260,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         boxBottomToScroll = scrollView.bottomAnchor.constraint(equalTo: box.bottomAnchor)
 
         textFieldLeadingToIcon = textField.leadingAnchor.constraint(equalTo: searchIcon.trailingAnchor, constant: 8)
-        textFieldLeadingToChip = textField.leadingAnchor.constraint(equalTo: siteSearchChip.trailingAnchor, constant: 6)
+        textFieldLeadingToChip = textField.leadingAnchor.constraint(equalTo: chip.trailingAnchor, constant: 6)
         NSLayoutConstraint.activate([
-            siteSearchChip.leadingAnchor.constraint(equalTo: searchIcon.trailingAnchor, constant: 8),
-            siteSearchChip.centerYAnchor.constraint(equalTo: textField.centerYAnchor),
+            chip.leadingAnchor.constraint(equalTo: searchIcon.trailingAnchor, constant: 8),
+            chip.centerYAnchor.constraint(equalTo: textField.centerYAnchor),
         ])
 
         centerXConstraint = glassContainer.centerXAnchor.constraint(equalTo: safeAreaLayoutGuide.centerXAnchor)
@@ -353,6 +364,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         centerYConstraint.isActive = true
 
         endSiteSearchMode()
+        endCommandChip()
         declinedSiteSearchKeyword = nil
         userTypedText = ""
         inlineCompletionSuffix = nil
@@ -373,8 +385,21 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         // The chip's color came from the old space and the old profile's
         // history: start over from the new ones (TASK-290).
         if let entry = activeSiteSearch {
-            siteSearchChip.setFill(spaceColor, animated: false)
+            chip.setFill(spaceColor, animated: false)
             loadSiteColor(for: entry)
+        }
+        if let state = activeCommandChip {
+            // Its choices were the old space's (Move Tab to Space leaves out
+            // the space the window shows): read them again, or leave the chip
+            // as Backspace would when the command is no longer offered here.
+            if let command = resolvedCommand(state.commandID) {
+                commandChipCommand = command
+                commandChipChoices = commandSource?.choices(state.commandID) ?? []
+                chip.setFill(spaceColor, animated: false)
+            } else {
+                leaveCommandChip(restoring: state)
+                return
+            }
         }
         refreshLocalSuggestions(allowAutocomplete: false)
     }
@@ -513,8 +538,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     }
 
     private func appendSearchSuggestions(_ texts: [String], forQuery query: String) {
-        // Ignore responses that arrive after the list was rebuilt for different input.
-        guard query == suggestionsQuery else { return }
+        // Ignore responses that arrive after the list was rebuilt for different
+        // input, or for a command's choices, which are never searched for.
+        guard query == suggestionsQuery, activeCommandChip == nil else { return }
         searchSuggestionTexts = texts
         searchSuggestionsQuery = query
         showQueryRows(isLatePass: true)
@@ -604,16 +630,28 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             moveSelection(by: 1)
             return true
         }
+        if commandSelector == #selector(NSResponder.insertNewline(_:)), activeCommandChip != nil {
+            // The selected choice; with none (nothing matches), nothing: the
+            // text filters the choices and is never submitted.
+            if let index = selectedSuggestionIndex, index < suggestions.count { activateSuggestion(at: index) }
+            return true
+        }
+        if commandSelector == #selector(NSResponder.deleteBackward(_:)), let state = activeCommandChip,
+           PaletteChip.backspaceLeaves(selection: textView.selectedRange()) {
+            leaveCommandChip(restoring: state)
+            return true
+        }
         if commandSelector == #selector(NSResponder.insertNewline(_:)), activeSiteSearch != nil {
             submitInSiteSearch()
             return true
         }
         if commandSelector == #selector(NSResponder.deleteBackward(_:)), activeSiteSearch != nil,
-           textView.selectedRange() == NSRange(location: 0, length: 0) {
+           PaletteChip.backspaceLeaves(selection: textView.selectedRange()) {
             leaveSiteSearchByBackspace()
             return true
         }
-        if commandSelector == #selector(NSResponder.insertTab(_:)), activeSiteSearch == nil, !isInCommandMode,
+        if commandSelector == #selector(NSResponder.insertTab(_:)), activeSiteSearch == nil, activeCommandChip == nil,
+           !isInCommandMode,
            let offer = selectionMovedByUser ? siteSearchOffer : siteSearchForTabKey() {
             // Before the inline completion is accepted: `w` completing to
             // wikipedia.org with `w` a keyword, or `you` completing to
@@ -691,9 +729,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         setKeyboardSelection(to: newIndex)
         selectionMovedByUser = true
 
-        if isInCommandMode {
-            // The command list's field is its filter: it keeps what was
-            // typed, so typing on narrows the list.
+        if isInCommandMode || activeCommandChip != nil {
+            // The command list's and the chip's field is their filter: it
+            // keeps what was typed, so typing on narrows the list.
             if let idx = newIndex { tableView.scrollRowToVisible(idx) }
         } else if let idx = newIndex {
             tableView.scrollRowToVisible(idx)
@@ -715,8 +753,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
         // A late pass skipped while the selection sat on a row it would have
         // changed lands now if the new selection allows it. The command list
-        // has no late passes.
-        if suggestionsQuery != nil, !isInCommandMode {
+        // and a command's choices have no late passes.
+        if suggestionsQuery != nil, !isInCommandMode, activeCommandChip == nil {
             showQueryRows(isLatePass: true)
         }
     }
@@ -737,6 +775,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             return fieldText
         case .command(let command):
             return command.title
+        case .commandChoice(let choice):
+            return choice.title
         }
     }
 
@@ -752,6 +792,12 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// authoritative list back in — dropped on arrival if the query has since
     /// changed.
     private func refreshLocalSuggestions(allowAutocomplete: Bool) {
+        // First: a filter that starts with ">" or names a site search's
+        // keyword is still the chip's filter.
+        if activeCommandChip != nil {
+            showCommandChoices()
+            return
+        }
         if let entry = activeSiteSearch {
             refreshSiteSearchSuggestions(entry)
             return
@@ -838,7 +884,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// palette has commands to offer; nil otherwise. A palette without a
     /// command source treats ">" as ordinary text.
     private var commandModeQuery: String? {
-        commandSource == nil ? nil : PaletteCommands.commandModeQuery(userTypedText)
+        commandSource == nil || activeCommandChip != nil ? nil : PaletteCommands.commandModeQuery(userTypedText)
     }
 
     private var isInCommandMode: Bool { commandModeQuery != nil }
@@ -893,6 +939,106 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         updateSuggestions(availableCommandRows(for: query, limit: .max))
     }
 
+    // MARK: - A command's chip (TASK-320 AC #3)
+
+    /// Choosing a command that needs a space, a tab or an extension: its chip
+    /// goes before the field, as a site search's does, the field is emptied
+    /// to filter the command's choices, and the rows are those choices. What
+    /// was typed is kept for Backspace.
+    private func enterCommandChip(_ command: PaletteCommand) {
+        // Read now: the row was offered when the palette resolved it.
+        let choices = commandSource?.choices(command.id) ?? []
+        guard !choices.isEmpty else {
+            // The window changed since (its other space was deleted).
+            NSSound.beep()
+            return
+        }
+        debounceWorkItem?.cancel()
+        currentTask?.cancel()
+        localSuggestionGeneration &+= 1
+        let entered = PaletteChip.enter(command.id, typedText: userTypedText)
+        activeCommandChip = entered.state
+        commandChipCommand = command
+        commandChipChoices = choices
+        declinedSiteSearchKeyword = nil
+        siteSearchOffer = nil
+        inlineCompletionSuffix = nil
+        uneditedPrefill = nil
+        userTypedText = entered.fieldText
+        setTextFieldQuietly(entered.fieldText)
+        let prompt = Self.choicePrompt(for: command.parameter)
+        showChip(title: command.title, symbol: command.symbol ?? "command", placeholder: prompt,
+                 accessibilityLabel: "\(command.title): \(prompt)")
+        refreshLocalSuggestions(allowAutocomplete: false)
+    }
+
+    /// The placeholder while a command's chip waits for its argument.
+    private static func choicePrompt(for parameter: CommandParameter?) -> String {
+        switch parameter {
+        case .space: return "Choose a space"
+        case .tab: return "Choose a tab"
+        case .profile: return "Choose a profile"
+        case .extension: return "Choose an extension"
+        case .url, .position, nil: return "Choose"
+        }
+    }
+
+    /// Back to normal input; the caller sets the field's text.
+    private func endCommandChip() {
+        guard activeCommandChip != nil else { return }
+        activeCommandChip = nil
+        commandChipCommand = nil
+        commandChipChoices = []
+        hideChip()
+    }
+
+    /// Backspace at the start of the filter: back to what was typed when the
+    /// command was chosen (and the filter after it, as a site search puts
+    /// its query back), the caret after it.
+    private func leaveCommandChip(restoring state: PaletteChip.CommandState) {
+        let filter = textField.stringValue
+        endCommandChip()
+        let restored = PaletteChip.restoredField(enteredFrom: state.enteredText, query: filter)
+        userTypedText = restored.text
+        setTextFieldQuietly(restored.text)
+        textField.currentEditor()?.selectedRange = NSRange(location: restored.caret, length: 0)
+        refreshLocalSuggestions(allowAutocomplete: false)
+    }
+
+    /// The chip's rows: its command's choices that the field's text matches,
+    /// in their own order for an empty field. No history pass, no search
+    /// suggestions (the text is never sent to the search engine), no inline
+    /// completion and no filler; the first row is selected, so Return runs
+    /// the command on the best match.
+    private func showCommandChoices() {
+        localSuggestionGeneration &+= 1
+        debounceWorkItem?.cancel()
+        currentTask?.cancel()
+        inlineCompletionSuffix = nil
+        siteSearchOffer = nil
+        let filter = userTypedText.trimmingCharacters(in: .whitespaces)
+        // Never nil: a filtered list, whose first row is selected.
+        suggestionsQuery = filter
+        matchRows = []
+        commandRows = []
+        searchSuggestionTexts = []
+        searchSuggestionsQuery = nil
+        updateSuggestions(CommandChoices.filtered(filter, in: commandChipChoices).map { .commandChoice($0) })
+    }
+
+    /// A space's emoji drawn as a row's 16 pt icon.
+    private static func emojiImage(_ emoji: String) -> NSImage {
+        let size = NSSize(width: 16, height: 16)
+        return NSImage(size: size, flipped: false) { rect in
+            let text = emoji as NSString
+            let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13)]
+            let textSize = text.size(withAttributes: attributes)
+            text.draw(at: NSPoint(x: rect.midX - textSize.width / 2, y: rect.midY - textSize.height / 2),
+                      withAttributes: attributes)
+            return true
+        }
+    }
+
     // MARK: - Site search (TASK-287)
 
     /// The site search a just-typed Space enters: the field is a keyword
@@ -900,7 +1046,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// text (not what deleting the rest of `r foo` left), and that keyword
     /// was not just declined.
     private func siteSearchEnteredBySpace(_ raw: String) -> SiteSearch? {
-        guard activeSiteSearch == nil, raw.hasSuffix(" "), !isCommandModeText(raw) else { return nil }
+        guard activeSiteSearch == nil, activeCommandChip == nil, raw.hasSuffix(" "), !isCommandModeText(raw)
+        else { return nil }
         let word = String(raw.dropLast())
         guard word == userTypedText else { return nil }
         guard !word.isEmpty, !word.contains(where: \.isWhitespace),
@@ -944,7 +1091,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
                 provider.loadFavicon(for: faviconURL) { [weak self] image in
                     guard let self, generation == self.siteColorGeneration,
                           let image, let color = SiteColor.dominant(in: image) else { return }
-                    self.siteSearchChip.setFill(color.nsColor, animated: true)
+                    self.chip.setFill(color.nsColor, animated: true)
                 }
             }
         }
@@ -963,15 +1110,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         uneditedPrefill = nil
         userTypedText = ""
         setTextFieldQuietly("")
-        siteSearchChip.title = entry.name
-        siteSearchChip.setFill(spaceColor, animated: false)
-        siteSearchChip.isHidden = false
+        showChip(title: entry.name, symbol: nil, placeholder: "Search \(entry.name)",
+                 accessibilityLabel: "Search \(entry.name)")
         loadSiteColor(for: entry)
-        textFieldLeadingToIcon.isActive = false
-        textFieldLeadingToChip.isActive = true
-        placeholderOutsideSiteSearch = textField.placeholderString
-        textField.placeholderString = "Search \(entry.name)"
-        textField.setAccessibilityLabel("Search \(entry.name)")
         refreshLocalSuggestions(allowAutocomplete: false)
     }
 
@@ -980,10 +1121,29 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         guard activeSiteSearch != nil else { return }
         activeSiteSearch = nil
         siteColorGeneration &+= 1
-        siteSearchChip.isHidden = true
+        hideChip()
+    }
+
+    /// Shows the chip before the field, in the space's color, with the
+    /// field's placeholder saying what to type.
+    private func showChip(title: String, symbol: String?, placeholder: String, accessibilityLabel: String) {
+        chip.title = title
+        chip.symbol = symbol
+        chip.setFill(spaceColor, animated: false)
+        chip.isHidden = false
+        textFieldLeadingToIcon.isActive = false
+        textFieldLeadingToChip.isActive = true
+        if placeholderOutsideChip == nil { placeholderOutsideChip = textField.placeholderString }
+        textField.placeholderString = placeholder
+        textField.setAccessibilityLabel(accessibilityLabel)
+    }
+
+    private func hideChip() {
+        chip.isHidden = true
         textFieldLeadingToChip.isActive = false
         textFieldLeadingToIcon.isActive = true
-        textField.placeholderString = placeholderOutsideSiteSearch
+        textField.placeholderString = placeholderOutsideChip
+        placeholderOutsideChip = nil
         textField.setAccessibilityLabel(nil)
     }
 
@@ -998,10 +1158,10 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         endSiteSearchMode()
         // Only a keyword can be re-entered by Space, so only a keyword is declined.
         declinedSiteSearchKeyword = entry.matches(keyword: entered) ? entered : nil
-        let text = query.isEmpty ? entered : entered + " " + query
-        userTypedText = text
-        setTextFieldQuietly(text)
-        textField.currentEditor()?.selectedRange = NSRange(location: entered.utf16.count, length: 0)
+        let restored = PaletteChip.restoredField(enteredFrom: entered, query: query)
+        userTypedText = restored.text
+        setTextFieldQuietly(restored.text)
+        textField.currentEditor()?.selectedRange = NSRange(location: restored.caret, length: 0)
         refreshLocalSuggestions(allowAutocomplete: false)
     }
 
@@ -1079,8 +1239,18 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             let current = activeSiteSearch.flatMap { siteSearches.entry(withID: $0.id) }?.url(for: query)
             guard let url = current ?? URL(string: url) else { return }
             delegate?.commandPalette(self, didSubmitSiteSearch: url)
+        case .command(let command) where command.parameter != nil:
+            enterCommandChip(command)
+            // A click on the row made the table first responder; the filter
+            // is typed in the field.
+            if let window, window.firstResponder !== textField.currentEditor() {
+                window.makeFirstResponder(textField)
+            }
         case .command(let command):
-            delegate?.commandPalette(self, didRequestCommand: command.id)
+            delegate?.commandPalette(self, didRequestCommand: command.id, argument: nil)
+        case .commandChoice(let choice):
+            guard let state = activeCommandChip else { return }
+            delegate?.commandPalette(self, didRequestCommand: state.commandID, argument: choice.argument)
         case .siteSearchHint(let id, _, let fieldText):
             guard let entry = siteSearches.entry(withID: id) else { return }
             enterSiteSearch(entry, from: fieldText)
@@ -1111,30 +1281,31 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
     }
 
+    /// Escape, staged (`PaletteChip.escapeAction`): a pre-filled palette
+    /// (Cmd+L, the address bar) dismisses at once; otherwise a chip goes
+    /// first, then an inline completion, then the text, then the palette.
     private func handleEscape() {
-        // Prepopulated mode (Cmd+L / sidebar click): Escape dismisses immediately
-        if wasPrepopulated {
+        switch PaletteChip.escapeAction(wasPrepopulated: wasPrepopulated,
+                                        hasChip: activeSiteSearch != nil || activeCommandChip != nil,
+                                        hasCompletion: inlineCompletionSuffix != nil,
+                                        fieldIsEmpty: textField.stringValue.isEmpty) {
+        case .dismiss:
             dismiss()
-            return
-        }
-
-        // Multi-stage escape for user-typed input
-        if activeSiteSearch != nil {
+        case .leaveChip:
             endSiteSearchMode()
+            endCommandChip()
             setTextFieldQuietly("")
             userTypedText = ""
             loadDefaultSuggestions()
-        } else if inlineCompletionSuffix != nil {
+        case .dropCompletion:
             inlineCompletionSuffix = nil
             setTextFieldQuietly(userTypedText)
             textField.currentEditor()?.selectedRange = NSRange(location: userTypedText.utf16.count, length: 0)
             refreshLocalSuggestions(allowAutocomplete: false)
-        } else if !textField.stringValue.isEmpty {
+        case .clearField:
             setTextFieldQuietly("")
             userTypedText = ""
             loadDefaultSuggestions()
-        } else {
-            dismiss()
         }
     }
 
@@ -1197,6 +1368,16 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             // The shortcut where a history row shows its address.
             cell.configure(title: command.title, url: command.keyEquivalent, icon: nil, isSearch: false,
                            symbol: command.symbol ?? "command")
+        case .commandChoice(let choice):
+            switch choice.icon {
+            case .emoji(let emoji):
+                cell.configure(title: choice.title, url: choice.detail, icon: Self.emojiImage(emoji), isSearch: false)
+            case .symbol(let name):
+                cell.configure(title: choice.title, url: choice.detail, icon: nil, isSearch: false, symbol: name)
+            case .image(let image):
+                // As an open-tab row: its favicon, else the globe.
+                cell.configure(title: choice.title, url: choice.detail, icon: image, isSearch: false)
+            }
         }
     }
 
@@ -1379,14 +1560,17 @@ private class SuggestionCellView: NSTableCellView {
     }
 }
 
-// MARK: - SiteSearchChipView
+// MARK: - PaletteChipView
 
-/// The site's name at the start of the field in site-search mode (TASK-287).
+/// The chip at the start of the field: the site's name in site-search mode
+/// (TASK-287), or the symbol and title of a command waiting for its space,
+/// tab or extension (TASK-320 AC #3).
 ///
-/// Filled with the site's color (TASK-290): the space's at once, then the
-/// favicon's when one is found; the text is light or dark by contrast.
-final class SiteSearchChipView: NSView {
+/// Filled with the space's color; a site search's then takes the site's
+/// (TASK-290) when its favicon has one. The text is light or dark by contrast.
+final class PaletteChipView: NSView {
     private let label = NSTextField(labelWithString: "")
+    private let symbolView = NSImageView()
     /// The fill; dynamic colors (the accent) resolve in `updateLayer`.
     private(set) var fill: NSColor = .controlAccentColor
     /// The text color the last `setFill` chose; readable for tests.
@@ -1424,6 +1608,15 @@ final class SiteSearchChipView: NSView {
     private func updateTextColor(for resolved: CGColor) {
         let rgb = NSColor(cgColor: resolved).flatMap(SiteColor.RGB.init)
         label.textColor = rgb.map(SiteColor.prefersDarkText) == true ? .black : .white
+        symbolView.contentTintColor = label.textColor
+    }
+
+    /// An SF Symbol before the title (a command's); nil shows none (a site's).
+    var symbol: String? {
+        didSet {
+            symbolView.image = symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
+            symbolView.isHidden = symbolView.image == nil
+        }
     }
 
     var title: String {
@@ -1441,14 +1634,25 @@ final class SiteSearchChipView: NSView {
         label.font = .systemFont(ofSize: 14, weight: .medium)
         label.textColor = .white
         label.lineBreakMode = .byTruncatingTail
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        symbolView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+        symbolView.contentTintColor = .white
+        symbolView.isHidden = true
+        symbolView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        // A hidden symbol takes no room: the stack detaches hidden views.
+        let stack = NSStackView(views: [symbolView, label])
+        stack.orientation = .horizontal
+        stack.spacing = 4
+        stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            label.topAnchor.constraint(equalTo: topAnchor, constant: 3),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
-            widthAnchor.constraint(lessThanOrEqualToConstant: 180),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
+            // Wide enough for "Move Tab to Space"; longer titles truncate.
+            widthAnchor.constraint(lessThanOrEqualToConstant: 200),
         ])
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)

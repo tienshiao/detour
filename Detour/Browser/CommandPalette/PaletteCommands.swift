@@ -9,6 +9,18 @@ nonisolated struct PaletteCommand: Equatable, Sendable {
     let symbol: String?
     /// "⇧⌘T"; nil for a command with no shortcut.
     let keyEquivalent: String?
+    /// What choosing the command asks for with a chip in the field (AC #3);
+    /// nil for a command that runs at once.
+    let parameter: CommandParameter?
+
+    init(id: CommandID, title: String, symbol: String?, keyEquivalent: String?,
+         parameter: CommandParameter? = nil) {
+        self.id = id
+        self.title = title
+        self.symbol = symbol
+        self.keyEquivalent = keyEquivalent
+        self.parameter = parameter
+    }
 }
 
 /// A command a palette may match, before its availability is known: what the
@@ -28,6 +40,16 @@ struct PaletteCommandCandidate: Equatable {
 struct PaletteCommandSource {
     let candidates: [PaletteCommandCandidate]
     let resolve: (CommandID) -> PaletteCommand?
+    /// A parameterised command's choices in the window as it is now
+    /// (TASK-320 AC #3, `CommandContext.commandChoices(for:)`).
+    let choices: (CommandID) -> [CommandChoice]
+
+    init(candidates: [PaletteCommandCandidate], resolve: @escaping (CommandID) -> PaletteCommand?,
+         choices: @escaping (CommandID) -> [CommandChoice] = { _ in [] }) {
+        self.candidates = candidates
+        self.resolve = resolve
+        self.choices = choices
+    }
 }
 
 /// How the palette matches and ranks commands (TASK-320). Pure, so it can be
@@ -132,11 +154,14 @@ enum PaletteCommands {
         let kind = controller.commandWindowKind
         let candidates = BrowserCommands.all
             .filter { $0.palette.isOffered && $0.windowKinds.contains(kind) }
-            .map { PaletteCommandCandidate(id: $0.id, title: $0.title, aliases: $0.aliases) }
-        return PaletteCommandSource(candidates: candidates) { [weak controller] id in
-            guard let controller, let command = BrowserCommands.command(withID: id) else { return nil }
-            return resolve(command, in: controller, menu: menu())
-        }
+            .map { PaletteCommandCandidate(id: $0.id, title: $0.titleInPalette, aliases: $0.aliases) }
+        return PaletteCommandSource(
+            candidates: candidates,
+            resolve: { [weak controller] id in
+                guard let controller, let command = BrowserCommands.command(withID: id) else { return nil }
+                return resolve(command, in: controller, menu: menu())
+            },
+            choices: { [weak controller] id in controller?.commandChoices(for: id) ?? [] })
     }
 
     /// `command` as a palette over `context`'s window offers it, or nil when
@@ -144,8 +169,17 @@ enum PaletteCommands {
     /// validation answers (AC #4). A command with an explicit target (the
     /// updater) needs its live item, which only a run with Sparkle has, and
     /// that item enabled by its target.
+    ///
+    /// A parameterised command is offered only when the window has a value
+    /// to run it on (AC #3): "Move Tab to Space" with one space is not.
     static func resolve(_ command: BrowserCommand, in context: any CommandContext, menu: NSMenu?) -> PaletteCommand? {
         guard command.palette.isOffered, command.isAvailable(in: context) else { return nil }
+        if let parameter = command.choiceParameter {
+            guard !context.commandChoices(for: command.id).isEmpty else { return nil }
+            // A value is chosen in the palette: no menu item of its own, no shortcut.
+            return PaletteCommand(id: command.id, title: command.contextualTitle?(context) ?? command.titleInPalette,
+                                  symbol: command.symbol, keyEquivalent: nil, parameter: parameter)
+        }
         if command.responder == .updater {
             // Its target validates it (Sparkle disables it while a check runs).
             guard let item = CommandDispatch.menuItem(for: command.id, in: menu), let target = item.target,

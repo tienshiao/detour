@@ -756,6 +756,30 @@ class BrowserWindowController: NSWindowController {
         tabSidebar.animateToSpace(id: id)
     }
 
+    /// Move Tab to Space (TASK-320 AC #3; the palette's chip gives the space
+    /// as `representedObject`): the selected tab, or its pinned entry, goes
+    /// to that space by the sidebar's own Move to path, refusals and their
+    /// hint included.
+    @objc func moveSelectedTabToSpace(_ sender: NSMenuItem) {
+        guard let spaceID = sender.representedObject as? UUID, let space = activeSpace,
+              let tabID = selectedTab?.id else { return }
+        if let index = space.pinnedEntries.firstIndex(where: { $0.tab?.id == tabID }) {
+            tabSidebar(tabSidebar, didRequestMoveTabAt: index, isPinned: true, toSpaceID: spaceID)
+        } else if let index = space.tabs.firstIndex(where: { $0.id == tabID }) {
+            tabSidebar(tabSidebar, didRequestMoveTabAt: index, isPinned: false, toSpaceID: spaceID)
+        }
+    }
+
+    /// Split with Tab (TASK-320 AC #3; the palette's chip gives the tab as
+    /// `representedObject`): the chosen tab joins the selected one in a split,
+    /// to its right, by the sidebar's create-split path (Split with Next Tab
+    /// for any tab of the space). The store refuses a pinned or grouped tab.
+    @objc func splitSelectedTabWith(_ sender: NSMenuItem) {
+        guard let tabID = sender.representedObject as? UUID, let space = activeSpace,
+              let selectedID = selectedTab?.id, space.tabs.contains(where: { $0.id == selectedID }) else { return }
+        tabSidebar(tabSidebar, didRequestCreateSplit: tabID, withTabID: selectedID, edge: .right)
+    }
+
     @objc func openSpacesSettings(_ sender: Any?) {
         SettingsWindowController.shared.showSpacesPane()
     }
@@ -3577,6 +3601,68 @@ extension BrowserWindowController: CommandContext {
     var hasTabToStepTo: Bool {
         tabNavigationTarget(in: tabNavigationStops(), selectedTabID: selectedTabID, offset: 1) != nil
     }
+
+    var selectedTabIsInSplit: Bool {
+        guard let tab = selectedTab, let space = activeSpace else { return false }
+        return store.splitGroup(containing: tab.id, in: space) != nil
+    }
+
+    /// The palette's choices for a parameterised command in this window
+    /// (TASK-320 AC #3), by the rules in `CommandChoices`.
+    func commandChoices(for id: CommandID) -> [CommandChoice] {
+        switch id {
+        case BrowserCommands.switchToSpace.id:
+            return CommandChoices.switchToSpace(spaces: commandSpaceFacts, activeSpaceID: activeSpaceID,
+                                                windowIsPrivate: isIncognito, windowProfileID: activeSpace?.profileID)
+        case BrowserCommands.moveTabToSpace.id:
+            guard let source = activeSpace, let tabID = selectedTab?.id else { return [] }
+            let entry = source.pinnedEntries.first { $0.tab?.id == tabID }
+            let store = store
+            return CommandChoices.moveTabToSpace(
+                spaces: commandSpaceFacts, activeSpaceID: activeSpaceID, windowIsPrivate: isIncognito,
+                windowProfileID: source.profileID,
+                canMove: { spaceID in
+                    // What the store would do with it (TASK-37/38).
+                    guard let destination = store.space(withID: spaceID) else { return false }
+                    if let entry { return store.canMovePinnedEntry(id: entry.id, from: source, to: destination) }
+                    return store.canMoveTab(id: tabID, from: source, to: destination)
+                })
+        case BrowserCommands.splitWithTab.id:
+            guard let space = activeSpace else { return [] }
+            let tabs = space.tabs.map {
+                CommandChoices.TabFacts(id: $0.id, title: $0.title, url: $0.url?.absoluteString, favicon: $0.favicon,
+                                        isInSplit: $0.splitGroupID != nil)
+            }
+            return CommandChoices.splitWithTab(tabs: tabs, selectedTabID: selectedTab?.id)
+        case BrowserCommands.showExtensionPopup.id:
+            let extensions = ExtensionMenuItems.extensions(inProfile: activeSpace?.profileID)
+            return CommandChoices.extensions(Self.extensionFacts(extensions)) { id in
+                extensions.first { $0.id == id }.map(ExtensionMenuItems.hasPopup) ?? false
+            }
+        case BrowserCommands.extensionOptions.id:
+            let profile = activeSpace?.profile
+            let extensions = ExtensionMenuItems.extensions(inProfile: activeSpace?.profileID)
+            return CommandChoices.extensions(Self.extensionFacts(extensions)) { id in
+                extensions.first { $0.id == id }.map { ExtensionMenuItems.hasOptions($0, in: profile) } ?? false
+            }
+        default:
+            return []
+        }
+    }
+
+    /// The store's spaces, in Settings › Spaces order, as the choice rules read them.
+    private var commandSpaceFacts: [CommandChoices.SpaceFacts] {
+        store.spaces.map {
+            CommandChoices.SpaceFacts(id: $0.id, name: $0.name, emoji: $0.emoji, isIncognito: $0.isIncognito,
+                                      profileID: $0.profileID, profileName: $0.profile?.name)
+        }
+    }
+
+    private static func extensionFacts(_ extensions: [WebExtension]) -> [CommandChoices.ExtensionFacts] {
+        extensions.map {
+            CommandChoices.ExtensionFacts(id: $0.id, name: ExtensionManager.shared.displayName(for: $0.id), icon: $0.icon)
+        }
+    }
 }
 
 /// A view that never takes mouse events: the split-formation veneer's
@@ -3949,14 +4035,21 @@ extension BrowserWindowController: CommandPaletteDelegate {
     /// through its menu item, validated as a click on it would be, sent to
     /// this controller when it is one of its commands (the rule that offered
     /// it is this controller's).
-    func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID) {
+    ///
+    /// A choice from a command's chip (`argument`, AC #3) runs the command on
+    /// it as the menu item for that value does (a Spaces menu item, the
+    /// sidebar's Move to submenu, an extension's submenu).
+    func commandPalette(_ palette: CommandPaletteView, didRequestCommand id: CommandID, argument: CommandArgument?) {
         dismissCommandPalette()
         guard let window, let command = BrowserCommands.command(withID: id) else { return }
+        let ran = if let argument {
+            CommandDispatch.perform(command, argument: argument, in: window, controller: self)
+        } else {
+            CommandDispatch.perform(command, in: window, menu: NSApp.mainMenu, controller: self)
+        }
         // Refused (state changed since the row was offered): a beep, as a
         // disabled menu item's key equivalent gives.
-        if !CommandDispatch.perform(command, in: window, menu: NSApp.mainMenu, controller: self) {
-            NSSound.beep()
-        }
+        if !ran { NSSound.beep() }
     }
 }
 

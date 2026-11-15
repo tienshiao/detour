@@ -179,7 +179,7 @@ nonisolated final class SiteSearchChipColorTests: XCTestCase {
     }
 
     @MainActor private func fillRGB(_ palette: CommandPaletteView) -> SiteColor.RGB? {
-        SiteColor.RGB(palette.siteSearchChip.fill)
+        SiteColor.RGB(palette.chip.fill)
     }
 
     @MainActor private func spin(until condition: () -> Bool) {
@@ -198,7 +198,7 @@ nonisolated final class SiteSearchChipColorTests: XCTestCase {
         XCTAssertEqual(site.red, 1, accuracy: 0.02, "the icon's red")
         XCTAssertEqual(site.green, 0, accuracy: 0.02)
         XCTAssertEqual(fetched.map(\.absoluteString), ["https://www.example.com/icon.png"])
-        XCTAssertEqual(palette.siteSearchChip.textColor, .white, "white reads on red")
+        XCTAssertEqual(palette.chip.textColor, .white, "white reads on red")
     }
 
     @MainActor func testASiteTheProfileNeverVisitedKeepsTheSpacesColorAndFetchesNothing() throws {
@@ -208,7 +208,7 @@ nonisolated final class SiteSearchChipColorTests: XCTestCase {
         XCTAssertEqual(fill.red, 1, accuracy: 0.01)
         XCTAssertEqual(fill.green, 0x95 / 255.0, accuracy: 0.01, "the space's orange")
         XCTAssertEqual(fetched, [])
-        XCTAssertEqual(palette.siteSearchChip.textColor, .black, "dark text on orange")
+        XCTAssertEqual(palette.chip.textColor, .black, "dark text on orange")
     }
 
     @MainActor func testARescopedPaletteDropsTheOldProfilesSiteColor() throws {

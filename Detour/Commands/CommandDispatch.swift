@@ -95,4 +95,31 @@ enum CommandDispatch {
               isEnabled(item, autoenables: item.menu?.autoenablesItems ?? true, target: target) else { return false }
         return NSApp.sendAction(action, to: target, from: item)
     }
+
+    /// Runs a parameterised command on `argument` in `window` (TASK-320
+    /// AC #3) as the item that runs it in a menu does: one item per value,
+    /// built from the command and carrying the value as `representedObject`
+    /// (the Spaces menu's items after the ninth, the sidebar's Move to
+    /// submenu, an extension's submenu), sent to the target such an item has
+    /// and validated there as a click on it would be. `controller` answers a
+    /// `.windowController` command it implements, as in `perform(_:in:menu:controller:)`.
+    @discardableResult
+    static func perform(_ command: BrowserCommand, argument: CommandArgument, in window: NSWindow,
+                        controller: AnyObject? = nil) -> Bool {
+        let item = command.makeMenuItem()
+        item.representedObject = argument.representedObject
+        let action = command.action
+        var target: AnyObject?
+        switch command.responder {
+        case .windowController:
+            if let controller, controller.responds(to: action) { target = controller }
+        case .appDelegate(explicitTarget: true):
+            target = NSApp.delegate
+        case .appDelegate(explicitTarget: false), .updater, .appKit:
+            break
+        }
+        guard let target = target ?? responderTarget(for: action, in: window),
+              isEnabled(item, autoenables: true, target: target) else { return false }
+        return NSApp.sendAction(action, to: target, from: item)
+    }
 }

@@ -23,6 +23,7 @@ private struct Context: CommandContext {
     var hasTabToStepTo = false
     var openInSpaceTitle = QuickDetourWindowController.openInMenuItemTitle
     var canOpenInSpace = false
+    var selectedTabIsInSplit = false
 }
 
 /// TASK-320: the command registry. Its identifiers are API (TASK-327 keys
@@ -46,7 +47,7 @@ nonisolated final class BrowserCommandRegistryTests: XCTestCase {
     private static let identifiers: [String] = [
         "app.about", "app.check-for-updates", "app.settings", "app.hide", "app.hide-others", "app.show-all",
         "app.quit",
-        "tab.new", "location.open", "tab.close", "tab.reopen-closed", "tab.toggle-pin",
+        "tab.new", "location.open", "tab.close", "tab.reopen-closed", "tab.toggle-pin", "tab.split-with",
         "window.new", "window.new-private", "quick-detour.new", "page.open-in-space", "app.import-from-arc",
         "edit.undo", "edit.redo", "edit.cut", "edit.copy", "tab.copy-url", "edit.paste", "edit.select-all",
         "find.show", "find.next", "find.previous",
@@ -55,7 +56,7 @@ nonisolated final class BrowserCommandRegistryTests: XCTestCase {
         "space.next", "space.previous",
         "space.jump-1", "space.jump-2", "space.jump-3", "space.jump-4", "space.jump-5", "space.jump-6",
         "space.jump-7", "space.jump-8", "space.jump-9",
-        "space.switch", "space.manage",
+        "space.switch", "tab.move-to-space", "space.manage",
         "extension.show-popup", "extension.options", "extensions.add", "extensions.manage",
         "extensions.check-for-updates",
         "develop.web-inspector", "develop.load-unpacked-extension", "extension.inspect-offscreen",
@@ -169,16 +170,58 @@ nonisolated final class BrowserCommandRegistryTests: XCTestCase {
 
     // MARK: - Parameters and the palette
 
-    @MainActor func testACommandThatNeedsAParameterIsNotOfferedInThePalette() {
+    /// TASK-320 AC #3: a command whose parameter has a list to choose from
+    /// is offered in the palette, which asks for it with a chip; one with a
+    /// URL or a position could not be (none is declared yet).
+    @MainActor func testAParameterisedCommandIsOfferedWhenItsParameterHasAList() {
         let parameterised = BrowserCommands.all.filter { !$0.parameters.isEmpty }
         XCTAssertEqual(Set(parameterised.map(\.id)), [
-            "space.switch", "extension.show-popup", "extension.options", "extension.inspect-offscreen",
-            "extension.reload-unpacked",
+            "tab.split-with", "space.switch", "tab.move-to-space", "extension.show-popup", "extension.options",
+            "extension.inspect-offscreen", "extension.reload-unpacked",
         ])
+        let offered: Set<CommandID> = ["tab.split-with", "space.switch", "tab.move-to-space", "extension.show-popup",
+                                       "extension.options"]
         for command in parameterised {
-            XCTAssertEqual(command.palette, .needsParameter, "\(command.id)")
+            XCTAssertEqual(command.palette.isOffered, offered.contains(command.id), "\(command.id)")
+            XCTAssertNotNil(command.choiceParameter, "\(command.id)")
         }
         XCTAssertEqual(BrowserCommands.switchToSpace.parameters, [.space])
+        XCTAssertEqual(BrowserCommands.moveTabToSpace.parameters, [.space])
+        XCTAssertEqual(BrowserCommands.splitWithTab.parameters, [.tab])
+        XCTAssertEqual(BrowserCommands.showExtensionPopup.titleInPalette, "Show Extension Popup",
+                       "its menu title says nothing outside the extension's submenu")
+        XCTAssertEqual(BrowserCommands.showExtensionPopup.title, "Show Popup", "the menu's is unchanged")
+        // A URL or a position has no list: such a command stays out.
+        let url = BrowserCommand("test.open-url", "Open URL", action: #selector(AppDelegate.openSettings),
+                                 responder: .appDelegate(explicitTarget: false), parameters: [.url])
+        XCTAssertEqual(url.palette, .needsParameter)
+        XCTAssertNil(url.choiceParameter)
+    }
+
+    @MainActor func testTheChipCommandsRulesFollowTheSidebarsItems() {
+        let tab: (inout Context) -> Void = { $0.hasSelectedTab = true; $0.selectedTabHasURL = true }
+        XCTAssertTrue(BrowserCommands.moveTabToSpace.isAvailable(in: context(.normal, tab)))
+        XCTAssertFalse(BrowserCommands.moveTabToSpace.isAvailable(in: context(.private, tab)), "nothing leaves Private")
+        XCTAssertFalse(BrowserCommands.moveTabToSpace.isAvailable(in: context(.normal)), "no tab")
+        XCTAssertFalse(BrowserCommands.moveTabToSpace.isAvailable(in: context(.normal) {
+            tab(&$0); $0.selectedTabIsInSplit = true
+        }), "a split row has no Move to")
+        XCTAssertTrue(BrowserCommands.moveTabToSpace.isAvailable(in: context(.normal) {
+            tab(&$0); $0.selectedTabIsPinned = true
+        }), "a pinned row has one")
+
+        XCTAssertTrue(BrowserCommands.splitWithTab.isAvailable(in: context(.normal, tab)))
+        XCTAssertTrue(BrowserCommands.splitWithTab.isAvailable(in: context(.private, tab)), "Private splits too")
+        XCTAssertFalse(BrowserCommands.splitWithTab.isAvailable(in: context(.normal) {
+            tab(&$0); $0.selectedTabIsPinned = true
+        }), "a split is formed from unpinned tabs")
+        XCTAssertFalse(BrowserCommands.splitWithTab.isAvailable(in: context(.normal) {
+            tab(&$0); $0.selectedTabIsInSplit = true
+        }), "one split per tab")
+        XCTAssertFalse(BrowserCommands.splitWithTab.isAvailable(in: context(.quickDetour, tab)))
+
+        XCTAssertTrue(BrowserCommands.switchToSpace.isAvailable(in: context(.normal)))
+        XCTAssertFalse(BrowserCommands.switchToSpace.isAvailable(in: context(.private)))
     }
 
     @MainActor func testAppKitsItemsAndThoseThatOpenThePaletteAreNotOffered() {

@@ -110,8 +110,9 @@ nonisolated struct KeyEquivalent: Equatable, Sendable {
     }
 }
 
-/// What a parameterised command needs to be told (TASK-320 declares them;
-/// the palette does not ask for them yet, so such commands stay out of it).
+/// What a parameterised command needs to be told (TASK-320). The palette
+/// asks for one that has a list to choose from with a chip in the field
+/// (AC #3, `CommandChoices`); a URL or a position it cannot ask for.
 nonisolated enum CommandParameter: String, Equatable, Sendable {
     case space
     case tab
@@ -120,6 +121,14 @@ nonisolated enum CommandParameter: String, Equatable, Sendable {
     case position
     /// A web extension, by its ID.
     case `extension`
+
+    /// Whether the palette can offer a list of values to choose from.
+    var hasChoiceList: Bool {
+        switch self {
+        case .space, .tab, .profile, .extension: return true
+        case .url, .position: return false
+        }
+    }
 }
 
 /// The kind of window a command is evaluated in.
@@ -165,7 +174,8 @@ enum PalettePresence: Equatable {
     case offered
     /// Not offered, with the reason (shown nowhere; it documents the choice).
     case notOffered(String)
-    /// Needs a parameter the palette cannot ask for yet (TASK-320 AC #3).
+    /// Needs a parameter the palette cannot ask for: one with no list to
+    /// choose from (a URL, a position).
     case needsParameter
 
     var isOffered: Bool { self == .offered }
@@ -204,6 +214,12 @@ protocol CommandContext {
     /// Cmd+O's title in this window.
     var openInSpaceTitle: String { get }
     var canOpenInSpace: Bool { get }
+    /// The selected tab is in a split (normal or pinned).
+    var selectedTabIsInSplit: Bool { get }
+    /// The values a parameterised command can be run on in this window, as
+    /// the palette lists them (TASK-320 AC #3); empty when it has none here,
+    /// and then the palette does not offer it.
+    func commandChoices(for id: CommandID) -> [CommandChoice]
 }
 
 extension CommandContext {
@@ -225,6 +241,8 @@ extension CommandContext {
     var hasTabToStepTo: Bool { false }
     var openInSpaceTitle: String { QuickDetourWindowController.openInMenuItemTitle }
     var canOpenInSpace: Bool { false }
+    var selectedTabIsInSplit: Bool { false }
+    func commandChoices(for id: CommandID) -> [CommandChoice] { [] }
 }
 
 /// A menu of the menu bar and its commands, in menu order (TASK-327:
@@ -241,6 +259,9 @@ struct BrowserCommand {
     /// The title its menu item is built with; validation may retitle the
     /// item (`title(in:)`).
     let title: String
+    /// The palette's title when the menu's would not say enough out of its
+    /// submenu ("Show Popup" under an extension's name); nil is `title`.
+    let paletteTitle: String?
     /// Other names the palette matches, lowercase.
     let aliases: [String]
     /// An SF Symbol for the palette row.
@@ -266,10 +287,12 @@ struct BrowserCommand {
     init(_ id: CommandID, _ title: String, key: KeyEquivalent? = nil, action: Selector,
          responder: CommandResponder, aliases: [String] = [], symbol: String? = nil,
          parameters: [CommandParameter] = [], tag: Int = 0, palette: PalettePresence = .offered,
+         paletteTitle: String? = nil,
          rule: ((any CommandContext) -> Bool)? = nil,
          contextualTitle: ((any CommandContext) -> String?)? = nil) {
         self.id = id
         self.title = title
+        self.paletteTitle = paletteTitle
         self.aliases = aliases
         self.symbol = symbol
         self.keyEquivalent = key
@@ -277,8 +300,8 @@ struct BrowserCommand {
         self.action = action
         self.responder = responder
         self.tag = tag
-        // A command that needs a parameter cannot be offered without asking for it.
-        self.palette = parameters.isEmpty ? palette : .needsParameter
+        // The palette asks for a parameter only from a list (AC #3).
+        self.palette = parameters.allSatisfy(\.hasChoiceList) ? palette : .needsParameter
         self.rule = rule
         self.contextualTitle = contextualTitle
     }
@@ -312,6 +335,15 @@ struct BrowserCommand {
     /// menu item to, or the built title.
     func title(in context: any CommandContext) -> String {
         contextualTitle?(context) ?? title
+    }
+
+    /// The title the palette matches and shows before a window gives it one.
+    var titleInPalette: String { paletteTitle ?? title }
+
+    /// The parameter the palette asks for with its chip; nil for a command
+    /// that runs as it is.
+    var choiceParameter: CommandParameter? {
+        parameters.first(where: \.hasChoiceList)
     }
 
     /// Its menu item, as the main menu has it. The item's identifier is the

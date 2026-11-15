@@ -112,14 +112,20 @@ nonisolated final class PaletteCommandWindowTests: XCTestCase {
     /// The palette commands whose main-menu item is enabled in `window`,
     /// resolved as `run_menu_item` resolves it, with the window itself first
     /// responder (as after the palette is dismissed and before the page
-    /// takes the keys back), in registry order.
-    @MainActor private func menuEnabledPaletteCommands(in window: NSWindow) throws -> [CommandID] {
+    /// takes the keys back), in registry order. A parameterised command has
+    /// no item of its own (TASK-320 AC #3): it is expected when the window's
+    /// rule holds and it has a value to choose (`PaletteCommandChipWindowTests`
+    /// checks the values).
+    @MainActor private func menuEnabledPaletteCommands(in window: NSWindow,
+                                                       context: any CommandContext) throws -> [CommandID] {
         window.makeFirstResponder(nil)
         let menu = try XCTUnwrap(NSApp.mainMenu)
         return BrowserCommands.all.filter { command in
-            guard command.palette.isOffered, let item = CommandDispatch.menuItem(for: command.id, in: menu) else {
-                return false
+            guard command.palette.isOffered else { return false }
+            if command.choiceParameter != nil {
+                return command.isAvailable(in: context) && !context.commandChoices(for: command.id).isEmpty
             }
+            guard let item = CommandDispatch.menuItem(for: command.id, in: menu) else { return false }
             return (try? AutomationMenus.resolve(item, in: window, allowPrivate: true)) != nil
         }.map(\.id)
     }
@@ -130,7 +136,7 @@ nonisolated final class PaletteCommandWindowTests: XCTestCase {
         let (wc, _) = windowWithPage()
         spin()
         let window = try XCTUnwrap(wc.window)
-        let expected = try menuEnabledPaletteCommands(in: window)
+        let expected = try menuEnabledPaletteCommands(in: window, context: wc)
         wc.newTab(nil)
         try type(">", in: window)
         XCTAssertEqual(commandRows(wc.commandPaletteView).map(\.id), expected)
@@ -146,7 +152,7 @@ nonisolated final class PaletteCommandWindowTests: XCTestCase {
         let wc = try privateWindowWithPage()
         spin()
         let window = try XCTUnwrap(wc.window)
-        let expected = try menuEnabledPaletteCommands(in: window)
+        let expected = try menuEnabledPaletteCommands(in: window, context: wc)
         wc.newTab(nil)
         try type(">", in: window)
         let offered = commandRows(wc.commandPaletteView).map(\.id)
@@ -163,7 +169,7 @@ nonisolated final class PaletteCommandWindowTests: XCTestCase {
         let controller = quickDetour()
         spin(0.2)
         let window = try XCTUnwrap(controller.window)
-        let expected = try menuEnabledPaletteCommands(in: window)
+        let expected = try menuEnabledPaletteCommands(in: window, context: controller)
         controller.showPalette(prefill: nil)
         try type(">", in: window)
         let offered = commandRows(controller.commandPaletteView).map(\.id)
@@ -181,7 +187,7 @@ nonisolated final class PaletteCommandWindowTests: XCTestCase {
         let controller = quickDetour(quarantine: true)
         spin(0.2)
         let window = try XCTUnwrap(controller.window)
-        let expected = try menuEnabledPaletteCommands(in: window)
+        let expected = try menuEnabledPaletteCommands(in: window, context: controller)
         controller.showPalette(prefill: nil)
         try type(">", in: window)
         XCTAssertEqual(commandRows(controller.commandPaletteView).map(\.id), expected)
