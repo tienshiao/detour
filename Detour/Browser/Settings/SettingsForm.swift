@@ -158,9 +158,23 @@ final class SettingsFormSection: NSView {
     /// The rows, the footnote included.
     var rows: [SettingsFormRow] { group.rows }
 
+    /// The width the rows wrap at until the group is laid out.
+    private var estimatedWidth = SettingsMetrics.formWidth
+
     /// The section's width before its first layout.
     func estimateWidth(_ width: CGFloat) {
+        estimatedWidth = width
         for row in rows { row.estimateWidth(groupWidth: width) }
+    }
+
+    /// Replaces the rows, a footnote included (Profiles' per-extension
+    /// switches, which come and go with the installed extensions). The new
+    /// rows wrap at the group's width, or the estimate before its first
+    /// layout, so the pane's next measurement is already right.
+    func setRows(_ rows: [SettingsFormRow]) {
+        let width = group.bounds.width > 0 ? group.bounds.width : estimatedWidth
+        for row in rows { row.estimateWidth(groupWidth: width) }
+        group.setRows(rows)
     }
 }
 
@@ -195,10 +209,7 @@ final class SettingsFormGroupView: NSView {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
-        for row in rows {
-            stack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
+        setRows(rows)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -207,12 +218,11 @@ final class SettingsFormGroupView: NSView {
 
     var rows: [SettingsFormRow] { stack.arrangedSubviews.compactMap { $0 as? SettingsFormRow } }
 
-    /// Replaces the rows (a list that changes: General's allowed clients).
+    /// Replaces the rows; the separators follow (Profiles' extension
+    /// switches, General's allowed clients). A section's `setRows` also wraps
+    /// the new rows at the group's width.
     func setRows(_ rows: [SettingsFormRow]) {
-        for row in stack.arrangedSubviews {
-            stack.removeArrangedSubview(row)
-            row.removeFromSuperview()
-        }
+        for row in stack.arrangedSubviews { row.removeFromSuperview() }
         for row in rows {
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -345,6 +355,18 @@ final class SettingsFormRow: NSView {
     /// A footnote row: secondary text across the group, at its end.
     convenience init(footnote: String) {
         self.init(title: nil, footnote: footnote, help: nil, accessory: .none, accessibilityName: nil)
+    }
+
+    /// A row that is one view of its own across the row, inside the row's
+    /// insets, as tall as its constraints make it (the Extensions pane's
+    /// header: icon, name, version, description and Settings…, the top row
+    /// of System Settings' Wi-Fi or Bluetooth pane). The view wraps its own
+    /// text: the row's width estimate does not reach into it.
+    convenience init(content: NSView) {
+        self.init(title: nil, footnote: nil, help: nil, accessory: .none, accessibilityName: nil)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        column.insertArrangedSubview(content, at: 0)
+        content.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
     }
 
     private init(title: String?, footnote: String?, help: String?, accessory: Accessory, accessibilityName: String?) {
