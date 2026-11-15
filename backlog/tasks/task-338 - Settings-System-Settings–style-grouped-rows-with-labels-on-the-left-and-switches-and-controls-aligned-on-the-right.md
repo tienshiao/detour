@@ -3,11 +3,11 @@ id: TASK-338
 title: >-
   Settings: System Settings–style grouped rows, with labels on the left and
   switches and controls aligned on the right
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-15T02:08:00Z'
-updated_date: '2026-11-15T05:32:00Z'
+updated_date: '2026-11-15T07:37:00Z'
 labels:
   - settings
   - ui
@@ -124,4 +124,6 @@ Found, out of scope: SettingsWindowController refit race on a list pane's first 
 Phase 2 final pass (after the review fixes, HEAD 4110566): every pane recaptured on the final build (dylib 20:47); every capture the same size as before the review fixes, so the refits did not move; Profiles with another profile selected while the pane is open (after-profiles-row1-light.png) opens at its natural 1008 pt. Allow Again keeps its old accessible name 'Allow Disconnected Agents Again' (AC5). Light and dark captures of every pane and the Increase Contrast captures were looked at. The refit race the subagent saw (open_ui row>0 on a list pane's first open) predates this work: an earlier run on the unconverted Profiles pane opened with row=1 left the window at 671 pt of content, short of the profile's natural height. Also dropped from the notes above: Extensions' per-permission tooltips are gone (names wrap instead of truncating), the extension's name, description and notes are no longer selectable, and the Permissions section is left out when only optional or saved rows exist (PROVISIONAL). The pane commits came before the review ran; its fixes are 11f150e. Status left In Progress for the user's look at the phase 2 choices and at Increase Contrast / Reduce Transparency with the real settings on.
 
 Follow-up 2026-11-14 (coordinator's list): the extension icon, in the Extensions detail header and in the list's rows, is hidden from Accessibility (on the view and its cell): the name read right after it says which extension it is; before, an unnamed AXImage. Test: SettingsProfilesExtensionsFormTests.testTheHeaderIconIsNotReadAsAnUnnamedImage (the pane's image views exist and none is an element; no image in the header's tree; the name is read). Runtime: the Extensions pane's Accessibility reading has no AXImage left, 0 unnamed switches, 0 duplicates. The aborted DetourVerify-338-before run's orphaned store was identified for certain (WebsiteDataStore/23cf252f-c9bf-5ee0-ae13-24c0d8757ac9 = UUIDv5 of 'DetourVerify-338-before/<its Personal profile id>' under WebKitStorageScope.namespace, created 19:47:11, open by no process) and removed; its Work profile's identifier (b2cefaec-…) had no folder. Same review run as TASK-339/340.
+
+2026-11-14 user decision: phase 2 approved as landed (Shortcuts stays a searchable list in a group; General's Allow Again row and separate Allowed Clients section; the new Extensions wording; pending permissions as a row).
 <!-- SECTION:NOTES:END -->

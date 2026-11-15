@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T20:17:00Z'
-updated_date: '2026-11-14T21:50:00Z'
+updated_date: '2026-11-15T07:37:00Z'
 labels:
   - links
   - content-blocker
@@ -83,6 +83,8 @@ Code review (/code-review medium --fix): 9 findings. Fixed by the review: cache 
 Follow-ups for the lead: a Settings row / switch for the list (Settings > Content Blocking: status, rule count, on/off) — not built, the TASK-328 agent is in that pane; whether quarantine should use the list (AC #4); possibly switch to AdGuard's chromium build for its extra exceptions.
 
 Follow-up after the final check: case sensitivity confirmed in tsurlfilter's remove-param-modifier.ts (a plain value becomes the regex ^name=[^&#]*$ with no i flag), which also needs a name= pair: list names now only remove a pair with '=' (a bare ?name is kept; built-in names unchanged). Test testAListNameNeedsAValue. Correction to the AC #3 note above: a regex exception keeps its addresses' parameters from the list's rules only, not from the built-in names (changed after the review). Known difference: patterns are matched against the whole address including its #fragment, which a content blocker never sees (no list rule is affected). Data point on over-stripping: the whole list removes Amazon's th= (||amazon.*$removeparam=th), so a link chosen as 'ordinary' changed under it. Tests rerun after this change: TrackingParameterFilterTests 37 (1 skipped: the whole-list leg without its env var; it passed in the earlier run), TrackingParametersTests 13, CopyURLTests 11, DevToolbarHostingTests 13, QuarantineTests 24 = 98, 0 failures. This change had no separate code review; the runtime check ran on the build before it (its pairs all carry values).
+
+2026-11-14 user decision: (1) quarantine navigations also strip the AdGuard list's parameters (cleanLink instead of the built-in-only rule in Quarantine.trackingFreeURL and openQuarantine), reversing the provisional built-in-only choice; implementation follows. (2) Site-specific exceptions keep built-in names on their sites (exceptions win), as built.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-15T05:14:00Z'
-updated_date: '2026-11-15T07:06:00Z'
+updated_date: '2026-11-15T07:37:00Z'
 labels:
   - automation
 dependencies: []
@@ -64,6 +64,8 @@ Found 2026-11-14 in TASK-338's runtime checks: in a test run, the endpoint's cli
 - All Automation* suites and MCPServerTests on the rebased tree: 212 tests, 0 failures. After the review fixes: AutomationInputTests, AutomationWindowKindsTests, AutomationToolsTests, AutomationPrivateAccessTests 46/0.
 - Runtime on the rebased build (dylib 22:59, DetourVerify-2288 test run): the mini Peek switch toggles PeekEnabled to 0 and back to 1; the Private switch is gate_closed; the Quick Detour idle pop-up opens, lists its five items, and choose_menu_item stores never; Back (HoverButton) in the background, drag strip, app stayed inactive. 17/19: the pre-existing sidebar row left click, and the key-window difference (Detour was active this run: a routed click on the browser's Back button made the browser window key and Settings lost key). docs/harness/task326-copy-url-checks.py ALL PASS; verify2287.py 21/21. Defaults keys, suite plists and data folders removed.
 - Review (/code-review medium --fix, forked, no build): 6 findings. Fixed: (1) the Settings switch test restores PeekSettings in a defer; (3) the route is decided before focus() moves (a field editor put over a text field would change the hit test). Left: (2) the routed click makes a non-key window key when Detour is active, as a person's click does; with two browser windows that moves web view ownership; recorded in the wiki, for the lead. (4) a window with a sheet may drop a routed press while click reports completed (speculative, not reproduced). (5) the direct route sends the original release, the routed one the dequeued copy (same time and place; left). (6) the test's queue check peeks in .eventTracking as the older test does (left).
+
+2026-11-14 user decision: approved: while Detour is active, an endpoint click in a background window brings it forward as a person's click does (the ownership hand-off is tested in TASK-228.10).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -1,11 +1,11 @@
 ---
 id: TASK-333
 title: 'Pages: ⇧⌘Z (Redo) in a page is never matched by BrowserWebView''s interception'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T23:45:00Z'
-updated_date: '2026-11-15T00:19:00Z'
+updated_date: '2026-11-15T07:37:00Z'
 labels:
   - keyboard
   - undo
@@ -26,7 +26,7 @@ Found 2026-11-14 in TASK-327. BrowserWebView intercepts ⌘Z and ⇧⌘Z so undo
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The intended behaviour of the ⇧⌘Z branch is found and recorded, and ⇧⌘Z in a page does that (in text fields, contenteditable and outside them)
+- [x] #1 The intended behaviour of the ⇧⌘Z branch is found and recorded, and ⇧⌘Z in a page does that (in text fields, contenteditable and outside them)
 - [x] #2 TASK-327's shortcut reservations match the fixed behaviour (⇧⌘Z reserved again if it is taken before the menus)
 - [x] #3 A test covers the key matching with and without Shift; checked at runtime with /verify
 <!-- AC:END -->
@@ -62,6 +62,8 @@ Review (code-review medium --fix, forked): no bug in the matching. Acted on: the
 Final test run: BrowserUndoKeyTests 8, ShortcutConflictTests 10, ShortcutBindingStoreTests 21, ShortcutMenuTests 10, ShortcutsSettingsPaneTests 16, MainMenuCharacterizationTests 9, QuickDetourWindowTests 16, ClosedPeekTests 11: 101 tests, 0 failures. Runtime re-run on that build (16:15, DetourVerify-333c): body + redo pending: the page saw nothing and the tab re-closed; <input> + redo pending: the page saw ⇧⌘Z (then the menu's Redo); body + undo pending: ⌘Z reopened the tab without the page seeing it.
 
 AC #1 left unchecked: outside fields ⇧⌘Z does what the branch meant; in a text field or contenteditable the branch stands aside as meant, but what follows is the Edit menu's browser redo, not the page's text redo (pre-existing, also for ⌘Z), which this task did not change.
+
+2026-11-14 user decision: (1) file a follow-up to route Edit > Undo/Redo to the page's own undo while an editable element is focused; (2) canvas apps: the page gets ⌘Z/⇧⌘Z first, and Detour's undo runs only when the page does not handle the key. Both go to the follow-up task; AC #1 of this task is settled by it.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

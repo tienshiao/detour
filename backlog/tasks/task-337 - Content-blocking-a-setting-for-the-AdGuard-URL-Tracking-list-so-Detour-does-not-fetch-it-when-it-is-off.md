@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T23:45:00Z'
-updated_date: '2026-11-15T01:18:00Z'
+updated_date: '2026-11-15T07:37:00Z'
 labels:
   - links
   - content-blocker
@@ -56,6 +56,8 @@ PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user
 Tests: TrackingParameterListTests +9 (default on and stored, off at launch, refresh while off, Clear Cache while off, turning off, a response in flight when turned off, turning on offline with the cache, turning on without a cache, the status line); SettingsSwitchRowTests +1 (the pane's switch shows and writes the setting, named by its label; the TASK-336 sweep now counts it). Run: TrackingParameterListTests, SettingsSwitchRowTests, CopyURLTests, ContentBlockerTests, SettingsPaneColumnsTests, SettingsPaneHeightTests, SettingsGuideLinkTests: 106 tests, 0 failures.
 Runtime (/verify, docs/harness/task337-tracking-list-setting-checks.py, Debug build, one isolated data directory over two launches, a local server logging requests via DETOUR_TRACKING_FILTER_URL, the switch and buttons pressed through Accessibility, Shift-Cmd-C read with pbpaste): 25/25 checks passed, twice (before and after the review fixes). On at launch: 1 request, cached, Copy URL drops the list's site parameters, switch named, status '32 rules, updated 3s ago'. Off: Copy URL keeps them (built-in names only); Update All Now: no request; cache kept. Relaunch while off: no request; switch off; cache on disk. Server 503, on: 1 request, cached rules in use again. Off, Clear Cache & Redownload: no request, cache deleted. On: 1 full request, cached again. Total 3 list requests, each from a step that should make one. Pane checked in light and dark (screenshots): the section sits under the buttons, help wraps, real list showed 2,665 rules.
 Review (code-review medium --fix): stub's held reply now times out (applied); status line read 'Not downloaded yet' during the cache read after turning on (fixed: falls back to the recorded rule count); 'updated in 0s' when the fetch is a moment ahead of the clock (fixed, tested). Not changed: toggling on/off/on very fast can queue two turnedOn fetches (two requests, nothing wrong installed); the isEnabled check in installIfNewest duplicates the ticket gate on purpose; the test teardown stores the setting explicitly.
+
+2026-11-14 user decision: keep the downloaded copy, unused, while the list is off (as built).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

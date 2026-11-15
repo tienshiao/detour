@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08T07:38:00Z'
-updated_date: '2026-11-15T00:08:00Z'
+updated_date: '2026-11-15T07:37:00Z'
 labels:
   - spaces
   - menus
@@ -28,7 +28,7 @@ Context for the choice of keys (the user's call): the only digit key equivalent 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The key binding is chosen with the user before implementation (⌃1–⌃9, ⌘1–⌘9 or another set), with the Mission Control conflict considered
+- [x] #1 The key binding is chosen with the user before implementation (⌃1–⌃9, ⌘1–⌘9 or another set), with the Mission Control conflict considered
 - [x] #2 Each of the first nine spaces, in Settings › Spaces order, has a shortcut that switches the key window to it, listed in the Spaces menu next to the space's name
 - [x] #3 A shortcut for a position with no space does nothing (no beep, no error), and the shortcuts are disabled in Private windows
 - [x] #4 Reordering, adding or deleting spaces updates which space each shortcut opens without a relaunch
@@ -90,6 +90,8 @@ No correctness bugs. Fixed: the space title format shared by both item loops; th
 - The unfiltered Settings > Shortcuts pane (and filtered by Navigate, Develop) showed no 'Used by macOS' mark on any existing default; only Switch to Space 1–6 carry it here.
 - Cleaned up as before (app by pid, fixture server, defaults keys, data-dir suite).
 - Searched DetourTests, scripts and docs/capture for other users of the per-space items (selectSpaceFromMenu, switchToSpace, the 7000 tag, Spaces-menu lookups): none depend on the first nine being space.switch items. New files (SpaceJump.swift, SpaceJumpTests.swift): other checkouts need xcodegen generate.
+
+2026-11-14 user decision: keep ⌃1–⌃9 as the defaults (matches Arc). On the user's Mac Mission Control holds ⌃1–⌃6; the user turns those off in System Settings or rebinds in Settings > Shortcuts, which already marks them 'Used by macOS'. ⌘1–⌘9 rejected.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

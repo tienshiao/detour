@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-10T09:38:00Z'
-updated_date: '2026-11-14T22:56:00Z'
+updated_date: '2026-11-15T07:37:00Z'
 labels:
   - command-palette
   - automation
@@ -148,6 +148,8 @@ Correction to the counts above (from the logs): BrowserCommandRegistryTests 22, 
 - Lock attribution is INFERRED, not shown: the control suite FaviconLinkBridgeTests (8/8) loaded pages under the same lock. The evidence is that the three failing suites passed at b10ab60 and that nothing after it is on the failing tests' path (they open no palette). Rerun owed on an unlocked screen.
 
 2026-11-14 lead: the 12 Quick Detour / quarantine failures were the locked screen. Rerun on an unlocked screen at f0f38d7 (TASK-320 rebased on main with 326/292.11/325/328/329): QuickDetourWindowTests 16/16, QuarantineWindowTests 22/22, QuickDetourOpenInWindowTests 17/17 (55/55). Rebased neighbours: 210 tests, 0 failures, 1 skipped (opt-in whole-list test).
+
+2026-11-14 user decision: approved as built: command rows after 3+ characters, at most 2, below the typed row; '>' lists commands only; New Tab, Open Location…, Undo/Redo and parameterised commands not offered. AC #3: parameterised commands ask for their argument with a chip in the field, like site search (nested list and typed arguments rejected). Implementation of the chip follows.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T23:45:00Z'
-updated_date: '2026-11-15T00:37:00Z'
+updated_date: '2026-11-15T07:37:00Z'
 labels:
   - tabs
 dependencies: []
@@ -53,6 +53,8 @@ An asleep pinned opener is dropped on reopen (same rule as parentTab(for:)), alt
 Tests: ClosedTabOpenerTests 15/0 (new); with the neighbours: AppDatabaseTests 28, ArchivedTabRestoreTests 20, ClosedPeekTests 11, NavigationSwipeTests 37, QuickDetourArchiveTests 17, SplitTabTests 63, TabStoreTests 40: 231 tests, 0 failures. After the review fixes: ClosedTabOpenerTests 15, MoveTabToSpaceTests 31, NavigationSwipeTests 37: 0 failures.
 Runtime (/verify, Debug build, isolated DETOUR_DATA_DIR, automation endpoint, docs/harness/task332-reopen-opener-checks.py, 9/9 passed): target=_blank child -> Cmd+W -> the closedTab row carries the opener id -> Reopen Closed Tab: own swipe mode with opener_id = opener; Cmd+[ with the page focused closes it to the opener; reopened again, a back swipe's completion (navigation_swipe, scripted tracker) closes it to the opener; reopened again, the sidebar's Back button does; then child closed, opener closed, Reopen twice: the opener (new id) and the child with opener_id nil, WebKit's gesture, Cmd+[ leaves it open. The run was on the build before the review's two cosmetic edits (lazy pinned search; a moveTab-undo edit reverted). Not verified: a real trackpad swipe (synthetic events cannot drive trackSwipeEvent), the palette's Back.
 Review (/code-review medium --fix): plan step 4 corrected to say the undos are unchecked; openerTab searches the pinned entries lazily; the reviewer also switched moveTab's undo to openerTab (relinks a live pinned opener too), which I reverted as out of scope (reported).
+
+2026-11-14 user decision: Undo Close Tab filters the restored opener link through Space.openerTab like Reopen Closed Tab (keep it only if the opener is still open in the same space). Implementation follows.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

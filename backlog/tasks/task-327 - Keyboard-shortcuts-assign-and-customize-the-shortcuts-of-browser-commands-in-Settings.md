@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T19:47:00Z'
-updated_date: '2026-11-14T23:36:00Z'
+updated_date: '2026-11-15T07:37:00Z'
 labels:
   - keyboard
   - menus
@@ -50,7 +50,7 @@ Open questions for the user:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The scope (which commands can be bound), the storage format and how it interacts with macOS App Shortcuts (NSUserKeyEquivalents) are decided with the user and recorded in the task, with rejected alternatives
+- [x] #1 The scope (which commands can be bound), the storage format and how it interacts with macOS App Shortcuts (NSUserKeyEquivalents) are decided with the user and recorded in the task, with rejected alternatives
 - [x] #2 Settings lists the bindable commands with their current shortcuts; the user can record a new shortcut, clear one, and assign one to a command that has none
 - [x] #3 A changed shortcut takes effect at once in every window, menus show it, and it persists across relaunch
 - [x] #4 A shortcut already used by another command, by the Quick Detour hotkey, or reserved by macOS is refused or reassigned as decided, and the user is told which command or system shortcut holds it
@@ -142,6 +142,8 @@ Left as is: (a) conflicts on shifted punctuation are not seen (a recording store
 - Side effect outside the task: the Quick Detour recorder's refusal now names the application menu 'Detour > Settings…' instead of 'NSMenuItem > Settings…' (HotKeyShortcutValidation's menu path now titles the app menu by the app's name).
 - For the user: the row 'Open Quick Detour in Space' is also Open Peek in New Tab in a browser window (one item, one shortcut); the pane opens at the screen's height cap (1330 pt here) because the Settings height rule makes every row its natural height, which the user may want capped lower.
 - The spikes, the Accessibility helper (axdrive.swift) and the fixture page are in docs/harness/task327 for redoing the owed checks.
+
+2026-11-14 user decision: approved as built: main-menu commands only; ⌘ or ⌃ required except F1–F20; a taken key is refused with the holder named, never reassigned; Restore Defaults asks no confirmation; App Shortcuts set in System Settings win.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

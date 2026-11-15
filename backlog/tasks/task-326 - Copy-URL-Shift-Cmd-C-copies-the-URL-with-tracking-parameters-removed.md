@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T09:35:00Z'
-updated_date: '2026-11-14T20:25:00Z'
+updated_date: '2026-11-15T07:37:00Z'
 labels:
   - feature
   - links
@@ -63,6 +63,8 @@ Code review (/code-review medium --fix): no correctness bugs; fixed: double eval
 Runtime check rerun on the final build (dylib built 12:08:58, after the review's edit) with the committed docs/harness/task326-copy-url-checks.py: all 12 checks passed (menu, Shift-Cmd-C, address bar button, sidebar Copy URL clean; tab URL, history and session kept the tracked address). Defaults keys and data directory of every run removed.
 
 2026-11-14 follow-up (user's call): Share… in the sidebar tab menu now shares the clean link too (TrackingParameters.removing; the picker comes from TabSidebarViewController.makeSharingPicker, which a test replaces). CopyURLTests 8/8 passed (new: testTheSidebarsShareSharesTheLinkWithoutTrackingParameters). Code review (low): no findings. Runtime: docs/harness/task326-copy-url-checks.py on a fresh main build, ALL PASS, sidebar menu still lists Share… (the system share sheet itself was not opened).
+
+2026-11-14 user decision: the dev toolbar's link button copies the address as loaded (no stripping), so developers testing utm_ handling get the exact address; every other copy entry point keeps stripping. Implementation follows.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
