@@ -3,11 +3,11 @@ id: TASK-320
 title: >-
   Command palette: browser commands (a shared command registry, also for
   AppleScript, Shortcuts and MCP)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-10T09:38:00Z'
-updated_date: '2026-11-15T07:44:00Z'
+updated_date: '2026-11-15T08:21:00Z'
 labels:
   - command-palette
   - automation
@@ -51,7 +51,7 @@ Constraints from the codebase: the palette is scoped to its window's profile (TA
 <!-- AC:BEGIN -->
 - [x] #1 The registry's shape (command, parameters, availability, action) and how menus, palette, AppleScript/Shortcuts (TASK-319) and MCP (TASK-228) use it are recorded in the task, with rejected alternatives
 - [x] #2 Typing part of a command's title or alias in the palette lists it with its key equivalent, and Return runs it through the same code as its menu item
-- [ ] #3 A command that needs a space, tab or profile asks for it in the palette and runs on the choice
+- [x] #3 A command that needs a space, tab or profile asks for it in the palette and runs on the choice
 - [x] #4 A command unavailable in the context (window kind, selection, tab state) is not offered, by the same rule that disables its menu item
 - [x] #5 Tests cover the availability rules and the palette's ranking of commands against URL and history rows; the runtime check exercises the palette in a normal and a Private window
 <!-- AC:END -->
@@ -152,17 +152,43 @@ Correction to the counts above (from the logs): BrowserCommandRegistryTests 22, 
 2026-11-14 lead: the 12 Quick Detour / quarantine failures were the locked screen. Rerun on an unlocked screen at f0f38d7 (TASK-320 rebased on main with 326/292.11/325/328/329): QuickDetourWindowTests 16/16, QuarantineWindowTests 22/22, QuickDetourOpenInWindowTests 17/17 (55/55). Rebased neighbours: 210 tests, 0 failures, 1 skipped (opt-in whole-list test).
 
 2026-11-14 user decision: approved as built: command rows after 3+ characters, at most 2, below the typed row; '>' lists commands only; New Tab, Open Location…, Undo/Redo and parameterised commands not offered. AC #3: parameterised commands ask for their argument with a chip in the field, like site search (nested list and typed arguments rejected). Implementation of the chip follows.
+
+## AC #3: the chip (2026-11-15, branch palette-chip: b77eb8c, 200e0c0, 3187099, 5edf4ab)
+
+Built as the user decided on 2026-11-14 (a chip in the field, like site search; nested list and typed arguments rejected).
+- Commands: space.switch (existing), tab.move-to-space and tab.split-with (new, no menu item; the sidebar's Move to and create-split paths through BrowserWindowController.moveSelectedTabToSpace(_:) / splitSelectedTabWith(_:)), extension.show-popup and extension.options (palette titles Show Extension Popup / Extension Options; choices from ExtensionMenuItems, shared with the Extensions menu).
+- Choices (CommandChoices, pure): Switch to Space = what the Spaces menu offers (every normal space in Settings > Spaces order, another profile's too, its row naming the profile) but the window's own; none in a Private window. Move Tab to Space = what the sidebar's Move to offers (normal spaces; nothing from a Private window) but the tab's own space and spaces the store would refuse (canMoveTab / canMovePinnedEntry); not for a tab in a split (the sidebar has no Move to on a split row); a pinned entry moves as a pinned entry. Split with Tab = the window space's unpinned tabs in no split but the selected one (Private windows: their own tabs only); not for a pinned or split tab. A command is offered only when its rule holds and it has a choice (PaletteCommands.resolve), so Move Tab to Space with one space is not listed.
+- Profiles: CommandChoices.profiles (normal profiles; none from a Private window) is built and tested but no command takes a profile yet (the lead's call: no invented profile command).
+- Palette (CommandPaletteView chip mode, PaletteChip): Return or a click on a parameterised command's row puts the command's symbol and title in the chip (PaletteChipView, site search's chip, renamed from SiteSearchChipView, now with a symbol), placeholder Choose a space/tab/extension, rows = choices, first selected. The field filters (title prefix, then words, then contains in title or address); arrows keep the field; Return runs on the selected choice, nothing with none; no history, search suggestions, completion or filler; Space after a keyword, Tab and a leading > stay the filter. Backspace at the start puts back the typed text (plus a space and the filter, as site search), Escape leaves then dismisses, a Cmd+L palette dismisses at once (PaletteChip.escapeAction, shared with site search).
+- Running: CommandDispatch.performFromPalette (both owners) checks the choice against commandChoices(for:) now and refuses a stale one (beep); perform(_:argument:in:controller:) sends an item built from the command with the value as representedObject to the controller (or the app delegate), validated by its rule.
+
+PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): the new command IDs tab.move-to-space and tab.split-with (API once shipped; free to rename until then); alternative names under space.* / split.*.
+PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): row and chip titles without an ellipsis (Switch to Space, Move Tab to Space, Split with Tab); alternative: Move Tab to Space… in the row, as menu items that ask for more.
+PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): Develop's per-extension items (Inspect Offscreen, Reload Unpacked) stay out of the palette (the Develop menu lists every profile's extensions, the palette only its window profile's); alternative: offer them with the window profile's extensions only.
+PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): Split with Tab puts the chosen tab to the right of the selected one (as Split with Next Tab); alternative: to its left, or a second chip for the side.
+
+Tests at 5edf4ab (37 suites, one run): 552 tests, 0 failures. New: CommandChoicesTests 16, PaletteCommandChipTests 15, PaletteCommandChipWindowTests 8 (Move Tab to Space for a tab and a pinned entry, not for a split; Switch to Space; Split with Tab; a normal window never lists a Private window's space; a Private window offers neither space command and splits only its own tabs; a choice gone before Return is refused). Updated: BrowserCommandRegistryTests 23 (IDs pinned, parameterised commands offered, the chip commands' rules), PaletteCommandsTests 19, PaletteCommandWindowTests 9, SpaceJumpTests 15, PaletteCommandRowsTests 13, SiteColorTests 9. Also passing: SiteSearchPaletteTests 25, MainMenuCharacterizationTests 10, ShortcutMenuTests 10, MenuKeyEquivalentMatcherTests 16, PaletteRows/Selection/ReturnKey/Focus/EmptyState/TabScope*/SuggestionProvider, Help, Shortcut* suites, HotKeyShortcutTests, PeekWindowCommandsTests, OpenInQuickDetourMenuTests, ExtensionMenuPopupDecisionTests, ExtensionOptionsPageEntryTests, AutomationToolsTests, MCPServerTests, SplitTabTests, SiteSearchRuleTests, QuickDetourWindowTests 16.
+
+Runtime (/verify, Debug build 00:04, DETOUR_DATA_DIR=DetourVerify-320chip, endpoint, seed_world: Home and Reading in Personal, Work in a second profile; screen unlocked): keys delivered by the endpoint as NSEvents to the field editor (type_text, press_key return/delete/escape); the palette opened with run_menu_item File > New Tab.
+- >move tab, Return: chip Move Tab to Space (symbol and title, the space's blue, white text), rows Reading and Work (Work naming its profile); captured with source=screen in light and dark and looked at. rea + Return: the tab moved from Home to Reading (list_tabs).
+- >switch, Return: chip; Backspace: >switch back with the command list; Return, Escape: chip gone, field cleared, palette open; Escape: dismissed. >switch, Return, work, Return: the window switched to Work. Its chip took Work's orange with dark text.
+- Private window (AutomationAllowPrivate on for the run): >space lists no command; > lists Split with Tab and no space command; >split, Return: the chip lists only the window's other Private tab; Return formed the split in the Private space. With it open, the normal window's Switch and Move chips list Home and Reading only (no Private space).
+- A click on the command row: the endpoint's click on a palette row does not send the table's action (any row, a plain command too; not this change's), so a real HID click (CGEvent, window brought front) was used: it entered the chip and the field kept the keys (rea + Return switched to Reading).
+- Not run at runtime: the extension commands (no extension installed in the run; pure tests cover their choices), Split with Tab in a normal window (window tests), the Cmd+L palette's one-step Escape (unit tests).
+- Seen: in a Private window the chip takes the Private space's 2C2C2E, close to the palette's dark glass, so the chip's edge barely shows (site search's chip there does the same, TASK-290's color rule).
+- Cleaned up: the app stopped by pid; its NSWindow Frame / NSSplitView keys, its defaults suite and data folder deleted.
+
+Code review (code-review medium --fix over 084197b..HEAD): 9 findings. Fixed: a choice gone stale by Return did nothing silently (now refused with a beep, performFromPalette, new test); dead chip state removed; the chip's title follows a re-scoped palette; a window with no space lists no extension; emoji icons cached; the two owners' duplicated dispatch folded into performFromPalette. Kept by decision: Move Tab to Space hides spaces the store would refuse (the brief: refused choices are not listed; the action's doc corrected); the profile list without a consumer (the lead's call). Left: choices are computed again on entry and on Return (canMoveTab reads the database only for extension pages).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Built the shared command registry and moved the main menu onto it; the palette now offers browser commands. The task stays In Progress: how commands show up is provisional, and AC #3 (parameterised commands in the palette) is the user's call. The options and a recommendation are in the notes.
+Built the shared command registry, moved the main menu onto it, and made the palette offer browser commands, including those that need a space, tab or extension.
 
-- Registry (Detour/Commands): every main-menu command has a stable hand-written ID (API for TASK-327), title, aliases, symbol, default key equivalent, typed parameters, the window kinds whose controller answers it, and an availability rule and contextual title over a lazy CommandContext that the browser and Quick Detour controllers implement. Both validateMenuItem implementations now answer the registry's rule.
-- Menus: every item is built from its command (identifier = command ID); titles, keys, actions, targets, tags and enablement are unchanged. MainMenuCharacterizationTests were written on the old menu and pass unchanged. Dynamic items keep their builders.
-- CommandDispatch: responder resolution in a given window plus AppKit's tiered enable decision, now shared by the TASK-56 fast path, run_menu_item and the palette.
-- Palette: commands rank in after the verbatim row (3+ characters, at most 2 rows), or are listed alone after ">". Rows show the window's title for the command and the live item's shortcut. Return dismisses the palette and runs the command through its live menu item, sent to the window's controller. Unavailable commands are not offered, by the menu's rule, in normal, Private, Quick Detour and quarantine windows.
-- Verification: tests (412 of 424 passed; the 12 failures are Quick Detour page-load waits under a locked screen, and those suites passed before the lock; rerun owed on an unlocked screen). Runtime through the endpoint with the screen locked: menus by key and path; palette commands in a normal and a Private window; Private menu enablement. Not run at runtime: Quick Detour (the endpoint cannot address it) and the rows' visual appearance.
-- Follow-ups for the lead: TASK-319/228 can use CommandDispatch + isAvailable per command ID. Context menus, the Dock menu and non-menu keys are not on the registry yet.
+- Registry (Detour/Commands): every main-menu command has a stable hand-written ID, title, aliases, symbol, default key equivalent, typed parameters, the window kinds that answer it, and an availability rule and contextual title over a lazy CommandContext. Both validateMenuItem implementations answer the registry's rule; the menu is built from it (MainMenuCharacterizationTests unchanged); CommandDispatch is shared by the key-equivalent fast path, run_menu_item and the palette.
+- Palette commands: rows rank in after the verbatim row (3+ characters, at most 2) or alone after '>' (the user's decision, 2026-11-14); Return dismisses the palette and runs the command through its menu item, sent to the window's controller; unavailable commands are not offered, by the menu's rule, in normal, Private, Quick Detour and quarantine windows.
+- AC #3 (the user's choice of a chip, 2026-11-14): Switch to Space, Move Tab to Space, Split with Tab (both new) and the extension popup and options commands put their chip in the field; the field filters the window's choices (Spaces menu order, the sidebar's Move to and split rules, never a Private window's space, Private windows only their own tabs); Return runs the command on the choice through the path its menu or sidebar item takes; Backspace and Escape leave the chip as site search does. A command with no choice in the window is not offered. A profile list is built but no command takes a profile yet.
+- Verification: affected suites at 5edf4ab, 552 tests, 0 failures; runtime through the endpoint with real key events: Move Tab to Space and Switch to Space through the chip, the chip in light and dark, Backspace and two-step Escape, a Private window offering no space commands and splitting only its own tabs; a row click via a real HID click (the endpoint's click does not reach the palette's table action, for any row).
+- Provisional and left for the user: new IDs tab.move-to-space and tab.split-with, titles without ellipsis, Develop's per-extension items not in the palette, the split side. Not on the registry yet: context menus, the Dock menu, keys outside menus.
 <!-- SECTION:FINAL_SUMMARY:END -->
