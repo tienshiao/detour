@@ -353,13 +353,16 @@ extension NSTableView {
     }
 }
 
-/// A view drawn as a grouped form's group (TASK-338): the 12 pt rounded
-/// fill of `SettingsFormGroupView`, its content clipped to the shape, and a
-/// border under Increase Contrast. Drawn in `updateLayer`, so the colours
-/// are resolved again whenever the appearance changes (a `CGColor` set once
+/// The group around a list (Spaces, Profiles and Extensions' master lists,
+/// Search's site searches, Links' routes, the Shortcuts list), drawn as a
+/// grouped form's group (TASK-338): the 12 pt rounded fill of
+/// `SettingsFormGroupView`, its rows clipped to the shape, and a border
+/// under Increase Contrast. Drawn in `updateLayer`, so the colours are
+/// resolved again whenever the appearance changes (a `CGColor` set once
 /// keeps the appearance it was created in, TASK-189 defect 9). Until
-/// TASK-338 it was a 4 pt rounded 1 pt separator border.
-class SettingsBorderedView: NSView {
+/// TASK-338 it was a 4 pt rounded 1 pt separator border
+/// (`SettingsBorderedView`, which the bordered switch boxes shared).
+final class SettingsListContainerView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -387,10 +390,6 @@ class SettingsBorderedView: NSView {
         needsDisplay = true
     }
 }
-
-/// The group around a list (Spaces, Profiles and Extensions' master lists,
-/// Search's site searches, Links' routes, the Shortcuts list).
-final class SettingsListContainerView: SettingsBorderedView {}
 
 /// TASK-336's rule for a switch (or any control) and the label that names
 /// it. A form row applies it to its control (TASK-338).

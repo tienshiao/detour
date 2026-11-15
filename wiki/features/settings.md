@@ -100,6 +100,12 @@ sources:
   - id: form-tests
     resource: ../../DetourTests/SettingsFormTests.swift
     title: SettingsFormTests.swift
+  - id: panes-form-tests
+    resource: ../../DetourTests/SettingsPanesFormTests.swift
+    title: SettingsPanesFormTests.swift (General, Spaces, Links, lists as groups)
+  - id: profiles-extensions-form-tests
+    resource: ../../DetourTests/SettingsProfilesExtensionsFormTests.swift
+    title: SettingsProfilesExtensionsFormTests.swift
   - id: task-337
     resource: backlog:TASK-337
     title: "Content blocking: a setting for the AdGuard URL Tracking list, so Detour does not fetch it when it is off"
@@ -238,15 +244,15 @@ takes one of two forms, chosen by `scrollsBodyAsWhole`:[^task-211]
   refits if the pane is the shown one. Spaces' height does not depend on its
   selection, so it does not report it.
 - `paneDidFit()` runs after each fit (Spaces scrolls its selection into view there).
-- `SettingsBorderedView` draws a 1 pt separator-coloured rounded border in
-  `updateLayer`, so it follows the appearance. `SettingsListContainerView`
-  (around a master list) and `SettingsGroupBoxView` are its subclasses.
-- `SettingsGroupBoxView` is a bordered group of rows (Profiles' filter lists
-  and extension switches, an extension's permissions): a vertical stack inset
-  10 / 8 by required constraints, every row pinned to the group's width. Its
-  height is its rows' height plus the insets, so it grows and shrinks with
-  them, which an `NSBox` does not; a long name in a row truncates instead of
-  widening it.[^task-189]
+- `SettingsListContainerView` holds a list (the master lists, Search's site
+  searches, Links' routes, the Shortcuts list) and draws it as a form group
+  in `updateLayer`, so it follows the appearance: the 12 pt rounded fill,
+  its rows clipped, a border under Increase Contrast. Until TASK-338 it was a
+  `SettingsBorderedView` with a 1 pt separator-coloured border, shared with
+  `SettingsGroupBoxView`, the bordered box of switch rows (Profiles' filter
+  lists and extension switches, an extension's permissions) that grew with
+  its rows where an `NSBox` does not;[^task-189] the form's groups replaced
+  both.
 - `SettingsWrappingLabel` is the wrapping label of every body (help text,
   descriptions, the pending banner, an extension's name): its wrap width
   (`preferredMaxLayoutWidth`) is its own width, taken in `setFrameSize`, and
@@ -266,21 +272,18 @@ takes one of two forms, chosen by `scrollsBodyAsWhole`:[^task-211]
 | Window width | 740 |
 | Pane margins, section gap, list to detail column | 20 |
 | Description to body | 12 |
-| Section title to its first row | 8 |
 | Between rows | 10 |
 | Control to its help text | 4 |
 | Label to control | 8 |
-| Label column (right-aligned) | 124 |
 | Text field width, cap on a detail pop-up | 260 |
 | Master list | 220 wide, 28 pt rows, 24 pt +/- buttons |
-| Bordered group | insets 10 (sides) and 8 (top, bottom), 6 between rows (4 in a permission list) |
 | List pane minimum height | 400 |
 | Screen margin for the cap | 80 |
 
-The detail column starts level with the top of the list. Grid labels sit on
-their control's first baseline (`rowAlignment = .firstBaseline`); a row
-whose control has no text (the colour well, a switch) is centred instead. A
-section title is 12 pt semibold, like System Settings' group headers.
+The detail column starts level with the top of the list. Until TASK-338 a
+right-aligned 124 pt label column (Profiles, Spaces), 8 pt from a section
+title to its first row and bordered groups with 10 / 8 pt insets set the
+details; the grouped form's metrics (below) replaced them.
 
 ### The grouped form (TASK-338)
 
@@ -360,9 +363,15 @@ header on the rows' text edge (`settingsSectionTitle`, 12 pt before).
   (`NSView.enclosingSettingsPane`), since a wrapping label reports only
   width changes; Content Blocking's details and footnote and Quick Detour's
   warning rely on it.
-- **Widths.** The rows wrap at `estimatedWidth` (the body's 700 pt by
-  default; a detail column passes its own) less the control until they are
-  laid out, so the pane's first natural-height measurement is the laid-out
+- **Widths.** A row reads its control's `fittingSize` when it is built, so
+  a `.custom` field gets its width constraint first (Spaces' and Profiles'
+  260 pt fields); rows added to a built form go through the section's
+  `setRows`, which wraps them at the group's width. A row's help is not
+  selectable unless the pane turns it on (Profiles' user-agent preview).
+  `SettingsFormRow(content:)` is a row of one view across its insets
+  (Extensions' header), whose subview order is VoiceOver's. The rows wrap at
+  `estimatedWidth` (the body's 700 pt by default; a detail column passes its
+  own) less the control until they are laid out, so the pane's first natural-height measurement is the laid-out
   height (`testTheFirstMeasurementIsTheLaidOutHeight`, at 443 and 700 pt).
 
 The numbers come from a SwiftUI `Form` with `.formStyle(.grouped)` (what
@@ -398,25 +407,20 @@ fixes the switch to it; see [AppKit gotchas](../platform/appkit-gotchas.md#layou
 
 Every on/off setting in the window is an `NSSwitch` (TASK-328, at the
 user's request: General and Quick Detour used checkboxes until Nov 14
-2026).[^task-328] A switch has no title, so each one has a label beside it,
-in one of three forms:
-
-| Form | Where | Layout |
-|---|---|---|
-| Label column | Profiles (`ProfileSettingsLayout` grid) | the label right-aligned in the 124 pt column, the regular switch 8 pt after it, centred on it |
-| Label, then switch | Extensions (Enabled, Allow in Private), General (`SettingsSwitchRow.make`) | the 13 pt label at the column's leading edge, the regular switch 8 pt after it, centred on it |
-| Form row | Quick Detour, Content Blocking (`SettingsFormRow`, TASK-338) | the 13 pt name at the group's text edge, the mini switch on the group's right edge, centred on the name's first line |
-| Switch, then name | a bordered group (Profiles' filter lists and extension switches, an extension's permissions; `SettingsGroupBoxView.switchRow`) | a small or mini switch, the 12 pt name 6 pt after it |
-
-General and Quick Detour had no label column, and their labels are
-sentences too long for one, so they took the second form (Quick Detour is
-a form since TASK-338). Measured with
-Accessibility on Nov 14 2026, their rows match Extensions' Enabled and
-Profiles' Search suggestions exactly: a 56 × 26 switch, its frame 6 pt after
-the label's (8 pt between alignment rects; a label's frame is 2 pt wider on
-each side), the same centre line. A click on a label does nothing, on every
-pane: the labels are plain text fields, as they were on Profiles and
-Extensions before (making them toggle the switch was the alternative).
+2026).[^task-328] A switch has no title, so each one has a label beside it.
+Since TASK-338 every switch in the window is a form row's: the 13 pt name
+at the group's text edge, the mini switch (36 × 16, as System Settings')
+on the group's right edge, centred on the name's first line. Before, there
+were four forms: Profiles' right-aligned 124 pt label column, a label then
+a regular switch 8 pt after it (General, Quick Detour, Extensions' Enabled
+and Allow in Private: `SettingsSwitchRow.make`), and a small switch then its
+12 pt name in a bordered box (Profiles' filter lists and extension switches,
+an extension's permissions: `SettingsGroupBoxView.switchRow`); TASK-328
+measured the first two to match exactly (a 56 × 26 switch, its frame 6 pt
+after the label's, one centre line). Only the sidebar's page settings
+popover keeps a label then a switch. A click on a label does nothing, on
+every pane: the labels are plain text fields (making them toggle the switch
+was the alternative).
 The five converted switches keep the identifiers the checkboxes had
 (`peekEnabled`, `automationEnabled`, `automationAllowPrivate`,
 `quickDetourHotKeyEnabled`, `quickDetourOptionCommandClick`).
@@ -424,10 +428,9 @@ The five converted switches keep the identifiers the checkboxes had
 **Accessibility (TASK-336).** Each switch and its label are one element:
 `SettingsSwitchRow.name(_:by:)` gives the switch the label's text as its
 accessibility label and takes the label out of the Accessibility tree, so
-VoiceOver reads "<label>, switch, on" once. All three forms go through it
-(`SettingsSwitchRow.make`, `SettingsGroupBoxView.switchRow`, the Profiles
-grid's switch rows, Extensions' Enabled and Allow in Private), and so does
-the sidebar's page settings popover (`makeSwitchRow`).[^task-336] Before, a TASK-328 row was a static
+VoiceOver reads "<label>, switch, on" once. Every form row goes through it
+(TASK-338; before, the three forms of the time did), and so does the
+sidebar's page settings popover (`makeSwitchRow`).[^task-336] Before, a TASK-328 row was a static
 text followed by a switch of the same name (read twice), and the Profiles
 and Extensions switches had no name at all (read as "switch"). A text
 field's Accessibility element is its cell, so the label is hidden on the
@@ -625,19 +628,21 @@ The pane retries a refused shortcut when it appears
 ## Profiles
 
 A list of the profiles plus the built-in Private profile, and the selected
-profile's settings in titled sections. Each control writes a property and
+profile's settings as a grouped form in the detail column (TASK-338): a
+section per `ProfileSettingsSection`, titled as below, with "Learn more"
+as the header's accessory where the section has a guide. Each control writes a property and
 calls `TabStore.shared.updateProfile(profile)`. In the list a long profile
 name truncates with an ellipsis and gives way before "N Spaces".
 
 | Section | Rows | Shown |
 |---|---|---|
-| (no title) | Name; "This profile is used for Private Windows." | the note only for Private; the name is not editable there |
+| (no title) | Name (a 260 pt field on the right); "This profile is used for Private Windows." and the Private Browsing guide as the group's footnote | the note only for Private; the name is not editable there |
 | Search | Search engine (Google, DuckDuckGo, Bing, Yahoo, Ecosia, Kagi); Search suggestions | always. Suggestions gate the network row of the [suggestion pipeline](./suggestion-pipeline.md) |
-| Tabs | Archive tabs after; Sleep tabs after; Per-tab isolation (each tab its own non-persistent data store); the warning that sleeping tabs lose session data under isolation | archive hidden for Private; the warning when isolation is on and tabs sleep |
-| Content Blocking | Block content (the master switch); the four filter lists in a bordered group | always; the lists are disabled while blocking is off, each toggle calls `reapplyRuleLists()` |
-| Extensions | one switch per installed extension, in a bordered group | when any extension is installed, Private included |
-| User Agent | Identify as (Detour, Safari, Custom); Custom string; a preview of the resulting user agent | the string only for Custom |
-| External Apps | Saved permissions: the count and Clear | hidden for Private (it never remembers one). See [external apps](./external-apps.md) |
+| Tabs | Archive tabs after; Sleep tabs after; Per-tab isolation (each tab its own non-persistent data store) with the warning that sleeping tabs lose session data under isolation as its warning line | archive hidden for Private; the warning when isolation is on and tabs sleep |
+| Content Blocking | Block content (the master switch); a row per filter list | always; the list rows are turned off (name dimmed) while blocking is off, each toggle calls `reapplyRuleLists()` |
+| Extensions | a row per installed extension (`setRows` as they come and go) | when any extension is installed, Private included |
+| User Agent | Identify as (Detour, Safari, Custom) with a preview of the resulting user agent as its help (selectable); Custom string (a 260 pt field on the right) | the string only for Custom |
+| External Apps | Saved permissions: the count and Clear (`.value(count, button:)`) | hidden for Private (it never remembers one). See [external apps](./external-apps.md) |
 
 Why this grouping: the untitled first section holds the name, which
 identifies the profile as an account name heads a System Settings pane (a
@@ -649,16 +654,15 @@ for by name. Row labels do not repeat their section's title ("Block content",
 
 `ProfileSettingsLayout` is the pure rule: which rows a `ProfileSettingsState`
 (Private, isolation, sleeping, custom user agent, any extension installed)
-shows, which sections have a visible row, and the space above each row (0
-for a section's first visible row, 4 for help text, 10 otherwise). The view
-controller keeps each row's `NSGridRow` and each section's view by these
-enum values and applies the rule in `applyRowLayout()` (called on selection,
-on the switches and pop-ups that change visibility, and on extension
-changes), which also reports the height change. Each section is its own
-grid with `rowSpacing = 0`; the spacing is each row's `topPadding`, so a
-hidden row leaves no gap and help text sits 4 pt below its control. Help
-text, the groups and the custom string field take the whole control column
-(the section's width less the 132 pt label column).
+shows and which sections have a visible row. The view controller keeps each
+row's form row and each section by these enum values and sets their
+`isHidden` from the rule (on selection, on the switches and pop-ups that
+change visibility, and on extension changes), which also reports the height
+change; the form's stacks leave no gap for a hidden row or section. The
+isolation warning and the user-agent preview have no rows of their own:
+they drive the isolation row's warning line and Identify as's help. Until
+TASK-338 the rule also gave the space above each row for the label-column
+grids (`spacing(above:)`, gone with them).
 
 A profile cannot be deleted while a space uses it ("Remove or reassign those
 spaces first"), the Private profile cannot be deleted, and the last profile
@@ -666,8 +670,9 @@ cannot be deleted. What deleting does to the profile's data is on
 [profile data removal](../architecture/profile-data-removal.md).
 
 The per-profile extension switch shows the profile's own saved choice. While
-the extension is turned off globally the switch is disabled and the name
-dimmed, rather than hidden: it tells the user what turning the extension back
+the extension is turned off globally the row is turned off (switch disabled,
+name dimmed, "Turned off for all profiles in Extensions settings." as its
+help), rather than hidden: it tells the user what turning the extension back
 on will restore. For the Private profile it is the same opt-in as "Allow in
 Private" on the Extensions pane; see
 [private profile extensions](../extensions/private-profile-extensions.md).
@@ -712,22 +717,35 @@ added, and Uninstall. "Add Extension…" offers loading an unpacked extension
 or opening the Chrome Web Store; an unpacked load is turned on in the
 profile of the browser window behind Settings, and both alerts name it
 ([extensions on per profile](../decisions/extensions-on-per-profile.md)). The list's rows are 28 pt. The detail
-column is one vertical stack in a column scroll view of its own (TASK-211;
-before, in the pane's scroll view, so scrolling it moved the list too), as
-tall as its content: the header (icon; the name, wrapping to two lines and then
-truncated; the version; "Settings…" at the trailing edge), the description,
-the source and update rows, the pending-permissions banner (it makes the
-column taller and squeezes nothing), Enabled, Turn On in All Profiles and
-its line, Allow in Private and its note,
-"Permissions". **Uninstall Extension** is not in the column: it sits
+column is a grouped form (TASK-338) in a column scroll view of its own
+(TASK-211; before, in the pane's scroll view, so scrolling it moved the list
+too), as tall as its content:
+
+- a top group, as System Settings' Wi-Fi pane opens: a header row
+  (`SettingsFormRow(content:)`: the icon, the 13 pt bold name, the version
+  and the description, "Settings…" on the right edge level with the icon,
+  added after the text so VoiceOver reads the name first), the source row
+  ("Loaded unpacked" or "Installed from…", the folder or the last check as a
+  one-line detail, Reload or Check for Updates) and the staged update's row
+  with Install Now;
+- the permissions an update added, as a row of their own group ("Version X
+  needs new permissions", the permissions as its help, Accept and Enable,
+  and a warning line "Turned off until you accept them."; before, an orange
+  banner);
+- Enabled; "Profiles" (which profiles have it on, as help, and Turn On in
+  All Profiles); Allow in Private (its note as help);
+- Permissions, Optional Permissions, Requested Sites and Site Access, each
+  a section of named switch rows (the switches' identifiers keep
+  `id\tkey\ttype`), or the footnote "No special permissions requested."
+
+**Uninstall Extension** is not in the column: it sits
 under it, 20 pt below the column's scroll view and level with the bottom of
 the list, so it stays in view however far the details scroll (user request
 during TASK-211; Spaces and Profiles have no comparable action at the end of
 their details, since deleting goes through the list's − button, which is
-always in view). The permissions are a bordered group as
-tall as its rows (one permission: 32 pt), or one line of text when the
-extension asks for none; there is no inner scroll view any more (it had a
-96 pt floor and put a one-line list in a 287 pt box). The behaviour behind those controls is
+always in view). The layout choices above (the header row, the pending
+group, the sections' titles, the new wording) are PROVISIONAL, chosen by
+Claude while the user was away.[^task-338] The behaviour behind those controls is
 covered by [extension manager](../extensions/extension-manager.md),
 [permissions](../extensions/permissions.md) and
 [updates](../extensions/updates.md).
@@ -812,8 +830,9 @@ Accessibility-driven checks.[^task-337]
   insets that must hold, pin the content's bottom to the container, and give
   the content required vertical compression resistance.[^layout-notes]
 - **`NSBox` does not grow to an Auto Layout content view's fitting height.**
-  The pending-permissions banner uses a custom view (`TintedBannerView`) and
-  the bordered groups `SettingsGroupBoxView` for that reason.[^layout-notes]
+  The pending-permissions banner (`TintedBannerView`) and the bordered
+  groups (`SettingsGroupBoxView`) were custom views for that reason, until
+  the grouped form replaced them (TASK-338).[^layout-notes]
 - **Measure, do not eyeball.** Log `convert(bounds, to: nil)` gaps and search
   the log for "Unable to simultaneously satisfy".[^layout-notes] See
   [AppKit gotchas](../platform/appkit-gotchas.md).
@@ -859,8 +878,8 @@ from the window, a scrolling body still one scroll view, which panes take
 which form, the toolbar order with Quick Detour after Links, the Quick
 Detour pane's natural height, Links fitting the 400 pt minimum, and the end
 anchoring of `SettingsColumnScrollView`); `LinkRouteEditorTests` the Links pane's rules (target
-menus, drag destination, warnings, drafts); `ProfileSettingsLayoutTests` the Profiles sections, which
-rows show for a normal and the Private profile, and the row spacing;
+menus, drag destination, warnings, drafts); `ProfileSettingsLayoutTests` the Profiles sections and which
+rows show for a normal and the Private profile;
 `SettingsGuideLinkTests` the Learn more links (`GuidePage` URLs under the
 Help menu's guide index, which links each pane has, a click handing its URL
 to the opener, the link under the description or in its place, and the
@@ -878,7 +897,23 @@ and help wrapping before the control with no overlap, controls on the
 name's first line, row, section and form heights, hidden rows and sections
 taking no room, the first measurement equal to the laid-out height for the
 form and the two pilot panes, each control named by its row and read once,
-the warning line) and the Content Blocking rows, buttons and texts. The
+the warning line, header accessories, turned-off rows, 44 pt button rows,
+the Increase Contrast border) and the Content Blocking rows, buttons and
+texts; `SettingsPanesFormTests` General (its controls on the form's edges,
+the Automation sections' identifier, hidden button rows), Spaces' detail
+form and its grids named once, Links' Default section, the lists drawn as
+groups with their titles on the text edge, and that no pane draws a
+material of its own (Reduce Transparency has nothing to change);
+`SettingsProfilesExtensionsFormTests` the Profiles and Extensions details
+(controls on the right edge, names on the left, Profiles normal and
+Private, rows and sections hidden per `ProfileSettingsState`, filter lists
+off while blocking is off, extension rows turned off and rebuilt, the
+pending permissions, identifiers, Learn more pages and switch names, the
+first measurement equal to the laid-out height, `setRows` and
+`SettingsFormRow(content:)`). `SettingsCaptureHarnessTests` is a capture
+harness, skipped unless `TEST_RUNNER_SETTINGS_CAPTURE_DIR` names a folder:
+it draws every pane in light and dark with Increase Contrast forced through
+`SettingsGroupStyle.increaseContrastOverride`. The
 panes have no other UI tests; their layout is
 checked at runtime with the TASK-189 survey harness (every pane and state,
 light and dark, frames measured; pane switches, drags, the cap and a real

@@ -173,14 +173,14 @@ class GeneralSettingsViewController: SettingsPaneViewController {
     /// used under it, and Revoke.
     private func rebuildClientRows(_ clients: [AutomationClientRecord]) {
         guard !clients.isEmpty else {
-            clientsSection.group.setRows([SettingsFormRow(footnote: "None yet. A client asks the first time it connects.")])
+            clientsSection.setRows([SettingsFormRow(footnote: "None yet. A client asks the first time it connects.")])
             return
         }
         let dates = DateFormatter()
         dates.dateStyle = .medium
         dates.timeStyle = .short
         let now = Date()
-        clientsSection.group.setRows(clients.map { client in
+        clientsSection.setRows(clients.map { client in
             var detail = "Allowed \(dates.string(from: client.created))"
             if let used = client.lastUsed { detail += ", last used \(AutomationIndicator.age(of: used, now: now))" }
             if client.title != nil { detail = "\(client.name). " + detail }
@@ -191,7 +191,6 @@ class GeneralSettingsViewController: SettingsPaneViewController {
             revoke.toolTip = "\(client.displayName) loses access at once; it has to ask you again to reconnect."
             return SettingsFormRow(title: client.displayName, help: detail, accessory: .button(revoke))
         })
-        clientsSection.estimateWidth(SettingsMetrics.formWidth)
     }
 
     @objc private func revokeClient(_ sender: NSButton) {

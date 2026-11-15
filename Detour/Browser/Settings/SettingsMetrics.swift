@@ -17,12 +17,8 @@ enum SettingsMetrics {
     static let rowGap: CGFloat = 10
     /// Space from a control to the help text that belongs to it.
     static let controlToHelp: CGFloat = 4
-    /// Space from a section's title to its first row.
-    static let sectionTitleToRows: CGFloat = 8
     /// Space from a row's label to its control.
     static let labelToControl: CGFloat = 8
-    /// Width of the right-aligned label column, shared by every pane that has one.
-    static let labelColumnWidth: CGFloat = 124
     /// Width of text fields (Spaces' and Profiles' name, Profiles' custom
     /// user agent) and the cap on pop-up buttons in a detail column.
     static let fieldWidth: CGFloat = 260
@@ -35,7 +31,6 @@ enum SettingsMetrics {
     static let listButtonSize: CGFloat = 24
     /// Height of the bar under a list: separator, padding, buttons, padding.
     static let listBarHeight: CGFloat = 1 + 2 + listButtonSize + 2
-    static let listCornerRadius: CGFloat = 4
     /// Width of the detail column beside a master list.
     static let detailColumnWidth: CGFloat = windowWidth - 2 * paneMargin - listWidth - sectionGap
 
