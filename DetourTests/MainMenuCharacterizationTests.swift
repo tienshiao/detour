@@ -526,6 +526,25 @@ nonisolated final class MainMenuCharacterizationTests: XCTestCase {
         XCTAssertEqual(CommandDispatch.menuItem(for: "tab.toggle-pin", in: NSApp.mainMenu)?.title, "Unpin Tab")
     }
 
+    /// Every menu-bar item carries the title the bar shows (TASK-334): AppKit
+    /// matches a menu-path App Shortcut ("File->Close Tab") against the
+    /// parent items' titles, which `NSMenuItem()` leaves as "NSMenuItem".
+    /// That an entry then applies is measured at runtime, with the entry as a
+    /// launch argument: AppKit reads NSUserKeyEquivalents once, so a test
+    /// cannot add one (tried: an argument-domain entry set in the test host
+    /// did not apply on a retitle).
+    @MainActor func testEveryBarItemIsTitledAsItsMenu() throws {
+        let menu = try XCTUnwrap(NSApp.mainMenu)
+        var titles: [String] = []
+        for barItem in menu.items {
+            let submenu = try XCTUnwrap(barItem.submenu, barItem.title)
+            XCTAssertEqual(barItem.title, submenu.title)
+            titles.append(barItem.title)
+        }
+        XCTAssertEqual(titles, ["Detour", "File", "Edit", "View", "Navigate", "Spaces", "Extensions", "Develop",
+                                "Window", "Help"])
+    }
+
     /// Every item the menu builds is a view of a registry command and says
     /// which by its identifier, which is how the palette finds the live item.
     @MainActor func testEveryOwnItemCarriesItsCommandsIdentifier() throws {

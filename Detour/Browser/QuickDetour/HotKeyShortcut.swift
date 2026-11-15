@@ -332,14 +332,15 @@ enum HotKeyShortcutValidation {
         }
         for item in menu.items {
             guard let submenu = item.submenu else { continue }
-            // The menu bar's own items are titled by their submenus (an item
-            // made with `NSMenuItem()` reports "NSMenuItem"); the application
-            // menu's has no title, and the bar shows the app's name.
+            // What the bar shows: the submenu's title. Detour's bar items
+            // carry the same title (TASK-334), but an item made with
+            // `NSMenuItem()` reports "NSMenuItem", and an untitled
+            // application menu shows the app's name.
             let title: String
             if !submenu.title.isEmpty {
                 title = submenu.title
             } else if menu.supermenu == nil {
-                title = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Detour"
+                title = AppDelegate.appName
             } else {
                 title = item.title
             }

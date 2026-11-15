@@ -656,13 +656,14 @@ enum AutomationMenus {
         menu.delegate?.menuNeedsUpdate?(menu)
     }
 
-    /// The title a person sees. A menu-bar item's own title is AppKit's
-    /// placeholder ("NSMenuItem"); the bar shows its submenu's title.
+    /// The title a person sees. The bar shows a menu-bar item's submenu
+    /// title; Detour's bar items carry the same title (TASK-334), but one
+    /// made with `NSMenuItem()` reports AppKit's placeholder ("NSMenuItem").
     static func displayTitle(_ item: NSMenuItem) -> String {
         guard let submenu = item.submenu, item.menu?.supermenu == nil else { return item.title }
         if !submenu.title.isEmpty { return submenu.title }
-        // The application menu's submenu has no title; the bar shows the app's name.
-        return Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Detour"
+        // An untitled application menu: the bar shows the app's name.
+        return AppDelegate.appName
     }
 
     static func titlesMatch(_ title: String, _ wanted: String) -> Bool {

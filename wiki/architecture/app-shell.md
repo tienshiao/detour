@@ -19,6 +19,9 @@ sources:
   - id: task-292-10
     resource: backlog:TASK-292.10
     title: "Help menu: open the Detour guide, keyboard shortcuts, Switching from Arc, release notes and issue reporting"
+  - id: task-334
+    resource: backlog:TASK-334
+    title: "Menus: give the top-level menu items titles so App Shortcuts written as a menu path apply"
   - id: task-309
     resource: backlog:TASK-309
     title: "Dock menu: Show / Hide All Quick Detour Windows"
@@ -141,6 +144,13 @@ resolve through the responder chain to the key window's controller, whose
 item by item; `MainMenuCharacterizationTests` pinned every item's title, key
 equivalent, action, target, tag and enablement before the move and still
 pass unchanged.
+
+Each menu-bar item is titled as its menu (`AppDelegate.menuBarItem(for:)`,
+the application menu and its item by the app's name), not left as
+`NSMenuItem()`: AppKit matches a menu-path App Shortcut ("File->Close Tab")
+against the parent items' titles, so on untitled items those never applied
+(TASK-334[^task-334], [keyboard shortcuts](../features/keyboard-shortcuts.md#macos-app-shortcuts)).
+The bar looks the same: it shows the submenu's title either way.
 
 | Menu | Contents | Dynamic? |
 |---|---|---|
@@ -331,3 +341,4 @@ with them), `BrowserCommandRegistryTests`, `ExtensionMenuPopupDecisionTests`,
 
 [^task-56]: Implement menuHasKeyEquivalent so key presses stop rebuilding the Spaces and Extensions menus
 [^spike-295]: TASK-295 spike: hidden, disabled and delegate-answered menu items under real Control+digit events (macOS 26, 2026-11-14)
+[^task-334]: TASK-334

@@ -102,14 +102,12 @@ extension AppDelegate {
     /// (`BrowserCommands.help`, TASK-320), added by `add`, which targets them
     /// at the app delegate. Each item's tag is its page's index.
     func makeHelpMenuItem(adding add: (BrowserCommand, NSMenu) -> NSMenuItem) -> NSMenuItem {
-        let item = NSMenuItem()
         let menu = NSMenu(title: "Help")
         for (link, command) in zip(HelpLinks.allCases, BrowserCommands.help) {
             if link == .releaseNotes { menu.addItem(.separator()) }
             _ = add(command, menu)
         }
-        item.submenu = menu
-        return item
+        return Self.menuBarItem(for: menu)
     }
 
     @objc func openHelpLink(_ sender: NSMenuItem) {

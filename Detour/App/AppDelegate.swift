@@ -831,6 +831,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
+    /// The app's name, as the menu bar shows it on the application menu.
+    static let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Detour"
+
+    /// The menu bar's item for `menu`, titled as the menu (TASK-334). The bar
+    /// shows the submenu's title either way, but AppKit matches a menu-path
+    /// App Shortcut ("File->Close Tab" in System Settings) against the parent
+    /// items' titles, and an untitled `NSMenuItem()` is titled "NSMenuItem".
+    /// Titled before the submenu is attached: the entries for its items apply
+    /// on attaching (measured, docs/harness/task327 spike 3).
+    static func menuBarItem(for menu: NSMenu) -> NSMenuItem {
+        let item = NSMenuItem(title: menu.title, action: nil, keyEquivalent: "")
+        item.submenu = menu
+        return item
+    }
+
     /// The menu bar, every item from the command registry (`BrowserCommands`,
     /// TASK-320): its title, key equivalent, action and target. Enablement is
     /// the registry's rule, which the window controllers' `validateMenuItem`
@@ -841,9 +856,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let commands = BrowserCommands.self
 
         // App menu
-        let appMenuItem = NSMenuItem()
-        mainMenu.addItem(appMenuItem)
-        let appMenu = NSMenu()
+        let appMenu = NSMenu(title: Self.appName)
         add(commands.about, to: appMenu)
         // Not added at all when the updater did not start (TASK-41), so nothing
         // can reach it — and no separator is left standing where it would have been.
@@ -859,11 +872,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         add(commands.showAll, to: appMenu)
         appMenu.addItem(.separator())
         add(commands.quit, to: appMenu)
-        appMenuItem.submenu = appMenu
+        mainMenu.addItem(Self.menuBarItem(for: appMenu))
 
         // File menu
-        let fileMenuItem = NSMenuItem()
-        mainMenu.addItem(fileMenuItem)
         let fileMenu = NSMenu(title: "File")
         add(commands.newTab, to: fileMenu)
         add(commands.openLocation, to: fileMenu)
@@ -884,11 +895,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         add(commands.openInSpace, to: fileMenu)
         fileMenu.addItem(.separator())
         add(commands.importFromArc, to: fileMenu)
-        fileMenuItem.submenu = fileMenu
+        mainMenu.addItem(Self.menuBarItem(for: fileMenu))
 
         // Edit menu
-        let editMenuItem = NSMenuItem()
-        mainMenu.addItem(editMenuItem)
         let editMenu = NSMenu(title: "Edit")
         add(commands.undo, to: editMenu)
         add(commands.redo, to: editMenu)
@@ -902,11 +911,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         add(commands.find, to: editMenu)
         add(commands.findNext, to: editMenu)
         add(commands.findPrevious, to: editMenu)
-        editMenuItem.submenu = editMenu
+        mainMenu.addItem(Self.menuBarItem(for: editMenu))
 
         // View menu
-        let viewMenuItem = NSMenuItem()
-        mainMenu.addItem(viewMenuItem)
         let viewMenu = NSMenu(title: "View")
         add(commands.toggleSidebar, to: viewMenu)
         add(commands.reload, to: viewMenu)
@@ -914,11 +921,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         add(commands.actualSize, to: viewMenu)
         add(commands.zoomIn, to: viewMenu)
         add(commands.zoomOut, to: viewMenu)
-        viewMenuItem.submenu = viewMenu
+        mainMenu.addItem(Self.menuBarItem(for: viewMenu))
 
         // Navigate menu
-        let navigateMenuItem = NSMenuItem()
-        mainMenu.addItem(navigateMenuItem)
         let navigateMenu = NSMenu(title: "Navigate")
         add(commands.back, to: navigateMenu)
         add(commands.forward, to: navigateMenu)
@@ -935,11 +940,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // right past the first space.
         add(commands.showArchivedTabs, to: navigateMenu)
         add(commands.clearArchivedTabs, to: navigateMenu)
-        navigateMenuItem.submenu = navigateMenu
+        mainMenu.addItem(Self.menuBarItem(for: navigateMenu))
 
         // Spaces menu
-        let spacesMenuItem = NSMenuItem()
-        mainMenu.addItem(spacesMenuItem)
         let spacesMenu = NSMenu(title: "Spaces")
         spacesMenu.delegate = self
         add(commands.nextSpace, to: spacesMenu)
@@ -954,17 +957,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             add(command, to: spacesMenu).allowsKeyEquivalentWhenHidden = true
         }
         add(commands.manageSpaces, to: spacesMenu)
-        spacesMenuItem.submenu = spacesMenu
+        mainMenu.addItem(Self.menuBarItem(for: spacesMenu))
 
         // Extensions menu
-        let extensionsMenuItem = NSMenuItem()
-        mainMenu.addItem(extensionsMenuItem)
         let extensionsMenu = NSMenu(title: "Extensions")
         extensionsMenu.delegate = self
         add(commands.addExtensions, to: extensionsMenu)
         add(commands.manageExtensions, to: extensionsMenu)
         add(commands.checkForExtensionUpdates, to: extensionsMenu)
-        extensionsMenuItem.submenu = extensionsMenu
+        mainMenu.addItem(Self.menuBarItem(for: extensionsMenu))
 
         // Develop menu. Deliberately not delegate-driven: its dynamic items
         // depend only on the global extension list, so they are rebuilt from
@@ -972,13 +973,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // one letter shortcut (Cmd+Option+I) out of `menuHasKeyEquivalent`'s
         // hand-rolled matching — AppKit matches it natively, with its own
         // keyboard-layout handling and validation (TASK-56 review).
-        let developMenuItem = NSMenuItem()
-        mainMenu.addItem(developMenuItem)
         let developMenu = NSMenu(title: "Develop")
         add(commands.webInspector, to: developMenu)
         developMenu.addItem(.separator())
         add(commands.loadUnpackedExtension, to: developMenu)
-        developMenuItem.submenu = developMenu
+        mainMenu.addItem(Self.menuBarItem(for: developMenu))
         self.developMenu = developMenu
         updateDevelopMenu(developMenu)
         NotificationCenter.default.addObserver(
@@ -989,12 +988,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         // Window menu
-        let windowMenuItem = NSMenuItem()
-        mainMenu.addItem(windowMenuItem)
         let windowMenu = NSMenu(title: "Window")
         add(commands.minimize, to: windowMenu)
         add(commands.zoomWindow, to: windowMenu)
-        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(Self.menuBarItem(for: windowMenu))
         NSApp.windowsMenu = windowMenu
 
         // Help menu, last (TASK-292.10): registered, so macOS adds its search field.

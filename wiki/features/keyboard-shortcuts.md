@@ -29,6 +29,9 @@ sources:
   - id: task-295
     resource: backlog:TASK-295
     title: "Spaces: keyboard shortcuts that jump straight to a space by its position (first through ninth)"
+  - id: task-334
+    resource: backlog:TASK-334
+    title: "Menus: give the top-level menu items titles so App Shortcuts written as a menu path apply"
   - id: spike
     resource: ../../docs/harness/task327
     title: "TASK-327 spikes (standalone AppKit programs building a menu in code, run with -NSUserKeyEquivalents as a launch argument; menu matching from real CGEvents; macOS 26, 2026-11-14) and the Accessibility helper for driving Settings"
@@ -230,11 +233,23 @@ so nothing is written to the app's real defaults), on macOS 26:[^spike]
 - **The menu-path form** (System Settings' "File->Close Tab", stored as
   `"\u{1b}File\u{1b}Close Tab"`) is matched against the **parent items'
   titles**, not the submenus' titles, and wins over a plain-title entry.
-  Detour's menu-bar items are `NSMenuItem()`, titled "NSMenuItem" (the bar
-  shows the submenu's title), so **path-form App Shortcuts never apply to
-  Detour today**; only plain-title entries do. Titling the bar items would
-  fix it (measured: an entry applied once the parent was titled, even after
-  the items were added). Not changed in TASK-327.
+  An entry applies when its item's submenu is attached to a titled parent,
+  or once the parent is titled, even after the items were added.
+  Detour's menu-bar items were `NSMenuItem()`, titled "NSMenuItem" (the bar
+  shows the submenu's title), so path-form entries never applied to Detour
+  until TASK-334 titled every bar item as its menu, the application menu's
+  by the app's name ("Detour->Settings…").[^task-334] Measured in the real
+  app (Debug build, launched with
+  `-NSUserKeyEquivalents '{ "\033File\033Close Tab" = "@~w"; "\033Detour\033Settings…" = "@~,"; "\033View\033Zoom In" = "@~="; "Show All History" = "@~y"; }'`):
+  before, only the plain-title entry applied; after, all four did (read
+  through Accessibility, `run_menu_item key=cmd+opt+w` ran File > Close Tab
+  and `cmd+w` found nothing), and Settings > Shortcuts said "Set in System
+  Settings" on all four rows. The bar's titles read through Accessibility
+  were the same before and after.
+- AppKit reads the entries **once**: one put in the argument domain from
+  inside the running app (the test host) did not apply on a retitle, so a
+  test cannot add one; an entry has to be in place at launch (System
+  Settings' own, or a launch argument).[^task-334]
 
 The spikes and `axdrive.swift` (Accessibility press and read by identifier
 in the Settings window, key events posted to the process) are in
@@ -341,4 +356,5 @@ for the app. To try one at runtime, pass it as a launch argument; never
 
 [^task-327]: TASK-327
 [^task-295]: TASK-295
+[^task-334]: TASK-334
 [^spike]: NSUserKeyEquivalents spikes
