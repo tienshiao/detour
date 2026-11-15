@@ -110,6 +110,20 @@ struct HotKeyShortcut: Equatable, Hashable {
     /// The menu key equivalent pressing this shortcut matches (TASK-327).
     var menuKeyEquivalent: KeyEquivalent { KeyEquivalent(keyEquivalent, modifiers) }
 
+    /// The other menu key equivalent pressing this shortcut fires (TASK-335):
+    /// with Shift held, the character Shift gives the key (`shiftedCharacter`,
+    /// from the layout) with the other modifiers. AppKit matches an item on
+    /// the typed character with that Shift implied: ⇧⌘= fires Zoom In's ⌘+
+    /// on a US layout, and ⇧⌘[ an item on ⌘{, while ⌘= and ⌥⇧⌘= fire neither
+    /// (measured, docs/harness/task335). Nil without Shift, for a key named
+    /// by its code, when the layout gives no character, and for a letter,
+    /// whose shifted character is the same shortcut.
+    func shiftedKeyEquivalent(shiftedCharacter: String) -> KeyEquivalent? {
+        guard modifiers.contains(.shift), namedKey == nil, !shiftedCharacter.isEmpty,
+              shiftedCharacter.lowercased() != character else { return nil }
+        return KeyEquivalent(shiftedCharacter, modifiers.subtracting(.shift))
+    }
+
     // MARK: - Menu
 
     /// The key equivalent of a menu item answering this shortcut.
@@ -155,6 +169,10 @@ enum HotKeyShortcutProblem: Equatable {
     case unnamedKey
     /// One of Detour's own menu items uses it; the item's path, "File > New Tab".
     case usedByMenu(String)
+    /// A menu item's shortcut is this key's shifted character, which the
+    /// same keystroke fires (TASK-335): the item's path and the shortcut it
+    /// shows, "View > Zoom In" and "⌘+" for ⇧⌘= on a US layout.
+    case usedByMenuAsShifted(path: String, shortcut: String)
     /// One of Detour's shortcuts that no menu item carries (an event
     /// monitor's); what it does, "switching to a recent tab".
     case usedByDetour(String)
@@ -196,10 +214,24 @@ struct SystemHotKey: Equatable {
     /// key's character from `character` (`layoutCharacter(forKeyCode:)` for
     /// the current layout's); nil for a key with no name.
     func menuKeyEquivalent(character: (UInt16) -> String) -> KeyEquivalent? {
+        shortcut(character: character).map(\.menuKeyEquivalent)
+    }
+
+    /// The menu key equivalents a press of it fires: `menuKeyEquivalent`'s,
+    /// and with Shift the key's shifted character's from `shiftedCharacter`
+    /// (TASK-335: ⇧⌘= also takes Zoom In's ⌘+ on a US layout).
+    func menuKeyEquivalents(character: (UInt16) -> String, shiftedCharacter: (UInt16) -> String) -> [KeyEquivalent] {
+        guard let shortcut = shortcut(character: character) else { return [] }
+        return [shortcut.menuKeyEquivalent]
+            + [shortcut.shiftedKeyEquivalent(shiftedCharacter: shiftedCharacter(keyCode))].compactMap { $0 }
+    }
+
+    /// It as a shortcut, with the key's character from `character`; nil for
+    /// a key with no name.
+    private func shortcut(character: (UInt16) -> String) -> HotKeyShortcut? {
         let shortcut = HotKeyShortcut(keyCode: keyCode, modifiers: HotKeyShortcut.modifiers(fromCarbon: carbonModifiers),
                                       character: character(keyCode))
-        guard shortcut.hasKeyName else { return nil }
-        return shortcut.menuKeyEquivalent
+        return shortcut.hasKeyName ? shortcut : nil
     }
 
     /// The character `keyCode` types with no modifiers on the current
@@ -221,11 +253,15 @@ enum HotKeyShortcutValidation {
     ///   - ownAction: the Quick Detour item's action: its own key equivalent
     ///     mirrors the hotkey, so it is never a conflict.
     ///   - systemHotKeys: the enabled macOS shortcuts.
+    ///   - shiftedCharacter: the character a key code types with Shift; by
+    ///     default the current keyboard layout's.
     static func problem(for shortcut: HotKeyShortcut, menu: NSMenu?, ownAction: Selector?,
-                        systemHotKeys: [SystemHotKey]) -> HotKeyShortcutProblem? {
+                        systemHotKeys: [SystemHotKey],
+                        shiftedCharacter: (UInt16) -> String = { KeyboardLayout.currentShiftedCharacter(forKeyCode: $0) })
+        -> HotKeyShortcutProblem? {
         problem(for: shortcut, rules: .globalHotKey, menu: menu,
                 isOwnItem: { ownAction != nil && $0.action == ownAction },
-                quickDetourShortcut: nil, systemHotKeys: systemHotKeys)
+                quickDetourShortcut: nil, systemHotKeys: systemHotKeys, shiftedCharacter: shiftedCharacter)
     }
 
     /// The first problem `shortcut` has under `rules`, or nil when it can be used.
@@ -239,9 +275,14 @@ enum HotKeyShortcutValidation {
     ///   - quickDetourShortcut: the Quick Detour hotkey's shortcut, a holder
     ///     named apart from its menu item (whose item `isOwnItem` then skips).
     ///   - systemHotKeys: the enabled macOS shortcuts.
+    ///   - shiftedCharacter: the character a key code types with Shift, for
+    ///     the item a shifted key also fires (TASK-335); by default the
+    ///     current keyboard layout's.
     static func problem(for shortcut: HotKeyShortcut, rules: HotKeyShortcutRules, menu: NSMenu?,
                         isOwnItem: (NSMenuItem) -> Bool, quickDetourShortcut: HotKeyShortcut?,
-                        systemHotKeys: [SystemHotKey]) -> HotKeyShortcutProblem? {
+                        systemHotKeys: [SystemHotKey],
+                        shiftedCharacter: (UInt16) -> String = { KeyboardLayout.currentShiftedCharacter(forKeyCode: $0) })
+        -> HotKeyShortcutProblem? {
         switch rules {
         case .globalHotKey:
             if shortcut.modifiers.isDisjoint(with: [.command, .option, .control]) { return .needsModifier }
@@ -251,8 +292,15 @@ enum HotKeyShortcutValidation {
             }
         }
         guard shortcut.hasKeyName else { return .unnamedKey }
-        if let menu, let path = menuItemPath(using: shortcut, in: menu, isOwnItem: isOwnItem, parents: []) {
-            return .usedByMenu(path.joined(separator: " > "))
+        if let menu {
+            if let path = menuItemPath(matching: shortcut.menuKeyEquivalent, in: menu, isOwnItem: isOwnItem, parents: []) {
+                return .usedByMenu(path.joined(separator: " > "))
+            }
+            // After the whole menu: AppKit fires an exact item first (measured).
+            if let shifted = shortcut.shiftedKeyEquivalent(shiftedCharacter: shiftedCharacter(shortcut.keyCode)),
+               let path = menuItemPath(matching: shifted, in: menu, isOwnItem: isOwnItem, parents: []) {
+                return .usedByMenuAsShifted(path: path.joined(separator: " > "), shortcut: shifted.displayString ?? "")
+            }
         }
         if let quickDetourShortcut,
            quickDetourShortcut == shortcut
@@ -321,13 +369,13 @@ enum HotKeyShortcutValidation {
         HeldShortcut(character: "q", modifiers: [.option, .shift, .command], name: "Log Out"),
     ]
 
-    /// The titles from the menu bar down to the item that answers `shortcut`,
+    /// The titles from the menu bar down to the item that answers `key`,
     /// matched as AppKit matches a key equivalent (`MenuKeyEquivalentMatcher`).
-    private static func menuItemPath(using shortcut: HotKeyShortcut, in menu: NSMenu,
+    private static func menuItemPath(matching key: KeyEquivalent, in menu: NSMenu,
                                      isOwnItem: (NSMenuItem) -> Bool, parents: [String]) -> [String]? {
         let candidates = menu.items.filter { !isOwnItem($0) }
-        if let item = MenuKeyEquivalentMatcher.item(matchingCharacters: shortcut.keyEquivalent,
-                                                    modifiers: shortcut.modifiers, in: candidates) {
+        if let item = MenuKeyEquivalentMatcher.item(matchingCharacters: key.key, modifiers: key.modifiers,
+                                                    in: candidates) {
             return parents + [item.title]
         }
         for item in menu.items {
@@ -344,7 +392,7 @@ enum HotKeyShortcutValidation {
             } else {
                 title = item.title
             }
-            if let path = menuItemPath(using: shortcut, in: submenu, isOwnItem: isOwnItem, parents: parents + [title]) {
+            if let path = menuItemPath(matching: key, in: submenu, isOwnItem: isOwnItem, parents: parents + [title]) {
                 return path
             }
         }
@@ -371,6 +419,8 @@ enum HotKeyShortcutValidation {
         case .needsModifier: return "Include ⌘, ⌥ or ⌃ in the shortcut."
         case .unnamedKey: return "That key cannot be used. Choose another."
         case .usedByMenu(let path): return "\(shortcut.displayString) is the shortcut of \(path)."
+        case .usedByMenuAsShifted(let path, let shown):
+            return "\(shortcut.displayString) is \(shown) on this keyboard, the shortcut of \(path)."
         case .usedByDetour(let use): return "\(shortcut.displayString) is Detour's shortcut for \(use)."
         case .usedBySystem:
             return "\(shortcut.displayString) is a macOS shortcut (System Settings > Keyboard > Keyboard Shortcuts)."

@@ -19,6 +19,9 @@ import AppKit
 /// keys — plus plain letters and command/option/shift combinations; it does not
 /// try to model layout-dependent cases such as Shift+`=` producing `+` or a
 /// non-Latin layout's Command mapping, which AppKit handles on the miss path.
+/// (The shortcut recorders' conflict check does model the shifted
+/// character, with the current layout, on top of this matcher: TASK-335,
+/// `HotKeyShortcut.shiftedKeyEquivalent`.)
 enum MenuKeyEquivalentMatcher {
 
     /// The modifiers a key equivalent can require. AppKit events also carry

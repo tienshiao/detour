@@ -221,7 +221,7 @@ launcher from any app (and from Detour), on the screen under the pointer.
 | Piece | What it does |
 |---|---|
 | `HotKeyShortcut` | The shortcut: virtual key code (layout independent, what is registered), modifiers, and the key's character on the layout it was recorded with. Spelled three ways: Carbon modifiers (`carbonModifiers`), the menu's key equivalent (the character, or AppKit's function-key character for F-keys, arrows, Return and the like), and the label (`displayString`, ⌃⌥⇧⌘ then the key: `⌥⌘N`, `⌃⌥⌘F12`). Stored as `{keyCode, modifiers (Carbon), character}`. |
-| `HotKeyShortcutValidation` | Refuses a shortcut without ⌘, ⌥ or ⌃ (a global Shift or plain key would take a key from typing everywhere), a key with no name, one a Detour menu item uses (the main menu searched with its submenus through `MenuKeyEquivalentMatcher.item(matchingCharacters:modifiers:in:)`, the Quick Detour item itself excepted; the message names the path, "File > New Tab"), one of Detour's shortcuts that no menu carries (Control-Tab and Shift-Control-Tab, the recent-tab switcher's event monitor, which a Carbon hotkey would pre-empt), and an enabled macOS shortcut (`CopySymbolicHotKeys`, the Fn bit ignored). |
+| `HotKeyShortcutValidation` | Refuses a shortcut without ⌘, ⌥ or ⌃ (a global Shift or plain key would take a key from typing everywhere), a key with no name, one a Detour menu item uses (the main menu searched with its submenus through `MenuKeyEquivalentMatcher.item(matchingCharacters:modifiers:in:)`, the Quick Detour item itself excepted; the message names the path, "File > New Tab"; also, for a key recorded with Shift, an item on its shifted character on the current layout, TASK-335), one of Detour's shortcuts that no menu carries (Control-Tab and Shift-Control-Tab, the recent-tab switcher's event monitor, which a Carbon hotkey would pre-empt), and an enabled macOS shortcut (`CopySymbolicHotKeys`, the Fn bit ignored). |
 | `HotKeyRecordingOutcome` | What a key press does in the recorder: Escape alone cancels, Delete or Forward Delete alone clears, anything else is validated and recorded or refused. |
 | `HotKeyRegistration` | The state machine: `off`, `noShortcut`, `suspended`, `registered(shortcut)`, `failed(shortcut, error)`. Holds at most one registration; lets go of the old one before registering a new one (a second registration in one process is refused); a refused one keeps the user's choice and holds nothing; `retryIfFailed`; suspended while the recorder records, resuming onto the latest setting. |
 | `QuickDetourHotKeySettings` | `QuickDetourHotKeyEnabled` and `QuickDetourHotKeyShortcut` in `UserDefaultsScope.defaults` (the standard domain in the default data directory, `<bundle id>.<data dir>` elsewhere). A cleared shortcut is an empty dictionary, so it is not mistaken for "never set". |
@@ -377,11 +377,11 @@ off. TASK-193.5 added the rest of the section
 
 ### Known limits
 
-- **A menu shortcut on a shifted character is not seen as a conflict.** The
-  check compares the recorded key's unshifted character with each item's
-  key equivalent, so View > Zoom In ("+" with ⌘, typed as ⇧= on a US
-  layout) does not match a recorded ⇧⌘=. AppKit would match the menu by
-  the typed character; nothing models layouts here.
+- **A menu shortcut on a shifted character** is a conflict since TASK-335:
+  a recorded ⇧⌘= is refused for View > Zoom In ("+" with ⌘), the shifted
+  character read from the current keyboard layout with `UCKeyTranslate`
+  ([keyboard shortcuts](./keyboard-shortcuts.md#a-shifted-key-and-its-character),
+  which has the measurements and the layout limits).
 - **The default ⌥⌘N is a fixed key code** (`kVK_ANSI_N`). On a layout that
   puts another letter there (Dvorak's B), the hotkey is the key in the N
   position while the label and the menu still say N. A recorded shortcut

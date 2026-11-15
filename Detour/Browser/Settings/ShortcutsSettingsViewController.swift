@@ -66,7 +66,7 @@ struct ShortcutRowState: Equatable {
     ///   - systemShortcut: the App Shortcut macOS gives its item, if any.
     ///   - quickDetourShortcut: the Quick Detour hotkey's setting.
     ///   - macOSShortcuts: the enabled macOS shortcuts, as the menu key
-    ///     equivalents they take (`SystemHotKey.menuKeyEquivalent`).
+    ///     equivalents they take (`SystemHotKey.menuKeyEquivalents`).
     static func make(for command: BrowserCommand, store: ShortcutBindingStore, systemShortcut: KeyEquivalent?,
                      quickDetourShortcut: HotKeyShortcut?, macOSShortcuts: [KeyEquivalent] = []) -> ShortcutRowState {
         switch command.bindability {
@@ -114,6 +114,7 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
     private let quickDetourShortcut: () -> HotKeyShortcut?
     private let systemHotKeys: () -> [SystemHotKey]
     private let systemHotKeyCharacter: (UInt16) -> String
+    private let systemHotKeyShiftedCharacter: (UInt16) -> String
     private let systemShortcut: (CommandID) -> KeyEquivalent?
     /// The enabled macOS shortcuts as menu key equivalents, read once per
     /// reload (rows are marked with them, TASK-295).
@@ -151,6 +152,11 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
     ///   - systemHotKeyCharacter: the character a key code types, for
     ///     matching macOS's shortcuts with the commands'; by default the
     ///     current layout's.
+    ///   - systemHotKeyShiftedCharacter: the character a key code types
+    ///     with Shift, so a macOS shortcut held with Shift also marks the
+    ///     command on that character, and the recorder refuses a shifted
+    ///     key whose character is an item's (TASK-335); by default the
+    ///     current layout's.
     ///   - systemShortcut: the App Shortcut macOS gives a command's item;
     ///     by default read from the live item.
     init(store: ShortcutBindingStore = .shared,
@@ -159,6 +165,9 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
          quickDetourShortcut: @escaping () -> HotKeyShortcut? = { QuickDetourHotKey.shared.settings.shortcut },
          systemHotKeys: @escaping () -> [SystemHotKey] = { HotKeyShortcutValidation.currentSystemHotKeys() },
          systemHotKeyCharacter: @escaping (UInt16) -> String = { SystemHotKey.layoutCharacter(forKeyCode: $0) },
+         systemHotKeyShiftedCharacter: @escaping (UInt16) -> String = {
+             KeyboardLayout.currentShiftedCharacter(forKeyCode: $0)
+         },
          systemShortcut: ((CommandID) -> KeyEquivalent?)? = nil) {
         self.store = store
         self.mainMenu = mainMenu
@@ -166,6 +175,7 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
         self.quickDetourShortcut = quickDetourShortcut
         self.systemHotKeys = systemHotKeys
         self.systemHotKeyCharacter = systemHotKeyCharacter
+        self.systemHotKeyShiftedCharacter = systemHotKeyShiftedCharacter
         self.systemShortcut = systemShortcut ?? { id in
             ShortcutRowState.systemShortcut(of: CommandDispatch.menuItem(for: id, in: mainMenu()))
         }
@@ -331,7 +341,9 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
         reloadPending = false
         listedQuery = query
         items = ShortcutList.items(in: BrowserCommands.menus, query: query, includes: includes)
-        macOSShortcuts = systemHotKeys().compactMap { $0.menuKeyEquivalent(character: systemHotKeyCharacter) }
+        macOSShortcuts = systemHotKeys().flatMap {
+            $0.menuKeyEquivalents(character: systemHotKeyCharacter, shiftedCharacter: systemHotKeyShiftedCharacter)
+        }
         tableView.reloadData()
         emptyLabel.stringValue = items.isEmpty ? "No commands match “\(query)”." : ""
         emptyLabel.isHidden = !items.isEmpty
@@ -365,7 +377,8 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
                 let raw = item.identifier?.rawValue
                 return raw == id.rawValue || raw == BrowserCommands.newQuickDetourWindow.id.rawValue
             },
-            quickDetourShortcut: quickDetourShortcut(), systemHotKeys: systemHotKeys())
+            quickDetourShortcut: quickDetourShortcut(), systemHotKeys: systemHotKeys(),
+            shiftedCharacter: systemHotKeyShiftedCharacter)
     }
 
     private func updateWarning() {

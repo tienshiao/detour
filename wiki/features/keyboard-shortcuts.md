@@ -32,6 +32,12 @@ sources:
   - id: task-334
     resource: backlog:TASK-334
     title: "Menus: give the top-level menu items titles so App Shortcuts written as a menu path apply"
+  - id: task-335
+    resource: backlog:TASK-335
+    title: "Shortcuts: detect conflicts between a shifted key and its character (⇧⌘= and Zoom In ⌘+)"
+  - id: spike-335
+    resource: ../../docs/harness/task335
+    title: "TASK-335 spikes: AppKit's matching of shifted-character items from real CGEvents, UCKeyTranslate on installed layouts (macOS 26, 2026-11-14)"
   - id: spike
     resource: ../../docs/harness/task327
     title: "TASK-327 spikes (standalone AppKit programs building a menu in code, run with -NSUserKeyEquivalents as a launch argument; menu matching from real CGEvents; macOS 26, 2026-11-14) and the Accessibility helper for driving Settings"
@@ -153,7 +159,10 @@ unchanged) and `.appShortcut` (a command). In order:
    Shortcut, this covers other commands, AppKit's own items (Emoji &
    Symbols, Start Dictation…) and System Settings' overrides. The message
    names the path: "⌘T is the shortcut of File > New Tab." (the application
-   menu by the app's name).
+   menu by the app's name). Then, for a key recorded with Shift, the item
+   on the key's **shifted character** with the other modifiers, which the
+   same press fires (TASK-335, [below](#a-shifted-key-and-its-character)):
+   "⇧⌘= is ⌘+ on this keyboard, the shortcut of View > Zoom In."
 4. **The Quick Detour hotkey's setting** (on or off: the File item carries
    it either way): "⌥⌘N is the Quick Detour shortcut (Settings > Quick
    Detour)."
@@ -172,6 +181,58 @@ unchanged) and `.appShortcut` (a command). In order:
 
 A refused key beeps, the reason shows on the line under the list, and the
 recorder keeps recording (PROVISIONAL: refuse rather than reassign[^task-327]).
+
+## A shifted key and its character
+
+AppKit matches a menu item against the typed character with the Shift that
+produced it implied. Measured with real CGEvents on a US layout
+(macOS 26, 2026-11-14):[^spike-335]
+
+| Press | Fired |
+|---|---|
+| ⇧⌘= ("+") | an item on ⌘+ (Zoom In) |
+| ⇧⌘[ / ⇧⌘1 / ⇧⌘0 / ⇧⌘; | items on ⌘{ / ⌘! / ⌘) / ⌘: |
+| ⌘ with the keypad's + | ⌘+ |
+| ⌘= | nothing (⌘+ is not ⌘=) |
+| ⌥⇧⌘= | nothing (the other modifiers must match) |
+| ⇧⌘= with both "=" + ⇧⌘ and ⌘+ in one menu | the exact "=" + ⇧⌘, in either order |
+| ⇧⌘/ ("?") | neither ⌘? nor ⇧⌘? (this Mac has macOS's Show Help menu, ⇧⌘/, enabled; not separated further) |
+
+So both recorders (`HotKeyShortcutValidation`, either rule set) refuse a
+key recorded with Shift when the menu has an item on the key's **shifted
+character** with the other modifiers (`HotKeyShortcut.shiftedKeyEquivalent`),
+searched after the whole menu found no item on the key itself, since AppKit
+fires an exact item first. Letters are left out (their shifted character is
+the same shortcut), and so are keys named by their code.
+
+The shifted character comes from the **current keyboard layout**
+(`KeyboardLayout`: `TISCopyCurrentKeyboardLayoutInputSource`'s Unicode
+layout data through `UCKeyTranslate`, Shift only, dead keys giving their own
+character; injected in tests, which use the installed US and French layouts
+through `KeyboardLayout.installed(id:)` whatever the Mac uses). Shift only,
+not ⌘: the US layout's ⌘ table gives "=" for ⇧⌘=, while AppKit's
+`charactersIgnoringModifiers` gave "+".
+
+Limits:
+
+- A layout with no Unicode layout data gives no shifted character, and
+  only the key itself is compared.
+- The layout at the time of the check is used; a shortcut recorded on one
+  layout is not re-checked when the user switches.
+- Other layouts were read, not pressed (switching the user's input source
+  was out of bounds): French AZERTY types "+" with Shift on the key in the
+  US "/" place and the digits with Shift; German types "=" as ⇧0. That
+  AppKit's shifted matching works there as on US is assumed, not measured.
+- A layout whose ⌘ table differs from its plain one (Dvorak – QWERTY ⌘,
+  where ⌘ gives the QWERTY character) reads the plain Shift character, so
+  the check may name the wrong item there; not handled (code review).
+- Non-Latin layouts (Russian): the layout's ⌘ table gives a Latin "c"
+  where it types "с" with no modifier, and the recording reads the
+  unmodified character; what AppKit matches there was not measured, and
+  neither recorder models it.
+- Resetting a row (`reset(_:)`) and the resolver still compare keys by
+  character, so a reset of Zoom In while another command holds ⇧⌘= is
+  not refused. Only recording is covered.
 
 ## The pane
 
@@ -192,10 +253,11 @@ on its own, 400 pt minimum), then the warning line.
   Keyboard > Keyboard Shortcuts (and Mission Control's Switch to Desktop for
   ⌃1–⌃9); its recorder stays enabled (TASK-295). The pane reads
   `CopySymbolicHotKeys` once per reload and turns each key code into the
-  menu key it takes with the current layout's character
-  (`SystemHotKey.menuKeyEquivalent(character:)`, `layoutCharacter(forKeyCode:)`
-  through a synthesized key event, nothing posted); both are injected in
-  tests. Before, the list was only consulted when recording, so a built-in
+  menu keys it takes with the current layout's characters
+  (`SystemHotKey.menuKeyEquivalents(character:shiftedCharacter:)`:
+  `layoutCharacter(forKeyCode:)` through a synthesized key event, nothing
+  posted, and for one held with Shift also its shifted character, so a
+  macOS ⇧⌘= marks Zoom In's ⌘+, TASK-335); all are injected in tests. Before, the list was only consulted when recording, so a built-in
   shortcut macOS held looked like any other.
 - A row: title, the note, `ShortcutRecorderView` (placeholder "None"; a
   disabled one shows its shortcut as dimmed text with no box), and a reset
@@ -272,9 +334,9 @@ for the app. To try one at runtime, pass it as a launch argument; never
   such an item on the real press: a CGEvent ⇧⌘1, whose
   `charactersIgnoringModifiers` is "!", fired an item "1" + ⇧⌘, and ⇧⌘=
   ("+") fired "=" + ⇧⌘ (spike, 2026-11-14).[^spike] The TASK-56 matcher
-  compares "!" with "1" and misses, which is its fallback path. A built-in
-  `"+"` with ⌘ (Zoom In) is typed as ⇧= and is not seen as the same
-  shortcut by the conflict check, as for the Quick Detour recorder.
+  compares "!" with "1" and misses, which is its fallback path. The same
+  press also fires an item spelled with the shifted character; since
+  TASK-335 the recorders see that (next section).
 - **Function keys and ⌥.** In the same spike AppKit's menu matching fired
   an F6 item with no modifier (matched by key code: the event's characters
   were empty), a ⌥E item, and a ⌃⌥K item.[^spike]
@@ -305,9 +367,18 @@ for the app. To try one at runtime, pass it as a launch argument; never
   there was not tried (it may switch the desktop). The digits are layout
   characters: on a layout that types them shifted (French AZERTY),
   `MenuKeyEquivalentMatcher` misses and AppKit's own matching decides (not
-  measured). The "Used by macOS" mark compares the layout's character for
+  measured). The "Used by macOS" mark compares the layout's characters for
   the system shortcut's key code with the row's key, while the recorder's
   refusal compares key codes, so on such a layout the two can disagree.
+  TASK-335's Shift-level mapping does not settle it: Mission Control's ⌃1
+  is held without Shift, so on AZERTY it maps to "&" + ⌃ only and the
+  default "1" + ⌃ row stays unmarked. In Detour's model that is
+  consistent (the row's "1" is typed ⇧⌃ on that key, which the system
+  shortcut does not hold), but whether AppKit's key-equivalent
+  localization moves "1" + ⌃ onto the unshifted key there is not measured
+  (it needs the user's input source switched). UCKeyTranslate on the
+  installed French layout gives "1" for that key with ⌃ held, a hint that
+  ⌃ may reach the digit there.
 - **Space names as titles.** The Spaces menu titles its position items with
   the space's emoji and name when it opens, so an App Shortcut written for
   "Switch to Space 1" applies only until then, and one written for a space's
@@ -331,7 +402,11 @@ for the app. To try one at runtime, pass it as a launch argument; never
 - `ShortcutConflictTests`: the modifier rule and function keys, another
   command's path, the own item, AppKit's items, the Quick Detour setting,
   Detour's keys outside menus, macOS's (symbolic and reserved), the real
-  menu bar, the pane's check.
+  menu bar, the pane's check; a shifted key and its character (TASK-335):
+  the US and French layouts' characters through `UCKeyTranslate`, ⇧⌘=
+  refused for ⌘+ and ⇧⌘/ for ⌘?, ⌘=, ⌘/, ⌥⇧⌘= and ⇧⌘T not, the exact
+  item named first, the French layout's "+", the Quick Detour recorder's
+  rules, the real menu's Zoom In.
 - `ShortcutMenuTests` (the real menu bar and the shared store, restored):
   a binding reaches the item and AppKit's matching, clearing, a shortcut
   for a command with none and Restore Defaults, reset, the Quick Detour
@@ -344,7 +419,9 @@ for the app. To try one at runtime, pass it as a launch argument; never
   Check for Updates…, search; row states; recording, refusing with the
   holder named, clearing, a function key alone, reset, Restore Defaults,
   disabled rows, an empty search; a macOS shortcut turned into the menu key
-  it takes, the "Used by macOS" row state and note (TASK-295).
+  it takes, the "Used by macOS" row state and note (TASK-295); a macOS
+  shortcut held with Shift marking the row on its shifted character
+  (TASK-335).
 
 # Related
 
@@ -357,4 +434,5 @@ for the app. To try one at runtime, pass it as a launch argument; never
 [^task-327]: TASK-327
 [^task-295]: TASK-295
 [^task-334]: TASK-334
+[^spike-335]: TASK-335 spikes
 [^spike]: NSUserKeyEquivalents spikes

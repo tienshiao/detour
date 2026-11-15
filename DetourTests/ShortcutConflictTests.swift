@@ -44,16 +44,26 @@ nonisolated final class ShortcutConflictTests: XCTestCase {
         return main
     }
 
+    /// The installed US layout, whatever layout the Mac is using, so the
+    /// shifted characters are the same on every run (TASK-335).
+    @MainActor private static let us = KeyboardLayout.installed(id: "com.apple.keylayout.US")
+    @MainActor private static let french = KeyboardLayout.installed(id: "com.apple.keylayout.French")
+
+    @MainActor private static func shifted(on layout: KeyboardLayout?) -> (UInt16) -> String {
+        { layout?.character(forKeyCode: $0, shift: true) ?? "" }
+    }
+
     @MainActor private func problem(_ shortcut: HotKeyShortcut, for id: CommandID = BrowserCommands.reload.id,
                                     menu: NSMenu? = nil, quickDetour: HotKeyShortcut? = .quickDetourDefault,
-                                    system: [SystemHotKey] = []) -> HotKeyShortcutProblem? {
+                                    system: [SystemHotKey] = [],
+                                    layout: KeyboardLayout? = ShortcutConflictTests.us) -> HotKeyShortcutProblem? {
         HotKeyShortcutValidation.problem(
             for: shortcut, rules: .appShortcut, menu: menu ?? mainMenu(),
             isOwnItem: { item in
                 let raw = item.identifier?.rawValue
                 return raw == id.rawValue || raw == BrowserCommands.newQuickDetourWindow.id.rawValue
             },
-            quickDetourShortcut: quickDetour, systemHotKeys: system)
+            quickDetourShortcut: quickDetour, systemHotKeys: system, shiftedCharacter: Self.shifted(on: layout))
     }
 
     // MARK: - Modifiers
@@ -173,5 +183,113 @@ nonisolated final class ShortcutConflictTests: XCTestCase {
                        .usedByMenu("File > New Tab"))
         XCTAssertEqual(pane.problem(for: .quickDetourDefault, command: BrowserCommands.reload.id), .usedByQuickDetour)
         XCTAssertNil(pane.problem(for: shortcut(kVK_ANSI_R, [.command], "r"), command: BrowserCommands.reload.id))
+    }
+
+    // MARK: - A shifted key and its character (TASK-335)
+
+    /// View > Zoom In on ⌘+ and an item on ⌘? (no command of Detour's has
+    /// it), as a menu spells a shifted character's shortcut.
+    @MainActor private func shiftedCharacterMenu(extra: [NSMenuItem] = []) -> NSMenu {
+        let main = mainMenu()
+        func add(_ title: String, _ items: [NSMenuItem]) {
+            let menu = NSMenu(title: title)
+            items.forEach(menu.addItem)
+            main.addItem(AppDelegate.menuBarItem(for: menu))
+        }
+        add("Zoom", extra + [item("Zoom In", "+", id: BrowserCommands.zoomIn.id)])
+        add("Help", [item("Search Help", "?")])
+        return main
+    }
+
+    @MainActor func testTheLayoutGivesEachKeysShiftedCharacter() throws {
+        let us = try XCTUnwrap(Self.us, "the US layout is always installed")
+        XCTAssertEqual(us.character(forKeyCode: UInt16(kVK_ANSI_Equal), shift: false), "=")
+        XCTAssertEqual(us.character(forKeyCode: UInt16(kVK_ANSI_Equal), shift: true), "+")
+        XCTAssertEqual(us.character(forKeyCode: UInt16(kVK_ANSI_Slash), shift: true), "?")
+        XCTAssertEqual(us.character(forKeyCode: UInt16(kVK_ANSI_1), shift: true), "!")
+        XCTAssertEqual(us.character(forKeyCode: UInt16(kVK_ANSI_T), shift: true), "T")
+        XCTAssertEqual(us.character(forKeyCode: UInt16(kVK_F5), shift: true), "", "a function key types no character")
+        XCTAssertEqual(us.character(forKeyCode: UInt16(kVK_Return), shift: false), "")
+        // French AZERTY types the digits with Shift, and "+" on the US "/" key.
+        let french = try XCTUnwrap(Self.french)
+        XCTAssertEqual(french.character(forKeyCode: UInt16(kVK_ANSI_1), shift: false), "&")
+        XCTAssertEqual(french.character(forKeyCode: UInt16(kVK_ANSI_1), shift: true), "1")
+        XCTAssertEqual(french.character(forKeyCode: UInt16(kVK_ANSI_Slash), shift: true), "+")
+        XCTAssertNotNil(KeyboardLayout.current(), "the layout in use has Unicode layout data")
+    }
+
+    @MainActor func testAShiftedKeyIsRefusedForTheItemOnItsCharacter() {
+        let menu = shiftedCharacterMenu()
+        let shiftEqual = shortcut(kVK_ANSI_Equal, [.shift, .command], "=")
+        XCTAssertEqual(problem(shiftEqual, menu: menu), .usedByMenuAsShifted(path: "Zoom > Zoom In", shortcut: "⌘+"),
+                       "AppKit fires ⌘+ on ⇧⌘=")
+        XCTAssertEqual(problem(shortcut(kVK_ANSI_Slash, [.shift, .command], "/"), menu: menu),
+                       .usedByMenuAsShifted(path: "Help > Search Help", shortcut: "⌘?"))
+        XCTAssertEqual(HotKeyShortcutValidation.message(for: .usedByMenuAsShifted(path: "Zoom > Zoom In", shortcut: "⌘+"),
+                                                        shortcut: shiftEqual),
+                       "⇧⌘= is ⌘+ on this keyboard, the shortcut of Zoom > Zoom In.")
+        XCTAssertNil(problem(shiftEqual, for: BrowserCommands.zoomIn.id, menu: menu), "Zoom In's own key")
+    }
+
+    @MainActor func testAKeyWithoutItsShiftedCharacterIsNotRefused() {
+        let menu = shiftedCharacterMenu()
+        XCTAssertNil(problem(shortcut(kVK_ANSI_Equal, [.command], "="), menu: menu), "⌘= does not fire ⌘+")
+        XCTAssertNil(problem(shortcut(kVK_ANSI_Slash, [.command], "/"), menu: menu))
+        XCTAssertNil(problem(shortcut(kVK_ANSI_Equal, [.option, .shift, .command], "="), menu: menu),
+                     "⌥⇧⌘= does not fire ⌘+ (measured): the other modifiers must match")
+        XCTAssertNil(problem(shortcut(kVK_ANSI_Equal, [.shift, .command], "="), menu: menu, layout: nil),
+                     "no layout data: only the key itself is compared")
+        // A letter's shifted character is the letter: ⇧⌘T is still only itself.
+        XCTAssertNil(problem(shortcut(kVK_ANSI_T, [.shift, .command], "t"), menu: menu))
+    }
+
+    @MainActor func testTheExactKeyIsNamedBeforeTheShiftedCharacter() {
+        // AppKit fires the exact "=" + ⇧⌘ item whatever the order (measured).
+        let menu = shiftedCharacterMenu(extra: [item("Actual Size", "=", [.shift, .command])])
+        XCTAssertEqual(problem(shortcut(kVK_ANSI_Equal, [.shift, .command], "="), menu: menu),
+                       .usedByMenu("Zoom > Actual Size"))
+    }
+
+    @MainActor func testTheShiftedCharacterFollowsTheLayout() {
+        let menu = shiftedCharacterMenu()
+        // On French AZERTY "+" is Shift and the key in the US "/" place;
+        // the US "=" key types "-" and "_".
+        XCTAssertEqual(problem(shortcut(kVK_ANSI_Slash, [.shift, .command], "="), menu: menu, layout: Self.french),
+                       .usedByMenuAsShifted(path: "Zoom > Zoom In", shortcut: "⌘+"))
+        XCTAssertNil(problem(shortcut(kVK_ANSI_Equal, [.shift, .command], "-"), menu: menu, layout: Self.french))
+    }
+
+    @MainActor func testTheQuickDetourRecorderRefusesAShiftedKeyToo() {
+        let menu = shiftedCharacterMenu()
+        XCTAssertEqual(HotKeyShortcutValidation.problem(for: shortcut(kVK_ANSI_Equal, [.shift, .command], "="),
+                                                        menu: menu, ownAction: nil, systemHotKeys: [],
+                                                        shiftedCharacter: Self.shifted(on: Self.us)),
+                       .usedByMenuAsShifted(path: "Zoom > Zoom In", shortcut: "⌘+"))
+        XCTAssertNil(HotKeyShortcutValidation.problem(for: shortcut(kVK_ANSI_Equal, [.option, .command], "="),
+                                                      menu: menu, ownAction: nil, systemHotKeys: [],
+                                                      shiftedCharacter: Self.shifted(on: Self.us)))
+    }
+
+    @MainActor func testThePaneChecksAShiftedKeyWithItsLayout() throws {
+        let suite = "ShortcutConflictTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let menu = shiftedCharacterMenu()
+        let pane = ShortcutsSettingsViewController(store: ShortcutBindingStore(defaults: defaults),
+                                                   mainMenu: { menu }, includesUpdater: false,
+                                                   quickDetourShortcut: { .quickDetourDefault },
+                                                   systemHotKeys: { [] },
+                                                   systemHotKeyShiftedCharacter: Self.shifted(on: Self.us))
+        let shiftEqual = shortcut(kVK_ANSI_Equal, [.shift, .command], "=")
+        XCTAssertEqual(pane.problem(for: shiftEqual, command: BrowserCommands.reload.id),
+                       .usedByMenuAsShifted(path: "Zoom > Zoom In", shortcut: "⌘+"))
+        XCTAssertNil(pane.problem(for: shiftEqual, command: BrowserCommands.zoomIn.id), "Zoom In's own key")
+    }
+
+    @MainActor func testTheRealMenuBarsZoomIn() throws {
+        let menu = try XCTUnwrap(NSApp.mainMenu)
+        XCTAssertEqual(problem(shortcut(kVK_ANSI_Equal, [.shift, .command], "="), menu: menu),
+                       .usedByMenuAsShifted(path: "View > Zoom In", shortcut: "⌘+"))
+        XCTAssertNil(problem(shortcut(kVK_ANSI_Equal, [.shift, .command], "="), for: BrowserCommands.zoomIn.id, menu: menu))
     }
 }

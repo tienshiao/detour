@@ -293,6 +293,42 @@ nonisolated final class ShortcutsSettingsPaneTests: XCTestCase {
                      "a key with no name")
     }
 
+    /// A macOS shortcut held with Shift also takes the key's shifted
+    /// character (TASK-335): ⇧⌘= is how Zoom In's ⌘+ is typed on a US layout.
+    @MainActor func testAShiftedMacOSShortcutAlsoTakesItsCharacter() throws {
+        let us = try XCTUnwrap(KeyboardLayout.installed(id: "com.apple.keylayout.US"))
+        let character: (UInt16) -> String = { us.character(forKeyCode: $0, shift: false) }
+        let shifted: (UInt16) -> String = { us.character(forKeyCode: $0, shift: true) }
+        let shiftEqual = SystemHotKey(keyCode: UInt16(kVK_ANSI_Equal), carbonModifiers: UInt32(cmdKey | shiftKey))
+        XCTAssertEqual(shiftEqual.menuKeyEquivalents(character: character, shiftedCharacter: shifted),
+                       [KeyEquivalent("=", [.shift, .command]), KeyEquivalent("+", [.command])])
+        let plainEqual = SystemHotKey(keyCode: UInt16(kVK_ANSI_Equal), carbonModifiers: UInt32(cmdKey))
+        XCTAssertEqual(plainEqual.menuKeyEquivalents(character: character, shiftedCharacter: shifted),
+                       [KeyEquivalent("=", [.command])], "no Shift, no shifted character")
+
+        let store = makeStore()
+        let macOS = shiftEqual.menuKeyEquivalents(character: character, shiftedCharacter: shifted)
+        XCTAssertTrue(ShortcutRowState.make(for: BrowserCommands.zoomIn, store: store, systemShortcut: nil,
+                                            quickDetourShortcut: .quickDetourDefault, macOSShortcuts: macOS).isTakenByMacOS)
+        XCTAssertFalse(ShortcutRowState.make(for: BrowserCommands.zoomOut, store: store, systemShortcut: nil,
+                                             quickDetourShortcut: .quickDetourDefault, macOSShortcuts: macOS).isTakenByMacOS)
+
+        // The pane turns its macOS shortcuts into keys the same way.
+        let pane = ShortcutsSettingsViewController(store: store, includesUpdater: false,
+                                                   quickDetourShortcut: { .quickDetourDefault },
+                                                   systemHotKeys: { [shiftEqual] },
+                                                   systemHotKeyCharacter: character,
+                                                   systemHotKeyShiftedCharacter: shifted,
+                                                   systemShortcut: { _ in nil })
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: SettingsMetrics.windowWidth, height: 700),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = pane
+        pane.view.layoutSubtreeIfNeeded()
+        addTeardownBlock { window.close() }
+        XCTAssertTrue(pane.rowState(for: BrowserCommands.zoomIn).isTakenByMacOS)
+    }
+
     @MainActor func testARowWhoseShortcutMacOSTakesSaysSo() throws {
         let store = makeStore()
         let first = BrowserCommands.jumpToSpace[0]
