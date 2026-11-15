@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-10T09:38:00Z'
-updated_date: '2026-11-15T07:37:00Z'
+updated_date: '2026-11-15T07:44:00Z'
 labels:
   - command-palette
   - automation
@@ -65,6 +65,8 @@ Constraints from the codebase: the palette is scoped to its window's profile (TA
 4. (c) Palette commands: SuggestionItem.command; the owner (browser window, Quick Detour window; not the launcher) hands the palette a command source; pure ranking (word-prefix match on title/aliases) mixed after the verbatim row (capped, min length), '>' prefix = commands only (no history, network, completion, filler; Return with no row does nothing); rows show the live menu item's key equivalent and the contextual title; Return dismisses the palette then performs the command as run_menu_item does. Availability evaluated only for matched candidates, memoized per showing.
 5. Tests: registry rules over fake contexts, ranking, palette integration (normal/Private/Quick Detour), menu/palette/MCP-menu/Quick Detour suites. /verify: palette commands in a normal and a Private window, menu items by key and by path through the automation endpoint, menu enablement in Private and Quick Detour.
 6. Record AC #1 (shape, how menus/palette/AppleScript/MCP use it, rejected alternatives), provisional decisions, AC #3 options + recommendation (not built), what is left (context menus, dock menu). Wiki: new commands page, app-shell, command-palette, suggestion-pipeline. Task stays In Progress.
+
+AC #3 (chip, decided by the user 2026-11-14): 7. Pure layer: CommandChoice (value: space/tab/profile/extension id, title, subtitle, icon), per-command choice lists (Switch to Space = what the Spaces menu offers the window minus the active space; Move Tab to Space = what the sidebar's Move to offers (non-incognito spaces, nothing in a Private window) minus the current space, filtered by canMoveTab/canMovePinnedEntry; extension commands = what their menu builders enable), the text filter, and the chip state machine (enter, Backspace at the start restores the typed text, Escape leaves then dismisses; Cmd+L palettes dismiss at once, as site search). A parameterised command is offered only when its rule holds and it has a choice. 8. Registry: kinds with a natural list are palette-eligible (url/position keep needsParameter); new tab.move-to-space command (BrowserWindowController.moveSelectedTabToSpace(_:) -> the sidebar's didRequestMoveTabAt path), not offered for a split (the sidebar has no Move to on a split row). 9. CommandDispatch.perform with an argument: a transient item with representedObject, validated and sent as the dynamic item is. 10. CommandPaletteView chip mode (chip = command symbol + title, rows = choices, no history/network/filler, Return runs, Return with no row does nothing); both owners. 11. Tests: pure choice/filter/state-machine tests; window tests for Move Tab to Space and Switch to Space via the chip in a normal window and their absence in a Private window; palette/registry/menu suites. 12. /verify with posted key events, chip captures light/dark, move + switch through the chip, Private window offers no cross-profile targets. Wiki: command-palette, browser-commands, site-search link.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
