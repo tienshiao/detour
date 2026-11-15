@@ -121,13 +121,18 @@ struct AutomationEnvironment {
     /// Whether the user allows agents to use Private windows (TASK-228.5).
     /// Asked at every check: turning it off refuses again at once.
     var allowsPrivate: () -> Bool = { AutomationPrivateAccess.isAllowed() }
+    /// Whether the input tools show the agent pointer (TASK-228.11), asked at
+    /// every call. Off unless given, so a test's clicks gain no delay; live,
+    /// the Settings switch (or a Debug override).
+    var showsAgentPointer: () -> Bool = { false }
 
     static var live: AutomationEnvironment {
         AutomationEnvironment(
             windowControllers: { (NSApp.delegate as? AppDelegate)?.windowControllers ?? [] },
             mainMenu: { NSApp.mainMenu },
             store: .shared,
-            otherWindows: AutomationWindows.liveOtherWindows)
+            otherWindows: AutomationWindows.liveOtherWindows,
+            showsAgentPointer: { AutomationAgentPointerSetting.isEnabled() })
     }
 }
 
@@ -146,6 +151,16 @@ final class AutomationTools {
     /// How long an input tool waits for one mouse or key event to be handled
     /// before saying it is still running (it opened a menu or an alert).
     var inputWait: Duration = .milliseconds(1500)
+    /// The pointer the input tools show where they click and type
+    /// (TASK-228.11), while `environment.showsAgentPointer` says so.
+    var agentPointer = AutomationAgentPointer.shared
+    /// Whether capture staging is in use: a client seeded a world or placed a
+    /// window (`seed_world`, `set_window_frame`) in this run. The pointer then
+    /// glides slower, so a recording can follow it. PROVISIONAL (chosen by
+    /// Claude for TASK-228.11, not confirmed by the user).
+    var stagingInUse = false
+    /// Keeps input calls in arrival order while the pointer is on.
+    let inputOrder = AutomationInputOrder()
 
     init(environment: AutomationEnvironment) {
         self.environment = environment

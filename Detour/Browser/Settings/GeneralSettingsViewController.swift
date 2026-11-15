@@ -13,6 +13,7 @@ class GeneralSettingsViewController: SettingsPaneViewController {
     private var tokenButtons: [NSButton] = []
     private var allowAgainRow: SettingsFormRow!
     private var privateSwitch: NSSwitch!
+    private(set) var agentPointerSwitch: NSSwitch!
     private var clientsSection: SettingsFormSection!
     /// What the client rows show now, so a change rebuilds them only when
     /// something changed (the window resizes with them).
@@ -66,6 +67,16 @@ class GeneralSettingsViewController: SettingsPaneViewController {
                 + "windows included), their tabs or menus, or the Private profile's extensions. Turning it off takes "
                 + "effect at once.",
             accessory: .toggle(privateSwitch))
+        // TASK-228.11: the agent pointer, on by default.
+        agentPointerSwitch = NSSwitch()
+        agentPointerSwitch.target = self
+        agentPointerSwitch.action = #selector(agentPointerSwitchChanged)
+        agentPointerSwitch.setAccessibilityIdentifier("automationAgentPointer")
+        let pointerRow = SettingsFormRow(
+            title: "Show where agents click and type",
+            help: "An orange pointer marked Agent moves to each click an agent makes, and the field it types into "
+                + "is outlined, also in windows behind other apps. Screenshots agents take leave it out.",
+            accessory: .toggle(agentPointerSwitch))
         let allowAgainButton = NSButton(title: "Allow Again", target: self, action: #selector(allowDisconnectedAgents))
         allowAgainButton.bezelStyle = .rounded
         // Its name before TASK-338, when it stood alone under the switches.
@@ -90,7 +101,7 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         // has none, each client getting its own through the helper.
         tokenButtons = [copyToken, resetToken]
         automationSection = SettingsFormSection(
-            title: "Automation", rows: [automationRow, privateRow, allowAgainRow], footnote: automationStatus,
+            title: "Automation", rows: [automationRow, privateRow, pointerRow, allowAgainRow], footnote: automationStatus,
             buttons: [copyCommand, copyConfig, copyToken, resetToken])
         // The automation endpoint's input tools refuse views in here (TASK-228.7).
         automationSection.identifier = AutomationWindows.automationSettingsIdentifier
@@ -148,6 +159,7 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         }
         automationStatus.setHelp(status)
         privateSwitch.state = controller.allowsPrivateInSettings ? .on : .off
+        agentPointerSwitch.state = AutomationAgentPointerSetting.isOn() ? .on : .off
         let buttonsHidden = !controller.status.isOn
         let allowHidden = controller.blockedClientNames.isEmpty
         let tokenButtonsHidden = controller.usesClientApproval
@@ -198,6 +210,10 @@ class GeneralSettingsViewController: SettingsPaneViewController {
 
     @objc private func privateSwitchChanged() {
         AutomationController.shared.setAllowsPrivate(privateSwitch.state == .on)
+    }
+
+    @objc func agentPointerSwitchChanged() {
+        AutomationAgentPointerSetting.set(agentPointerSwitch.state == .on)
     }
 
     @objc private func automationSwitchChanged() {

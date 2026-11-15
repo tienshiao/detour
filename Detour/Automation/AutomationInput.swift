@@ -482,6 +482,34 @@ enum AutomationInput {
 
     // MARK: Elements in a page
 
+    /// The page's focused element in `webView`, in window coordinates, for
+    /// the agent pointer's highlight (TASK-228.11); nil when nothing but the
+    /// document has the focus or the page does not answer. In the client
+    /// world, which the page's own scripts do not share.
+    static func focusedElementRect(in webView: WKWebView) async -> NSRect? {
+        let script = """
+            let element = document.activeElement;
+            while (element && element.shadowRoot && element.shadowRoot.activeElement) {
+                element = element.shadowRoot.activeElement;
+            }
+            if (!element || element === document.body || element === document.documentElement) { return null; }
+            const r = element.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) { return null; }
+            return { x: r.left, y: r.top, width: r.width, height: r.height };
+            """
+        guard let result = try? await webView.callAsyncJavaScript(script, arguments: [:], in: nil,
+                                                                   contentWorld: .defaultClient),
+              let fields = result as? [String: Any],
+              let x = (fields["x"] as? NSNumber)?.doubleValue, let y = (fields["y"] as? NSNumber)?.doubleValue,
+              let width = (fields["width"] as? NSNumber)?.doubleValue,
+              let height = (fields["height"] as? NSNumber)?.doubleValue else { return nil }
+        // WKWebView is flipped, so CSS pixels convert directly once zoomed.
+        let zoom = webView.pageZoom
+        let rect = NSRect(x: x * zoom, y: y * zoom, width: width * zoom, height: height * zoom)
+            .intersection(webView.bounds)
+        return rect.isEmpty ? nil : webView.convert(rect, to: nil)
+    }
+
     /// The centre of the element `selector` matches in `webView`'s top
     /// document, in window coordinates, after scrolling it into view.
     static func elementPoint(_ selector: String, in webView: WKWebView) async throws -> NSPoint {

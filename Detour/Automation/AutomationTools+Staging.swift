@@ -42,6 +42,8 @@ extension AutomationTools {
             annotations: ["readOnlyHint": false, "destructiveHint": true],
             handler: { [self] arguments in
                 try requireStagingTestRun("seed_world")
+                // Staging a capture: the agent pointer glides slower (TASK-228.11).
+                stagingInUse = true
                 let path = try arguments.requiredString("fixture_path")
                 guard path.hasPrefix("/") else {
                     throw AutomationToolError(.invalidArguments, "fixture_path must be an absolute path")
@@ -265,6 +267,7 @@ extension AutomationTools {
             handler: { [self] arguments in
                 try requireStagingTestRun("set_window_frame")
                 let window = try placeableWindow(arguments)
+                stagingInUse = true
                 let activate = try arguments.bool("activate") ?? false
                 var rect = CGRect(x: try arguments.number("x") ?? 0, y: try arguments.number("y") ?? 0,
                                   width: try arguments.number("width") ?? 0, height: try arguments.number("height") ?? 0)
@@ -337,7 +340,9 @@ extension AutomationTools {
             // Quick Detour windows a window_id too.
             return try anyWindow(id: windowID).window
         }
-        guard let window = NSApp.windows.first(where: { $0.windowNumber == number && $0.isVisible }) else {
+        guard let window = NSApp.windows.first(where: { $0.windowNumber == number && $0.isVisible
+            // The agent pointer's overlay (TASK-228.11) is not a window to place.
+            && !($0 is AutomationAgentPointerWindow) }) else {
             throw AutomationToolError(.unknownWindow, "Detour has no visible window \(number!)")
         }
         let access = AutomationWindows.access(of: window)

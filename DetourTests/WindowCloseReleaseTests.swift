@@ -285,6 +285,22 @@ nonisolated final class WindowCloseReleaseTests: XCTestCase {
         })
     }
 
+    /// TASK-228.11: the agent pointer's overlay is a child window of the
+    /// window it shows in, kept by a weak-keyed table; closing the window
+    /// with the pointer and a field's outline on screen frees it.
+    @MainActor func testAWindowClosedWithTheAgentPointerShowingIsFreed() async throws {
+        let tab = try await loadedTab(in: work)
+        try await assertFreedAfterClose("agent pointer", make: { makeWindow(showing: work, selecting: tab) },
+                                        history: { wc in
+            try await self.waitForLoad(tab)
+            let window = try XCTUnwrap(wc.window)
+            let pointer = AutomationAgentPointer.shared
+            await pointer.glide(to: NSPoint(x: 300, y: 200), in: window, slow: false)
+            pointer.highlight(NSRect(x: 280, y: 180, width: 120, height: 24), in: window)
+            XCTAssertEqual(pointer.existingOverlay(for: window)?.isShown, true)
+        })
+    }
+
     @MainActor func testAWindowClosedWithTheFindBarOpenIsFreed() async throws {
         let tab = try await loadedTab(in: work)
         try await assertFreedAfterClose("find bar", make: { makeWindow(showing: work, selecting: tab) },

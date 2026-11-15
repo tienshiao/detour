@@ -98,82 +98,156 @@ extension AutomationTools {
             ]),
             annotations: ["readOnlyHint": false, "destructiveHint": true],
             handler: { [self] arguments in
-                guard let button = AutomationInput.Button(rawValue: try arguments.string("button") ?? "left") else {
-                    throw AutomationToolError(.invalidArguments, "button is left or right")
-                }
-                let modifiers = try AutomationInput.modifiers(arguments.stringArray("modifiers") ?? [])
-                let count = try arguments.int("count") ?? 1
-                guard (1...3).contains(count) else {
-                    throw AutomationToolError(.invalidArguments, "count is 1, 2 or 3")
-                }
-                let x = try arguments.number("x"), y = try arguments.number("y")
-                guard (x == nil) == (y == nil) else { throw AutomationToolError(.invalidArguments, "Give x and y together") }
-
-                let controller: NSWindowController
-                let window: NSWindow
-                let point: NSPoint
-                let target: AutomationInput.Target
-                if let context = try arguments.string("context") {
-                    guard !arguments.has("window_id") else {
-                        throw AutomationToolError(.invalidArguments, "Give context or window_id, not both")
+                try await inArrivalOrder {
+                    guard let button = AutomationInput.Button(rawValue: try arguments.string("button") ?? "left") else {
+                        throw AutomationToolError(.invalidArguments, "button is left or right")
                     }
-                    let resolved = try resolve(context: context)
-                    guard let webView = resolved.webView else { throw AutomationToolError(.notDisplayed, "No web view") }
-                    controller = resolved.controller
-                    window = resolved.window
-                    if let selector = try arguments.string("selector") {
-                        guard x == nil else { throw AutomationToolError(.invalidArguments, "Give selector or x and y, not both") }
-                        point = try await AutomationInput.elementPoint(selector, in: webView)
-                    } else if let x, let y {
-                        let zoom = webView.pageZoom
-                        let width = webView.bounds.width / zoom, height = webView.bounds.height / zoom
-                        guard x >= 0, y >= 0, x <= width, y <= height else {
-                            throw AutomationToolError(.invalidArguments,
-                                                      "(\(x), \(y)) is outside the page's viewport (\(width) × \(height))")
+                    let modifiers = try AutomationInput.modifiers(arguments.stringArray("modifiers") ?? [])
+                    let count = try arguments.int("count") ?? 1
+                    guard (1...3).contains(count) else {
+                        throw AutomationToolError(.invalidArguments, "count is 1, 2 or 3")
+                    }
+                    let x = try arguments.number("x"), y = try arguments.number("y")
+                    guard (x == nil) == (y == nil) else { throw AutomationToolError(.invalidArguments, "Give x and y together") }
+
+                    let controller: NSWindowController
+                    let window: NSWindow
+                    let point: NSPoint
+                    var target: AutomationInput.Target
+                    if let context = try arguments.string("context") {
+                        guard !arguments.has("window_id") else {
+                            throw AutomationToolError(.invalidArguments, "Give context or window_id, not both")
                         }
-                        point = webView.convert(NSPoint(x: x * zoom, y: y * zoom), to: nil)
+                        let resolved = try resolve(context: context)
+                        guard let webView = resolved.webView else { throw AutomationToolError(.notDisplayed, "No web view") }
+                        controller = resolved.controller
+                        window = resolved.window
+                        if let selector = try arguments.string("selector") {
+                            guard x == nil else { throw AutomationToolError(.invalidArguments, "Give selector or x and y, not both") }
+                            point = try await AutomationInput.elementPoint(selector, in: webView)
+                        } else if let x, let y {
+                            let zoom = webView.pageZoom
+                            let width = webView.bounds.width / zoom, height = webView.bounds.height / zoom
+                            guard x >= 0, y >= 0, x <= width, y <= height else {
+                                throw AutomationToolError(.invalidArguments,
+                                                          "(\(x), \(y)) is outside the page's viewport (\(width) × \(height))")
+                            }
+                            point = webView.convert(NSPoint(x: x * zoom, y: y * zoom), to: nil)
+                        } else {
+                            throw AutomationToolError(.invalidArguments, "With context, give selector or x and y")
+                        }
+                        // Straight to the page, as a person's click on it would go.
+                        target = .webView(webView)
+                    } else if let windowID = try arguments.int("window_id") {
+                        guard !arguments.has("selector") else {
+                            throw AutomationToolError(.invalidArguments, "selector needs context")
+                        }
+                        let addressed = try inputWindow(id: windowID)
+                        controller = addressed.controller
+                        window = addressed.window
+                        guard let x, let y else { throw AutomationToolError(.invalidArguments, "With window_id, give x and y") }
+                        point = try windowPoint(x: x, y: y, in: window)
+                        guard let hit = AutomationInput.target(at: point, in: window, button: button,
+                                                               modifiers: modifiers) else {
+                            throw AutomationToolError(.invalidArguments, "Nothing is under that point")
+                        }
+                        if case .view(let view) = hit { try refuseAutomationSettings(view) }
+                        target = hit
                     } else {
-                        throw AutomationToolError(.invalidArguments, "With context, give selector or x and y")
+                        throw AutomationToolError(.invalidArguments, "Give context and selector, or window_id with x and y")
                     }
-                    // Straight to the page, as a person's click on it would go.
-                    target = .webView(webView)
-                } else if let windowID = try arguments.int("window_id") {
-                    guard !arguments.has("selector") else {
-                        throw AutomationToolError(.invalidArguments, "selector needs context")
-                    }
-                    let addressed = try inputWindow(id: windowID)
-                    controller = addressed.controller
-                    window = addressed.window
-                    guard let x, let y else { throw AutomationToolError(.invalidArguments, "With window_id, give x and y") }
-                    point = try windowPoint(x: x, y: y, in: window)
-                    guard let hit = AutomationInput.target(at: point, in: window, button: button,
-                                                           modifiers: modifiers) else {
-                        throw AutomationToolError(.invalidArguments, "Nothing is under that point")
-                    }
-                    if case .view(let view) = hit { try refuseAutomationSettings(view) }
-                    target = hit
-                } else {
-                    throw AutomationToolError(.invalidArguments, "Give context and selector, or window_id with x and y")
-                }
 
-                // A person's click elsewhere dismisses an open menu; so does this
-                // one, once its arguments are known to be good.
-                await AutomationMenuTracker.shared.closeAll()
-                let completed = await AutomationInput.click(target, at: point, in: window, button: button,
-                                                            modifiers: modifiers, count: count, wait: inputWait)
-                let (kind, view): (String, NSView) = switch target {
-                case .webView(let webView): ("web_view", webView)
-                case .view(let view): ("view", view)
+                    // A person's click elsewhere dismisses an open menu; so does this
+                    // one, once its arguments are known to be good.
+                    await AutomationMenuTracker.shared.closeAll()
+                    if await glidePointer(to: point, in: window) {
+                        target = try retarget(target, at: point, in: window, button: button, modifiers: modifiers,
+                                              byWindowPoint: !arguments.has("context"))
+                    }
+                    let completed = await AutomationInput.click(target, at: point, in: window, button: button,
+                                                                modifiers: modifiers, count: count, wait: inputWait)
+                    let (kind, view): (String, NSView) = switch target {
+                    case .webView(let webView): ("web_view", webView)
+                    case .view(let view): ("view", view)
+                    }
+                    return [
+                        "window_id": .int(windowIDs.id(for: controller)),
+                        "target": .string(kind),
+                        "view": .string(String(describing: type(of: view))),
+                        "point": contentPoint(point, in: window),
+                        "completed": .bool(completed),
+                        "menu_open": .bool(AutomationMenuTracker.shared.topMenu != nil),
+                    ]
                 }
-                return [
-                    "window_id": .int(windowIDs.id(for: controller)),
-                    "target": .string(kind),
-                    "view": .string(String(describing: type(of: view))),
-                    "point": contentPoint(point, in: window),
-                    "completed": .bool(completed),
-                    "menu_open": .bool(AutomationMenuTracker.shared.topMenu != nil),
-                ]
             })
+    }
+
+    // MARK: The agent pointer (TASK-228.11)
+
+    /// Runs an input tool's call after the input calls that came before it
+    /// have delivered their events, while the agent pointer is on: a click
+    /// then waits for its glide, and another client's call arriving
+    /// meanwhile must not overtake it. Off, calls run as they always did
+    /// (an uncontended call never waits either way).
+    func inArrivalOrder<T>(_ body: () async throws -> T) async throws -> T {
+        guard environment.showsAgentPointer() else { return try await body() }
+        return try await inputOrder.run(body)
+    }
+
+    /// Glides the agent pointer to `point` in `window` before a click there,
+    /// when it is on and can be seen there. True when it was shown, and the
+    /// click's target needs checking again (`retarget`): the glide is a wait
+    /// between the checks and the delivery. With the pointer off this returns
+    /// at once with nothing awaited, so the click gains no delay.
+    func glidePointer(to point: NSPoint, in window: NSWindow) async -> Bool {
+        guard environment.showsAgentPointer(), agentPointer.canShow(in: window) else { return false }
+        await agentPointer.glide(to: point, in: window, slow: stagingInUse)
+        return true
+    }
+
+    /// A click's target checked again after the pointer's glide, as it was
+    /// before it: the window still open and reachable (the Private setting
+    /// can change meanwhile), a page still in it, and for a window point what
+    /// is under the point now, with the gate on Settings' Automation section.
+    func retarget(_ target: AutomationInput.Target, at point: NSPoint, in window: NSWindow,
+                  button: AutomationInput.Button, modifiers: NSEvent.ModifierFlags,
+                  byWindowPoint: Bool) throws -> AutomationInput.Target {
+        guard window.isVisible else { throw AutomationToolError(.notDisplayed, "The window closed") }
+        let access = AutomationWindows.access(of: window)
+        guard access.allows(privateAllowed) else { throw access.refusal("The window") }
+        if !byWindowPoint {
+            guard case .webView(let webView) = target, webView.window === window else {
+                throw AutomationToolError(.notDisplayed, "The page left the window; select it first")
+            }
+            return target
+        } else {
+            guard let hit = AutomationInput.target(at: point, in: window, button: button, modifiers: modifiers) else {
+                throw AutomationToolError(.invalidArguments, "Nothing is under that point")
+            }
+            if case .view(let view) = hit { try refuseAutomationSettings(view) }
+            return hit
+        }
+    }
+
+    /// Outlines what keys are about to go to, while the agent pointer is on:
+    /// a control (a field editor's field), or the page's focused element (the
+    /// web view when it has none). Never waits: a page's answer comes in
+    /// while the keys are typed.
+    func highlightKeyTarget(_ responder: NSResponder, in window: NSWindow) {
+        guard environment.showsAgentPointer(), agentPointer.canShow(in: window) else { return }
+        let pointer = agentPointer
+        if let webView = responder as? WKWebView {
+            Task { [self] in
+                let rect = await AutomationInput.focusedElementRect(in: webView)
+                    ?? webView.convert(webView.visibleRect, to: nil)
+                // The setting can turn off while the page answers.
+                guard environment.showsAgentPointer() else { return }
+                pointer.highlight(rect, in: window)
+            }
+            return
+        }
+        guard let view = AutomationWindows.view(for: responder), view.window === window else { return }
+        pointer.highlight(view.convert(view.visibleRect, to: nil), in: window)
     }
 
     // MARK: hit_test
@@ -277,31 +351,38 @@ extension AutomationTools {
             ]),
             annotations: ["readOnlyHint": false, "destructiveHint": true],
             handler: { [self] arguments in
-                let text = try arguments.requiredString("text")
-                let interval = try arguments.int("interval_ms") ?? 0
-                guard (0...5000).contains(interval) else {
-                    throw AutomationToolError(.invalidArguments, "interval_ms is 0 to 5000")
+                try await inArrivalOrder {
+                    let text = try arguments.requiredString("text")
+                    let interval = try arguments.int("interval_ms") ?? 0
+                    guard (0...5000).contains(interval) else {
+                        throw AutomationToolError(.invalidArguments, "interval_ms is 0 to 5000")
+                    }
+                    let selector = try arguments.string("selector")
+                    guard selector == nil || arguments.has("context") else {
+                        throw AutomationToolError(.invalidArguments, "selector needs context")
+                    }
+                    // Every argument is checked before anything is clicked or closed.
+                    let (controller, window, responder) = try keyTarget(arguments)
+                    await AutomationMenuTracker.shared.closeAll()
+                    if let selector, let webView = responder as? WKWebView {
+                        let point = try await AutomationInput.elementPoint(selector, in: webView)
+                        if await glidePointer(to: point, in: window) {
+                            _ = try retarget(.webView(webView), at: point, in: window, button: .left, modifiers: [],
+                                             byWindowPoint: false)
+                        }
+                        _ = await AutomationInput.click(.webView(webView), at: point, in: window, button: .left,
+                                                        modifiers: [], count: 1, wait: inputWait)
+                    }
+                    highlightKeyTarget(responder, in: window)
+                    let completed = await AutomationInput.type(text, into: responder, in: window,
+                                                               interval: .milliseconds(interval), wait: inputWait)
+                    return [
+                        "window_id": .int(windowIDs.id(for: controller)),
+                        "typed": .int(text.count),
+                        "target": .string(String(describing: type(of: responder))),
+                        "completed": .bool(completed),
+                    ]
                 }
-                let selector = try arguments.string("selector")
-                guard selector == nil || arguments.has("context") else {
-                    throw AutomationToolError(.invalidArguments, "selector needs context")
-                }
-                // Every argument is checked before anything is clicked or closed.
-                let (controller, window, responder) = try keyTarget(arguments)
-                await AutomationMenuTracker.shared.closeAll()
-                if let selector, let webView = responder as? WKWebView {
-                    let point = try await AutomationInput.elementPoint(selector, in: webView)
-                    _ = await AutomationInput.click(.webView(webView), at: point, in: window, button: .left,
-                                                    modifiers: [], count: 1, wait: inputWait)
-                }
-                let completed = await AutomationInput.type(text, into: responder, in: window,
-                                                           interval: .milliseconds(interval), wait: inputWait)
-                return [
-                    "window_id": .int(windowIDs.id(for: controller)),
-                    "typed": .int(text.count),
-                    "target": .string(String(describing: type(of: responder))),
-                    "completed": .bool(completed),
-                ]
             })
     }
 
@@ -328,30 +409,33 @@ extension AutomationTools {
             ]),
             annotations: ["readOnlyHint": false, "destructiveHint": true],
             handler: { [self] arguments in
-                let (characters, modifiers) = try AutomationMenus.parseKeyEquivalent(try arguments.requiredString("key"))
-                let (controller, window, responder) = try keyTarget(arguments)
-                guard let (down, up) = AutomationInput.keyEvents(for: characters.first ?? " ", modifiers: modifiers,
-                                                                 in: window) else {
-                    throw AutomationToolError(.internalError, "Could not make the key event")
-                }
-                await AutomationMenuTracker.shared.closeAll()
-                var handled = true
-                let completed: Bool
-                if down.modifierFlags.contains(.command) {
-                    let view = (responder as? NSView) ?? window.contentView
-                    completed = await AutomationInput.runFromRunLoop(wait: inputWait) {
-                        AutomationInput.announce(down, in: window)
-                        handled = view?.performKeyEquivalent(with: down) ?? false
+                try await inArrivalOrder {
+                    let (characters, modifiers) = try AutomationMenus.parseKeyEquivalent(try arguments.requiredString("key"))
+                    let (controller, window, responder) = try keyTarget(arguments)
+                    guard let (down, up) = AutomationInput.keyEvents(for: characters.first ?? " ", modifiers: modifiers,
+                                                                     in: window) else {
+                        throw AutomationToolError(.internalError, "Could not make the key event")
                     }
-                } else {
-                    completed = await AutomationInput.press(down, up, to: responder, in: window, wait: inputWait)
+                    await AutomationMenuTracker.shared.closeAll()
+                    highlightKeyTarget(responder, in: window)
+                    var handled = true
+                    let completed: Bool
+                    if down.modifierFlags.contains(.command) {
+                        let view = (responder as? NSView) ?? window.contentView
+                        completed = await AutomationInput.runFromRunLoop(wait: inputWait) {
+                            AutomationInput.announce(down, in: window)
+                            handled = view?.performKeyEquivalent(with: down) ?? false
+                        }
+                    } else {
+                        completed = await AutomationInput.press(down, up, to: responder, in: window, wait: inputWait)
+                    }
+                    return [
+                        "window_id": .int(windowIDs.id(for: controller)),
+                        "target": .string(String(describing: type(of: responder))),
+                        "handled": .bool(handled),
+                        "completed": .bool(completed),
+                    ]
                 }
-                return [
-                    "window_id": .int(windowIDs.id(for: controller)),
-                    "target": .string(String(describing: type(of: responder))),
-                    "handled": .bool(handled),
-                    "completed": .bool(completed),
-                ]
             })
     }
 

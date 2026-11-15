@@ -197,6 +197,7 @@ extension AutomationTools {
             "space_toss_hop": (defaults.object(forKey: spaceTossHopKey) as? Double).map(JSONValue.double) ?? .null,
             "space_toss_gravity": (defaults.object(forKey: spaceTossGravityKey) as? Double).map(JSONValue.double) ?? .null,
             "automation_indicator": .bool(!AutomationIndicator.isHiddenForCapture),
+            "agent_pointer": AutomationAgentPointerSetting.debugOverride.map(JSONValue.bool) ?? .null,
         ]
     }
 
@@ -208,10 +209,13 @@ extension AutomationTools {
                 + "off, for this process, without touching the protected system setting), space_toss_hop and "
                 + "space_toss_gravity (points and points/s², the space editor's toss, kept in the data "
                 + "directory's defaults), automation_indicator (off hides the connected-agent capsule in every "
-                + "window while a capture records, for this process; test runs only). value default clears the override. "
+                + "window while a capture records, for this process; test runs only), agent_pointer (on or off: "
+                + "the pointer that shows where the endpoint clicks and types, for this process whatever the "
+                + "setting says; test runs only). value default clears the override. "
                 + "Returns every override.",
             inputSchema: MCPSchema.input([
-                ("name", .enumeration(["reduce_motion", "space_toss_hop", "space_toss_gravity", "automation_indicator"],
+                ("name", .enumeration(["reduce_motion", "space_toss_hop", "space_toss_gravity", "automation_indicator",
+                                       "agent_pointer"],
                                       "The override")),
                 ("value", .string("on, off or a number; default clears it")),
             ], required: ["name", "value"]),
@@ -248,6 +252,17 @@ extension AutomationTools {
                     }
                     NotificationCenter.default.post(name: AutomationController.didChangeNotification,
                                                     object: AutomationController.shared)
+                case "agent_pointer":
+                    // On the user's endpoint the pointer is the user's
+                    // setting: no client hides where it acts (TASK-228.11).
+                    try requireStagingTestRun("set_debug_override agent_pointer")
+                    switch value {
+                    case "on", "true": AutomationAgentPointerSetting.debugOverride = true
+                    case "off", "false": AutomationAgentPointerSetting.debugOverride = false
+                    case "default": AutomationAgentPointerSetting.debugOverride = nil
+                    default: throw AutomationToolError(.invalidArguments, "agent_pointer is on, off or default")
+                    }
+                    if !environment.showsAgentPointer() { agentPointer.hideAll() }
                 case "space_toss_hop", "space_toss_gravity":
                     let key = name == "space_toss_hop" ? Self.spaceTossHopKey : Self.spaceTossGravityKey
                     if clear {

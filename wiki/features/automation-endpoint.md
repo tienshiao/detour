@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Automation endpoint (MCP)
-description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2, TASK-228.3, TASK-228.5, TASK-228.7, TASK-228.8): how it is turned on, who may connect (Host, Origin, a test run's shared token, per-client tokens the user approves in Detour's own prompt, and the rejected alternatives), the Private-window opt-in, the HTTP and MCP layers, the tools and their stable error codes, the window kinds a window_id names (browser, Quick Detour, quarantine, Settings) and who reaches which, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the per-extension compatibility report (static scan of chrome.* references checked in the live worker and a probe page, the stub registry and its call counts, API-naming runtime errors, unsupported manifest keys and permissions, worker failures) and the stable output for diffing against a baseline, capture staging (a demo world seeded from a fixture file and its format, displays and exact window placement read back from the window server, paced typing, Debug UI on demand, the test-run guard on Arc's folder, who takes the focus), the connected-agent indicator and disconnecting (revoking an approved client), the bundled stdio helper and where it keeps each client's token, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, a shared item retitled per window, a table's hit test that follows the current event, AppKit controls that track a click only through the window's routing, a switch's pill, renumbered posted events, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host, a window's open animation, focus during captures)."
+description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2, TASK-228.3, TASK-228.5, TASK-228.7, TASK-228.8): how it is turned on, who may connect (Host, Origin, a test run's shared token, per-client tokens the user approves in Detour's own prompt, and the rejected alternatives), the Private-window opt-in, the HTTP and MCP layers, the tools and their stable error codes, the window kinds a window_id names (browser, Quick Detour, quarantine, Settings) and who reaches which, how clicks, keys and menus are delivered inside the app without activating it, the agent pointer that shows where they land (TASK-228.11: a click-through child overlay window, its glide and arrival order, its setting and Debug override), screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the per-extension compatibility report (static scan of chrome.* references checked in the live worker and a probe page, the stub registry and its call counts, API-naming runtime errors, unsupported manifest keys and permissions, worker failures) and the stable output for diffing against a baseline, capture staging (a demo world seeded from a fixture file and its format, displays and exact window placement read back from the window server, paced typing, Debug UI on demand, the test-run guard on Arc's folder, who takes the focus), the connected-agent indicator and disconnecting (revoking an approved client), the bundled stdio helper and where it keeps each client's token, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, a shared item retitled per window, a table's hit test that follows the current event, AppKit controls that track a click only through the window's routing, a switch's pill, renumbered posted events, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host, a window's open animation, focus during captures)."
 tags: [automation, mcp, testing, security]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T08:10:00Z }
@@ -84,6 +84,12 @@ sources:
   - id: task-228-8
     resource: backlog:TASK-228.8
     title: "Automation: a click from the endpoint toggles a switch and opens a pop-up in Settings"
+  - id: task-228-11
+    resource: backlog:TASK-228.11
+    title: "Automation: a visible agent pointer shows where the endpoint clicks and types"
+  - id: agent-pointer
+    resource: ../../Detour/Automation/AutomationAgentPointer.swift
+    title: AutomationAgentPointer.swift (the setting, the overlay window, the glide, the arrival order)
   - id: webkit-manifest
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
     title: "WebKit, WebExtension.cpp (the manifest keys it reads, supportedPermissions)"
@@ -371,7 +377,7 @@ tool's schema to hold it.
 | `list_menu` | The open menu's items (index, title, enabled, checked, submenu, identifier); waits `timeout_ms` for one to open; `path` for a submenu | A page's context menu shows WebKit's `WKMenuItemIdentifier…` identifiers. |
 | `choose_menu_item` | Chooses an item by title, index or identifier, then closes the menu | WebKit's own items run for real (Download Linked File downloaded at runtime). |
 | `close_menu` | Closes the open menu without choosing | |
-| `screenshot` | A PNG of a window's content (any kind, Settings on any endpoint), a browser window's sidebar (`part`; another kind is `unsupported_window`) or a tab's page (`context`), as image content and/or written to `save_to` (an existing file only with `overwrite`); `scale` 1 or 2, never above the display's | `source` app (default): drawn inside Detour, no grant, works in the background, no shadow, but no glass (see Traps). `source` screen: the window server's picture through ScreenCaptureKit, exact; needs Screen Recording (checked with `CGPreflightScreenCaptureAccess`, never prompted), else `permission_denied`. |
+| `screenshot` | A PNG of a window's content (any kind, Settings on any endpoint), a browser window's sidebar (`part`; another kind is `unsupported_window`) or a tab's page (`context`), as image content and/or written to `save_to` (an existing file only with `overwrite`); `scale` 1 or 2, never above the display's | `source` app (default): drawn inside Detour, no grant, works in the background, no shadow, but no glass (see Traps). `source` screen: the window server's picture through ScreenCaptureKit, exact; needs Screen Recording (checked with `CGPreflightScreenCaptureAccess`, never prompted), else `permission_denied`. Neither shows the agent pointer, which is a window of its own (see "The agent pointer"). |
 | `set_appearance` | Light, dark, or following the system, for all of Detour (`NSApp.appearance`) | Until quit or the next call. |
 | `evaluate_js` | Runs `expression` or `script` (a function body with `return`) in a tab's main frame, `world` page (default) or isolated (`WKContentWorld` "DetourAutomation": the DOM, not the page's globals); awaits promises | Result as JSON with its `type`; what JSON cannot hold is converted in the page (nodes `<div#id.class>`, cycles `[Circular]`, functions, undefined null). A throw is `script_error` with `error.details` {name, message, stack}; a syntax error too (from WebKit's exception). `timeout_ms` (default 10 s) gives `timeout`; the script runs on. Results over 1 MB are cut (`truncated`). |
 | `read_page` | url, title, ready_state, viewport, and by `mode`: `text` (default, `innerText`), `html` (`outerHTML`), `elements`, `summary` | `selector` narrows; `max_length` cuts text and html, `max_elements` the list, with `truncated`. Elements: tag, role (explicit or implicit), name (aria-labelledby, aria-label, label, text, alt, title, placeholder), a selector unique in the document (`#id`, then `tag[data-testid|name|aria-label=…]`, then an `nth-of-type` path), rect in CSS pixels, visible (`checkVisibility`), in_viewport, disabled. Runs in the isolated world. The argument is `mode`, not `format`, a JSON Schema keyword the flatness test refuses. |
@@ -379,7 +385,7 @@ tool's schema to hold it.
 | `network_requests` | A tab's navigation and resource loads (Resource Timing) and its fetch and XHR calls, after `after_seq`, by `sources`, `failed_only` | See "Page capture" for the limits. |
 | `wait_for` | Polls every 100 ms until `load` (not loading and readyState complete), `selector` (with `visible`), `expression` truthy (a throw counts as false; the last one is in the timeout's message) or `url` (a plain substring) | `timeout` after `timeout_ms` (default 10 s). Exactly one condition. |
 | `wake_tab` | Loads a sleeping tab's page (`BrowserTab.wake()`) without selecting it | `woken` false when it was awake. |
-| `set_debug_override` | Debug builds only: `reduce_motion` (this process, via `MotionPreference`), `space_toss_hop` and `space_toss_gravity` (the data directory's defaults keys `SpaceCelebration` already read in Debug), `automation_indicator` (off hides the connected-agent capsule for a capture, TASK-228.3; test runs only, `gate_closed` on the user's own endpoint); `default` clears | Absent from Release (checked on a Release build: its tool list and its binary's strings). |
+| `set_debug_override` | Debug builds only: `reduce_motion` (this process, via `MotionPreference`), `space_toss_hop` and `space_toss_gravity` (the data directory's defaults keys `SpaceCelebration` already read in Debug), `automation_indicator` (off hides the connected-agent capsule for a capture, TASK-228.3; test runs only, `gate_closed` on the user's own endpoint), `agent_pointer` (on or off whatever the setting says, TASK-228.11; test runs only, as the indicator's); `default` clears | Absent from Release (checked on a Release build: its tool list and its binary's strings). |
 | `list_extensions` | Installed extensions sorted by id (or one, by id or name): version, source, global switch, `loaded`/`load_failed`, per normal profile `turned_on`, `loaded`, `worker_parked`, `open_contexts`, `context_errors`; the manifest's permission lists, the saved decisions, WebKit's manifest warnings and every load error recorded this session | Reads whenever the endpoint is on. Load errors come from `ExtensionErrorLog` (see "Extension contexts"). `stable: true` is the diffable form (see "Diffing against a baseline"). |
 | `install_extension` | Test runs only. An unpacked folder or a `.crx`, turned on in `profile_id` (default: the only normal profile); waits for it to load | No prompt. A CRX goes through `CRXInstallGate` with a file URL (its developer signature), may replace an installed id, and never updates. A keyless folder installed again keeps its id. `install_failed` for no or a bad manifest or a refused CRX. |
 | `uninstall_extension` | Test runs only. Settings' Uninstall, every profile, no prompt | Closes the endpoint's popups of it first. |
@@ -533,6 +539,92 @@ reaches each kind of target:
   every menu in the app; the newest one open is what `list_menu` shows.
   Choosing calls `performActionForItem(at:)` while the menu is still
   tracking (WebKit's items need their live menu), then `cancelTracking()`.
+
+## The agent pointer
+
+The endpoint's input never moves the person's pointer, so Detour draws
+where it acts (TASK-228.11, `AutomationAgentPointer`).[^task-228-11][^agent-pointer]
+The design was the user's (2026-11-15), after Claude in Chrome's virtual
+cursor:
+
+- **A window of its own, not the page.** A borderless, clear overlay window
+  (`AutomationAgentPointerWindow`) covering the target window's frame, added
+  as its child window (`addChildWindow(_:ordered: .above)`), so it moves
+  with the window and shows while Detour is in the background. It ignores
+  mouse events, can never become key or main, is out of the Windows menu,
+  `transient`, `ignoresCycle` and `fullScreenAuxiliary`. Its
+  `sharingType` is left alone, so a full-screen recording shows it. An
+  in-page cursor was rejected: the endpoint also clicks sidebar rows,
+  menus, switches and Settings, and page scripts, `hit_test` and the page
+  tools would see it.
+- **A click** (`click`, and `type_text`'s `selector` click): after the
+  arguments and gates are checked and open menus closed, the arrow, orange
+  like the connected-agent capsule and tagged "Agent" (the tag moves to the
+  arrow's left near the window's right edge), glides from where it
+  last was in that window (the first time, from 40 points below and right
+  of the point) in 150 ms, ripples, and then the click is delivered as
+  before. Once in a run a client has staged a capture (`seed_world` or
+  `set_window_frame`), the glide takes 600 ms, so a recording can follow it
+  (PROVISIONAL, `AutomationTools.stagingInUse`). With Reduce Motion
+  (`MotionPreference`) it appears at the point, the ripple only fades, and
+  nothing waits. It stays 3 s after the last click or key, then fades and
+  leaves the parent's child windows; the next click glides from the same
+  place.
+- **The checks again after the glide** (`retarget`): the glide is a wait
+  between the checks and the delivery, so the window must still be open and
+  reachable (the Private setting is read again), a page must still be in
+  it, and a window point is hit-tested again, with the gate on Settings'
+  Automation section. A view put over the point meanwhile gets the click;
+  the gate still refuses.
+- **Arrival order** (`AutomationInputOrder`): while the pointer is on,
+  `click`, `type_text` and `press_key` run one at a time in the order the
+  calls came. One client's calls are already in order (a connection is
+  answered one request at a time, a batch in sequence), but another
+  client's keys sent during a click's glide would otherwise be delivered
+  before the click (a test shows exactly that without it). An uncontended
+  call awaits nothing; with the pointer off the tools run as before.
+- **Typing** (`type_text`, `press_key`) outlines what takes the keys: a
+  control (a field editor's field), or a page's focused element
+  (`AutomationInput.focusedElementRect`, in the client content world,
+  through open shadow roots), else the web view. The page's answer comes in
+  while the keys are typed; nothing waits for it.
+- **Not drawn** over a window that hangs off another (an extension popup's
+  popover, a sheet: input by `context` into a popup gets no pointer) or
+  while the window is closed, minimized, off every screen or on another
+  Space: nothing waits for a glide nobody can see. A window covered by
+  another app's windows still gets it. Browser, Quick Detour,
+  quarantine and Settings windows all get it through the same routing.
+- **Lifecycle.** One overlay per window, in a weak-keyed table, holding its
+  window weakly; it hides when the window minimizes or leaves the screen
+  and is closed and forgotten when the window closes
+  (`WindowCloseReleaseTests` closes a window with the pointer and an
+  outline showing). `set_window_frame window_number` never finds it, and
+  `list_windows`, `hit_test` and the Window menu never see it.
+- **Screenshots leave it out.** `source app` draws the target window's
+  content view, which the overlay is not in. `source screen` needed a
+  change: ScreenCaptureKit's picture of one window
+  (`SCContentFilter(desktopIndependentWindow:)`) includes its child
+  windows, so the pointer was in it (seen at runtime). While an overlay is
+  over the window, the window is taken from its display instead, cropped
+  to the window's frame, with every window excluded but the window and its
+  other child windows (so the overlay, other apps' windows covering it and
+  the wallpaper are left out, a popover of the window kept;
+  `AutomationCapture.pointerFreeRegion`). `SCContentFilter(display:including:)`
+  with the window still drew the overlay, as if a window brought its
+  children along. A window across two displays or on another Space keeps
+  the old path, pointer included. Checked at runtime: the screenshot
+  had no pointer while `screencapture -l` of the overlay, taken right
+  after, showed it.
+- **The setting**: Settings > General > Automation, "Show where agents
+  click and type" (`AutomationAgentPointerEnabled` in the data directory's
+  defaults, read at every call; off hides a pointer on screen). On by
+  default for the user. In a test run (`DETOUR_MCP=1` with an isolated data
+  directory) it starts off, so scripts and harnesses that never ask for it
+  keep their speed (PROVISIONAL); a client turns it on with
+  `set_debug_override agent_pointer on` (Debug) or the saved setting. The
+  XCTest host's tools have it off unless a test turns it on
+  (`AutomationEnvironment.showsAgentPointer`). The switch is in the
+  Automation section, which no input tool reaches.
 
 # Page capture
 
@@ -896,6 +988,10 @@ end-to-end playbook, with `docs/harness/task2282-compat-run.py`.
 
 # Capture staging
 
+Once a client has seeded a world or placed a window in a run, the agent
+pointer (off in a test run until turned on) glides in 600 ms instead of
+150, so a recording can follow it (see "The agent pointer").
+
 What TASK-228.3 adds so a release's website media is one script
 (`docs/capture/capture.py`, [capture kit](../../docs/capture/README.md))
 instead of a harness pasted into AppDelegate.[^task-228-3][^staging] The
@@ -1238,6 +1334,11 @@ In a test run, Claude Code can also connect directly:
   the window, the event under `eventKey`) before each mouse-down and
   key-down, and that monitor listens to it too. Control-Tab's switcher,
   sidebar swipes and the hover card do not yet.
+- **`type_text` returns before the page has taken every key.** A test that
+  made a native field first responder right after typing "hi" into a page
+  got "oik" in the native field when it then typed "ok": the page's last
+  key reached the new first responder. Not investigated further; wait for
+  the page's value before moving the focus.
 - **A tab never shown has no size.** A tab opened in the background has a
   web view with a zero frame until a window first hosts it. Its page loads
   and runs scripts, and `read_page` text works, but its viewport is 0 × 0, so
@@ -1343,7 +1444,17 @@ mouse-up left queued, a native context menu chosen from, an `NSSwitch`
 toggled both ways and an `NSPopUpButton` opened, listed and chosen from with
 the window not key, when a press goes through the window, a right click on a
 sidebar row's label and icon opening the row's menu, and the input errors),
-`AutomationCaptureTests` (window, sidebar and page PNGs as image content
+`AutomationAgentPointerTests` (TASK-228.11: off, a click and typing wait
+for nothing and make no overlay; on, the 150 ms glide comes before the
+click, the overlay is a click-through child that is never key or main and
+no listed window, the app's key and main windows unchanged; the staging
+glide and Reduce Motion; `hit_test`, the first responder and a click
+through the pointer unchanged; keys sent during a click's glide arrive after
+it; a view put over the point during the glide gets the click and the
+Automation-section gate still refuses; the outline on a page field and on
+a native field; a window screenshot without the arrow the overlay draws;
+minimize and close; the setting's defaults, the Debug override in test runs
+only, and the Settings switch), `AutomationCaptureTests` (window, sidebar and page PNGs as image content
 and on disk, scale 2, the page's own colours from WebKit's snapshot, light
 and dark, the Debug overrides and that they exist only in Debug, and the
 errors), `AutomationPageTests` (TASK-228.4: evaluate_js in both worlds, awaited
@@ -1454,3 +1565,5 @@ its contexts following the setting).[^tests][^approval-tests]
 [^approval-tests]: AutomationClientApprovalTests and AutomationPrivateAccessTests
 [^task-228-7]: Automation: run_menu_item and right clicks match what the user sees (live titles, row labels), and Quick Detour windows and Settings can be addressed
 [^task-228-8]: Automation: a click from the endpoint toggles a switch and opens a pop-up in Settings
+[^task-228-11]: Automation: a visible agent pointer shows where the endpoint clicks and types
+[^agent-pointer]: AutomationAgentPointer.swift (the setting, the overlay window, the glide, the arrival order)

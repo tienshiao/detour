@@ -35,13 +35,36 @@ enum AutomationCapture {
         guard let scWindow = content.windows.first(where: { $0.windowID == windowID }) else {
             throw AutomationToolError(.notDisplayed, "The window server does not list the window")
         }
-        let filter = SCContentFilter(desktopIndependentWindow: scWindow)
         let configuration = SCStreamConfiguration()
-        let scale = CGFloat(filter.pointPixelScale)
-        configuration.width = Int(filter.contentRect.width * scale)
-        configuration.height = Int(filter.contentRect.height * scale)
         configuration.showsCursor = false
-        configuration.ignoreShadowsSingleWindow = true
+        let filter: SCContentFilter
+        let scale: CGFloat
+        if let region = pointerFreeRegion(of: window, in: content) {
+            // The agent pointer's overlay (TASK-228.11) is a child window, and
+            // a desktop-independent window's picture includes its child
+            // windows (seen at runtime). The display, cropped to the window,
+            // with every window excluded but this one and its other child
+            // windows, leaves the overlay out and keeps everything else the
+            // window's own picture would show. Not `including:` the kept
+            // windows: that drew the overlay too (seen at runtime), as if a
+            // window brought its children along.
+            let kept = Set([windowID] + (window.childWindows ?? [])
+                .filter { !($0 is AutomationAgentPointerWindow) }.map { CGWindowID($0.windowNumber) })
+            filter = SCContentFilter(display: region.display,
+                                     excludingWindows: content.windows.filter { !kept.contains($0.windowID) })
+            scale = CGFloat(filter.pointPixelScale)
+            configuration.sourceRect = region.rect
+            configuration.width = Int(region.rect.width * scale)
+            configuration.height = Int(region.rect.height * scale)
+            configuration.ignoreShadowsDisplay = true
+            configuration.backgroundColor = .clear
+        } else {
+            filter = SCContentFilter(desktopIndependentWindow: scWindow)
+            scale = CGFloat(filter.pointPixelScale)
+            configuration.width = Int(filter.contentRect.width * scale)
+            configuration.height = Int(filter.contentRect.height * scale)
+            configuration.ignoreShadowsSingleWindow = true
+        }
         let image: CGImage
         do {
             image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
@@ -51,6 +74,25 @@ enum AutomationCapture {
         let rep = NSBitmapImageRep(cgImage: image)
         rep.size = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
         return rep
+    }
+
+    /// Where to crop a display to `window`, when the agent pointer's overlay
+    /// is over it and the window lies on one display on the active Space; nil
+    /// otherwise (the window's own picture then has no overlay to leave out,
+    /// or the overlay shows in it, for a window across displays or on another
+    /// Space, which a display picture would not have at all).
+    private static func pointerFreeRegion(of window: NSWindow,
+                                          in content: SCShareableContent) -> (display: SCDisplay, rect: CGRect)? {
+        guard window.childWindows?.contains(where: { $0 is AutomationAgentPointerWindow && $0.isVisible }) == true,
+              window.isOnActiveSpace,
+              let screen = window.screen,
+              let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+              let display = content.displays.first(where: { $0.displayID == number.uint32Value }),
+              screen.frame.contains(window.frame) else { return nil }
+        // The display's points, top-left origin.
+        let frame = window.frame
+        return (display, CGRect(x: frame.minX - screen.frame.minX, y: screen.frame.maxY - frame.maxY,
+                                width: frame.width, height: frame.height))
     }
 
     /// The window's content: AppKit's drawing of the content view, with a

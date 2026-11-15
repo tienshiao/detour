@@ -16,6 +16,7 @@ nonisolated final class SettingsSwitchRowTests: XCTestCase {
         ("peekEnabled", "Open links from pinned tabs and favorites in a Peek"),
         ("automationEnabled", "Let AI agents and scripts control Detour (MCP)"),
         ("automationAllowPrivate", "Allow agents to use Private windows"),
+        ("automationAgentPointer", "Show where agents click and type"),
     ]
     @MainActor private static let quickDetourSwitches = [
         ("quickDetourHotKeyEnabled", "Open \(QuickDetour.displayName) from any app"),

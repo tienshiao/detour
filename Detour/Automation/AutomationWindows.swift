@@ -161,13 +161,19 @@ enum AutomationWindows {
         return quickDetours + settings
     }
 
+    /// The view `responder` stands for: itself, or for a field editor the
+    /// field it edits.
+    static func view(for responder: NSResponder?) -> NSView? {
+        if let editor = responder as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSView {
+            return field
+        }
+        return responder as? NSView
+    }
+
     /// Whether `responder` is in Settings' Automation section: a view inside
     /// it, or the field editor of a field inside it.
     static func isInAutomationSettings(_ responder: NSResponder?) -> Bool {
-        var view: NSView? = responder as? NSView
-        if let editor = responder as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSView {
-            view = field
-        }
+        var view = self.view(for: responder)
         while let current = view {
             if current.identifier == automationSettingsIdentifier { return true }
             view = current.superview

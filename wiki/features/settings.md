@@ -521,7 +521,9 @@ favorites in a Peek" (`PeekSettings`, app-wide, on by default) with the help
 Shift-click still opens a Peek." and the Peek guide
 ([Peek](../tabs/peek.md#when-a-link-opens-in-a-peek)).
 **Automation** (TASK-228): the switches "Let AI agents and scripts control
-Detour (MCP)" and "Allow agents to use Private windows", each with its help,
+Detour (MCP)", "Allow agents to use Private windows" and (TASK-228.11)
+"Show where agents click and type" (the agent pointer, on by default, off
+by default in a test run), each with its help,
 the row "Disconnected agents [Allow Again]" while any are blocked, the
 endpoint's status as the group's footnote, and the copy buttons under the
 group (shown while it listens; Copy Token and Reset Token… in a test run
