@@ -137,7 +137,9 @@ nonisolated final class PaletteCommandsTests: XCTestCase {
         var hasSelectedTab = true
         var selectedTabHasURL = true
         var selectedTabIsPinned = false
+        var choices: [CommandID: [CommandChoice]] = [:]
         init(_ kind: CommandWindowKind) { commandWindowKind = kind }
+        func commandChoices(for id: CommandID) -> [CommandChoice] { choices[id] ?? [] }
     }
 
     @MainActor private func candidateIDs(_ source: PaletteCommandSource) -> Set<String> {
@@ -154,9 +156,29 @@ nonisolated final class PaletteCommandsTests: XCTestCase {
         for source in [browser, quick] {
             XCTAssertTrue(candidateIDs(source).isDisjoint(with: [
                 "tab.new", "location.open", "edit.undo", "edit.copy", "app.quit", "window.minimize",
-                "space.switch", "extension.show-popup", "space.jump-1", "space.jump-9",
+                "space.jump-1", "space.jump-9", "extension.inspect-offscreen", "extension.reload-unpacked",
             ]))
         }
+        // Parameterised commands (TASK-320 AC #3): candidates where their
+        // window answers them; offered only with a choice (below).
+        XCTAssertTrue(candidateIDs(browser).isSuperset(of: ["space.switch", "tab.move-to-space", "tab.split-with",
+                                                            "extension.show-popup", "extension.options"]))
+        XCTAssertTrue(candidateIDs(quick).isDisjoint(with: ["space.switch", "tab.move-to-space", "tab.split-with"]))
+        XCTAssertEqual(browser.candidates.first { $0.id == "extension.show-popup" }?.title, "Show Extension Popup")
+    }
+
+    @MainActor func testAParameterisedCommandIsOfferedOnlyWithAChoice() {
+        let window = FakeWindow(.normal)
+        let source = PaletteCommands.source(for: window, menu: { nil })
+        XCTAssertNil(source.resolve("space.switch"), "no other space: nothing to switch to")
+        let reading = CommandChoice(argument: .space(UUID()), title: "Reading", icon: .emoji("📚"))
+        window.choices["space.switch"] = [reading]
+        XCTAssertEqual(source.resolve("space.switch"),
+                       PaletteCommand(id: "space.switch", title: "Switch to Space", symbol: "square.stack.3d.up",
+                                      keyEquivalent: nil, parameter: .space))
+        XCTAssertEqual(source.choices("space.switch"), [reading], "the window's choices, for the chip")
+        window.commandWindowKind = .private
+        XCTAssertNil(source.resolve("space.switch"), "its rule first: not in a Private window, choices or not")
     }
 
     @MainActor func testTheSourceResolvesACommandByItsRuleTitleAndShortcut() throws {

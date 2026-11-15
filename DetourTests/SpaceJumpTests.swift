@@ -70,7 +70,7 @@ nonisolated final class SpaceJumpTests: XCTestCase {
         }
         let spaces = BrowserCommands.menus.first { $0.title == "Spaces" }?.commands.map(\.id.rawValue) ?? []
         XCTAssertEqual(spaces, ["space.next", "space.previous"] + (1...9).map { "space.jump-\($0)" }
-                       + ["space.switch", "space.manage"])
+                       + ["space.switch", "tab.move-to-space", "space.manage"])
     }
 
     @MainActor func testAvailableInANormalWindowOnly() {
