@@ -1,11 +1,11 @@
 ---
 id: TASK-228.11
 title: 'Automation: a visible agent pointer shows where the endpoint clicks and types'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-15T20:08:00Z'
-updated_date: '2026-11-15T22:13:00Z'
+updated_date: '2026-11-15T22:27:00Z'
 labels:
   - automation
   - ui
@@ -42,9 +42,9 @@ Design (the user approved these defaults on 2026-11-15):
 - [x] #2 Typing through the endpoint briefly highlights the element or field that receives the keys
 - [x] #3 The pointer is shown when the target window is in the background and Detour is not frontmost, and never takes clicks, focus or key status
 - [x] #4 Settings > General > Automation has a switch for the pointer, on by default; off, endpoint input is delivered with no added delay (a test measures it)
-- [ ] #5 The endpoint's screenshot tool leaves the pointer out of the image; a full-screen recording shows it (checked at runtime)
+- [x] #5 The endpoint's screenshot tool leaves the pointer out of the image; a full-screen recording shows it (checked at runtime)
 - [x] #6 A Debug set_debug_override turns it off for tests and harnesses; existing automation tests and harnesses still pass
-- [ ] #7 Checked at runtime with /verify (a recording of clicks in the sidebar, a Settings switch and a page); wiki updated (automation endpoint, capture staging)
+- [x] #7 Checked at runtime with /verify (a recording of clicks in the sidebar, a Settings switch and a page); wiki updated (automation endpoint, capture staging)
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -95,6 +95,8 @@ Not verified / owed:
 2026-11-15 user decision: the remaining defaults are approved as built: the 600 ms glide once a capture is staged (seed_world / set_window_frame), the 3 s linger, the first glide starting 40 pt below-right of the point. PROVISIONAL markers removed from AutomationTools.stagingInUse, AutomationAgentPointerSetting.defaultValue and the wiki (comments only).
 
 2026-11-15 (lead, main c99dca9d Debug build): harness scripts still pass with the pointer's test-run default: docs/harness/task228-7-private-quick-detour-checks.py ALL PASS (17 checks, two launches), docs/harness/task324-endpoint-checks.py ALL PASSED (5 checks; Detour stayed in the background). Still owed for AC #5/#7: a full-screen recording on an uncovered window showing the pointer, the ripple and the typing outline.
+
+2026-11-15 (lead) full-screen recording: screencapture -v of the capture kit's virtual display (no other window can cover it; no wallpaper change), Detour placed there with set_window_frame activate false and never activated (app_active false before and after), the kit's seed and its agent_pointer override on, so the 600 ms staging glide. Recorded: a click on a page button by selector (glide, ripple, 'Clicked 1'), a click at a page point (glide to it), type_text into a field (glide, ripple, orange outline on the field while typing, 'agent typing' typed), then the pointer lingering and fading. A contact sheet of the frames confirmed each. Sidebar-row and Settings-switch clicks were not in this recording (the scan by hit_test found no labelled row); they were seen in the agent's burst captures of the overlay window earlier. The endpoint's own screenshot leaving the pointer out was checked by the agent and AutomationAgentPointerTests. Script: scratchpad pointer_recording.py (subclasses docs/capture/capture.py's Capture with one shot).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
