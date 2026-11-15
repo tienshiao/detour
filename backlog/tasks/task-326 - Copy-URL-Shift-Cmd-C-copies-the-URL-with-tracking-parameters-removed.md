@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T09:35:00Z'
-updated_date: '2026-11-15T07:37:00Z'
+updated_date: '2026-11-15T07:54:00Z'
 labels:
   - feature
   - links
@@ -43,6 +43,8 @@ Only the copied string changes: the page's loaded URL, history and session recor
 3. Strip at every clipboard writer of a page/tab URL: BrowserWindowController.copyURL (menu Shift-Cmd-C, faux address bar button, dev toolbar link button), QuickDetourWindowController.copyCurrentURL (menu + title-bar Copy Link), TabSidebarViewController.contextMenuCopyURL (with an injectable pasteboard). Not QuickDetour.sidebarCopyURL: that is the address an Opt-Cmd-click loads, not a clipboard copy.
 4. Tests: move the strip tests to TrackingParametersTests + AC #7 cases; entry-point tests with private pasteboards asserting the tab's url keeps its parameters.
 5. Wiki (quarantine page, new/updated section), /verify via automation endpoint, code review, commit.
+
+(2026-11-14 user decision) BrowserWindowController.copyURL(_:asLoaded:) — the dev toolbar's link button passes asLoaded: true (no stripping); every other entry point unchanged. DevToolbarHostingTests flipped (+ Copy URL on the same tab still strips). Wiki copy-url.md table/decision, dev-mode.md toolbar row.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -65,10 +67,12 @@ Runtime check rerun on the final build (dylib built 12:08:58, after the review's
 2026-11-14 follow-up (user's call): Share… in the sidebar tab menu now shares the clean link too (TrackingParameters.removing; the picker comes from TabSidebarViewController.makeSharingPicker, which a test replaces). CopyURLTests 8/8 passed (new: testTheSidebarsShareSharesTheLinkWithoutTrackingParameters). Code review (low): no findings. Runtime: docs/harness/task326-copy-url-checks.py on a fresh main build, ALL PASS, sidebar menu still lists Share… (the system share sheet itself was not opened).
 
 2026-11-14 user decision: the dev toolbar's link button copies the address as loaded (no stripping), so developers testing utm_ handling get the exact address; every other copy entry point keeps stripping. Implementation follows.
+
+2026-11-14 implemented the user's decision: BrowserWindowController.copyURL(_:asLoaded:) with asLoaded: true from the dev toolbar's link button only (the address as loaded, tracking parameters included); Shift-Cmd-C, the faux address bar, Quick Detour, the sidebar menu and Share… keep stripping. Tests: DevToolbarHostingTests 13 + CopyURLTests 11 = 24, 0 failures (testTheCopyButtonLeavesOutTrackingParameters became testTheCopyButtonKeepsTrackingParametersWhileCopyURLStripsThem: the button copies as loaded, copyCurrentURL on the same tab still strips). Runtime (docs/harness/task326-dev-toolbar-copy-checks.py, Debug build dylib 23:53, isolated data dir removed): a click on the dev toolbar's Copy URL button (found with hit_test, screenshot checked) put http://127.0.0.1:<port>/app.html?tab=1&utm_source=news&gclid=x on the real clipboard; Shift-Cmd-C in the same window put …?tab=1; the tab kept its address. Code review (medium --fix): 6 findings, all wiki/doc except one: fixed wiki log line, generated.at on copy-url/dev-mode, stale copyURL(_:) names, dev-mode Copy row wording; kept the Bool parameter (a separate copyLoadedURL would be taste, one caller).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Copy URL now copies the clean link. The tracking-parameter rule that Quarantine already had moved to a shared pure enum, TrackingParameters (one list; _ga added; a query with stray empty pieces no longer leaves a '?' or '&'), and every Detour copy of a page's or tab's address goes through it: Shift-Cmd-C in browser and Quick Detour windows, the faux address bar, dev toolbar and Quick Detour title-bar link buttons, and the sidebar tab menu's Copy URL / Copy Link (now through an injectable pasteboard). A page's own Copy Link, Share… and the Opt-Cmd-click Quick Detour copy (a load, not a clipboard write) are untouched. The loaded URL, history and session keep the original. AC #6's scope is a PROVISIONAL decision by Claude (not confirmed by the user), recorded in the notes with its alternative. Tests: 106 across 7 suites, 0 failures; runtime check through the automation endpoint passed (menu, key equivalent, address bar button, sidebar menu; history and session unchanged). Wiki: new features/copy-url.md; quarantine and webkit-privacy-protections name the shared rule. Possible follow-up: whether Share… should share the clean link too.
+Copy URL now copies the clean link. The tracking-parameter rule that Quarantine already had moved to a shared pure enum, TrackingParameters (one list; _ga added; a query with stray empty pieces no longer leaves a '?' or '&'), and every Detour copy of a page's or tab's address goes through it: Shift-Cmd-C in browser and Quick Detour windows, the faux address bar and Quick Detour title-bar link buttons, and the sidebar tab menu's Copy URL / Copy Link (now through an injectable pasteboard); Share… shares the clean link too. The dev toolbar's link button copies its pane's address as loaded (the user's decision, 2026-11-14), so a developer testing utm_ handling gets the exact address. A page's own Copy Link and the Opt-Cmd-click Quick Detour copy (a load, not a clipboard write) are untouched. The loaded URL, history and session keep the original. Tests across 7 suites, 0 failures; runtime checks through the automation endpoint passed (menu, key equivalent, address bar button, sidebar menu; the dev toolbar's as-loaded copy beside a clean Shift-Cmd-C; history and session unchanged). Wiki: features/copy-url.md, dev-mode.md.
 <!-- SECTION:FINAL_SUMMARY:END -->

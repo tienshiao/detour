@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Copy URL
-description: "Every copy of a page's or tab's address (Edit > Copy URL / Shift-Cmd-C in a browser or Quick Detour window, the faux address bar's and Quick Detour's Copy Link buttons, the dev toolbar's link button, the sidebar tab menu's Copy URL / Copy Link) puts the address on the clipboard without its tracking parameters, through TrackingParameters: the built-in list quarantine pages also use, plus the downloaded AdGuard URL Tracking filter's site-specific $removeparam rules and exceptions (TASK-329: rule forms supported and skipped, fallback; quarantine navigations use it too, the user's decision); Share… shares the clean link too; the list's switch in Settings > Content Blocking (TASK-337: off, it is neither fetched nor used; the cache is kept); what is left alone (a page's own Copy Link, Opt-Cmd-click copies into Quick Detour) and why; the loaded URL, history and session keep the original (TASK-326)."
+description: "Every copy of a page's or tab's address (Edit > Copy URL / Shift-Cmd-C in a browser or Quick Detour window, the faux address bar's and Quick Detour's Copy Link buttons, the sidebar tab menu's Copy URL / Copy Link) puts the address on the clipboard without its tracking parameters (the dev toolbar's link button copies it as loaded, the user's decision), through TrackingParameters: the built-in list quarantine pages also use, plus the downloaded AdGuard URL Tracking filter's site-specific $removeparam rules and exceptions (TASK-329: rule forms supported and skipped, fallback; quarantine navigations use it too, the user's decision); Share… shares the clean link too; the list's switch in Settings > Content Blocking (TASK-337: off, it is neither fetched nor used; the cache is kept); what is left alone (the dev toolbar's link button, a page's own Copy Link, Opt-Cmd-click copies into Quick Detour) and why; the loaded URL, history and session keep the original (TASK-326)."
 tags: [links, privacy, clipboard, sidebar, window]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T01:40:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T07:52:00Z }
 sources:
   - id: task-326
     resource: backlog:TASK-326
@@ -42,6 +42,9 @@ sources:
   - id: checks-329
     resource: ../../docs/harness/task329-tracking-filter-checks.py
     title: TASK-329 runtime checks (fixture list served locally, Shift-Cmd-C)
+  - id: checks-326-toolbar
+    resource: ../../docs/harness/task326-dev-toolbar-copy-checks.py
+    title: TASK-326 runtime check of the dev toolbar's copy (as loaded) beside Shift-Cmd-C (clean)
   - id: checks-329q
     resource: ../../docs/harness/task329-quarantine-checks.py
     title: TASK-329 AC #4 runtime checks (a routed link opened in Quarantine, the server's request log)
@@ -66,31 +69,33 @@ address as it was loaded.
 
 | Entry point | Code | Strips |
 |---|---|---|
-| Edit > Copy URL (Shift-Cmd-C), browser window | `BrowserWindowController.copyCurrentURL` → `copyURL(_:)` | yes |
+| Edit > Copy URL (Shift-Cmd-C), browser window | `BrowserWindowController.copyCurrentURL` → `copyURL(_:asLoaded:)` | yes |
 | The faux address bar's link button (Copy Link) | `fauxAddressBar.onCopyURL` → `copyCurrentURL` | yes |
-| A dev-mode page's toolbar link button (its own pane) | `copyURL(_:)` | yes |
+| A dev-mode page's toolbar link button (its own pane) | `copyURL(_:asLoaded: true)` | no: the address as loaded (the user's decision, 2026-11-14) |
 | Edit > Copy URL (Shift-Cmd-C), Quick Detour window | `QuickDetourWindowController.copyCurrentURL` | yes |
 | Quick Detour's title-bar Copy Link button | `titleBar.onCopyLink` → `copyCurrentURL` | yes |
 | The sidebar tab menu's Copy URL / Copy Link (a tab, a split row, a pinned entry live or dormant, a pinned split) | `TabSidebarViewController.contextMenuCopyURL` | yes |
 | A page's own context menu, Copy Link on a link | WebKit's item | no |
-| The sidebar tab menu's Share… | `makeSharingPicker([TrackingParameters.removing(from: url)])` | yes (see below) |
+| The sidebar tab menu's Share… | `makeSharingPicker([TrackingParameters.cleanLink(for: url)])` | yes (see below) |
 | Opt-Cmd-click on a sidebar tab or favourite ("a Quick Detour copy") | `QuickDetour.sidebarCopyURL` | no: it picks the address a new Quick Detour *loads*, not a clipboard string |
 
 The three code paths that write the clipboard call
-`TrackingParameters.copyableString(for:)`. Each writes to a pasteboard
+`TrackingParameters.copyableString(for:)` (the browser window's `copyURL`
+skips it when the dev toolbar asks for the address as loaded). Each writes to a pasteboard
 property (`urlPasteboard`, `.general` by default) that tests replace with a
 private one.
 
-**Decision (TASK-326 AC #6, made by Claude while the user was away, not
-confirmed by the user):** every Detour command that copies "this page's" or
-"this tab's" address strips, so the copied link is the same clean one
-whichever button made it. A link copied from inside the page (WebKit's Copy
-Link) is the page's content and stays as the page wrote it. Alternative:
-strip only Shift-Cmd-C (the task's required scope); flipping it back is a
-one-line change per entry point. The dev toolbar is the debatable one: a
-developer testing how their own site handles `utm_*` on localhost gets the
-clean address from its button too (the palette, Cmd+L, still shows the
-full address).[^task-326]
+**Decision (TASK-326 AC #6; confirmed by the user on 2026-11-14 with one
+change):** every Detour command that copies "this page's" or "this tab's"
+address strips, so the copied link is the same clean one whichever button
+made it, **except the dev toolbar's link button**, which copies its pane's
+address as loaded (`copyURL(_:asLoaded: true)`): a developer testing how
+their own site handles `utm_*` on localhost wants the exact address, and
+the toolbar is a developer's tool, not a way to share a link. Shift-Cmd-C
+in the same window still strips. A link copied from inside the page
+(WebKit's Copy Link) is the page's content and stays as the page wrote it.
+The first cut (Claude's while the user was away) stripped the dev toolbar's
+copy too.[^task-326]
 
 Share… in the sidebar tab menu shares the clean link too (the user's call,
 Nov 14 2026, after the first cut had left it alone): it is the other place a
@@ -279,7 +284,7 @@ list again. Three requests in all, each from a step that should make one.
 |---|---|
 | `TrackingParametersTests` | the list (AC #1's names, case, lookalikes kept), order and encoding of the rest, percent-encoded names and values, repeated keys, only-tracking queries and stray `&`, fragments, URLs left unchanged, non-web schemes |
 | `CopyURLTests` | in a real browser window with a private pasteboard: `copyCurrentURL`, the Edit menu item's Shift-Cmd-C binding, the faux address bar button, the sidebar's Copy Link (unselected tab), Copy URL (selected tab) and a pinned tab's, each also checking the tab's URL keeps its parameters |
-| `DevToolbarHostingTests` | the dev toolbar's link button |
+| `DevToolbarHostingTests` | the dev toolbar's link button copying its own pane's address as loaded, and Copy URL for the same tab still stripping |
 | `QuickDetourWindowTests` | the title bar's Copy Link and `copyCurrentURL` on a loopback page, and the page keeping its address |
 | `QuarantineTests`, `QuarantineWindowTests` | the quarantine navigation rule, which uses the same list and the downloaded filter: with it loaded a per-site rule and an exception apply, a list-only parameter never reaches a loopback server from the opened link or a click; without it the built-in names alone |
 | `TrackingParameterFilterTests` | the downloaded filter on the excerpt: counts by kind, global and per-site rules, wildcard TLDs in patterns and `domain=`, `~` domains, substrings, remove-all / all-but, request types, exceptions (bare, named, regex, widened, other types), case, repeats, list spellings, real-world links unchanged, quarantine navigations with and without the filter; `testTheWholeDownloadedList` runs on a downloaded copy when `TEST_RUNNER_TRACKING_FILTER_FILE` names one |
@@ -307,6 +312,13 @@ and Edit > Copy URL copied the address without its host-pattern,
 alert showed.[^checks-329] A pattern matches the address as written, port
 included: `||127.0.0.1/keep/` does not match `127.0.0.1:64903/keep/`.
 
+At runtime for the dev toolbar (2026-11-14, after the user's decision,
+`docs/harness/task326-dev-toolbar-copy-checks.py`): on a loopback page in
+dev mode loaded with `utm_source` and `gclid`, a click on the toolbar's
+Copy URL button (found by `hit_test`'s label) put the address as loaded on
+the real clipboard, and Shift-Cmd-C in the same window then put the clean
+one.[^checks-326-toolbar]
+
 At runtime for quarantine (2026-11-14, AC #4,
 `docs/harness/task329-quarantine-checks.py`): a Link Route sent a link
 clicked on a `localhost` page to Quarantine (a click to the same host is
@@ -323,6 +335,7 @@ built-in names alone.[^checks-329q]
 [^checks-337]: docs/harness/task337-tracking-list-setting-checks.py
 [^checks-329]: docs/harness/task329-tracking-filter-checks.py
 [^checks-329q]: docs/harness/task329-quarantine-checks.py
+[^checks-326-toolbar]: docs/harness/task326-dev-toolbar-copy-checks.py
 [^adguard-filter]: AdGuard URL Tracking filter sources (GPL-3.0)
 [^adguard-kb]: AdGuard knowledge base, $removeparam and $domain modifiers
 [^tsurlfilter]: tsurlfilter remove-param-modifier.ts (a plain value becomes an anchored name= regex, no i flag)

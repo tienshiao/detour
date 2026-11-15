@@ -71,8 +71,9 @@ extension BrowserWindowController {
             guard let self, let tab, self.focusPane(tab) else { return }
             self.showSiteSettingsPopover(relativeTo: view, fromAddressBar: false)
         }
+        // The address as loaded, tracking parameters included (TASK-326).
         toolbar.onCopyClick = { [weak self, weak tab] in
-            self?.copyURL(tab?.url)
+            self?.copyURL(tab?.url, asLoaded: true)
         }
         wireCaptureButtons(of: toolbar, to: tab)
         wireInspectorButtons(of: toolbar, to: tab)

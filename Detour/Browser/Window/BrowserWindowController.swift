@@ -2485,11 +2485,14 @@ class BrowserWindowController: NSWindowController {
         copyURL(displayTab?.url)
     }
 
-    /// Copy URL for the address bar's link button, the menu, and a dev
-    /// toolbar's link button (which copies its own pane's URL): the address
-    /// without its tracking parameters (TASK-326); the tab keeps its own.
-    func copyURL(_ url: URL?) {
-        guard let urlString = url.map(TrackingParameters.copyableString(for:)) else { return }
+    /// Copy URL for the address bar's link button and the menu: the address
+    /// without its tracking parameters (TASK-326); the tab keeps its own. A
+    /// dev toolbar's link button copies its own pane's address as loaded
+    /// (`asLoaded`, the user's decision on TASK-326), so a developer testing
+    /// how their site handles `utm_*` gets the exact address.
+    func copyURL(_ url: URL?, asLoaded: Bool = false) {
+        guard let url else { return }
+        let urlString = asLoaded ? url.absoluteString : TrackingParameters.copyableString(for: url)
         urlPasteboard.clearContents()
         urlPasteboard.setString(urlString, forType: .string)
         toastManager.show(message: "URL copied")

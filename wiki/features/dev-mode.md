@@ -4,7 +4,7 @@ title: Dev mode
 description: "Which URLs count as local development (localhost, *.localhost, 127.0.0.0/8 in any IPv4 spelling, [::1], 0.0.0.0, *.test over http/https), the per-site override and its popover switch, the one function the effective state goes through, how a dev-mode tab's sidebar row, split half and favourite tile are marked with a host line and, on the window's selected row only (like Arc), a hazard border, and the striped toolbar above a dev-mode page (inside the tab's container, frame-based so the docked Web Inspector keeps working) with its capture buttons (visible area and full page, to the clipboard or Downloads) and its Console, Network and element picker buttons."
 tags: [dev-mode, sidebar, tabs, url-rules, site-settings]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T21:45:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T07:52:00Z }
 sources:
   - id: rule
     resource: ../../Detour/Browser/DevMode/DevMode.swift
@@ -331,7 +331,7 @@ Arc.[^toolbar-view][^capture-group][^inspector-group]
 |---|---|
 | Info | Opens the site settings popover (the one behind the address bar's slider button) under the info button, without the address bar's hover buttons showing |
 | URL | Opens the command palette prefilled with the URL, navigating the tab in place (a new tab while a Peek is up), anchored at the toolbar |
-| Copy | Copies the toolbar's own pane's URL, with the "URL copied" toast, through the same `copyURL` the address bar uses |
+| Copy | Copies the toolbar's own pane's URL as loaded, tracking parameters included (TASK-326, the user's decision: Copy URL elsewhere strips them, see [Copy URL](copy-url.md)), with the "URL copied" toast, through the browser window's `copyURL(_:asLoaded: true)` (the address bar's button goes through it too, without `asLoaded`, and strips) |
 | Capture Visible Area | Puts a PNG of this pane's visible page on the clipboard ("Screenshot copied"); Option-click saves it to Downloads ([below](#captures)) |
 | Capture Full Page | The same for the whole document ("Full-page screenshot copied") |
 | Console | Opens this pane's inspector on Console; closes it when it already shows Console; switches to Console when it shows another tab |
