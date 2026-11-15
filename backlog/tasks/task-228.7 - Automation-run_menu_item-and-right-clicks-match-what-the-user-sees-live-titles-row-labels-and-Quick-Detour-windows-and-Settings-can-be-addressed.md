@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T23:45:00Z'
-updated_date: '2026-11-15T02:06:00Z'
+updated_date: '2026-11-15T02:24:00Z'
 labels:
   - automation
 dependencies: []
@@ -76,6 +76,8 @@ Not checked at runtime: a quarantine window or a Private Quick Detour (no tool o
 Found: run_menu_item cmd+w on Settings answers 'Nothing in the window handles Close Tab'. Whether a person's Cmd+W closes Settings was not checked.
 The verify skill's §3 still says Settings needs screencapture; the skill was not edited (out of scope and not writable here).
 Defaults keys and the data folder of the run were removed.
+
+Code review (--fix, high): fixed choose_menu_item ignoring the Settings gates (tracker records AutomationSettingsReach; list_menu stays readable over Settings), window access now walks the whole sheet/child chain, extension pages (popup:/options:) and input by context ask AutomationWindows.access, posted events' timestamps compared within 1 us (they come back rounded to the nanosecond, so the leftover mouse-up check never matched), the endpoint's own nextEvent calls use the private run-loop mode, makeCurrent remembers the person's displaced event window and drops its event if it was not dequeued. Tests: AutomationWindowKindsTests 10/0 (3 new), AutomationInputTests 10/0, AutomationToolsTests, AutomationPrivateAccessTests, AutomationExtensionTests, AutomationPageTests, AutomationCaptureTests, AutomationStagingTests, MCPServerTests 91/0. Not tested: the extension-page window check (a popup over a Private Quick Detour needs a real popover in the test host) and makeCurrent's discard path (not reachable on demand). No /verify run for the review fixes.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

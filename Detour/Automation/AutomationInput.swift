@@ -104,11 +104,40 @@ enum AutomationInput {
                            modifiers: NSEvent.ModifierFlags, clickCount: Int) -> NSEvent? {
         eventNumber += 1
         let pressed = type == .leftMouseDown || type == .rightMouseDown
+        // Apart from the last one's by more than `sameTime` tells apart.
+        let timestamp = max(ProcessInfo.processInfo.systemUptime, (syntheticTimestamps.last ?? 0) + 0.000_01)
+        syntheticTimestamps.append(timestamp)
+        if syntheticTimestamps.count > 32 { syntheticTimestamps.removeFirst(syntheticTimestamps.count - 32) }
         return NSEvent.mouseEvent(with: type, location: point, modifierFlags: modifiers,
-                                  timestamp: ProcessInfo.processInfo.systemUptime,
+                                  timestamp: timestamp,
                                   windowNumber: window.windowNumber, context: nil,
                                   eventNumber: eventNumber, clickCount: clickCount, pressure: pressed ? 1 : 0)
     }
+
+    /// The timestamps of the latest mouse events made here: how one is told
+    /// from a person's once it is current (posting renumbers an event, but
+    /// keeps its time to the nanosecond, `sameTime`).
+    private static var syntheticTimestamps: [TimeInterval] = []
+
+    /// Whether `event` is a mouse event an input tool made.
+    static func isSynthetic(_ event: NSEvent) -> Bool {
+        syntheticTimestamps.contains { sameTime($0, event.timestamp) }
+    }
+
+    /// Whether two event timestamps are the same time. Posting keeps an
+    /// event's time only to the nanosecond (the window server's clock), so
+    /// the double read back is not equal to the one given
+    /// (725491.8170181251 came back as 725491.817018125).
+    static func sameTime(_ a: TimeInterval, _ b: TimeInterval) -> Bool {
+        abs(a - b) < 0.000_001
+    }
+
+    /// The window of the person's event that an input tool's `makeCurrent`
+    /// last displaced as the current event. The menu tracker asks it while
+    /// a tool's event is still current: a WebKit context menu opens some
+    /// time after the person's right click, and a `hit_test` run in between
+    /// must not make it look as if it opened over the tool's window.
+    private(set) static weak var displacedEventWindow: NSWindow?
 
     /// What a click hit.
     enum Target {
@@ -124,16 +153,32 @@ enum AutomationInput {
     /// or icon to the table itself only while the current event is a mouse
     /// press, and otherwise to the label, whose `rightMouseDown` inside a
     /// table opens no menu (TASK-228.7).
-    /// Taken off in a run-loop mode of its own: in a common mode such as
-    /// `.eventTracking`, `nextEvent` would also run pending common-mode work
-    /// (another tool's `runFromRunLoop` body) inside the caller.
-    static func makeCurrent(_ event: NSEvent) {
+    /// Taken off in a run-loop mode of its own (`privateMode`). The person's
+    /// event it displaces is remembered (`displacedEventWindow`). Never left
+    /// in the queue: dispatched later, it would be a real click that no
+    /// tool's check saw. False when it did not become current.
+    @discardableResult
+    static func makeCurrent(_ event: NSEvent) -> Bool {
+        if let current = NSApp.currentEvent, !isSynthetic(current) { displacedEventWindow = current.window }
+        let mask = NSEvent.EventTypeMask(type: event.type)
         NSApp.postEvent(event, atStart: true)
-        _ = NSApp.nextEvent(matching: NSEvent.EventTypeMask(type: event.type), until: .distantPast,
-                            inMode: makeCurrentMode, dequeue: true)
+        let taken = NSApp.nextEvent(matching: mask, until: .distantPast, inMode: privateMode, dequeue: true)
+        if let taken, sameTime(taken.timestamp, event.timestamp) { return true }
+        // Not expected: drop what is left of this kind rather than let it be
+        // dispatched.
+        if let marker = NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [],
+                                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0,
+                                           context: nil, subtype: 0, data1: 0, data2: 0) {
+            NSApp.discardEvents(matching: mask, before: marker)
+        }
+        return false
     }
 
-    private static let makeCurrentMode = RunLoop.Mode("DetourAutomationMakeCurrent")
+    /// A run-loop mode with nothing else in it, for taking events off the
+    /// queue inside a caller: in a common mode such as `.eventTracking`,
+    /// `nextEvent` would also run pending common-mode work (another tool's
+    /// `runFromRunLoop` body, main-actor jobs) inside it.
+    private static let privateMode = RunLoop.Mode("DetourAutomationMakeCurrent")
 
     /// The deepest view under `point` (window coordinates), as the window's
     /// own hit test finds it for a press of `button` there: with that press
@@ -227,11 +272,12 @@ enum AutomationInput {
                     // A view that runs no tracking loop leaves the mouse-up
                     // queued; the window would later hand it to another view.
                     // Found by its time: posting renumbers an event (and the
-                    // test host moves its location).
+                    // test host moves its location). In `privateMode`, so no
+                    // other work runs inside this body.
                     let mask: NSEvent.EventTypeMask = button == .left ? .leftMouseUp : .rightMouseUp
-                    if let left = NSApp.nextEvent(matching: mask, until: .distantPast, inMode: .eventTracking, dequeue: false),
-                       left.timestamp == up.timestamp {
-                        _ = NSApp.nextEvent(matching: mask, until: .distantPast, inMode: .eventTracking, dequeue: true)
+                    if let left = NSApp.nextEvent(matching: mask, until: .distantPast, inMode: privateMode, dequeue: false),
+                       sameTime(left.timestamp, up.timestamp) {
+                        _ = NSApp.nextEvent(matching: mask, until: .distantPast, inMode: privateMode, dequeue: true)
                     }
                 }
                 guard returned else { return false }
@@ -433,6 +479,10 @@ final class AutomationMenuTracker {
     /// front), and their submenus: `list_menu` and `choose_menu_item` refuse
     /// a menu the client may not reach. Absent means open.
     private var menuAccess: [ObjectIdentifier: AutomationWindowAccess] = [:]
+    /// How far into Settings each open menu reaches, the same way: on the
+    /// user's endpoint `choose_menu_item` refuses a menu over Settings, and
+    /// everywhere one over its Automation section (TASK-228.7). Absent: none.
+    private var menuSettingsReach: [ObjectIdentifier: AutomationSettingsReach] = [:]
     private var observers: [any NSObjectProtocol] = []
 
     var topMenu: NSMenu? { openMenus.last }
@@ -440,6 +490,11 @@ final class AutomationMenuTracker {
     /// How reachable the window `menu` opened over is.
     func access(of menu: NSMenu) -> AutomationWindowAccess {
         menuAccess[ObjectIdentifier(menu)] ?? .open
+    }
+
+    /// How far into Settings `menu` reaches.
+    func settingsReach(of menu: NSMenu) -> AutomationSettingsReach {
+        menuSettingsReach[ObjectIdentifier(menu)] ?? .none
     }
 
     func start() {
@@ -451,19 +506,32 @@ final class AutomationMenuTracker {
             // menu that opens with one under the person's last event, or in
             // front while Detour is active, is the person's own there. Errs
             // towards refusing: an agent's menu opened meanwhile is refused
-            // too. The strictest of those and of the menus already open.
+            // too. The strictest of those and of the menus already open. While
+            // a tool's event is current (a `hit_test` since the person's
+            // right click), the person's last event's window counts too.
+            let event = NSApp.currentEvent
+            let displaced = event.flatMap { AutomationInput.isSynthetic($0) ? AutomationInput.displacedEventWindow : nil }
+            let key = NSApp.isActive ? NSApp.keyWindow : nil
             let access = (openMenus.map { self.access(of: $0) } + [
-                AutomationWindows.access(of: NSApp.currentEvent?.window),
-                NSApp.isActive ? AutomationWindows.access(of: NSApp.keyWindow) : .open,
+                AutomationWindows.access(of: event?.window),
+                AutomationWindows.access(of: displaced),
+                AutomationWindows.access(of: key),
             ]).max() ?? .open
+            let reach = (openMenus.map { self.settingsReach(of: $0) } + [
+                AutomationWindows.settingsReach(of: event?.window, event: event),
+                AutomationWindows.settingsReach(of: displaced),
+                AutomationWindows.settingsReach(of: key),
+            ]).max() ?? .none
             openMenus.removeAll { $0 === menu }
             openMenus.append(menu)
             menuAccess[ObjectIdentifier(menu)] = access == .open ? nil : access
+            menuSettingsReach[ObjectIdentifier(menu)] = reach == .none ? nil : reach
         })
         observers.append(center.addMainObserver(forName: NSMenu.didEndTrackingNotification, object: nil) { [weak self] note in
             guard let menu = note.object as? NSMenu else { return }
             self?.openMenus.removeAll { $0 === menu }
             self?.menuAccess[ObjectIdentifier(menu)] = nil
+            self?.menuSettingsReach[ObjectIdentifier(menu)] = nil
         })
     }
 

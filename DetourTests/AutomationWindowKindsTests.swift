@@ -293,11 +293,9 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
 
     // MARK: Settings
 
-    @MainActor func testSettingsCanBeSeenOnAnyEndpointButTakesInputOnlyInATestRun() async throws {
-        let f = try makeFixture(settings: true)
-        let settings = try XCTUnwrap(f.settings)
-        let id: JSONValue = .int(f.id(settings))
-        // Settings animates to the pane's height: wait until its frame holds.
+    /// Settings' window once it has animated to the pane's height (its frame
+    /// holds), laid out.
+    @MainActor private func settledWindow(_ settings: SettingsWindowController) async throws -> NSWindow {
         let settingsWindow = try XCTUnwrap(settings.window)
         var last = NSRect.zero
         let deadline = Date().addingTimeInterval(3)
@@ -305,8 +303,110 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
             last = settingsWindow.frame
             try await Task.sleep(for: .milliseconds(150))
         }
+        try XCTUnwrap(settingsWindow.contentView).layoutSubtreeIfNeeded()
+        return settingsWindow
+    }
+
+    /// A person's press: made here, not by `AutomationInput.mouseEvent`, so
+    /// the tools do not take it for one of theirs.
+    @MainActor private func personsPress(at point: NSPoint, in window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [],
+                                         timestamp: ProcessInfo.processInfo.systemUptime - 0.5,
+                                         windowNumber: window.windowNumber, context: nil, eventNumber: 7,
+                                         clickCount: 1, pressure: 1))
+    }
+
+    /// Leaves a release current, so no press is left for a later menu to wait on.
+    @MainActor private func releaseCurrentPress(in window: NSWindow) {
+        if let release = AutomationInput.mouseEvent(.rightMouseUp, at: NSPoint(x: 1, y: 1), in: window,
+                                                    modifiers: [], clickCount: 1) {
+            AutomationInput.makeCurrent(release)
+        }
+    }
+
+    @MainActor func testAHitTestBeforeThePersonsMenuOpensDoesNotOpenItUp() async throws {
+        let f = try makeFixture()
+        f.setting.allowed = true
+        let quarantineWindow = try XCTUnwrap(f.quarantine.window)
+        // The person right-clicks the quarantine's page; WebKit's menu opens
+        // some time later, and an agent's hit_test runs in between.
+        XCTAssertTrue(AutomationInput.makeCurrent(try personsPress(at: NSPoint(x: 20, y: 20), in: quarantineWindow)))
+        defer { releaseCurrentPress(in: quarantineWindow) }
+        _ = try await ok(f.server, "hit_test", ["window_id": .int(f.id(f.browser)), "x": 10, "y": 10])
+        XCTAssertTrue(NSApp.currentEvent.map(AutomationInput.isSynthetic) ?? false, "the hit test's event is current")
+        let menu = NSMenu(title: "Page Menu")
+        menu.addItem(NSMenuItem(title: "Item", action: nil, keyEquivalent: ""))
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
+        defer { NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menu) }
+        XCTAssertEqual(AutomationMenuTracker.shared.access(of: menu), .never)
+        let refused = try await code(f.server, "choose_menu_item", ["title": "Item", "timeout_ms": 500])
+        XCTAssertEqual(refused, "private_unreachable")
+    }
+
+    @MainActor func testAWindowHangingOffAChildOfAPrivateQuickDetourIsAsUnreachable() throws {
+        let f = try makeFixture()
+        let quarantineWindow = try XCTUnwrap(f.quarantine.window)
+        let rect = NSRect(x: 0, y: 0, width: 40, height: 40)
+        let child = NSWindow(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: true)
+        let grandchild = NSWindow(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: true)
+        child.isReleasedWhenClosed = false
+        grandchild.isReleasedWhenClosed = false
+        quarantineWindow.addChildWindow(child, ordered: .above)
+        child.addChildWindow(grandchild, ordered: .above)
+        defer {
+            child.removeChildWindow(grandchild)
+            quarantineWindow.removeChildWindow(child)
+            grandchild.orderOut(nil)
+            child.orderOut(nil)
+        }
+        XCTAssertEqual(AutomationWindows.access(of: grandchild), .never, "a popover on a popover of the quarantine")
+        XCTAssertEqual(AutomationWindows.access(of: f.browser.window), .open)
+    }
+
+    @MainActor func testAMenuOverSettingsIsChosenOnlyInATestRunAndNeverOverTheAutomationSection() async throws {
+        let f = try makeFixture(settings: true)
+        let settingsWindow = try await settledWindow(try XCTUnwrap(f.settings))
+        let switches = views(NSSwitch.self, in: try XCTUnwrap(settingsWindow.contentView))
+        let automationSwitch = try XCTUnwrap(switches.first { $0.accessibilityIdentifier() == "automationEnabled" })
+        let otherSwitch = try XCTUnwrap(switches.first { !AutomationWindows.isInAutomationSettings($0) })
+        settingsWindow.makeFirstResponder(otherSwitch)
+        let (_, testRun) = testRunServer(f)
+        defer { releaseCurrentPress(in: settingsWindow) }
+
+        func openMenu(pressedOn view: NSView) throws -> NSMenu {
+            let centre = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+            XCTAssertTrue(AutomationInput.makeCurrent(try personsPress(at: centre, in: settingsWindow)))
+            let menu = NSMenu(title: "Settings Menu")
+            menu.addItem(NSMenuItem(title: "Item", action: nil, keyEquivalent: ""))
+            NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
+            return menu
+        }
+
+        // A menu over Settings outside the Automation section: listed on any
+        // endpoint, chosen from only in a test run.
+        let menu = try openMenu(pressedOn: otherSwitch)
+        XCTAssertEqual(AutomationMenuTracker.shared.settingsReach(of: menu), .settings)
+        _ = try await ok(f.server, "list_menu", ["timeout_ms": 500])
+        let refused = try await code(f.server, "choose_menu_item", ["title": "Item", "timeout_ms": 500])
+        XCTAssertEqual(refused, "gate_closed")
+        _ = try await ok(testRun, "choose_menu_item", ["title": "Item", "timeout_ms": 500])
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menu)
+
+        // One opened by a press on the Automation section's switch: never.
+        let section = try openMenu(pressedOn: automationSwitch)
+        defer { NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: section) }
+        XCTAssertEqual(AutomationMenuTracker.shared.settingsReach(of: section), .automationSection)
+        let sectionRefused = try await code(testRun, "choose_menu_item", ["title": "Item", "timeout_ms": 500])
+        XCTAssertEqual(sectionRefused, "gate_closed")
+    }
+
+    @MainActor func testSettingsCanBeSeenOnAnyEndpointButTakesInputOnlyInATestRun() async throws {
+        let f = try makeFixture(settings: true)
+        let settings = try XCTUnwrap(f.settings)
+        let id: JSONValue = .int(f.id(settings))
+        // Settings animates to the pane's height: wait until its frame holds.
+        let settingsWindow = try await settledWindow(settings)
         let paneView = try XCTUnwrap(settingsWindow.contentView)
-        paneView.layoutSubtreeIfNeeded()
         let switches = views(NSSwitch.self, in: paneView)
         let automationSwitch = try XCTUnwrap(switches.first { $0.accessibilityIdentifier() == "automationEnabled" })
         let privateSwitch = try XCTUnwrap(switches.first { $0.accessibilityIdentifier() == "automationAllowPrivate" })

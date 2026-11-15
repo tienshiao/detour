@@ -35,9 +35,9 @@ extension AutomationTools {
             throw AutomationToolError(.notDisplayed, "\(page.label) is not shown in a window"
                                         + (page.tab == nil ? " yet" : "; select it first"))
         }
-        guard privateAllowed || !controller.isIncognito else {
-            throw AutomationToolError(.privateUnreachable, "\(page.label) is in a Private window" + Self.privateHint)
-        }
+        // The one Private predicate, over the window and what it hangs off.
+        let access = AutomationWindows.access(of: window)
+        guard access.allows(privateAllowed) else { throw access.refusal("The window showing \(page.label)") }
         return InputTarget(controller: controller, window: window, webView: webView)
     }
 
@@ -455,6 +455,18 @@ extension AutomationTools {
                     throw AutomationToolError(.invalidArguments, "Give exactly one of title, index or identifier")
                 }
                 let root = try await openMenu(timeout: try arguments.int("timeout_ms") ?? 2000)
+                // Choosing is input: the gates on Settings apply (TASK-228.7).
+                switch AutomationMenuTracker.shared.settingsReach(of: root) {
+                case .automationSection:
+                    throw AutomationToolError(.gateClosed,
+                                              "The open menu is over Settings' Automation section, which is the user's; "
+                                                + "no tool changes it")
+                case .settings where !environment.isTestRun:
+                    throw AutomationToolError(.gateClosed,
+                                              "The open menu is over Settings, which takes menu choices only in a test run")
+                case .settings, .none:
+                    break
+                }
                 let menu = try submenu(of: root, path: try arguments.stringArray("path") ?? [])
                 let allowPrivate = privateAllowed
                 let index: Int

@@ -41,6 +41,17 @@ nonisolated enum AutomationWindowAccess: Int, Comparable, Sendable {
     }
 }
 
+/// How far into Settings a menu reaches, for `choose_menu_item`: not at all,
+/// Settings (whose input is for test runs only), or its Automation section
+/// (never). The strictest of several wins.
+nonisolated enum AutomationSettingsReach: Int, Comparable, Sendable {
+    case none
+    case settings
+    case automationSection
+
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
 /// A window a client can address, with its kind and how reachable it is.
 struct AutomationWindow {
     let controller: NSWindowController
@@ -91,13 +102,44 @@ enum AutomationWindows {
         }
     }
 
-    /// How reachable `window` is: the strictest of its own controller's,
-    /// the window a sheet is attached to and the window a child window (a
-    /// popover) belongs to.
+    /// How reachable `window` is: the strictest of its own controller's and
+    /// those of every window it hangs off, through any depth of sheets
+    /// (`sheetParent`) and child windows (`parent`: a popover, a popover on a
+    /// sheet).
     static func access(of window: NSWindow?) -> AutomationWindowAccess {
-        guard let window else { return .open }
-        return [window, window.sheetParent, window.parent].compactMap { $0 }
-            .map { access(of: $0.windowController) }.max() ?? .open
+        ancestry(of: window).map { access(of: $0.windowController) }.max() ?? .open
+    }
+
+    /// `window` and every window it is a sheet or a child window of, nearest
+    /// first.
+    static func ancestry(of window: NSWindow?) -> [NSWindow] {
+        var found: [NSWindow] = []
+        var pending = [window].compactMap { $0 }
+        while let next = pending.first {
+            pending.removeFirst()
+            guard !found.contains(where: { $0 === next }) else { continue }
+            found.append(next)
+            pending += [next.sheetParent, next.parent].compactMap { $0 }
+        }
+        return found
+    }
+
+    /// How far into Settings a menu opened over `window` reaches: whether
+    /// `window` is (or hangs off) Settings, and whether its keyboard focus,
+    /// or the view under `event` (the press that opened the menu), is in the
+    /// Automation section.
+    static func settingsReach(of window: NSWindow?, event: NSEvent? = nil) -> AutomationSettingsReach {
+        guard let settings = ancestry(of: window).first(where: { $0.windowController is SettingsWindowController })
+        else { return .none }
+        if isInAutomationSettings(settings.firstResponder) { return .automationSection }
+        if let event, let eventWindow = event.window, ancestry(of: eventWindow).contains(where: { $0 === settings }),
+           [.leftMouseDown, .rightMouseDown, .otherMouseDown, .leftMouseUp, .rightMouseUp, .otherMouseUp]
+            .contains(event.type),
+           let frameView = eventWindow.contentView?.superview ?? eventWindow.contentView,
+           isInAutomationSettings(frameView.hitTest(event.locationInWindow)) {
+            return .automationSection
+        }
+        return .settings
     }
 
     /// The addressable window `controller` manages, nil for any other.

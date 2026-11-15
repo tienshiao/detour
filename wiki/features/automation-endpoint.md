@@ -431,6 +431,18 @@ Private access, resets the token or allows a client. A window-point click
 cannot reach the Settings toolbar, which is outside the content view, so
 switch panes with `open_ui settings` (`pane`).
 
+Choosing from an open menu is input too. The menu tracker notes, beside a
+menu's Private access, how far it reaches into Settings
+(`AutomationSettingsReach`): a menu opened over Settings (under the
+person's press, or in front while Detour is active) is listed on any
+endpoint, but `choose_menu_item` takes it only in a test run, and never
+one opened while the Automation section has the keyboard or under a press
+on it (`gate_closed`). A window's reach is the strictest along its whole
+chain of sheets and child windows (`AutomationWindows.ancestry`), so a
+popover on a popover of a Private Quick Detour is refused as the window
+is. Extension pages (`popup:`, `options:`) take the same window check as
+tabs, and input by `context` asks the same predicate.
+
 Checks written before TASK-228.7 work around these limits.
 `docs/harness/task326-copy-url-checks.py` right-clicks a sidebar row's
 background and skips its label and icon. `docs/harness/task327` drives
@@ -1072,11 +1084,25 @@ In a test run, Claude Code can also connect directly:
   `didBeginTrackingNotification` by hand instead. At runtime, a right click
   on a Quick Detour's page through the endpoint (WebKit's menu) listed and
   closed normally.
-- **Posting an event renumbers it.** `NSApp.postEvent` gives the event a
-  new `eventNumber` (posted 1,000,001 came back as about 16,900), so the
-  check that took a leftover mouse-up off the queue never matched it. It
-  now matches the event's `timestamp`. The test host also moves the
-  location.
+- **Posting an event renumbers it and rounds its time.** `NSApp.postEvent`
+  gives the event a new `eventNumber` (posted 1,000,001 came back as about
+  16,900), so the check that took a leftover mouse-up off the queue never
+  matched it. Its `timestamp` survives only to the nanosecond
+  (725491.8170181251 came back as 725491.817018125), so an exact `==` on it
+  fails too: `AutomationInput.sameTime` compares within a microsecond, and
+  the input tools' own mouse events are made at least 10 µs apart so they
+  stay told apart (`isSynthetic`). The test host also moves the location.
+  Every event the endpoint takes off the queue itself is taken in a
+  run-loop mode of its own, never a common one, where `nextEvent` would run
+  main-actor jobs and other tools' run-loop bodies inside the caller.
+- **A tool's event displaces the person's as the current event.** The menu
+  tracker reads the current event's window to tell a person's menu in a
+  Private window, and WebKit opens a page's context menu some time after
+  the right click. A `hit_test` in between left its own event current, so
+  the menu looked as if it opened over the tool's window.
+  `AutomationInput.makeCurrent` remembers the window of the person's event
+  it displaced, and the tracker takes the strictest of both while a tool's
+  event is current.
 - **An item with a submenu has an action.** AppKit gives it
   `submenuAction:`, which only its menu's own tracking may send; sending it
   raised `-[NSMenu submenuAction:]: unrecognized selector`. Such items are

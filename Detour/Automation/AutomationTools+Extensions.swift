@@ -151,7 +151,13 @@ extension AutomationTools {
             let (tab, webView) = try resolvePage(context: value)
             return PageTarget(webView: webView, tab: tab, label: "Tab \(tab.id.uuidString)")
         case .extension(let kind, let ref):
-            return try resolveExtensionPage(kind: kind, ref: ref)
+            let page = try resolveExtensionPage(kind: kind, ref: ref)
+            // A popup's popover hangs off the window it opened from: one over
+            // a Private window, or a Private Quick Detour or quarantine
+            // window, is refused as that window is (TASK-228.7).
+            let access = AutomationWindows.access(of: page.webView.window)
+            guard access.allows(privateAllowed) else { throw access.refusal("The window showing \(page.label)") }
+            return page
         }
     }
 
