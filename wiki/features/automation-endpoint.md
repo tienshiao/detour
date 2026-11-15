@@ -565,7 +565,8 @@ cursor:
   of the point) in 150 ms, ripples, and then the click is delivered as
   before. Once in a run a client has staged a capture (`seed_world` or
   `set_window_frame`), the glide takes 600 ms, so a recording can follow it
-  (PROVISIONAL, `AutomationTools.stagingInUse`). With Reduce Motion
+  (`AutomationTools.stagingInUse`; the user approved the 600 ms, the 3 s
+  linger and the first glide's start on 2026-11-15). With Reduce Motion
   (`MotionPreference`) it appears at the point, the ripple only fades, and
   nothing waits. It stays 3 s after the last click or key, then fades and
   leaves the parent's child windows; the next click glides from the same

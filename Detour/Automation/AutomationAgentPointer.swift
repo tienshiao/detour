@@ -11,8 +11,9 @@ enum AutomationAgentPointerSetting {
 
     static let enabledKey = "AutomationAgentPointerEnabled"
 
-    /// What an unset setting means. PROVISIONAL (chosen by Claude while
-    /// building TASK-228.11, not confirmed by the user): off in a test run.
+    /// What an unset setting means: off in a test run, so harness scripts
+    /// keep their speed (the user's decision, 2026-11-15; the capture kit
+    /// turns it on).
     static func defaultValue(testRun: Bool) -> Bool { !testRun }
 
     /// Whether this process is a test run, as the Arc folder guard decides it.
@@ -68,7 +69,7 @@ final class AutomationAgentPointer {
     /// waits for it.
     var glideDuration: Duration = .milliseconds(150)
     /// The glide while capture staging is in use, so a recording can follow
-    /// it (PROVISIONAL, see `AutomationTools.stagingInUse`).
+    /// it (see `AutomationTools.stagingInUse`).
     var stagingGlideDuration: Duration = .milliseconds(600)
     /// How long the pointer stays after the last click or key before it fades.
     var linger: Duration = .seconds(3)

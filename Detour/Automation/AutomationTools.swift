@@ -156,8 +156,8 @@ final class AutomationTools {
     var agentPointer = AutomationAgentPointer.shared
     /// Whether capture staging is in use: a client seeded a world or placed a
     /// window (`seed_world`, `set_window_frame`) in this run. The pointer then
-    /// glides slower, so a recording can follow it. PROVISIONAL (chosen by
-    /// Claude for TASK-228.11, not confirmed by the user).
+    /// glides slower, so a recording can follow it (the user's decision,
+    /// 2026-11-15).
     var stagingInUse = false
     /// Keeps input calls in arrival order while the pointer is on.
     let inputOrder = AutomationInputOrder()
