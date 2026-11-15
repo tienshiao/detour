@@ -271,13 +271,17 @@ enum AutomationInput {
                     }
                     // A view that runs no tracking loop leaves the mouse-up
                     // queued; the window would later hand it to another view.
-                    // Found by its time: posting renumbers an event (and the
-                    // test host moves its location). In `privateMode`, so no
-                    // other work runs inside this body.
+                    // It goes to this view instead, as AppKit's dispatch
+                    // sends a release to the view that took the press (a
+                    // view that acts on mouseUp, such as the faux address
+                    // bar's buttons). Found by its time: posting renumbers an
+                    // event (and the test host moves its location). In
+                    // `privateMode`, so no other work runs inside this body.
                     let mask: NSEvent.EventTypeMask = button == .left ? .leftMouseUp : .rightMouseUp
                     if let left = NSApp.nextEvent(matching: mask, until: .distantPast, inMode: privateMode, dequeue: false),
                        sameTime(left.timestamp, up.timestamp) {
                         _ = NSApp.nextEvent(matching: mask, until: .distantPast, inMode: privateMode, dequeue: true)
+                        if button == .left { view.mouseUp(with: up) } else { view.rightMouseUp(with: up) }
                     }
                 }
                 guard returned else { return false }
@@ -518,8 +522,9 @@ final class AutomationMenuTracker {
                 AutomationWindows.access(of: key),
             ]).max() ?? .open
             let reach = (openMenus.map { self.settingsReach(of: $0) } + [
+                // Not the displaced event's window: Settings shows no web
+                // view, so its menus open while the person's press is current.
                 AutomationWindows.settingsReach(of: event?.window, event: event),
-                AutomationWindows.settingsReach(of: displaced),
                 AutomationWindows.settingsReach(of: key),
             ]).max() ?? .none
             openMenus.removeAll { $0 === menu }

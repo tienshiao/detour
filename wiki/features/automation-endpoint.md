@@ -437,7 +437,9 @@ menu's Private access, how far it reaches into Settings
 person's press, or in front while Detour is active) is listed on any
 endpoint, but `choose_menu_item` takes it only in a test run, and never
 one opened while the Automation section has the keyboard or under a press
-on it (`gate_closed`). A window's reach is the strictest along its whole
+on it (`gate_closed`). While Detour is active with Settings key, that
+refuses the agent's own menus over other windows too, as the Private
+check errs towards refusing. A window's reach is the strictest along its whole
 chain of sheets and child windows (`AutomationWindows.ancestry`), so a
 popover on a popover of a Private Quick Detour is refused as the window
 is. Extension pages (`popup:`, `options:`) take the same window check as
@@ -1089,7 +1091,10 @@ In a test run, Claude Code can also connect directly:
   16,900), so the check that took a leftover mouse-up off the queue never
   matched it. Its `timestamp` survives only to the nanosecond
   (725491.8170181251 came back as 725491.817018125), so an exact `==` on it
-  fails too: `AutomationInput.sameTime` compares within a microsecond, and
+  fails too (so before the TASK-228.7 review the leftover mouse-up was never
+  taken; it is now handed to the view that took the press, as AppKit's
+  dispatch does, which a view acting on `mouseUp` such as the faux address
+  bar's buttons needs): `AutomationInput.sameTime` compares within a microsecond, and
   the input tools' own mouse events are made at least 10 µs apart so they
   stay told apart (`isSynthetic`). The test host also moves the location.
   Every event the endpoint takes off the queue itself is taken in a

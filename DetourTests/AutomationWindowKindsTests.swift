@@ -392,6 +392,21 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
         _ = try await ok(testRun, "choose_menu_item", ["title": "Item", "timeout_ms": 500])
         NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menu)
 
+        // An agent's menu over the browser window after the person's last
+        // press was in Settings is not taken for one over Settings.
+        let browserWindow = try XCTUnwrap(f.browser.window)
+        browserWindow.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(AutomationInput.makeCurrent(try personsPress(at: NSPoint(x: 20, y: 20), in: settingsWindow)))
+        let agentsPress = try XCTUnwrap(AutomationInput.mouseEvent(.rightMouseDown, at: NSPoint(x: 20, y: 20),
+                                                                   in: browserWindow, modifiers: [], clickCount: 1))
+        XCTAssertTrue(AutomationInput.makeCurrent(agentsPress))
+        let agentsMenu = NSMenu(title: "Agent's Menu")
+        agentsMenu.addItem(NSMenuItem(title: "Item", action: nil, keyEquivalent: ""))
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: agentsMenu)
+        XCTAssertEqual(AutomationMenuTracker.shared.settingsReach(of: agentsMenu), .none)
+        _ = try await ok(f.server, "choose_menu_item", ["title": "Item", "timeout_ms": 500])
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: agentsMenu)
+
         // One opened by a press on the Automation section's switch: never.
         let section = try openMenu(pressedOn: automationSwitch)
         defer { NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: section) }

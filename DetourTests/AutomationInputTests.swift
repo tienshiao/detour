@@ -251,7 +251,9 @@ nonisolated final class AutomationInputTests: XCTestCase {
 
     @MainActor private final class ClickView: NSView {
         var downs: [NSEvent] = []
+        var ups: [NSEvent] = []
         override func mouseDown(with event: NSEvent) { downs.append(event) }
+        override func mouseUp(with event: NSEvent) { ups.append(event) }
     }
 
     @MainActor private final class MenuView: NSView {
@@ -288,6 +290,7 @@ nonisolated final class AutomationInputTests: XCTestCase {
         XCTAssertEqual(clickView.downs.first?.modifierFlags.contains(.option), true)
         XCTAssertNil(NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .eventTracking, dequeue: false),
                      "a view that tracks nothing leaves no mouse-up queued for another view")
+        XCTAssertEqual(clickView.ups.count, 1, "the release goes to the view that took the press, as in AppKit's dispatch")
         let (hit, _) = try await call(f, "hit_test", ["window_id": .int(f.windowID), "x": .double(bx), "y": .double(by)])
         XCTAssertEqual(hit["view"], "ClickView")
         XCTAssertEqual(hit["frame"]?["width"]?.doubleValue, 120)
