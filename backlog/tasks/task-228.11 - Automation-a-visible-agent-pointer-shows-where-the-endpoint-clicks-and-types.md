@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-15T20:08:00Z'
-updated_date: '2026-11-15T22:12:00Z'
+updated_date: '2026-11-15T22:13:00Z'
 labels:
   - automation
   - ui
@@ -43,7 +43,7 @@ Design (the user approved these defaults on 2026-11-15):
 - [x] #3 The pointer is shown when the target window is in the background and Detour is not frontmost, and never takes clicks, focus or key status
 - [x] #4 Settings > General > Automation has a switch for the pointer, on by default; off, endpoint input is delivered with no added delay (a test measures it)
 - [ ] #5 The endpoint's screenshot tool leaves the pointer out of the image; a full-screen recording shows it (checked at runtime)
-- [ ] #6 A Debug set_debug_override turns it off for tests and harnesses; existing automation tests and harnesses still pass
+- [x] #6 A Debug set_debug_override turns it off for tests and harnesses; existing automation tests and harnesses still pass
 - [ ] #7 Checked at runtime with /verify (a recording of clicks in the sidebar, a Settings switch and a page); wiki updated (automation endpoint, capture staging)
 <!-- AC:END -->
 
@@ -93,6 +93,8 @@ Not verified / owed:
 2026-11-15 user decision: keep the pointer off by default in test runs (DETOUR_MCP=1), as built (no longer provisional); the website capture kit turns it on: docs/capture/capture.py calls set_debug_override agent_pointer on after seeding (Debug builds; a Release build logs and goes on), and --no-agent-pointer leaves it out. README and wiki updated. Checked: the script parses and lists the flag; the override's 'on' value is the one AutomationAgentPointerTests covers. Not run: a full capture.py take (needs the virtual display and an idle screen); the first website capture will show it. Still provisional: the 600 ms staging glide and the 3 s linger.
 
 2026-11-15 user decision: the remaining defaults are approved as built: the 600 ms glide once a capture is staged (seed_world / set_window_frame), the 3 s linger, the first glide starting 40 pt below-right of the point. PROVISIONAL markers removed from AutomationTools.stagingInUse, AutomationAgentPointerSetting.defaultValue and the wiki (comments only).
+
+2026-11-15 (lead, main c99dca9d Debug build): harness scripts still pass with the pointer's test-run default: docs/harness/task228-7-private-quick-detour-checks.py ALL PASS (17 checks, two launches), docs/harness/task324-endpoint-checks.py ALL PASSED (5 checks; Detour stayed in the background). Still owed for AC #5/#7: a full-screen recording on an uncovered window showing the pointer, the ripple and the typing outline.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
