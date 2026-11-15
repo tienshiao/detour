@@ -53,10 +53,10 @@ enum AutomationCapture {
         return rep
     }
 
-    /// The window's content: AppKit's drawing of the content view, with the
-    /// sidebar drawn over it from its layer.
-    static func window(_ controller: BrowserWindowController) throws -> NSBitmapImageRep {
-        guard let window = controller.window, let content = window.contentView else {
+    /// The window's content: AppKit's drawing of the content view, with a
+    /// browser window's `sidebar` drawn over it from its layer.
+    static func window(_ window: NSWindow, sidebar: NSView?) throws -> NSBitmapImageRep {
+        guard let content = window.contentView else {
             throw AutomationToolError(.unknownWindow, "The window has no content")
         }
         content.layoutSubtreeIfNeeded()
@@ -67,8 +67,7 @@ enum AutomationCapture {
         }
         content.cacheDisplay(in: bounds, to: rep)
 
-        let sidebar = controller.tabSidebar.view
-        if !sidebar.isHiddenOrHasHiddenAncestor, sidebar.window === window, let layer = sidebar.layer,
+        if let sidebar, !sidebar.isHiddenOrHasHiddenAncestor, sidebar.window === window, let layer = sidebar.layer,
            let context = NSGraphicsContext(bitmapImageRep: rep) {
             let rect = sidebar.convert(sidebar.bounds, to: content)
             let scale = CGFloat(rep.pixelsWide) / max(1, bounds.width)

@@ -281,7 +281,7 @@ nonisolated final class MCPServerTests: XCTestCase {
             "selector_no_match", "timeout", "gate_closed", "internal_error", "not_displayed", "element_not_visible", "permission_denied",
             "tab_asleep", "script_error", "unknown_extension", "ambiguous_extension", "ambiguous_profile",
             "unknown_profile", "extension_disabled", "context_not_open", "unsupported_context", "worker_not_running",
-            "install_failed", "invalid_fixture", "not_empty", "unknown_display",
+            "install_failed", "invalid_fixture", "not_empty", "unknown_display", "unsupported_window",
         ], "codes are part of the contract: add new ones, never rename")
     }
 

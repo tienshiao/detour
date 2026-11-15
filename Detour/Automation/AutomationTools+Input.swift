@@ -72,7 +72,8 @@ extension AutomationTools {
             title: "Click",
             description: "Clicks inside Detour without bringing it to the front or moving the pointer. Target an "
                 + "element with context (a tab_id or tab:<id> from list_tabs) and selector (CSS, top document), or "
-                + "a point: x and y in the window's content (top-left origin, points) with window_id, or in the "
+                + "a point: x and y in the window's content (top-left origin, points) with window_id (any kind of "
+                + "window from list_windows), or in the "
                 + "page's viewport (CSS pixels) with context. button right opens a context menu; then use "
                 + "list_menu and choose_menu_item. A menu that is open is closed first, as a person's click elsewhere "
                 + "closes it. completed is false when the click opened a menu or an alert that "
@@ -108,7 +109,7 @@ extension AutomationTools {
                 let x = try arguments.number("x"), y = try arguments.number("y")
                 guard (x == nil) == (y == nil) else { throw AutomationToolError(.invalidArguments, "Give x and y together") }
 
-                let controller: BrowserWindowController
+                let controller: NSWindowController
                 let window: NSWindow
                 let point: NSPoint
                 let target: AutomationInput.Target
@@ -140,14 +141,16 @@ extension AutomationTools {
                     guard !arguments.has("selector") else {
                         throw AutomationToolError(.invalidArguments, "selector needs context")
                     }
-                    controller = try self.window(id: windowID)
-                    guard let nsWindow = controller.window else { throw AutomationToolError(.unknownWindow, "No window") }
-                    window = nsWindow
+                    let addressed = try inputWindow(id: windowID)
+                    controller = addressed.controller
+                    window = addressed.window
                     guard let x, let y else { throw AutomationToolError(.invalidArguments, "With window_id, give x and y") }
                     point = try windowPoint(x: x, y: y, in: window)
-                    guard let hit = AutomationInput.target(at: point, in: window) else {
+                    guard let hit = AutomationInput.target(at: point, in: window, button: button,
+                                                           modifiers: modifiers) else {
                         throw AutomationToolError(.invalidArguments, "Nothing is under that point")
                     }
+                    if case .view(let view) = hit { try refuseAutomationSettings(view) }
                     target = hit
                 } else {
                     throw AutomationToolError(.invalidArguments, "Give context and selector, or window_id with x and y")
@@ -196,8 +199,8 @@ extension AutomationTools {
             ]),
             annotations: ["readOnlyHint": true],
             handler: { [self] arguments in
-                let controller = try self.window(id: try arguments.requiredInt("window_id"))
-                guard let window = controller.window, let content = window.contentView else {
+                let window = try anyWindow(id: try arguments.requiredInt("window_id")).window
+                guard let content = window.contentView else {
                     throw AutomationToolError(.unknownWindow, "No window")
                 }
                 guard let x = try arguments.number("x"), let y = try arguments.number("y") else {
@@ -227,7 +230,7 @@ extension AutomationTools {
     /// The responder keys go to: a tab's web view (made its window's first
     /// responder, which does not activate Detour), or a window's first
     /// responder.
-    private func keyTarget(_ arguments: ToolArguments) throws -> (BrowserWindowController, NSWindow, NSResponder) {
+    private func keyTarget(_ arguments: ToolArguments) throws -> (NSWindowController, NSWindow, NSResponder) {
         if let context = try arguments.string("context") {
             guard !arguments.has("window_id") else {
                 throw AutomationToolError(.invalidArguments, "Give context or window_id, not both")
@@ -240,12 +243,13 @@ extension AutomationTools {
         guard let windowID = try arguments.int("window_id") else {
             throw AutomationToolError(.invalidArguments, "Give context or window_id")
         }
-        let controller = try window(id: windowID)
-        guard let window = controller.window else { throw AutomationToolError(.unknownWindow, "No window") }
+        let addressed = try inputWindow(id: windowID)
+        let window = addressed.window
         guard let responder = window.firstResponder, responder !== window else {
             throw AutomationToolError(.invalidArguments, "Nothing in window \(windowID) has keyboard focus")
         }
-        return (controller, window, responder)
+        try refuseAutomationSettings(responder)
+        return (addressed.controller, window, responder)
     }
 
     // MARK: type_text
@@ -383,9 +387,8 @@ extension AutomationTools {
             if let menu = AutomationMenuTracker.shared.topMenu {
                 // Whether the menu opened over a Private window was noted when
                 // it opened; whether that matters is asked now.
-                guard privateAllowed || !AutomationMenuTracker.shared.isOverPrivateWindow(menu) else {
-                    throw AutomationToolError(.privateUnreachable, "The open menu is over a Private window" + Self.privateHint)
-                }
+                let access = AutomationMenuTracker.shared.access(of: menu)
+                guard access.allows(privateAllowed) else { throw access.refusal("The window the open menu is over") }
                 return menu
             }
             if ContinuousClock.now >= deadline { break }
@@ -457,7 +460,7 @@ extension AutomationTools {
                 let index: Int
                 if let title = try arguments.string("title") {
                     guard let found = menu.items.firstIndex(where: {
-                        !$0.isSeparatorItem && (allowPrivate || !AutomationMenus.namesPrivateWindow($0))
+                        !$0.isSeparatorItem && !AutomationMenus.namesUnreachableWindow($0, allowPrivate: allowPrivate)
                             && AutomationMenus.titlesMatch(AutomationMenus.displayTitle($0), title)
                     }) else {
                         throw AutomationToolError(.unknownMenuItem, "No \"\(title)\" in the menu")
@@ -476,8 +479,8 @@ extension AutomationTools {
                     index = wanted
                 }
                 let item = menu.items[index]
-                guard allowPrivate || !AutomationMenus.namesPrivateWindow(item) else {
-                    throw AutomationToolError(.privateUnreachable, "The item acts on a Private window" + Self.privateHint)
+                guard !AutomationMenus.namesUnreachableWindow(item, allowPrivate: allowPrivate) else {
+                    throw AutomationMenus.refusal(for: item)
                 }
                 guard !item.isSeparatorItem, item.submenu == nil else {
                     throw AutomationToolError(.unknownMenuItem, "\"\(AutomationMenus.displayTitle(item))\" is not an item that can be chosen")

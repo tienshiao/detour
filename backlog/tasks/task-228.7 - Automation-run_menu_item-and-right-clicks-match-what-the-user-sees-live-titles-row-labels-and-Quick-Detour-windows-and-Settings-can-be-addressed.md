@@ -3,9 +3,11 @@ id: TASK-228.7
 title: >-
   Automation: run_menu_item and right clicks match what the user sees (live
   titles, row labels), and Quick Detour windows and Settings can be addressed
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-14T23:45:00Z'
+updated_date: '2026-11-15T02:06:00Z'
 labels:
   - automation
 dependencies: []
@@ -28,8 +30,56 @@ Found 2026-11-14 during the batch's runtime checks. (1) run_menu_item by path ma
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 run_menu_item validates the menu (as AppKit does before showing it) before matching a path, so the title it matches is the one the user would see
+- [x] #1 run_menu_item validates the menu (as AppKit does before showing it) before matching a path, so the title it matches is the one the user would see
 - [ ] #2 list_windows lists Quick Detour, quarantine and Settings windows with their kind, and run_menu_item, screenshot and the input tools accept them (Private and quarantine rules as for browser windows)
-- [ ] #3 A right click at a sidebar row's label or icon opens the row's menu as a real right click does
-- [ ] #4 Tests cover each; the wiki tools table and traps are updated
+- [x] #3 A right click at a sidebar row's label or icon opens the row's menu as a real right click does
+- [x] #4 Tests cover each; the wiki tools table and traps are updated
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. run_menu_item by path: before matching each level, validate that level's items against the target window (item.target or the window's responder chain, then CommandDispatch.isEnabled), the same validation that retitles Pin/Unpin Tab. NSMenu.update() is not used because it validates against the key window, not the named one. Test: two windows, a pinned tab selected in one, neither key, with Pin Tab and Unpin Tab paths.
+2. Windows: AutomationWindowIDs keyed on NSWindowController, keeping the same counter. AutomationEnvironment.otherWindows (defaults to none; live it reads NSApp.windows for Quick Detour and Settings controllers, so the Settings singleton is not created). list_windows gains kind (browser, quick_detour, quarantine, settings). A second resolver serves run_menu_item, screenshot (window part), click, hit_test, type_text and press_key; browser-only tools answer a new unsupported_window code. One privacy predicate (browser incognito, Quick Detour on the Private profile, quarantine) feeds list hiding, refusal by id, the menu tracker and the Window-menu entries. PROVISIONAL: Private Quick Detour and quarantine windows stay refused whatever the setting until the lead answers; the switch to follow the opt-in is one line. Settings: list, screenshot and hit_test on any endpoint; input and run_menu_item in test runs only (gate_closed otherwise); the General pane's Automation section is refused always.
+3. Right click on a sidebar row's label or icon: reproduce on the real sidebar in the test host, find the cause, fix it in AutomationInput.
+4. Tests in AutomationToolsTests, AutomationInputTests, AutomationPrivateAccessTests and AutomationCaptureTests; wiki tools table, traps and Private section; review, verify, commit.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-14 implementation (Claude):
+- (1) AutomationMenus.item(atPath:in:validatingFor:allowPrivate:) validates each menu level's items for the named window (item.target or CommandDispatch.responderTarget, then CommandDispatch.isEnabled), which is where BrowserCommands.validate retitles Pin/Unpin Tab. NSMenu.update() was rejected because it asks the key window's chain. Window-menu entries (target is an NSWindow) are skipped.
+- (2) New AutomationWindows.swift: AutomationWindowKind (browser, quick_detour, quarantine, settings), AutomationWindowAccess (open, privateOptIn, never) and one predicate for every Private check: listing, refusal by id, the menu tracker (now stores an access level per menu), the Window-menu entries, set_window_frame by window_number and resolvePage's window check. This also fixes a gap: a person's context menu in a Private Quick Detour was listable, because only BrowserWindowController.isIncognito was asked. AutomationWindowIDs is keyed on NSWindowController, with one counter. AutomationEnvironment.otherWindows defaults to none; live, it is QuickDetourWindowController.openControllers plus a visible Settings window found in NSApp.windows (asking .shared would build Settings). list_windows gains kind; a Quick Detour gives its page url and title but no tab id. anyWindow(id:) serves run_menu_item, screenshot (window part), click, hit_test, type_text and press_key; window(id:) stays browser-only and answers the new code unsupported_window.
+- PROVISIONAL (chosen by Claude while the user was away, confirmed by the lead as the plan, not by the user): Private Quick Detour and quarantine windows are refused whatever the 'Allow agents to use Private windows' setting (AutomationWindows.privateQuickDetourAccess = .never), as the wiki's 'Never, whatever the setting' already said of their pages. Alternative: .privateOptIn, a one-value change. AC #2 is left unchecked for this.
+- Settings: list_windows, screenshot and hit_test on any endpoint. click, type_text, press_key and run_menu_item only in test runs (gate_closed on the user's endpoint), because its panes would let an approved client do what the tools keep to test runs or the user (extensions in any profile including Private, permissions, profiles, Link Routes). In test runs too, input to Settings > General's Automation section (tagged with AutomationWindows.automationSettingsIdentifier) is gate_closed, for a click on a view in it and for keys or a command while the keyboard is in it, so no tool turns on Private access, resets the token or allows a client.
+- (3) Cause, measured in the test host on the real sidebar: NSTableView.hitTest answers with the table for a press on a row's label or icon only while NSApp.currentEvent is a mouse press. The endpoint hit-tested with a stale appKitDefined event as current, got the NSTextField, and NSTextField.rightMouseDown inside a table opens nothing (label.rightMouseDown and window.sendEvent both opened nothing; cell, row and table opened the row menu). In a standalone spike, a plain label in a plain view forwards the click. Fix in AutomationInput: makeCurrent(event), which posts the event to the front of the queue and dequeues it, before hit-testing and before delivering a native mouse-down. hitView then makes the matching release current, so no press is left current.
+- Also fixed in the same path: the leftover mouse-up check compared eventNumber, but posting renumbers events (1,000,001 came back as about 16,900), so it never matched. It now compares timestamps.
+- Found: a context menu popped up by test code (NSMenu.popUpContextMenu from a RunLoop.perform block) in a Quick Detour window stalled the main queue in the test host, twice, with and without a release queued, while the same path in browser windows works. Not explained. The menu-over-Private test posts the tracking notification by hand instead.
+- Tests: AutomationWindowKindsTests 5/5 (new), AutomationToolsTests 21/21 (new: Pin/Unpin matched per window), AutomationInputTests 10/10 (new: sidebar label/icon right click; no mouse-up left queued), AutomationPrivateAccessTests, AutomationCaptureTests, AutomationStagingTests, MCPServerTests (stable codes include unsupported_window), AutomationExtensionTests, AutomationPageTests: 70/70. Total 106, 0 failures.
+
+Review (/code-review medium --fix, run as a forked agent on this worktree's diff). It found no correctness or security bug; it reported 5 findings.
+1. makeCurrent's nextEvent in .eventTracking could run another tool's pending run-loop work re-entrantly. Fixed: it now dequeues in a private run-loop mode (DetourAutomationMakeCurrent). The other part of this finding was left: a synthetic release stays current, so the menu tracker judges a later menu without its own event by the agent's window, not the person's last one.
+2. A menu the person opens over Settings' Automation section is not marked as restricted. Left: no control there opens a menu today.
+3. A hidden Quick Detour (Dock Hide All) stays addressable while a hidden Settings window does not. Left.
+4. Items with no target in the named window keep another window's title. Left: AppKit shows the same.
+5. The review rewrote placeableWindow so that set_window_frame's window_id takes any kind of window, with the same reach as window_number; it also fixed the doc comment.
+Re-run after the review: AutomationWindowKindsTests, AutomationToolsTests, AutomationInputTests, AutomationStagingTests and AutomationPrivateAccessTests, 58 tests, 0 failures. The earlier 70-test run of Capture, Staging, PrivateAccess, MCPServer, Extension and Page predates the run-loop mode change.
+Runtime (/verify): Debug build of this worktree (dylib built 18:01), DETOUR_DATA_DIR=DetourVerify-2287, DETOUR_MCP=1 test run, Detour in the background, through scripts/detour-mcp's Session. Script: scratchpad task-228.7/verify2287.py. All 22 checks passed:
+- A right click at x=90 on a tab row's title opens the row's menu (Copy URL, Share…, Open in Quick Detour).
+- File > Unpin Tab is refused while the tab is unpinned; File > Pin Tab pins it; File > Unpin Tab, right after, unpins it.
+- Open in Quick Detour lists a quick_detour window with the page's URL and no tab id. Its screenshot is right. Its page hit-tests as a web_view; a right click there lists WebKit's menu; list_tabs on it answers unsupported_window; File > Close Tab (cmd+w) through run_menu_item closes it.
+- open_ui settings lists a settings window and its screenshot is right. A click on 'Allow agents to use Private windows' answers gate_closed, and the screenshot shows the switch still off. A click on the Peek switch goes through, and a second click toggles it back. Window > Minimize answers menu_item_disabled (Settings cannot minimise). press_key tab reaches an NSSwitch. File > Pin Tab is not matched in Settings (the title stays as another window left it).
+- File > New Private Window gives hidden_private_windows 1.
+- One of four runs failed to open the Quick Detour from the row menu; it was not investigated (likely the script's choose timing).
+Not checked at runtime: a quarantine window or a Private Quick Detour (no tool opens one; covered by tests), and Settings on the user's own endpoint (covered by tests).
+Found: run_menu_item cmd+w on Settings answers 'Nothing in the window handles Close Tab'. Whether a person's Cmd+W closes Settings was not checked.
+The verify skill's §3 still says Settings needs screencapture; the skill was not edited (out of scope and not writable here).
+Defaults keys and the data folder of the run were removed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+run_menu_item validates each menu for the named window before matching a path, so Pin Tab and Unpin Tab match what that window shows. window_id now also names Quick Detour, quarantine and Settings windows, listed with their kind (new code unsupported_window for the tools for spaces and tabs). AutomationWindows is now the one Private predicate, which also closed a gap: menus over a Private Quick Detour were listable. A right click at a sidebar row's label or icon opens the row's menu: the endpoint now hit-tests and delivers with the press as NSApp.currentEvent, as AppKit's dispatch does. NSTableView sends a label press to the table only then. PROVISIONAL (not confirmed by the user): Private Quick Detour and quarantine windows are refused whatever the Private setting (one value to change, AutomationWindows.privateQuickDetourAccess); AC #2 is unchecked for that reason, and the task stays In Progress. Settings takes input and menu commands only in test runs, never in its Automation section; screenshot and hit_test work on any endpoint. Tests: new AutomationWindowKindsTests (5) plus additions to Tools and Input; affected suites 58/58 after the review, 70/70 before it. Runtime: 22/22 endpoint checks in an isolated test run. Wiki: automation-endpoint (Windows of every kind, tools table, Private windows, traps, tests) and log.
+<!-- SECTION:FINAL_SUMMARY:END -->

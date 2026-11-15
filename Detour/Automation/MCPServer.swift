@@ -64,6 +64,10 @@ nonisolated enum AutomationErrorCode: String, Sendable, CaseIterable {
     case notEmpty = "not_empty"
     /// No display has that id (list_displays names them).
     case unknownDisplay = "unknown_display"
+    /// The window is of a kind the tool does not take: a Quick Detour,
+    /// quarantine or Settings window for a tool that needs a browser
+    /// window's spaces and tabs (TASK-228.7).
+    case unsupportedWindow = "unsupported_window"
 }
 
 /// A tool call that failed in a way the caller can act on.

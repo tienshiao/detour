@@ -116,11 +116,43 @@ enum AutomationInput {
         case view(NSView)
     }
 
+    /// Makes `event` the application's current event, as `NSApp.sendEvent`
+    /// does while it dispatches one: posted to the front of the queue and
+    /// taken off again (`nextEvent` with dequeue sets `currentEvent`).
+    /// Handing an event to a view skips that, and AppKit reads the current
+    /// event in places: `NSTableView.hitTest` sends a press on a row's label
+    /// or icon to the table itself only while the current event is a mouse
+    /// press, and otherwise to the label, whose `rightMouseDown` inside a
+    /// table opens no menu (TASK-228.7).
+    /// Taken off in a run-loop mode of its own: in a common mode such as
+    /// `.eventTracking`, `nextEvent` would also run pending common-mode work
+    /// (another tool's `runFromRunLoop` body) inside the caller.
+    static func makeCurrent(_ event: NSEvent) {
+        NSApp.postEvent(event, atStart: true)
+        _ = NSApp.nextEvent(matching: NSEvent.EventTypeMask(type: event.type), until: .distantPast,
+                            inMode: makeCurrentMode, dequeue: true)
+    }
+
+    private static let makeCurrentMode = RunLoop.Mode("DetourAutomationMakeCurrent")
+
     /// The deepest view under `point` (window coordinates), as the window's
-    /// own hit test finds it.
-    static func hitView(at point: NSPoint, in window: NSWindow) -> NSView? {
+    /// own hit test finds it for a press of `button` there: with that press
+    /// as the current event (`makeCurrent`), as during AppKit's dispatch.
+    /// Its release is made current afterwards, so no press is left current
+    /// for code that reads the current event later (a context menu opened
+    /// on a current press waits for its release and stops the main queue).
+    static func hitView(at point: NSPoint, in window: NSWindow, button: Button = .left,
+                        modifiers: NSEvent.ModifierFlags = []) -> NSView? {
         guard let frameView = window.contentView?.superview ?? window.contentView else { return nil }
-        return frameView.hitTest(point)
+        let (downType, upType): (NSEvent.EventType, NSEvent.EventType) =
+            button == .left ? (.leftMouseDown, .leftMouseUp) : (.rightMouseDown, .rightMouseUp)
+        guard let press = mouseEvent(downType, at: point, in: window, modifiers: modifiers, clickCount: 1),
+              let release = mouseEvent(upType, at: point, in: window, modifiers: modifiers, clickCount: 1)
+        else { return frameView.hitTest(point) }
+        makeCurrent(press)
+        let hit = frameView.hitTest(point)
+        makeCurrent(release)
+        return hit
     }
 
     /// What a click at `hit` reaches: the web view it is inside, or the view.
@@ -133,10 +165,11 @@ enum AutomationInput {
         return .view(hit)
     }
 
-    /// The view under `point` (window coordinates), or the web view it is
-    /// inside.
-    static func target(at point: NSPoint, in window: NSWindow) -> Target? {
-        hitView(at: point, in: window).map(target(for:))
+    /// The view a press of `button` at `point` (window coordinates) reaches,
+    /// or the web view it is inside.
+    static func target(at point: NSPoint, in window: NSWindow, button: Button = .left,
+                       modifiers: NSEvent.ModifierFlags = []) -> Target? {
+        hitView(at: point, in: window, button: button, modifiers: modifiers).map(target(for:))
     }
 
     /// Moves keyboard focus to `view` as a person's left click does (NSWindow
@@ -183,6 +216,8 @@ enum AutomationInput {
                 NSApp.postEvent(up, atStart: false)
                 let returned = await runFromRunLoop(wait: wait) {
                     announce(down, in: window)
+                    // Current while it is handled, as in AppKit's dispatch.
+                    makeCurrent(down)
                     if button == .left {
                         focus(view, in: window)
                         view.mouseDown(with: down)
@@ -191,9 +226,11 @@ enum AutomationInput {
                     }
                     // A view that runs no tracking loop leaves the mouse-up
                     // queued; the window would later hand it to another view.
+                    // Found by its time: posting renumbers an event (and the
+                    // test host moves its location).
                     let mask: NSEvent.EventTypeMask = button == .left ? .leftMouseUp : .rightMouseUp
                     if let left = NSApp.nextEvent(matching: mask, until: .distantPast, inMode: .eventTracking, dequeue: false),
-                       left.eventNumber == up.eventNumber {
+                       left.timestamp == up.timestamp {
                         _ = NSApp.nextEvent(matching: mask, until: .distantPast, inMode: .eventTracking, dequeue: true)
                     }
                 }
@@ -391,16 +428,18 @@ final class AutomationMenuTracker {
     static let shared = AutomationMenuTracker()
 
     private(set) var openMenus: [NSMenu] = []
-    /// The open menus that opened over a Private window (a person's context
-    /// menu in one, the menu bar while one is in front), and their submenus:
-    /// `list_menu` and `choose_menu_item` refuse them.
-    private var privateMenus: Set<ObjectIdentifier> = []
+    /// How reachable the window each open menu opened over is (a person's
+    /// context menu in a Private window, the menu bar while one is in
+    /// front), and their submenus: `list_menu` and `choose_menu_item` refuse
+    /// a menu the client may not reach. Absent means open.
+    private var menuAccess: [ObjectIdentifier: AutomationWindowAccess] = [:]
     private var observers: [any NSObjectProtocol] = []
 
     var topMenu: NSMenu? { openMenus.last }
 
-    func isOverPrivateWindow(_ menu: NSMenu) -> Bool {
-        privateMenus.contains(ObjectIdentifier(menu))
+    /// How reachable the window `menu` opened over is.
+    func access(of menu: NSMenu) -> AutomationWindowAccess {
+        menuAccess[ObjectIdentifier(menu)] ?? .open
     }
 
     func start() {
@@ -408,21 +447,23 @@ final class AutomationMenuTracker {
         let center = NotificationCenter.default
         observers.append(center.addMainObserver(forName: NSMenu.didBeginTrackingNotification, object: nil) { [weak self] note in
             guard let self, let menu = note.object as? NSMenu else { return }
-            // Input tools never deliver to a Private window, so a menu that
-            // opens with one under the person's last event, or in front while
-            // Detour is active, is the person's own there. Errs towards
-            // refusing: an agent's menu opened meanwhile is refused too.
-            let overPrivate = openMenus.contains { privateMenus.contains(ObjectIdentifier($0)) }
-                || AutomationMenus.isPrivate(NSApp.currentEvent?.window)
-                || (NSApp.isActive && AutomationMenus.isPrivate(NSApp.keyWindow))
+            // Input tools deliver to a Private window only while allowed, so a
+            // menu that opens with one under the person's last event, or in
+            // front while Detour is active, is the person's own there. Errs
+            // towards refusing: an agent's menu opened meanwhile is refused
+            // too. The strictest of those and of the menus already open.
+            let access = (openMenus.map { self.access(of: $0) } + [
+                AutomationWindows.access(of: NSApp.currentEvent?.window),
+                NSApp.isActive ? AutomationWindows.access(of: NSApp.keyWindow) : .open,
+            ]).max() ?? .open
             openMenus.removeAll { $0 === menu }
             openMenus.append(menu)
-            if overPrivate { privateMenus.insert(ObjectIdentifier(menu)) } else { privateMenus.remove(ObjectIdentifier(menu)) }
+            menuAccess[ObjectIdentifier(menu)] = access == .open ? nil : access
         })
         observers.append(center.addMainObserver(forName: NSMenu.didEndTrackingNotification, object: nil) { [weak self] note in
             guard let menu = note.object as? NSMenu else { return }
             self?.openMenus.removeAll { $0 === menu }
-            self?.privateMenus.remove(ObjectIdentifier(menu))
+            self?.menuAccess[ObjectIdentifier(menu)] = nil
         })
     }
 
@@ -444,7 +485,7 @@ final class AutomationMenuTracker {
     /// unless Private is allowed.
     static func describe(_ menu: NSMenu, allowPrivate: Bool) -> [JSONValue] {
         menu.items.enumerated().compactMap { index, item in
-            if !allowPrivate && AutomationMenus.namesPrivateWindow(item) { return nil }
+            if AutomationMenus.namesUnreachableWindow(item, allowPrivate: allowPrivate) { return nil }
             if item.isSeparatorItem {
                 return ["index": .int(index), "separator": true, "title": ""]
             }

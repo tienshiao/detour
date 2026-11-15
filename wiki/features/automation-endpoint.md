@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Automation endpoint (MCP)
-description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2, TASK-228.3, TASK-228.5): how it is turned on, who may connect (Host, Origin, a test run's shared token, per-client tokens the user approves in Detour's own prompt, and the rejected alternatives), the Private-window opt-in, the HTTP and MCP layers, the tools and their stable error codes, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the per-extension compatibility report (static scan of chrome.* references checked in the live worker and a probe page, the stub registry and its call counts, API-naming runtime errors, unsupported manifest keys and permissions, worker failures) and the stable output for diffing against a baseline, capture staging (a demo world seeded from a fixture file and its format, displays and exact window placement read back from the window server, paced typing, Debug UI on demand, the test-run guard on Arc's folder, who takes the focus), the connected-agent indicator and disconnecting (revoking an approved client), the bundled stdio helper and where it keeps each client's token, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host, a window's open animation, focus during captures)."
+description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2, TASK-228.3, TASK-228.5, TASK-228.7): how it is turned on, who may connect (Host, Origin, a test run's shared token, per-client tokens the user approves in Detour's own prompt, and the rejected alternatives), the Private-window opt-in, the HTTP and MCP layers, the tools and their stable error codes, the window kinds a window_id names (browser, Quick Detour, quarantine, Settings) and who reaches which, how clicks, keys and menus are delivered inside the app without activating it, screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the per-extension compatibility report (static scan of chrome.* references checked in the live worker and a probe page, the stub registry and its call counts, API-naming runtime errors, unsupported manifest keys and permissions, worker failures) and the stable output for diffing against a baseline, capture staging (a demo world seeded from a fixture file and its format, displays and exact window placement read back from the window server, paced typing, Debug UI on demand, the test-run guard on Arc's folder, who takes the focus), the connected-agent indicator and disconnecting (revoking an approved client), the bundled stdio helper and where it keeps each client's token, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, a shared item retitled per window, a table's hit test that follows the current event, renumbered posted events, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host, a window's open animation, focus during captures)."
 tags: [automation, mcp, testing, security]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T12:00:00Z }
@@ -75,6 +75,12 @@ sources:
   - id: approval-tests
     resource: ../../DetourTests/AutomationClientApprovalTests.swift
     title: AutomationClientApprovalTests and AutomationPrivateAccessTests
+  - id: task-228-7
+    resource: backlog:TASK-228.7
+    title: "Automation: run_menu_item and right clicks match what the user sees (live titles, row labels), and Quick Detour windows and Settings can be addressed"
+  - id: windows
+    resource: ../../Detour/Automation/AutomationWindows.swift
+    title: AutomationWindows.swift (window kinds, who reaches which, Settings' Automation section)
   - id: webkit-manifest
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
     title: "WebKit, WebExtension.cpp (the manifest keys it reads, supportedPermissions)"
@@ -188,7 +194,7 @@ Deny prompt once, and gets a token of its own (user decisions,
    Allow is not the default button, Escape denies, and both buttons are
    enabled only 1 s after the panel appears, so a click or Return meant for
    the app in front cannot approve anything. No automation tool reaches the
-   panel: input goes only to browser windows, and `set_window_frame`
+   panel: input goes only to the windows `list_windows` names, and `set_window_frame`
    refuses it, so an approved agent cannot approve another.
 3. The HTTP request is held until the answer (`AutomationApprovals`):
    Allow stores a record and answers 200 `{token, client_id, name}`; Deny
@@ -281,9 +287,17 @@ again from the next call.
   finishes, as one does after Disconnect, Revoke or Turn Off.
 - **Never, whatever the setting**: the Private profile as a target of
   `install_extension`, `set_extension_enabled` or a permission (those skip
-  the user's prompts); a route into a quarantine; the Private profile's
-  Quick Detour and quarantine pages (no tool reaches Quick Detour windows,
-  and capture never goes into them). Its extension contexts follow the
+  the user's prompts); a route into a quarantine; Private Quick Detour
+  windows and quarantine windows, which since TASK-228.7 are addressable
+  windows (see "Windows of every kind") but are left out of `list_windows`,
+  counted in `hidden_private_windows` and refused by id, as are menus over
+  them and the Window menu's entries for them. This is PROVISIONAL (chosen
+  while the user was away): the documented model said their pages are never
+  reached, so the new window tools kept that rather than widening it. The
+  alternative, treating them as Private browser windows are (reachable
+  while the setting is on), is one value:
+  `AutomationWindows.privateQuickDetourAccess`. Page capture never goes into
+  Quick Detour pages either way. Its extension contexts follow the
   setting but only when named (`popup:<ext>@<Private profile id>`): a
   client that names no profile resolves exactly as before. Its workers that
   were answered `stop` while the setting was off park only at their next
@@ -325,20 +339,20 @@ tool's schema to hold it.
 
 | Tool | Does | Notes |
 |---|---|---|
-| `list_windows` | Windows with `window_id`, `window_number` (the CGWindowID), frame (AppKit's), `screen_bounds` (the window server's, top-left points) and `display_id`, key/main, `is_private`, active space, selected tab | `window_id` is a small stable number per window, not `windowNumber`, which is only assigned once a window is on screen. |
+| `list_windows` | Windows with `window_id`, `kind` (`browser`, `quick_detour`, `quarantine`, `settings`), `window_number` (the CGWindowID), frame (AppKit's), `screen_bounds` (the window server's, top-left points) and `display_id`, key/main, `is_private`, active space, selected tab (a Quick Detour's page: its url and title, no tab id) | `window_id` is a small stable number per window, one counter for every kind, not `windowNumber`, which is only assigned once a window is on screen. Settings keeps its id when closed and reopened. See "Windows of every kind". |
 | `list_spaces` | Spaces with profile, counts, the windows showing each | |
 | `list_tabs` | A space's favourites, pinned entries (live or dormant) and tabs, in sidebar order, plus its pinned folders | `id` is what `select_tab` takes; `tab_id` and `context` are null for a dormant item. |
 | `select_tab` | Selects an item as a row click does | Switches the window's space first; wakes a dormant pinned entry or favourite; `dormant_refused` when its extension keeps it dormant. |
 | `open_url` | The palette's typed-URL path (`openTypedURL`): a new tab, or `in_place` | Link Routes apply as for a typed URL; `routed` says the URL went elsewhere. |
-| `run_menu_item` | A main-menu command by path or key equivalent, sent to that window's responder chain and validated there | Works with Detour in the background, where there is no key window. |
-| `click` | A click by element (`context` + CSS `selector`), by page point (`context` + CSS-pixel `x`, `y`) or by window point (`window_id` + `x`, `y`, the content's top-left origin); `button` left/right, `modifiers`, `count` 2 for a double click | Closes an open menu first. `completed` false: the click opened a menu or an alert that is still open. |
+| `run_menu_item` | A main-menu command by path or key equivalent, sent to that window's responder chain and validated there; any kind of window | Works with Detour in the background, where there is no key window. Each menu on a path is validated for the named window before it is matched (TASK-228.7), so a title that changes with the window is the one it shows there ("File > Unpin Tab" while that window's tab is pinned, whichever window validated the shared item last). |
+| `click` | A click by element (`context` + CSS `selector`), by page point (`context` + CSS-pixel `x`, `y`) or by window point (`window_id` of any kind + `x`, `y`, the content's top-left origin); `button` left/right, `modifiers`, `count` 2 for a double click | Closes an open menu first. `completed` false: the click opened a menu or an alert that is still open. A right click on a sidebar row's label or icon opens the row's menu (TASK-228.7; see Traps). |
 | `type_text` | Key presses for `text` into a tab's page (after clicking `selector`, if given) or a window's focused control; `interval_ms` paces them | US key codes; other characters as key presses with no physical key. |
 | `press_key` | One key with modifiers (`return`, `shift+tab`, `cmd+a`) | A Cmd key goes through the target's key equivalents (`handled`); menu commands are `run_menu_item`. |
-| `hit_test` | What a click at a window point would reach: view class, accessibility role and label, frame | Read-only; aims `click` without a screenshot. |
+| `hit_test` | What a click at a window point would reach: view class, accessibility role and label, frame; any kind of window, Settings on any endpoint | Read-only; aims `click` without a screenshot. Hit-tests as AppKit's dispatch does, with the press as the current event: a sidebar row's label reports `DraggableTableView`. |
 | `list_menu` | The open menu's items (index, title, enabled, checked, submenu, identifier); waits `timeout_ms` for one to open; `path` for a submenu | A page's context menu shows WebKit's `WKMenuItemIdentifier…` identifiers. |
 | `choose_menu_item` | Chooses an item by title, index or identifier, then closes the menu | WebKit's own items run for real (Download Linked File downloaded at runtime). |
 | `close_menu` | Closes the open menu without choosing | |
-| `screenshot` | A PNG of a window's content, its sidebar (`part`) or a tab's page (`context`), as image content and/or written to `save_to` (an existing file only with `overwrite`); `scale` 1 or 2, never above the display's | `source` app (default): drawn inside Detour, no grant, works in the background, no shadow, but no glass (see Traps). `source` screen: the window server's picture through ScreenCaptureKit, exact; needs Screen Recording (checked with `CGPreflightScreenCaptureAccess`, never prompted), else `permission_denied`. |
+| `screenshot` | A PNG of a window's content (any kind, Settings on any endpoint), a browser window's sidebar (`part`; another kind is `unsupported_window`) or a tab's page (`context`), as image content and/or written to `save_to` (an existing file only with `overwrite`); `scale` 1 or 2, never above the display's | `source` app (default): drawn inside Detour, no grant, works in the background, no shadow, but no glass (see Traps). `source` screen: the window server's picture through ScreenCaptureKit, exact; needs Screen Recording (checked with `CGPreflightScreenCaptureAccess`, never prompted), else `permission_denied`. |
 | `set_appearance` | Light, dark, or following the system, for all of Detour (`NSApp.appearance`) | Until quit or the next call. |
 | `evaluate_js` | Runs `expression` or `script` (a function body with `return`) in a tab's main frame, `world` page (default) or isolated (`WKContentWorld` "DetourAutomation": the DOM, not the page's globals); awaits promises | Result as JSON with its `type`; what JSON cannot hold is converted in the page (nodes `<div#id.class>`, cycles `[Circular]`, functions, undefined null). A throw is `script_error` with `error.details` {name, message, stack}; a syntax error too (from WebKit's exception). `timeout_ms` (default 10 s) gives `timeout`; the script runs on. Results over 1 MB are cut (`truncated`). |
 | `read_page` | url, title, ready_state, viewport, and by `mode`: `text` (default, `innerText`), `html` (`outerHTML`), `elements`, `summary` | `selector` narrows; `max_length` cuts text and html, `max_elements` the list, with `truncated`. Elements: tag, role (explicit or implicit), name (aria-labelledby, aria-label, label, text, alt, title, placeholder), a selector unique in the document (`#id`, then `tag[data-testid|name|aria-label=…]`, then an `nth-of-type` path), rect in CSS pixels, visible (`checkVisibility`), in_viewport, disabled. Runs in the isolated world. The argument is `mode`, not `format`, a JSON Schema keyword the flatness test refuses. |
@@ -358,7 +372,7 @@ tool's schema to hold it.
 | `read_extension_global` | Reads the value at a dotted path (`self.cache.size`) | How a worker's own globals are read. |
 | `seed_world` | Test runs only. Builds a world from a fixture file into an empty data directory: profiles, favourites, spaces, pinned entries in nested folders, splits, tabs, history visits, Link Routes, the active space | See "Seeding a world". `invalid_fixture` (with `details.path`), `not_empty` (with what is there). |
 | `list_displays` | Displays with `display_id` (CGDirectDisplayID), `frame` and `visible_frame` in global top-left points, `scale`, `main`, `name`, pixel size | Virtual displays included. Read-only, whenever the endpoint is on. |
-| `set_window_frame` | Test runs only. Moves and sizes a browser window (`window_id`) or another Detour window (`window_number`: Settings, the Arc import window) in top-left points, global or relative to `display_id`; `activate` brings Detour to the front with the window key | Returns `frame`, `screen_bounds` (the window server's), `settled`, `is_key`, `app_active`, `window_number`. `unknown_window`, `unknown_display`; a sheet, the approval panel, and a Private window unless allowed, are refused. |
+| `set_window_frame` | Test runs only. Moves and sizes a window from `list_windows` (`window_id`, any kind, TASK-228.7) or another Detour window (`window_number`: the Arc import window) in top-left points, global or relative to `display_id`; `activate` brings Detour to the front with the window key | Returns `frame`, `screen_bounds` (the window server's), `settled`, `is_key`, `app_active`, `window_number`. `unknown_window`, `unknown_display`; a sheet, the approval panel, and a Private window unless allowed, are refused. |
 | `open_ui` | Debug builds and test runs only. `space_editor` (a draft: name, emoji, color, profile_id; new or `space_id`), `arc_offer` and `arc_import` (from `arc_folder`, a fake Arc folder in the data directory or a temporary folder: never in or under Arc's own, in any case spelling, and with no symbolic or hard links inside, which the reader would follow to Arc's files), `settings` (`pane`, `row`) | Returns the window the UI is in (`window_number`, `frame`, `screen_bounds`). Absent from Release (its tool list was checked on a Release test run). |
 | `navigation_swipe` | Debug builds and test runs only (TASK-325). `state` reports each hosted pane's back-swipe mode, WebKit's gesture flag, rubber-band edges, history and opener; `begin` starts a swipe on a pane (`context`, `direction`, `progress`) with a scripted tracker and holds the veneer; `finish` completes it or springs it back through the trackpad swipe's completion code | Synthetic events cannot drive `NSEvent.trackSwipeEvent`; see [Back swipe to the opener](../tabs/back-swipe-to-opener.md). |
 | `extension_compat_report` | What an extension uses that Detour lacks: its `chrome.*`/`browser.*` references checked in the worker and a page, the stubs it references or called, API-naming TypeErrors, unsupported manifest keys and permissions, worker failures | Whenever the endpoint is on (not gated: it installs nothing). `probe: false` skips the runtime checks. See "The compatibility report". |
@@ -375,6 +389,57 @@ in every page and input tool; before TASK-228.4 the input tools said
 `not_displayed`. Extension contexts (`popup:<ext>`, `options:<ext>`,
 `worker:<ext>`, `extension:<ext>`) go in the same argument
 (`resolvePageTarget`); see "Extension contexts" for which tool takes which.
+
+## Windows of every kind
+
+Since TASK-228.7, `window_id` names four kinds of window, all listed by
+`list_windows` with their `kind`: browser windows, Quick Detour windows,
+quarantine windows (a Quick Detour with a throwaway store) and Settings
+(while it is open).[^task-228-7] No other window is addressable: the
+approval prompt, sheets, alerts and popovers stay out of reach.
+`AutomationWindows` holds the classification. It is the one place that
+decides which windows are Private, so listing, refusal by id, menus over a
+window, the Window menu's entries and `set_window_frame`'s `window_number`
+all agree. Before, only `BrowserWindowController.isIncognito` was asked, so
+a person's context menu in a Private Quick Detour was listable.
+`AutomationEnvironment.otherWindows` supplies the extra windows. Live, it is
+`QuickDetourWindowController.openControllers` plus a visible Settings
+window found in `NSApp.windows`. Asking `SettingsWindowController.shared`
+would build Settings and all its panes.
+
+| Kind | `run_menu_item`, `click`, `type_text`, `press_key` | `screenshot`, `hit_test` | Tools for spaces and tabs |
+|---|---|---|---|
+| `browser` | yes | yes (`part: sidebar` too) | yes |
+| `quick_detour` | yes; a window point over the page reaches its web view | yes | `unsupported_window` |
+| `quarantine`, or a Quick Detour on the Private profile | `private_unreachable` whatever the setting (PROVISIONAL, see "Private windows") | the same | the same |
+| `settings` | test runs only (`gate_closed` on the user's endpoint); never in the Automation section | yes, on any endpoint | `unsupported_window` |
+
+A Quick Detour's page is not a tab of a space, so its `selected_tab_id` is
+null and the page tools do not take it. What the window shows is in
+`selected_tab_url` and `selected_tab_title`.
+
+Settings takes input only in a test run because its panes do what the tools
+keep to test runs or to the user. On the user's endpoint they would let an
+approved client turn extensions on (in Private too), change their
+permissions, delete profiles and edit Link Routes, all without the prompts
+that `install_extension` and `set_extension_permission` are gated for. In
+a test run too, a click on a view in Settings > General's Automation
+section, or keys or a command while something in it has the keyboard, is
+`gate_closed`. That section carries
+`AutomationWindows.automationSettingsIdentifier`, so no tool turns on
+Private access, resets the token or allows a client. A window-point click
+cannot reach the Settings toolbar, which is outside the content view, so
+switch panes with `open_ui settings` (`pane`).
+
+Checks written before TASK-228.7 work around these limits.
+`docs/harness/task326-copy-url-checks.py` right-clicks a sidebar row's
+background and skips its label and icon. `docs/harness/task327` drives
+Settings through Accessibility (`axdrive.swift`) and posted key events.
+TASK-320's Quick Detour checks could not reach the window at all. In a test
+run, each of these can now go through the endpoint: `click` at a row's
+label, `click`, `type_text` and `press_key` on Settings' `window_id`, and
+`run_menu_item` on a Quick Detour's. The scripts and the `/verify` skill
+have not been rewritten.
 
 ## How input is delivered
 
@@ -393,7 +458,11 @@ reaches each kind of target:
   and US `event.code`s, while Detour is in the background.
 - **A native view** under a window point gets `mouseDown(with:)` directly,
   with the mouse-up posted to the app's queue first, where a control's
-  tracking loop finds it. Checked at runtime with Detour in the background:
+  tracking loop finds it. The view is hit-tested, and the press handled,
+  with that press as `NSApp.currentEvent` (`AutomationInput.makeCurrent`:
+  posted to the front of the queue and taken off with `nextEvent` in a
+  run-loop mode of its own, so no other tool's pending run-loop work runs
+  inside the call), as in AppKit's own dispatch. See the trap on sidebar rows. Checked at runtime with Detour in the background:
   the sidebar's Add Space button opened the space editor.
 - **Every event goes out from `RunLoop.main.perform`**, as `run_menu_item`'s
   actions do (see Traps): a native context menu runs its whole tracking loop
@@ -971,6 +1040,43 @@ In a test run, Claude Code can also connect directly:
 - **Menu-bar titles.** A menu-bar item's own title is AppKit's placeholder
   `NSMenuItem`; the bar shows its submenu's title, and the application menu's
   submenu has none (it is the app's name). Paths match on those.
+- **A shared item's title is whichever window validated it last.**
+  Pin/Unpin Tab is one File-menu item that `validateMenuItem` retitles for
+  the window it is asked for. Matched without validating, "File > Unpin
+  Tab" was refused while the item still read "Pin Tab" from another
+  window's validation (TASK-320). `run_menu_item` now validates each
+  level's items for the named window before matching. It does not use
+  `NSMenu.update()`, which asks the key window's chain: with Detour in the
+  background there may be no key window, or a different one.
+- **A sidebar row's label took a right click and opened nothing.** A view-based
+  `NSTableView` answers `hitTest` with itself for a press on a row's label
+  or icon, but only while the current event is a mouse press. With any
+  other current event (in the test host it was an `appKitDefined` event
+  left over), it answers with the `NSTextField` or `NSImageView`. Such a
+  label inside a table does not pass `rightMouseDown` on to the row: in the
+  test host, `label.rightMouseDown` and `window.sendEvent` both opened
+  nothing, while the same event on the cell, the row or the table opened
+  the row's menu. A real right click is hit-tested during dispatch, so it
+  reaches the table. The endpoint hit-tested outside dispatch, so its right
+  click reached the label (TASK-326's helper aimed at the row's background
+  to get around it). Now the press is made current first. A plain label in
+  a plain view does forward the click (standalone spike), so this is the
+  table's doing. The release is made current after a bare `hit_test`:
+  `NSMenu.popUpContextMenu` with a press current and no release queued
+  waited for the release and stopped the main queue, which hung a test.
+- **A context menu popped up by a test in a Quick Detour window stalled the
+  main queue.** `NSMenu.popUpContextMenu` called from a `RunLoop.main.perform`
+  block in a Quick Detour window held the main queue in the test host twice,
+  with and without a release queued. The same call through a native view in a
+  browser window does not. This is not explained. The test posts
+  `didBeginTrackingNotification` by hand instead. At runtime, a right click
+  on a Quick Detour's page through the endpoint (WebKit's menu) listed and
+  closed normally.
+- **Posting an event renumbers it.** `NSApp.postEvent` gives the event a
+  new `eventNumber` (posted 1,000,001 came back as about 16,900), so the
+  check that took a leftover mouse-up off the queue never matched it. It
+  now matches the event's `timestamp`. The test host also moves the
+  location.
 - **An item with a submenu has an action.** AppKit gives it
   `submenuAction:`, which only its menu's own tracking may send; sending it
   raised `-[NSMenu submenuAction:]: unrecognized selector`. Such items are
@@ -1126,12 +1232,14 @@ JSON), `MCPServerTests` (negotiation, sessions, routing, result and error
 shapes, schema flatness, stable codes, context ids), `AutomationToolsTests`
 (the tools against real windows on `TabStore.shared`, including a Private
 window, a dormant pinned entry, another space, validation through the
-window, and a slow command), `AutomationEndpointTests` (refusals, a whole
+window, Pin Tab and Unpin Tab matched by the named window's title with
+neither window key, and a slow command), `AutomationEndpointTests` (refusals, a whole
 session and a split, kept-alive request over a real socket),
 `AutomationInputTests` (trusted clicks by selector, by page and by window
 point, modifier and double clicks, typing in order with US codes, Return,
-a page's context menu listed and closed, a native view's mouse-down and a
-native context menu chosen from, and the input errors),
+a page's context menu listed and closed, a native view's mouse-down with no
+mouse-up left queued, a native context menu chosen from, a right click on a
+sidebar row's label and icon opening the row's menu, and the input errors),
 `AutomationCaptureTests` (window, sidebar and page PNGs as image content
 and on disk, scale 2, the page's own colours from WebKit's snapshot, light
 and dark, the Debug overrides and that they exist only in Debug, and the
@@ -1197,7 +1305,15 @@ stop, a bad body; sessions bound to their client and refused once revoked
 on the main actor; over a real socket: a token working until revoked and the
 next request 401, bad heads refused before the body, a held request
 outliving the 10 s deadline while an idle connection does not and the held
-limit, a client hanging up) and `AutomationPrivateAccessTests` (listing, a
+limit, a client hanging up) and `AutomationWindowKindsTests` (TASK-228.7: Quick Detour and
+Settings windows listed with their kind and stable ids; Private Quick
+Detour and quarantine windows hidden and refused by every window tool, by
+their Window-menu entries and in a menu opened over them, whatever the
+setting; a Quick Detour's screenshot, a hit test and click into its page,
+a command closing it through its own responder chain, and
+`unsupported_window` from the tools for spaces and tabs; Settings seen on
+any endpoint, input refused outside a test run, and in a test run refused
+in the Automation section only), `AutomationPrivateAccessTests` (listing, a
 page tool, an input tool and a menu tool with the setting off, on and off
 again; capture installed in and removed from Private pages, never in a
 Private Quick Detour page; the Private profile never an install target,
@@ -1231,3 +1347,4 @@ its contexts following the setting).[^tests][^approval-tests]
 [^task-228-5]: Automation: per-client approval prompt and tokens, and a Private-window opt-in, for the MCP endpoint
 [^approvals]: AutomationApprovals.swift, AutomationClients.swift and AutomationApprovalPanel.swift (the authorize route, the client store, the prompt)
 [^approval-tests]: AutomationClientApprovalTests and AutomationPrivateAccessTests
+[^task-228-7]: Automation: run_menu_item and right clicks match what the user sees (live titles, row labels), and Quick Detour windows and Settings can be addressed

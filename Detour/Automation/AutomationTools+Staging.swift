@@ -243,15 +243,15 @@ extension AutomationTools {
             title: "Place a window",
             description: "Test runs only. Moves and sizes a window, in points with a top-left origin: global coordinates, or relative "
                 + "to the top-left of display_id (from list_displays) to put it on that display, a virtual one "
-                + "included. window_id is a browser window; window_number (a CGWindowID from list_windows, or from "
-                + "open_ui in Debug builds) reaches Detour's other windows too, such as Settings. Returns the frame "
+                + "included. window_id is any window from list_windows; window_number (a CGWindowID from list_windows, "
+                + "or from open_ui in Debug builds) reaches Detour's other windows too, such as the Arc import window. Returns the frame "
                 + "read back after "
                 + "the move and screen_bounds, the window server's own bounds of the window (what screencapture "
                 + "-l and -R see), with window_number for screencapture; settled is false when the window server "
                 + "had not caught up within 2 s. activate brings Detour to the front with "
                 + "the window key, as a recording of an active window needs (it takes focus from the app in front).",
             inputSchema: MCPSchema.input([
-                ("window_id", .integer("A browser window from list_windows")),
+                ("window_id", .integer("A window from list_windows")),
                 ("window_number", .integer("Or any of Detour's windows by its CGWindowID")),
                 ("x", .number("Left edge in points")),
                 ("y", .number("Top edge in points, from the top")),
@@ -322,10 +322,10 @@ extension AutomationTools {
         "app_active": MCPSchema.booleanType,
     ]
 
-    /// The window `window_id` or `window_number` names: a browser window
-    /// (a Private one only while the user allows it), or another of Detour's
-    /// windows (Settings, the Arc import window). Never a sheet (it moves
-    /// with its parent), never the approval prompt (TASK-228.5).
+    /// The window `window_id` (any kind from list_windows) or `window_number`
+    /// names, a Private one only while the user allows it. `window_number`
+    /// also reaches Detour's other windows (the Arc import window). Never a
+    /// sheet (it moves with its parent), never the approval prompt (TASK-228.5).
     private func placeableWindow(_ arguments: ToolArguments) throws -> NSWindow {
         let windowID = try arguments.int("window_id")
         let number = try arguments.int("window_number")
@@ -333,17 +333,15 @@ extension AutomationTools {
             throw AutomationToolError(.invalidArguments, "Give window_id or window_number")
         }
         if let windowID {
-            guard let window = try self.window(id: windowID).window else {
-                throw AutomationToolError(.unknownWindow, "Window \(windowID) has no NSWindow")
-            }
-            return window
+            // Any kind (TASK-228.7): open_ui and list_windows give Settings and
+            // Quick Detour windows a window_id too.
+            return try anyWindow(id: windowID).window
         }
         guard let window = NSApp.windows.first(where: { $0.windowNumber == number && $0.isVisible }) else {
             throw AutomationToolError(.unknownWindow, "Detour has no visible window \(number!)")
         }
-        guard privateAllowed || (!AutomationMenus.isPrivate(window) && !AutomationMenus.isPrivate(window.sheetParent)) else {
-            throw AutomationToolError(.privateUnreachable, "Window \(number!) is a Private window" + Self.privateHint)
-        }
+        let access = AutomationWindows.access(of: window)
+        guard access.allows(privateAllowed) else { throw access.refusal("Window \(number!)") }
         guard window.identifier != AutomationApprovalPanel.panelIdentifier else {
             throw AutomationToolError(.unknownWindow, "Window \(number!) is Detour's approval prompt, which no agent reaches")
         }
@@ -357,11 +355,11 @@ extension AutomationTools {
     /// points) and the window server's bounds of it, which is what a
     /// recording region must be taken from.
     func placement(of window: NSWindow) -> [String: JSONValue] {
-        let controller = window.windowController as? BrowserWindowController
-        let browserWindowID = controller.flatMap { c in openWindows.contains { $0 === c } ? windowIDs.id(for: c) : nil }
+        let addressed = addressableWindows.first { $0.window === window }
+        let windowID = addressed.map { windowIDs.id(for: $0.controller) }
         let screen = window.screen
         return [
-            "window_id": browserWindowID.map(JSONValue.int) ?? .null,
+            "window_id": windowID.map(JSONValue.int) ?? .null,
             "window_number": .int(window.windowNumber),
             "frame": Self.json(Self.topLeft(window.frame)),
             "screen_bounds": Self.screenBounds(ofWindowNumber: window.windowNumber).map(Self.json) ?? .null,

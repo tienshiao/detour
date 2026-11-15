@@ -286,6 +286,8 @@ nonisolated final class AutomationInputTests: XCTestCase {
         XCTAssertEqual(clicked["view"], "ClickView")
         XCTAssertEqual(clickView.downs.count, 1)
         XCTAssertEqual(clickView.downs.first?.modifierFlags.contains(.option), true)
+        XCTAssertNil(NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .eventTracking, dequeue: false),
+                     "a view that tracks nothing leaves no mouse-up queued for another view")
         let (hit, _) = try await call(f, "hit_test", ["window_id": .int(f.windowID), "x": .double(bx), "y": .double(by)])
         XCTAssertEqual(hit["view"], "ClickView")
         XCTAssertEqual(hit["frame"]?["width"]?.doubleValue, 120)
@@ -315,6 +317,34 @@ nonisolated final class AutomationInputTests: XCTestCase {
         XCTAssertFalse(chooseError, chosen.jsonString)
         try await waitUntil("the menu item's action", timeout: 3) { receiver.actions == ["chosen"] }
         try await waitUntil("the menu to close", timeout: 3) { AutomationMenuTracker.shared.topMenu == nil }
+    }
+
+    /// A sidebar row's label and icon take a right click as the row does
+    /// (TASK-228.7): the press is hit-tested while it is the current event,
+    /// as AppKit's dispatch does, so `NSTableView.hitTest` gives the table
+    /// itself, whose menu is the row's. Before, the stale current event sent
+    /// the press to the label, which opened nothing.
+    @MainActor func testARightClickOnASidebarRowsLabelOrIconOpensTheRowsMenu() async throws {
+        let f = try await makeFixture()
+        let table = f.window.tabSidebar.tableView
+        table.layoutSubtreeIfNeeded()
+        let cell = try XCTUnwrap((0..<table.numberOfRows).lazy.compactMap {
+            table.view(atColumn: 0, row: $0, makeIfNecessary: false) as? TabCellView
+        }.first { $0.titleLabel.stringValue == "Input" })
+        for view in [cell.titleLabel as NSView, cell.faviconImageView] {
+            let (x, y) = try contentCentre(of: view)
+            let (hit, _) = try await call(f, "hit_test", ["window_id": .int(f.windowID), "x": .double(x), "y": .double(y)])
+            XCTAssertEqual(hit["view"], "DraggableTableView", "a press there goes to the table, as a real one does")
+            let (clicked, isError) = try await call(f, "click", ["window_id": .int(f.windowID), "x": .double(x),
+                                                                 "y": .double(y), "button": "right"])
+            XCTAssertFalse(isError, clicked.jsonString)
+            XCTAssertEqual(clicked["view"], "DraggableTableView")
+            let (listed, listError) = try await call(f, "list_menu", ["timeout_ms": 3000])
+            XCTAssertFalse(listError, listed.jsonString)
+            let titles = listed["items"]?.arrayValue?.compactMap { $0["title"]?.stringValue } ?? []
+            XCTAssertTrue(titles.contains("Copy URL"), "the row's menu: \(titles)")
+            await AutomationMenuTracker.shared.closeAll()
+        }
     }
 
     // MARK: Key mapping

@@ -45,8 +45,9 @@ extension AutomationTools {
         }
         // A web view shown in a Private window is reachable only while
         // Private is allowed, whatever the space says.
-        if !privateAllowed && AutomationMenus.isPrivate(webView.window) {
-            throw AutomationToolError(.privateUnreachable, "Tab \(tab.id.uuidString) is in a Private window" + Self.privateHint)
+        let access = AutomationWindows.access(of: webView.window)
+        if !access.allows(privateAllowed) {
+            throw access.refusal("The window showing tab \(tab.id.uuidString)")
         }
         return (tab, webView)
     }

@@ -85,14 +85,16 @@ nonisolated struct AutomationExtensionRef: Equatable, Sendable {
 }
 
 /// Small, stable window numbers for clients (`window_id`), handed out in the
-/// order windows are first seen. Not `NSWindow.windowNumber`, which is only
-/// assigned once a window is on screen; that number is reported separately
-/// as `window_number` (it is the CGWindowID screencapture takes).
+/// order windows are first seen, one counter for every kind of window
+/// (TASK-228.7). Not `NSWindow.windowNumber`, which is only assigned once a
+/// window is on screen; that number is reported separately as
+/// `window_number` (it is the CGWindowID screencapture takes). Settings keeps
+/// its id across closing and reopening: its controller lives on.
 final class AutomationWindowIDs {
-    private let ids = NSMapTable<BrowserWindowController, NSNumber>(keyOptions: .weakMemory, valueOptions: .strongMemory)
+    private let ids = NSMapTable<NSWindowController, NSNumber>(keyOptions: .weakMemory, valueOptions: .strongMemory)
     private var next = 1
 
-    func id(for controller: BrowserWindowController) -> Int {
+    func id(for controller: NSWindowController) -> Int {
         if let existing = ids.object(forKey: controller) { return existing.intValue }
         let id = next
         next += 1
@@ -107,6 +109,10 @@ struct AutomationEnvironment {
     var windowControllers: () -> [BrowserWindowController]
     var mainMenu: () -> NSMenu?
     var store: TabStore
+    /// The other windows a client can address (TASK-228.7): Quick Detour,
+    /// quarantine and Settings windows. Any other controller is ignored.
+    /// None unless given, so a test lists only its own windows.
+    var otherWindows: () -> [NSWindowController] = { [] }
     /// Whether the endpoint runs in the isolated test-run mode
     /// (`AutomationGate.Mode.testRun`). The tools that install extensions or
     /// grant them permissions without the user's prompt answer `gate_closed`
@@ -120,7 +126,8 @@ struct AutomationEnvironment {
         AutomationEnvironment(
             windowControllers: { (NSApp.delegate as? AppDelegate)?.windowControllers ?? [] },
             mainMenu: { NSApp.mainMenu },
-            store: .shared)
+            store: .shared,
+            otherWindows: AutomationWindows.liveOtherWindows)
     }
 }
 
@@ -164,7 +171,7 @@ final class AutomationTools {
     /// The open windows a client may see: Private ones only while allowed.
     var reachableWindows: [BrowserWindowController] {
         let allowed = privateAllowed
-        return openWindows.filter { allowed || !$0.isIncognito }
+        return openWindows.filter { AutomationWindows.access(of: $0 as NSWindowController).allows(allowed) }
     }
 
     /// The spaces a client may see: Private ones only while allowed.
@@ -176,14 +183,58 @@ final class AutomationTools {
     /// A message for a refused Private window, space or tab.
     static let privateHint = "; the user can allow agents to use Private windows in Detour's Settings"
 
-    func window(id: Int) throws -> BrowserWindowController {
-        guard let controller = openWindows.first(where: { windowIDs.id(for: $0) == id }) else {
+    /// Every addressable window: browser windows, then Quick Detour,
+    /// quarantine and Settings windows (TASK-228.7), reachable or not.
+    var addressableWindows: [AutomationWindow] {
+        openWindows.compactMap(AutomationWindows.describe)
+            + environment.otherWindows().compactMap(AutomationWindows.describe)
+                .filter { !($0.controller is BrowserWindowController) }
+    }
+
+    /// The window `window_id` names, of any kind. A Private one only while
+    /// the user allows it; a Private Quick Detour or quarantine window as
+    /// `AutomationWindows.privateQuickDetourAccess` says.
+    func anyWindow(id: Int) throws -> AutomationWindow {
+        guard let found = addressableWindows.first(where: { windowIDs.id(for: $0.controller) == id }) else {
             throw AutomationToolError(.unknownWindow, "No open window \(id)")
         }
-        guard privateAllowed || !controller.isIncognito else {
-            throw AutomationToolError(.privateUnreachable, "Window \(id) is a Private window" + Self.privateHint)
+        guard found.access.allows(privateAllowed) else { throw found.access.refusal("Window \(id)") }
+        return found
+    }
+
+    /// The window `window_id` names for a tool that sends it input or a
+    /// command. Settings takes them only in a test run (an isolated data
+    /// directory): on the user's own endpoint its panes would let an agent
+    /// do what the tools keep to test runs or to the user (installing and
+    /// turning on extensions, permissions, profiles, Link Routes).
+    func inputWindow(id: Int) throws -> AutomationWindow {
+        let found = try anyWindow(id: id)
+        if found.kind == .settings && !environment.isTestRun {
+            throw AutomationToolError(.gateClosed,
+                                      "Settings takes clicks, keys and menu commands only in a test run; "
+                                        + "screenshot and hit_test work on it")
         }
-        return controller
+        return found
+    }
+
+    /// Refuses input that would reach Settings' Automation section (its
+    /// switches, token buttons and client list): a click on a view in it, or
+    /// keys or a command while something in it has the keyboard. The user's,
+    /// in a test run too: no tool turns on Private access (TASK-228.5).
+    func refuseAutomationSettings(_ responder: NSResponder?) throws {
+        guard AutomationWindows.isInAutomationSettings(responder) else { return }
+        throw AutomationToolError(.gateClosed, "Settings' Automation section is the user's; no tool changes it")
+    }
+
+    /// The browser window `window_id` names, for the tools that act on its
+    /// spaces and tabs. Another kind of window is `unsupported_window`.
+    func window(id: Int) throws -> BrowserWindowController {
+        let found = try anyWindow(id: id)
+        guard let browser = found.browser else {
+            throw AutomationToolError(.unsupportedWindow,
+                                      "Window \(id) is a \(found.kind.rawValue) window; this tool takes a browser window")
+        }
+        return browser
     }
 
     func space(id: UUID) throws -> Space {
@@ -208,11 +259,13 @@ final class AutomationTools {
         MCPTool(
             name: "list_windows",
             title: "List windows",
-            description: "Lists Detour's browser windows (Private windows are left out unless the user allows agents "
-                + "to use them; is_private says which is one): each one's window_id, "
+            description: "Lists Detour's windows with their kind: browser, quick_detour, quarantine and settings "
+                + "(Private windows are left out unless the user allows agents to use them; Private Quick Detour and "
+                + "quarantine windows are always left out; is_private says which is one): each one's window_id, "
                 + "window_number (its CGWindowID), frame (AppKit's, bottom-left origin), screen_bounds (the window "
                 + "server's, top-left origin, as screencapture takes it), display_id, key/main state, active space "
-                + "and selected tab. window_id is what the other tools take.",
+                + "and selected tab (a Quick Detour's page). window_id is what the other tools take; the tools for "
+                + "spaces and tabs take browser windows only. Settings takes input only in a test run.",
             inputSchema: MCPSchema.input([]),
             outputSchema: MCPSchema.output([
                 "app_active": MCPSchema.booleanType,
@@ -221,8 +274,9 @@ final class AutomationTools {
             ]),
             annotations: ["readOnlyHint": true],
             handler: { [self] _ in
-                let windows = openWindows
-                let visible = reachableWindows
+                let windows = addressableWindows
+                let allowed = privateAllowed
+                let visible = windows.filter { $0.access.allows(allowed) }
                 return [
                     "app_active": .bool(NSApp.isActive),
                     "windows": .array(visible.map(describe)),
@@ -231,27 +285,33 @@ final class AutomationTools {
             })
     }
 
-    private func describe(_ controller: BrowserWindowController) -> JSONValue {
-        let window = controller.window
-        let frame = window?.frame ?? .zero
+    private func describe(_ entry: AutomationWindow) -> JSONValue {
+        let window = entry.window
+        let frame = window.frame
+        let controller = entry.browser
+        // A Quick Detour's page is not a tab of a space: the page tools do not
+        // take it, so its id is not given, only what the window shows.
+        let quickDetourTab = (entry.controller as? QuickDetourWindowController)?.tab
+        let selectedTab = controller?.selectedTab ?? quickDetourTab
         return [
-            "window_id": .int(windowIDs.id(for: controller)),
-            "window_number": .int(window?.windowNumber ?? 0),
+            "window_id": .int(windowIDs.id(for: entry.controller)),
+            "kind": .string(entry.kind.rawValue),
+            "window_number": .int(window.windowNumber),
             "frame": ["x": .double(frame.origin.x), "y": .double(frame.origin.y),
                       "width": .double(frame.width), "height": .double(frame.height)],
             // Global top-left points, as screencapture takes them (TASK-228.3):
             // the window server's bounds, null while the window is off screen.
-            "screen_bounds": window.flatMap { Self.screenBounds(ofWindowNumber: $0.windowNumber) }.map(Self.json) ?? .null,
-            "display_id": window?.screen.flatMap(Self.displayID).map { .int(Int($0)) } ?? .null,
-            "is_key": .bool(window?.isKeyWindow ?? false),
-            "is_main": .bool(window?.isMainWindow ?? false),
-            "is_visible": .bool(window?.isVisible ?? false),
-            "is_miniaturized": .bool(window?.isMiniaturized ?? false),
-            "is_private": .bool(controller.isIncognito),
-            "active_space_id": .nullable(controller.activeSpaceID?.uuidString),
-            "selected_tab_id": .nullable(controller.selectedTabID?.uuidString),
-            "selected_tab_url": .nullable(controller.selectedTab?.url?.absoluteString),
-            "selected_tab_title": .nullable(controller.selectedTab?.title),
+            "screen_bounds": Self.screenBounds(ofWindowNumber: window.windowNumber).map(Self.json) ?? .null,
+            "display_id": window.screen.flatMap(Self.displayID).map { .int(Int($0)) } ?? .null,
+            "is_key": .bool(window.isKeyWindow),
+            "is_main": .bool(window.isMainWindow),
+            "is_visible": .bool(window.isVisible),
+            "is_miniaturized": .bool(window.isMiniaturized),
+            "is_private": .bool(entry.access != .open),
+            "active_space_id": .nullable(controller?.activeSpaceID?.uuidString),
+            "selected_tab_id": .nullable(controller?.selectedTabID?.uuidString),
+            "selected_tab_url": .nullable(selectedTab?.url?.absoluteString),
+            "selected_tab_title": .nullable(selectedTab?.title),
         ]
     }
 
@@ -531,7 +591,9 @@ final class AutomationTools {
             title: "Run a menu command",
             description: "Runs a main-menu command for a window, by menu path (for example [\"File\", \"New Tab\"]) "
                 + "or by key equivalent (for example \"cmd+shift+t\", \"cmd+option+down\"). The command goes to that "
-                + "window's responder chain and is validated there, so it works while Detour is not frontmost. "
+                + "window's responder chain and is validated there, so it works while Detour is not frontmost. Menus "
+                + "are validated for that window before a path is matched, so a title that changes with the window "
+                + "(Pin Tab, Unpin Tab) is the one it shows there. Any kind of window from list_windows. "
                 + "completed is false when the command is still running after a short wait (it opened a modal alert).",
             inputSchema: MCPSchema.input([
                 ("window_id", .integer("The window the command is for")),
@@ -545,7 +607,7 @@ final class AutomationTools {
             ]),
             annotations: ["readOnlyHint": false, "destructiveHint": true],
             handler: { [self] arguments in
-                let controller = try window(id: try arguments.requiredInt("window_id"))
+                let addressed = try inputWindow(id: try arguments.requiredInt("window_id"))
                 let path = try arguments.stringArray("path")
                 let key = try arguments.string("key")
                 guard (path == nil) != (key == nil) else {
@@ -554,16 +616,16 @@ final class AutomationTools {
                 guard let menu = environment.mainMenu() else {
                     throw AutomationToolError(.unknownMenuItem, "There is no main menu")
                 }
+                let window = addressed.window
+                try refuseAutomationSettings(window.firstResponder)
                 let found: (item: NSMenuItem, path: [String])
                 let allowPrivate = privateAllowed
                 if let path {
-                    found = try AutomationMenus.item(atPath: path, in: menu, allowPrivate: allowPrivate)
+                    found = try AutomationMenus.item(atPath: path, in: menu, validatingFor: window,
+                                                     allowPrivate: allowPrivate)
                 } else {
                     let (characters, modifiers) = try AutomationMenus.parseKeyEquivalent(key!)
                     found = try AutomationMenus.item(matchingCharacters: characters, modifiers: modifiers, in: menu)
-                }
-                guard let window = controller.window else {
-                    throw AutomationToolError(.unknownWindow, "The window has no NSWindow")
                 }
                 let (action, target) = try AutomationMenus.resolve(found.item, in: window, allowPrivate: allowPrivate)
                 // From the run loop: see `AutomationInput.runFromRunLoop`.
@@ -584,18 +646,23 @@ final class AutomationTools {
 enum AutomationMenus {
 
     /// The item at `path` (titles, compared case-insensitively, with "..."
-    /// matching "…"). Dynamic menus are rebuilt on the way down. A Private
-    /// window's Window-menu entry only with `allowPrivate`.
-    static func item(atPath path: [String], in menu: NSMenu,
+    /// matching "…"). Each menu on the way down is brought up to date as it
+    /// is before it opens: a delegate-built one is rebuilt, and its items are
+    /// validated for `window` (TASK-228.7), which retitles the ones that
+    /// change with it ("Pin Tab" / "Unpin Tab"), so the title matched is the
+    /// one the person would see there. A Private window's Window-menu entry
+    /// only with `allowPrivate`.
+    static func item(atPath path: [String], in menu: NSMenu, validatingFor window: NSWindow?,
                      allowPrivate: Bool) throws -> (item: NSMenuItem, path: [String]) {
         guard !path.isEmpty else { throw AutomationToolError(.invalidArguments, "path is empty") }
         var current = menu
         var titles: [String] = []
         for (index, title) in path.enumerated() {
             refresh(current)
+            if let window { validate(current, for: window) }
             // The Window menu's entry for a Private window bears its page's
             // title: neither matched nor listed, unless Private is allowed.
-            let hidden: (NSMenuItem) -> Bool = { !allowPrivate && namesPrivateWindow($0) }
+            let hidden: (NSMenuItem) -> Bool = { namesUnreachableWindow($0, allowPrivate: allowPrivate) }
             guard let item = current.items.first(where: {
                 !$0.isSeparatorItem && !hidden($0) && titlesMatch(displayTitle($0), title)
             }) else {
@@ -638,22 +705,42 @@ enum AutomationMenus {
         return nil
     }
 
-    /// Whether `window` is a Private browser window, which automation
-    /// reaches only while the user allows it (TASK-228.5).
-    static func isPrivate(_ window: NSWindow?) -> Bool {
-        (window?.windowController as? BrowserWindowController)?.isIncognito == true
+    /// Whether `item` acts on a window a client may not reach with
+    /// `allowPrivate`: the Window menu's entry for a Private window (browser,
+    /// Quick Detour or quarantine) targets it, and is titled with its page's
+    /// title.
+    static func namesUnreachableWindow(_ item: NSMenuItem, allowPrivate: Bool) -> Bool {
+        guard let window = item.target as? NSWindow else { return false }
+        return !AutomationWindows.access(of: window).allows(allowPrivate)
     }
 
-    /// Whether `item` acts on a Private window: the Window menu's entry for
-    /// one targets it, and is titled with its selected page's title.
-    static func namesPrivateWindow(_ item: NSMenuItem) -> Bool {
-        isPrivate(item.target as? NSWindow)
+    /// The refusal for an item that acts on such a window.
+    static func refusal(for item: NSMenuItem) -> AutomationToolError {
+        AutomationWindows.access(of: item.target as? NSWindow).refusal("The window the item acts on")
     }
 
     /// Lets a delegate-built menu (Spaces, Extensions) fill itself in, as it
     /// does when it opens.
     private static func refresh(_ menu: NSMenu) {
         menu.delegate?.menuNeedsUpdate?(menu)
+    }
+
+    /// Validates `menu`'s items as AppKit does before showing it, for
+    /// `window` rather than the key window: each item's target (its own, or
+    /// the first along the window's responder chain) is asked, which is
+    /// where a command retitles its item (`BrowserCommands.validate`).
+    /// `NSMenu.update()` is not used: it asks the key window's chain, and
+    /// with Detour in the background there may be none, or another window.
+    /// Items with submenus are skipped (their own menu is validated when the
+    /// path goes into it), and so are the Window menu's entries, whose
+    /// target is the window they name.
+    static func validate(_ menu: NSMenu, for window: NSWindow) {
+        for item in menu.items where !item.isSeparatorItem && item.submenu == nil {
+            guard let action = item.action, !(item.target is NSWindow),
+                  let target = item.target ?? CommandDispatch.responderTarget(for: action, in: window) else { continue }
+            // For the retitling; the enable decision is `resolve`'s, at the end.
+            _ = CommandDispatch.isEnabled(item, autoenables: menu.autoenablesItems, target: target)
+        }
     }
 
     /// The title a person sees. The bar shows a menu-bar item's submenu
@@ -690,9 +777,7 @@ enum AutomationMenus {
         guard !item.isHidden else {
             throw AutomationToolError(.menuItemDisabled, "\"\(item.title)\" is hidden")
         }
-        guard allowPrivate || !namesPrivateWindow(item) else {
-            throw AutomationToolError(.privateUnreachable, "The item acts on a Private window" + AutomationTools.privateHint)
-        }
+        guard !namesUnreachableWindow(item, allowPrivate: allowPrivate) else { throw refusal(for: item) }
         guard let target = item.target ?? CommandDispatch.responderTarget(for: action, in: window) else {
             throw AutomationToolError(.menuItemDisabled, "Nothing in the window handles \"\(item.title)\"")
         }

@@ -90,15 +90,21 @@ extension AutomationTools {
                     }
                     rep = try await AutomationCapture.page(webView)
                 } else if let windowID = try arguments.int("window_id") {
-                    let controller = try self.window(id: windowID)
+                    // Any kind of window (TASK-228.7); only a browser window has a sidebar.
+                    let addressed = try anyWindow(id: windowID)
                     if source == "screen" {
-                        guard part == "window", let window = controller.window else {
+                        guard part == "window" else {
                             throw AutomationToolError(.invalidArguments, "source screen takes a whole window")
                         }
-                        rep = try await AutomationCapture.screen(window)
+                        rep = try await AutomationCapture.screen(addressed.window)
+                    } else if part == "sidebar" {
+                        guard let browser = addressed.browser else {
+                            throw AutomationToolError(.unsupportedWindow,
+                                                      "Window \(windowID) is a \(addressed.kind.rawValue) window, which has no sidebar")
+                        }
+                        rep = try AutomationCapture.sidebar(browser)
                     } else {
-                        rep = part == "sidebar" ? try AutomationCapture.sidebar(controller)
-                                                : try AutomationCapture.window(controller)
+                        rep = try AutomationCapture.window(addressed.window, sidebar: addressed.browser?.tabSidebar.view)
                     }
                 } else {
                     throw AutomationToolError(.invalidArguments, "Give window_id or context")

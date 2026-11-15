@@ -129,6 +129,8 @@ class GeneralSettingsViewController: SettingsPaneViewController {
         automationSection.orientation = .vertical
         automationSection.alignment = .leading
         automationSection.spacing = SettingsMetrics.sectionTitleToRows
+        // The automation endpoint's input tools refuse views in here (TASK-228.7).
+        automationSection.identifier = AutomationWindows.automationSettingsIdentifier
 
         let stack = NSStackView(views: [browserSection, peekSection, automationSection])
         stack.orientation = .vertical

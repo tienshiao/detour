@@ -368,6 +368,53 @@ nonisolated final class AutomationToolsTests: XCTestCase {
         XCTAssertEqual(f.window.activeSpaceID, f.b.id)
     }
 
+    /// Pin/Unpin Tab is one shared item that each window's validation
+    /// retitles (TASK-228.7): the path is matched against the title the named
+    /// window would show, whichever window validated it last, with neither
+    /// window key.
+    @MainActor func testRunMenuItemMatchesTheTitleTheNamedWindowShows() async throws {
+        let other = BrowserWindowController(incognito: false)
+        other.sidebarSplitView.autosaveName = nil
+        windows.append(other)
+        let bar = NSMenu(title: "Main")
+        let fileItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        let file = NSMenu(title: "File")
+        let toggle = BrowserCommands.togglePin.makeMenuItem()
+        file.addItem(toggle)
+        fileItem.submenu = file
+        bar.addItem(fileItem)
+        let f = try makeFixture(menu: bar, extraWindows: [other])
+        other.setActiveSpace(id: f.b.id)
+        let normal = addTab("http://127.0.0.1:9/normal", in: f.a)
+        f.window.selectTab(id: normal.id)
+        let pinned = addTab("http://127.0.0.1:9/pinned", in: f.b)
+        TabStore.shared.pinTab(id: pinned.id, in: f.b)
+        other.selectTab(id: pinned.id)
+        XCTAssertTrue(other.selectedTabIsPinned)
+        let otherID: JSONValue = .int(f.tools.windowIDs.id(for: other))
+        let windowID: JSONValue = .int(f.windowID)
+        XCTAssertEqual(toggle.title, "Pin/Unpin Tab", "no window has validated it yet")
+
+        // The window with the normal tab shows Pin Tab, not the item's last title.
+        var refused = try await call(f, "run_menu_item", ["window_id": windowID, "path": ["File", "Unpin Tab"]])
+        XCTAssertEqual(refused.content["error"]?["code"], "unknown_menu_item")
+        XCTAssertTrue(refused.content["error"]?["message"]?.stringValue?.contains("it has: Pin Tab") == true,
+                      refused.content.jsonString)
+        // The pinned window's validation retitles the item to Unpin Tab...
+        refused = try await call(f, "run_menu_item", ["window_id": otherID, "path": ["File", "Pin Tab"]])
+        XCTAssertEqual(refused.content["error"]?["code"], "unknown_menu_item")
+        XCTAssertEqual(toggle.title, "Unpin Tab")
+        // ...and the other window still matches Pin Tab, as it would show it.
+        let (pinRun, pinError) = try await call(f, "run_menu_item", ["window_id": windowID, "path": ["File", "Pin Tab"]])
+        XCTAssertFalse(pinError, pinRun.jsonString)
+        XCTAssertEqual(pinRun["title"], "Pin Tab")
+        XCTAssertTrue(f.a.pinnedTabs.contains { $0.id == normal.id }, "the window's own tab was pinned")
+        let (unpinRun, unpinError) = try await call(f, "run_menu_item", ["window_id": otherID, "path": ["File", "Unpin Tab"]])
+        XCTAssertFalse(unpinError, unpinRun.jsonString)
+        XCTAssertEqual(unpinRun["path"], ["File", "Unpin Tab"])
+        XCTAssertFalse(f.b.pinnedTabs.contains { $0.id == pinned.id }, "the other window's tab was unpinned")
+    }
+
     @MainActor func testRunMenuItemErrors() async throws {
         let f = try makeFixture()
         let window: JSONValue = .int(f.windowID)
