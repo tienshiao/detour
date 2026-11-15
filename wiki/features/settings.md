@@ -106,6 +106,9 @@ sources:
   - id: profiles-extensions-form-tests
     resource: ../../DetourTests/SettingsProfilesExtensionsFormTests.swift
     title: SettingsProfilesExtensionsFormTests.swift
+  - id: task-340
+    resource: backlog:TASK-340
+    title: "Settings: the window can stop mid-resize when a list pane first opens on a row other than the first"
   - id: task-337
     resource: backlog:TASK-337
     title: "Content blocking: a setting for the AdGuard URL Tracking list, so Detour does not fetch it when it is off"
@@ -812,6 +815,21 @@ Accessibility-driven checks.[^task-337]
   mid-animation (Profiles reports from `viewWillAppear`); it must start from
   the animation's target height, not the window's intermediate one, or the
   window stops at the 400 minimum.[^task-189]
+- **A replaced animation still completes (TASK-340).** A refit mid-animation
+  starts a new animation; the one it replaces still calls its completion,
+  and when both head to the same height (a list pane opened on another row
+  refits as its rows and labels settle, often to the height it is already
+  going to) the completion matched on the fit and the height took it for the
+  newer one's: it cleared the target while the window was mid-resize, the
+  next refit read the intermediate height as one the user dragged to and
+  kept it, and the window stopped short (671 pt of content on the
+  pre-TASK-338 Profiles pane, whose normal profile needed about 709).
+  Each fit now takes a generation number and only the newest fit's
+  completion applies the bounds and clears the target. The animator is
+  `SettingsWindowController.animateFrame`, replaced in
+  `SettingsWindowFitTests` to end the animations in a chosen order (the race
+  test failed before the fix: the target was gone). Checked at runtime:
+  Profiles opened first on rows 1 and 2 ends at its natural 1008 pt.[^task-340]
 - **Measure wrapped text with a wrap width.** `fittingSize` does not do the
   two-pass layout a wrapping `NSTextField` needs: a wrapping label without
   `preferredMaxLayoutWidth` measures as one line. A constant wrap width
@@ -948,5 +966,6 @@ suites.
 [^task-336]: TASK-336
 [^task-337]: TASK-337
 [^task-338]: TASK-338
+[^task-340]: TASK-340
 [^task211-harness]: TASK-211 harness
 [^survey-harness]: TASK-189 survey harness

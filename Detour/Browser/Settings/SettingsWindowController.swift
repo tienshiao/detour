@@ -31,12 +31,30 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     /// so a harness can exercise the cap on a tall screen. Nil in the app.
     var screenUsableHeightOverride: CGFloat?
 
+    /// Animates the window to a frame and calls `completion` when the
+    /// animation ends (or is superseded). Tests replace it to decide when
+    /// each animation ends (TASK-340).
+    var animateFrame: (NSWindow, NSRect, @escaping @MainActor @Sendable () -> Void) -> Void = { window, frame, completion in
+        // Asynchronous (the animator proxy), so the switch returns at once.
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = window.animationResizeTime(frame)
+            window.animator().setFrame(frame, display: true)
+        }, onMain: completion)
+    }
+
     /// The fit last applied to the window, which `refit` starts from.
     private var currentFit: SettingsPaneHeight?
     /// The content height an animation in flight is heading to. A refit that
     /// arrives mid-animation (a pane reporting its rows from `viewWillAppear`)
     /// starts from this, not from the window's intermediate height.
-    private var animationTargetHeight: CGFloat?
+    private(set) var animationTargetHeight: CGFloat?
+    /// Counts fits; a fit's completion applies only while it is the newest
+    /// (TASK-340). A refit mid-animation to the same height as the running
+    /// animation's replaces that animation, whose completion still arrives:
+    /// matching on the fit and the height took it for the newer one's, which
+    /// cleared the target while the window was mid-resize, and the next
+    /// refit kept that height as one the user had dragged to.
+    private var fitGeneration = 0
 
     private init() {
         // Resizable in height only (TASK-189): the minimum and maximum content
@@ -293,10 +311,12 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
             if frame.maxY > visible.maxY { frame.origin.y = visible.maxY - frame.height }
             if frame.minY < visible.minY { frame.origin.y = min(visible.minY, visible.maxY - frame.height) }
         }
+        fitGeneration += 1
+        let generation = fitGeneration
         let finish: @MainActor @Sendable () -> Void = { [weak self] in
-            // A later fit (another switch mid-animation) owns the bounds.
-            guard let self, self.currentFit == fit, window.contentViewController === pane,
-                  self.animationTargetHeight == nil || self.animationTargetHeight == height else { return }
+            // A later fit (another switch or a refit mid-animation, even to
+            // the same height) owns the bounds.
+            guard let self, self.fitGeneration == generation, window.contentViewController === pane else { return }
             self.animationTargetHeight = nil
             window.contentMinSize = NSSize(width: SettingsMetrics.windowWidth, height: fit.minHeight)
             window.contentMaxSize = NSSize(width: SettingsMetrics.windowWidth, height: fit.maxHeight)
@@ -308,12 +328,8 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         }
         if animate && window.isVisible {
             animationTargetHeight = height
-            // Asynchronous (the animator proxy), so the switch returns at
-            // once; a refit that lands mid-animation starts from the target.
-            NSAnimationContext.runAnimationGroup({ context in
-                context.duration = window.animationResizeTime(frame)
-                window.animator().setFrame(frame, display: true)
-            }, onMain: finish)
+            // A refit that lands mid-animation starts from the target.
+            animateFrame(window, frame, finish)
         } else {
             animationTargetHeight = nil
             window.setFrame(frame, display: true)
