@@ -536,8 +536,8 @@ final class AutomationTools {
             description: "Opens a URL in a window as if it were typed in the command palette: in a new tab "
                 + "(Cmd+T), or in the selected tab with in_place (Cmd+L). Link Routes apply to a new tab, as they "
                 + "do to typed URLs, so a routed URL can open in another space or window (routed is then true); "
-                + "a route into a Private window is refused with private_unreachable unless the user allows agents to "
-                + "use Private windows, and a route into a quarantine always is.",
+                + "a route into a Private window is refused with private_unreachable unless the user allows agents "
+                + "to use Private windows. Routes never send a typed URL to a quarantine.",
             inputSchema: MCPSchema.input([
                 ("window_id", .integer("The window to open in")),
                 ("url", .string("An absolute URL, or a host such as example.com")),
@@ -560,18 +560,17 @@ final class AutomationTools {
                     throw AutomationToolError(.unknownSpace, "Window \(windowID) shows no space")
                 }
                 let inPlace = try arguments.bool("in_place") ?? false
-                // A route into a Private window would make one reachable from
-                // automation: refused, not followed, unless the user allows
-                // Private windows (TASK-228.5). A quarantine (a Quick Detour
-                // window in the Private profile with a store of its own) is
-                // always refused here, whatever the setting, though an open
-                // one is reachable while Private is allowed (TASK-228.7) and
-                // a click on a routed link in a page still opens one. Only
-                // where `openTypedURL` would route (the
-                // same rule it asks).
+                // A route into a Private window would make one reachable
+                // from automation: refused, not followed, unless the user
+                // allows Private windows (TASK-228.5). A typed URL is never
+                // quarantined (the resolver's rule), so `.quarantine` cannot
+                // come back here today; if it ever does, it follows the same
+                // setting, as open quarantine windows do (TASK-228.7, the
+                // user's decision of 2026-11-15). Only where `openTypedURL`
+                // would route (the same rule it asks).
                 if typedURLIsRoutable(url, isSearch: false, navigatesInPlace: inPlace && controller.selectedTab != nil),
                    let decision = controller.routedTypedDecision(for: url),
-                   decision == .quarantine || (decision == .privateWindow && !privateAllowed) {
+                   decision == .quarantine || decision == .privateWindow, !privateAllowed {
                     throw AutomationToolError(.privateUnreachable,
                                               "A Link Route sends \(url.absoluteString) to a "
                                                 + (decision == .quarantine ? "quarantine" : "Private window"))

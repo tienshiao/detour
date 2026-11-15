@@ -292,9 +292,14 @@ again from the next call.
   finishes, as one does after Disconnect, Revoke or Turn Off.
 - **Never, whatever the setting**: the Private profile as a target of
   `install_extension`, `set_extension_enabled` or a permission (those skip
-  the user's prompts); a route into a quarantine (`open_url` never opens
-  one); page capture in Quick Detour and quarantine pages, which are not
-  tabs of a space and so no page tool's context. Private Quick Detour and
+  the user's prompts); a quarantine opened by `open_url`, which cannot
+  happen: Link Routes never quarantine a typed URL (`LinkRouteResolver`), so
+  a route into a quarantine does not apply and the URL opens in a new tab
+  of the window's space. The user chose on 2026-11-15 that a quarantine
+  route in `open_url` should follow the setting; it is moot while typed URLs
+  are never quarantined, and the guard in `open_url` refuses one only while
+  the setting is off, should that change. Page capture in Quick Detour and quarantine pages,
+  which are not tabs of a space and so no page tool's context. Private Quick Detour and
   quarantine windows themselves are no longer here: since the user's
   decision on TASK-228.7 (2026-11-14) they follow the setting as Private
   browser windows do (`AutomationWindows.privateQuickDetourAccess =
@@ -1328,7 +1333,8 @@ shapes, schema flatness, stable codes, context ids), `AutomationToolsTests`
 (the tools against real windows on `TabStore.shared`, including a Private
 window, a dormant pinned entry, another space, validation through the
 window, Pin Tab and Unpin Tab matched by the named window's title with
-neither window key, and a slow command), `AutomationEndpointTests` (refusals, a whole
+neither window key, a slow command, and `open_url` never opening a quarantine through a
+Link Route, with Private allowed or not), `AutomationEndpointTests` (refusals, a whole
 session and a split, kept-alive request over a real socket),
 `AutomationInputTests` (trusted clicks by selector, by page and by window
 point, modifier and double clicks, typing in order with US codes, Return,

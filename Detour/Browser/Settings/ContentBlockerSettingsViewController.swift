@@ -3,7 +3,7 @@ import AppKit
 /// Settings > Content Blocking: the four filter lists, each a row with its
 /// status on the right and its rule counts and last update under its name, a
 /// footnote with the total and what is being fetched, the buttons that
-/// update or redownload every list, and the Copied Links section (TASK-337).
+/// update or redownload every list, and the Tracking Parameters section (TASK-337).
 /// A grouped form (TASK-338); until then the lists were a five-column table.
 /// Which lists block content is set per profile, on the Profiles pane.
 class ContentBlockerSettingsViewController: SettingsPaneViewController {
@@ -86,7 +86,7 @@ class ContentBlockerSettingsViewController: SettingsPaneViewController {
         trackingListStatusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         trackingListStatusLabel.setAccessibilityIdentifier("trackingParameterListStatus")
         row.addDetail(trackingListStatusLabel)
-        return SettingsFormSection(title: "Copied Links", rows: [row])
+        return SettingsFormSection(title: "Tracking Parameters", rows: [row])
     }
 
     static let trackingListTitle = "Remove tracking parameters with the AdGuard URL Tracking filter"

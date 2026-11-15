@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-10T09:38:00Z'
-updated_date: '2026-11-15T08:30:00Z'
+updated_date: '2026-11-15T19:58:00Z'
 labels:
   - command-palette
   - automation
@@ -193,6 +193,8 @@ Cleaned up: apps stopped by pid; defaults keys, suites and data folders of Detou
 PROVISIONAL (chosen by Claude while the user was away, not confirmed by the user): a normal window's Switch to Space and Move Tab to Space list every normal profile's spaces, as the Spaces menu and the sidebar's Move to do (the row names the other profile). Alternative: the window's profile only, as the palette's open-tab and history rows are (TASK-209); a one-line filter in CommandChoices.
 
 Tests after the fix: PaletteCommandChipWindowTests 8, PaletteCommandChipTests 15, PaletteCommandWindowTests 9, CommandPaletteFocusTests 4, all passing.
+
+2026-11-15 user decision: the space chips (Switch to Space, Move Tab to Space) keep listing every normal profile's spaces, matching the Spaces menu (as built; no change).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -51,7 +51,8 @@ nonisolated final class AutomationToolsTests: XCTestCase {
 
     /// One window on space A; B is the next space. The menu is the test's own,
     /// so its items are known.
-    @MainActor private func makeFixture(menu: NSMenu? = nil, extraWindows: [BrowserWindowController] = []) throws -> Fixture {
+    @MainActor private func makeFixture(menu: NSMenu? = nil, extraWindows: [BrowserWindowController] = [],
+                                        allowsPrivate: Bool? = nil) throws -> Fixture {
         let store = TabStore.shared
         let profile = try XCTUnwrap(store.profiles.first { !$0.isIncognito })
         let a = store.addSpace(name: "Automation A", emoji: "A", colorHex: "007AFF", profileID: profile.id)
@@ -62,9 +63,10 @@ nonisolated final class AutomationToolsTests: XCTestCase {
         windows.append(wc)
         wc.setActiveSpace(id: a.id)
         let all = [wc] + extraWindows
-        let tools = AutomationTools(environment: AutomationEnvironment(windowControllers: { all },
-                                                                       mainMenu: { menu ?? Self.testMenu() },
-                                                                       store: store))
+        var environment = AutomationEnvironment(windowControllers: { all }, mainMenu: { menu ?? Self.testMenu() },
+                                                store: store)
+        if let allowsPrivate { environment.allowsPrivate = { allowsPrivate } }
+        let tools = AutomationTools(environment: environment)
         tools.menuActionWait = .milliseconds(200)
         let server = MCPServer(tools: tools.all, serverVersion: "test", instructions: "")
         return Fixture(tools: tools, server: server, window: wc, windowID: tools.windowIDs.id(for: wc), a: a, b: b)
@@ -282,6 +284,36 @@ nonisolated final class AutomationToolsTests: XCTestCase {
                                                      "url": "http://automation-private.test/", "in_place": true])
         XCTAssertFalse(inPlace.isError, inPlace.content.jsonString)
         XCTAssertEqual(inPlace.content["routed"], false)
+    }
+
+    /// A typed URL is never quarantined, so a Link Route into a quarantine
+    /// does not apply to open_url, with Private windows allowed or not: the
+    /// URL opens in a new tab of the window's space and no quarantine opens.
+    @MainActor func testOpenURLNeverOpensAQuarantine() async throws {
+        route("automation-quarantine.test", to: .quarantine)
+        let quarantinesBefore = QuickDetourWindowController.openControllers.filter(\.isQuarantine)
+        func opened() -> [QuickDetourWindowController] {
+            QuickDetourWindowController.openControllers.filter { open in
+                open.isQuarantine && !quarantinesBefore.contains { $0 === open }
+            }
+        }
+        defer {
+            for controller in opened() {
+                controller.closeDisposition = .discard
+                controller.close()
+            }
+        }
+        for allowed in [false, true] {
+            let f = try makeFixture(allowsPrivate: allowed)
+            let before = f.a.tabs.count
+            let (content, isError) = try await call(f, "open_url", ["window_id": .int(f.windowID),
+                                                                    "url": "http://automation-quarantine.test/"])
+            XCTAssertFalse(isError, "Private allowed: \(allowed): \(content.jsonString)")
+            XCTAssertEqual(content["routed"], false, "Private allowed: \(allowed)")
+            XCTAssertEqual(f.a.tabs.count, before + 1, "Private allowed: \(allowed): a new tab in the space")
+            if let tab = f.window.selectedTab { tabs.append(tab) }
+            XCTAssertTrue(opened().isEmpty, "Private allowed: \(allowed): no quarantine opened")
+        }
     }
 
     /// Routes take web URLs only: a Default of Private Window does not make

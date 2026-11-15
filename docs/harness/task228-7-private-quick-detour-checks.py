@@ -17,6 +17,16 @@ nothing is written to any defaults domain:
   on:  list_windows lists it with kind quarantine and is_private true, its
        page the routed link; screenshot and hit_test by its window_id work.
 
+Then open_url with a URL the same route takes. Link Routes never
+quarantine a typed URL, so in both launches open_url opens it in a new tab
+of the browser window (routed false) and no window opens (2026-11-15: the
+user's choice that a quarantine route in open_url follows the setting turned
+out to be moot).
+
+The "on" launch also opens Settings > Content Blocking and saves a
+screenshot of it (settings-contentblocker.png), for the section that is
+titled "Tracking Parameters" since 2026-11-15.
+
 Needs the sandbox off. Usage:
 
   docs/harness/task228-7-private-quick-detour-checks.py <worktree> /path/to/Detour.app <output-dir>
@@ -141,6 +151,29 @@ def run(label, allowed):
             hit, err = raw("hit_test", window_id=guess, x=200, y=200)
             check("off: hit_test by its window_id is private_unreachable",
                   err and (hit or {}).get("error", {}).get("code") == "private_unreachable", hit)
+        # open_url with a URL the route takes.
+        before = call("list_windows")
+        before_count = len(before["windows"]) + before.get("hidden_private_windows", 0)
+        routed_url = start.replace("/start.html", "/probe.html?via=open_url")
+        opened, err = raw("open_url", window_id=1, url=routed_url)
+        after = None
+        time.sleep(2)
+        after = call("list_windows")
+        after_count = len(after["windows"]) + after.get("hidden_private_windows", 0)
+        tabs_after = call("list_tabs", window_id=1).get("items", [])
+        check(f"{label}: open_url does not route a typed URL into a quarantine (routed false)",
+              not err and (opened or {}).get("routed") is False, opened)
+        check(f"{label}: no window opened", after_count == before_count, (before_count, after_count))
+        check(f"{label}: the URL opened as a tab of the browser window",
+              any("via=open_url" in (t.get("url") or "") for t in tabs_after), [t.get("url") for t in tabs_after])
+        if allowed:
+            call("open_ui", what="settings", pane="contentblocker"); time.sleep(1.5)
+            settings = next((w for w in call("list_windows")["windows"] if w["kind"] == "settings"), None)
+            check("on: Settings is listed", settings is not None)
+            if settings:
+                shot, err = raw("screenshot", window_id=settings["window_id"], include_image=False,
+                                save_to=os.path.join(out, "settings-contentblocker.png"), overwrite=True)
+                check("on: Settings > Content Blocking screenshot saved", not err, shot)
         s.close()
     finally:
         detour.send_signal(signal.SIGTERM)

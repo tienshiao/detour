@@ -461,7 +461,7 @@ command.
 | Profiles | 630 (Private) / 709 (a normal profile) to 1218 (custom UA, warning, 15 extensions); 1047 for Private with 14 extensions (2026-10-27) | toolbar only |
 | Extensions | 400 (none, or one small extension) to 1092 (22 permissions, 4 hosts, 6 optional) | Extensions > Manage Extensions…, the settings popover (`showExtensionsPane()`) |
 | Shortcuts | 400 minimum; every row (about 1,800 pt) is its natural height, so it opens at the screen's cap | toolbar only |
-| Content Blocking | 554, fixed (TASK-338's grouped form: four list rows, the footnote, the buttons, Copied Links, 2026-11-14; 379 with the table and TASK-337's section) | toolbar only |
+| Content Blocking | 554, fixed (TASK-338's grouped form: four list rows, the footnote, the buttons, Tracking Parameters (named Copied Links until 2026-11-15), 2026-11-14; 379 with the table and TASK-337's section) | toolbar only |
 
 TASK-189 part 1 moved every pane into the container and rebuilt General,
 Content Blocking and Spaces on the metrics; part 2 rebuilt Profiles (titled
@@ -780,7 +780,9 @@ group as a custom row.) The rows refresh on `.contentBlockerStatusDidChange`
 and `.contentBlockerRulesDidChange`. Which lists are *enabled* is a
 per-profile setting on the Profiles pane, not here.
 
-Under the buttons, a "Copied Links" section (TASK-337) holds the one
+Under the buttons, a "Tracking Parameters" section (TASK-337; named
+"Copied Links" until 2026-11-15, renamed by the user since its help also
+covers quarantine pages) holds the one
 app-wide switch of the pane: "Remove tracking parameters with the AdGuard
 URL Tracking filter" (`trackingParameterListEnabled`, a form row since
 TASK-338, on by default), help saying Copy URL, Copy Link, Share… and

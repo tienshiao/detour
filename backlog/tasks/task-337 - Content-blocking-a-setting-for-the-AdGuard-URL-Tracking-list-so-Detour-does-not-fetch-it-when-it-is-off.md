@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T23:45:00Z'
-updated_date: '2026-11-15T07:37:00Z'
+updated_date: '2026-11-15T20:04:00Z'
 labels:
   - links
   - content-blocker
@@ -58,6 +58,8 @@ Runtime (/verify, docs/harness/task337-tracking-list-setting-checks.py, Debug bu
 Review (code-review medium --fix): stub's held reply now times out (applied); status line read 'Not downloaded yet' during the cache read after turning on (fixed: falls back to the recorded rule count); 'updated in 0s' when the fetch is a moment ahead of the clock (fixed, tested). Not changed: toggling on/off/on very fast can queue two turnedOn fetches (two requests, nothing wrong installed); the isEnabled check in installIfNewest duplicates the ticket gate on purpose; the test teardown stores the setting explicitly.
 
 2026-11-14 user decision: keep the downloaded copy, unused, while the list is off (as built).
+
+2026-11-15 user decision: the section is renamed from 'Copied Links' to 'Tracking Parameters' (its help also covers quarantine pages since TASK-329). Title change only (ContentBlockerSettingsViewController.makeTrackingListSection); identifiers unchanged. Tests: AutomationToolsTests, AutomationWindowKindsTests, SettingsFormTests, SettingsPaneColumnsTests, SettingsPaneHeightTests: 92 passed, 0 failed. Runtime: Settings > Content Blocking opened through the endpoint's open_ui in a DETOUR_DATA_DIR launch; the screenshot shows the 'Tracking Parameters' section with its switch and status line.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

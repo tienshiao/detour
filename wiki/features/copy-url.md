@@ -234,7 +234,7 @@ back to it is let through the second time
 
 ## Turning it off (TASK-337)
 
-Settings > Content Blocking > Copied Links has a switch for the list, on by
+Settings > Content Blocking > Tracking Parameters has a switch for the list, on by
 default (`TrackingParameterList.isEnabled`, the defaults key
 `ContentBlocker.adguard-url-tracking.enabled` in the data directory's content
 blocker suite, beside the list's fetch bookkeeping).[^task-337] The gate is in
