@@ -102,24 +102,22 @@ try:
         time.sleep(0.4)
         got = pbpaste(); check("address bar Copy Link copies the clean URL", got == clean, got)
 
-    # Sidebar row context menu: a right click on the row's own background
-    # (its label and icon take a right click without opening a menu).
-    row = None
+    # Sidebar row context menu.
+    # Since TASK-228.7 hit_test reports what a real click reaches: the table,
+    # for a press on a row's label or icon. Find the row whose menu is a tab
+    # menu (Copy URL / Copy Link) by right-clicking table rows.
+    row = None; menu = None
     for y in range(100, 700, 6):
-        h = call("hit_test", window_id=1, x=80, y=y)
-        if "Tracked article" in json.dumps(h):
-            row = (80, y); break
+        if call("hit_test", window_id=1, x=90, y=y).get("view") != "DraggableTableView": continue
+        r = call("click", window_id=1, x=90, y=y, button="right")
+        if not r.get("menu_open"): continue
+        m = call("list_menu", timeout_ms=2000)
+        if any(i.get("title") in ("Copy URL", "Copy Link") for i in m.get("items", [])):
+            row = (90, y); menu = m; break
+        call("close_menu")
     check("found the tab's sidebar row", row is not None)
     if row:
         pbset("SENTINEL")
-        menu = None
-        for x in range(6, 226, 4):
-            v = call("hit_test", window_id=1, x=x, y=row[1]).get("view")
-            if v in ("NSTextField", "NSImageView", "BrowserWebView", "NSSplitView", "HoverButton"): continue
-            r = call("click", window_id=1, x=x, y=row[1], button="right")
-            if r.get("menu_open"):
-                menu = call("list_menu", timeout_ms=2000); break
-        if menu is None: raise RuntimeError("no sidebar menu opened")
         print("menu:", [i.get("title") for i in menu.get("items", [])])
         titles = [i.get("title") for i in menu.get("items", [])]
         title = "Copy URL" if "Copy URL" in titles else "Copy Link"

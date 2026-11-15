@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T23:45:00Z'
-updated_date: '2026-11-15T02:24:00Z'
+updated_date: '2026-11-15T02:33:00Z'
 labels:
   - automation
 dependencies: []
@@ -78,6 +78,8 @@ The verify skill's §3 still says Settings needs screencapture; the skill was no
 Defaults keys and the data folder of the run were removed.
 
 Code review (--fix, high): fixed choose_menu_item ignoring the Settings gates (tracker records AutomationSettingsReach; list_menu stays readable over Settings), window access now walks the whole sheet/child chain, extension pages (popup:/options:) and input by context ask AutomationWindows.access, posted events' timestamps compared within 1 us (they come back rounded to the nanosecond, so the leftover mouse-up check never matched), the endpoint's own nextEvent calls use the private run-loop mode, makeCurrent remembers the person's displaced event window and drops its event if it was not dequeued. Tests: AutomationWindowKindsTests 10/0 (3 new), AutomationInputTests 10/0, AutomationToolsTests, AutomationPrivateAccessTests, AutomationExtensionTests, AutomationPageTests, AutomationCaptureTests, AutomationStagingTests, MCPServerTests 91/0. Not tested: the extension-page window check (a popup over a Private Quick Detour needs a real popover in the test host) and makeCurrent's discard path (not reachable on demand). No /verify run for the review fixes.
+
+2026-11-14 lead: after the high review's fixes (a22d9bc, 0e78d2b), on a fresh build: the 228.7 runtime script 22/22 and docs/harness/task326-copy-url-checks.py 12/12 (address bar Copy Link through the changed mouse-up delivery, sidebar row menu). hit_test on a sidebar row's label now reports the table (what a real click reaches), so the 326 script finds the row through the table; updated in the same commit.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
