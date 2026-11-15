@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-15T02:08:00Z'
-updated_date: '2026-11-15T03:10:00Z'
+updated_date: '2026-11-15T03:44:00Z'
 labels:
   - settings
   - ui
@@ -84,4 +84,6 @@ Tests (DetourTests, -only-testing): SettingsFormTests (13, new), SettingsSwitchR
 Runtime (/verify, DETOUR_DATA_DIR=DetourVerify-338 and -338b, removed afterwards): before and after captures of both panes in light and dark; Accessibility reading of both panes with the TASK-336 reader (every identifier present: quickDetourHotKeyEnabled, quickDetourHotKeyShortcut, quickDetourOptionCommandClick, quickDetourIdleTimeout, learnMore.quick-detour, contentBlockerClearCache, contentBlockerUpdateAll, trackingParameterListEnabled, trackingParameterListStatus, learnMore.content-blocker; switches named, 0 duplicates, 0 unnamed); Update All Now pressed through Accessibility; docs/harness/task337-tracking-list-setting-checks.py ALL PASS on the new pane. Captures: /private/tmp/claude-501/-Users-tma-Projects-browser-MyBrowser/5d738add-7244-46a9-a428-169317fc928a/scratchpad/task-338/before-*.png, /private/tmp/claude-501/-Users-tma-Projects-browser-MyBrowser/5d738add-7244-46a9-a428-169317fc928a/scratchpad/task-338/after-*.png, /private/tmp/claude-501/-Users-tma-Projects-browser-MyBrowser/5d738add-7244-46a9-a428-169317fc928a/scratchpad/task-338/compare-*.png.
 
 Clear Cache & Redownload pressed through Accessibility in a fresh data directory (DetourVerify-338c, removed): every list row read Updating…, the footnote "No active rules. Updating 4 lists…", Update All Now disabled, then "74,719 active rules. Updating 3 lists…" as lists came back (captured: activity-clearing.png). Not verified: real mouse clicks on the mini switch, the recorder and the pop-up (every runtime action was an Accessibility press); Increase Contrast and Reduce Transparency (needs the system settings; the group draws a border under the high-contrast appearances, untested on screen); a Learn more click at runtime (the link is the pane container's, unchanged; SettingsGuideLinkTests pass); minimum and maximum widths checked by tests, not on screen (the window is fixed at 740). code-review (medium --fix) ran: 6 of 9 findings fixed (stale Updating… after the pane reappears, refit when row text changes, status width estimate, shared warning gap, shared date clamp, Quick Detour's manual refit); custom-container naming fixed by me afterwards; double width estimate left (harmless).
+
+2026-11-14: the user reviewed the phase 1 captures (Quick Detour, Content Blocking; light and dark) and approved the pilot as is, including its provisional choices: mini switches, bordered pop-ups, Quick Detour's Opening/Closing sections, Content Blocking's table as rows, the form 20 pt under the Learn more link, and the taller panes. Phase 2 converts the remaining panes.
 <!-- SECTION:NOTES:END -->
