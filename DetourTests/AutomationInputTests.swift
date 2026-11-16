@@ -909,4 +909,156 @@ nonisolated final class AutomationInputTests: XCTestCase {
         XCTAssertEqual(table.selectedRow, 2, "a click beside the switch selects the row")
         XCTAssertFalse(window.isKeyWindow)
     }
+
+    // MARK: A key the page gives back (TASK-364)
+
+    /// A key the endpoint hands a view, given back, goes on to AppKit only in
+    /// the window it was pressed in, when that window is key; otherwise it
+    /// stops and the route's `unhandled` runs for that window, once.
+    @MainActor func testAKeyGivenBackGoesOnOnlyInItsOwnKeyWindow() throws {
+        let pressedIn = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled],
+                                 backing: .buffered, defer: true)
+        let other = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled],
+                             backing: .buffered, defer: true)
+        XCTAssertTrue(AutomationKeyResend.goesOn(pressedIn: pressedIn, keyWindow: pressedIn))
+        XCTAssertFalse(AutomationKeyResend.goesOn(pressedIn: pressedIn, keyWindow: other))
+        XCTAssertFalse(AutomationKeyResend.goesOn(pressedIn: pressedIn, keyWindow: nil))
+        XCTAssertFalse(AutomationKeyResend.goesOn(pressedIn: nil, keyWindow: nil))
+
+        var key: NSWindow? = pressedIn
+        var unhandled: [(NSEvent, NSWindow)] = []
+        let route = AutomationKeyResend.Route(keyWindow: { key }) { unhandled.append(($0, $1)) }
+        let (down, _) = try XCTUnwrap(AutomationInput.keyEvents(for: "w", modifiers: .command, in: pressedIn))
+        AutomationKeyResend.mark(down, in: pressedIn, route: route)
+        XCTAssertTrue(AutomationKeyResend.takeBack(down) === down, "in its own key window it goes on")
+        XCTAssertTrue(unhandled.isEmpty)
+
+        key = other
+        AutomationKeyResend.mark(down, in: pressedIn, route: route)
+        XCTAssertNil(AutomationKeyResend.takeBack(down), "with another window key it stops")
+        XCTAssertEqual(unhandled.count, 1)
+        XCTAssertTrue(unhandled.first?.0 === down)
+        XCTAssertTrue(unhandled.first?.1 === pressedIn, "and runs for the window it was pressed in")
+        XCTAssertTrue(AutomationKeyResend.takeBack(down) === down, "a mark is used once")
+        XCTAssertEqual(unhandled.count, 1)
+
+        key = nil
+        AutomationKeyResend.mark(down, in: pressedIn, route: route)
+        XCTAssertNil(AutomationKeyResend.takeBack(down), "with no key window (Detour in the background) it stops")
+        XCTAssertEqual(unhandled.count, 2)
+
+        let (unmarked, _) = try XCTUnwrap(AutomationInput.keyEvents(for: "q", modifiers: .command, in: pressedIn))
+        XCTAssertTrue(AutomationKeyResend.takeBack(unmarked) === unmarked, "a key the endpoint did not send goes on")
+    }
+
+    /// Two windows on one space, each showing its own tab of the fixture
+    /// page, with a main menu holding File > Close Tab (Cmd-W) and, as the
+    /// key window, `keyWindow`'s pick.
+    @MainActor private func makeTwoWindowsWithOwnTabs(keyWindow: @escaping (BrowserWindowController) -> NSWindow?)
+        async throws -> (server: MCPServer, tools: AutomationTools, first: BrowserWindowController,
+                         second: BrowserWindowController, firstTab: BrowserTab, secondTab: BrowserTab) {
+        let f = try await makeFixture()
+        let secondTab = TabStore.shared.addTab(in: f.space, url: try XCTUnwrap(f.tab.url))
+        let second = BrowserWindowController(incognito: false)
+        second.sidebarSplitView.autosaveName = nil
+        windows.append(second)
+        second.setActiveSpace(id: f.space.id, selectTab: false)
+        second.showWindow(nil)
+        second.selectTab(id: secondTab.id)
+        f.window.selectTab(id: f.tab.id)
+        try await waitUntil("the second tab's page to load") { secondTab.webView?.title == "Input" && !secondTab.isLoading }
+
+        let menu = NSMenu()
+        let file = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        file.submenu = NSMenu(title: "File")
+        file.submenu?.addItem(NSMenuItem(title: "Close Tab", action: #selector(BrowserWindowController.closeCurrentTab(_:)),
+                                         keyEquivalent: "w"))
+        menu.addItem(file)
+        var env = AutomationEnvironment(windowControllers: { [f.window, second] }, mainMenu: { menu }, store: .shared)
+        let first = f.window
+        env.keyWindow = { keyWindow(first) }
+        let tools = AutomationTools(environment: env)
+        tools.inputWait = .milliseconds(400)
+        tools.menuActionWait = .milliseconds(400)
+        let server = MCPServer(tools: tools.all, serverVersion: "test", instructions: "")
+        return (server, tools, f.window, second, f.tab, secondTab)
+    }
+
+    @MainActor private func pressKey(_ server: MCPServer, _ arguments: JSONValue) async throws -> JSONValue {
+        let tool = try XCTUnwrap(server.tools.first { $0.name == "press_key" })
+        let result = await server.call(tool, arguments: arguments)
+        let content = try XCTUnwrap(result["structuredContent"])
+        XCTAssertNotEqual(result["isError"], true, content.jsonString)
+        return content
+    }
+
+    /// The runtime case (TASK-364): with the first window key, Cmd-W pressed
+    /// in the second window's page, which does not take it, closes the
+    /// second window's tab, not the first's. The page gives the key back and
+    /// AppKit would hand it to the key window; it goes to the second
+    /// window's main menu instead.
+    @MainActor func testCmdWInAPageClosesThatWindowsTabWhenAnotherWindowIsKey() async throws {
+        let w = try await makeTwoWindowsWithOwnTabs { first in first.window }
+        let space = try XCTUnwrap(w.first.activeSpace)
+        let pressed = try await pressKey(w.server, ["context": .string(w.secondTab.id.uuidString), "key": "cmd+w"])
+        XCTAssertEqual(pressed["window_id"], .int(w.tools.windowIDs.id(for: w.second)))
+        try await waitUntil("the second window's tab to close", timeout: 5) {
+            !space.tabs.contains { $0.id == w.secondTab.id }
+        }
+        XCTAssertTrue(space.tabs.contains { $0.id == w.firstTab.id }, "the key window's tab stays")
+        XCTAssertEqual(w.first.selectedTabID, w.firstTab.id, "and stays selected there")
+    }
+
+    /// With no key window (Detour in the background) the same key, by
+    /// window, closes the window's selected tab; before TASK-364 it closed
+    /// nothing. A key the page takes (preventDefault) closes nothing.
+    @MainActor func testCmdWByWindowClosesItsTabInTheBackgroundUnlessThePageTakesIt() async throws {
+        let w = try await makeTwoWindowsWithOwnTabs { _ in nil }
+        let space = try XCTUnwrap(w.first.activeSpace)
+        let secondID = w.tools.windowIDs.id(for: w.second)
+        let page = try XCTUnwrap(w.secondTab.webView)
+        _ = try await page.evaluateJavaScript("""
+            window.takeCmdW = e => { if (e.metaKey && e.key === 'w') e.preventDefault(); };
+            document.addEventListener('keydown', window.takeCmdW, true); 1
+            """)
+        try XCTUnwrap(w.second.window).makeFirstResponder(page)
+        XCTAssertTrue(w.second.window?.firstResponder === page, "window_id's key goes to the page")
+        _ = try await pressKey(w.server, ["window_id": .int(secondID), "key": "cmd+w"])
+        try await waitUntil("the page to see the key", timeout: 5) {
+            let count = try? await page.evaluateJavaScript("window.events.filter(e => e.type === 'keydown').length")
+            return (count as? Int ?? 0) >= 1
+        }
+        let closed = try await pollUntil(timeout: 1) { !space.tabs.contains { $0.id == w.secondTab.id } }
+        XCTAssertFalse(closed, "the page took the key")
+
+        _ = try await page.evaluateJavaScript("document.removeEventListener('keydown', window.takeCmdW, true); 1")
+        _ = try await pressKey(w.server, ["window_id": .int(secondID), "key": "cmd+w"])
+        try await waitUntil("the second window's tab to close", timeout: 5) {
+            !space.tabs.contains { $0.id == w.secondTab.id }
+        }
+        XCTAssertTrue(space.tabs.contains { $0.id == w.firstTab.id })
+        XCTAssertEqual(w.first.selectedTabID, w.firstTab.id)
+    }
+
+    /// A Cmd key a native view declines at once goes to the window's main
+    /// menu, as AppKit tries next for a person's key.
+    @MainActor func testACmdKeyANativeViewDeclinesRunsTheWindowsMenuItem() async throws {
+        let w = try await makeTwoWindowsWithOwnTabs { first in first.window }
+        let space = try XCTUnwrap(w.first.activeSpace)
+        let focusable = FocusableView(frame: NSRect(x: 300, y: 300, width: 40, height: 20))
+        try XCTUnwrap(w.second.window?.contentView).addSubview(focusable)
+        XCTAssertTrue(try XCTUnwrap(w.second.window).makeFirstResponder(focusable))
+        let pressed = try await pressKey(w.server, ["window_id": .int(w.tools.windowIDs.id(for: w.second)),
+                                                    "key": "cmd+w"])
+        XCTAssertEqual(pressed["target"], "FocusableView")
+        XCTAssertEqual(pressed["handled"], true, "the menu item took it")
+        try await waitUntil("the second window's tab to close", timeout: 5) {
+            !space.tabs.contains { $0.id == w.secondTab.id }
+        }
+        XCTAssertTrue(space.tabs.contains { $0.id == w.firstTab.id })
+    }
+
+    @MainActor private final class FocusableView: NSView {
+        override var acceptsFirstResponder: Bool { true }
+    }
 }

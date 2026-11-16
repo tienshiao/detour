@@ -428,6 +428,7 @@ extension AutomationTools {
                     }
                     highlightKeyTarget(responder, in: window)
                     let completed = await AutomationInput.type(text, into: responder, in: window,
+                                                               resend: keyResendRoute,
                                                                interval: .milliseconds(interval), wait: inputWait)
                     return [
                         "window_id": .int(windowIDs.id(for: controller)),
@@ -441,14 +442,51 @@ extension AutomationTools {
 
     // MARK: press_key
 
+    /// Where a key a page gives back goes (`AutomationKeyResend`, TASK-364):
+    /// on to AppKit in the key window, else to the main-menu key equivalent
+    /// of the window it was pressed in.
+    var keyResendRoute: AutomationKeyResend.Route {
+        AutomationKeyResend.Route(keyWindow: environment.keyWindow) { [weak self] event, window in
+            self?.runMenuKeyEquivalent(of: event, in: window)
+        }
+    }
+
+    /// The main-menu command whose key equivalent is `event`'s keystroke for
+    /// `window`, resolved and validated there as `run_menu_item key=` does.
+    /// Nil when no enabled item has it. (The matcher narrows the modifiers
+    /// itself, keeping Fn where it counts, TASK-375.)
+    func menuKeyEquivalent(of event: NSEvent,
+                           in window: NSWindow) -> (action: Selector, target: AnyObject, item: NSMenuItem)? {
+        guard let menu = environment.mainMenu(), let characters = event.charactersIgnoringModifiers,
+              !characters.isEmpty,
+              let found = try? AutomationMenus.item(matchingCharacters: characters, modifiers: event.modifierFlags,
+                                                    in: menu),
+              let (action, target) = try? AutomationMenus.resolve(found.item, in: window, allowPrivate: privateAllowed)
+        else { return nil }
+        return (action, target, found.item)
+    }
+
+    /// Runs `menuKeyEquivalent(of:in:)` from the run loop (an action may open
+    /// a modal alert), for a key a page gave back after its press_key call
+    /// returned. False when no enabled item has it.
+    @discardableResult
+    func runMenuKeyEquivalent(of event: NSEvent, in window: NSWindow) -> Bool {
+        guard let (action, target, item) = menuKeyEquivalent(of: event, in: window) else { return false }
+        let wait = menuActionWait
+        Task { _ = await AutomationInput.runFromRunLoop(wait: wait) { NSApp.sendAction(action, to: target, from: item) } }
+        return true
+    }
+
     private var pressKey: MCPTool {
         MCPTool(
             name: "press_key",
             title: "Press a key",
             description: "Presses one key with optional modifiers, for example \"return\", \"escape\", \"down\", "
                 + "\"tab\", \"shift+tab\" or \"cmd+a\", in a tab's page (context) or a window's focused control "
-                + "(window_id). A key with cmd goes through the target's key equivalents; handled says whether "
-                + "something took it. For a menu command use run_menu_item.",
+                + "(window_id). A key with cmd goes through the target's key equivalents, then the main menu's for "
+                + "that window; handled says whether something took it (a page takes every key at once). A key a "
+                + "page does not take goes to the main menu of the window it was pressed in, even when another "
+                + "window is key, as a person's key in that window would. For a menu command use run_menu_item.",
             inputSchema: MCPSchema.input([
                 ("key", .string("Modifiers and a key joined by +")),
                 ("context", .string("A tab_id or tab:<id>, popup:<ext> or options:<ext>")),
@@ -472,15 +510,32 @@ extension AutomationTools {
                     await AutomationMenuTracker.shared.closeAll()
                     highlightKeyTarget(responder, in: window)
                     var handled = true
-                    let completed: Bool
+                    var completed: Bool
                     if down.modifierFlags.contains(.command) {
                         let view = (responder as? NSView) ?? window.contentView
-                        completed = await AutomationInput.runFromRunLoop(wait: inputWait) {
+                        let resend = keyResendRoute
+                        var menuCommand: (action: Selector, target: AnyObject, item: NSMenuItem)?
+                        completed = await AutomationInput.runFromRunLoop(wait: inputWait) { [self] in
                             AutomationInput.announce(down, in: window)
+                            AutomationKeyResend.mark(down, in: window, route: resend)
                             handled = view?.performKeyEquivalent(with: down) ?? false
+                            // Declined at once (a native view): the window's
+                            // main menu, as AppKit tries next for a person's key.
+                            if !handled {
+                                menuCommand = menuKeyEquivalent(of: down, in: window)
+                                handled = menuCommand != nil
+                            }
+                        }
+                        // Awaited, so the command has run before the next
+                        // input in arrival order (a select_tab after Cmd-W).
+                        if completed, let (action, target, item) = menuCommand {
+                            completed = await AutomationInput.runFromRunLoop(wait: menuActionWait) {
+                                NSApp.sendAction(action, to: target, from: item)
+                            }
                         }
                     } else {
-                        completed = await AutomationInput.press(down, up, to: responder, in: window, wait: inputWait)
+                        completed = await AutomationInput.press(down, up, to: responder, in: window,
+                                                                resend: keyResendRoute, wait: inputWait)
                     }
                     return [
                         "window_id": .int(windowIDs.id(for: controller)),

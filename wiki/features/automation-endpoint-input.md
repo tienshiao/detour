@@ -4,7 +4,7 @@ title: "Automation endpoint: how input is delivered"
 description: How the automation endpoint's clicks, keys and menu choices reach pages, native views, sidebar rows and AppKit's own controls inside Detour without HID events or activating the app, when a click makes its window key (the user's decision on TASK-228.10), the pointer-arrival hover, and the AppKit and WebKit traps met on the way (current-event hit tests, renumbered posted events, gesture-recognizer controls, a table that will not select in a window that is not key, key ordering).
 tags: [automation, mcp, appkit, input]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T06:48:01Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T19:10:00Z }
 sources:
   - id: input
     resource: ../../Detour/Automation/AutomationInput.swift
@@ -27,6 +27,12 @@ sources:
   - id: task-228-12
     resource: backlog:TASK-228.12
     title: "Automation: endpoint clicks select rows in the other table views (Archived Tabs list, Settings lists)"
+  - id: task-364
+    resource: backlog:TASK-364
+    title: "Automation: select_tab then Cmd+W closed a different tab once (investigate)"
+  - id: webkit-resend
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/mac/WebViewImpl.mm
+    title: WebKit's WebViewImpl.mm (doneWithKeyEvent, performKeyEquivalent)
   - id: sidebar-components
     resource: ../../Detour/Browser/Sidebar/SidebarComponents.swift
     title: SidebarComponents.swift (DraggableTableView, FocusGatedTableView)
@@ -54,6 +60,31 @@ pointer](./automation-endpoint-agent-pointer.md).
   the web view is made its window's first responder (which does not activate
   the app). The page sees trusted events (`isTrusted`) with the modifiers
   and US `event.code`s, while Detour is in the background.
+- **A key the page gives back** goes to the window it was pressed in
+  (TASK-364).[^task-364] A web view takes every key at once and asks the
+  page; a key the page does not take, WebKit sends again through
+  `NSApp.sendEvent`, the same event object
+  (`WebViewImpl::doneWithKeyEvent`),[^webkit-resend] for the key
+  equivalents and the menus, and AppKit hands that to the key window, which
+  for an agent's key need not be the window it was pressed in. The endpoint
+  marks every key-down it hands a view (`AutomationKeyResend`, in
+  `AutomationInput.swift`, by `press`, `type` and `press_key`'s Cmd branch);
+  a local key-down monitor, which `NSApp.sendEvent` runs, catches a marked
+  event coming back. In its own window, when that window is key, it goes on
+  as AppKit sends it, as a person's key does; otherwise it stops there and
+  the window's main-menu key equivalent runs, resolved and validated in that
+  window as `run_menu_item key=` does (`AutomationTools.runMenuKeyEquivalent`).
+  A key with no menu item is dropped. The resend comes after `press_key` has
+  answered, so its command acts on what the window holds when it arrives
+  (a `select_tab` sent in between can change which tab Cmd+W closes), as
+  AppKit's own resend does for a person's key; not guarded. The mark lives as long as the event
+  (weak keys): the page answered after more than a second once at runtime.
+  A Cmd key a native first responder declines at once
+  (`performKeyEquivalent` false) goes to the same menu lookup
+  (`menuKeyEquivalent`), and press_key awaits the command before it returns,
+  so a later input in arrival order (a select_tab) cannot run first, as AppKit
+  tries the menu next for a person's key (chosen by Claude, not yet
+  confirmed by the user; alternative: leave it unhandled).
 - **A native view** under a window point gets `mouseDown(with:)` directly,
   with the mouse-up posted to the app's queue first, where a control's
   tracking loop finds it. The view is hit-tested, and the press handled,
@@ -309,6 +340,21 @@ other-Space guard cannot be tested in the host.
   themselves. The Downloads popover's list is out of reach (popovers are
   not addressable), and is an `AutomationTableView` all the same. See also [AppKit
   gotchas](../platform/appkit-gotchas.md).
+- **A key pressed in a window that was not key acted in the key window**
+  (TASK-364, measured through the endpoint before the fix).[^task-364] With
+  Detour active and window 1 key, `press_key window_id=2 key=cmd+w` closed
+  window 1's selected tab (window 2's stayed), and `press_key window_id=2
+  key=x`, which the page in window 2 did not take, reached the page in
+  window 1 as a trusted keydown, more than a second later. In the
+  background, with no key window, the same Cmd+W closed nothing and still
+  answered `handled: true` (the web view took the key; the page's answer
+  comes later). `run_menu_item` never had this: it resolves the item in the
+  named window's chain. `select_tab` was not involved: it selects in the
+  window it names, key or not. The report that started the task was a
+  script's mistake: `select_tab` called with `tab_id=` is refused
+  (`invalid_arguments`, "Unknown argument(s): tab_id", exit 1 from
+  `scripts/detour-mcp`), the script discarded the answer, and Cmd+W closed
+  the tab still selected.
 - **Local event monitors do not see the endpoint's input.** AppKit runs
   `NSEvent.addLocalMonitorForEvents` handlers only for events going through
   `NSApp.sendEvent`, and the input tools hand events to views directly (that
@@ -355,5 +401,7 @@ tests](./automation-endpoint-tests.md).[^tests]
 [^task-228-9]: Automation: a left click on a sidebar row selects its tab, as a person's click does
 [^task-228-10]: Automation: an endpoint click that brings a window forward hands web view ownership over correctly (test it)
 [^task-228-12]: Automation: endpoint clicks select rows in the other table views (Archived Tabs list, Settings lists)
+[^task-364]: Automation: select_tab then Cmd+W closed a different tab once (investigate)
+[^webkit-resend]: WebKit's WebViewImpl.mm (doneWithKeyEvent, performKeyEquivalent)
 [^sidebar-components]: SidebarComponents.swift (DraggableTableView, FocusGatedTableView)
 [^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests, and the other Automation suites

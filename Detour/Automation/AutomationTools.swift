@@ -132,6 +132,10 @@ struct AutomationEnvironment {
     /// cannot make a window key.
     var isAppActive: () -> Bool = { NSApp.isActive }
     var makeKey: (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) }
+    /// AppKit's key window, for a key a page gives back
+    /// (`AutomationKeyResend`, TASK-364): it goes on to AppKit only in the
+    /// key window. Injected for the same reason.
+    var keyWindow: () -> NSWindow? = { NSApp.keyWindow }
 
     static var live: AutomationEnvironment {
         AutomationEnvironment(

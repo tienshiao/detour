@@ -543,11 +543,13 @@ enum AutomationInput {
         return (down, up)
     }
 
-    /// Delivers one key press (down and up) to `responder` in `window`.
+    /// Delivers one key press (down and up) to `responder` in `window`. A
+    /// key the page gives back goes by `resend` (`AutomationKeyResend`).
     static func press(_ down: NSEvent, _ up: NSEvent, to responder: NSResponder, in window: NSWindow,
-                      wait: Duration) async -> Bool {
+                      resend: AutomationKeyResend.Route, wait: Duration) async -> Bool {
         let returned = await runFromRunLoop(wait: wait) {
             announce(down, in: window)
+            AutomationKeyResend.mark(down, in: window, route: resend)
             responder.keyDown(with: down)
         }
         guard returned else { return false }
@@ -557,14 +559,14 @@ enum AutomationInput {
     /// Types `text` into `responder`, one key press per character; a character
     /// with no US key is inserted as text. `interval` paces the characters.
     static func type(_ text: String, into responder: NSResponder, in window: NSWindow,
-                     interval: Duration, wait: Duration) async -> Bool {
+                     resend: AutomationKeyResend.Route, interval: Duration, wait: Duration) async -> Bool {
         for character in text {
             if let (code, shift) = key(for: character) {
                 let typed = String(character)
                 let base = shift ? String(shifted[character] ?? Character(typed.lowercased())) : typed
                 guard let (down, up) = keyEvents(characters: typed, ignoringModifiers: base, code: code,
                                                  modifiers: shift ? .shift : [], in: window) else { continue }
-                guard await press(down, up, to: responder, in: window, wait: wait) else { return false }
+                guard await press(down, up, to: responder, in: window, resend: resend, wait: wait) else { return false }
             } else {
                 // A key press carrying the character, with no US key behind it:
                 // AppKit's text input inserts its characters. Not insertText
@@ -574,7 +576,7 @@ enum AutomationInput {
                 let typed = String(character)
                 guard let (down, up) = keyEvents(characters: typed, ignoringModifiers: typed, code: unmappedKeyCode,
                                                  modifiers: [], in: window) else { continue }
-                guard await press(down, up, to: responder, in: window, wait: wait) else { return false }
+                guard await press(down, up, to: responder, in: window, resend: resend, wait: wait) else { return false }
             }
             if interval > .zero { try? await Task.sleep(for: interval) }
         }
@@ -790,5 +792,80 @@ final class AutomationMenuTracker {
 class AutomationTableView: NSTableView {
     override var needsPanelToBecomeKey: Bool {
         AutomationInput.isHandingPress(to: self) ? false : super.needsPanelToBecomeKey
+    }
+}
+
+// MARK: A key the page gives back (TASK-364)
+
+/// Where a key press the endpoint hands a view goes when the view gives it
+/// back. A web view takes every key at once and asks the page; a key the page
+/// does not take, WebKit sends again through `NSApp.sendEvent`, the same event
+/// object (`WebViewImpl::doneWithKeyEvent`), so the menus can have it as they
+/// would a person's. AppKit hands that resend to the key window: its key
+/// equivalents, the main menu (whose action goes up the key window's chain),
+/// then its first responder. A person's key is always in the key window; an
+/// agent's need not be. Seen at runtime with Detour active and window 1 key:
+/// `press_key window_id=2 cmd+w` closed window 1's tab, and a plain key the
+/// page in window 2 did not take reached the page in window 1 as a trusted
+/// keydown. In the background (no key window) the resend did nothing, so
+/// Cmd+W in a page closed nothing.
+///
+/// Each key-down the endpoint hands a view is marked; a local key-down
+/// monitor (AppKit runs local monitors from `NSApp.sendEvent`) catches the
+/// marked event coming back. In its own window, when that window is key, it
+/// goes on as AppKit sends it, as a person's key does. Otherwise it stops
+/// there and the route's `unhandled` runs for the window it was pressed in
+/// (for the tools, that window's main-menu key equivalent, as
+/// `run_menu_item key=` runs it). The mark lives as long as the event does:
+/// WebKit holds the event until the page has answered, which took over a
+/// second at runtime, so no timer.
+enum AutomationKeyResend {
+
+    /// What happens to a marked key that comes back: `keyWindow` is asked at
+    /// that moment (injected, since the XCTest host never has one), and
+    /// `unhandled` runs when the key does not go on to AppKit.
+    struct Route {
+        var keyWindow: () -> NSWindow?
+        var unhandled: ((NSEvent, NSWindow) -> Void)?
+    }
+
+    private final class Mark {
+        weak var window: NSWindow?
+        let route: Route
+        init(window: NSWindow, route: Route) {
+            self.window = window
+            self.route = route
+        }
+    }
+
+    /// Weak keys: a mark goes with its event (a key the page took never
+    /// comes back, and its event is released).
+    private static let marks = NSMapTable<NSEvent, Mark>.weakToStrongObjects()
+    private static var monitor: Any?
+
+    /// Marks `event`, a key-down about to be handed to a view in `window`.
+    static func mark(_ event: NSEvent, in window: NSWindow, route: Route) {
+        if monitor == nil {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in takeBack(event) }
+        }
+        marks.setObject(Mark(window: window, route: route), forKey: event)
+    }
+
+    /// The monitor's body: `event` itself when it goes on to AppKit, nil when
+    /// it stops here. An event that is not marked always goes on.
+    static func takeBack(_ event: NSEvent) -> NSEvent? {
+        guard let mark = marks.object(forKey: event) else { return event }
+        marks.removeObject(forKey: event)
+        guard let window = mark.window else { return nil }
+        if goesOn(pressedIn: window, keyWindow: mark.route.keyWindow()) { return event }
+        mark.route.unhandled?(event, window)
+        return nil
+    }
+
+    /// Whether a key given back goes on to AppKit's dispatch: only when the
+    /// window it was pressed in is the key window, where AppKit sends it.
+    static func goesOn(pressedIn window: NSWindow?, keyWindow: NSWindow?) -> Bool {
+        guard let window else { return false }
+        return window === keyWindow
     }
 }
