@@ -4,9 +4,7 @@ title: A page's key equivalents and its undo
 description: How a WKWebView on macOS hands a Cmd key to the page first and gives the ones the page leaves back to AppKit (re-sent through NSApp.sendEvent, so the main menu gets them once; no Cocoa delegate callback), where WebKit keeps a page's edits for undo (the view's undoManager, by inheritance the window's) and when it drops them (the view changing windows, a tab switch) — read in WebKit's source and measured for TASK-345; and how the windows that are not browser windows (the Quick Detour launcher, Settings and its sheet, an extension's popup) answer Edit > Undo with their own field's typing (TASK-346, TASK-349).
 tags: [webkit, keyboard, undo, menus, responder-chain]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:10:00Z }
-verified:
-  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:44Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:55:23Z }
 stale_after: 2027-06-01T00:00:00Z
 sources:
   - id: task-345
@@ -274,7 +272,7 @@ key) stays that browser window's own undo, so it never reaches into
 Settings' Automation section or a Private window (found in TASK-349's
 review; `testAnAddressedUndoWhileSettingsIsKeyIsTheBrowserWindowsOwn`). That a
 field-less popover's ⌘Z now does nothing, rather than the browser's undo,
-was chosen by Claude and is not yet confirmed by the user.
+is the user's decision (2026-11-16).
 
 Measured with the fix, the same script: in the profile name, a space's
 name, the site search sheet's Name, the Add Profile sheet's name, a route's

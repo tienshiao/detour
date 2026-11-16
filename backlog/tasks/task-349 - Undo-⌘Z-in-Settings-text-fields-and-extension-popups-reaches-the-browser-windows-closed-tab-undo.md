@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T04:51:00Z'
-updated_date: '2026-11-16T07:25:00Z'
+updated_date: '2026-11-16T09:56:00Z'
 labels:
   - keyboard
   - undo
@@ -62,6 +62,8 @@ Runtime AFTER (same script, final build 23:15): Profiles name, a space's name, A
 Review (code-review medium --fix): fixed the missed Add Profile sheet (+ test); finding 'popup protected only while the web view is first responder' and 'central fallback' addressed by nonBrowserKeyWindow on the lead's request; field-less popover behaviour decided as above.
 
 Lead's review (2026-11-15, code-review medium on the committed change): the central fallback handed Undo/Redo to any non-browser key window even for a command addressed to a browser window (automation run_menu_item), reaching Settings' Automation section or a Private Quick Detour past the endpoint's gates. Fixed: nonBrowserKeyWindow defers only when the key window's own chain resolves the undo action to this controller (the popover case), or to nothing in a window that is not main; validateMenuItem computes it only for Undo/Redo. New test testAnAddressedUndoWhileSettingsIsKeyIsTheBrowserWindowsOwn; SettingsAndPopupUndoTests + PageUndoRoutingTests + QuickDetourLauncherTests 32/0 after the fix. Not re-run at runtime after this narrowing (the popover cases are covered by the existing tests). Left as follow-ups: a popup shown from a Quick Detour window has no equivalent fallback; prompt()/alert sheets with text fields cannot undo their typing.
+
+2026-11-16: the user confirmed: Cmd+Z / Edit > Undo while a popover without text fields (Downloads, site settings, emoji picker) is key over a browser window does nothing (Undo disabled), never the browser's undo; also the shared FieldUndo rule, and fixing Settings even though its fall-through did not reproduce.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

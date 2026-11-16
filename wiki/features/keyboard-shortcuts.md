@@ -5,7 +5,7 @@ description: "Where Detour's shortcuts are defined (the command registry's defau
 resource: ../../Detour/Commands/ShortcutBindings.swift
 tags: [keyboard, menus, settings, commands]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T08:23:10Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:55:23Z }
 stale_after: 2027-06-01T00:00:00Z
 sources:
   - id: task-345
@@ -304,8 +304,8 @@ also compare with what the store does not resolve:[^task-350]
   reload (`outsideConflicts`) and marks the command's row "Same key as
   Copy" / "Same key as Quick Detour", the pair note's look; a pair of
   commands is named first. Only the command's row is marked: an AppKit item
-  has no row and the Quick Detour row shows its link in that place (chosen
-  by Claude, not yet confirmed by the user). The tooltip names the holder;
+  has no row and the Quick Detour row shows its link in that place (the
+  user's decision, 2026-11-16). The tooltip names the holder;
   for a shifted pair it says which runs (the Shift-held one, as for
   pairs); for the very same shortcut it says the Quick Detour hotkey takes
   the key first while it is on (a Carbon hotkey comes before any menu), and

@@ -5,7 +5,7 @@ description: "EasyListParser, which turns Adblock Plus filter-list text into Web
 resource: ../../Detour/Browser/ContentBlocker/EasyListParser.swift
 tags: [content-blocker, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:39:06Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:55:23Z }
 sources:
   - id: parser
     resource: ../../Detour/Browser/ContentBlocker/EasyListParser.swift
@@ -102,9 +102,7 @@ by dumping both parsers' rules and diffing them: no list has a
 rule for rule and in order.
 
 - `||void.nicopr.fr/rec$method=POST`: was a block rule for every method,
-  now left out. Chosen by Claude (not yet confirmed by the user); the
-  alternative is to support `method` as an ignored option and keep blocking
-  every method.
+  now left out (the user's decision, 2026-11-16).
 - `@@||google-analytics.com/analytics.js$redirect-rule,script,domain=mond.how`:
   was a literal-pattern exception that matched nothing, now left out.
 

@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T05:53:00Z'
-updated_date: '2026-11-16T08:56:00Z'
+updated_date: '2026-11-16T09:56:00Z'
 labels:
   - links
   - link-routes
@@ -58,6 +58,8 @@ Review (/code-review medium --fix, forked): 5 findings. Fixed (separate commit, 
 
 Correction: the plain-newwindow runtime case does exercise the branch the Private fix edits. Rebuilt (dylib 00:56) and re-ran docs/harness/task356-link-menu-checks.py on the final tree: ALL PASS again (both routed items, Split View, Quick Detour, unrouted New Tab and New Window; exactly two 'Link routed' lines). The harness now also removes its defaults suite (com.detourbrowser.mac.DetourVerify-356.plist was left by the first runs; removed). It brings Detour to the front (set_window_frame activate=true) before each case.
 Chosen by Claude (not yet confirmed by the user): keep the review's Private-window fix (a Private window's Open Link in New Window opens a new Private window) in this task as its own commit; alternative: drop that commit (and this note and the summary's mention) and file it as a separate task.
+
+2026-11-16: the user confirmed: a routed Open Link in New Window is placed like a routed Cmd+click (no forced new window); and the review's fix (a Private window's Open Link in New Window opens a Private window) stays in TASK-356.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -4,7 +4,7 @@ title: "Automation endpoint: the agent pointer"
 description: The visible agent pointer of the automation endpoint (TASK-228.11), a click-through child overlay window that glides an orange "Agent" arrow to each click and outlines the field keys go to, covering its timing, the checks run again after the glide, the arrival order of input and menu calls, where it is not drawn, how screenshots leave it out, and its setting and Debug override.
 tags: [automation, mcp, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T06:21:26Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:55:23Z }
 sources:
   - id: task-228-11
     resource: backlog:TASK-228.11
@@ -72,8 +72,8 @@ cursor.
   open. The menu tools joined on the user's decision of 2026-11-15, which
   changes how they wait: `choose_menu_item`'s `timeout_ms` counts from its
   turn, not from its arrival, and while it waits for a menu that never
-  opens, later input waits behind it (up to its timeout; chosen by Claude,
-  not yet confirmed by the user: the alternative is to take the turn and
+  opens, later input waits behind it (up to its timeout; the user's
+  decision, 2026-11-16: the alternative, rejected, was to take the turn and
   then wait for the menu outside the order). `list_menu` and
   `hit_test` read only and stay out. An uncontended call awaits nothing;
   with the pointer off the tools run as before, and the menu tools never

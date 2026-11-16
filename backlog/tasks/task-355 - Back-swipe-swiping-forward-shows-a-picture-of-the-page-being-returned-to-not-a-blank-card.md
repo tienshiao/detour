@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T05:53:00Z'
-updated_date: '2026-11-16T08:23:00Z'
+updated_date: '2026-11-16T09:56:00Z'
 labels:
   - tabs
   - navigation
@@ -70,6 +70,8 @@ Tests (Debug, -derivedDataPath .derived): NavigationSwipeTests 48 + WebKitDelega
 Runtime (/verify via docs/harness/task325-swipe-checks.py, Debug build of the final source, data dir DetourVerify-355, Detour in the background, cleaned up after): all 17 checks passed, among them the new ones: Back on page 1 reports a forward picture; the forward card held half-way shows page 2 (screenshot pixel (222, 244, 210) = page 2's #d8f5d0); after the page's own history.back() no picture and the card is plain white (255, 255, 255). Screenshots looked right (page 2's picture under the dev toolbar strip, which stays plain).
 
 Not verified (owed by hand, real trackpad): WebKit's own two-finger swipe back from a child's page 2, then a two-finger swipe forward on page 1: the card should show page 2 (the capture at _webViewDidBeginNavigationGesture: is only exercised by calling the callback in a test). Also the three-finger back on page 2 (WebKit's swipeWithEvent:) then a forward swipe. A back that swaps web processes (cross-site page 2) was not measured for the snapshot-before-navigation ordering.
+
+2026-11-16: the user confirmed: a pane resized since the picture was taken gets the plain card (not a stretched picture); 4 forward pictures per window (about 5 MB each at 1x).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

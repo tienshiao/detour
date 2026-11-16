@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T05:37:00Z'
-updated_date: '2026-11-16T07:57:00Z'
+updated_date: '2026-11-16T09:56:00Z'
 labels:
   - content-blocking
   - filter-lists
@@ -58,6 +58,8 @@ Chosen by Claude (not yet confirmed by the user): $method=POST rules are left ou
 Tests: ContentBlockerExceptionTests + ContentBlockerTests + ContentBlockerDomainListTests + ContentRuleStoreThreadingTests + TrackingParameterFilterTests: 117 run, 0 failures, 1 skipped (pre-existing skip in TrackingParameterFilterTests). The cached real lists still compile through WebKit (ContentBlockerTests). Not verified at runtime: the launch-time recompile of format-3 lists to format 4 (the mechanism is TASK-199's, covered by testACompiledListIsReusedOnlyWhenItsFormatIsCurrent); no UI change, so no /verify launch.
 
 Code review (/code-review medium --fix, 7 findings). Fixed by the review: isOptionList now splits at unescaped commas (splitAtUnescapedCommas) and needs every token to read as an option, so it no longer stops at the first unsupported one (that had made ||site.example/banner$id=1,2$image lose its rule; regression case added); parseLine computes optionTokens once. Left as they were: the hand-kept unsupportedModifiers list (bare uBO aliases $1p/$3p/$xhr and modifiers such as $urlblock or $jsinject still stay literal patterns that never match; out of scope); isRewritingOption repeating rewrite/redirect/csp (code this task did not touch); ~ handling repeated in two helpers; $match-case ignored (behaviour from before this task). After the review: the list diff is unchanged (only easyprivacy's two rules), and the test suites ContentBlockerExceptionTests 33, ContentBlockerTests 11, ContentBlockerDomainListTests 16, ContentRuleStoreThreadingTests 17, ContentRuleListChunkTests 35, TrackingParameterFilterTests 40 ran 152 tests: 0 failures, 1 skipped (a skip that was already there).
+
+2026-11-16: the user confirmed: a network rule with an option the parser does not support is left out, so easyprivacy's `||void.nicopr.fr/rec$method=POST` blocks nothing (rather than blocking every method).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

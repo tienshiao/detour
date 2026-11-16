@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T05:53:00Z'
-updated_date: '2026-11-16T07:19:00Z'
+updated_date: '2026-11-16T09:56:00Z'
 labels:
   - content-blocking
   - quick-detour
@@ -55,6 +55,8 @@ Runtime (/verify, DETOUR_DATA_DIR=DetourVerify-359, endpoint): lists downloaded 
 AC #2: the four lists fetched 2026-11-15 and counted with EasyListParser built standalone (swiftc, rulesFormatVersion 3), each compiled whole through a temporary WKContentRuleListStore: easylist 73,252 (3,562 lines skipped, 48.8% of the cap), easyprivacy 56,555 (106, 37.7%), easylist-cookie 25,109 (273, 16.7%), urlhaus-filter 109,083 (1, 72.7%); no rule stripped. The Debug app on a fresh data dir recorded the same ruleCount/compiledRuleCount (easylist 73,255 from a copy fetched minutes later). Recorded in wiki/features/content-blocking-chunks.md with a trend table.
 
 Code review (/code-review medium --fix): no correctness findings. Applied: the applyRuleLists doc comment now points to replaceRuleLists; the test fixture uses replaceRuleLists instead of its own loop. Re-run after the fixes: QuickDetourContentBlockingTests + ContentRuleListChunkTests, 38 tests, 0 failures. Skipped (out of scope, reported): browser windows still re-apply only on the selected tab's panes (background tabs with a web view keep old lists) — a store-wide pass over every live web view would cover both; the small duplicate add-loop in applyRuleLists/replaceRuleLists; the test-only contentRuleStore property.
+
+2026-11-16: the user confirmed: QuickDetourWindowController.contentRuleStore is a settable test seam.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T05:37:00Z'
-updated_date: '2026-11-16T08:02:00Z'
+updated_date: '2026-11-16T09:56:00Z'
 labels:
   - cleanup
   - concurrency
@@ -58,6 +58,8 @@ Wiki: native-port-keep-alive (stale-comments gotcha rewritten), settings-window-
 Tests (2026-11-16, lane-a, sandbox off, .derived): RuntimeInstalledEventTests + RuntimeInstalledEventLoadFailureTests 33/33, run twice (before and after the review's comment edits). onInstalled real-context tests: NewProfileExtensionLoadTests (incl. the TASK-134 failing-worker case) 9/9, the 7 ExtensionPolyfillTests testRuntimeOnInstalled*, the 5 ExtensionPolyfillProfileWiringTests onInstalled tests and WKExtensionIntegrationTests.testRuntimeOnInstalledIsNotDelivered: 22/22, 0 failures. No /verify: no UI or behaviour change (comments plus a lock swap), per the brief.
 Review: /code-review medium --fix found no correctness bugs; it fixed four comment issues (Mutex comment overclaimed protection off the main thread, harness claim narrowed to a Detour-hosted offscreen close, two rewraps). Its wiki finding (sentences recording TASK-353 as change history = status) was applied by me: the three pages now state the fact only, and the task-353 sources were dropped. Wiki lint 0 errors, 0 warnings.
 Not verified: nothing at runtime; the harness patch parses (git apply --stat) but did not apply to today's AppDelegate before this change either.
+
+2026-11-16: the user confirmed: ProvisionalInstalledEventClaims keeps its record in a Mutex rather than dropping the lock.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

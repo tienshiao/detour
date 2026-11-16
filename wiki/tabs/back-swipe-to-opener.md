@@ -4,7 +4,7 @@ title: Back swipe to the opener
 description: "On a tab opened from another tab, with no back history, the two-finger back swipe does what the Back button does — closes the tab and selects its opener — through Detour's own swipe (WebKit's needs a back item): when a pane's web view is in that mode, how a swipe starts from the scrolls the page did not use, the veneer that shows during it (the opener's picture going back, a picture of the page left going back on the forward swipe), the decisions per case (splits, Peek, pinned tabs, Quick Detour), and what is verified only by hand."
 tags: [tabs, navigation, gestures, webkit, split]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:55:23Z }
 sources:
   - id: rules
     resource: ../../Detour/Browser/Window/NavigationSwipe.swift
@@ -205,8 +205,8 @@ else WebKit's own swipe shows WebKit's own picture.[^task-355]
   window's cache until it is evicted or the tab closes.
 - **When it shows**: only when its item is the web view's forward item and
   the web view's size still matches within a point; a pane resized since
-  would stretch it, so the plain card then (chosen by Claude, not yet
-  confirmed by the user). It sits at the web view's frame in the pane, so a
+  would stretch it, so the plain card then (the user's decision,
+  2026-11-16; the other option was to draw it scaled). It sits at the web view's frame in the pane, so a
   dev toolbar beside the page stays plain.
 - **Fallback, the plain card**: after a relaunch, after a back the window
   did not start, after a navigation changed the forward list, in another
@@ -220,7 +220,7 @@ else WebKit's own swipe shows WebKit's own picture.[^task-355]
 | Peek | The Peek's web view keeps WebKit's gesture (its own history; Back acts on it too); the tab under an open Peek starts nothing | Back targets the Peek while one is open; the overlay also swallows scrolls |
 | Quick Detour | Unchanged: WebKit's gesture, history only | Its Back is history only and its tab has no opener |
 | Pinned tab or favourite with a `parentID` | WebKit's gesture; never swiped closed (confirmed: the user's decision, 2026-11-15; the other option was to select the opener as Back does) | `TabStore.closeTab` closes normal tabs only. The Back button on a pinned child still selects the opener without closing it (behaviour before TASK-325) |
-| Child of a favourite | Closes to the favourite and selects it, as for a pinned opener; a dormant favourite is no opener, so WebKit's gesture (chosen by Claude, TASK-358, not yet confirmed by the user; the other option was no opener, as before) | One opener rule for every reader; before TASK-358 a favourite was an opener for `window.close()` and for the tab's placement but not for Back |
+| Child of a favourite | Closes to the favourite and selects it, as for a pinned opener; a dormant favourite is no opener, so WebKit's gesture (confirmed: the user's decision, 2026-11-16, TASK-358; the other option was no opener, as before) | One opener rule for every reader; before TASK-358 a favourite was an opener for `window.close()` and for the tab's placement but not for Back |
 | Reopened child | Closes to its opener again while that tab is still an opener `Space.openerTab` resolves (the record carries `parentID` since v26); with the opener closed, archived, moved or asleep meanwhile, no opener and WebKit's gesture | The record is the tab's only life after closing (TASK-332) |
 | Child brought back by Undo Close Tab (or Undo Close Both Splits) | The same rule: its captured opener only while `Space.openerTab` resolves it; an opener closed since (even if its own close was undone first: a new tab) leaves no opener | One rule for every way a closed tab comes back (the user's decision on TASK-332, 2026-11-14) |
 

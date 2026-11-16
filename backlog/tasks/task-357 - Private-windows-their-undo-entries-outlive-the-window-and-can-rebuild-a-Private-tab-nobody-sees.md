@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T05:53:00Z'
-updated_date: '2026-11-16T06:39:00Z'
+updated_date: '2026-11-16T09:56:00Z'
 labels:
   - incognito
   - undo
@@ -66,6 +66,8 @@ Verification:
 Chosen by Claude (not yet confirmed by the user): per-window removal (other Private windows and normal windows keep their entries) rather than clearing the whole stack; alternative: removeAllActions() on every Private window close (simpler, loses normal history).
 
 Follow-up commit: test for an Undo whose open group holds only the dropped Private entry (no exception, nothing restored, canUndo/canRedo false) — PrivateWindowUndoTests now 13 + 1 window test, all pass; wiki/architecture/tabstore.md mutation shape updated to registerUndo(actionName:in:).
+
+2026-11-16: the user confirmed: a closed Private window's undo/redo entries are removed per window (normal windows and other Private windows keep their history), not the whole stack.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

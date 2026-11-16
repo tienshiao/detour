@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T04:51:00Z'
-updated_date: '2026-11-16T08:28:00Z'
+updated_date: '2026-11-16T09:56:00Z'
 labels:
   - keyboard
   - settings
@@ -56,6 +56,8 @@ Chosen by Claude (not yet confirmed by the user): only the command's row is mark
 Tests: ShortcutConflictTests +9 (shipped defaults vs the real menu bar: no outside conflict on US and French; a saved ⌘C marked against Edit > Copy; Copy holding its registry key after AppKit cleared its item; resets refused for the Quick Detour setting exact and on its ⇧⌘= keystroke on US and French keys; for an item no command is, exact and French-only ⇧⌘à; either direction; saved shortcuts marked: ⇧⌘/ vs ⌘? on US only, ⌘+ vs ⇧⌘= on both, French-only ⌥⇧⌘à, the Quick Detour shortcut and keystroke; a command pair named first). Run after the review: ShortcutConflictTests, ShortcutsSettingsPaneTests, ShortcutBindingStoreTests, ShortcutMenuTests, SpaceJumpTests, HotKeyShortcutTests, QuickDetourHotKeyTests, MenuKeyEquivalentMatcherTests, MainMenuCharacterizationTests, SettingsSwitchRowTests, SettingsPaneColumnsTests, SettingsPaneHeightTests: 242 tests, 0 failures.
 Runtime (/verify, DETOUR_DATA_DIR=DetourVerify-350, suite seeded: Quick Detour hotkey ⌘R and off, Reload Page ⌥⌘E, New Window ⌘C; then Show All History ⌘R, Toggle Sidebar ⌃⌘Space; read through Accessibility, screenshots): New Window's row 'Same key as Copy'; Reload Page's reset pressed through Accessibility was refused with '⌘R is the Quick Detour shortcut (Settings > Quick Detour). Change that one first.' and kept ⌥⌘E, list kept its height; Show All History's row 'Same key as Quick Detour'; Toggle Sidebar on ⌃⌘Space showed 'Used by macOS' (macOS's note first; Emoji & Symbols is also a macOS shortcut). Not verified at runtime: a non-US layout (tests only); the tooltips (unit tests only); the review's tooltip rewording for the Quick Detour case came after the runtime run.
 Review (code-review medium --fix): 7 findings, 1 fixed by the review (identifier checked before userKeyEquivalent), 1 by me (Quick Detour exact tooltip names the hotkey as taking the key first). Left: Restore Defaults does not check holders outside the commands (product choice, out of scope); a row with an App Shortcut is compared by its binding (pre-existing, same for pairs); the shipped-defaults test reads the real menu bar, so an 'All Applications' App Shortcut on the Mac could affect it (as testTheRealMenuBar can); the inline both-direction match duplicates firesOnSameKeystroke to read shifted equivalents once; canFire wrapper kept.
+
+2026-11-16: the user confirmed: only the command's row gets the "Same key as" note; the exact-clash tooltip says "only one of them can have it"; clashes with outside holders are not written to the launch log.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

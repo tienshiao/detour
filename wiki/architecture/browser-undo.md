@@ -4,7 +4,7 @@ title: Browser undo
 description: "Detour's undo of browsing actions: the one app-wide UndoManager on TabStore, which mutations register an entry and which do not, how closures capture spaces (the instance) and tabs (by id), grouping, when the stack is cleared, how a closed Private window's entries leave it, the identity and deleted-profile pitfalls, and which window answers Edit > Undo."
 tags: [architecture, undo, state, menus]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:55:23Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -283,7 +283,7 @@ then the main window's.
 | Settings | the typing in its field with the keys (`SettingsWindowController`) | `TabStore`'s list. Settings is the main window while it is key, so the actions never reached a browser window from it; before TASK-349 nothing answered them: disabled, still titled from the browser window that validated them last ("Undo Close Tab"), and the typing could not be undone[^task-349] |
 | A sheet on Settings with a field (Add Site Search, Add Profile) | its fields' typing, on the sheet's own undo manager (`SiteSearchForm`, `AddProfileViewController`, in the fields' chain) | `TabStore`'s list. Settings' controller cannot answer for it: AppKit disables a menu action aimed at a window with a sheet attached (measured: "Undo Typing", disabled) |
 | An extension's action popup | the popup page's edits, which WebKit registers with the web view's undo manager (the popover window's), answered by its `PopupContentView`; with the popover window itself first responder, by the browser window's fallback below | `TabStore`'s list: the popover window is key but never main, and its own next responder is the window it is shown from, so before TASK-349 ⌘Z in the popup reopened a closed tab in the browser window behind it |
-| Any other window that is not a browser window, has the keys and does not answer (the Downloads, site settings and emoji picker popovers, none with a text field) | the browser window's `browserUndo:` (through the popover window's next responder, or as the main window's), which runs **that key window's** own undo (`nonBrowserKeyWindow` + `FieldUndo`; only when the key window's chain hands Undo to this controller, or to nothing in a window that is not main, so a command addressed to a browser window stays its own): nothing for those popovers, disabled and titled "Undo" | `TabStore`'s list; before TASK-349 ⌘Z there reopened a closed tab. Chosen by Claude, not yet confirmed by the user: the alternative keeps the browser's undo for a popover without fields[^task-349] |
+| Any other window that is not a browser window, has the keys and does not answer (the Downloads, site settings and emoji picker popovers, none with a text field) | the browser window's `browserUndo:` (through the popover window's next responder, or as the main window's), which runs **that key window's** own undo (`nonBrowserKeyWindow` + `FieldUndo`; only when the key window's chain hands Undo to this controller, or to nothing in a window that is not main, so a command addressed to a browser window stays its own): nothing for those popovers, disabled and titled "Undo" | `TabStore`'s list; before TASK-349 ⌘Z there reopened a closed tab. Doing nothing there is the user's decision (2026-11-16)[^task-349] |
 
 The item's title and enabled state come from the same choice
 (`BrowserCommands.undo` / `.redo`: "Undo Typing" from the page, "Undo

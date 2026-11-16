@@ -4,7 +4,7 @@ title: Tab opener
 description: "The link from a tab to the tab it was opened from (BrowserTab.parentID): which paths set it, the one opener rule (Space.openerTab: a normal, live pinned or live favourite tab) every reader resolves it by (close selection, Back and the back swipe, window.close, reopen and the close undos, Move to Space), the deliberate exceptions, and when the link is cut, re-checked or left dangling."
 tags: [tabs, opener, rules, undo]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:55:23Z }
 sources:
   - id: browsertab
     resource: ../../Detour/Browser/BrowserTab.swift
@@ -148,14 +148,12 @@ which Back then never resolved.[^task-358]
 with a `parentID` and no history selects the opener and leaves the tab
 alone, and the back swipe keeps WebKit's gesture there.
 
-**Chosen by Claude (TASK-358), not yet confirmed by the user:** a favourite
-counts (Back, Cmd+[ and the swipe on a child of a favourite close it and
-select the favourite, as for a pinned opener; alternative: drop the favourite
-line); Cmd+W on a child returns to its pinned or favourite opener after its
-siblings, ahead of the neighbour, as Back does (alternative: the window's
-`isOpener` accepts `space.tabs` only); Move to Space keeps the link while it
-resolves in the destination (a favourite of its profile, an opener moved there
-first; alternative: always cut, `tab.parentID = nil`).
+**The user's decision (2026-11-16, TASK-358):** a favourite counts (Back,
+Cmd+[ and the swipe on a child of a favourite close it and select the
+favourite, as for a pinned opener); Cmd+W on a child returns to its pinned
+or favourite opener after its siblings, ahead of the neighbour, as Back
+does; Move to Space keeps the link while it resolves in the destination (a
+favourite of its profile, an opener moved there first).
 
 ## When the link is cut, re-checked, or left dangling
 

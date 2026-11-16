@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T04:51:00Z'
-updated_date: '2026-11-16T06:56:00Z'
+updated_date: '2026-11-16T09:56:00Z'
 labels:
   - automation
 dependencies: []
@@ -75,6 +75,8 @@ Follow-up after the review (second commit):
 - The runtime pass ran before the review's two small fixes (the Downloads popover's table class, a comment) and before this test-only follow-up.
 - Seen at runtime, not investigated (out of scope): select_tab on beta followed by Cmd+W closed gamma (the select_tab output was discarded, so whether it selected is unverified).
 Chosen by Claude (not yet confirmed by the user): the press flag is set on both routes (direct and through the window); alternative: keep any press whose hit view is inside a table on the direct route. Chosen by Claude (not yet confirmed by the user): every Detour table is made from AutomationTableView, including the Shortcuts and Link Routes lists (no selectable rows) and the Downloads popover (out of reach); alternative: only the tables with selectable rows or click actions.
+
+2026-11-16: the user confirmed: the endpoint's press flag is also set when the press goes through the window; every table uses AutomationTableView, including the ones with no selectable rows.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

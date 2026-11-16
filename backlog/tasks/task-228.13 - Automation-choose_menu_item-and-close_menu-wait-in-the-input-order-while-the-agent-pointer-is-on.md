@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T05:53:00Z'
-updated_date: '2026-11-16T06:26:00Z'
+updated_date: '2026-11-16T09:56:00Z'
 labels:
   - automation
 dependencies: []
@@ -55,6 +55,8 @@ Tests: AutomationAgentPointerTests +2 — testWithThePointerOnAMenuChoiceWaitsFo
 Runtime (/verify, DETOUR_MCP=1, DetourVerify-22813, Debug build from this tree, pointer on through set_debug_override, set_window_frame first so the glide is 600 ms): two endpoint clients. Client A right-clicked the page (#area); 150 ms later client B sent choose_menu_item title Reload timeout_ms 100: click 0.000-0.721 s, choice 0.154-0.724 s, chose Reload, the page reloaded (performance.timeOrigin changed). Same race with close_menu: closed true (0.152-0.948 s), no menu left open. Detour stayed in the background (app_active false before and after). Script: scratchpad TASK-228.13/verify.py. Defaults keys and data folder removed.
 
 Review (/code-review medium --fix, forked): fixed in the tree: the held-order test resumes its continuation in a teardown block; the off-mode menu calls run in a task with a 3 s wait, so a regression that makes them wait fails instead of hanging; a comment rewrapped, a misleading test comment removed. Skipped: choose_menu_item holding the order while it polls (the provisional choice above); list_menu outside the order (read-only, planned; a list_menu answered during another client's glide can describe the menu before that click's, so choose by index could then pick from a different menu: for the user); run_menu_item outside the order (out of scope: it can still run ahead of a gliding click; possible follow-up); extracting choose_menu_item's body into a method (re-indent churn only). After the fixes: AutomationAgentPointerTests 14/14 + AutomationInputTests 16/16 = 30/30.
+
+2026-11-16: the user confirmed: choose_menu_item keeps its queue turn while it waits (up to timeout_ms) for a menu to open; run_menu_item and list_menu stay outside the input order.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
