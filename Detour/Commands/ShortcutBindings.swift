@@ -110,6 +110,37 @@ enum ShortcutResolution {
         }
         return result
     }
+
+    /// The shortcuts held outside the commands that each of `keys` fires on
+    /// the same keystroke as (TASK-350; `holders` from
+    /// `HotKeyShortcutValidation.keystrokeHolders`, in menu order, the
+    /// Quick Detour hotkey last): a holder on the very same shortcut first,
+    /// as AppKit fires an exact item first, else one sharing the keystroke
+    /// through a shifted character in either direction (TASK-343's mapping).
+    /// A command a reset would give its default is asked with that default;
+    /// the saved shortcuts are asked with their effective keys. Each
+    /// shortcut's shifted equivalents are read once.
+    static func outsideHolderConflicts(of keys: [(id: CommandID, key: KeyEquivalent)], holders: [KeystrokeHolder],
+                                       shiftedEquivalents: (KeyEquivalent) -> [KeyEquivalent])
+        -> [CommandID: KeystrokeHolder] {
+        guard !holders.isEmpty else { return [:] }
+        let holdersShifted = holders.map { shiftedEquivalents($0.key) }
+        var result: [CommandID: KeystrokeHolder] = [:]
+        for entry in keys {
+            if let exact = holders.first(where: { $0.key.isSameShortcut(as: entry.key) }) {
+                result[entry.id] = exact
+                continue
+            }
+            let keyShifted = shiftedEquivalents(entry.key)
+            if let index = holders.indices.first(where: { index in
+                keyShifted.contains { $0.isSameShortcut(as: holders[index].key) }
+                    || holdersShifted[index].contains { $0.isSameShortcut(as: entry.key) }
+            }) {
+                result[entry.id] = holders[index]
+            }
+        }
+        return result
+    }
 }
 
 /// The user's shortcuts, stored in the data directory's defaults suite
@@ -212,8 +243,18 @@ final class ShortcutBindingStore {
     func sameKeystrokeConflicts(
         shiftedEquivalents: (KeyEquivalent) -> [KeyEquivalent] = { KeyEquivalent.currentShiftedEquivalents($0) }
     ) -> [CommandID: CommandID] {
-        let keys = commands.compactMap { command in keyEquivalent(for: command.id).map { (id: command.id, key: $0) } }
-        return ShortcutResolution.sameKeystrokeConflicts(of: keys, shiftedEquivalents: shiftedEquivalents)
+        ShortcutResolution.sameKeystrokeConflicts(of: effectiveKeys, shiftedEquivalents: shiftedEquivalents)
+    }
+
+    /// Each command's shortcut now, in menu order; commands with none left out.
+    var effectiveKeys: [(id: CommandID, key: KeyEquivalent)] {
+        commands.compactMap { command in keyEquivalent(for: command.id).map { (id: command.id, key: $0) } }
+    }
+
+    /// Whether `item` is one of its commands' items (the Settings pane
+    /// compares those by their bindings, the rest as holders outside them).
+    func isCommandItem(_ item: NSMenuItem) -> Bool {
+        item.identifier.map { commandIDs.contains(CommandID(rawValue: $0.rawValue)) } ?? false
     }
 
     /// Logs each pair `sameKeystrokeConflicts` finds (TASK-343): at launch

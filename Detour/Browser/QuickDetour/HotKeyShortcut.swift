@@ -205,6 +205,33 @@ extension KeyEquivalent {
     }
 }
 
+/// A shortcut held by something Settings > Shortcuts cannot change (TASK-350):
+/// a menu item that is none of its commands, or the Quick Detour hotkey.
+struct KeystrokeHolder: Equatable {
+    enum Kind: Equatable {
+        /// The item's path from the menu bar, "Edit > Emoji & Symbols".
+        case menuItem(path: String)
+        /// The Quick Detour hotkey, set on its own pane (its File item
+        /// carries it).
+        case quickDetour
+    }
+
+    let kind: Kind
+    /// "Emoji & Symbols", "Quick Detour".
+    let title: String
+    let key: KeyEquivalent
+
+    /// The holder in a sentence: "the shortcut of Edit > Emoji & Symbols",
+    /// "the Quick Detour shortcut (Settings > Quick Detour)", as the
+    /// recorder's refusals name them.
+    var phrase: String {
+        switch kind {
+        case .menuItem(let path): return "the shortcut of \(path)"
+        case .quickDetour: return HotKeyShortcutValidation.quickDetourPhrase
+        }
+    }
+}
+
 /// Why a shortcut cannot be the Quick Detour hotkey.
 enum HotKeyShortcutProblem: Equatable {
     /// Neither Command, Option nor Control: a global shortcut on a plain or
@@ -418,23 +445,69 @@ enum HotKeyShortcutValidation {
         }
         for item in menu.items {
             guard let submenu = item.submenu else { continue }
-            // What the bar shows: the submenu's title. Detour's bar items
-            // carry the same title (TASK-334), but an item made with
-            // `NSMenuItem()` reports "NSMenuItem", and an untitled
-            // application menu shows the app's name.
-            let title: String
-            if !submenu.title.isEmpty {
-                title = submenu.title
-            } else if menu.supermenu == nil {
-                title = AppDelegate.appName
-            } else {
-                title = item.title
-            }
-            if let path = menuItemPath(matching: key, in: submenu, isOwnItem: isOwnItem, parents: parents + [title]) {
+            if let path = menuItemPath(matching: key, in: submenu, isOwnItem: isOwnItem,
+                                       parents: parents + [title(of: submenu, item: item, in: menu)]) {
                 return path
             }
         }
         return nil
+    }
+
+    /// An item's key equivalent as it is now; nil for none.
+    static func liveKeyEquivalent(of item: NSMenuItem) -> KeyEquivalent? {
+        item.keyEquivalent.isEmpty ? nil : KeyEquivalent(item.keyEquivalent, item.keyEquivalentModifierMask)
+    }
+
+    /// What the bar shows for `item`'s `submenu`: the submenu's title.
+    /// Detour's bar items carry the same title (TASK-334), but an item made
+    /// with `NSMenuItem()` reports "NSMenuItem", and an untitled application
+    /// menu shows the app's name.
+    private static func title(of submenu: NSMenu, item: NSMenuItem, in menu: NSMenu) -> String {
+        if !submenu.title.isEmpty { return submenu.title }
+        if menu.supermenu == nil { return AppDelegate.appName }
+        return item.title
+    }
+
+    /// The shortcuts held outside the commands of Settings > Shortcuts
+    /// (TASK-350), which a reset or a saved shortcut is compared with as the
+    /// recorder compares a keystroke with the whole menu (rule 3) and the
+    /// Quick Detour setting (rule 4): every item of `menu` (with its
+    /// submenus, in menu order) AppKit could fire
+    /// (`MenuKeyEquivalentMatcher.canDispatch`) that `isExcluded` does not
+    /// leave out and that `key` gives a shortcut, then the Quick Detour
+    /// hotkey's shortcut, on or off. The pane leaves out the store's
+    /// commands, which it compares by their bindings, and the Quick Detour
+    /// item, named from its setting; what is left is AppKit's own items
+    /// (Emoji & Symbols, Start Dictation…), the fixed Edit commands, and the
+    /// App Shortcuts System Settings gives them.
+    ///
+    /// - Parameter key: the shortcut an item holds; by default its key
+    ///   equivalent, none when empty. AppKit gives a key equivalent to one
+    ///   item of the menu bar only, so an item can have lost its own to
+    ///   another (measured, TASK-350): the pane passes the registry's key
+    ///   for a command's item.
+    static func keystrokeHolders(in menu: NSMenu?, isExcluded: (NSMenuItem) -> Bool,
+                                 key: (NSMenuItem) -> KeyEquivalent? = { liveKeyEquivalent(of: $0) },
+                                 quickDetourShortcut: HotKeyShortcut?) -> [KeystrokeHolder] {
+        var holders: [KeystrokeHolder] = []
+        func walk(_ menu: NSMenu, parents: [String]) {
+            for item in menu.items {
+                if MenuKeyEquivalentMatcher.canDispatch(item), !isExcluded(item), let key = key(item) {
+                    holders.append(KeystrokeHolder(
+                        kind: .menuItem(path: (parents + [item.title]).joined(separator: " > ")), title: item.title,
+                        key: key))
+                }
+                if let submenu = item.submenu {
+                    walk(submenu, parents: parents + [title(of: submenu, item: item, in: menu)])
+                }
+            }
+        }
+        if let menu { walk(menu, parents: []) }
+        if let quickDetourShortcut {
+            holders.append(KeystrokeHolder(kind: .quickDetour, title: QuickDetour.displayName,
+                                           key: quickDetourShortcut.menuKeyEquivalent))
+        }
+        return holders
     }
 
     /// The enabled macOS shortcuts (System Settings > Keyboard > Keyboard
@@ -451,6 +524,8 @@ enum HotKeyShortcutValidation {
         }
     }
 
+    static let quickDetourPhrase = "the \(QuickDetour.displayName) shortcut (Settings > \(QuickDetour.displayName))"
+
     /// What the recorder shows for a problem.
     static func message(for problem: HotKeyShortcutProblem, shortcut: HotKeyShortcut) -> String {
         switch problem {
@@ -465,7 +540,7 @@ enum HotKeyShortcutValidation {
         case .needsModifierOrFunctionKey:
             return "Include ⌘ or ⌃ in the shortcut, or use a function key: with ⌥ alone, a text field types the character instead."
         case .usedByQuickDetour:
-            return "\(shortcut.displayString) is the \(QuickDetour.displayName) shortcut (Settings > \(QuickDetour.displayName))."
+            return "\(shortcut.displayString) is \(quickDetourPhrase)."
         case .reservedBySystem(let use): return "\(shortcut.displayString) is the macOS shortcut for \(use)."
         }
     }

@@ -65,15 +65,22 @@ struct ShortcutRowState: Equatable {
     /// shifted character on this keyboard layout (TASK-343): a binding
     /// saved before the recorder refused such pairs, or one the layout
     /// chosen since makes collide. Both rows say so; neither is dropped.
+    /// Or a shortcut held outside the commands (TASK-350: a menu item that
+    /// is none of them, the Quick Detour hotkey) does, on the same keystroke
+    /// or the very same shortcut; only this row says so.
     var sameKeystroke: SameKeystroke?
 
     struct SameKeystroke: Equatable {
-        /// The other command's title and shortcut ("Zoom In", "⌘+").
+        /// The other's title and shortcut ("Zoom In", "⌘+").
         let otherTitle: String
         let otherShortcut: String
-        /// The command the keystroke runs: the one holding Shift, whose key
+        /// What the keystroke runs: the one holding Shift, whose key
         /// equivalent matches the press exactly (TASK-335's measurement).
-        let runner: String
+        /// Nil when both are the very same shortcut (only with a holder
+        /// outside the commands): which one fires was not measured.
+        let runner: String?
+        /// The holder when it is no command of the list (TASK-350).
+        var outside: KeystrokeHolder?
     }
 
     /// - Parameters:
@@ -84,9 +91,11 @@ struct ShortcutRowState: Equatable {
     ///   - sameKeystroke: the command sharing this one's keystroke, if any
     ///     (`ShortcutBindingStore.sameKeystrokeConflicts`), and the layout's
     ///     shifted equivalents, to say which of the two the keystroke runs.
+    ///   - outsideHolder: else the holder outside the commands sharing it,
+    ///     if any (`ShortcutResolution.outsideHolderConflicts`, TASK-350).
     static func make(for command: BrowserCommand, store: ShortcutBindingStore, systemShortcut: KeyEquivalent?,
                      quickDetourShortcut: HotKeyShortcut?, macOSShortcuts: [KeyEquivalent] = [],
-                     sameKeystroke: BrowserCommand? = nil,
+                     sameKeystroke: BrowserCommand? = nil, outsideHolder: KeystrokeHolder? = nil,
                      shiftedEquivalents: (KeyEquivalent) -> [KeyEquivalent] = { _ in [] }) -> ShortcutRowState {
         switch command.bindability {
         case .quickDetourPane:
@@ -108,6 +117,17 @@ struct ShortcutRowState: Equatable {
                 let runsThisOne = shiftedEquivalents(key).contains { $0.isSameShortcut(as: otherKey) }
                 state.sameKeystroke = SameKeystroke(otherTitle: other.title, otherShortcut: otherKey.displayString ?? "",
                                                     runner: runsThisOne ? command.title : other.title)
+            } else if let key, let holder = outsideHolder {
+                let runner: String?
+                if holder.key.isSameShortcut(as: key) {
+                    runner = nil
+                } else {
+                    runner = shiftedEquivalents(key).contains { $0.isSameShortcut(as: holder.key) }
+                        ? command.title : holder.title
+                }
+                state.sameKeystroke = SameKeystroke(otherTitle: holder.title,
+                                                    otherShortcut: holder.key.displayString ?? "",
+                                                    runner: runner, outside: holder)
             }
             return state
         }
@@ -152,6 +172,10 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
     /// The commands whose shortcuts share a keystroke on the layout, read
     /// once per reload (TASK-343): each mapped to the other.
     private(set) var sameKeystrokeConflicts: [CommandID: CommandID] = [:]
+    /// The commands whose shortcuts share a keystroke with a holder outside
+    /// the commands (a menu item that is none of them, the Quick Detour
+    /// hotkey), read once per reload (TASK-350).
+    private(set) var outsideConflicts: [CommandID: KeystrokeHolder] = [:]
     /// The keyboard layout change observer (a distributed notification).
     private var layoutObserver: NSObjectProtocol?
 
@@ -404,6 +428,8 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
             $0.menuKeyEquivalents(character: systemHotKeyCharacter, shiftedCharacter: systemHotKeyShiftedCharacter)
         }
         sameKeystrokeConflicts = store.sameKeystrokeConflicts(shiftedEquivalents: shiftedEquivalents)
+        outsideConflicts = ShortcutResolution.outsideHolderConflicts(of: store.effectiveKeys, holders: outsideHolders(),
+                                                                     shiftedEquivalents: shiftedEquivalents)
         tableView.reloadData()
         emptyLabel.stringValue = items.isEmpty ? "No commands match “\(query)”." : ""
         emptyLabel.isHidden = !items.isEmpty
@@ -427,7 +453,33 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
         ShortcutRowState.make(for: command, store: store, systemShortcut: systemShortcut(command.id),
                               quickDetourShortcut: quickDetourShortcut(), macOSShortcuts: macOSShortcuts,
                               sameKeystroke: sameKeystrokeConflicts[command.id].flatMap(BrowserCommands.command(withID:)),
-                              shiftedEquivalents: shiftedEquivalents)
+                              outsideHolder: outsideConflicts[command.id], shiftedEquivalents: shiftedEquivalents)
+    }
+
+    /// The shortcuts held outside the store's commands (TASK-350): the live
+    /// menu's other items, and the Quick Detour hotkey named from its
+    /// setting rather than by its File item, as the recorder names it.
+    private func outsideHolders() -> [KeystrokeHolder] {
+        HotKeyShortcutValidation.keystrokeHolders(
+            in: mainMenu(),
+            isExcluded: { [store] item in
+                store.isCommandItem(item) || item.identifier?.rawValue == BrowserCommands.newQuickDetourWindow.id.rawValue
+            },
+            key: { item in
+                // A command's item the store does not write (the fixed Edit
+                // commands) holds its registry key, though AppKit may have
+                // cleared it on the item: it gives a key equivalent to one
+                // item of the bar only, and a binding saved on Copy's ⌘C took
+                // it at launch (measured, TASK-350). An App Shortcut on the
+                // item wins.
+                if let raw = item.identifier?.rawValue,
+                   let command = BrowserCommands.command(withID: CommandID(rawValue: raw)),
+                   item.userKeyEquivalent.isEmpty {
+                    return command.keyEquivalent
+                }
+                return HotKeyShortcutValidation.liveKeyEquivalent(of: item)
+            },
+            quickDetourShortcut: quickDetourShortcut())
     }
 
     /// Why `shortcut` cannot be `id`'s, or nil.
@@ -497,7 +549,9 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
     /// over a default), so it is refused with the holder named. Also refused
     /// when the built-in shortcut and another command's binding are one
     /// keystroke on this keyboard through a shifted character (TASK-343:
-    /// Zoom In's ⌘+ while another command holds ⇧⌘=), as recording it is.
+    /// Zoom In's ⌘+ while another command holds ⇧⌘=), as recording it is,
+    /// and when a holder outside the commands has it or its keystroke
+    /// (TASK-350: the Quick Detour hotkey set to the default, an AppKit item).
     func reset(_ id: CommandID) {
         endRecording()
         if let builtIn = BrowserCommands.command(withID: id)?.keyEquivalent {
@@ -508,6 +562,11 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
             if let shared = store.command(sharingKeystrokeWith: builtIn, except: id,
                                           shiftedEquivalents: shiftedEquivalents) {
                 refuseReset(Self.sameKeystrokeRefusal(builtIn: builtIn, held: shared.key, holder: shared.command.title))
+                return
+            }
+            if let holder = ShortcutResolution.outsideHolderConflicts(
+                of: [(id: id, key: builtIn)], holders: outsideHolders(), shiftedEquivalents: shiftedEquivalents)[id] {
+                refuseReset(Self.outsideRefusal(builtIn: builtIn, holder: holder))
                 return
             }
         }
@@ -525,6 +584,21 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
     static func sameKeystrokeRefusal(builtIn: KeyEquivalent, held: KeyEquivalent, holder: String) -> String {
         "\(builtIn.displayString ?? "") and \(held.displayString ?? "") are one keystroke on this keyboard, and "
             + "\(held.displayString ?? "") is now \(holder)'s shortcut. Change that one first."
+    }
+
+    /// A reset refused for a holder outside the commands (TASK-350): "⌘R is
+    /// the Quick Detour shortcut (Settings > Quick Detour). Change that one
+    /// first." A menu item that is no command cannot be changed here.
+    static func outsideRefusal(builtIn: KeyEquivalent, holder: KeystrokeHolder) -> String {
+        let builtInShown = builtIn.displayString ?? ""
+        let held = holder.key.displayString ?? ""
+        let start = holder.key.isSameShortcut(as: builtIn)
+            ? "\(builtInShown) is "
+            : "\(builtInShown) and \(held) are one keystroke on this keyboard, and \(held) is "
+        switch holder.kind {
+        case .menuItem: return start + holder.phrase + ", which cannot be changed here."
+        case .quickDetour: return start + holder.phrase + ". Change that one first."
+        }
     }
 
     private func recordingChanged(_ recording: Bool, command id: CommandID) {
@@ -750,8 +824,25 @@ final class ShortcutRowView: NSTableCellView {
     }
 
     static func sameKeystrokeToolTip(_ same: ShortcutRowState.SameKeystroke, shortcut: String) -> String {
-        "\(shortcut) and \(same.otherTitle)'s \(same.otherShortcut) are one keystroke on this keyboard, which runs "
-            + "\(same.runner). Record another shortcut for one of them."
+        guard let holder = same.outside else {
+            return "\(shortcut) and \(same.otherTitle)'s \(same.otherShortcut) are one keystroke on this keyboard, "
+                + "which runs \(same.runner ?? same.otherTitle). Record another shortcut for one of them."
+        }
+        // A holder outside the list: only this row can change (TASK-350).
+        guard let runner = same.runner else {
+            switch holder.kind {
+            case .quickDetour:
+                // A Carbon hotkey takes the key before any menu.
+                return "\(shortcut) is also \(holder.phrase), which takes the key first while it is on. "
+                    + "Record another shortcut for this command."
+            case .menuItem:
+                // macOS keeps a key equivalent on one menu item only (TASK-350).
+                return "\(shortcut) is also \(holder.phrase), and only one of them can have it. "
+                    + "Record another shortcut for this command."
+            }
+        }
+        return "\(shortcut) and \(same.otherShortcut), \(holder.phrase), are one keystroke on this keyboard, which "
+            + "runs \(runner). Record another shortcut for this command."
     }
 
     static func takenByMacOSToolTip(_ shortcut: String) -> String {

@@ -4,7 +4,7 @@ title: Quick Detour global hotkey
 description: "The system-wide shortcut (Opt-Cmd-N by default) that shows the Quick Detour launcher from any app: the Carbon registration and why, what conflicts it can and cannot detect (measured), where it registers, the toggle, the Settings recorder and its warnings, and the layout limits."
 tags: [window, keyboard, settings]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:09Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T08:23:10Z }
 stale_after: 2026-12-31T00:00:00Z
 sources:
   - id: task-193-2
@@ -171,6 +171,10 @@ switch above is off, and the row's warning line. TASK-193.5 added the rest
   Detour)."), and suspends the hotkey while one of its recorders records
   ([keyboard shortcuts](./keyboard-shortcuts.md)). Both recorders use one
   validator, `HotKeyShortcutValidation`, with `.globalHotKey` rules here.
+  Since TASK-350 that pane also refuses a command's reset onto this
+  shortcut or its keystroke, and marks a saved command shortcut on it
+  "Same key as Quick Detour" (the setting, on or off;
+  [holders outside the commands](./keyboard-shortcuts.md#holders-outside-the-commands)).
 
 # Known limits
 

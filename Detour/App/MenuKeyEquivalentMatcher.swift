@@ -51,13 +51,24 @@ enum MenuKeyEquivalentMatcher {
         let eventModifiers = modifiers.intersection(significantModifiers)
 
         return items.first { item in
-            // The dynamic items have no key equivalent at all, so that is the
-            // test that rejects almost everything.
-            guard !item.keyEquivalent.isEmpty,
-                  !item.isSeparatorItem, !item.isHidden || item.allowsKeyEquivalentWhenHidden,
-                  item.action != nil else { return false }
-            return matches(item, characters: characters, modifiers: eventModifiers)
+            canFire(item) && matches(item, characters: characters, modifiers: eventModifiers)
         }
+    }
+
+    /// Whether AppKit could fire `item` from its key equivalent: it has one
+    /// and `canDispatch`.
+    static func canFire(_ item: NSMenuItem) -> Bool {
+        // The dynamic items have no key equivalent at all, so that is the
+        // test that rejects almost everything.
+        !item.keyEquivalent.isEmpty && canDispatch(item)
+    }
+
+    /// Whether AppKit could fire `item` from a key equivalent it had: it has
+    /// an action, and is no separator and not hidden (unless it allows its
+    /// key equivalent while hidden). Also how Settings > Shortcuts lists the
+    /// items holding a key outside its commands (TASK-350).
+    static func canDispatch(_ item: NSMenuItem) -> Bool {
+        !item.isSeparatorItem && (!item.isHidden || item.allowsKeyEquivalentWhenHidden) && item.action != nil
     }
 
     /// Whether one item's key equivalent is the given keystroke.

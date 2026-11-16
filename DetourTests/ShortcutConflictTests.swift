@@ -471,4 +471,245 @@ nonisolated final class ShortcutConflictTests: XCTestCase {
                                    shiftedEquivalents: Self.shiftedEquivalents(on: Self.us)),
                      "⌘[ is not ⌘{'s keystroke")
     }
+
+    // MARK: - Holders outside the commands (TASK-350)
+
+    /// `shiftedCharacterMenu` (Search Help on ⌘?, an item no command is)
+    /// with a menu "Extra" of more such items.
+    @MainActor private func outsideMenu(_ extra: [NSMenuItem] = []) -> NSMenu {
+        let main = shiftedCharacterMenu()
+        let menu = NSMenu(title: "Extra")
+        extra.forEach(menu.addItem)
+        main.addItem(AppDelegate.menuBarItem(for: menu))
+        return main
+    }
+
+    @MainActor private func pane(_ store: ShortcutBindingStore, layout: KeyboardLayout?, menu: NSMenu,
+                                 quickDetour: HotKeyShortcut? = .quickDetourDefault) -> ShortcutsSettingsViewController {
+        let pane = ShortcutsSettingsViewController(store: store, mainMenu: { menu }, includesUpdater: false,
+                                                   quickDetourShortcut: { quickDetour }, systemHotKeys: { [] },
+                                                   systemHotKeyShiftedCharacter: Self.shifted(on: layout),
+                                                   shiftedEquivalents: Self.shiftedEquivalents(on: layout),
+                                                   layoutChangeCenter: NotificationCenter())
+        _ = pane.view
+        return pane
+    }
+
+    @MainActor private func command(_ id: CommandID) throws -> BrowserCommand {
+        try XCTUnwrap(BrowserCommands.command(withID: id))
+    }
+
+    /// The menu bar that ships, with every default: no command's default
+    /// shares a keystroke with an item outside the commands (AppKit's, the
+    /// fixed Edit commands) or the Quick Detour hotkey, on US or French, so
+    /// no reset is refused and no row is marked on a fresh install.
+    @MainActor func testTheShippedDefaultsShareNoKeystrokeWithAHolderOutsideTheCommands() throws {
+        let menu = try XCTUnwrap(NSApp.mainMenu)
+        let store = try throwawayStore()
+        let holders = HotKeyShortcutValidation.keystrokeHolders(
+            in: menu,
+            isExcluded: { store.isCommandItem($0) || $0.identifier?.rawValue == BrowserCommands.newQuickDetourWindow.id.rawValue },
+            quickDetourShortcut: .quickDetourDefault)
+        XCTAssertTrue(holders.contains { $0.kind == .menuItem(path: "Edit > Copy") }, "a fixed command is a holder")
+        XCTAssertTrue(holders.contains { $0.kind == .quickDetour && $0.key == KeyEquivalent("n", [.command, .option]) })
+        XCTAssertFalse(holders.contains { $0.title == "New Tab" }, "the store's commands are compared by their bindings")
+        XCTAssertFalse(holders.contains { $0.title == "New Quick Detour Window" }, "named from the setting instead")
+        let defaults = BrowserCommands.bindable.compactMap { command in command.keyEquivalent.map { (id: command.id, key: $0) } }
+        for layout in [Self.us, Self.french] {
+            XCTAssertEqual(ShortcutResolution.outsideHolderConflicts(of: defaults, holders: holders,
+                                                                     shiftedEquivalents: Self.shiftedEquivalents(on: layout)),
+                           [:])
+            XCTAssertEqual(pane(store, layout: layout, menu: menu).outsideConflicts, [:])
+        }
+        // A saved shortcut on a fixed command's key is marked; which of the
+        // two fires is not claimed.
+        store.setKeyEquivalent(KeyEquivalent("c"), for: BrowserCommands.reload.id)
+        let pane = pane(store, layout: Self.us, menu: menu)
+        let same = try XCTUnwrap(pane.rowState(for: try command(BrowserCommands.reload.id)).sameKeystroke)
+        XCTAssertEqual(same.otherTitle, "Copy")
+        XCTAssertNil(same.runner)
+        XCTAssertEqual(ShortcutRowView.sameKeystrokeToolTip(same, shortcut: "⌘C"),
+                       "⌘C is also the shortcut of Edit > Copy, and only one of them can have it. "
+                       + "Record another shortcut for this command.")
+    }
+
+    /// AppKit gives a key equivalent to one item of the bar only: a binding
+    /// on Copy's ⌘C saved before launch takes it from Copy's item, which is
+    /// left with none (measured, TASK-350). Copy still holds ⌘C for the
+    /// check, from the registry.
+    @MainActor func testAFixedCommandHoldsItsKeyAfterAppKitClearedItsItem() throws {
+        let copy = NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "")
+        copy.identifier = NSUserInterfaceItemIdentifier(BrowserCommands.copy.id.rawValue)
+        let store = try throwawayStore()
+        store.setKeyEquivalent(KeyEquivalent("c"), for: BrowserCommands.reload.id)
+        let pane = pane(store, layout: Self.us, menu: outsideMenu([copy]))
+        XCTAssertEqual(pane.outsideConflicts[BrowserCommands.reload.id]?.kind, .menuItem(path: "Extra > Copy"))
+        // An item no command is keeps only what it holds now.
+        let cleared = item("Thing", "")
+        XCTAssertTrue(HotKeyShortcutValidation.keystrokeHolders(in: outsideMenu([cleared]), isExcluded: { _ in false },
+                                                                quickDetourShortcut: nil)
+            .allSatisfy { $0.title != "Thing" })
+    }
+
+    /// Reload Page rebound, the Quick Detour hotkey then set to ⌘R: Reload
+    /// Page's reset is refused with the hotkey named, as recording ⌘R is.
+    @MainActor func testAResetOntoTheQuickDetourShortcutIsRefused() throws {
+        let commandR = shortcut(kVK_ANSI_R, [.command], "r")
+        for (quickDetour, refused) in [(commandR, true), (nil, false)] {
+            let store = try throwawayStore()
+            store.setKeyEquivalent(KeyEquivalent("e", [.option, .command]), for: BrowserCommands.reload.id)
+            let pane = pane(store, layout: Self.us, menu: outsideMenu(), quickDetour: quickDetour)
+            pane.reset(BrowserCommands.reload.id)
+            XCTAssertEqual(store.isOverridden(BrowserCommands.reload.id), refused)
+            XCTAssertEqual(pane.warningLabel.isHidden, !refused)
+            if refused {
+                XCTAssertEqual(pane.warningLabel.stringValue,
+                               "⌘R is the Quick Detour shortcut (Settings > Quick Detour). Change that one first.")
+            }
+        }
+    }
+
+    /// The Quick Detour hotkey on ⇧⌘ and the key typing "=" (a different
+    /// key on US and French) is Zoom In's ⌘+ keystroke: Zoom In's reset is
+    /// refused on both layouts.
+    @MainActor func testAResetOntoTheQuickDetourKeystrokeIsRefused() throws {
+        for (layout, keyCode) in [(Self.us, kVK_ANSI_Equal), (Self.french, kVK_ANSI_Slash)] {
+            let store = try throwawayStore()
+            store.setKeyEquivalent(KeyEquivalent("=", [.option, .command]), for: BrowserCommands.zoomIn.id)
+            let pane = pane(store, layout: layout, menu: outsideMenu(),
+                            quickDetour: shortcut(keyCode, [.shift, .command], "="))
+            pane.reset(BrowserCommands.zoomIn.id)
+            XCTAssertTrue(store.isOverridden(BrowserCommands.zoomIn.id), "kept")
+            XCTAssertEqual(pane.warningLabel.stringValue,
+                           "⌘+ and ⇧⌘= are one keystroke on this keyboard, and ⇧⌘= is the Quick Detour shortcut "
+                           + "(Settings > Quick Detour). Change that one first.")
+        }
+    }
+
+    /// An item no command is (AppKit's, say): Reload Page's default on it is
+    /// refused; Actual Size's ⌘0 against one on ⇧⌘à on French only.
+    @MainActor func testAResetOntoAnItemOutsideTheCommandsIsRefused() throws {
+        let store = try throwawayStore()
+        store.setKeyEquivalent(KeyEquivalent("e", [.option, .command]), for: BrowserCommands.reload.id)
+        let exact = pane(store, layout: Self.us, menu: outsideMenu([item("Thing", "r")]))
+        exact.reset(BrowserCommands.reload.id)
+        XCTAssertTrue(store.isOverridden(BrowserCommands.reload.id))
+        XCTAssertEqual(exact.warningLabel.stringValue, "⌘R is the shortcut of Extra > Thing, which cannot be changed here.")
+
+        for (layout, refused) in [(Self.french, true), (Self.us, false)] {
+            let store = try throwawayStore()
+            store.setKeyEquivalent(KeyEquivalent("0", [.option, .command]), for: BrowserCommands.actualSize.id)
+            let pane = pane(store, layout: layout, menu: outsideMenu([item("Thing", "à", [.shift, .command])]))
+            pane.reset(BrowserCommands.actualSize.id)
+            XCTAssertEqual(store.isOverridden(BrowserCommands.actualSize.id), refused)
+            if refused {
+                XCTAssertEqual(pane.warningLabel.stringValue,
+                               "⌘0 and ⇧⌘À are one keystroke on this keyboard, and ⇧⌘À is the shortcut of Extra > Thing, "
+                               + "which cannot be changed here.")
+            } else {
+                XCTAssertTrue(pane.warningLabel.isHidden)
+            }
+        }
+    }
+
+    /// Either direction: the shortcut holding Shift on a key whose shifted
+    /// character the holder has (⇧⌘[ against ⌘{), or the other way round.
+    @MainActor func testAnOutsideHolderIsFoundInEitherDirection() {
+        let holder = { (key: KeyEquivalent) in KeystrokeHolder(kind: .menuItem(path: "Extra > Thing"), title: "Thing", key: key) }
+        let us = Self.shiftedEquivalents(on: Self.us)
+        let back = BrowserCommands.back.id
+        XCTAssertEqual(ShortcutResolution.outsideHolderConflicts(of: [(id: back, key: KeyEquivalent("[", [.shift, .command]))],
+                                                                 holders: [holder(KeyEquivalent("{"))], shiftedEquivalents: us),
+                       [back: holder(KeyEquivalent("{"))])
+        XCTAssertEqual(ShortcutResolution.outsideHolderConflicts(of: [(id: back, key: KeyEquivalent("{"))],
+                                                                 holders: [holder(KeyEquivalent("[", [.shift, .command]))],
+                                                                 shiftedEquivalents: us),
+                       [back: holder(KeyEquivalent("[", [.shift, .command]))])
+        XCTAssertEqual(ShortcutResolution.outsideHolderConflicts(of: [(id: back, key: KeyEquivalent("["))],
+                                                                 holders: [holder(KeyEquivalent("{"))], shiftedEquivalents: us),
+                       [:], "⌘[ is not ⌘{'s keystroke")
+        // The very same shortcut is named before one on the keystroke.
+        let exact = holder(KeyEquivalent("{"))
+        XCTAssertEqual(ShortcutResolution.outsideHolderConflicts(
+            of: [(id: back, key: KeyEquivalent("{"))],
+            holders: [holder(KeyEquivalent("[", [.shift, .command])), exact], shiftedEquivalents: us)[back], exact)
+    }
+
+    /// Saved shortcuts sharing a keystroke with an item no command is, or
+    /// with the Quick Detour hotkey, are marked on their row like a pair.
+    @MainActor func testASavedShortcutSharingAnOutsideHoldersKeystrokeIsMarked() throws {
+        let reload = try command(BrowserCommands.reload.id)
+        // ⇧⌘/ is Search Help's ⌘? on US (the saved shortcut holds Shift), and
+        // no keystroke of it on French.
+        for (layout, marked) in [(Self.us, true), (Self.french, false)] {
+            let store = try throwawayStore()
+            store.setKeyEquivalent(KeyEquivalent("/", [.shift, .command]), for: reload.id)
+            let pane = pane(store, layout: layout, menu: outsideMenu())
+            let same = pane.rowState(for: reload).sameKeystroke
+            if marked {
+                let holder = try XCTUnwrap(pane.outsideConflicts[reload.id])
+                XCTAssertEqual(holder.kind, .menuItem(path: "Help > Search Help"))
+                XCTAssertEqual(same, .init(otherTitle: "Search Help", otherShortcut: "⌘?", runner: "Reload Page", outside: holder))
+                let row = ShortcutRowView(identifier: NSUserInterfaceItemIdentifier("row"))
+                row.show(pane.rowState(for: reload), commandID: reload.id)
+                XCTAssertFalse(row.noteLabel.isHidden)
+                XCTAssertEqual(row.noteLabel.stringValue, "Same key as Search Help")
+                XCTAssertEqual(row.toolTip, "⇧⌘/ and ⌘?, the shortcut of Help > Search Help, are one keystroke on this "
+                               + "keyboard, which runs Reload Page. Record another shortcut for this command.")
+            } else {
+                XCTAssertNil(same)
+            }
+        }
+        // The holder holding Shift: ⌘+ saved against an item on ⇧⌘=, on both
+        // layouts (the keystroke runs the item).
+        for layout in [Self.us, Self.french] {
+            let store = try throwawayStore()
+            store.setKeyEquivalent(KeyEquivalent("+"), for: reload.id)
+            let pane = pane(store, layout: layout, menu: outsideMenu([item("Thing", "=", [.shift, .command])]))
+            XCTAssertEqual(pane.rowState(for: reload).sameKeystroke?.runner, "Thing")
+        }
+        // French only: ⌥⇧⌘à is ⌥⌘0's keystroke there.
+        for (layout, marked) in [(Self.french, true), (Self.us, false)] {
+            let store = try throwawayStore()
+            store.setKeyEquivalent(KeyEquivalent("à", [.option, .shift, .command]), for: reload.id)
+            let pane = pane(store, layout: layout, menu: outsideMenu([item("Thing", "0", [.option, .command])]))
+            XCTAssertEqual(pane.rowState(for: reload).sameKeystroke?.otherTitle, marked ? "Thing" : nil)
+        }
+    }
+
+    @MainActor func testASavedShortcutOnTheQuickDetourShortcutIsMarked() throws {
+        let reload = try command(BrowserCommands.reload.id)
+        for layout in [Self.us, Self.french] {
+            let store = try throwawayStore()
+            store.setKeyEquivalent(KeyEquivalent("n", [.option, .command]), for: reload.id)
+            let pane = pane(store, layout: layout, menu: outsideMenu())
+            let same = try XCTUnwrap(pane.rowState(for: reload).sameKeystroke)
+            XCTAssertEqual(same.otherTitle, "Quick Detour")
+            XCTAssertNil(same.runner, "the very same shortcut: which fires is not claimed")
+            let row = ShortcutRowView(identifier: NSUserInterfaceItemIdentifier("row"))
+            row.show(pane.rowState(for: reload), commandID: reload.id)
+            XCTAssertEqual(row.noteLabel.stringValue, "Same key as Quick Detour")
+            XCTAssertEqual(row.toolTip, "⌥⌘N is also the Quick Detour shortcut (Settings > Quick Detour), which takes "
+                           + "the key first while it is on. Record another shortcut for this command.")
+            XCTAssertNil(self.pane(store, layout: layout, menu: outsideMenu(), quickDetour: nil)
+                .rowState(for: reload).sameKeystroke, "no hotkey set")
+        }
+        // On its keystroke: the hotkey on ⇧⌘ and the "=" key, Zoom In's ⌘+.
+        let zoomIn = try command(BrowserCommands.zoomIn.id)
+        for (layout, keyCode) in [(Self.us, kVK_ANSI_Equal), (Self.french, kVK_ANSI_Slash)] {
+            let pane = pane(try throwawayStore(), layout: layout, menu: outsideMenu(),
+                            quickDetour: shortcut(keyCode, [.shift, .command], "="))
+            let same = try XCTUnwrap(pane.rowState(for: zoomIn).sameKeystroke)
+            XCTAssertEqual(same.otherTitle, "Quick Detour")
+            XCTAssertEqual(same.runner, "Quick Detour", "the Shift-held one is the exact match")
+        }
+    }
+
+    /// A pair of commands is named before a holder outside them.
+    @MainActor func testACommandPairIsNamedBeforeAnOutsideHolder() throws {
+        let store = try throwawayStore()
+        store.setKeyEquivalent(KeyEquivalent("=", [.shift, .command]), for: BrowserCommands.reload.id)
+        let pane = pane(store, layout: Self.us, menu: outsideMenu([item("Thing", "+", [.command])]))
+        XCTAssertEqual(pane.rowState(for: try command(BrowserCommands.reload.id)).sameKeystroke?.otherTitle, "Zoom In")
+    }
 }

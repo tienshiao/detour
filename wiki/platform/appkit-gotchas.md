@@ -4,7 +4,7 @@ title: AppKit gotchas
 description: A collection of AppKit behaviours that cost debugging time in Detour — first responder and key-view loop, split and stack view layout, hit testing, table views under a drag session, popovers, Accessibility — each with where it bit and what to do instead.
 tags: [appkit, platform, focus, layout, drag-and-drop, hit-testing]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T08:23:10Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-349
@@ -124,6 +124,9 @@ sources:
   - id: task-315
     resource: backlog:TASK-315
     title: "Windows: find what keeps a closed browser window's controller in memory"
+  - id: task-350
+    resource: backlog:TASK-350
+    title: "Shortcuts: Reset and saved-pair checks also compare against the Quick Detour hotkey's item and AppKit's own menu items"
 ---
 
 # Behavior
@@ -231,6 +234,12 @@ Related.
 | A text field's Accessibility element is its cell: `NSTextField.isAccessibilityElement()` is already false, and a view's `accessibilityChildren()` lists the `NSTextFieldCell`. `setAccessibilityElement(false)` on the field changes nothing; the text stays in the tree.[^task-336] | A switch's label hidden on the field was still read as text beside the named switch, in the running app and in a unit test (TASK-336) | Hide it on the cell: `label.cell?.setAccessibilityElement(false)` (`SettingsSwitchRow.hideFromAccessibility`). A test that walks `accessibilityChildren()` sees what a client sees, cells included |
 | `NSSwitch` is reported as `AXButton` with subrole `AXSwitch` (macOS 26), not `AXCheckBox`.[^task-336] | An Accessibility reader looking for check boxes found no switches | Match on the subrole |
 
+# Menus
+
+| Behavior | Where it bit | Do instead |
+|---|---|---|
+| AppKit keeps a key equivalent on **one item of the menu bar**. Installing a bar where two items share one (File > New Window and Edit > Copy both ⌘C) leaves the later item with an empty `keyEquivalent`; setting an item to a key another item of the installed bar holds leaves the item set with none. Measured on macOS 26 with a standalone program (`docs/harness/task350/dup-key-equivalents.swift`).[^task-350] | A binding saved on Copy's ⌘C (written into the defaults) took the key from Edit > Copy at launch, so Settings > Shortcuts, which read the live items, did not see Copy holding it (TASK-350) | Read a command's intended shortcut from the registry or the binding store, not from the live item ([Keyboard shortcuts](../features/keyboard-shortcuts.md#holders-outside-the-commands)) |
+
 # Windows
 
 | Behavior | Where it bit | Do instead |
@@ -298,3 +307,4 @@ from a probe or a measurement.
 [^task-228-12]: Automation: endpoint clicks select rows in the other table views (Archived Tabs list, Settings lists)
 [^task-338]: Settings: System Settings–style grouped rows
 [^task-349]: "Undo: ⌘Z in Settings text fields and extension popups reaches the browser window's closed-tab undo"
+[^task-350]: "Shortcuts: Reset and saved-pair checks also compare against the Quick Detour hotkey's item and AppKit's own menu items"

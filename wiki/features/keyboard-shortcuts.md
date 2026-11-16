@@ -5,7 +5,7 @@ description: "Where Detour's shortcuts are defined (the command registry's defau
 resource: ../../Detour/Commands/ShortcutBindings.swift
 tags: [keyboard, menus, settings, commands]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T08:23:10Z }
 stale_after: 2027-06-01T00:00:00Z
 sources:
   - id: task-345
@@ -41,6 +41,12 @@ sources:
   - id: task-343
     resource: backlog:TASK-343
     title: "Shortcuts: Reset and saved bindings are checked for shifted-key conflicts too"
+  - id: task-350
+    resource: backlog:TASK-350
+    title: "Shortcuts: Reset and saved-pair checks also compare against the Quick Detour hotkey's item and AppKit's own menu items"
+  - id: spike-350
+    resource: ../../docs/harness/task350/dup-key-equivalents.swift
+    title: "TASK-350 spike: AppKit keeps a key equivalent on one item of the menu bar (macOS 26, 2026-11-16)"
   - id: spike-335
     resource: ../../docs/harness/task335
     title: "TASK-335 spikes: AppKit's matching of shifted-character items from real CGEvents, UCKeyTranslate on installed layouts (macOS 26, 2026-11-14)"
@@ -263,6 +269,55 @@ Limits:
     before TASK-335 or colliding only on a layout chosen since was never
     re-checked.
 
+## Holders outside the commands
+
+The recorder compares a keystroke with the whole live menu and the Quick
+Detour setting (rules 3 and 4). A row's reset and the saved-pair marks
+(TASK-343) compared only with the store's commands until TASK-350; they now
+also compare with what the store does not resolve:[^task-350]
+
+- `HotKeyShortcutValidation.keystrokeHolders` walks the live menu once, in
+  menu order, and lists every item AppKit could fire
+  (`MenuKeyEquivalentMatcher.canDispatch`: an action, no separator, not
+  hidden unless it allows its key while hidden) other than the store's
+  commands (compared by their bindings) and the Quick Detour item; then the
+  Quick Detour hotkey from its setting, on or off. In practice: the fixed
+  Edit commands (Undo, Redo, Cut, Copy, Paste, Select All), AppKit's
+  insertions (Emoji & Symbols on ⌘Space and, hidden but firing, ⌃⌘Space and
+  fn-E; Start Dictation on fn-D), and an App Shortcut System Settings gives
+  any of them. Hide, Quit, Minimize and Zoom are bindable commands, already
+  compared.
+- A command's item is read with its **registry** key, unless an App
+  Shortcut applies: AppKit keeps a key equivalent on one item of the bar
+  only (measured, [AppKit gotchas](../platform/appkit-gotchas.md#menus)), so
+  a binding saved on ⌘C took it from Edit > Copy at launch and the live Copy
+  item had none.[^spike-350]
+- `ShortcutResolution.outsideHolderConflicts` (pure) asks, for each
+  shortcut, a holder on the very same shortcut first, then one on the same
+  keystroke through a shifted character in either direction (TASK-343's
+  mapping, each shortcut's equivalents read once).
+- **Reset** asks it with the built-in shortcut, after the store's two
+  checks: "⌘R is the Quick Detour shortcut (Settings > Quick Detour).
+  Change that one first.", "⌘0 and ⇧⌘À are one keystroke on this keyboard,
+  and ⇧⌘À is the shortcut of Extra > Thing, which cannot be changed here."
+- **Saved shortcuts**: the pane asks it with the effective keys once per
+  reload (`outsideConflicts`) and marks the command's row "Same key as
+  Copy" / "Same key as Quick Detour", the pair note's look; a pair of
+  commands is named first. Only the command's row is marked: an AppKit item
+  has no row and the Quick Detour row shows its link in that place (chosen
+  by Claude, not yet confirmed by the user). The tooltip names the holder;
+  for a shifted pair it says which runs (the Shift-held one, as for
+  pairs); for the very same shortcut it says the Quick Detour hotkey takes
+  the key first while it is on (a Carbon hotkey comes before any menu), and
+  for a menu item that only one of them can have it.
+- Not logged at launch (the store's pair log knows only commands).
+
+Limits: items whose mask has Fn (fn-D, fn-E, the Window menu's tiling
+items when AppKit adds them) are compared without it, as the recorder's
+matcher narrows modifiers; a binding never holds Fn, so such an item can be
+named for a binding on the same key without Fn (none of the defaults is
+one). Restore Defaults does not check holders outside the commands.
+
 ## The pane
 
 `ShortcutsSettingsViewController` (toolbar item "Shortcuts", symbol
@@ -296,7 +351,10 @@ on its own, 400 pt minimum), then the warning line.
   keyboard, which runs Reload Page. Record another shortcut for one of
   them."); both rows of the pair are marked, and macOS's note wins when a
   row has both. The row note, rather than a line under the list or a
-  dialog, is the user's choice (confirmed 2026-11-15).[^task-343]
+  dialog, is the user's choice (confirmed 2026-11-15).[^task-343] The
+  same note marks a shortcut sharing a keystroke with an item that is no
+  command, or with the Quick Detour hotkey (TASK-350,
+  [above](#holders-outside-the-commands)).
 - The warning line under the list (a refused recording or reset) sits on
   the pane's bottom and the list takes the rest. Until TASK-343 the line
   was only held above the bottom and nothing gave the list a height, so the
@@ -455,7 +513,15 @@ for the app. To try one at runtime, pass it as a launch argument; never
   Zoom In on both layouts and both kept, ⇧⌘à on French only, both rows
   marked and macOS's note first, the marks following a posted input source
   change, Zoom In's and Actual Size's resets refused (US and French; US
-  lets Actual Size's through), the holder found in either direction.
+  lets Actual Size's through), the holder found in either direction;
+  holders outside the commands (TASK-350): the shipped defaults share no
+  keystroke with one on the real menu bar (US and French), a fixed command
+  holding its registry key after AppKit cleared its item, resets refused
+  for the Quick Detour setting (exact, and its ⇧⌘= keystroke on US and
+  French) and an item no command is (exact, French-only ⇧⌘à), either
+  direction, saved shortcuts marked (⇧⌘/ against ⌘? on US only, ⌘+ against
+  ⇧⌘=, a French-only ⌥⇧⌘à, the Quick Detour shortcut and keystroke), a
+  pair of commands named first.
   The layout-change test posts on a center of its own
   (`layoutChangeCenter`), not the system's distributed one.
   `ShortcutsSettingsPaneTests.testTheListKeepsItsHeightWhileARefusalShows`:
@@ -488,5 +554,7 @@ for the app. To try one at runtime, pass it as a launch argument; never
 [^task-295]: TASK-295
 [^task-334]: TASK-334
 [^spike-335]: TASK-335 spikes
+[^task-350]: TASK-350
+[^spike-350]: TASK-350 spike
 [^task-343]: TASK-343
 [^spike]: NSUserKeyEquivalents spikes
