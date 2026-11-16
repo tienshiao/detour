@@ -148,7 +148,7 @@ later stamp would miss the tab and it would never
 | Create | `addSpace(name:emoji:colorHex:profileID:)` | Registers an "Add Space" undo. |
 | Default | `ensureDefaultSpace()` | Only when there are no spaces; creates "Home" on the first non-incognito profile, minting a "Default" profile if needed. `profiles.first` can be the Private profile on a session-less launch, which is why it is skipped explicitly. |
 | Edit | `updateSpace(id:name:emoji:colorHex:profileID:)` | A profile change is a rebuild, see below. |
-| Reorder | `moveSpace(from:to:)` | |
+| Reorder | `moveSpace(from:to:)` | Indexes into `spaces` (the Settings pane maps its rows to them). Its undo and redo go by the space's id and its place among the normal spaces, so a Private window opening or closing in between does not shift them ([browser undo](./browser-undo.md#capture-the-space-by-instance-everything-else-by-id), TASK-360). |
 | Delete | `deleteSpace(id:)` | Returns `SpaceDeletionResult`. Refused while a link route or the Default targets the space (`.blockedByLinkRoutes`, [Link Routes](../features/link-routing.md)). Refuses the last space, and the last **normal** space even while a Private window's space makes `spaces.count` larger (a review fix in TASK-191.1: before it, deleting the last persistent space with a Private window open left the next launch no saved session, and it made a new "Home" space). An undo of Add Space or redo of Delete Space that routes refuse posts `spaceDeletionBlockedNotification` and keeps its entry. |
 | Move a tab between spaces | `moveTab(id:from:to:)`, `movePinnedEntry(id:from:to:)` | See below. |
 

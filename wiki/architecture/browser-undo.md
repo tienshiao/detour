@@ -93,6 +93,9 @@ sources:
   - id: incognito
     resource: ./incognito.md
     title: Incognito (Private windows)
+  - id: task-360
+    resource: backlog:TASK-360
+    title: "Undo: Move Space's undo stores positions in the space list, which Private windows shift"
 ---
 
 # Summary
@@ -188,6 +191,14 @@ explicitly. A harness must never end the automatic group by hand
   the old ids, so a captured object could be an orphan by then.
 - Move to Space resolves **both spaces by id** at undo time; Add Space and
   Edit Space work on the space id too.
+- **Move Space records the space's id and its place among the normal
+  spaces** (`stablePosition(of:)`: every normal space, plus the moved one),
+  never an index into `spaces`, which holds the Private windows' spaces too.
+  The undo and redo put it before the normal space now at that place, or
+  after the last one (`moveSpace(id:toStablePosition:)`). The old index pair
+  drifted when a Private window closed between the move and its undo: N, B, C
+  came back as N, C, B (confirmed by a failing test; a window opening only
+  appends, which never shifted the indexes).[^task-360]
 - A tab that comes back from a close undo is a **new tab with a new id**
   (`restoredTab`). Its redo closes `restored.id`; a split partner closed
   separately cannot rejoin by id; a child whose opener was closed and undone
@@ -305,7 +316,7 @@ popover, panel or sheet that does not answer the actions itself.[^task-349]
 | The page's undo manager, `editingPage(in:)` | [BrowserWebView.swift](../../Detour/Browser/Window/BrowserWebView.swift) |
 | Quick Detour and launcher responders | [QuickDetourWindowController.swift](../../Detour/Browser/QuickDetour/QuickDetourWindowController.swift), [QuickDetourLauncher.swift](../../Detour/Browser/QuickDetour/QuickDetourLauncher.swift) |
 | The field-undo rule; Settings, its sheets and the popup; the fallback (`nonBrowserKeyWindow`, in BrowserWindowController.swift) | [FieldUndo.swift](../../Detour/Commands/FieldUndo.swift), [SettingsWindowController.swift](../../Detour/Browser/Settings/SettingsWindowController.swift), [SearchSettingsViewController.swift](../../Detour/Browser/Settings/SearchSettingsViewController.swift) (`SiteSearchForm`), [AddProfileViewController.swift](../../Detour/Browser/Sidebar/AddProfileViewController.swift), [ExtensionPopoverController.swift](../../Detour/Extensions/UI/ExtensionPopoverController.swift) (`PopupContentView`) |
-| Tests | `UndoAfterDeleteSpaceTests`, `ProfileDeletionUndoTests`, `PrivateWindowUndoTests`, `PrivateWindowUndoWindowTests`, `PageUndoRoutingTests`, `ExtensionPageUndoTests`, `ClosedTabOpenerTests`, `ClosedPeekTests`, `MoveTabToSpaceTests`, `LinkRouteStoreTests`, `QuickDetourLauncherTests`, `SettingsAndPopupUndoTests`, `TabStoreTests` |
+| Tests | `UndoAfterDeleteSpaceTests`, `ProfileDeletionUndoTests`, `PrivateWindowUndoTests` (Move Space across Private windows too), `PrivateWindowUndoWindowTests`, `PageUndoRoutingTests`, `ExtensionPageUndoTests`, `ClosedTabOpenerTests`, `ClosedPeekTests`, `MoveTabToSpaceTests`, `LinkRouteStoreTests`, `QuickDetourLauncherTests`, `SettingsAndPopupUndoTests`, `TabStoreTests` |
 
 # Related
 
@@ -323,4 +334,5 @@ popover, panel or sheet that does not answer the actions itself.[^task-349]
 [^task-35]: Undo of Delete Space / Edit Space after its profile was deleted crashes
 [^task-346]: "Quick Detour launcher: ⌘Z in its field undoes the typing, never Detour's closed-tab list"
 [^task-357]: Private windows: their undo entries outlive the window and can rebuild a Private tab nobody sees
+[^task-360]: "Undo: Move Space's undo stores positions in the space list, which Private windows shift"
 [^task-349]: "Undo: ⌘Z in Settings text fields and extension popups reaches the browser window's closed-tab undo"

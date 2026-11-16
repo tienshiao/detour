@@ -2697,11 +2697,46 @@ class TabStore {
         guard sourceIndex != destinationIndex,
               sourceIndex >= 0, sourceIndex < spaces.count,
               destinationIndex >= 0, destinationIndex < spaces.count else { return }
-        let space = spaces.remove(at: sourceIndex)
+        let space = spaces[sourceIndex]
+        let position = stablePosition(of: space)
+        spaces.remove(at: sourceIndex)
         spaces.insert(space, at: destinationIndex)
+        registerMoveSpaceUndo(of: space, backTo: position)
+        notifyObservers { $0.tabStoreDidUpdateSpaces() }
+        scheduleSave()
+    }
+
+    /// Registers the undo (or redo) of a Move Space: the space goes back to
+    /// `position` (`stablePosition(of:)`). Not an index into `spaces`, which
+    /// also holds the Private windows' spaces: one opening or closing between
+    /// the move and its undo shifted those indexes, and the undo moved the
+    /// wrong space or nothing (TASK-360).
+    private func registerMoveSpaceUndo(of space: Space, backTo position: Int) {
+        let id = space.id
         registerUndo(actionName: "Move Space", in: [space]) { [weak self] in
-            self?.moveSpace(from: destinationIndex, to: sourceIndex)
+            self?.moveSpace(id: id, toStablePosition: position)
         }
+    }
+
+    /// The place of `space` among the spaces no Private window shifts: every
+    /// normal space, and `space` itself (the normal spaces before it).
+    private func stablePosition(of space: Space) -> Int {
+        guard let index = spaces.firstIndex(where: { $0 === space }) else { return 0 }
+        return spaces[..<index].count(where: { !$0.isIncognito })
+    }
+
+    /// Moves the space `id` to `position` among the normal spaces: before the
+    /// normal space now there, or after the last one. Registers its own
+    /// inverse; does nothing (and registers nothing) for a space gone since.
+    private func moveSpace(id: UUID, toStablePosition position: Int) {
+        guard let index = spaces.firstIndex(where: { $0.id == id }) else { return }
+        let space = spaces[index]
+        let currentPosition = stablePosition(of: space)
+        spaces.remove(at: index)
+        let anchors = spaces.indices.filter { !spaces[$0].isIncognito }
+        let destination = position < anchors.count ? anchors[position] : (anchors.last.map { $0 + 1 } ?? spaces.count)
+        spaces.insert(space, at: destination)
+        registerMoveSpaceUndo(of: space, backTo: currentPosition)
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
         scheduleSave()
     }

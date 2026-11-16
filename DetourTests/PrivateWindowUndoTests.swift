@@ -314,6 +314,85 @@ nonisolated final class PrivateWindowUndoTests: XCTestCase {
         XCTAssertFalse(f.store.undoManager.canUndo)
         XCTAssertFalse(f.store.undoManager.canRedo)
     }
+
+    // MARK: - Move Space across Private windows (TASK-360)
+
+    /// Normal spaces N, B, C with a Private window's space between N and B
+    /// (it opened before B and C were added): `spaces` is N, P, B, C.
+    @MainActor private func makeSpacesAroundAPrivateOne(_ f: Fixture) -> (priv: Space, b: Space, c: Space) {
+        let priv = f.store.addIncognitoSpace()
+        let profileID = f.normal.profileID
+        var added: [Space] = []
+        inUndoGroup(f.store) {
+            for name in ["B", "C"] {
+                added.append(f.store.addSpace(name: name, emoji: name, colorHex: "007AFF", profileID: profileID))
+            }
+        }
+        let (b, c) = (added[0], added[1])
+        f.store.undoManager.removeAllActions()
+        XCTAssertEqual(f.store.spaces.map(\.id), [f.normal.id, priv.id, b.id, c.id], "precondition")
+        return (priv, b, c)
+    }
+
+    @MainActor private func normalOrder(_ store: TabStore) -> [String] {
+        store.nonIncognitoSpaces.map(\.name)
+    }
+
+    /// Before the fix the undo moved by index into `spaces`, which the closed
+    /// window's space no longer shifted: N, B, C came back as N, C, B.
+    @MainActor func testUndoOfMoveSpacePutsItBackAfterAPrivateWindowClosed() throws {
+        let f = try makeFixture()
+        let (priv, b, _) = makeSpacesAroundAPrivateOne(f)
+        inUndoGroup(f.store) { f.store.moveSpace(from: 2, to: 0) }
+        XCTAssertEqual(normalOrder(f.store), ["B", "N", "C"])
+        XCTAssertEqual(f.store.undoManager.undoActionName, "Move Space")
+
+        f.store.removeIncognitoSpace(id: priv.id)
+        f.store.undoManager.undo()
+
+        XCTAssertEqual(normalOrder(f.store), ["N", "B", "C"])
+        f.store.undoManager.redo()
+        XCTAssertEqual(normalOrder(f.store), ["B", "N", "C"])
+        XCTAssertEqual(f.store.spaces.first?.id, b.id)
+    }
+
+    /// The redo, registered by the undo while the Private window was open,
+    /// keeps its target once the window closes.
+    @MainActor func testRedoOfMoveSpaceAfterAPrivateWindowClosed() throws {
+        let f = try makeFixture()
+        let (priv, _, _) = makeSpacesAroundAPrivateOne(f)
+        inUndoGroup(f.store) { f.store.moveSpace(from: 2, to: 0) }
+        f.store.undoManager.undo()
+        XCTAssertEqual(normalOrder(f.store), ["N", "B", "C"])
+
+        f.store.removeIncognitoSpace(id: priv.id)
+        f.store.undoManager.redo()
+
+        XCTAssertEqual(normalOrder(f.store), ["B", "N", "C"])
+        f.store.undoManager.undo()
+        XCTAssertEqual(normalOrder(f.store), ["N", "B", "C"])
+    }
+
+    /// A Private window opened between the move and its undo, and another one
+    /// closed.
+    @MainActor func testUndoOfMoveSpacePutsItBackAfterPrivateWindowsOpenedAndClosed() throws {
+        let f = try makeFixture()
+        let (priv, _, _) = makeSpacesAroundAPrivateOne(f)
+        inUndoGroup(f.store) { f.store.moveSpace(from: 0, to: 3) }
+        XCTAssertEqual(normalOrder(f.store), ["B", "C", "N"])
+
+        let opened = f.store.addIncognitoSpace()
+        f.store.undoManager.undo()
+        XCTAssertEqual(normalOrder(f.store), ["N", "B", "C"], "a Private window opened since")
+        f.store.undoManager.redo()
+        XCTAssertEqual(normalOrder(f.store), ["B", "C", "N"])
+
+        f.store.removeIncognitoSpace(id: priv.id)
+        f.store.undoManager.undo()
+        XCTAssertEqual(normalOrder(f.store), ["N", "B", "C"], "and one closed")
+        XCTAssertNotNil(f.store.space(withID: opened.id))
+        f.store.removeIncognitoSpace(id: opened.id)
+    }
 }
 
 /// TASK-357 AC #3 through the real windows: a Private window closes with its
