@@ -1,10 +1,10 @@
 ---
 type: Concept
 title: Content blocking chunks
-description: "How a filter list over WebKit's 150,000-rule cap is compiled as several rule lists and kept together (ContentRuleListChunks, the list-level ContentRuleStore operations, chunkCount in defaults), what each chunk holds so an @@ exception reaches block rules in every chunk (TASK-155), how close the shipped lists are to the cap, and what splitting does not solve."
+description: "How a filter list over WebKit's 150,000-rule cap is compiled as several rule lists and kept together (ContentRuleListChunks, the list-level ContentRuleStore operations, chunkCount in defaults), what each chunk holds so an @@ exception reaches block rules in every chunk (TASK-155), how close the shipped lists are to the cap, a real list padded past the cap run through the chunk path (TASK-370), and what splitting does not solve."
 tags: [content-blocker, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:22:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T18:10:00Z }
 sources:
   - id: rule-store
     resource: ../../Detour/Browser/ContentBlocker/ContentRuleStore.swift
@@ -27,6 +27,9 @@ sources:
   - id: task-199
     resource: backlog:TASK-199
     title: $generichide / $elemhide exceptions compile to ignore-previous-rules and unblock all loads on those hosts
+  - id: task-370
+    resource: backlog:TASK-370
+    title: "Content blocking: exercise the over-cap chunking on a real list (urlhaus-filter is at 73% of the cap and growing)"
   - id: task-359
     resource: backlog:TASK-359
     title: "Content blocking: an open Quick Detour window keeps the rule lists it was created with"
@@ -34,9 +37,11 @@ sources:
 
 WebKit is given at most 150,000 rules as one rule list. A longer filter list
 is compiled as several rule lists ("chunks"), and everything that handles a
-list has to treat the chunks as one. No shipped list has reached the cap,
-so this path has not yet run on a real list; `urlhaus-filter`, the closest,
-was at 72.7% of it on 2026-11-15 and growing ([how close](#how-close-the-lists-are)). Part of
+list has to treat the chunks as one. No shipped list has reached the cap;
+`urlhaus-filter`, the closest, was at 72.7% of it on 2026-11-15 and growing
+([how close](#how-close-the-lists-are)). The chunk path has been run on
+real lists padded past the cap, in a gated test
+([a real list past the cap](#a-real-list-past-the-cap)). Part of
 [content blocking](./content-blocking.md); the compile itself is
 [rule-list compilation](./content-blocking-rule-compilation.md).
 
@@ -110,9 +115,58 @@ the 2026-10-26 ones from the
 page. The three EasyList-family lists move by a few percent between
 fetches. `urlhaus-filter` is the one that grows: about tenfold from early
 October to 2026-10-26, then 6% more in the 20 days to 2026-11-15. Its
-growth decides when the chunk path first runs on a real list; at the late
+growth decides when the chunk path first runs on a real list in the app; at the late
 October to mid November pace it would reach the cap in a few months, but
 the earlier jump shows the pace is not steady.
+
+## A real list past the cap
+
+`ContentRuleListChunkTests` has two gated legs
+(`TEST_RUNNER_DETOUR_REAL_LIST_CHUNKS=1`; see
+[build and test](../playbooks/build-and-test.md#5-environment-variables-for-the-test-host))
+that take a downloaded list, pad it past the cap, and run it through the
+same path the app uses (TASK-370):[^task-370]
+
+1. The list text is read from the test data directory's cache, or else
+   the app's (`~/Library/Application Support/Detour/ContentBlocker/`), and
+   never written. The leg skips itself when the list is not there.
+2. Padding lines `||p<n>.chunk-padding.invalid^$all` (urlhaus-filter's
+   shape) go before and after the real text, so the 150,000-rule boundary
+   falls in the middle of the real block rules: both chunks hold real
+   rules. One padding exception, `@@||p0.chunk-padding.invalid/allowed`,
+   exempts a URL of a block rule in the first chunk.
+3. `ContentRuleStore` at the production cap compiles it into a temporary
+   rule list store. Then a new store looks it up as at launch, and
+   `ContentBlockerManager.ruleLists(for:in:)` attaches it to a `WKWebView`
+   that loads one padding URL from each chunk and the exempted URL.
+   Only `.invalid` hosts are loaded, so a probe that is not blocked never
+   reaches a real (malware) host.
+
+Result on 2026-11-16, with the copies in the test data directory's cache
+(`DetourTests/ContentBlocker/`, downloaded by the test host on 2026-11-15;
+not the copies counted above), `rulesFormatVersion` 4, Debug test host:
+
+| List | Real rules (carried exceptions) | Padded | Chunks | Compile | Test |
+|---|---|---|---|---|---|
+| `urlhaus-filter` | 109,048 (0) | 205,524 | 150,000 + 55,525 | 8.2 s | 38 s |
+| `easylist` | 74,992 (546) | 188,223 | 150,000 + 38,770 | 4.4 s | 17 s |
+
+Both chunks of each list compiled with no rule stripped (the store's count
+equals the parsed count), were found again by the relaunched store, and
+blocked their own probe, reported under their own identifier (`<id>` and
+`<id>-1`). The exempted URL was not blocked: the exception, which in list order
+would be in the second chunk only, reached the block rule in the first. A
+chunk of exactly 150,000 rules compiles; 150,005 do not (WebKit: "Too many
+rules in JSON array", measured with a standalone compile). The test host
+peaked at about 1.2 GB resident; parsing the padded urlhaus-filter (12 MB
+of real text) in the Debug build took 15.6 s, the larger part of the leg.
+
+What it does not cover: urlhaus-filter has no exceptions, so its leg checks
+the slicing only; the EasyList leg adds 546 real carried exceptions and its
+element-hiding section (the leg checks that no hiding rule is laid out
+after the first chunk), but no element hiding is checked in the web view. A real rule is never loaded (its host
+would be a live malware or ad host); the real rules are checked by
+compiling them.
 
 # What a chunk holds
 
@@ -206,6 +260,8 @@ exceptions (EasyList as a whole is about 75,700 rules).
   an exception exempts a block rule of an earlier and of a later chunk, a
   disabled list's chunks are all detached, and a whitelisted navigation is
   not blocked by any chunk.
+  Two gated legs compile a real list padded past the production cap
+  ([above](#a-real-list-past-the-cap)).
 - `ContentBlockerExceptionTests` - the split layout keeping the element-hiding
   section in chunk 0.
 
@@ -218,3 +274,4 @@ exceptions (EasyList as a whole is about 75,700 rules).
 [^task-145]: A filter list over 150,000 rules attaches only its first chunk
 [^task-155]: In a split filter list an exception in a later chunk than its block rule does not apply
 [^task-359]: Content blocking: an open Quick Detour window keeps the rule lists it was created with
+[^task-370]: Content blocking: exercise the over-cap chunking on a real list (urlhaus-filter is at 73% of the cap and growing)

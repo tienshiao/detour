@@ -163,6 +163,7 @@ Variables the tests read (name as seen in the host):
 | `HISTORY_BENCH=1` | `HistoryBenchmarkTests` |
 | `HISTORY_SEARCH_BENCH=1` | `HistoryURLSearchBenchmarkTests`: `chrome.history.search`'s query on a 300,000-visit history, and the palette's wait behind it; about 50 s |
 | `SESSION_SAVE_BENCH=1` | `SessionSaveBenchmarkTests`: the cost of one `saveNow()` on a 2,000-tab session, about 5 s |
+| `DETOUR_REAL_LIST_CHUNKS=1` | the two legs of `ContentRuleListChunkTests` that pad a downloaded `urlhaus-filter` and `easylist` past the 150,000-rule cap and compile, attach and load them ([chunks](../features/content-blocking-chunks.md#a-real-list-past-the-cap)); about 40 s and 17 s, 1.2 GB resident. They read the cached lists (the test data directory's, else the app's) and skip without them |
 
 The gated legs skip themselves otherwise. Leave them off in ordinary runs
 and reviews. What the unload legs measure is on

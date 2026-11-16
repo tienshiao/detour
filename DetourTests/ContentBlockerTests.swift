@@ -2,6 +2,15 @@ import XCTest
 import WebKit
 @testable import Detour
 
+/// Downloaded filter list text, read only: the test data directory's cache,
+/// or else the production app's. Shared with `ContentRuleListChunkTests`.
+@MainActor func cachedFilterListFile(_ identifier: String) -> URL {
+    let own = ContentBlockerStorage.current.filterListCacheDirectory.appendingPathComponent("\(identifier).txt")
+    if FileManager.default.fileExists(atPath: own.path) { return own }
+    return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("\(defaultDetourDataDirectoryName)/ContentBlocker/\(identifier).txt")
+}
+
 nonisolated final class ContentBlockerTests: XCTestCase {
 
     private let parser = EasyListParser()
@@ -9,14 +18,6 @@ nonisolated final class ContentBlockerTests: XCTestCase {
     /// app's `~/Library/WebKit/<bundle id>/ContentRuleLists/` (TASK-36).
     @MainActor private lazy var ruleListStore = ContentBlockerStorage.current.ruleListStore
 
-    /// Downloaded filter list text, read only: the test data directory's cache,
-    /// or else the production app's.
-    @MainActor private func cachedFilterListFile(_ identifier: String) -> URL {
-        let own = ContentBlockerStorage.current.filterListCacheDirectory.appendingPathComponent("\(identifier).txt")
-        if FileManager.default.fileExists(atPath: own.path) { return own }
-        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("\(defaultDetourDataDirectoryName)/ContentBlocker/\(identifier).txt")
-    }
 
     // MARK: - Storage per data directory (TASK-36)
 

@@ -10,7 +10,8 @@ import WebKit
 /// exception applies to the block rules of every chunk (TASK-155).
 ///
 /// The cap is injected (2 rules per list) and the rule sets are a handful of
-/// rules: nothing here compiles a real filter list. Each test gets its own
+/// rules, except in the gated legs at the end, which compile a real filter
+/// list padded past the production cap (TASK-370). Each test gets its own
 /// rule list store and defaults suite in a temporary directory, so the lists
 /// named `easylist` below never meet the test host's own.
 nonisolated final class ContentRuleListChunkTests: XCTestCase {
@@ -581,6 +582,149 @@ nonisolated final class ContentRuleListChunkTests: XCTestCase {
 
         XCTAssertEqual(store.cachedLists(forList: "easylist").map(\.identifier), ["easylist"])
         XCTAssertEqual(store.compiledRuleCount(forList: "easylist"), 2)
+    }
+
+    // MARK: - A real list padded past the cap (TASK-370)
+
+    /// Off by default, since each leg parses a real list and compiles about
+    /// 200,000 rules (`TEST_RUNNER_DETOUR_REAL_LIST_CHUNKS=1`). urlhaus-filter
+    /// is the list closest to the cap (72.7% on 2026-11-15): block rules only.
+    @MainActor func testTheRealURLhausFilterPaddedPastTheCapBlocksFromEveryChunk() async throws {
+        try await compileRealListPaddedPastTheCap("urlhaus-filter")
+    }
+
+    /// EasyList adds what urlhaus-filter lacks: an element-hiding section
+    /// that has to stay in the first chunk, and real exceptions carried into
+    /// every chunk.
+    @MainActor func testTheRealEasyListPaddedPastTheCapBlocksFromEveryChunk() async throws {
+        try await compileRealListPaddedPastTheCap("easylist")
+    }
+
+    /// Padding rule `n` blocks everything under `p<n>.chunk-padding.invalid`,
+    /// written as urlhaus-filter writes its rules. `.invalid` never resolves,
+    /// so a probe that is not blocked never leaves the machine.
+    @MainActor private static func paddingLine(_ index: Int) -> String {
+        "||p\(index).chunk-padding.invalid^$all"
+    }
+
+    /// The padding block rule's index; nil for any other rule, the padding
+    /// exception (which names `p0`) included.
+    @MainActor private static func paddingIndex(of rule: ContentRule) -> Int? {
+        guard (rule["action"] as? ContentRule)?["type"] as? String == "block",
+              let urlFilter = (rule["trigger"] as? ContentRule)?["url-filter"] as? String,
+              let range = urlFilter.range(of: #"p[0-9]+\\\.chunk-padding"#, options: .regularExpression) else { return nil }
+        return Int(urlFilter[range].dropFirst().prefix { $0.isNumber })
+    }
+
+    /// Pads the real list on both sides so the chunk boundary falls inside
+    /// its rules, compiles it at the production cap through the store, and
+    /// loads one padding URL per chunk in a web view.
+    @MainActor private func compileRealListPaddedPastTheCap(_ identifier: String) async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["DETOUR_REAL_LIST_CHUNKS"] == "1",
+                          "set TEST_RUNNER_DETOUR_REAL_LIST_CHUNKS=1 to compile a real list padded past the cap")
+        let file = cachedFilterListFile(identifier)
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else {
+            throw XCTSkip("\(identifier) not cached at \(file.path): run the app first to download it")
+        }
+        let cap = ContentRuleStore.defaultMaxRulesPerList
+        let parser = EasyListParser()
+
+        var start = Date()
+        // Only the counts are kept: the rules are parsed again with the padding.
+        let (realCount, realCarried) = { () -> (Int, Int) in
+            let real = parser.parse(text: text).rules
+            return (real.count, ContentRuleListChunks.carriedExceptionCount(ofCompiledRules: real))
+        }()
+        let realParseSeconds = Date().timeIntervalSince(start)
+        // Chunk 0 holds `cap - carried` rules that are not carried, the
+        // padding exception below included in `carried`. Put the boundary in
+        // the middle of the real rules.
+        let prefixCount = cap - (realCarried + 1) - (realCount - realCarried) / 2
+        let suffixCount = 1_000
+        // Half the list's rules plus its carried exceptions fill a chunk only
+        // once the list is about twice the cap; a negative count would trap
+        // in the range below.
+        guard prefixCount > 0 else {
+            return XCTFail("\(identifier) is too long to put the boundary in its middle: prefix \(prefixCount)")
+        }
+        let exempted = URL(string: "http://p0.chunk-padding.invalid/allowed.png")!
+        let padded = (0 ..< prefixCount).map(Self.paddingLine).joined(separator: "\n")
+            + "\n" + text + "\n"
+            + (prefixCount ..< prefixCount + suffixCount).map(Self.paddingLine).joined(separator: "\n")
+            + "\n@@||p0.chunk-padding.invalid/allowed\n"
+
+        start = Date()
+        let rules = parser.parse(text: padded).rules
+        let paddedParseSeconds = Date().timeIntervalSince(start)
+        XCTAssertEqual(rules.count, realCount + prefixCount + suffixCount + 1, "every padding line is one rule")
+
+        // Where the store will put each rule, and one padding URL per chunk.
+        let (chunkSizes, probes) = try { () throws -> ([Int], [(identifier: String, url: URL)]) in
+            let layout = ContentRuleListChunks.chunks(ofCompiledRules: rules, maxRulesPerList: cap)
+            let probes: [(identifier: String, url: URL)] = try layout.enumerated().map { index, chunk in
+                XCTAssertTrue(chunk.rules.contains {
+                    ($0["action"] as? ContentRule)?["type"] as? String == "block" && Self.paddingIndex(of: $0) == nil
+                }, "chunk \(index) holds real block rules: the boundary is inside the list")
+                let padding = try XCTUnwrap(chunk.rules.lazy.compactMap(Self.paddingIndex).first, "chunk \(index) has padding")
+                return (ContentRuleListChunks.identifier(forList: identifier, chunk: index),
+                        URL(string: "http://p\(padding).chunk-padding.invalid/x.png")!)
+            }
+            XCTAssertFalse(layout.dropFirst().contains { chunk in
+                chunk.rules.contains { ($0["action"] as? ContentRule)?["type"] as? String == "css-display-none" }
+            }, "the element-hiding section stays in the first chunk")
+            return (layout.map(\.rules.count), probes)
+        }()
+        XCTAssertEqual(chunkSizes.count, 2, "chunk sizes \(chunkSizes)")
+
+        // Compile at the production cap, as the app does.
+        let store = ContentRuleStore(storage: storage)
+        start = Date()
+        let compiled: [String] = await withCheckedContinuation { continuation in
+            store.compile(identifier: identifier, rules: rules) { outcome in
+                continuation.resume(returning: outcome.lists.map(\.identifier))
+            }
+        }
+        let compileSeconds = Date().timeIntervalSince(start)
+        let expectedIdentifiers = ContentRuleListChunks.identifiers(forList: identifier, chunkCount: chunkSizes.count)
+        XCTAssertEqual(compiled, expectedIdentifiers)
+        XCTAssertEqual(store.cachedLists(forList: identifier).map(\.identifier), expectedIdentifiers)
+        XCTAssertEqual(store.compiledRuleCount(forList: identifier), rules.count,
+                       "every rule compiled: none stripped as bad, no exception left out")
+        let stored = await storedIdentifiers()
+        XCTAssertEqual(stored, expectedIdentifiers.sorted())
+
+        // A relaunch finds every chunk.
+        let relaunched = ContentRuleStore(storage: storage)
+        let found = await lookUp(relaunched, identifier)
+        XCTAssertEqual(found.map(\.identifier), expectedIdentifiers)
+        XCTAssertEqual(relaunched.compiledRuleCount(forList: identifier), rules.count)
+
+        // Every chunk attaches and blocks; the carried exception reaches the first.
+        let delegate = ChunkRecordingNavigationDelegate()
+        let webView = makeWebView()
+        defer { webView.navigationDelegate = nil }
+        webView.navigationDelegate = delegate
+        apply(ContentBlockerManager.ruleLists(for: Profile(name: "Test"), in: relaunched), to: webView)
+        let images = (probes.map(\.url) + [exempted]).map { "<img src='\($0.absoluteString)'>" }.joined()
+        start = Date()
+        webView.loadHTMLString("<html><body>\(images)</body></html>", baseURL: pageURL)
+        try await waitUntil("the page finished loading", timeout: 60) { delegate.finished }
+        try await waitUntil("a blocked load per chunk is reported", timeout: 30) {
+            Set(delegate.blocked.map(\.url)).isSuperset(of: probes.map(\.url))
+        }
+        let loadSeconds = Date().timeIntervalSince(start)
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        for probe in probes {
+            XCTAssertTrue(delegate.blocked.contains { $0.url == probe.url && $0.identifier == probe.identifier },
+                          "\(probe.url) blocked by \(probe.identifier): \(delegate.blocked)")
+        }
+        XCTAssertFalse(delegate.blocked.contains { $0.url == exempted }, "exempted: \(delegate.blocked)")
+
+        print(String(format: """
+            TASK-370 \(identifier): \(text.utf8.count) bytes, \(realCount) rules (\(realCarried) carried exceptions), \
+            parsed in %.1f s; padded \(prefixCount) + \(suffixCount) + 1 = \(rules.count) rules in %.1f s; \
+            chunks \(chunkSizes); compiled in %.1f s; page with every chunk loaded in %.1f s
+            """, realParseSeconds, paddedParseSeconds, compileSeconds, loadSeconds))
     }
 }
 
