@@ -4,7 +4,7 @@ title: Error pages
 description: "What a failed load looks like: the browser-error:// page, which failures earn one (only those before commit) and which are ignored, how the tab keeps the URL the user asked for, and how retry, restore and background tabs behave."
 tags: [navigation, errors, webkit, tabs]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:12:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T10:40:00Z }
 sources:
   - id: scheme-handler
     resource: ../../Detour/Browser/Window/ErrorSchemeHandler.swift
@@ -30,6 +30,15 @@ sources:
   - id: task-178
     resource: backlog:TASK-178
     title: A load that fails after the page committed replaces the working page with the full error page
+  - id: task-372
+    resource: backlog:TASK-372
+    title: "Error page: a failed in-page navigation names the previous page's URL, so Reload goes back instead of retrying"
+  - id: task-372-patch
+    resource: ../../docs/harness/task372/provisional-url-fallback.patch
+    title: The parked TASK-372 fix, its tests and the two wake probes
+  - id: navigation-failure-tests
+    resource: ../../DetourTests/NavigationFailureURLTests.swift
+    title: NavigationFailureURLTests.swift
   - id: committed-tests
     resource: ../../DetourTests/CommittedLoadFailureTests.swift
     title: CommittedLoadFailureTests.swift
@@ -99,6 +108,29 @@ error page, `tab.url` and Reload name the right URL:
 
 Rejected: using the failing URL only when the tab has no URL of its own
 (TASK-167's first version); it left the first two rows wrong.
+
+**When the error names no URL** (TASK-372).[^task-372] Step 3 needs
+`NSURLErrorFailingURLErrorKey`. Every network failure measured carries it
+(script, link and `tabs.update` to a refused loopback port all name the
+target), but WebKit's extension scheme handler refuses a main-frame
+`webkit-extension://` load in a web view not built from that extension's
+configuration with an `NSError` whose `userInfo` is nil (-1008; see
+[extension pages](../extensions/extension-pages.md#where-an-extension-page-cannot-be)).
+WebKit adds only `_WKRecoveryAttempterErrorKey`, so a page that navigates to
+such a page, by script, link or `tabs.update`, gets an error page naming the
+page it was on, and Reload goes back there. Measured 2026-11-16.
+
+The fix is parked, not applied:
+[docs/harness/task372/provisional-url-fallback.patch](../../docs/harness/task372/provisional-url-fallback.patch)
+records `webView.url` at `didStartProvisionalNavigation` (already the target
+there), clears it on commit and uses it when the error has no failing URL. Its
+five tests fail without it and pass with it. It is held back because adopting a
+refused extension URL makes it the tab's URL, and **`wakeConfiguration` builds
+a tab whose URL is an extension page from that extension's own
+configuration**: after the tab sleeps and wakes, Reload loads the page WebKit
+refused, a non-web-accessible one included (`options.html`, measured with the
+patch's probe B). How a page-chosen extension URL may be named, kept and
+retried is not settled; the options considered are in TASK-372's notes.
 
 Neither delegate implements `webView(_:didFail:withError:)`, the failure of
 a navigation that already committed. See
@@ -225,6 +257,14 @@ loads the original URL again.
   manual reload. A process the tab replaced because it was not answering a
   load is not counted
   ([unresponsive web process](../platform/unresponsive-web-process.md)).
+- **A `window.open` child refused an extension page keeps its URL** (main,
+  not only the parked TASK-372 patch). The child has no committed page, so
+  the URL observer's provisional extension URL stays `lastAttemptedURL` and
+  `tab.url` through the failure, and the error page names it. After
+  `sleep(force:)` and `wake()` the tab is rebuilt from the extension's
+  configuration (`showsExtensionPage` is true while it sleeps) and Reload
+  loads the page, `options.html` included. Measured 2026-11-16 with the
+  patch's probe A on the unpatched tree; a relaunch was not tried.[^task-372]
 - **Back/forward re-attempt targets the selected tab.** The branch calls
   `selectedTab?.load(originalURL)` rather than resolving the tab from the web
   view that fired. Read from the code; the case of an unfocused split pane
@@ -247,7 +287,9 @@ loads the original URL again.
   script's location change and a clicked link in a window's selected tab, a
   location change in an unowned tab, a typed URL redirecting to the dead
   host, a typed dead URL, and Reload after the failure; all but the last
-  typed case fail without step 3.[^task-170]
+  typed case fail without step 3.[^task-170] Since TASK-372 also
+  `tabs.update` (`loadURL(_:for:)`) to the dead host, which passes on the
+  same code. The parked patch adds the refused-extension-page cases.
 - `BrowserTabWakeTests` - a failed wake keeps session, title and favicon;
   reload after it retries; a commit ends the protection; a failed *user* load
   still shows the error page.
@@ -268,4 +310,5 @@ loads the original URL again.
 [^task-121]: A tab showing a standalone video shows the error page with "Plug-in handled load"
 [^task-122]: A background (unowned) tab whose load fails never shows the error page
 [^task-178]: TASK-178, from the unified log of the affected process
+[^task-372]: Error page: a failed in-page navigation names the previous page's URL, so Reload goes back instead of retrying
 [^task-170]: When a page-started navigation fails, the error page names the page the tab was on, and Reload goes back to it

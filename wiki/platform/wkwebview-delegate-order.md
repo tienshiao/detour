@@ -4,7 +4,7 @@ title: WKWebView delegate call order
 description: Which WKNavigationDelegate and WKUIDelegate methods WebKit calls, and in what order, for target=_blank links, window.open, custom-scheme links, failed and superseded loads, and custom-scheme internal pages — verified with a standalone spike.
 tags: [webkit, navigation, delegates, peek, internal-pages]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T10:40:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: notes-spike
@@ -31,6 +31,9 @@ sources:
   - id: task-168
     resource: backlog:TASK-168
     title: A sign-in popup cannot reach the page that opened it or close itself
+  - id: task-372
+    resource: backlog:TASK-372
+    title: "Error page: a failed in-page navigation names the previous page's URL, so Reload goes back instead of retrying"
   - id: spike-167
     resource: ../../docs/harness/task167-window-open-spike.swift
     title: Standalone spike — what createWebViewWith receives and what the page gets back
@@ -124,6 +127,13 @@ Other facts from the same runs:
   provisional failure (never `about:blank`, the error scheme or an internal
   URL), which covers the opened window and, since TASK-170, the ordinary
   tab; see [error pages](../features/error-pages.md).[^task-167]
+  Observed directly on 2026-11-16 by logging in the tab: for a page-started
+  navigation (script, link, `tabs.update`) `webView.url` is already the
+  target when `didStartProvisionalNavigation` arrives, and is the committed
+  page again when `didFailProvisionalNavigation` does. Not every error has
+  the key: a refused `webkit-extension://` main frame (-1008) carries only
+  `_WKRecoveryAttempterErrorKey`, because WebKit's extension scheme handler
+  fails the task with `userInfo:nil`.[^task-372]
 - **An extension page's `window.open` is supplied the extension context's
   configuration** (`_requiredWebExtensionBaseURL` set; CORS checks off for the
   extension's hosts). A child built from it for a web URL carried the
@@ -195,6 +205,7 @@ navigation:
 | A download-policy interruption | `WebKitErrorDomain` 102 (`WebKitErrorFrameLoadInterruptedByPolicyChange`); Detour treats it like a superseded load |
 | A standalone media URL (media document) | Commit, then `didFail` with `WebKitErrorDomain` 204 and **no** `didFinish` — see [media and picture-in-picture](./media-and-pip.md)[^task-121] |
 | A response that ends short after the navigation committed (a dropped connection, a timeout) | Commit, then `didFail` with the URL error (`NSURLErrorNetworkConnectionLost`, `NSURLErrorTimedOut`); WebKit finishes the document with what arrived and `isLoading` goes false. Detour's tab delegates do not implement `didFail`, so the page stays — see [error pages](../features/error-pages.md#failures-after-commit) |
+| A `webkit-extension://` main frame in a web view not built from that extension's configuration | `didFailProvisionalNavigation` with `NSURLErrorResourceUnavailable` (-1008) and no `NSURLErrorFailingURLErrorKey`[^task-372] |
 | A URL on a restricted port (`http://127.0.0.1:1/`; ports 1, 7, 9 …) | No failure at all: WebKit commits `about:blank` and calls `didFinish`[^task-122] |
 | A web view with no navigation delegate | Nothing is reported to anyone; a failed load leaves `about:blank` or the previous content |
 
@@ -296,6 +307,7 @@ delegate order and the `_wantsPopup` values were.[^task-85]
 
 [^task-167]: window.open() hands the page no window back, so an xterm.js terminal link opens an empty tab
 [^task-168]: A sign-in popup cannot reach the page that opened it or close itself
+[^task-372]: Error page: a failed in-page navigation names the previous page's URL, so Reload goes back instead of retrying
 [^spike-167]: Standalone spike — what createWebViewWith receives and what the page gets back
 [^notes-spike]: WKWebView delegate spike — verified call order and custom-scheme facts
 [^task-85]: Peek: target=_blank links in a pinned tab or favourite open in a Peek

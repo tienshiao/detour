@@ -4,7 +4,7 @@ title: Extension pages in tabs
 description: A tab showing a webkit-extension:// page is tied to one loaded context's origin, which dies on every context reload and every relaunch; how such tabs, pinned tiles, favourites and closed-tab records are rehomed, restored, refused or closed, and why a Quick Detour or quarantine window cannot show one.
 tags: [extensions, tabs, persistence, pinned, favorites]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:45:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T10:40:00Z }
 sources:
   - id: page-url
     resource: ../../Detour/Extensions/Runtime/ExtensionPageURL.swift
@@ -284,6 +284,12 @@ out. The probe test was not kept; it was the
 - A Peek cannot show an extension page: its web view is built from the space
   configuration, which WebKit refuses for an extension main frame
   ([below](#where-an-extension-page-cannot-be)).
+- A refused extension page can still become a space tab's URL: a
+  `window.open` child of a web page keeps the extension URL it failed on, and
+  `wakeConfiguration` then builds the woken tab from the extension's
+  configuration, so Reload after a sleep loads it, even a page that is not
+  web-accessible (measured 2026-11-16, TASK-372; see
+  [error pages](../features/error-pages.md#edge-cases)).
 - If an extension is enabled but its `WKWebExtension` fails to load, its
   restored pages stay pending and display as an empty page, not an error page.
 - The window registers its owned-pane script message handlers on the web

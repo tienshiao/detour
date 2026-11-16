@@ -13,6 +13,12 @@ nonisolated final class NavigationFailureURLTests: XCTestCase {
     private var controllers: [BrowserWindowController] = []
     private var createdSpaceIDs: [UUID] = []
     private var servers: [LoopbackHTTPServer] = []
+    private var tempDirs: [URL] = []
+    private var registeredExtensionIDs: [String] = []
+    private var createdProfiles: [Profile] = []
+    /// Profiles outlive the test: WebKit traps when a profile that hosted
+    /// extension web views is released while they wind down.
+    @MainActor private static var retainedProfiles: [Profile] = []
     private var previousLastActiveSpaceID: UUID?
     private var defaultFaviconFetch: ((URL, @escaping @Sendable (NSImage?) -> Void) -> Void)!
 
@@ -35,6 +41,17 @@ nonisolated final class NavigationFailureURLTests: XCTestCase {
             TabStore.shared.deleteSpace(id: id)
         }
         createdSpaceIDs.removeAll()
+        for profile in createdProfiles {
+            profile.unloadAllExtensions()
+            TabStore.shared.forceRemoveProfile(id: profile.id)
+            AppDatabase.shared.deleteProfile(id: profile.id.uuidString)
+            Self.retainedProfiles.append(profile)
+        }
+        createdProfiles.removeAll()
+        for id in registeredExtensionIDs { ExtensionManager.shared.extensions.removeAll { $0.id == id } }
+        registeredExtensionIDs.removeAll()
+        for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
+        tempDirs.removeAll()
         for server in servers { server.stop() }
         servers.removeAll()
         TabStore.shared.lastActiveSpaceID = previousLastActiveSpaceID
@@ -67,8 +84,8 @@ nonisolated final class NavigationFailureURLTests: XCTestCase {
                        redirect: URL(string: "http://127.0.0.1:\(port)/redirect")!, dead: dead)
     }
 
-    @MainActor private func makeSpace() -> Space {
-        let profile = TabStore.shared.profiles.first { !$0.isIncognito }!
+    @MainActor private func makeSpace(profile: Profile? = nil) -> Space {
+        let profile = profile ?? TabStore.shared.profiles.first { !$0.isIncognito }!
         let space = TabStore.shared.addSpace(name: "TASK-170", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
         createdSpaceIDs.append(space.id)
         return space
@@ -76,8 +93,9 @@ nonisolated final class NavigationFailureURLTests: XCTestCase {
 
     /// A tab selected in a window, or (`inWindow: false`) a tab of a space no
     /// window shows, whose web view's delegate is the tab's own.
-    @MainActor private func openerTab(_ fixture: Fixture, inWindow: Bool) async throws -> BrowserTab {
-        let space = makeSpace()
+    @MainActor private func openerTab(_ fixture: Fixture, inWindow: Bool,
+                                      profile: Profile? = nil) async throws -> BrowserTab {
+        let space = makeSpace(profile: profile)
         let tab = TabStore.shared.addTab(in: space, url: fixture.page)
         if inWindow {
             let wc = BrowserWindowController(incognito: false)
@@ -108,6 +126,22 @@ nonisolated final class NavigationFailureURLTests: XCTestCase {
         let named = try await errorPageURL(of: tab, file: file, line: line)
         XCTAssertEqual(named, fixture.dead, "the error page names the URL that failed", file: file, line: line)
         XCTAssertEqual(tab.url, fixture.dead, "the tab shows the URL that failed", file: file, line: line)
+    }
+
+    /// An extension loaded into a profile of its own: the context `tabs.update`
+    /// acts for.
+    @MainActor private func makeExtension() async throws -> (Profile, WKWebExtensionContext) {
+        let id = "task-372-\(UUID().uuidString.prefix(8))"
+        let ext = try await makeTestExtension(id: id, manifestJSON: """
+            { "manifest_version": 3, "name": "TASK-372", "version": "1.0.0" }
+            """)
+        tempDirs.append(ext.basePath)
+        ExtensionManager.shared.extensions.append(ext)
+        registeredExtensionIDs.append(id)
+        let profile = TabStore.shared.addProfile(name: "TASK-372 \(id)")
+        createdProfiles.append(profile)
+        _ = profile.extensionController
+        return (profile, try loadTestContext(ext, in: profile))
     }
 
     // MARK: - Page-started navigations
@@ -150,6 +184,17 @@ nonisolated final class NavigationFailureURLTests: XCTestCase {
         try await Task.sleep(nanoseconds: 300_000_000)
         try await assertNamesTheDeadURL(tab, fixture)
         XCTAssertNotEqual(tab.title, "Opener", "Reload must not go back to the opener")
+    }
+
+    /// `tabs.update` loads into the web view directly, past the tab's own
+    /// `load`, so the tab learns of it the way it learns of a page's own
+    /// navigation.
+    @MainActor func testATabsUpdateToADeadHostNamesIt() async throws {
+        let fixture = try await makeFixture()
+        let (profile, context) = try await makeExtension()
+        let tab = try await openerTab(fixture, inWindow: true, profile: profile)
+        tab.loadURL(fixture.dead, for: context) { _ in }
+        try await assertNamesTheDeadURL(tab, fixture)
     }
 
     // MARK: - Loads the tab starts
