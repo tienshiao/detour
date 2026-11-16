@@ -73,7 +73,7 @@ main menu nib.
 installs an `AppDelegate` and runs. The signal matters: writing to a native
 messaging host whose process has exited would otherwise terminate the app
 with signal 13. With `SIG_IGN` the write returns `EPIPE` and the caller
-handles it. See [native messaging](../extensions/native-messaging.md).
+handles it. See [writing to a native host](../extensions/native-host-writing.md).
 
 ## Launch and termination
 
@@ -162,7 +162,7 @@ The bar looks the same: it shows the submenu's title either way.
 |---|---|---|
 | App | About, Check for Updates… (only when Sparkle runs), Settings…, Hide, Hide Others, Show All, Quit | No |
 | File | New Tab, Open Location…, Open in Space (`openInSpace`, Cmd+O), Import from Arc…, Close Tab, Reopen Closed Tab, Pin/Unpin Tab, New Window, New Private Window, New Quick Detour Window (`newQuickDetourWindow`, which shows the Quick Detour launcher panel; its key equivalent is the global hotkey's shortcut, Opt-Cmd-N by default, set by `QuickDetourHotKey`, and pressing it while the panel is up closes it) | No |
-| Edit | Undo/Redo (the **browser** undo manager), Cut/Copy/Copy URL/Paste, Select All, Find, Find Next, Find Previous | No |
+| Edit | Undo/Redo (the **browser** undo manager, [browser undo](./browser-undo.md)), Cut/Copy/Copy URL/Paste, Select All, Find, Find Next, Find Previous | No |
 | View | Toggle Sidebar, Reload, zoom | No |
 | Navigate | Back/Forward, Previous/Next Tab, Show All History, Archived Tabs, Clear Archived Tabs | No |
 | Spaces | Next/Previous Space, the first nine spaces (static items on ⌃1–⌃9, titled and hidden on open, TASK-295; see [browser commands](../features/browser-commands.md#spaces-by-position-task-295)), one item per later space, Manage Spaces… | `menuNeedsUpdate` |

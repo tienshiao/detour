@@ -61,7 +61,7 @@ The close button's key equivalent is Escape, which is how Escape reaches the
 bar while the field has focus. The bar's height is taken from a `ToastView`'s
 fitting size so the two stay in step. The bar sits 12 pt from the content
 area's top-left corner; `updateFindBarPlacement` moves it down by the
-[dev toolbar](./dev-mode.md)'s height while a hosted pane's toolbar lies
+[dev toolbar](./dev-toolbar.md)'s height while a hosted pane's toolbar lies
 under that spot (TASK-186.2), so it never covers the toolbar's controls.
 
 # Edge cases

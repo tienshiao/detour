@@ -4,7 +4,7 @@ title: "Automation endpoint: the agent pointer"
 description: The visible agent pointer of the automation endpoint (TASK-228.11), a click-through child overlay window that glides an orange "Agent" arrow to each click and outlines the field keys go to, covering its timing, the checks run again after the glide, the arrival order of input calls, where it is not drawn, how screenshots leave it out, and its setting and Debug override.
 tags: [automation, mcp, appkit]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:58:12Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
 sources:
   - id: task-228-11
     resource: backlog:TASK-228.11
@@ -15,6 +15,9 @@ sources:
   - id: tests
     resource: ../../DetourTests/MCPServerTests.swift
     title: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests
+  - id: task-228-13
+    resource: backlog:TASK-228.13
+    title: "Automation: choose_menu_item and close_menu wait in the input order while the agent pointer is on"
 ---
 
 The [automation endpoint](./automation-endpoint.md)'s input never moves
@@ -63,8 +66,11 @@ cursor.
   client's keys sent during a click's glide would otherwise be delivered
   before the click (a test shows exactly that without it). An uncontended
   call awaits nothing; with the pointer off the tools run as before.
-  `choose_menu_item` and `close_menu` are not in the order (left for the
-  user: it would change how the menu tools wait for a menu).[^task-228-11]
+  `choose_menu_item` and `close_menu` are not in the order yet: putting
+  them in it changes how the menu tools wait for a menu, so it was left for
+  the user, who decided on 2026-11-15 that they should wait in the input
+  order while the pointer is on (the user's decision). Planned in
+  TASK-228.13.[^task-228-11][^task-228-13]
 - **Typing** (`type_text`, `press_key`) outlines what takes the keys: a
   control (a field editor's field), or a page's focused element
   (`AutomationInput.focusedElementRect`, in the client content world,
@@ -147,3 +153,4 @@ tests](./automation-endpoint-tests.md).[^tests]
 [^task-228-11]: Automation: a visible agent pointer shows where the endpoint clicks and types
 [^agent-pointer]: AutomationAgentPointer.swift (the setting, the overlay window, the glide, the arrival order)
 [^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests, and the other Automation suites
+[^task-228-13]: Automation: choose_menu_item and close_menu wait in the input order while the agent pointer is on

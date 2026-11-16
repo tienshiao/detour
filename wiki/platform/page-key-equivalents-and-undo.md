@@ -113,7 +113,7 @@ every menu shortcut, not only undo.
   no browser undo behind it): the focused page's own
   undo when the window's first responder is a `BrowserWebView` whose
   `isEditingWebContent` is set (the `editableFieldFocus` script message),
-  else `TabStore.undoManager`; never the page while another window (Settings,
+  else `TabStore.undoManager` ([browser undo](../architecture/browser-undo.md)); never the page while another window (Settings,
   an extension's popup) has the keys, since Edit > Undo then falls through to
   the main window. The first-responder check matters: a field keeps DOM
   focus when the keys move to the palette or the find bar, and no focusout

@@ -4,7 +4,7 @@ title: Tab insertion and close selection
 description: The two pure rules that decide where a new tab lands in a space's list and which tab is selected after one closes, plus what the window layers on top of them.
 tags: [tabs, rules, pure-functions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:08Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:43:40Z }
 sources:
   - id: insertion
     resource: ../../Detour/Browser/TabInsertion.swift
@@ -32,7 +32,7 @@ sources:
 # Summary
 
 The normal-tab list is flat, but each tab remembers the tab it was opened from
-(`BrowserTab.parentID`). Two pure functions give the list a tree-like feel
+(`BrowserTab.parentID`, the [tab opener](./tab-opener.md) link). Two pure functions give the list a tree-like feel
 without a tree: `tabInsertionIndex` keeps a parent's children in a run right
 below it, and `tabCloseSelectionID` walks siblings, then the parent, then a
 neighbour. Both take `(id, parentID)` tuples and the set of pinned backing-tab
@@ -121,7 +121,8 @@ removal notification finds nothing to fix. The same helper serves "Move to
 Space", which takes a tab out of the list without closing it.
 
 `parentID` is cut when a tab moves to another space (it arrives as a root tab)
-and restored if the move is undone while the parent still exists.
+and restored if the move is undone while the parent is still a normal tab of
+the home space ([tab opener](./tab-opener.md)).
 
 # Where it lives
 
@@ -143,6 +144,7 @@ change to the rules extends.
 # Related
 
 - [Tab lifecycle](./tab-lifecycle.md): the creation and close paths that call these rules.
+- [Tab opener](./tab-opener.md): the `parentID` link both rules read, and the other readers.
 - [Split tabs](./split-tabs.md): the invariant the snap protects.
 - [Sidebar row layout](../sidebar/row-layout.md): item indices versus tab indices, which drop gaps are expressed in.
 - [Sidebar drag and drop](../sidebar/drag-and-drop.md): where gap indices come from.

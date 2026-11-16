@@ -4,7 +4,7 @@ title: Settings window height
 description: "How the Settings window sizes to its panes: the pure height rule (natural height, opening no taller than 720 pt of content or the screen's cap, list panes draggable down to 400), refits while a pane is shown or the screen changes, measured pane heights, and the resize-animation traps (bounds, superseded animations)."
 tags: [settings, appkit, layout]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:58:14Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
 sources:
   - id: height
     resource: ../../Detour/Browser/Settings/SettingsPaneHeight.swift
@@ -36,6 +36,9 @@ sources:
   - id: task-347
     resource: backlog:TASK-347
     title: "Settings: panes ordered by topic, and a tall pane opens at a design maximum height instead of the screen's"
+  - id: task-353
+    resource: backlog:TASK-353
+    title: "Code comments contradicted by later tasks, and RuntimeInstalledEvent's NSLock"
 ---
 
 # Summary
@@ -89,12 +92,16 @@ returns content heights `(initial, minHeight, maxHeight)`:
   is an injection point for a harness, nil in the app.
 
 **The 720 pt figure and the Profiles pane.** TASK-347 chose 720 so that a
-normal profile's Profiles pane (709 pt of content) opens whole, and the
-code's comment on `designMaximumContentHeight` still says so. That 709 is a
-pre-TASK-338 measurement: on the grouped form the pane is taller (it opened
-at its natural 1008 pt in TASK-338's final captures, with another profile
-selected), and in TASK-347's own runtime run Profiles opened at the 720
-maximum (an 808 pt window) and scrolled.[^task-338][^task-347]
+normal profile's Profiles pane (709 pt of content) would open whole. That
+709 is a pre-TASK-338 measurement: on the grouped form the pane is taller
+(it opened at its natural 1008 pt in TASK-338's final captures, with another
+profile selected), and in TASK-347's own runtime run Profiles opened at the
+720 maximum (an 808 pt window) and scrolled.[^task-338][^task-347] The user
+kept 720 knowing this (the user's decision, 2026-11-15): Profiles opens at
+the maximum and scrolls, and "so that Profiles opens whole" is no longer the
+reason for the figure.[^task-347] The code's comment on
+`designMaximumContentHeight` still gives that old reason; correcting it is
+planned in TASK-353.[^task-353]
 
 # Measured heights
 
@@ -168,3 +175,4 @@ content and never from the window, and that Links fits the 400 pt minimum.
 [^task-338]: TASK-338
 [^task-340]: TASK-340
 [^task-347]: TASK-347
+[^task-353]: TASK-353

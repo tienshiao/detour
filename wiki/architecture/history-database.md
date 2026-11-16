@@ -5,8 +5,14 @@ description: "history.db — one shared row per URL, one row per visit scoped to
 resource: ../../Detour/Storage/HistoryDatabase.swift
 tags: [architecture, storage, history, fts5, search]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:01:51Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:45:22Z }
 sources:
+  - id: task-293-2
+    resource: backlog:TASK-293.2
+    title: "Import from Arc: turn a snapshot into Detour profiles, spaces, pinned entries, favourites and history without duplicates"
+  - id: favicon-scope-tests
+    resource: ../../DetourTests/FaviconLookupScopeTests.swift
+    title: FaviconLookupScopeTests.swift
   - id: task-231-2
     resource: backlog:TASK-231.2
     title: History and session database access is compiler-checked across threads
@@ -64,7 +70,9 @@ and under which title. It serves four readers — the
 [command palette](../features/suggestion-pipeline.md), the
 [History page](../features/history-page.md), URL completion, and the
 `chrome.history` extension API — and it is written by `TabStore` when a load
-finishes.
+finishes, and in bulk by `importVisits` (the
+[Arc import](../features/arc-import.md) and the automation endpoint's
+[staging tool](../features/automation-endpoint-staging.md)).
 
 The database knows nothing about profiles. A profile's history is "the
 visits of the spaces that use that profile", and callers pass those space
@@ -111,11 +119,11 @@ profile-scoped view must therefore take its values from in-scope
   only order results. `faviconURL` is displayed and is shared; that is a
   known, accepted leak of one icon per URL.
 
-No reader that answers a question from outside is unscoped. Until TASK-138
-`chrome.history.search` read `historyURL` across all spaces
-(`searchHistoryGlobal`, since removed), which handed an extension in one
-profile the URLs, titles and visit counts of every other profile; it now
-reads through `searchURLs`, scoped like the History page.
+No reader that answers a question from outside is unscoped:
+`chrome.history.search` reads through `searchURLs`, scoped like the History
+page. How it read every profile's history until TASK-138, and the rules the
+extension sees, are on
+[chrome.history in the polyfill](../extensions/polyfill-history.md).
 
 The favicon lookup was the same hole in a smaller shape (TASK-152). The row
 for a URL exists, and has an icon, as soon as *any* profile visits the page,
@@ -284,8 +292,9 @@ is 396 title-less visits of a 5,225-visit URL, and it is what the 2.2 s of
 "text matching every URL" is attributed to: the same query takes 352 ms in
 the 99,000-visit profile and 164 ms in the 45,000-visit one, neither of which
 visited that URL. (Inferred from those controls; the URL was not removed to
-isolate it.) Not fixed; the default range of `chrome.history.search` keeps
-the common call away from it.
+isolate it.) Not fixed; the default range of `chrome.history.search`
+([the last 24 hours](../extensions/polyfill-history.md#the-default-range-is-the-last-24-hours))
+keeps the common call away from it.
 
 All FTS query tokens are double-quoted (`"tok"*`). FTS5 reserves `AND`, `OR`
 and `NOT`; unquoted, typing "not found" was a syntax error and every lookup
@@ -302,6 +311,16 @@ returned nothing (TASK-94).
   than renaming a stranger's visit. The URL-level title follows only when
   this visit is still the newest visit of the URL across all spaces. It is
   queued behind the insert that produced the id, so it cannot overtake it.
+- `importVisits(_:spaceID:completion:)` writes visits brought in from
+  another browser (TASK-293.2) under one history scope, in one background
+  transaction: all of them or none. A visit with the same URL, scope and
+  time as a stored one is skipped, so a second import adds nothing. The URL
+  row's `visitCount` grows, `lastVisitTime` only moves forward, and its
+  title changes only when the imported visit is the newest, so an old import
+  never renames a page Detour has seen since. The completion, with the count
+  added, runs on the writer queue. Its callers are the
+  [Arc import](../features/arc-import.md) and the automation endpoint's
+  [staging tool](../features/automation-endpoint-staging.md).[^task-293-2]
 
 When a visit is recorded, the 30 s dedup and the 60 s correction window live
 in `TabStore`; see
@@ -476,7 +495,9 @@ between two profiles, own counts, times and titles, the legacy-title guard),
 `HistoryTitleIndexTests` (migrate-versus-fresh, every
 delete path, the differential gate test), `HistoryDeletionIntegrationTests`,
 `HistoryTitleUpdateTests`, `SameDocumentVisitTests`, `HistoryTimeRangeTests`,
-`HistoryBenchmarkTests`.
+`HistoryBenchmarkTests`, `FaviconLookupScopeTests` (`faviconURL(for:visitedInSpaces:)`
+answers only for pages and hosts the given spaces visited), and
+`ArcImportTabStoreTests` for `importVisits`.
 
 For the empty-text listing, `HistoryURLSearchTests` also holds the differential
 test against the windowed select and the step-count test described above;
@@ -486,7 +507,9 @@ test against the windowed select and the step-count test described above;
 
 - [History recording and search](../features/history-recording-and-search.md) — when a visit is recorded and corrected.
 - [History page](../features/history-page.md) — the profile-scoped reader.
-- [Import from Arc](../features/arc-import.md) — the Chromium History format Arc visits are imported from.
+- [Import from Arc](../features/arc-import.md) — the Chromium History format Arc visits are imported from, through `importVisits`.
+- [chrome.history in the polyfill](../extensions/polyfill-history.md) — the extension reader of `searchURLs`: its scope, argument rules and default range.
+- [Favicons](../features/favicons.md#the-extension-route-belongs-to-a-profile) — the extension route that reads `faviconURL(for:visitedInSpaces:)`.
 - [Suggestion pipeline](../features/suggestion-pipeline.md) — the palette's reader, profile-scoped since TASK-209.
 - [History own-title matching](../decisions/history-own-title-matching.md) — the isolation decision.
 - [Two databases](../decisions/two-databases.md) — why this is a separate file.
@@ -497,4 +520,5 @@ test against the windowed select and the step-count test described above;
 [^task-152]: favicon.lookup answers from every profile's history, without a permission check
 [^task-153]: chrome.history.search with empty text scans every visit of the profile
 [^task-246]: TASK-246
+[^task-293-2]: Import from Arc: turn a snapshot into Detour profiles, spaces, pinned entries, favourites and history without duplicates
 [^history-notes]: Session notes on the History feature

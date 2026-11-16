@@ -153,7 +153,7 @@ migration.
 | v23 | `closedTab.peekHostTabID` (TASK-307): a closed Peek's host tab, nil for closed tabs ([closed tabs](../tabs/closed-tabs-and-archive.md#closed-peeks)). Tested against a database migrated to v22. |
 | v24 | Data only (TASK-312): an ON `profileExtension` row for every normal profile × installed extension that has none, the old implicit default written down before a missing row became off everywhere; existing rows and the Private profile untouched ([extensions on per profile](../decisions/extensions-on-per-profile.md)). Tested against a database migrated to v23. |
 | v25 | `importLink` (TASK-293.2): where an import put each source profile and space — (`source`, `sourceKey`) → `kind`, `detourID`, `importedAt`. Not foreign keys: a row naming something gone is ignored and replaced at the next import ([Import from Arc](../features/arc-import.md)). |
-| v26 | `closedTab.parentID` (TASK-332): the tab a closed tab was opened from, kept on reopen only while that tab is still an opener the Back button resolves; nil for every older row ([closed tabs](../tabs/closed-tabs-and-archive.md#the-record)). Tested against a database migrated to v25. |
+| v26 | `closedTab.parentID` (TASK-332): the tab a closed tab was opened from ([tab opener](../tabs/tab-opener.md)), kept on reopen only while that tab is still an opener the Back button resolves; nil for every older row ([closed tabs](../tabs/closed-tabs-and-archive.md#the-record)). Tested against a database migrated to v25. |
 
 Patterns worth copying from the existing migrations:
 

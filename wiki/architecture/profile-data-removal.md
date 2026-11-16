@@ -4,7 +4,7 @@ title: Profile data removal and storage scoping
 description: "What deleting a profile removes and in what order, why the on-disk WebKit data needs a pending row and retries, and how WebKitStorageScope and UserDefaultsScope keep test and verification runs out of the production app's data."
 tags: [architecture, profiles, storage, webkit, test-isolation]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:45:22Z }
 sources:
   - id: removal
     resource: ../../Detour/Browser/ProfileDataRemoval.swift
@@ -42,6 +42,15 @@ sources:
   - id: task-41
     resource: backlog:TASK-41
     title: Stop the test host writing the production app's UserDefaults and starting Sparkle
+  - id: task-193-1
+    resource: backlog:TASK-193.1
+    title: "Quick Detour: the window, its single tab and the palette that opens it"
+  - id: task-193-5
+    resource: backlog:TASK-193.5
+    title: "Quick Detour: Opt-Cmd-click entry points, links from other apps, and auto-archive"
+  - id: task-238
+    resource: backlog:TASK-238
+    title: "Extensions: one profile's notifications are visible to and clearable by the same extension in another profile"
 ---
 
 # Summary
@@ -72,14 +81,20 @@ run can neither pile data into the production directory nor delete from it.
    ago still references it in the database, and the row delete would refuse.
 3. **Delete the rows** (`AppDatabase.deleteProfile`). If it returns false,
    stop: nothing has been torn down. A profile gone from memory but with its
-   row, its data and no pending removal would be unrecoverable.
+   row, its data and no pending removal would be unrecoverable. Then the
+   closed-tab records of the profile's [Quick Detour](../features/quick-detour.md)
+   history scope go too (`deleteClosedTabs`): a space's records go with the
+   space, and this scope has no space.[^task-193-5]
 4. **Clear the undo stack.** Undo closures hold spaces, which hold their
    profile strongly. Clearing the stack prevents an undo from rebuilding a space
    on the deleted profile and releases the `Profile` object (TASK-35).
 5. **Tear down what uses the store**: live favorite backing tabs (they can
-   outlive the space they were opened in), then
+   outlive the space they were opened in), the profile's open Quick Detour
+   windows (`closeQuickDetourTabs(of:)`, TASK-193.1),[^task-193-1] then
    `profile.unloadAllExtensions()` (background content, offscreen documents,
-   keep-alive ports, native hosts, relayed WebSockets).
+   keep-alive ports, native hosts, relayed WebSockets), and last any
+   extension notification still filed under the profile
+   (`polyfillHandler?.removeAllNotifications()`, TASK-238).[^task-238]
 6. Set `profile.isDeleted = true` and drop it from `profiles`.
 7. Start the removal on a **later main-actor turn** and return the `Task`.
 
@@ -282,3 +297,6 @@ above; those symbols no longer exist.
 
 [^task-32]: Deleting a profile must remove its website data store and extension controller data on disk
 [^task-36]: Stop the test host writing WebKit data into the production app's WebKit directory
+[^task-193-1]: Quick Detour: the window, its single tab and the palette that opens it
+[^task-193-5]: Quick Detour: Opt-Cmd-click entry points, links from other apps, and auto-archive
+[^task-238]: Extensions: one profile's notifications are visible to and clearable by the same extension in another profile

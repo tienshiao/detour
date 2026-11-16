@@ -63,7 +63,7 @@ The class is split across extension files under
 | `+LinkRouting.swift` | — | Link Routes for typed URLs and in-page links ([link routing](../features/link-routing.md)). |
 | `+NavigationSwipe.swift` | — | Detour's own back swipe, which can close a tab to its opener (TASK-325, [back swipe to the opener](../tabs/back-swipe-to-opener.md)). |
 | `+NowPlaying.swift` | — | The [now-playing bar](../features/now-playing-bar.md), window side. |
-| `+DevToolbar.swift` | — | [Dev mode](../features/dev-mode.md)'s in-page toolbar per hosted pane. |
+| `+DevToolbar.swift` | — | [Dev mode](../features/dev-mode.md)'s in-page [toolbar](../features/dev-toolbar.md) per hosted pane. |
 | `+Automation.swift` | — | The automation indicator ([automation endpoint](../features/automation-endpoint.md)). |
 | `BrowserWebView.swift` | `WKWebView` subclass | Pane focus on `becomeFirstResponder`, the page's own undo manager and editing flag (TASK-345), mouse button 3 = back, link context menu items; `swipe(with:)` and `scrollWheel(with:)` hook Detour's own back swipe (TASK-325); in a browser window `goBack(_:)`, `goForward(_:)` and their `validateUserInterfaceItem` hand Back/Forward to the controller (TASK-331). |
 
@@ -247,7 +247,8 @@ and so on; the menu is built in [app shell](./app-shell.md)).
 `validateMenuItem` answers the [command registry](../features/browser-commands.md)'s
 rules (TASK-320) over the window's facts (`CommandContext`, implemented
 next to it): they disable space switching, pinning and the archive items in
-a Private window, and retitle Undo/Redo from the store's undo manager unless
+a Private window, and retitle Undo/Redo from the store's undo manager
+([browser undo](./browser-undo.md)) unless
 the page has an editable field focused.
 
 `closeCurrentTab` has a fixed precedence: an open Peek closes first; with no

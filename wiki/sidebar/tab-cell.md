@@ -6,6 +6,8 @@ tags: [sidebar, cells, progress, split-tabs, appkit]
 status: stable
 resource: ../../Detour/Browser/Sidebar/TabCellView.swift
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:17:19Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:46:27Z }
 sources:
   - id: tab-cell
     resource: ../../Detour/Browser/Sidebar/TabCellView.swift

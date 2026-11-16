@@ -5,6 +5,8 @@ description: "Per-site preferences per profile: the siteSetting table, SiteSetti
 tags: [storage, profiles, content-blocker, site-settings, dev-mode]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:46:27Z }
 sources:
   - id: store
     resource: ../../Detour/Browser/SiteSettings/SiteSettingsStore.swift
@@ -129,7 +131,7 @@ on different ports are two sites; only `http`/`https` pages have one.[^task-186-
 `ContentBlockerWhitelist` kept its API (`isWhitelisted`, `toggleHost`,
 `hostsForProfile`, the pure `covers` / `entriesCovering`) and now reads and
 writes the store: a whitelisted host is a `contentBlocking = false` row. How
-the switch is enforced is unchanged ([content blocking](../features/content-blocking.md)).
+the switch is enforced is unchanged ([content blocking per-site switch](../features/content-blocking-per-site-switch.md)).
 
 Migration v18 copied every `contentBlockerWhitelist` row into `siteSetting`
 as `contentBlocking = false` and dropped the old table. The host is

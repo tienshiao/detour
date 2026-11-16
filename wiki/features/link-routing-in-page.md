@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Typed URLs and links clicked in a page
-description: "Which typed URLs and in-page link clicks Link Routes move, from where: the entry points (palette submit in new-tab mode, the Cmd+click branch, the policy after the download check, createWebViewWith), the pure linkRoutingEligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Opt-Cmd/Option/Shift-clicks, Peeks, subframes or the link menu; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, the decisions still to confirm, and the runtime check."
+description: "Which typed URLs and in-page link clicks Link Routes move, from where: the entry points (palette submit in new-tab mode, the Cmd+click branch, the policy after the download check, createWebViewWith), the pure linkRoutingEligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Opt-Cmd/Option/Shift-clicks, Peeks, subframes or the link menu; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, the user's decisions of 2026-11-15 (the link menu's New Tab and New Window to be routed, TASK-356), and the runtime check."
 tags: [links, navigation, webkit, peek]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T05:00:20Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
 stale_after: 2027-01-31T00:00:00Z
 sources:
   - id: eligibility
@@ -52,6 +52,9 @@ sources:
   - id: task-307
     resource: backlog:TASK-307
     title: "Peek: ⌘O opens the Peek as a tab, a setting turns Peek off, and ⇧⌘T / ⌘Z reopen a closed Peek"
+  - id: task-356
+    resource: backlog:TASK-356
+    title: "Link Routes: Open Link in New Tab and Open Link in New Window go through Link Routes"
 ---
 
 TASK-191.4.[^task-191-4] Inside Detour, a URL typed in a new tab and some
@@ -103,7 +106,7 @@ modifiers, the user-gesture signal, whether it is in a Peek, the page URL
 |---|---|---|
 | Target not http/https (`mailto:`, `detour://`, `data:`, `about:`, `blob:`, `file:`, app schemes) | not routed (`notWebURL`) | Routes match web pages only; non-web schemes and downloads are decided by the policy before it asks anyway. |
 | Fired by a Peek's page, or while a Peek is presented | `inPeek` | A Peek is a look at a link; its links navigate the Peek (decided 2026-10-25). The overlay is modal, so while it is up a click can only be in it. |
-| The link menu's own actions (Open Link in New Tab / Window / Split View) | `linkMenuAction` | The user picked where it opens. Not in the decided list; kept unrouted (see [decisions](#decisions-still-to-confirm)). TASK-300's Open Link in Quick Detour never reaches the rule: it does what Opt-Cmd-click does, never routed.[^task-300] |
+| The link menu's own actions (Open Link in New Tab / Window / Split View) | `linkMenuAction` | The user picked where it opens. All three are unrouted today; the user decided on 2026-11-15 that Open Link in New Tab and Open Link in New Window will be routed like a Cmd+click (planned in TASK-356) while Open Link in Split View stays unrouted (see [decisions](#decisions-2026-11-15)).[^task-356] TASK-300's Open Link in Quick Detour never reaches the rule: it does what Opt-Cmd-click does, never routed.[^task-300] |
 | A `_blank` link reaching `createWebViewWith` | `decidedByNavigationPolicy` | WebKit asked the policy first; it was routed (cancelled) or not there. |
 | Popup-style `window.open` (`_wantsPopup`, else explicit x/y/width/height) | `popupWindow` | It must keep its opener (sign-in and payment windows, TASK-168). |
 | Tab-style `window.open` without a gesture | `noUserGesture` | WebKit blocks those anyway (`javaScriptCanOpenWindowsAutomatically` is off). |
@@ -201,15 +204,26 @@ exactly as a real click.
   That is how the intercept behaved before this task; [Peek](../tabs/peek.md)
   said otherwise and was corrected.
 
-# Decisions still to confirm
+# Decisions (2026-11-15)
 
-Cases the task's decisions did not name, decided while implementing and
-recorded here for the user to confirm (TASK-191.4 notes, 2026-10-25; no
-later confirmation found in the Backlog or the wiki log as of 2026-11-15):
+Cases the task's decisions did not name were decided while implementing
+(TASK-191.4 notes, 2026-10-25) and put to the user, who decided them on
+2026-11-15.[^task-191-4]
 
-- **The link menu's actions are not routed** (Open Link in New Tab, in New
-  Window, in Split View): the user chose where the link opens. Routing Open
-  Link in New Tab like Cmd+click would be one line in `createWebViewWith`.
+**Changed** (the user's decision, 2026-11-15):
+
+- **Open Link in New Tab and Open Link in New Window will be routed like a
+  Cmd+click**; planned in TASK-356.[^task-356] Until it lands, the link
+  menu's actions are not routed (`linkMenuAction`), on the reasoning they
+  were built with: the user chose where the link opens. The user's reason
+  for the change is consistency with other browsers' link rules: Arc's Air
+  Traffic Control and Firefox's Multi-Account Containers apply their rules
+  whatever opened the link. When the task was built, routing Open Link in
+  New Tab like Cmd+click was estimated at one line in `createWebViewWith`.
+- **Open Link in Split View and Open Link in Quick Detour stay unrouted.**
+
+**Confirmed as built** (the user's decision, 2026-11-15):
+
 - **Cmd+L (or a click on the address bar) while a Peek is open routes.**
   `focusAddressBar` and the faux address bar open the palette in new-tab mode
   then (it shows the Peek's URL but opens a new tab), and the rule keys on the
@@ -303,3 +317,4 @@ clicking (the eligibility does not look at panes), a link in an iframe
 [^task-194]: Quarantine: links in a throwaway Quick Detour window, then moved to a profile and space on purpose
 [^task-300]: Link context menu: Open Link in Quick Detour
 [^task-307]: Peek: ⌘O opens the Peek as a tab, a setting turns Peek off, and ⇧⌘T / ⌘Z reopen a closed Peek
+[^task-356]: Link Routes: Open Link in New Tab and Open Link in New Window go through Link Routes

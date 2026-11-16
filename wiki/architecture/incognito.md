@@ -4,7 +4,7 @@ title: Incognito (Private windows)
 description: "How Private browsing is built — one built-in Private profile with a non-persistent store, one throwaway space per Private window, and the list of things that are and are not kept."
 tags: [architecture, privacy, profiles, incognito]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:10:46Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -48,6 +48,9 @@ sources:
   - id: private-notes
     resource: "Agent session notes, 2026-09-20 (not in the repository)"
     title: Session notes on the Private profile and extensions
+  - id: task-357
+    resource: backlog:TASK-357
+    title: "Private windows: their undo entries outlive the window and can rebuild a Private tab nobody sees"
 ---
 
 # Summary
@@ -124,8 +127,14 @@ Private window saw the previous session's cookies.[^private-notes]
   are still running (see Downloads below).
 - On `windowWillClose` the window calls `removeIncognitoSpace(id:)`, which
   removes the space and **tears down** every tab. The teardown is explicit
-  because an undo closure may still retain the space; without it the web
-  views would keep playing audio and stay in memory.
+  because an undo closure may still retain the space
+  ([browser undo](./browser-undo.md)); without it the web
+  views would keep playing audio and stay in memory. The window's undo
+  entries stay on the app-wide stack after it closes; read from the code
+  (not run), Undo Close Tab from a normal window could then rebuild a
+  Private tab into the removed space, which no window shows (see
+  [browser undo](./browser-undo.md#open-questions)). Removing them is
+  planned in TASK-357.[^task-357]
 - `addIncognitoSpace` and `removeIncognitoSpace` register no undo and
   schedule no save.
 
@@ -308,3 +317,4 @@ spaces are saved, its history is recorded, and `isIncognito` is false.
 [^private-notes]: Session notes on the Private profile and extensions
 [^task-156]: A Private window's download still running when the window closes is cancelled, after asking
 [^task-137]: A normal window's open-tab suggestions include tabs from open Private windows
+[^task-357]: Private windows: their undo entries outlive the window and can rebuild a Private tab nobody sees

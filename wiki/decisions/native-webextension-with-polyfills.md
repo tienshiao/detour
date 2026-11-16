@@ -5,6 +5,8 @@ description: Detour replaced its own extension runtime with WebKit's native WKWe
 tags: [extensions, webkit, polyfill, decision]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:46:27Z }
 sources:
   - id: notes-spike
     resource: "Agent session notes, 2026-07 (not in the repository)"

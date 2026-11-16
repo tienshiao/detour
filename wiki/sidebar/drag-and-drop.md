@@ -4,7 +4,7 @@ title: Sidebar drag and drop
 description: "The sidebar's drag pipeline: ID-based payloads, the pure validate / destination / resolve functions, the drop transaction, drop landing and the favorite drop hint."
 tags: [sidebar, drag-and-drop, split-tabs, invariants]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:25Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:45:22Z }
 sources:
   - id: dragdrop
     resource: ../../Detour/Browser/Sidebar/SidebarDragDrop.swift
@@ -42,6 +42,9 @@ sources:
   - id: commit-b9ef265
     resource: commit:b9ef265
     title: "Sidebar: ID-based drag payloads, pure drop resolver, drag fixes"
+  - id: task-300
+    resource: backlog:TASK-300
+    title: "Link context menu: Open Link in Quick Detour"
 ---
 
 # Summary
@@ -296,9 +299,11 @@ that are easy to miss here:
 - A whole split row reorders through `reorderNormalTab` and the
   `didMoveTab` delegate method (there is no separate split-group command);
   the store moves the block.
-- A split row's context menu has Copy URL, Separate Tabs and Close Both
-  Splits only (no Move to Space); a pinned split row has Copy URL and
-  Separate Tabs.
+- A split row's context menu has Copy URL, Open in Quick Detour (added by
+  TASK-300, for the pane under the pointer), Separate Tabs and Close Both
+  Splits, and no Move to Space; a pinned split row has Copy URL, Open in
+  Quick Detour and Separate Tabs (`buildSplitContextMenu`,
+  `buildPinnedSplitContextMenu`).[^task-300]
 
 # Tests
 
@@ -320,3 +325,4 @@ without a mouse, see the stub `NSDraggingInfo` technique in the
 [^task-129]: Favorite drop hint without a layout shift, and drops that land from the release point
 [^task-34]: Moving an extension-page favourite into the tab list or pinned section must give a loadable tab
 [^commit-b9ef265]: Sidebar: ID-based drag payloads, pure drop resolver, drag fixes
+[^task-300]: Link context menu: Open Link in Quick Detour

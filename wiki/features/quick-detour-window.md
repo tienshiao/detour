@@ -52,7 +52,7 @@ its buttons reopens the palette over the page, navigating it in place
 
 # Undo
 
-Cmd+Z in a page is the page's: the browser undo stack is the
+Cmd+Z in a page is the page's: the [browser undo](../architecture/browser-undo.md) stack is the
 browser windows' and is never reached from here (TASK-193.1). Since TASK-345
 (the user's decision) Edit > Undo and Redo, and the ⌘Z / ⇧⌘Z the page
 leaves, run the page's own undo while an editable element in it has focus

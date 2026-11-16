@@ -96,7 +96,7 @@ Why this channel and not another:
   done ([never replace the globals](../decisions/never-replace-chrome-globals.md)).
 - A native port would push without parking, but opening and closing ports
   changes how long WebKit keeps the background alive and can make it forget
-  another port (TASK-141), which would skew a compatibility run. A pending
+  another port (TASK-141, [WebKit extension ports](../platform/webkit-extension-ports.md)), which would skew a compatibility run. A pending
   native-message reply is not activity and touches no port bookkeeping
   ([service worker unload rules](../platform/service-worker-unload-rules.md)).
 - A hidden extension page relaying through `chrome.*` runs in a page, not

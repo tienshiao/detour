@@ -81,7 +81,7 @@ view) when the question is
 - Look a pinned tab up by `entry.tab?.id`, an entry by `entry.id`. Sidebar
   delegate calls for pinned rows carry an index into `space.pinnedEntries` or an
   entry id, never a tab id.
-- Undo closures capture ids, not objects: Undo Delete Space rebuilds a space's
+- Undo closures capture ids, not objects ([browser undo](../architecture/browser-undo.md)): Undo Delete Space rebuilds a space's
   entries and folders as fresh objects with the same ids, so a captured instance
   could be an orphan.[^task-40]
 

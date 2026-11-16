@@ -4,7 +4,7 @@ title: Build and test
 description: How to generate the project, build, and run the test suite without clobbering another build, another test run or the machine's memory.
 tags: [playbook, build, tests, xcodebuild]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:49Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:55:10Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
@@ -181,12 +181,19 @@ Use `pgrep -x`. `pgrep -f xcodebuild` matches the wait loop's own command
 line and never exits.[^notes-stale] In an agent shell that blocks
 foreground sleeps, run the whole line as one background command.
 
-When several agents share the machine, the agent batches since 2026-11-07
-ran every `xcodebuild` through a local wrapper instead,
-`.claude/scratch/xcb-locked.sh` (git-ignored, not in the repository): it
-takes a `mkdir` lock in the main checkout, waits while another holds it, and
-runs `caffeinate -d -i xcodebuild "$@"` so the display stays awake for the
-run.
+When several agents share the machine, run every `xcodebuild` through
+[`scripts/xcb-locked.sh`](../../scripts/xcb-locked.sh) instead (used by the
+agent batches since 2026-11-07, in the repository since 2026-11-15): it
+takes a `mkdir` lock in the main checkout's git-ignored `.claude/scratch`
+(found through `git rev-parse --git-common-dir`, so every worktree shares
+it), waits while another holds it, and runs `caffeinate -d -i xcodebuild
+"$@"` so the display stays awake for the run. Its companions are
+[`scripts/screen-lock.sh`](../../scripts/screen-lock.sh) (`acquire <who>` /
+`release` / `status`: one runtime UI session at a time) and
+[`scripts/launch-detour.sh`](../../scripts/launch-detour.sh) (launches a
+built app with a `DETOUR_DATA_DIR`, refusing the production app and the
+real profile name, and prints the PID). The old `.claude/scratch/*.sh`
+paths are symlinks to them.
 
 If two test runs must overlap anyway, give each its own data directory and
 its own DerivedData:

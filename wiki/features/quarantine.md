@@ -4,9 +4,7 @@ title: Quarantine
 description: "A link opened in a throwaway Quick Detour window whose page has a non-persistent website data store of its own (TASK-194): how it is chosen (a Link Routes target, the Default for links from other apps, a route also for matching clicks, never a typed URL), the window (a Private-profile Quick Detour with its own store, its badge and tint, popups sharing the opener's store, Cmd+click a fresh one), Open in as a fresh load in any profile's space, history (none), archive (never), idle close (never), extensions (those allowed in Private), downloads (asked each time), the tracking-parameter rule, Safari's user agent, WebKit's fingerprinting protections, and the limits."
 tags: [links, privacy, window, incognito, extensions, downloads]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T20:30:00Z }
-verified:
-  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:33Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:41:01Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-329
@@ -45,6 +43,9 @@ sources:
   - id: tracking-parameters
     resource: ../../Detour/Browser/TrackingParameters.swift
     title: TrackingParameters.swift (the tracking-parameter list and rule, shared with Copy URL)
+  - id: tracking-parameters-page
+    resource: ./tracking-parameters.md
+    title: Tracking parameters (the shared rule and the downloaded filter)
   - id: followup-harness
     resource: ../../docs/harness/task194-followup-harness.patch
     title: TASK-194 follow-up runtime harness (review fixes) and its results
@@ -196,22 +197,18 @@ package (`.crx`) is a download like any other here, not offered for install.
 
 ## Link tracking parameters
 
-`TrackingParameters.removing` (pure; `Quarantine.removingTrackingParameters`
-until TASK-326 moved it out to share it with [Copy URL](copy-url.md))
-removes click IDs (`gclid`, `gclsrc`, `dclid`, `gbraid`, `wbraid`,
-`fbclid`, `msclkid`, `igshid`, `yclid`, `twclid`, `ttclid`, `li_fat_id`,
-`mc_eid`, `mc_cid`, `_hsenc`, `_hsmi`, `mkt_tok`, `oly_anon_id`,
-`oly_enc_id`, `vero_id`, `s_cid`, `rb_clickid`), Google Analytics' linker
-`_ga` (added by TASK-326) and every `utm_` parameter, names compared without
-case and after percent-decoding, other parameters kept in order with their
-spelling. The list is the one Copy URL uses: a name added for one applies to
-both. Quarantine navigations, like Copy URL, also apply the downloaded
-AdGuard URL Tracking filter's site rules and honour its exceptions, which
-keep a parameter on their site even when it is a built-in name
-(`TrackingParameters.cleanLink(for:)`; TASK-329 AC #4, the user's decision
-on 2026-11-14, replacing a provisional built-in-only first cut). With the
-list off in Settings or not downloaded, the built-in names alone; see
-[Copy URL](copy-url.md#the-downloaded-filter-task-329).
+A quarantine page loads `TrackingParameters.cleanLink(for:)`, the rule
+[Copy URL](copy-url.md) also uses (see
+[Tracking parameters](tracking-parameters.md)): the built-in click IDs,
+`_ga` and every `utm_` parameter, other parameters kept in order with their
+spelling, plus, while it is downloaded and on, the AdGuard URL Tracking
+filter's site rules and its exceptions, which keep a parameter on their
+site even when it is a built-in name (TASK-329 AC #4, the user's decision on
+2026-11-14, replacing a provisional built-in-only first cut; see
+[Tracking parameters](tracking-parameters.md#quarantine-navigations-use-the-filter-too)).
+With the list off in Settings or not downloaded, the built-in names alone.
+A name added to the list applies to quarantine and Copy URL alike.
+
 Applied to the link before the window loads it, and to every main-frame
 navigation of the page (`trackingFreeURL`: a GET carrying any is cancelled
 and loaded again without them). Left alone: back/forward, reloads, form

@@ -175,7 +175,8 @@ Peek's Open in Split View all ask it.[^task-185]
 Where `addSplitInNormalSection` puts the pair: the `TabInsertion` rule for a
 new tab opened from that parent (top of the normal section, after the run of
 tabs the parent already opened), through `newTabInsertionIndex`, which also
-snaps out of a group's interior. Both panes get the parent as `parentID`, so
+snaps out of a group's interior. Both panes get the parent as `parentID` (the
+[tab opener](./tab-opener.md) link), so
 the pair counts as part of that run: a second split or a Cmd+click from the
 same pinned tab lands after it rather than before it or inside it. The rule was
 chosen over "next to the parent" because a pinned or favourite parent has no
@@ -207,6 +208,9 @@ selected, and the toast would otherwise fire once per pane.
   have to move together to survive.
 
 # Undo rules worth knowing
+
+The split actions' undos are on the shared
+[browser undo](../architecture/browser-undo.md) stack.
 
 - **Rejoins mint a new group id.** Undoing a single-pane close, a separate, or a
   "Close Both Splits" forms the split again under a fresh UUID (and the restored
@@ -298,6 +302,7 @@ Also `SleepShowBudgetTests` (partner rules), `ArchivedTabRestoreTests`
 - [Splits survive pinning](../decisions/splits-survive-pinning.md): why the pinned group is on the entries.
 - [Pinned tabs and folders](./pinned-tabs-and-folders.md): sort order and levels that the pinned invariants are stated in.
 - [TabStore](../architecture/tabstore.md): the store these mutations belong to.
+- [Browser undo](../architecture/browser-undo.md): the stack the split undos are on, and why tabs are captured by id.
 - [Session database](../architecture/session-database.md): migrations v6 and v7.
 
 [^task-38]: Move to Space loses extension pages (rebuilds the tab in the space configuration)

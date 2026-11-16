@@ -4,7 +4,7 @@ title: Settings panes
 description: "What the General, Spaces, Links, Quick Detour, Search, Shortcuts and Content Blocking panes of the Settings window show and edit, how each is laid out on the grouped form or as a list, and the layout choices the user decided (Profiles and Extensions have pages of their own)."
 tags: [settings, spaces, links, shortcuts, content-blocking]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:58:14Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
 sources:
   - id: general
     resource: ../../Detour/Browser/Settings/GeneralSettingsViewController.swift
@@ -191,9 +191,9 @@ sentence (the launcher) is the switch's help and its second (the menu
 item) the Shortcut row's, and the section titles are new. Both choices
 were Claude's while the user was away (the alternatives: the one-line
 sentence with the switch at its end; one untitled group). The user
-approved the pilot "as is" on 2026-11-14, and the pilot has both, but
-no decision names the two-row hotkey itself: approval inferred, not
-confirmed (provisional).[^task-338]
+approved the pilot "as is" on 2026-11-14 and confirmed the hotkey's two
+rows (the switch, then the Shortcut row) on 2026-11-15 (the user's
+decision).[^task-328][^task-338]
 
 The pane retries a refused shortcut when it appears
 (`QuickDetourHotKey.retryIfFailed`) and ends a recording when it
@@ -265,7 +265,7 @@ downloaded yet", or "Off: not downloaded or used", from
 `trackingListStatus`). It is a section of its own rather than a fifth list,
 since the lists are what blocks content. The switch calls
 `ContentBlockerManager.setTrackingParameterListEnabled`; what off does is
-on [Copy URL](./copy-url.md#the-downloaded-filter-task-329). The buttons
+on [Tracking parameters](./tracking-parameters.md#turning-it-off-task-337). The buttons
 carry identifiers (`contentBlockerUpdateAll`, `contentBlockerClearCache`)
 for Accessibility-driven checks.[^task-337]
 

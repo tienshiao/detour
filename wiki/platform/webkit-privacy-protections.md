@@ -124,7 +124,7 @@ What WebKit does not cover, Detour adds itself for quarantine pages:
 
 | Gap | Measure |
 |---|---|
-| `utm_*` and click IDs not on WebKit's list | `TrackingParameters.cleanLink(for:)` (the rule [Copy URL](../features/copy-url.md) also uses): a fixed list (`gclid`, `fbclid`, `msclkid`, `mc_eid`, `igshid`, `ttclid`, `_hsenc`, `mkt_tok`, …) plus every `utm_` parameter, and since TASK-329 the downloaded AdGuard URL Tracking filter's rules while it is loaded and on (`TrackingParameters.downloadedFilter`), removed from the link before it loads and from every main-frame GET the page navigates to (cancelled and loaded again without them; back/forward, reloads, POSTs, downloads and anchor jumps untouched; each clean address rewritten once per user navigation, so a page or server that insists on its parameters gets them the second time instead of a loop) |
+| `utm_*` and click IDs not on WebKit's list | `TrackingParameters.cleanLink(for:)` (the [tracking-parameter rule](../features/tracking-parameters.md) [Copy URL](../features/copy-url.md) also uses): a fixed list (`gclid`, `fbclid`, `msclkid`, `mc_eid`, `igshid`, `ttclid`, `_hsenc`, `mkt_tok`, …) plus every `utm_` parameter, and since TASK-329 the downloaded AdGuard URL Tracking filter's rules while it is loaded and on (`TrackingParameters.downloadedFilter`), removed from the link before it loads and from every main-frame GET the page navigates to (cancelled and loaded again without them; back/forward, reloads, POSTs, downloads and anchor jumps untouched; each clean address rewritten once per user navigation, so a page or server that insists on its parameters gets them the second time instead of a loop) |
 | The Detour token in the default mode's user agent makes it rarer than Safari's | Safari's own string, no Detour token (`Quarantine.userAgent`, the same `UserAgentMode.safariUserAgent` the Safari mode sends) |
 | Favicons are fetched with the app's `URLSession.shared`, outside the page's store (its cookie jar is the app's) | none fetched for a quarantine page |
 
@@ -179,7 +179,7 @@ as the worker).
 # Related
 
 - [Quarantine](../features/quarantine.md) — the feature these protections serve.
-- [Content blocking](../features/content-blocking.md) — the other per-navigation `WKWebpagePreferences` SPI Detour sets (the per-site switch).
+- [Content blocking per-site switch](../features/content-blocking-per-site-switch.md) — the other per-navigation `WKWebpagePreferences` SPI Detour sets (the per-site switch).
 - [WebKit source lookup](webkit-source-lookup.md) — how the sources above were read.
 
 [^task-194]: Quarantine: links in a throwaway Quick Detour window, then moved to a profile and space on purpose

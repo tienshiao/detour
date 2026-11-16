@@ -5,7 +5,7 @@ description: The state singleton that owns profiles, spaces and tabs — its obs
 resource: ../../Detour/Browser/TabStore.swift
 tags: [architecture, state, tabs, undo]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:16:42Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:43:40Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -58,7 +58,7 @@ in-memory database rather than touching `shared`.
 |---|---|
 | `profiles: [Profile]` | Includes the built-in Private profile. `private(set)`. |
 | `spaces: [Space]` | Normal and incognito spaces together; `nonIncognitoSpaces` filters. `private(set)`. A space appended here announces its live tabs to extensions (`didSet`). |
-| `undoManager` | The one browsing `UndoManager`. Windows return it as their own. |
+| `undoManager` | The one browsing `UndoManager`. Windows return it as their own ([browser undo](./browser-undo.md)). |
 | `lastActiveSpaceID` | Persistence only; live active space is per window. |
 | `observers` | Weak `TabStoreObserver` references. |
 | `tabSubscriptions` | Per-tab Combine sinks, keyed by tab id. |
@@ -152,11 +152,14 @@ group — and only then notify. Observers therefore see a tab that is already
 torn down; teardown is what reports the close to extension contexts, not the
 remove callback.
 
-Undo closures capture the `Space` instance and tab **ids**, and resolve tabs
-when they run. Undo of Delete Space brings back that same `Space` instance
+Most undo closures capture the `Space` instance and tab, entry and folder
+**ids**, and resolve them when they run (Move to Space resolves the spaces by
+id too). Undo of Delete Space brings back that same `Space` instance
 (captured strongly, TASK-40), so older closures holding it stay valid; it
 rebuilds the space's tabs as new objects with the old ids, so a captured tab
-object can be an orphan by the time its undo runs.
+object can be an orphan by the time its undo runs. The whole undo model —
+what registers, grouping, when the stack is cleared, which window answers
+Edit > Undo — is on [browser undo](./browser-undo.md).
 
 ## Per-tab subscriptions
 
@@ -261,6 +264,7 @@ here are test-first by project policy (see `CLAUDE.md`).
 
 - [Architecture overview](./overview.md) — where the store sits.
 - [Profiles and spaces](./profiles-and-spaces.md) — the space and profile mutations in detail.
+- [Browser undo](./browser-undo.md) — the undo stack every mutation registers on.
 - [BrowserTab](./browser-tab.md) — the object the subscriptions watch.
 - [BrowserWindowController](./browser-window-controller.md) — the observer.
 - [Persistence](./persistence.md) — `saveNow` and `restoreSession`.

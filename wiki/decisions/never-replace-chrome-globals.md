@@ -5,6 +5,8 @@ description: Replacing the chrome/browser globals with a Proxy silently disconne
 tags: [extensions, polyfill, webkit, decision, messaging]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:46:27Z }
 sources:
   - id: task-15
     resource: backlog:TASK-15

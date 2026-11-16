@@ -4,7 +4,7 @@ title: Closed tabs and the Archived Tabs page
 description: What a closed-tab record holds, how Reopen Closed Tab, the close undos and the Archived Tabs page each consume it, how archived records differ from plain closes, and closed Quick Detours filed under their profile's scope (TASK-193.5).
 tags: [tabs, closed-tabs, archive, undo, sidebar]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:16:42Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:43:40Z }
 sources:
   - id: task-332
     resource: backlog:TASK-332
@@ -99,7 +99,7 @@ no such page.
   together share one `closedAt`. Rows older than v16 without `archivedAt` have
   nil and are listed last, by id.
 - **`parentID`** (v26) is the tab the closed tab was opened from
-  (`BrowserTab.parentID`), written by `closeTab` and `closeSplitGroup` (so
+  (`BrowserTab.parentID`, the [tab opener](./tab-opener.md) link), written by `closeTab` and `closeSplitGroup` (so
   by Cmd+W, the Back button's and the back swipe's close to the opener, and
   both kinds of archive). Nil for a root tab, a Peek, a Quick Detour and
   every row before v26, which reopen unlinked as before.[^task-332]
@@ -164,21 +164,20 @@ rebuilds the tab with `restoredTab`, and inserts it at `min(sortOrder, count)`
 snapped out of any split group. The tab comes back **unsplit** and with a
 **new UUID**.
 
-It comes back **linked to its opener** when the record's `parentID` names a
-tab that is still an opener the Back button resolves in the space it reopens
-into (`Space.openerTab(id:)`, the rule `parentTab(for:)` uses: a normal tab of
-the space or a live pinned tab). Otherwise `parentID` stays nil: an opener
-closed (a reopened opener is a new tab with a new id, so "reopen the opener,
-then the child" does not relink them), archived, moved to another space, or
-asleep in a pinned slot. The link is set before the insert is announced, so
-the window's back-swipe mode sees it at once.[^task-332]
+It comes back **linked to its opener** only while the record's `parentID`
+still resolves as the Back button's opener in the space it reopens into
+(`Space.liveOpenerID`; which tabs count, and why a reopened opener never
+does, are on [tab opener](./tab-opener.md)). The link is set before the
+insert is announced, so the window's back-swipe mode sees it at
+once.[^task-332]
 
 `AppDatabase.popClosedTab(spaceID:)` still exists and ignores `archivedAt`, but
 nothing in the app calls it; only `AppDatabaseTests` does.
 
 ## Close undo
 
-`closeTab` and `closeSplitGroup` register an undo that rebuilds the tab from
+`closeTab` and `closeSplitGroup` register an undo (on the shared
+[browser undo](../architecture/browser-undo.md) stack) that rebuilds the tab from
 state captured in the closure, then deletes the record by `tabID`. Before
 rebuilding it checks `AppDatabase.hasClosedTab(tabID:)`:
 
@@ -189,18 +188,12 @@ rebuilding it checks `AppDatabase.hasClosedTab(tabID:)`:
 - in "Close Both Splits", a member whose record is gone stays closed and the
   other comes back alone, as a plain tab.
 
-The undo restores the `parentID` it captured only while
-`Space.openerTab(id:)` still resolves it in the space, the rule Reopen
-Closed Tab uses (the user's decision, 2026-11-14): an opener closed,
-archived, moved or asleep in a pinned slot meanwhile leaves no link. Close
-the child, then its opener, and undo both: the opener comes back as a new
-tab (a new id), so the child comes back unlinked. In "Close Both Splits"
-each member is checked the same way; a pane opened from its partner comes
-back unlinked, the partner being a new tab too. Incognito closes (no
-record) follow the same rule. Before, the undo restored the link unchecked
-and left `parentTab(for:)` to ignore a dangling one. The one rule is
-`Space.liveOpenerID(_:)`, which the two undos and Reopen Closed Tab
-call.[^task-332] Checked at runtime on 2026-11-15
+The undo restores the `parentID` it captured by the rule Reopen Closed Tab
+uses, `Space.liveOpenerID(_:)` (the user's decision, 2026-11-14; see
+[tab opener](./tab-opener.md)): an opener closed (and so a new tab if it
+came back), archived, moved or asleep in a pinned slot meanwhile leaves no
+link, in "Close Both Splits" for each member, and for incognito closes
+too.[^task-332] Checked at runtime on 2026-11-15
 (`docs/harness/task332-reopen-opener-checks.py`, step 4): a child closed
 and undone came back closing to its open opener; closed with its opener
 after it and both undone, it came back with no opener and WebKit's gesture.
@@ -300,6 +293,8 @@ opener, keeps WebKit's gesture and Cmd+[ leaves it open.[^task-332]
 - [Closed tabs are read from the database only](../decisions/closed-tabs-database-only.md): why there is no mirror and no cap.
 - [Sleeping and archiving](./sleeping-and-archiving.md): the sweep that produces archived records.
 - [Tab lifecycle](./tab-lifecycle.md): the close path that writes the record.
+- [Tab opener](./tab-opener.md): the link the record's `parentID` carries.
+- [Browser undo](../architecture/browser-undo.md): the undo stack the close undos live on.
 - [Space paging](../sidebar/space-paging.md): the page strip the archive page sits in.
 - [Session database](../architecture/session-database.md): the `closedTab` table and its migrations.
 - [Extension pages](../extensions/extension-pages.md): the classification used for records of extension pages.

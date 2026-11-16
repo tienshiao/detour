@@ -133,7 +133,7 @@ web-process file `…/WebProcess/Extensions/API/Cocoa/WebExtensionAPI<X>Cocoa.mm
 | `Source/WebCore/loader/FrameLoader.cpp` | `loadURL`, the new-window path |
 | `Source/WebKit/WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp` | `committedLoad` cancels a media document's main resource with error 204[^task-121] — see [media and picture-in-picture](./media-and-pip.md) |
 | `Source/WebKit/NetworkProcess/Classifier/ResourceLoadStatisticsStore.cpp` | What a tracking-prevention pass deletes[^task-70] — see [data store and ITP](../extensions/data-store-and-itp.md) |
-| `Source/WebCore/contentextensions/ContentExtensionsBackend.cpp` | `ignore-previous-rules` only cancels rules in the same rule list; block results of every list are merged[^task-69] — see [content blocking](../features/content-blocking.md) |
+| `Source/WebCore/contentextensions/ContentExtensionsBackend.cpp` | `ignore-previous-rules` only cancels rules in the same rule list; block results of every list are merged[^task-69] — see [content blocking exceptions](../features/content-blocking-exceptions.md#what-webkit-does-with-an-exception) |
 
 For a file not listed, search by the class name seen in a crash stack or a
 log line. WebKit's log messages are string literals in the source, so
@@ -142,7 +142,8 @@ grepping a fetched file for the message text finds the code that printed it.
 # Two findings that are easy to need again
 
 Both verified 2026-09-14, identical in `main` and the older revision; details
-on [service worker unload rules](./service-worker-unload-rules.md).[^notes-source]
+on [service worker unload rules](./service-worker-unload-rules.md) and
+[WebKit extension ports](./webkit-extension-ports.md#a-context-unload-drops-native-ports-silently).[^notes-source]
 
 - `unloadBackgroundContentIfPossible` runs every 30 s and keeps the
   background context only while it has open ports **and** the last port

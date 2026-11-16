@@ -129,7 +129,8 @@ The rules reproduce what the controllers answered item by item, quirks
 included:
 
 - The same action can have a different rule per window kind. Back is always
-  enabled in a browser window (its Back may close the tab to its opener,
+  enabled in a browser window (its Back may close the tab to its
+  [opener](../tabs/tab-opener.md),
   TASK-325); a Quick Detour's needs history. Copy URL, Reload, zoom, Find
   and Web Inspector are always enabled in a browser window and need an
   address in a Quick Detour.

@@ -123,7 +123,7 @@ favourite has no tab to move, so one is built.
   split members cannot. Favourites are never split members.
 - Payloads from another window's sidebar are rejected by `sidebarID`
   ([drag and drop](../sidebar/drag-and-drop.md)).
-- **Favourite mutations register no undo.**[^task-34]
+- **Favourite mutations register no undo** ([browser undo](../architecture/browser-undo.md)).[^task-34]
 
 A dormant favourite of an extension page obeys the same rules as a dormant
 pinned tile: it opens only while the extension is enabled, a disabled

@@ -136,7 +136,8 @@ host, and strips the prefix.
 | `TEST_RUNNER_DETOUR_DATA_DIR=<name>` | A private data directory, needed when two test runs overlap |
 
 The unload legs are measurements of WebKit's timers
-([service worker unload rules](../platform/service-worker-unload-rules.md)),
+([service worker unload rules](../platform/service-worker-unload-rules.md);
+the port-closing legs also of [WebKit extension ports](../platform/webkit-extension-ports.md)),
 and the CRX leg needs files that are not in the repository. Leave them off
 in normal runs.
 

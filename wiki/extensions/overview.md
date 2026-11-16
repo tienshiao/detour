@@ -89,7 +89,7 @@ The decision to build on WebKit's runtime, and what it replaced, is in
 | Popup, Extensions menu, options page | `UI/ExtensionPopoverController.swift`, `ExtensionMenuPopupDecision.swift`, `ExtensionMenuItems.swift`, `ExtensionOptionsPageEntry.swift` | [Popup and options UI](./popup-and-options-ui.md) |
 | Extension pages open in tabs | `Runtime/ExtensionPageURL.swift`, `Profile.retargetExtensionPages` | [Extension pages](./extension-pages.md) |
 | Frames and content scripts | `webNavigationJS`, `contentPolyfillJS` | [Frames and content scripts](./frames-and-content-scripts.md) |
-| Native messaging hosts | `Runtime/NativeMessagingHost.swift`, `NativeHostEnding.swift`, `NativeConnectLogLimiter.swift` | [Native messaging](./native-messaging.md) |
+| Native messaging hosts | `Runtime/NativeMessagingHost.swift`, `NativeHostEnding.swift`, `NativeConnectLogLimiter.swift` | [Native messaging](./native-messaging.md), with [writing](./native-host-writing.md), [connection lifecycle](./native-host-lifecycle.md) and [ending host processes](./native-host-termination.md) |
 | Keeping a worker alive | `Runtime/NativeHostKeepAlive.swift` | [Native port keep-alive](./native-port-keep-alive.md), [service worker unload rules](../platform/service-worker-unload-rules.md) |
 | WebSocket in workers | `Runtime/WebSocketRelay.swift` | [WebSocket relay](./websocket-relay.md) |
 | Worker console in the unified log | `consoleJS`, `Runtime/ConsoleBridgeLimiter.swift` | [Console bridge](./console-bridge.md) |

@@ -5,6 +5,8 @@ description: Why an extension update is installed only if its CRX3 signatures ve
 tags: [extensions, updates, security, crx, decision]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T10:05:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:46:27Z }
 sources:
   - id: verifier
     resource: ../../Detour/Extensions/Installer/CRX3Verifier.swift

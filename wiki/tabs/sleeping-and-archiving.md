@@ -204,7 +204,8 @@ The archive clock is `BrowserTab.archiveClockStart(now:)`:[^task-305]
 - A split member is archived only when the whole group is stale.
 - The last remaining tab of a space is never archived: if every tab is stale,
   the last one in list order stays.
-- The sweep registers no undo (it must not fill the undo stack). The sidebar's
+- The sweep registers no undo (it must not fill the
+  [undo stack](../architecture/browser-undo.md)). The sidebar's
   "Archive Tab" and "Archive Tabs Below" go through the same `closeTab` with
   `archivedAt` set and *do* register undo, named "Archive Tab"; a redo keeps the
   stamp.[^task-115]

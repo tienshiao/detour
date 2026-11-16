@@ -5,7 +5,7 @@ description: "Where Detour's shortcuts are defined (the command registry's defau
 resource: ../../Detour/Commands/ShortcutBindings.swift
 tags: [keyboard, menus, settings, commands]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:16Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
 stale_after: 2027-06-01T00:00:00Z
 sources:
   - id: task-345
@@ -47,6 +47,9 @@ sources:
   - id: spike
     resource: ../../docs/harness/task327
     title: "TASK-327 spikes (standalone AppKit programs building a menu in code, run with -NSUserKeyEquivalents as a launch argument; menu matching from real CGEvents; macOS 26, 2026-11-14) and the Accessibility helper for driving Settings"
+  - id: task-353
+    resource: backlog:TASK-353
+    title: "Code comments contradicted by later tasks, and RuntimeInstalledEvent's NSLock"
 ---
 
 # What it does
@@ -137,7 +140,7 @@ not on a binding change).
 |---|---|
 | Every parameterless main-menu command, AppKit's application and window items included (Hide, Quit, Minimize, Zoom) | `bindable` |
 | New Quick Detour Window | `quickDetourPane`: listed read-only, with a link to that pane |
-| Undo, Redo, Cut, Copy, Paste, Select All | `fixed`: listed read-only, the reason as tooltip (Undo and Redo: the user's decision, 2026-11-15, TASK-345; the text commands: still marked PROVISIONAL in `BrowserCommands.fixedShortcuts`, although the user approved the pane's scope as built on 2026-11-14[^task-327]) |
+| Undo, Redo, Cut, Copy, Paste, Select All | `fixed`: listed read-only, the reason as tooltip (Undo and Redo: the user's decision, 2026-11-15, TASK-345; Cut, Copy, Paste and Select All stay fixed too, like Undo and Redo: the user's decision, 2026-11-15[^task-327]. The comment in `BrowserCommands.fixedShortcuts` still marks the text commands PROVISIONAL; correcting it is planned in TASK-353[^task-353]) |
 | Parameterised commands (a space, an extension) | `notListed` |
 | Check for Updates… | listed only in a run that starts Sparkle |
 
@@ -490,3 +493,4 @@ for the app. To try one at runtime, pass it as a launch argument; never
 [^spike-335]: TASK-335 spikes
 [^task-343]: TASK-343
 [^spike]: NSUserKeyEquivalents spikes
+[^task-353]: TASK-353

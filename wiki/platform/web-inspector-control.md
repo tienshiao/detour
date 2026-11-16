@@ -169,7 +169,7 @@ delete only the new ones and restore any whose value changed.
 
 # Related
 
-- [Dev mode](../features/dev-mode.md) — the toolbar the buttons sit in, and how it stays above a docked inspector.
+- [Dev toolbar](../features/dev-toolbar.md) — the toolbar the buttons sit in, and how it stays above a docked inspector.
 - [WebKit source lookup](./webkit-source-lookup.md) — how the sources above were read.
 - [Split tabs hosting](../tabs/split-tabs-hosting.md) — why containers are frame-based for the docked inspector.
 

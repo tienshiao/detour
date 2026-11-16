@@ -4,7 +4,7 @@ title: Tab lifecycle
 description: How a tab comes into being, navigates, closes and comes back, which object is its navigation delegate at each point, and when each step reaches the database.
 tags: [tabs, lifecycle, navigation, persistence]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:16:42Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:43:40Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -77,7 +77,7 @@ above; the web view side (who hosts it) is
 
 Most paths that add a normal tab end in `TabStore.insertTab` (internal; the
 `addTab` family and a Quick Detour's tab moving into a space use it), which sets `spaceID` and
-`parentID`, computes the index
+`parentID` (the [tab opener](./tab-opener.md) link), computes the index
 ([insertion rule](./tab-insertion-and-close-selection.md)), inserts, subscribes
 to the tab's published properties, notifies `tabStoreDidInsertTab` and
 schedules a save. The rest insert into `space.tabs` directly and notify
@@ -262,24 +262,13 @@ another space) deliberately does not call it.
   `min(sortOrder, count)`, snapped out of any split that now spans that index.
 - A reopened or undone tab keeps its opener link only while the opener is
   still open: `parentID = space.liveOpenerID(…)` (TASK-332; see
-  [back swipe to the opener](./back-swipe-to-opener.md)).
+  [tab opener](./tab-opener.md)).
 - **Undo** (Cmd+Z) and **Redo** (Shift+Cmd+Z) of tab actions are
-  `TabStore.undoManager`, shared by all windows. Since TASK-345 a page gets
-  both keys first: a page that handles them (`preventDefault`, as canvas web
-  apps do) keeps them, and one it leaves reaches Edit > Undo or Redo, once
-  (WebKit re-sends unhandled keys to AppKit; see
-  [A page's key equivalents and its undo](../platform/page-key-equivalents-and-undo.md)).
-  Edit > Undo and Redo (`browserUndo:`/`browserRedo:`) run the focused
-  page's own undo while an editable element in it has focus (the window is
-  key, the web view is its first responder and its `editableFieldFocus` flag
-  is set, `undoTarget`;
-  titled from the page, "Undo Typing"), and `TabStore.undoManager` otherwise,
-  focus in the palette or the find bar included. Each `BrowserWebView` keeps
-  its page's edits on its own undo manager, which WebKit empties when the
-  view leaves the window (a tab switch).[^task-345] Before TASK-345 the
-  web view took both keys for the browser's undo before the page whenever
-  the browser had something to undo, and in a field the menu then ran the
-  browser's undo, not the page's (TASK-333 measured it).
+  `TabStore.undoManager`, shared by all windows
+  ([browser undo](../architecture/browser-undo.md)). A page gets both keys
+  first, and while an editable element in the focused page has the keys
+  Edit > Undo runs that page's own undo instead (TASK-345, see
+  [A page's key equivalents and its undo](../platform/page-key-equivalents-and-undo.md)).[^task-345]
 - An undone close posts `.tabRestoredByUndo`; windows on that space select the
   tab. It rejoins its split if the partner is still an ungrouped normal tab.
 - A close undo does nothing once its record is gone (restored from the archive
@@ -327,6 +316,8 @@ skipped.
 - [Tab insertion and close selection](./tab-insertion-and-close-selection.md): the two pure rules used above.
 - [Sleeping and archiving](./sleeping-and-archiving.md): what happens to a tab nobody looks at.
 - [Closed tabs and the archive](./closed-tabs-and-archive.md): where a closed tab goes.
+- [Tab opener](./tab-opener.md): the `parentID` link set at creation.
+- [Browser undo](../architecture/browser-undo.md): the shared undo stack the close undos use.
 - [Closed tabs are read from the database only](../decisions/closed-tabs-database-only.md): no closed-tab stack is loaded at launch.
 - [BrowserTab](../architecture/browser-tab.md): the object itself.
 - [Web view ownership](../architecture/webview-ownership.md): which window hosts the web view.

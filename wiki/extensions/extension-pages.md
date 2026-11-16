@@ -4,7 +4,7 @@ title: Extension pages in tabs
 description: A tab showing a webkit-extension:// page is tied to one loaded context's origin, which dies on every context reload and every relaunch; how such tabs, pinned tiles, favourites and closed-tab records are rehomed, restored, refused or closed.
 tags: [extensions, tabs, persistence, pinned, favorites]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:07Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
 sources:
   - id: page-url
     resource: ../../Detour/Extensions/Runtime/ExtensionPageURL.swift
@@ -51,6 +51,9 @@ sources:
   - id: persistence-tests
     resource: ../../DetourTests/ExtensionPagePersistenceTests.swift
     title: ExtensionPagePersistenceTests
+  - id: task-352
+    resource: backlog:TASK-352
+    title: "Extensions: reloading or updating an extension leaves its page in a Quick Detour window on the dead origin"
 ---
 
 An extension's own pages (options, a full-page UI, anything opened with
@@ -85,6 +88,11 @@ onto the new one:
 
 1. Find the pages (`extensionPageLocations`). A page can be in four places: a
    space's tabs, a pinned entry's tab, a favourite's backing tab, a Peek.
+   A [Quick Detour](../features/quick-detour.md) window's page
+   (`TabStore.quickDetourTabs`) is not covered: whether such a window can
+   show an extension page is not established, and if it can, a reload or
+   update would leave that page on the old origin and the deferred-update
+   check would not count it as open. Planned in TASK-352.[^task-352]
 2. Rewrite each URL with `rewriteExtensionPageURL`, which carries path, query
    and fragment over in their percent-encoded form. An extension page's query
    often holds a URL of its own, and decoding then re-encoding would change it.
@@ -179,7 +187,8 @@ Until then:
 
 ## Rebuilding from captured state
 
-Reopen Closed Tab, the close undos, Delete Space and Delete Tab undos all
+Reopen Closed Tab, the close undos, Delete Space and Delete Tab undos
+([browser undo](../architecture/browser-undo.md)) all
 rebuild from something captured earlier. They capture the extension id at
 close time and go through `TabStore.restoredTab` / `rehomedTileURL`:
 
@@ -246,3 +255,4 @@ Moves across the incognito boundary are refused.[^task-38]
 [^task-34]: Moving an extension-page favourite must give a loadable tab
 [^task-37]: Activating a dormant pinned entry of a disabled or uninstalled extension gives a dead tab
 [^task-38]: Move to Space loses extension pages
+[^task-352]: Extensions: reloading or updating an extension leaves its page in a Quick Detour window on the dead origin

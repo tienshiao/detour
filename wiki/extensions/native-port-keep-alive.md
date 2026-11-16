@@ -143,7 +143,7 @@ decides only the anchor below.
 ## The anchor (TASK-142)
 
 WebKit forgets every open port of a page as soon as any one of them closes
-(see [service worker unload rules](../platform/service-worker-unload-rules.md#closing-one-port-makes-webkit-forget-the-others)),
+(see [WebKit extension ports](../platform/webkit-extension-ports.md#closing-one-port-makes-webkit-forget-the-others)),
 and only a port the page opens or receives puts the entry back. So an armed
 background holds a second native port, the **anchor**
 (`connectNative('detourKeepAliveAnchor')`, `.keepAliveAnchorHost`, held in
@@ -192,7 +192,8 @@ extension's listener saw the end, Detour's never did).
 **A port the background closes itself.** `watchPort` also wraps
 `disconnect` on every port it watches (TASK-263). Shipped WebKit runs a
 port's own `onDisconnect` listeners inside the caller's `disconnect()` (a
-WebKit bug: Chrome fires it only at the other end), so the listener alone
+WebKit bug: Chrome fires it only at the other end; see
+[WebKit extension ports](../platform/webkit-extension-ports.md#a-pages-own-portdisconnect-fires-its-own-ondisconnect)), so the listener alone
 used to see these ends, but WebKit fixed that upstream on 2026-10-30
 (325256@main), and Detour uses the system WebKit: without the wrapper, an
 installed Detour would stop seeing them once a macOS update ships the fix,
@@ -221,7 +222,8 @@ over 60 s per close.
 
 `chrome.runtime.reload()`, and a WebKit-internal restart of the background,
 run WebKit's context unload, which drops native ports **without any
-disconnect callback**. The old host processes stayed alive as Detour's
+disconnect callback** (see
+[WebKit extension ports](../platform/webkit-extension-ports.md#a-context-unload-drops-native-ports-silently)). The old host processes stayed alive as Detour's
 children and kept counting: in the first signed-build run the armed count
 read 2 and then 3 for one profile, and ten host processes existed for three
 workers.[^task-67]
@@ -411,6 +413,7 @@ itself.[^task-21]
 # Related
 
 - [Service worker unload rules](../platform/service-worker-unload-rules.md) — the WebKit timers this works against
+- [WebKit extension ports](../platform/webkit-extension-ports.md) — the port bookkeeping the anchor and the port watch work around
 - [Native messaging](./native-messaging.md) — where hosts connect and disconnect
 - [WebSocket relay](./websocket-relay.md) — sockets count as hosts
 - [Data store and ITP](./data-store-and-itp.md) — what actually killed the worker in production

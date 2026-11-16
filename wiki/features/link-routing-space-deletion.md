@@ -131,6 +131,7 @@ entry with the other stack untouched, the alert text and its two buttons.
 - [Link Routes](./link-routing.md): the hub.
 - [Profiles and spaces](../architecture/profiles-and-spaces.md): space deletion and its other refusals.
 - [TabStore](../architecture/tabstore.md): `deleteSpace`'s invariants.
+- [Browser undo](../architecture/browser-undo.md): the undo stack the bounce puts entries back on.
 - [The Links pane](./link-routing-links-pane.md): where the alert's button leads.
 
 [^task-191-1]: TASK-191.1: route model, matching rule and storage

@@ -64,7 +64,7 @@ sources:
 A Peek shows a page in a rounded panel over the current tab, dimming what is
 behind it. It is for following a link without leaving, or losing, the page you
 were on. Escape, Cmd+W, the close button or a click outside the panel dismiss
-it, and Edit > Undo (Cmd+Z) or Reopen Closed Tab (Shift+Cmd+T) bring it back;
+it, and Edit > Undo (Cmd+Z, [browser undo](../architecture/browser-undo.md)) or Reopen Closed Tab (Shift+Cmd+T) bring it back;
 the expand button, or File > Open Peek in New Tab (Cmd+O), turns it into a
 normal tab, and the split button puts its page beside the host in a
 [split](./split-tabs.md). Settings > General can turn the automatic Peeks off

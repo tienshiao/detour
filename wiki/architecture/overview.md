@@ -134,7 +134,8 @@ Notifications in the browser core:
 `tabShouldSelectNotification` and others); those belong to the
 [extension pages](../extensions/overview.md).
 
-Undo of tab actions is one `UndoManager` on `TabStore`.
+Undo of tab actions is one `UndoManager` on `TabStore`
+([browser undo](./browser-undo.md)).
 `BrowserWindowController.undoManager` returns it, and Edit > Undo runs it
 unless the focused page has an editable element focused, when it runs that
 page's own (each `BrowserWebView` has one). Cmd+Z reaches the page first

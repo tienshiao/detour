@@ -5,6 +5,8 @@ description: "Making and editing a space in the sidebar itself: the editor that 
 tags: [sidebar, spaces, animation, accessibility]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T01:09:15Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:46:27Z }
 sources:
   - id: appearance
     resource: ../../Detour/Browser/Spaces/SpaceAppearance.swift

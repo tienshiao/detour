@@ -172,7 +172,7 @@ The favorite deactivation is not reversed by undoing the edit.
 `deleteSpace` snapshots every tab, pinned entry and folder as value structs
 (including interaction state, read before teardown), saves the space's
 closed-tab rows, tears the tabs down, and registers a "Delete Space" undo
-that rebuilds everything from the snapshots: the selected tab live, the rest
+([browser undo](./browser-undo.md)) that rebuilds everything from the snapshots: the selected tab live, the rest
 sleeping, the same shape `restoreSession` produces.
 
 Three details are deliberate:
@@ -209,7 +209,8 @@ leaves no closed-tab record.
   form state survive. Extensions get a move, not a close and reopen.
 - Different profile: the web view has to go. The tab is slept (forced) and
   wakes from the destination's configuration.
-- Either way the tab arrives as a root tab (`parentID` cleared); undoing
+- Either way the tab arrives as a root tab (`parentID` cleared, see
+  [tab opener](../tabs/tab-opener.md)); undoing
   the move restores the link while the opener is still a normal tab of the
   home space.
 - Across the incognito boundary: refused (`canMove`). An incognito tab's
@@ -247,6 +248,7 @@ action in an explicit group.[^task-40]
 # Related
 
 - [TabStore](./tabstore.md) — the mutation API these operations belong to.
+- [Browser undo](./browser-undo.md) — the undo stack, capture by instance and by id, and why deleting a profile clears it.
 - [Incognito](./incognito.md) — the built-in Private profile.
 - [Profile data removal](./profile-data-removal.md) — what deleting a profile removes.
 - [Persistence](./persistence.md) — how profiles and spaces are saved.

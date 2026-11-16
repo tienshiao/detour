@@ -42,7 +42,7 @@ sources:
     title: "Dev mode: capture buttons in the dev toolbar"
 ---
 
-The dev toolbar's capture buttons ([dev mode](../features/dev-mode.md#captures))
+The dev toolbar's capture buttons ([dev toolbar captures](../features/dev-toolbar-captures.md))
 needed a picture of the visible page and of the whole page, at device pixels.
 `WKWebView.takeSnapshot` does the first; on macOS it cannot do the second
 with a public rect. Found with a standalone spike (a `WKWebView` in a window,

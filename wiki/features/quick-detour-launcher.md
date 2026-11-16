@@ -78,7 +78,8 @@ File > New Quick Detour Window, or the [global hotkey](./quick-detour-hotkey.md)
 - **Undo** (TASK-346): Edit > Undo and Redo (⌘Z, ⇧⌘Z) undo and redo the
   field's typing, titled "Undo Typing" and disabled with nothing typed; the
   panel answers `browserUndo:`/`browserRedo:` itself, so they no longer fall
-  through to the main browser window's undo and reopen a closed tab there
+  through to the main browser window's
+  [undo](../architecture/browser-undo.md) and reopen a closed tab there
   ([A page's key equivalents and its undo](../platform/page-key-equivalents-and-undo.md)).
 - **Escape** follows the palette's own steps: it clears typed text first, and
   closes the panel on an empty field. **Clicking away** closes it through

@@ -102,7 +102,7 @@ For the Private profile it is the same opt-in as "Allow in Private" on the
   notification with the profile's id; each `BrowserTab` observes it. The
   content-blocker toggles additionally call `reapplyRuleLists()`, which
   reaches only the selected tab's panes (see
-  [content blocking](./content-blocking.md)).
+  [content blocking](./content-blocking.md#attaching-lists-to-web-views)).
 - **Text that does not fit must truncate.** With the window's width
   locked, a label at compression 750 squeezes its neighbours instead of
   widening the window: a long extension name in Profiles took 5 pt from
