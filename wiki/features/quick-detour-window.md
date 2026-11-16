@@ -4,7 +4,7 @@ title: Quick Detour window and its page
 description: "The Quick Detour window and its one page: size and cascading, undo, the page as a BrowserTab in no space and what every space-walking query does with it, links and windows the page opens, no session restore, a Private Quick Detour, how extensions see it as a popup window, and the teardown."
 tags: [window, tabs, privacy, extensions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:09Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:22:00Z }
 sources:
   - id: task-193-1
     resource: backlog:TASK-193.1
@@ -27,6 +27,9 @@ sources:
   - id: rules
     resource: ../../Detour/Browser/QuickDetour/QuickDetour.swift
     title: QuickDetour.swift (history scope, which profile, palette scope)
+  - id: task-359
+    resource: backlog:TASK-359
+    title: "Content blocking: an open Quick Detour window keeps the rule lists it was created with"
   - id: webkit-windows
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIWindowsCocoa.mm
     title: WebKit, WebExtensionContextAPIWindowsCocoa.mm (windowsGetAll reads the context's own window list)
@@ -95,6 +98,13 @@ What "no space" means for each query that walks spaces:
 Only the Quick Detour window ever hosts its web view: no other window lists
 the tab, so there is no ownership hand-off and no snapshot. The window is the
 web view's navigation and UI delegate for its whole life.
+
+The window also follows content-blocking changes: on
+`.contentBlockerRulesDidChange` it replaces the page's rule lists with what
+its current profile has on (`ContentBlockerManager.replaceRuleLists`), as a
+browser window does for its selected panes. Before TASK-359 nothing did, and
+an open page kept the lists it was created with
+([attaching lists to web views](./content-blocking.md#attaching-lists-to-web-views)).[^task-359]
 
 # Links and windows inside it
 
@@ -205,4 +215,5 @@ Suites, counts and the runtime passes are on [Quick Detour tests and runtime che
 - [Quarantine](./quarantine.md) — a Quick Detour on the Private profile whose page has a throwaway store of its own (TASK-194).
 - [Quick Detour tests and runtime checks](./quick-detour-tests.md) — the suites, what was written first, and the runtime passes.
 
+[^task-359]: Content blocking: an open Quick Detour window keeps the rule lists it was created with
 [^webkit-windows]: WebKit, WebExtensionContextAPIWindowsCocoa.mm (windowsGetAll reads the context's own window list)

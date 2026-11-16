@@ -4,7 +4,7 @@ title: Content blocking
 description: "The built-in blocker: EasyList-family filter lists compiled to WKContentRuleLists, per-profile list toggles, how lists reach web views, the blocked-resource counter and where state lives; this hub links the pages on conversion, compilation, chunks, Clear Cache & Redownload and the per-site switch."
 tags: [content-blocker, webkit, profiles, spi, privacy]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:22:00Z }
 sources:
   - id: task-329
     resource: backlog:TASK-329
@@ -30,6 +30,12 @@ sources:
   - id: quick-detour
     resource: ../../Detour/Browser/QuickDetour/QuickDetourWindowController+WebKit.swift
     title: QuickDetourWindowController+WebKit.swift
+  - id: quick-detour-window
+    resource: ../../Detour/Browser/QuickDetour/QuickDetourWindowController.swift
+    title: QuickDetourWindowController.swift (contentBlockerRulesDidChange)
+  - id: quick-detour-blocking-tests
+    resource: ../../DetourTests/QuickDetourContentBlockingTests.swift
+    title: QuickDetourContentBlockingTests.swift
   - id: doc
     resource: ../../docs/content-blocking.md
     title: docs/content-blocking.md
@@ -141,17 +147,27 @@ of `ruleLists(for:in:)`: every compiled chunk of each enabled list when the
 master switch is on, and nothing else. It adds no user script, so it is safe
 to call again after `removeAllContentRuleLists()`.
 
-On `.contentBlockerRulesDidChange`,
-`BrowserWindowController.handleContentBlockerRulesChanged` removes and re-adds
-the lists **only on the selected tab's panes, and only when this window owns
-the web view**. Each tab has its own configuration, so other tabs keep the
-lists they were created with until their web view is rebuilt (a wake) or they
-are the selected tab when a later change is posted. A
-[Quick Detour](./quick-detour.md) page's configuration is built the same way
-(`Space.makeWebViewConfiguration(for:inSpace:)`), and no Quick Detour window
-observes the notification, so its page keeps the lists it was created with
-(read from the code, not run); making an open Quick Detour or quarantine
-page take the new lists is planned in TASK-359.[^task-359]
+A rules change reaches a web view that already exists through
+`ContentBlockerManager.replaceRuleLists(on:profile:from:)`: every rule list
+is removed and the profile's current ones are added, so a list switched off,
+recompiled (a refresh) or cleared and compiled again (Clear Cache &
+Redownload) leaves nothing behind. Who calls it on
+`.contentBlockerRulesDidChange`:
+
+| Window | Pages it replaces the lists on |
+|---|---|
+| `BrowserWindowController.handleContentBlockerRulesChanged` | **only the selected tab's panes, and only when this window owns the web view**. Each tab has its own configuration, so other tabs keep the lists they were created with until their web view is rebuilt (a wake) or they are the selected tab when a later change is posted. |
+| `QuickDetourWindowController.contentBlockerRulesDidChange` | its one page, a [Quick Detour](./quick-detour.md)'s or a [quarantine](./quarantine.md)'s, with the lists of the window's current profile (the Private profile for a quarantine). The window is the page's only host, so there is no ownership to check. |
+
+Until TASK-359 no Quick Detour window observed the notification, and an
+open Quick Detour or quarantine page kept the lists it was created with: a
+test showed a list switched off still blocking there, and a recompiled
+list's old rule still blocking while its new one did not.[^task-359]
+
+Clear Cache & Redownload itself posts no rules change (read from the code):
+the lists already on a web view stay attached, although WebKit's store no
+longer has them, until the re-download compiles and posts one. The same
+holds for both kinds of window.
 
 ## The per-site switch
 
@@ -205,6 +221,12 @@ once per page.
   blocker.** A test page loading `http://127.0.0.1:9/x.js` reports no
   blocked load because WebKit refuses the port first; use an unused high
   port.
+- **Checking a Quick Detour at runtime.** A plain path rule such as
+  EasyPrivacy's `/1pixel.php` blocks on `127.0.0.1`, so a loopback page with
+  that image works as a probe. The endpoint's page tools do not reach a
+  Quick Detour's page, so read the fixture server's request log instead
+  (blocked = never requested); Settings > Profiles' list switches have no
+  identifiers but `hit_test` names them by label (TASK-359).[^task-359]
 - **Local fixtures and generic hiding.** Generic hiding is off on
   `127.0.0.1` and `localhost` (EasyList's `$generichide` lines); use `lvh.me`.
   See [exceptions and element hiding](./content-blocking-exceptions.md#gotchas).
@@ -227,6 +249,14 @@ part's page.
 
 - `ContentBlockerTests` - storage isolation per data directory, parser cases,
   and compiling each cached real list through WebKit.
+- `QuickDetourContentBlockingTests` - an open Quick Detour or quarantine
+  page after a rules change, in a real window with its rule store swapped
+  for a private one: a list switched off stops blocking (the Private
+  profile's for a quarantine), and a list recompiled after `invalidateAll`
+  blocks with its new rule and no longer with its old. The page `fetch`es
+  one path per list from a loopback server, so loaded and blocked are both
+  reported, and the window's blocked count must match. All three failed
+  before the fix (TASK-359).
 - `ContentBlockerWhitelistTests` - the per-site switch, and two
   real-`WKWebView` tests: one `blockedLoad` callback with blocking on, none
   when the navigation's preferences disable content blockers; the counter's

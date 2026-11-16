@@ -2398,9 +2398,8 @@ class BrowserWindowController: NSWindowController {
         // Remove old rule lists and re-add current ones — on every owned pane
         for member in splitMembers(of: tab) {
             guard let webView = member.webView else { continue }
-            let ucc = webView.configuration.userContentController
-            ucc.removeAllContentRuleLists()
-            ContentBlockerManager.shared.applyRuleLists(to: ucc, profile: profile)
+            ContentBlockerManager.replaceRuleLists(on: webView.configuration.userContentController, profile: profile,
+                                                   from: ContentBlockerManager.shared.ruleStore)
         }
     }
 

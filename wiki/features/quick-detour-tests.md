@@ -4,7 +4,7 @@ title: Quick Detour tests and runtime checks
 description: "The Quick Detour test suites and what each covers, which tests were written first against stubs and what they caught, and every runtime pass (TASK-193.1 to .5, 210, 213) with what was and was not checked."
 tags: [window, tests]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T05:00:09Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:22:00Z }
 sources:
   - id: tests-dir
     resource: ../../DetourTests
@@ -62,6 +62,7 @@ what a later sub-task added to a suite listed above it).
 | `QuickDetourArchiveWindowTests` (11) | in real windows: Cmd+W archiving, Private not, a profile switch not; a restore reopening on the profile and only once, a space's record refused; the monitor on an injected clock: the unused one closing as auto-closed while the frontmost stays, Never, the setting read at each check, a key press and key changes counting as use, a sheet, Private |
 | `QuickDetourSidebarCopyTests` (6) | Opt-Cmd mouse-downs handed to the sidebar's table: a normal tab copied and left unselected, a sleeping tab's stored address without waking it, each pane of a split row, a pinned entry, a dormant favourite (not woken) |
 | `OpenInQuickDetourMenuTests` (11) | TASK-300: the link menu's Open Link in Quick Detour after the other Open Link items, offered with the ⌥⌘-click setting off and inside a Peek, running WebKit's item for the Quick Detour action, a web link opening on the page's profile (Private in a Private window), a non-web link opening a background tab as Opt-Cmd-click does; the sidebar tab menu's Open in Quick Detour copying the tab, a split row's pane under the pointer, a Private window's tab into a Private Quick Detour |
+| `QuickDetourContentBlockingTests` (3) | TASK-359, in real windows with a private rule store: after a rules change an open Quick Detour's page stops blocking with a list switched off and blocks with a recompiled list's new rule, not its old one; a quarantine's page follows the Private profile's switches. All three failed before the fix |
 | `QuickDetourDockMenuTests` (7) | TASK-309: the item following the windows' states, the titles, no item without a Quick Detour, Hide All then Show All with Private ones included, a hidden window never frontmost so its idle timer runs, a new Quick Detour shown alone and hidden with the rest, a quarantine left alone |
 | `ExternalLinkRoutingTests` (+4), `LinkRoutingEligibilityTests` (+5), `LinkPlacementTests`, `LinkRouteEditorTests`, `ArchiveListLayoutTests` (+3), `QuickDetourOpenInWindowTests` (2 assertions) | a Quick Detour route, a from-app route and the Default opening a Quick Detour on the front window's profile (never Private); the Opt-Cmd branch and its exclusion from routing; `.openInQuickDetour`; the target offered; the subtitle and the clear scope; Open in (both kinds) archiving nothing |
 

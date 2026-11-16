@@ -4,7 +4,7 @@ title: Quarantine
 description: "A link opened in a throwaway Quick Detour window whose page has a non-persistent website data store of its own (TASK-194): how it is chosen (a Link Routes target, the Default for links from other apps, a route also for matching clicks, never a typed URL), the window (a Private-profile Quick Detour with its own store, its badge and tint, popups sharing the opener's store, Cmd+click a fresh one), Open in as a fresh load in any profile's space, history (none), archive (never), idle close (never), extensions (those allowed in Private), downloads (asked each time), the tracking-parameter rule, Safari's user agent, WebKit's fingerprinting protections, and the limits."
 tags: [links, privacy, window, incognito, extensions, downloads]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:41:01Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:22:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-329
@@ -109,7 +109,8 @@ makes a `QuarantineSession` (the store, `WKWebsiteDataStore.nonPersistent()`,
 and the link as it arrived) and a Quick Detour on the **Private profile**
 with it. `TabStore.openQuickDetourTab(quarantine:)` builds the page from the
 Private profile's configuration — its extension controller, its content
-rules — and puts the session's store in place of the profile's. Being a
+rules (replaced when they change, as on any Quick Detour, TASK-359) — and
+puts the session's store in place of the profile's. Being a
 Private-profile Quick Detour gives the rest:
 
 | | A quarantine | Why |
@@ -283,6 +284,7 @@ fingerprint reads, it does not make you anonymous.
 | `LinkRouteResolverTests`, `LinkRoutingEligibilityTests`, `LinkPlacementTests`, `LinkRouteEditorTests` | the rules above, `.openInQuarantine`, the target offered |
 | `ExternalLinkRoutingTests` (+4) | a route and the Default opening a quarantine with its own store and the front window's space in Open in; parameters stripped with the original kept; two links, two stores |
 | `InPageLinkRoutingTests` (+3) | a routed click quarantined while the tab stays; never from a Private window; a typed URL never |
+| `QuickDetourContentBlockingTests` (+1) | TASK-359: a list switched off in the Private profile stops blocking on an open quarantine page |
 | `QuickDetourExtensionTests` (+2) | real contexts: an incognito popup to a Private-profile extension whose content script runs and reaches the worker with the quarantine's tab; a normal profile's extension seeing nothing |
 
 The rule and store tests were written first, against stubs returning empty

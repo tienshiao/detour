@@ -204,11 +204,25 @@ class ContentBlockerManager {
 
     /// Adds the profile's enabled filter lists to `userContentController`.
     ///
-    /// Adds no user script: this is called again on every rules change (after
-    /// `removeAllContentRuleLists`), and the blocked-load counter now comes from
-    /// WebKit's own per-list action callback instead (TASK-69).
+    /// Adds no user script: a rules change replaces the lists on an existing
+    /// controller (`replaceRuleLists(on:profile:from:)`), and the blocked-load
+    /// counter comes from WebKit's own per-list action callback instead (TASK-69).
     func applyRuleLists(to userContentController: WKUserContentController, profile: Profile) {
         for list in Self.ruleLists(for: profile, in: ruleStore) {
+            userContentController.add(list)
+        }
+    }
+
+    /// A rules change reaching a web view that already exists: every rule list
+    /// it has is removed and `profile`'s current ones are added. What a
+    /// window does on `.contentBlockerRulesDidChange` for the pages it hosts
+    /// (a browser window's selected panes, a Quick Detour's or quarantine's
+    /// page, TASK-359); a list toggled off, recompiled or cleared leaves
+    /// nothing behind.
+    static func replaceRuleLists(on userContentController: WKUserContentController, profile: Profile,
+                                 from ruleStore: ContentRuleStore) {
+        userContentController.removeAllContentRuleLists()
+        for list in ruleLists(for: profile, in: ruleStore) {
             userContentController.add(list)
         }
     }

@@ -186,6 +186,9 @@ final class QuickDetourWindowController: NSWindowController {
     private(set) var isTornDown = false
     /// The pasteboard Copy Link writes to; a test swaps it.
     var urlPasteboard: NSPasteboard = .general
+    /// Where a rules change finds the compiled lists for the page
+    /// (`contentBlockerRulesDidChange`); a test swaps in a store of its own.
+    var contentRuleStore: ContentRuleStore = ContentBlockerManager.shared.ruleStore
 
     private static let scriptHandlerNames = ["linkHover", "editableFieldFocus"]
 
@@ -257,6 +260,11 @@ final class QuickDetourWindowController: NSWindowController {
                                                name: ExtensionManager.extensionPinStateDidChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(extensionActionDidChange(_:)),
                                                name: ExtensionManager.extensionActionDidChangeNotification, object: nil)
+        // A list refreshed, cleared and compiled again, or switched on or
+        // off: the page takes the profile's current lists, as a browser
+        // window's selected panes do (TASK-359).
+        NotificationCenter.default.addObserver(self, selector: #selector(contentBlockerRulesDidChange),
+                                               name: .contentBlockerRulesDidChange, object: nil)
         // `TabStore.updateProfile`'s only signal: a profile's settings (its
         // name among them) were saved.
         NotificationCenter.default.addObserver(self, selector: #selector(profileDidChange(_:)),
@@ -1049,6 +1057,15 @@ final class QuickDetourWindowController: NSWindowController {
     @objc private func profileDidChange(_ notification: Notification) {
         guard notification.userInfo?["profileID"] as? UUID == profile.id else { return }
         titleBar.setProfile(name: profile.name, isPrivate: profile.isIncognito)
+    }
+
+    /// The page's rule lists replaced with what the window's profile has on
+    /// now — the Private profile's for a quarantine. The window is the page's
+    /// only host, so there is no ownership to check.
+    @objc private func contentBlockerRulesDidChange() {
+        guard let webView = tab?.webView else { return }
+        ContentBlockerManager.replaceRuleLists(on: webView.configuration.userContentController, profile: profile,
+                                               from: contentRuleStore)
     }
 
     // MARK: - Teardown

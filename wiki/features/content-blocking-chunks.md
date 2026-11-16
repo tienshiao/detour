@@ -4,7 +4,7 @@ title: Content blocking chunks
 description: "How a filter list over WebKit's 150,000-rule cap is compiled as several rule lists and kept together (ContentRuleListChunks, the list-level ContentRuleStore operations, chunkCount in defaults), what each chunk holds so an @@ exception reaches block rules in every chunk (TASK-155), how close the shipped lists are to the cap, and what splitting does not solve."
 tags: [content-blocker, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:22:00Z }
 sources:
   - id: rule-store
     resource: ../../Detour/Browser/ContentBlocker/ContentRuleStore.swift
@@ -34,8 +34,9 @@ sources:
 
 WebKit is given at most 150,000 rules as one rule list. A longer filter list
 is compiled as several rule lists ("chunks"), and everything that handles a
-list has to treat the chunks as one. No shipped list has reached the cap, so
-this is a safeguard rather than a path every install takes. Part of
+list has to treat the chunks as one. No shipped list has reached the cap,
+so this path has not yet run on a real list; `urlhaus-filter`, the closest,
+was at 72.7% of it on 2026-11-15 and growing ([how close](#how-close-the-lists-are)). Part of
 [content blocking](./content-blocking.md); the compile itself is
 [rule-list compilation](./content-blocking-rule-compilation.md).
 
@@ -74,25 +75,44 @@ for good.[^task-145]
 
 ## How close the lists are
 
-No list is near the cap. Parser output for the lists as fetched on
-2026-10-04; the copies fetched on 2026-10-02 gave 74,973 / 56,146 / 25,002 /
-9,571, which are also the counts the installed app had recorded:[^task-145]
+Parser output for the lists as fetched on 2026-11-15, counted with
+`EasyListParser` (`rulesFormatVersion` 3) built standalone with `swiftc`,
+and each list compiled whole through a temporary `WKContentRuleListStore`
+by the same tool (the TASK-145 method, plus the compile):[^task-359]
 
-| List | Parsed rules | Compiled | Share of the cap |
-|---|---|---|---|
-| `easylist` | 75,661 | 75,661 | 50.4% |
-| `easyprivacy` | 56,158 | 56,158 | 37.4% |
-| `easylist-cookie` | 25,010 | 25,008 (2 stripped as invalid, fixed by TASK-201: see [domain lists](./content-blocking-domain-lists.md#how-many-rules-this-touches)) | 16.7% |
-| `urlhaus-filter` | 9,605 | 9,605 | 6.4% |
+| List | Parsed rules | Lines skipped | Compiled | Share of the cap |
+|---|---|---|---|---|
+| `easylist` | 73,252 | 3,562 | 73,252 (2.5 s) | 48.8% |
+| `easyprivacy` | 56,555 | 106 | 56,555 (2.2 s) | 37.7% |
+| `easylist-cookie` | 25,109 | 273 | 25,109 (1.5 s) | 16.7% |
+| `urlhaus-filter` | 109,083 | 1 | 109,083 (7.3 s) | 72.7% |
 
-Later counts are on the
+Every list compiled in one piece, with no rule stripped. Compile times are
+from one run on a loaded machine. The Debug app, launched minutes later on
+a fresh isolated data directory, recorded the same counts in its
+`ruleCount` and `compiledRuleCount` keys, except `easylist` at 73,255
+(its copy was fetched later and was 72 bytes longer).
+
+Earlier counts, for the trend (parsed unless noted; each parser version of
+its day; the first two columns from TASK-145):[^task-145]
+
+| List | 2026-10-02 | 2026-10-04 | 2026-10-12 (compiled, after TASK-199) | 2026-10-26 | 2026-11-15 |
+|---|---|---|---|---|---|
+| `easylist` | 74,973 | 75,661 | 78,190 | 71,316 | 73,252 |
+| `easyprivacy` | 56,146 | 56,158 | 56,209 | 56,310 | 56,555 |
+| `easylist-cookie` | 25,002 | 25,010 | 25,022 | 25,079 | 25,109 |
+| `urlhaus-filter` | 9,571 | 9,605 | 24,676 | 102,775 | 109,083 |
+
+The 2026-10-12 counts are from the
+[exceptions](./content-blocking-exceptions.md#size-and-compile-time) page,
+the 2026-10-26 ones from the
 [domain lists](./content-blocking-domain-lists.md#how-many-rules-this-touches)
-(2026-10-26) and [exceptions](./content-blocking-exceptions.md#size-and-compile-time)
-(2026-10-12) pages. `urlhaus-filter` grows fastest: 9,605 parsed rules on
-2026-10-04, 24,676 compiled on 2026-10-12 and 102,775 parsed on 2026-10-26,
-about two thirds of the cap, so "no list is near the cap" held less well by
-the end of October than this table shows. Re-measuring every list's count
-and recording it here is planned in TASK-359.[^task-359]
+page. The three EasyList-family lists move by a few percent between
+fetches. `urlhaus-filter` is the one that grows: about tenfold from early
+October to 2026-10-26, then 6% more in the 20 days to 2026-11-15. Its
+growth decides when the chunk path first runs on a real list; at the late
+October to mid November pace it would reach the cap in a few months, but
+the earlier jump shows the pace is not steady.
 
 # What a chunk holds
 
@@ -142,8 +162,8 @@ exceptions (EasyList as a whole is about 75,700 rules).
 - **The element-hiding section has to fit in the first chunk.** It is not
   carried, so if it were longer than a chunk the hiding left in chunk 0 would
   not be undone by a cosmetic exception in chunk 1. EasyList's section is
-  about 24,000 rules, a sixth of the cap; no shipped list reaches the cap at
-  all, so this was left alone in TASK-199's review. (Before TASK-199 an unsplit list
+  about 24,000 rules, a sixth of the cap, and EasyList itself is under half
+  the cap, so this was left alone in TASK-199's review. (Before TASK-199 an unsplit list
   kept file order, so a network exception only undid the block rules above
   it; the parser now puts every network exception after every block rule, in
   split and unsplit lists alike.)
@@ -163,8 +183,9 @@ exceptions (EasyList as a whole is about 75,700 rules).
   chunk count behind it. The list reads as one chunk, so that chunk is not
   attached, and it is removed only if a later compile reuses its identifier
   and then drops it. Stale chunks are found from the recorded count, not by
-  listing WebKit's store. The lists above have been at half the cap or less,
-  so no install is expected to have one.
+  listing WebKit's store. No list has been over the cap (the
+  [counts above](#how-close-the-lists-are)), so no install is expected to
+  have one.
 
 # Gotchas
 

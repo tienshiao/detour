@@ -79,8 +79,9 @@ Compile (ContentRuleStore; one compile per list at a time, in call order)
        v
 Apply (reapplyRuleLists)
   +-- Posts .contentBlockerRulesDidChange notification
-  +-- Each window re-applies rules to its selected tab's panes
-      (only the window that owns that web view)
+  +-- Each browser window re-applies rules to its selected tab's panes
+  |   (only the window that owns that web view)
+  +-- Each Quick Detour / quarantine window re-applies rules to its page
 ```
 
 ## Threading
@@ -245,7 +246,9 @@ only for the window's selected tab — both panes when it is a split — and onl
 this window owns the web view. Every tab has its own configuration, so the other
 tabs keep the lists their configuration was created with until their web view is
 rebuilt (a sleeping tab waking) or they are the selected tab when a later change is
-posted. The notification is posted after each successful compile, once the launch
+posted. A Quick Detour or quarantine window does the same for its one page, with
+its current profile's lists (TASK-359); both go through
+`ContentBlockerManager.replaceRuleLists(on:profile:from:)`. The notification is posted after each successful compile, once the launch
 lookups have all finished, and when a profile's blocking toggles change in Settings.
 
 ## Per-Profile Whitelist
