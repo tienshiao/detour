@@ -473,10 +473,11 @@ final class AutomationAgentPointerOverlay {
     }
 }
 
-/// Runs calls one at a time, in the order they came: the input tools while
-/// the agent pointer is on (TASK-228.11), so a click waiting for its glide is
-/// not overtaken by input a call made later delivers. An uncontended call
-/// runs at once, with nothing awaited.
+/// Runs calls one at a time, in the order they came: the input and menu
+/// tools while the agent pointer is on (TASK-228.11, TASK-228.13), so a click
+/// waiting for its glide is not overtaken by input or a menu choice a call
+/// made later delivers. Not reentrant: a call run here never runs another.
+/// An uncontended call runs at once, with nothing awaited.
 final class AutomationInputOrder {
 
     private var busy = false

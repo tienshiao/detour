@@ -4,7 +4,7 @@ title: "Automation endpoint: the tools"
 description: Every tool the automation endpoint offers (windows, spaces and tabs, menu commands, input, screenshots, page tools, extension tools, capture staging, Debug-only tools) with its arguments, gates and notes, the context argument, and the traps met with run_menu_item and the schemas (menu-bar titles, a shared item retitled per window, submenu actions, animated commands, modal actions and the main queue).
 tags: [automation, mcp]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:58:12Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T06:21:41Z }
 sources:
   - id: automation-dir
     resource: ../../Detour/Automation
@@ -49,8 +49,8 @@ How each is delivered: [how input is delivered](./automation-endpoint-input.md).
 | `press_key` | One key with modifiers (`return`, `shift+tab`, `cmd+a`) | A Cmd key goes through the target's key equivalents (`handled`); menu commands are `run_menu_item`. |
 | `hit_test` | What a click at a window point would reach: view class, accessibility role and label, frame; any kind of window, Settings on any endpoint | Read-only; aims `click` without a screenshot. Hit-tests as AppKit's dispatch does, with the press as the current event: a sidebar row's label reports `DraggableTableView`. |
 | `list_menu` | The open menu's items (index, title, enabled, checked, submenu, identifier); waits `timeout_ms` for one to open; `path` for a submenu | A page's context menu shows WebKit's `WKMenuItemIdentifier…` identifiers. |
-| `choose_menu_item` | Chooses an item by title, index or identifier, then closes the menu | WebKit's own items run for real (Download Linked File downloaded at runtime). |
-| `close_menu` | Closes the open menu without choosing | |
+| `choose_menu_item` | Chooses an item by title, index or identifier, then closes the menu | WebKit's own items run for real (Download Linked File downloaded at runtime). With the agent pointer on it waits its turn in the [input order](./automation-endpoint-agent-pointer.md) (TASK-228.13); `timeout_ms` counts from then. |
+| `close_menu` | Closes the open menu without choosing | Waits its turn in the input order with the agent pointer on, as `choose_menu_item` does. |
 
 # Screenshots and appearance
 

@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: "Automation endpoint: the agent pointer"
-description: The visible agent pointer of the automation endpoint (TASK-228.11), a click-through child overlay window that glides an orange "Agent" arrow to each click and outlines the field keys go to, covering its timing, the checks run again after the glide, the arrival order of input calls, where it is not drawn, how screenshots leave it out, and its setting and Debug override.
+description: The visible agent pointer of the automation endpoint (TASK-228.11), a click-through child overlay window that glides an orange "Agent" arrow to each click and outlines the field keys go to, covering its timing, the checks run again after the glide, the arrival order of input and menu calls, where it is not drawn, how screenshots leave it out, and its setting and Debug override.
 tags: [automation, mcp, appkit]
-status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
+status: stable
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T06:21:26Z }
 sources:
   - id: task-228-11
     resource: backlog:TASK-228.11
@@ -59,18 +59,31 @@ cursor.
   it, and a window point is hit-tested again, with the gate on Settings'
   Automation section. A view put over the point meanwhile gets the click;
   the gate still refuses.
-- **Arrival order** (`AutomationInputOrder`): while the pointer is on,
-  `click`, `type_text` and `press_key` run one at a time in the order the
+- **Arrival order** (`AutomationInputOrder`, `AutomationTools.inArrivalOrder`):
+  while the pointer is on, `click`, `type_text`, `press_key`,
+  `choose_menu_item` and `close_menu` run one at a time in the order the
   calls came. One client's calls are already in order (a connection is
   answered one request at a time, a batch in sequence), but another
-  client's keys sent during a click's glide would otherwise be delivered
-  before the click (a test shows exactly that without it). An uncontended
-  call awaits nothing; with the pointer off the tools run as before.
-  `choose_menu_item` and `close_menu` are not in the order yet: putting
-  them in it changes how the menu tools wait for a menu, so it was left for
-  the user, who decided on 2026-11-15 that they should wait in the input
-  order while the pointer is on (the user's decision). Planned in
-  TASK-228.13.[^task-228-11][^task-228-13]
+  client's call sent during a click's glide would otherwise run before the
+  click: keys delivered first (TASK-228.11), or a menu choice finding no
+  menu yet and failing with `no_open_menu` (TASK-228.13; the tests show
+  both without the order). So "right click, then choose an item" works
+  across clients: the choice runs once the click is delivered and its menu
+  open. The menu tools joined on the user's decision of 2026-11-15, which
+  changes how they wait: `choose_menu_item`'s `timeout_ms` counts from its
+  turn, not from its arrival, and while it waits for a menu that never
+  opens, later input waits behind it (up to its timeout; chosen by Claude,
+  not yet confirmed by the user: the alternative is to take the turn and
+  then wait for the menu outside the order). `list_menu` and
+  `hit_test` read only and stay out. An uncontended call awaits nothing;
+  with the pointer off the tools run as before, and the menu tools never
+  wait for a call holding the order. The order is not reentrant: nothing
+  run in it calls another tool that uses it. Checked at runtime on
+  2026-11-15 with two clients: a right click on a page with the 600 ms
+  staging glide, and 150 ms into it `choose_menu_item` "Reload" with
+  `timeout_ms` 100 from the other client chose it (answered 3 ms after the
+  click; the page reloaded), then the same with `close_menu` (`closed`
+  true); Detour stayed in the background.[^task-228-11][^task-228-13]
 - **Typing** (`type_text`, `press_key`) outlines what takes the keys: a
   control (a field editor's field), or a page's focused element
   (`AutomationInput.focusedElementRect`, in the client content world,
@@ -133,7 +146,11 @@ make no overlay; on: the 150 ms glide before the click, the overlay a
 click-through child that is never key or main and no listed window, the
 app's key and main windows unchanged; the staging glide and Reduce Motion;
 `hit_test`, the first responder and a click through the pointer unchanged;
-keys sent during a click's glide arriving after it; a view put over the
+keys sent during a click's glide arriving after it; `choose_menu_item`
+and `close_menu` sent during a right click's glide, with a timeout shorter
+than the glide, acting on the menu that click opens, and with the pointer
+off a click then a menu choice as before and the menu tools answering
+while another call holds the order (both fail without the order); a view put over the
 point during the glide getting the click while the Automation-section gate
 still refuses; the outline on a page field and on a native field; a window
 screenshot without the arrow; minimize and close; the setting's defaults,

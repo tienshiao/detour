@@ -213,8 +213,11 @@ extension AutomationTools {
     /// Runs an input tool's call after the input calls that came before it
     /// have delivered their events, while the agent pointer is on: a click
     /// then waits for its glide, and another client's call arriving
-    /// meanwhile must not overtake it. Off, calls run as they always did
-    /// (an uncontended call never waits either way).
+    /// meanwhile must not overtake it. `click`, `type_text`, `press_key`
+    /// (TASK-228.11), `choose_menu_item` and `close_menu` (TASK-228.13): a
+    /// menu choice sent during a click's glide acts on the menu that click
+    /// opens. Off, calls run as they always did (an uncontended call never
+    /// waits either way).
     func inArrivalOrder<T>(_ body: () async throws -> T) async throws -> T {
         guard environment.showsAgentPointer() else { return try await body() }
         return try await inputOrder.run(body)
@@ -554,11 +557,15 @@ extension AutomationTools {
             inputSchema: MCPSchema.input([]),
             outputSchema: MCPSchema.output(["closed": MCPSchema.booleanType]),
             annotations: ["readOnlyHint": false, "destructiveHint": false, "idempotentHint": true],
-            handler: { _ in
-                guard AutomationMenuTracker.shared.topMenu != nil else {
-                    throw AutomationToolError(.noOpenMenu, "No menu is open")
+            handler: { [self] _ in
+                // In the input order while the agent pointer is on
+                // (TASK-228.13): a menu an earlier click opens is there to close.
+                try await inArrivalOrder {
+                    guard AutomationMenuTracker.shared.topMenu != nil else {
+                        throw AutomationToolError(.noOpenMenu, "No menu is open")
+                    }
+                    return ["closed": .bool(await AutomationMenuTracker.shared.closeAll())]
                 }
-                return ["closed": .bool(await AutomationMenuTracker.shared.closeAll())]
             })
     }
 
@@ -584,62 +591,68 @@ extension AutomationTools {
             ]),
             annotations: ["readOnlyHint": false, "destructiveHint": true],
             handler: { [self] arguments in
-                let locators = ["title", "index", "identifier"].filter { arguments.has($0) }
-                guard locators.count == 1 else {
-                    throw AutomationToolError(.invalidArguments, "Give exactly one of title, index or identifier")
-                }
-                let root = try await openMenu(timeout: try arguments.int("timeout_ms") ?? 2000)
-                // Choosing is input: the gates on Settings apply (TASK-228.7).
-                switch AutomationMenuTracker.shared.settingsReach(of: root) {
-                case .automationSection:
-                    throw AutomationToolError(.gateClosed,
-                                              "The open menu is over Settings' Automation section, which is the user's; "
-                                                + "no tool changes it")
-                case .settings where !environment.isTestRun:
-                    throw AutomationToolError(.gateClosed,
-                                              "The open menu is over Settings, which takes menu choices only in a test run")
-                case .settings, .none:
-                    break
-                }
-                let menu = try submenu(of: root, path: try arguments.stringArray("path") ?? [])
-                let allowPrivate = privateAllowed
-                let index: Int
-                if let title = try arguments.string("title") {
-                    guard let found = menu.items.firstIndex(where: {
-                        !$0.isSeparatorItem && !AutomationMenus.namesUnreachableWindow($0, allowPrivate: allowPrivate)
-                            && AutomationMenus.titlesMatch(AutomationMenus.displayTitle($0), title)
-                    }) else {
-                        throw AutomationToolError(.unknownMenuItem, "No \"\(title)\" in the menu")
+                // In the input order while the agent pointer is on
+                // (TASK-228.13): it runs once every earlier click and key is
+                // delivered, so it chooses from the menu an earlier click
+                // opened; timeout_ms counts from then.
+                try await inArrivalOrder {
+                    let locators = ["title", "index", "identifier"].filter { arguments.has($0) }
+                    guard locators.count == 1 else {
+                        throw AutomationToolError(.invalidArguments, "Give exactly one of title, index or identifier")
                     }
-                    index = found
-                } else if let identifier = try arguments.string("identifier") {
-                    guard let found = menu.items.firstIndex(where: { $0.identifier?.rawValue == identifier }) else {
-                        throw AutomationToolError(.unknownMenuItem, "No item \(identifier) in the menu")
+                    let root = try await openMenu(timeout: try arguments.int("timeout_ms") ?? 2000)
+                    // Choosing is input: the gates on Settings apply (TASK-228.7).
+                    switch AutomationMenuTracker.shared.settingsReach(of: root) {
+                    case .automationSection:
+                        throw AutomationToolError(.gateClosed,
+                                                  "The open menu is over Settings' Automation section, which is the user's; "
+                                                    + "no tool changes it")
+                    case .settings where !environment.isTestRun:
+                        throw AutomationToolError(.gateClosed,
+                                                  "The open menu is over Settings, which takes menu choices only in a test run")
+                    case .settings, .none:
+                        break
                     }
-                    index = found
-                } else {
-                    let wanted = try arguments.requiredInt("index")
-                    guard menu.items.indices.contains(wanted) else {
-                        throw AutomationToolError(.unknownMenuItem, "No item at index \(wanted)")
+                    let menu = try submenu(of: root, path: try arguments.stringArray("path") ?? [])
+                    let allowPrivate = privateAllowed
+                    let index: Int
+                    if let title = try arguments.string("title") {
+                        guard let found = menu.items.firstIndex(where: {
+                            !$0.isSeparatorItem && !AutomationMenus.namesUnreachableWindow($0, allowPrivate: allowPrivate)
+                                && AutomationMenus.titlesMatch(AutomationMenus.displayTitle($0), title)
+                        }) else {
+                            throw AutomationToolError(.unknownMenuItem, "No \"\(title)\" in the menu")
+                        }
+                        index = found
+                    } else if let identifier = try arguments.string("identifier") {
+                        guard let found = menu.items.firstIndex(where: { $0.identifier?.rawValue == identifier }) else {
+                            throw AutomationToolError(.unknownMenuItem, "No item \(identifier) in the menu")
+                        }
+                        index = found
+                    } else {
+                        let wanted = try arguments.requiredInt("index")
+                        guard menu.items.indices.contains(wanted) else {
+                            throw AutomationToolError(.unknownMenuItem, "No item at index \(wanted)")
+                        }
+                        index = wanted
                     }
-                    index = wanted
+                    let item = menu.items[index]
+                    guard !AutomationMenus.namesUnreachableWindow(item, allowPrivate: allowPrivate) else {
+                        throw AutomationMenus.refusal(for: item)
+                    }
+                    guard !item.isSeparatorItem, item.submenu == nil else {
+                        throw AutomationToolError(.unknownMenuItem, "\"\(AutomationMenus.displayTitle(item))\" is not an item that can be chosen")
+                    }
+                    guard item.isEnabled, !item.isHidden else {
+                        throw AutomationToolError(.menuItemDisabled, "\"\(item.title)\" is disabled")
+                    }
+                    // While the menu is still tracking: WebKit's items need their live menu.
+                    let completed = await AutomationInput.runFromRunLoop(wait: menuActionWait) {
+                        menu.performActionForItem(at: index)
+                        root.cancelTracking()
+                    }
+                    return ["title": .string(AutomationMenus.displayTitle(item)), "completed": .bool(completed)]
                 }
-                let item = menu.items[index]
-                guard !AutomationMenus.namesUnreachableWindow(item, allowPrivate: allowPrivate) else {
-                    throw AutomationMenus.refusal(for: item)
-                }
-                guard !item.isSeparatorItem, item.submenu == nil else {
-                    throw AutomationToolError(.unknownMenuItem, "\"\(AutomationMenus.displayTitle(item))\" is not an item that can be chosen")
-                }
-                guard item.isEnabled, !item.isHidden else {
-                    throw AutomationToolError(.menuItemDisabled, "\"\(item.title)\" is disabled")
-                }
-                // While the menu is still tracking: WebKit's items need their live menu.
-                let completed = await AutomationInput.runFromRunLoop(wait: menuActionWait) {
-                    menu.performActionForItem(at: index)
-                    root.cancelTracking()
-                }
-                return ["title": .string(AutomationMenus.displayTitle(item)), "completed": .bool(completed)]
             })
     }
 }

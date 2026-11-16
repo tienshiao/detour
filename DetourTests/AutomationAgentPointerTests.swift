@@ -156,6 +156,41 @@ nonisolated final class AutomationAgentPointerTests: XCTestCase {
         override func mouseUp(with event: NSEvent) {}
     }
 
+    @MainActor private final class Receiver: NSObject {
+        var actions: [String] = []
+        @objc func chosen(_ sender: Any?) { actions.append("chosen") }
+    }
+
+    /// A native view with a context menu: a right click runs it.
+    @MainActor private final class MenuView: NSView {
+        var contextMenu: NSMenu?
+        override func menu(for event: NSEvent) -> NSMenu? { contextMenu }
+    }
+
+    /// Holds the input order, as a call still delivering would.
+    @MainActor private final class Hold {
+        var continuation: CheckedContinuation<Void, Never>?
+        var offReplies: [JSONValue]?
+        var finished = false
+    }
+
+    /// A view with a one-item context menu ("First") in the window, and a
+    /// right click at its centre.
+    @MainActor private func addMenuView(_ f: Fixture) throws -> (MenuView, Receiver, JSONValue) {
+        let content = try XCTUnwrap(f.window.window?.contentView)
+        let receiver = Receiver()
+        let menuView = MenuView(frame: NSRect(x: content.bounds.midX - 60, y: content.bounds.midY - 20,
+                                              width: 120, height: 40))
+        let menu = NSMenu(title: "Native Menu")
+        let item = NSMenuItem(title: "First", action: #selector(Receiver.chosen(_:)), keyEquivalent: "")
+        item.target = receiver
+        menu.addItem(item)
+        menuView.contextMenu = menu
+        content.addSubview(menuView)
+        let (x, y) = try contentCentre(of: menuView)
+        return (menuView, receiver, ["window_id": .int(f.windowID), "x": .double(x), "y": .double(y), "button": "right"])
+    }
+
     // MARK: Off
 
     /// Off, a click and typing wait for nothing and draw nothing (AC #4, #6):
@@ -297,6 +332,100 @@ nonisolated final class AutomationAgentPointerTests: XCTestCase {
         let down = try XCTUnwrap(types.firstIndex(of: "mousedown"))
         let key = try XCTUnwrap(types.firstIndex(of: "keydown"))
         XCTAssertLessThan(down, key, "the click that came first is delivered first: \(types)")
+    }
+
+    /// A menu choice keeps the input order too while the pointer is on
+    /// (TASK-228.13): choose_menu_item and close_menu sent while a right click
+    /// glides run once that click is delivered, so they act on the menu it
+    /// opens. Their timeouts are shorter than the glide: run at once, as
+    /// before, they find no menu (no_open_menu).
+    @MainActor func testWithThePointerOnAMenuChoiceWaitsForTheClickBeforeIt() async throws {
+        let f = try await makeFixture()
+        f.waits.realWait = .milliseconds(600)
+        let (menuView, receiver, rightClick) = try addMenuView(f)
+        defer { menuView.removeFromSuperview() }
+        let server = f.server
+        let clickTool = try XCTUnwrap(server.tools.first { $0.name == "click" })
+
+        let clicked = Task { await server.call(clickTool, arguments: rightClick) }
+        try await waitUntil("the glide to start", timeout: 3) { f.waits.durations.count == 1 }
+        let (chosen, chooseError) = try await call(f, "choose_menu_item", ["title": "First", "timeout_ms": 150])
+        let clickReply = await clicked.value
+        let actionsAfterChoice = receiver.actions
+
+        let clickedAgain = Task { await server.call(clickTool, arguments: rightClick) }
+        try await waitUntil("the second glide to start", timeout: 3) { f.waits.durations.count == 2 }
+        let (closed, closeError) = try await call(f, "close_menu")
+        let againReply = await clickedAgain.value
+        let openAfterClose = AutomationMenuTracker.shared.topMenu != nil
+        await AutomationMenuTracker.shared.closeAll()
+
+        XCTAssertNotEqual(clickReply["isError"], true, clickReply.jsonString)
+        XCTAssertFalse(chooseError, "the choice waited for the click's menu: \(chosen.jsonString)")
+        XCTAssertEqual(chosen["title"], "First")
+        XCTAssertEqual(actionsAfterChoice, ["chosen"], "the item's action ran")
+        XCTAssertNotEqual(againReply["isError"], true, againReply.jsonString)
+        XCTAssertFalse(closeError, "close_menu waited for the click's menu: \(closed.jsonString)")
+        XCTAssertEqual(closed["closed"], true)
+        XCTAssertFalse(openAfterClose)
+        XCTAssertEqual(receiver.actions, ["chosen"], "closing chose nothing")
+    }
+
+    /// With the pointer off a click then a menu choice run as before
+    /// (TASK-228.13): no glide, and the menu tools never wait in the input
+    /// order: while another call holds it they answer at once; with the
+    /// pointer on the same call waits until the order is free.
+    @MainActor func testWithThePointerOffMenuToolsNeverWaitInTheInputOrder() async throws {
+        let f = try await makeFixture(pointerOn: false)
+        let (menuView, receiver, rightClick) = try addMenuView(f)
+        defer { menuView.removeFromSuperview() }
+        let (clicked, clickError) = try await call(f, "click", rightClick)
+        let (chosen, chooseError) = try await call(f, "choose_menu_item", ["title": "First"])
+        await AutomationMenuTracker.shared.closeAll()
+        XCTAssertFalse(clickError, clicked.jsonString)
+        XCTAssertFalse(chooseError, chosen.jsonString)
+        try await waitUntil("the menu item's action", timeout: 3) { receiver.actions == ["chosen"] }
+        XCTAssertEqual(f.waits.durations, [], "nothing waited for a glide")
+
+        let hold = Hold()
+        let order = f.tools.inputOrder
+        let holder = Task {
+            try await order.run { await withCheckedContinuation { hold.continuation = $0 } }
+        }
+        // Released however the test ends, so a failure leaves no call suspended.
+        addTeardownBlock { @MainActor in
+            hold.continuation?.resume()
+            hold.continuation = nil
+        }
+        try await waitUntil("the order to be held", timeout: 3) { hold.continuation != nil }
+        let server = f.server
+        let closeTool = try XCTUnwrap(server.tools.first { $0.name == "close_menu" })
+        let chooseTool = try XCTUnwrap(server.tools.first { $0.name == "choose_menu_item" })
+        // In a task, so a regression that makes them wait fails here (and the
+        // teardown block frees them) instead of hanging the test.
+        Task {
+            hold.offReplies = [await server.call(closeTool, arguments: [:]),
+                               await server.call(chooseTool, arguments: ["title": "First", "timeout_ms": 0])]
+        }
+        try await waitUntil("the menu tools to answer while the order is held", timeout: 3) { hold.offReplies != nil }
+        let offReplies = try XCTUnwrap(hold.offReplies)
+        XCTAssertEqual(offReplies[0]["structuredContent"]?["error"]?["code"], "no_open_menu")
+        XCTAssertEqual(offReplies[1]["structuredContent"]?["error"]?["code"], "no_open_menu")
+
+        f.flag.on = true
+        let waiting = Task {
+            let reply = await server.call(closeTool, arguments: [:])
+            hold.finished = true
+            return reply
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        let finishedWhileHeld = hold.finished
+        hold.continuation?.resume()
+        hold.continuation = nil
+        try await holder.value
+        let reply = await waiting.value
+        XCTAssertFalse(finishedWhileHeld, "with the pointer on, close_menu waits for the call before it")
+        XCTAssertEqual(reply["structuredContent"]?["error"]?["code"], "no_open_menu")
     }
 
     /// The glide is a wait between the click's checks and its delivery, so
