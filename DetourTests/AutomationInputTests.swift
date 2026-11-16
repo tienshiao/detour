@@ -846,4 +846,67 @@ nonisolated final class AutomationInputTests: XCTestCase {
         XCTAssertNil(NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .eventTracking, dequeue: false),
                      "no release is left queued")
     }
+
+    /// Rows of switches, as a list in Settings may have.
+    @MainActor private final class SwitchRows: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+        let receiver = Receiver()
+        var switches: [Int: NSSwitch] = [:]
+        func numberOfRows(in tableView: NSTableView) -> Int { 3 }
+        func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+            let cell = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 30))
+            let toggle = NSSwitch(frame: NSRect(x: 8, y: 4, width: 40, height: 22))
+            toggle.target = receiver
+            toggle.action = #selector(Receiver.chosen(_:))
+            cell.addSubview(toggle)
+            switches[row] = toggle
+            return cell
+        }
+    }
+
+    /// A control in a table's row still takes a click through the window
+    /// while the table cooperates with the endpoint's press (the flag is set
+    /// on that route too, TASK-228.12): a switch in a row toggles and sends
+    /// its action, the window stays not key and no release is left queued;
+    /// a click beside it selects the row.
+    @MainActor func testASwitchInATableRowTogglesAndTheRowSelects() async throws {
+        try XCTSkipIf(NSApp.isActive, "needs the test host in the background, as Detour is when an agent drives it")
+        let f = try await makeFixture()
+        let window = try XCTUnwrap(f.window.window)
+        let content = try XCTUnwrap(window.contentView)
+        let rows = SwitchRows()
+        let table = AutomationTableView(frame: NSRect(x: 0, y: 0, width: 200, height: 90))
+        table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("c")))
+        table.headerView = nil
+        table.rowHeight = 30
+        table.dataSource = rows
+        table.delegate = rows
+        let scroll = NSScrollView(frame: NSRect(x: content.bounds.midX - 100, y: content.bounds.midY - 45,
+                                                width: 200, height: 90))
+        scroll.documentView = table
+        content.addSubview(scroll)
+        defer { scroll.removeFromSuperview() }
+        table.reloadData()
+        content.layoutSubtreeIfNeeded()
+        let toggle = try XCTUnwrap(rows.switches[1])
+        XCTAssertEqual(toggle.state, .off)
+
+        let clicked = try await clickCentre(f, of: toggle)
+        XCTAssertEqual(clicked["view"], "NSSwitch")
+        XCTAssertEqual(toggle.state, .on, "the switch in the row toggled")
+        XCTAssertEqual(rows.receiver.actions, ["chosen"], "and sent its action")
+        XCTAssertFalse(window.isKeyWindow, "the window stayed not key")
+        XCTAssertNil(AutomationInput.viewTakingPress)
+        XCTAssertNil(NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .eventTracking, dequeue: false),
+                     "no release is left queued")
+
+        let rect = table.rect(ofRow: 2)
+        let beside = table.convert(NSPoint(x: rect.maxX - 20, y: rect.midY), to: content)
+        let (selected, isError) = try await call(f, "click", [
+            "window_id": .int(f.windowID), "x": .double(beside.x),
+            "y": .double(content.isFlipped ? beside.y : content.bounds.height - beside.y),
+        ])
+        XCTAssertFalse(isError, selected.jsonString)
+        XCTAssertEqual(table.selectedRow, 2, "a click beside the switch selects the row")
+        XCTAssertFalse(window.isKeyWindow)
+    }
 }

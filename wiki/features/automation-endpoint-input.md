@@ -301,8 +301,10 @@ other-Space guard cannot be tested in the host.
   row's label, went through the window and reached the table up the
   responder chain, where the same check stopped it), and one on a Spaces,
   Profiles or Site Search row selected nothing. All three are plain
-  `NSTableView`s, and each delays window ordering, so it is not only a
-  drag source that does. The Shortcuts and Link Routes lists select no row
+  `NSTableView`s and each delayed window ordering for the press (so the
+  press stayed on the direct route); Spaces is a drag source, but Profiles,
+  Site Search and the Archived Tabs list are not, so a table that is not a
+  drag source delays it too. The Shortcuts and Link Routes lists select no row
   by design (`shouldSelectRow` false); their controls take the press
   themselves. The Downloads popover's list is out of reach (popovers are
   not addressable), and is an `AutomationTableView` all the same. See also [AppKit
@@ -325,7 +327,8 @@ other-Space guard cannot be tested in the host.
 point; typing; context menus; native views; `NSSwitch` and `NSPopUpButton`
 with the window not key; right and left clicks on sidebar rows, the
 hover-only close button, pinned entries, folders, the New Tab row; an
-Archived Tabs row and a command palette row, TASK-228.12;
+Archived Tabs row, a command palette row and a switch inside a table's
+row, TASK-228.12;
 TASK-228.10's two windows on one tab; the input errors), and
 `AutomationWindowKindsTests`' Settings list row (TASK-228.12, which also
 checks that every Settings pane's table is an `AutomationTableView`). The

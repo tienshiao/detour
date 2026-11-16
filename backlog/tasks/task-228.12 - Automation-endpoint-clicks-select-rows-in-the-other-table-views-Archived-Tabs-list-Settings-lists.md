@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T04:51:00Z'
-updated_date: '2026-11-16T06:51:00Z'
+updated_date: '2026-11-16T06:56:00Z'
 labels:
   - automation
 dependencies: []
@@ -65,6 +65,16 @@ Tests: new AutomationInputTests.testAnArchivedTabsRowAndACommandPaletteRowTakeAC
 Runtime (Debug build from .derived, DETOUR_MCP=1, DETOUR_DATA_DIR=DetourVerify-22812, scripts/detour-mcp). Background (app_active false, window not key throughout): Archived Tabs row (view ArchiveTableView) restored the closed tab twice; palette row (view NSTextField) switched to its tab; sidebar row selected its tab (regression); Settings > Search row (Amazon) selected (inactive highlight), Settings window not key. Detour active (set_window_frame activate=true, window key): Archived Tabs row restored; palette row switched to its tab; Settings > Search row (GitHub) selected. Screenshots checked. Not checked at runtime: Spaces/Profiles lists (one space and one profile in the fresh data dir; the test covers Spaces), Extensions list (no extension), a person's real (HID) click or drag in any of these tables (person's path unchanged by construction).
 
 Code review (/code-review medium --fix, forked): 5 findings. Fixed: the Downloads popover's table is now an AutomationTableView too (it is out of the endpoint's reach, popovers are not addressable, but every Detour table now shares the class; no test of its own); the deliversThroughWindow comment no longer says the flag belongs to the direct route only. Kept: the flag on the window route (intended; AppKit's routing asks the HIT view's needsPanelToBecomeKey, and a control inside a row is not the table; in the background the window never becomes key by an endpoint click anyway (TASK-228.10), and with Detour active bringForward made it key before the press; at runtime the Settings window stayed key after an active row click). Rejected: 'task file hand-edited' (all edits went through the backlog CLI); the duplicated row-to-point helper in two test files (minor). After the fixes: AutomationInputTests 17/0 (one earlier run had testARightClickOnASidebarRowsLabelOrIconOpensTheRowsMenu fail at list_menu, no_open_menu; a right click is untouched by this change, and the rerun passed 17/0: the known flake TASK-228.9 noted), AutomationWindowKindsTests 11/0, DownloadFlightStartTests and DownloadManagerTests passed (0 failures).
+
+Follow-up after the review (second commit):
+- New AutomationInputTests.testASwitchInATableRowTogglesAndTheRowSelects: an NSSwitch inside an AutomationTableView row (routed through the window with the table's flag set) toggles and sends its action, the window stays not key, no release queued; a click beside it selects the row. Closes the reviewer's question about controls in rows on the window route.
+- The Settings test now clicks a row in Spaces, Profiles and Site Search (each selected, window not key, app inactive) and switches panes through the toolbar item (showPane shows the window, which activates the app). It skips when the test host is active; macOS grants the test host's activation only sometimes, so in a run after other Settings tests it can skip (it did once in four runs; standalone it ran: AutomationWindowKindsTests 11/0, nothing skipped).
+- Extensions list: never clicked (no extension in the test host or the runtime data dir); its result is inferred from the shared class and its setup being the same as Profiles'.
+- Wiki wording corrected: Spaces' list is a drag source; Profiles, Site Search and the archive list are not and still delayed window ordering for the press.
+- Runs after these changes: AutomationInputTests 18/0, AutomationWindowKindsTests 11/0 (standalone, no skip) and 11 with the Settings test skipped (with other suites), AutomationAgentPointerTests 14/0, SidebarPageFocusTests 27/0.
+- The runtime pass ran before the review's two small fixes (the Downloads popover's table class, a comment) and before this test-only follow-up.
+- Seen at runtime, not investigated (out of scope): select_tab on beta followed by Cmd+W closed gamma (the select_tab output was discarded, so whether it selected is unverified).
+Chosen by Claude (not yet confirmed by the user): the press flag is set on both routes (direct and through the window); alternative: keep any press whose hit view is inside a table on the direct route. Chosen by Claude (not yet confirmed by the user): every Detour table is made from AutomationTableView, including the Shortcuts and Link Routes lists (no selectable rows) and the Downloads popover (out of reach); alternative: only the tables with selectable rows or click actions.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

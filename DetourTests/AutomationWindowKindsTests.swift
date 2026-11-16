@@ -602,35 +602,48 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
         try XCTSkipIf(NSApp.isActive, "needs the test host in the background, as Detour is when an agent drives it")
         let f = try makeFixture(settings: true)
         let settings = try XCTUnwrap(f.settings)
+        // Through the toolbar, as a person switches: `showPane` also shows
+        // the window, which activates the app.
+        let toolbar = try XCTUnwrap(settings.window?.toolbar)
+        func show(_ pane: String) throws {
+            let item = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == pane }, pane)
+            XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(item.action), to: item.target, from: item), pane)
+        }
         for pane in ["general", "spaces", "links", "quickdetour", "profiles", "search", "shortcuts", "extensions",
                      "contentblocker"] {
-            XCTAssertTrue(settings.showPane(named: pane), pane)
+            try show(pane)
             for table in settings.visiblePaneTables {
                 XCTAssertTrue(table is AutomationTableView, "\(pane)'s \(type(of: table)) takes the endpoint's press")
             }
         }
 
-        XCTAssertTrue(settings.showPane(named: "spaces"))
-        let settingsWindow = try await settledWindow(settings)
-        let table = try XCTUnwrap(settings.visiblePaneTables.first)
-        XCTAssertGreaterThanOrEqual(table.numberOfRows, 2, "the test host's spaces and the fixture's")
-        let target = table.selectedRow == 1 ? 0 : 1
-        let content = try XCTUnwrap(settingsWindow.contentView)
-        let rect = table.rect(ofRow: target)
-        let point = table.convert(NSPoint(x: rect.minX + min(60, rect.width / 3), y: rect.midY), to: content)
-        XCTAssertFalse(settingsWindow.isKeyWindow)
-
         let (tools, testRun) = testRunServer(f)
-        let clicked = try await ok(testRun, "click", ["window_id": .int(tools.windowIDs.id(for: settings)),
-                                                      "x": .double(point.x),
-                                                      "y": .double(content.isFlipped ? point.y : content.bounds.height - point.y)])
-        XCTAssertEqual(clicked["view"], "AutomationTableView")
-        XCTAssertEqual(table.selectedRow, target, "the clicked row is selected")
-        XCTAssertFalse(NSApp.isActive, "the click did not activate the app")
-        XCTAssertFalse(settingsWindow.isKeyWindow, "nor make the window key")
-        XCTAssertTrue(table.needsPanelToBecomeKey, "outside the endpoint's press the table is as AppKit made it")
-        XCTAssertNil(AutomationInput.viewTakingPress)
-        XCTAssertNil(NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .eventTracking, dequeue: false),
-                     "the table's tracking took the release")
+        let settingsID: JSONValue = .int(tools.windowIDs.id(for: settings))
+        // The lists with two rows or more in the test host (the fixture's
+        // space, the private profile, the built-in site searches).
+        for pane in ["spaces", "profiles", "search"] {
+            try show(pane)
+            let settingsWindow = try await settledWindow(settings)
+            let table = try XCTUnwrap(settings.visiblePaneTables.first, pane)
+            XCTAssertGreaterThanOrEqual(table.numberOfRows, 2, pane)
+            let target = table.selectedRow == 1 ? 0 : 1
+            let content = try XCTUnwrap(settingsWindow.contentView)
+            let rect = table.rect(ofRow: target)
+            let point = table.convert(NSPoint(x: rect.minX + min(60, rect.width / 3), y: rect.midY), to: content)
+            XCTAssertFalse(settingsWindow.isKeyWindow, pane)
+            try XCTSkipIf(NSApp.isActive, "the test host became active (\(pane)): not a background click")
+
+            let clicked = try await ok(testRun, "click", ["window_id": settingsID, "x": .double(point.x),
+                                                          "y": .double(content.isFlipped ? point.y
+                                                                       : content.bounds.height - point.y)])
+            XCTAssertEqual(clicked["view"], "AutomationTableView", pane)
+            XCTAssertEqual(table.selectedRow, target, "\(pane): the clicked row is selected")
+            XCTAssertFalse(NSApp.isActive, "\(pane): the click did not activate the app")
+            XCTAssertFalse(settingsWindow.isKeyWindow, "\(pane): nor make the window key")
+            XCTAssertTrue(table.needsPanelToBecomeKey, "outside the endpoint's press the table is as AppKit made it")
+            XCTAssertNil(AutomationInput.viewTakingPress)
+            XCTAssertNil(NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .eventTracking,
+                                         dequeue: false), "\(pane): the table's tracking took the release")
+        }
     }
 }
