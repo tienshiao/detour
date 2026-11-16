@@ -27,7 +27,14 @@ nonisolated final class EasyListParser: Sendable {
     /// 4 (TASK-351): a network rule with an option the parser does not
     /// support (`$removeparam`, `$method=`, `$redirect-rule`, ...) is left
     /// out, block rule and exception alike (`isSupportedOption`).
-    static let rulesFormatVersion = 4
+    ///
+    /// 5 (TASK-371): uBlock Origin's and AdGuard's short option names
+    /// (`$1p`, `$3p`, `$xhr`, `$frame`, `$css`, `$doc`, `$beacon`, `$from=`) compile as
+    /// the options they stand for (`canonicalOption`); their other modifiers
+    /// written without a value (`$urlblock`, `$jsinject`, `$popunder`, ...)
+    /// leave the rule out instead of reading as part of its pattern;
+    /// `$match-case` makes the rule case-sensitive.
+    static let rulesFormatVersion = 5
 
     struct ParseResult {
         let rules: [ContentRule]
@@ -443,6 +450,9 @@ nonisolated final class EasyListParser: Sendable {
             let pageFilters = convertPatternToRegexes(line)
             guard !pageFilters.isEmpty else { return nil }
             trigger["if-top-url"] = pageFilters
+            if optionTokens(in: line).contains("match-case") {
+                trigger["top-url-filter-is-case-sensitive"] = true
+            }
         }
         return [
             "trigger": trigger,
@@ -450,11 +460,12 @@ nonisolated final class EasyListParser: Sendable {
         ]
     }
 
-    /// The rule's options, trimmed and lower-cased; empty when it has none.
+    /// The rule's options, trimmed, lower-cased and under their Adblock Plus
+    /// names (`canonicalOption`); empty when it has none.
     private func optionTokens(in line: String) -> [String] {
         guard let dollarIndex = findOptionSeparator(in: line) else { return [] }
         return line[line.index(after: dollarIndex)...].split(separator: ",").map {
-            $0.trimmingCharacters(in: .whitespaces).lowercased()
+            Self.canonicalOption($0.trimmingCharacters(in: .whitespaces).lowercased())
         }
     }
 
@@ -491,17 +502,8 @@ nonisolated final class EasyListParser: Sendable {
     /// or none sanitises).
     private func buildTrigger(from line: String, urlFilter: String) -> ContentRule? {
         var trigger: ContentRule = ["url-filter": urlFilter]
-        var options: [String] = []
-
-        // Extract options after $
-        let patternLine: String
-        if let dollarIndex = findOptionSeparator(in: line) {
-            patternLine = String(line[line.startIndex..<dollarIndex])
-            let optionString = String(line[line.index(after: dollarIndex)...])
-            options = optionString.split(separator: ",").map(String.init)
-        } else {
-            patternLine = line
-        }
+        let patternLine = patternPart(of: line)
+        let options = optionTokens(in: line)
 
         // Process domain options
         var domainEntries: [String] = []
@@ -509,12 +511,10 @@ nonisolated final class EasyListParser: Sendable {
         var excludeResourceTypes: [String] = []
         var thirdParty: Bool?
 
-        for option in options {
-            let opt = option.trimmingCharacters(in: .whitespaces)
-            let lower = opt.lowercased()
-
+        for lower in options {
             if lower.hasPrefix("domain=") {
-                let domainList = String(opt.dropFirst("domain=".count))
+                // Lower-cased: `sanitizeDomain` lower-cases every domain anyway.
+                let domainList = String(lower.dropFirst("domain=".count))
                 domainEntries += domainList.split(separator: "|").map(String.init)
             } else if lower == "third-party" {
                 thirdParty = true
@@ -542,8 +542,11 @@ nonisolated final class EasyListParser: Sendable {
             trigger["load-type"] = tp ? ["third-party"] : ["first-party"]
         }
 
-        // Case sensitivity
-        if patternLine.hasPrefix("||") || patternLine.contains("*") {
+        // Case sensitivity: WebKit's default is case-insensitive, as filter
+        // rules are unless they say `$match-case`.
+        if options.contains("match-case") {
+            trigger["url-filter-is-case-sensitive"] = true
+        } else if patternLine.hasPrefix("||") || patternLine.contains("*") {
             trigger["url-filter-is-case-sensitive"] = false
         }
 
@@ -570,7 +573,7 @@ nonisolated final class EasyListParser: Sendable {
     private static func isOptionList(_ text: Substring) -> Bool {
         splitAtUnescapedCommas(text).allSatisfy { token in
             let option = token.trimmingCharacters(in: .whitespaces).lowercased()
-            if isSupportedOption(option) { return true }
+            if isSupportedOption(canonicalOption(option)) { return true }
             let name = option.hasPrefix("~") ? option.dropFirst() : Substring(option)
             if let equals = name.firstIndex(of: "=") {
                 return isOptionName(name[..<equals])
@@ -612,6 +615,7 @@ nonisolated final class EasyListParser: Sendable {
     /// pattern matches: `parseLine` leaves such a rule out. Adblock Plus,
     /// uBlock Origin and AdGuard also discard a rule with an option they do
     /// not know.
+    /// `option` is already under its Adblock Plus name (`canonicalOption`).
     private static func isSupportedOption(_ option: String) -> Bool {
         let name = option.hasPrefix("~") ? option.dropFirst() : Substring(option)
         if let equals = name.firstIndex(of: "=") {
@@ -637,10 +641,52 @@ nonisolated final class EasyListParser: Sendable {
     /// Listed so the `$` before one is read as the option separator and the
     /// rule is left out; with a value (`$removeparam=x`) every unsupported
     /// option is recognised already.
+    ///
+    /// The rest (TASK-371) are the other modifiers uBlock Origin's "Static
+    /// filter syntax" and AdGuard's "How to create your own ad filters"
+    /// document that the parser cannot carry out: AdGuard's exception-only
+    /// `$urlblock`, `$jsinject`, `$content`, `$extension`, `$network`; uBO's
+    /// `$popunder`, `$inline-script`, `$inline-font`, `$cname`, the strict
+    /// party options and the deprecated `$empty`, `$mp4`, `$queryprune`;
+    /// AdGuard's `$xmlprune` and `$referrerpolicy`. A bare word not listed
+    /// here or in `knownOptions` stays part of the pattern
+    /// (`example.com/hit$value`), so a modifier added to those blockers later
+    /// reads as a literal pattern until it is listed.
     private static let unsupportedModifiers: Set<String> = [
         "removeparam", "removeheader", "permissions", "header", "replace", "jsonprune",
         "urltransform", "cookie", "hls", "stealth", "redirect-rule",
+        "urlblock", "jsinject", "content", "extension", "network",
+        "popunder", "inline-script", "inline-font", "cname",
+        "strict1p", "strict3p", "strict-first-party", "strict-third-party",
+        "empty", "mp4", "queryprune", "xmlprune", "referrerpolicy",
     ]
+
+    /// uBlock Origin's and AdGuard's short names for Adblock Plus options
+    /// written without a value. `1p` and `first-party` are `~third-party`.
+    private static let optionAliases: [String: String] = [
+        "1p": "~third-party", "first-party": "~third-party", "3p": "third-party",
+        "xhr": "xmlhttprequest", "frame": "subdocument", "css": "stylesheet", "doc": "document",
+        "beacon": "ping",
+    ]
+
+    /// The same for options written with a value: `from=` is `domain=`.
+    private static let valueOptionAliases: [String: String] = ["from": "domain"]
+
+    /// `option` (trimmed, lower-cased) under its Adblock Plus name, `~` kept
+    /// (`~1p` is `third-party`): every reader of a rule's options goes
+    /// through it, so an alias the parser accepts also has the effect of the
+    /// option it stands for. Any other option is returned unchanged.
+    private static func canonicalOption(_ option: String) -> String {
+        let negated = option.hasPrefix("~")
+        let body = negated ? String(option.dropFirst()) : option
+        if let equals = body.firstIndex(of: "=") {
+            guard let name = valueOptionAliases[String(body[..<equals])] else { return option }
+            return (negated ? "~" : "") + name + body[equals...]
+        }
+        guard let canonical = optionAliases[body] else { return option }
+        guard negated else { return canonical }
+        return canonical.hasPrefix("~") ? String(canonical.dropFirst()) : "~" + canonical
+    }
 
     /// Returns one or more regex strings (multiple when disjunctions are expanded).
     private func convertPatternToRegexes(_ line: String) -> [String] {

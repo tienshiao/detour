@@ -356,6 +356,180 @@ nonisolated final class ContentBlockerExceptionTests: XCTestCase {
         XCTAssertFalse(evaluator.blocks("https://site.example/hit", on: "https://site.example/", type: "image"))
     }
 
+    // MARK: - uBlock Origin aliases, unknown modifiers, $match-case (TASK-371)
+
+    /// uBO's and AdGuard's short names compile exactly as the Adblock Plus
+    /// options they stand for, `~` forms included. Before TASK-371 a bare
+    /// alias was read as part of the pattern (a literal rule that matched
+    /// nothing) and a `$from=` rule was left out.
+    @MainActor func testOptionAliasesCompileAsTheirAdblockPlusOptions() {
+        let pairs = [
+            ("||ads.example^$1p", "||ads.example^$~third-party"),
+            ("||ads.example^$first-party", "||ads.example^$~third-party"),
+            ("||ads.example^$~1p", "||ads.example^$third-party"),
+            ("||ads.example^$~first-party", "||ads.example^$third-party"),
+            ("||ads.example^$3p", "||ads.example^$third-party"),
+            ("||ads.example^$~3p", "||ads.example^$~third-party"),
+            ("||ads.example^$xhr", "||ads.example^$xmlhttprequest"),
+            ("||ads.example^$~xhr,3p", "||ads.example^$~xmlhttprequest,third-party"),
+            ("||ads.example^$frame", "||ads.example^$subdocument"),
+            ("||ads.example^$~frame", "||ads.example^$~subdocument"),
+            ("||ads.example^$css", "||ads.example^$stylesheet"),
+            ("||ads.example^$doc", "||ads.example^$document"),
+            ("@@||ads.example^$beacon,image", "@@||ads.example^$ping,image"),
+            ("||ads.example^$XHR,3P", "||ads.example^$xmlhttprequest,third-party"),
+            ("||ads.example^$script,from=site.example|~sub.site.example",
+             "||ads.example^$script,domain=site.example|~sub.site.example"),
+            ("||ads.example^$important,1p", "||ads.example^$important,~third-party"),
+            ("@@||ads.example/ok.js$xhr,1p", "@@||ads.example/ok.js$xmlhttprequest,~third-party"),
+            ("@@||site.example^$doc", "@@||site.example^$document"),
+            ("@@$generichide,from=site.example", "@@$generichide,domain=site.example"),
+            ("@@||ads.example^$frame,popup", "@@||ads.example^$subdocument,popup"),
+        ]
+        for (alias, option) in pairs {
+            let aliased = parser.parse(text: alias)
+            let expected = parser.parse(text: option)
+            XCTAssertFalse(expected.rules.isEmpty, option)
+            XCTAssertEqual(NSArray(array: aliased.rules), NSArray(array: expected.rules), "\(alias) vs \(option)")
+            XCTAssertEqual(aliased.skippedCount, expected.skippedCount, alias)
+        }
+    }
+
+    /// What the aliases do to a load, not only to the JSON.
+    @MainActor func testAliasedRulesBlockWhatTheirOptionsBlock() {
+        let evaluator = RuleListEvaluator(rules("""
+        ||ads.example^$3p,xhr
+        ||track.example^$1p
+        ||frames.example^$frame,from=site.example
+        """))
+
+        XCTAssertTrue(evaluator.blocks("https://ads.example/x", on: "https://site.example/", type: "raw"))
+        XCTAssertFalse(evaluator.blocks("https://ads.example/x.js", on: "https://site.example/", type: "script"))
+        XCTAssertFalse(evaluator.blocks("https://ads.example/x", on: "https://ads.example/", type: "raw"), "first party")
+        XCTAssertTrue(evaluator.blocks("https://track.example/t.js", on: "https://track.example/", type: "script"))
+        XCTAssertFalse(evaluator.blocks("https://track.example/t.js", on: "https://site.example/", type: "script"))
+        XCTAssertTrue(evaluator.blocks("https://frames.example/f.html", on: "https://site.example/", type: "document"))
+        XCTAssertFalse(evaluator.blocks("https://frames.example/f.html", on: "https://other.example/", type: "document"))
+        XCTAssertFalse(evaluator.blocks("https://frames.example/f.js", on: "https://site.example/", type: "script"))
+    }
+
+    /// Modifiers uBlock Origin and AdGuard document that the parser cannot
+    /// carry out are options, not part of the pattern: the rule is left out
+    /// and counted as skipped, block rule and exception alike. Before
+    /// TASK-371 each became a literal pattern that matched nothing and
+    /// counted as a rule.
+    @MainActor func testOtherBlockersModifiersWrittenWithoutAValueAreLeftOut() {
+        let lines = [
+            "@@||site.example^$urlblock",
+            "@@||site.example^$jsinject",
+            "@@||site.example^$content",
+            "@@||site.example^$extension",
+            "@@||site.example^$network",
+            "@@||site.example^$elemhide,jsinject",
+            "||ads.example^$popunder",
+            "||ads.example^$script,popunder",
+            "||ads.example^$inline-script",
+            "||ads.example^$inline-font",
+            "||ads.example^$strict1p",
+            "||ads.example^$strict3p",
+            "||ads.example^$strict-first-party",
+            "||ads.example^$strict-third-party",
+            "||ads.example^$cname",
+            "||ads.example^$empty",
+            "||ads.example^$mp4",
+            "||ads.example^$queryprune",
+            "||ads.example^$xmlprune",
+            "||ads.example^$referrerpolicy",
+            "||ads.example^$UrlBlock",
+        ]
+        for line in lines {
+            let result = parser.parse(text: "||ads.example^\n" + line)
+            XCTAssertEqual(result.rules.count, 1, "\(line) adds no rule: \(result.rules)")
+            XCTAssertEqual(result.skippedCount, 1, line)
+        }
+    }
+
+    /// Rules are case-insensitive unless they say `$match-case`; WebKit's
+    /// `url-filter-is-case-sensitive` defaults to false, so the parser has
+    /// to write true (before TASK-371 it ignored the option and the rule
+    /// matched every case).
+    @MainActor func testMatchCaseMakesTheRuleCaseSensitive() {
+        let evaluator = RuleListEvaluator(rules("""
+        /AdBanner.$match-case
+        ||ads.example/Promo^$match-case
+        /Sponsor.
+        @@/AdBanner.png?Keep$match-case
+        @@/AdBanner.png?keep2
+        """))
+
+        XCTAssertTrue(evaluator.blocks("https://cdn.example/AdBanner.png", on: "https://site.example/", type: "image"))
+        XCTAssertFalse(evaluator.blocks("https://cdn.example/adbanner.png", on: "https://site.example/", type: "image"))
+        XCTAssertTrue(evaluator.blocks("https://ads.example/Promo/x.png", on: "https://site.example/", type: "image"))
+        XCTAssertFalse(evaluator.blocks("https://ads.example/promo/x.png", on: "https://site.example/", type: "image"))
+        XCTAssertTrue(evaluator.blocks("https://cdn.example/sponsor.png", on: "https://site.example/", type: "image"),
+                      "without $match-case every case matches")
+        XCTAssertTrue(evaluator.blocks("https://cdn.example/SPONSOR.png", on: "https://site.example/", type: "image"))
+        XCTAssertFalse(evaluator.blocks("https://cdn.example/AdBanner.png?Keep", on: "https://site.example/", type: "image"))
+        XCTAssertTrue(evaluator.blocks("https://cdn.example/AdBanner.png?keep", on: "https://site.example/", type: "image"),
+                      "a case-sensitive exception does not exempt another case")
+        XCTAssertFalse(evaluator.blocks("https://cdn.example/AdBanner.png?KEEP2", on: "https://site.example/", type: "image"))
+
+        for line in ["/AdBanner.$match-case", "||ads.example/Promo^$match-case", "/Ad[0-9]Banner/$match-case"] {
+            let trigger = parser.parse(text: line).rules.first?["trigger"] as? [String: Any]
+            XCTAssertEqual(trigger?["url-filter-is-case-sensitive"] as? Bool, true, line)
+        }
+    }
+
+    /// A `$document` allowlist's page condition comes from its pattern: with
+    /// `$match-case` the page URL is matched case-sensitively too.
+    @MainActor func testMatchCaseOnADocumentExceptionAppliesToThePageCondition() {
+        let compiled = rules("""
+        ||ads.example^
+        @@|https://site.example/Shop$document,match-case
+        """)
+        let pageWide = compiled.first { ContentRuleListChunks.isPageWideException($0) }
+        let trigger = pageWide?["trigger"] as? [String: Any]
+        XCTAssertEqual(trigger?["top-url-filter-is-case-sensitive"] as? Bool, true, "\(compiled)")
+        let evaluator = RuleListEvaluator(compiled)
+        XCTAssertFalse(evaluator.blocks("https://ads.example/x.js", on: "https://site.example/Shop/", type: "script"))
+        XCTAssertTrue(evaluator.blocks("https://ads.example/x.js", on: "https://site.example/shop/", type: "script"))
+    }
+
+    /// WebKit compiles the case-sensitive keys and honours them for a load
+    /// and, on a `$document` allowlist, for the page.
+    @MainActor func testMatchCaseIsHonouredInAWebView() async throws {
+        let text = """
+        /AdBanner.$match-case
+        /Sponsor.
+        @@|http://site.example/Shop$document,match-case
+        """
+        let (store, lists) = try await compiledStore(text)
+        XCTAssertEqual(store.compiledRuleCount(forList: "easylist"), rules(text).count, "WebKit took every rule")
+        let urls = ["AdBanner", "adbanner", "Sponsor", "sponsor"].map { URL(string: "http://cdn.task371.invalid/\($0).png")! }
+
+        func blockedLoads(onPage page: String, expected: Int) async throws -> Set<URL> {
+            let configuration = WKWebViewConfiguration()
+            configuration.websiteDataStore = .nonPersistent()
+            lists.forEach(configuration.userContentController.add)
+            let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200), configuration: configuration)
+            let delegate = ExceptionRecordingNavigationDelegate()
+            defer { webView.navigationDelegate = nil }
+            webView.navigationDelegate = delegate
+            let images = urls.map { "<img src='\($0.absoluteString)'>" }.joined()
+            webView.loadHTMLString("<html><body>\(images)</body></html>", baseURL: URL(string: page)!)
+            try await waitUntil("the page finished loading") { delegate.finished }
+            try await waitUntil("the blocked loads are reported", timeout: 5) { Set(delegate.blocked).count >= expected }
+            // Let the other loads run out (they fail at DNS): none may be blocked late.
+            try await Task.sleep(nanoseconds: 1_500_000_000)
+            return Set(delegate.blocked)
+        }
+
+        let onShopInLowerCase = try await blockedLoads(onPage: "http://site.example/shop/", expected: 3)
+        XCTAssertEqual(onShopInLowerCase, [urls[0], urls[2], urls[3]], "only the case-insensitive rule matches both cases")
+        let onShop = try await blockedLoads(onPage: "http://site.example/Shop/", expected: 0)
+        XCTAssertEqual(onShop, [], "the case-sensitive $document allowlist names this page")
+    }
+
     // MARK: - The real lists
 
     /// EasyList as downloaded: a generically blocked script stays blocked on
