@@ -4,7 +4,7 @@ title: Extension pages in tabs
 description: A tab showing a webkit-extension:// page is tied to one loaded context's origin, which dies on every context reload and every relaunch; how such tabs, pinned tiles, favourites and closed-tab records are rehomed, restored, refused or closed, and why a Quick Detour or quarantine window cannot show one.
 tags: [extensions, tabs, persistence, pinned, favorites]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T17:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T18:40:00Z }
 sources:
   - id: page-url
     resource: ../../Detour/Extensions/Runtime/ExtensionPageURL.swift
@@ -75,6 +75,12 @@ sources:
   - id: task-352
     resource: backlog:TASK-352
     title: "Extensions: reloading or updating an extension leaves its page in a Quick Detour window on the dead origin"
+  - id: task-373
+    resource: backlog:TASK-373
+    title: "Tests: guard that a Quick Detour window still cannot show an extension page"
+  - id: gate-tests
+    resource: ../../DetourTests/QuickDetourExtensionPageGateTests.swift
+    title: QuickDetourExtensionPageGateTests
 ---
 
 An extension's own pages (options, a full-page UI, anything opened with
@@ -465,27 +471,48 @@ space to find a context through. A browser window never hands its
 `createWebViewWith` configuration to a Quick Detour: Opt-Cmd-click, Open Link
 in Quick Detour and routed links all open a fresh window with a URL.
 
-**Probed on a real Quick Detour window** (`QuickDetourWindowController`,
-a loaded test extension with `options.html` and a web-accessible `war.html`,
-a loopback page). Every cell ended on Detour's error page with -1008, and
-`showsExtensionPage` was false:
+**Kept as a guard test.** `QuickDetourExtensionPageGateTests` (TASK-373)
+asserts each cell below on a real Quick Detour window
+(`QuickDetourWindowController`, a loaded test extension with `options.html`
+and a web-accessible `war.html`, a loopback page). If a WebKit release relaxes
+the gate, it fails.[^task-373] Each cell waits for either Detour's error page
+or the extension's document, then asserts all of these:
 
-| Entry | Example path | Result |
+- the error page names the refused URL;
+- the document is not the extension's;
+- `showsExtensionPage` is false;
+- `tab.url` is as the table says.
+
+A bare web view built from the tab's own configuration gets
+`NSURLErrorResourceUnavailable` (-1008). The error page carries only the
+message, so the test reads the code this way. A positive control loads both
+pages in the context's own configuration, in a normal and in a Private
+profile.
+
+The document check is what catches a relaxed gate. `showsExtensionPage` and
+`tab.url` cannot catch it: a Quick Detour tab has no
+`servedExtensionOriginHost`, so `mayAdopt` refuses the URL whatever WebKit
+does. This was measured by opening the Quick Detour on the context's
+configuration (`openedWith:`). The fresh-load cells then failed on the
+document, the error page and the -1008 check, while `tab.url` stayed nil.
+
+| Entry | Example path | Result (2026-11-16, macOS 26.7) |
 |---|---|---|
-| Fresh window loads the extension URL | sidebar Opt-Cmd-click or Open in Quick Detour on an extension-page tab (`sidebarCopyURL` has no scheme filter), an archived record | error page; `tab.url` kept the extension URL (since TASK-381 it stays nil: read from the code, not re-measured) |
-| Same, web-accessible page | — | error page |
-| `location.href =` from a web page, web-accessible or not | a content script or a link followed in the page | error page |
-| A link clicked in a web page | — | error page |
-| `tabs.update` (`loadURL(_:for:)`) on the Quick Detour's tab | an extension acting on the popup window's tab | error page |
-| `window.open` of the web-accessible page | the child Quick Detour | error page |
-| A space tab, `location.href =` (comparison) | — | error page |
+| Fresh window loads the extension URL, web-accessible or not | sidebar Opt-Cmd-click or Open in Quick Detour on an extension-page tab (`sidebarCopyURL` has no scheme filter), an archived record | error page, -1008; `tab.url` nil (TASK-381; it kept the extension URL on 2026-11-15) |
+| `location.href =` from a web page, web-accessible or not | a script in the page (a content script's would be the same navigation; not run) | error page; `tab.url` stays the web page |
+| A link clicked in a web page | — | error page; `tab.url` stays the web page |
+| `tabs.update` (`loadURL(_:for:)`) on the Quick Detour's tab, web-accessible or not | an extension acting on the popup window's tab | error page; `tab.url` stays the web page |
+| `window.open` of the web-accessible page | the child Quick Detour, on WebKit's copy of the opener's configuration | error page, -1008; `tab.url` nil |
+| A quarantine loads the extension URL, web-accessible or not (`openQuarantine`) | — | error page, -1008; `tab.url` nil |
+| A quarantine's web page, `location.href =` the web-accessible page | — | error page; `tab.url` stays the web page |
+
+The space-tab cells are `ExtensionPageProvenanceTests`'.
 
 Typed `webkit-extension://…` in the launcher or palette is a search
 (`AddressInputClassifier` reads `webkit-extension:` as a host with an empty
 port, which is no URL), and would be the fresh-load cell anyway. The rehoming walk and the
 deferred-update count therefore lose nothing by leaving Quick Detour pages
-out. The probe test was not kept; it was the
-`QuickDetourExtensionTests` harness with the cells above.
+out.
 
 # Gotchas
 
@@ -517,7 +544,7 @@ out. The probe test was not kept; it was the
 - [BrowserTab.swift](../../Detour/Browser/BrowserTab.swift) — `retarget`, `wake`, `wakeConfiguration`.
 - [TabStore.swift](../../Detour/Browser/TabStore.swift) — restore, rebuild helpers, refusals.
 - [ExtensionPageNavigationPolicy.swift](../../Detour/Extensions/Runtime/ExtensionPageNavigationPolicy.swift) — the rule for web content in an extension's tab (TASK-382).
-- Tests: [ExtensionPageNavigationPolicyTests](../../DetourTests/ExtensionPageNavigationPolicyTests.swift) (TASK-382's rule, table cases); [ExtensionPageProvenanceTests](../../DetourTests/ExtensionPageProvenanceTests.swift) (TASK-382: a framed web page's `top.location` in a window and in the background, which load `other.html` without the rule; the extension's own link, Back, own frame and `tabs.update`; a pin of WebKit's gate. TASK-381: a `window.open` child, a page-chosen `load`, another extension's `tabs.create` and a relaunch, which all fail with `mayAdopt` always true; a page navigating itself, which already passed; positive controls). Runtime check through the endpoint: [docs/harness/task381-endpoint-checks.py](../../docs/harness/task381-endpoint-checks.py) (a page's `window.open` child, Reload, Cmd+Q and relaunch, with the options tab as the control; 9/9 on 2026-11-16), `ExtensionPageURLTests`, [ExtensionPageRehostTests](../../DetourTests/ExtensionPageRehostTests.swift), [ExtensionPagePersistenceTests](../../DetourTests/ExtensionPagePersistenceTests.swift), `ExtensionPageUndoTests`, `ExtensionPageFavoriteTests`, `MoveTabToSpaceTests`.
+- Tests: [QuickDetourExtensionPageGateTests](../../DetourTests/QuickDetourExtensionPageGateTests.swift) (TASK-373: the gate in Quick Detour and quarantine windows, [above](#where-an-extension-page-cannot-be)); [ExtensionPageNavigationPolicyTests](../../DetourTests/ExtensionPageNavigationPolicyTests.swift) (TASK-382's rule, table cases); [ExtensionPageProvenanceTests](../../DetourTests/ExtensionPageProvenanceTests.swift) (TASK-382: a framed web page's `top.location` in a window and in the background, which load `other.html` without the rule; the extension's own link, Back, own frame and `tabs.update`; a pin of WebKit's gate. TASK-381: a `window.open` child, a page-chosen `load`, another extension's `tabs.create` and a relaunch, which all fail with `mayAdopt` always true; a page navigating itself, which already passed; positive controls). Runtime check through the endpoint: [docs/harness/task381-endpoint-checks.py](../../docs/harness/task381-endpoint-checks.py) (a page's `window.open` child, Reload, Cmd+Q and relaunch, with the options tab as the control; 9/9 on 2026-11-16), `ExtensionPageURLTests`, [ExtensionPageRehostTests](../../DetourTests/ExtensionPageRehostTests.swift), [ExtensionPagePersistenceTests](../../DetourTests/ExtensionPagePersistenceTests.swift), `ExtensionPageUndoTests`, `ExtensionPageFavoriteTests`, `MoveTabToSpaceTests`.
 
 # Related
 
@@ -536,5 +563,6 @@ out. The probe test was not kept; it was the
 [^task-382]: Extensions: a web page in a tab built from an extension's configuration can navigate to that extension's private pages
 [^webkit-navigation-state]: WebKit, NavigationState.mm (isUnsupportedWebExtensionNavigation)
 [^navigation-policy]: ExtensionPageNavigationPolicy.swift
+[^task-373]: Tests: guard that a Quick Detour window still cannot show an extension page
 [^task-352]: Extensions: reloading or updating an extension leaves its page in a Quick Detour window on the dead origin
 [^webkit-scheme-handler]: WebKit, WebExtensionURLSchemeHandlerCocoa.mm (main-frame loads need the configuration's requiredWebExtensionBaseURL)

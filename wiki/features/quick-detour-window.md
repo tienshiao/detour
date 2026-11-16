@@ -4,7 +4,7 @@ title: Quick Detour window and its page
 description: "The Quick Detour window and its one page: size and cascading, undo, the page as a BrowserTab in no space and what every space-walking query does with it, links and windows the page opens, no session restore, a Private Quick Detour, how extensions see it as a popup window, and the teardown."
 tags: [window, tabs, privacy, extensions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:45:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T18:40:00Z }
 sources:
   - id: task-193-1
     resource: backlog:TASK-193.1
@@ -93,7 +93,7 @@ What "no space" means for each query that walks spaces:
 | Now-playing bar (`nowPlayingTabs`) | not listed: no browser window can switch to it |
 | Palette open-tab suggestions (`gatherTabInfos`) | never offered, and neither the launcher panel nor the window's palette offers any |
 | Extension contexts | its own window, of type `popup` ([below](#extensions)) |
-| `Profile.extensionPageLocations` (rehoming on a context reload, the deferred-update count) | not walked: WebKit refuses an extension page in its web view, so it never shows one ([extension pages](../extensions/extension-pages.md#where-an-extension-page-cannot-be), TASK-352) |
+| `Profile.extensionPageLocations` (rehoming on a context reload, the deferred-update count) | not walked: WebKit refuses an extension page in its web view, so it never shows one ([extension pages](../extensions/extension-pages.md#where-an-extension-page-cannot-be), TASK-352; guarded by `QuickDetourExtensionPageGateTests`, TASK-373) |
 | History | its profile's [Quick Detour scope](./quick-detour-history.md) |
 
 Only the Quick Detour window ever hosts its web view: no other window lists
