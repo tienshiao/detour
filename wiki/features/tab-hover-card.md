@@ -4,9 +4,7 @@ title: Tab hover card
 description: "The card shown beside the sidebar when the pointer rests on a tab row or favourite tile: the full title, the URL with its host emphasised and a page thumbnail; when it shows, what it describes, where thumbnails come from (memory, then a per-row JPEG on disk) and what dismisses it."
 tags: [sidebar, tabs, hover, thumbnails, ui]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T11:31:06Z }
-verified:
-  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:03:57Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T22:23:17Z }
 sources:
   - id: rules
     resource: ../../Detour/Browser/HoverCard/HoverCardRules.swift
@@ -53,6 +51,12 @@ sources:
   - id: task-230
     resource: backlog:TASK-230
     title: "Hover card: keep a Peek's picture on disk, so a restored Peek's card has one"
+  - id: task-383
+    resource: backlog:TASK-383
+    title: "Windows: clicking a link that opens a new tab selects the tab but also brings another window to the front"
+  - id: pointer-window
+    resource: ../../Detour/Browser/Shared/PointerWindow.swift
+    title: PointerWindow.swift (is this window the one under the pointer)
 ---
 
 Sidebar tab rows have no AppKit tooltip. Resting the pointer on a row (or a
@@ -264,8 +268,22 @@ survives a relaunch.
 - **A row reconfigured in place** (a title change through `reloadTab`)
   while its card is up keeps the card's text until the next hover; the text
   is taken when the card shows.
-- **Non-key windows of the active app** show cards (the cells' tracking
-  areas are `.activeInActiveApp`), as native tooltips did.
+- **Only the key window shows a card** (TASK-383).[^task-383] The cells'
+  tracking areas are `.activeInActiveApp`, so a background window's rows
+  still highlight under the pointer, but `show()` gives up unless the
+  parent window is key. Before, a background window showed its card, and
+  that raised it: the card is a child window, and ordering a child in
+  brings its parent's group in front with it, so resting the pointer on a
+  visible row of a window behind put that window over the key one
+  (measured with real pointer moves, 2026-11-16). With a tab-list change
+  re-checking hover through a covering window (see
+  [the tab cell](../sidebar/tab-cell.md)), a click that opened a new tab in
+  the front window brought the window behind forward ~0.5 s later, once its
+  card's delay ran out: the report that started the task. Chosen by Claude,
+  not yet confirmed by the user: the alternative was to keep cards for
+  background windows and order the card in without its parent (no child
+  relationship, or `order(_:relativeTo:)`), which was not measured. The
+  dismissal rule already hid a card when its window resigned key.
 - **The selected tab's card** has no thumbnail by decision; a stale picture
   of the page in front of the user would be wrong and a fresh snapshot is a
   cost on every hover.[^task-190]
@@ -290,7 +308,13 @@ survives a relaunch.
   exit-then-enter and enter-then-exit, between a row and its Peek badge,
   dismissal holding across the badge, dismissal suppressing until leave,
   dismissal while pending, no card with the sidebar hidden, monitor removed
-  when idle.
+  when idle; a window that is not key shows none and stays behind the
+  window covering it (TASK-383; without the rule the test fails on the
+  order: the card brings its window in front). The controller's
+  `isKeyWindow` is injected, since a borderless test window never becomes
+  key.
+- `PointerWindowTests` (TASK-383): the window itself or one of its children
+  at the pointer counts, another window or none does not.
 - `TabThumbnailTests`: the cache round trip and the sweep rule, keys for
   each row kind and Private, and a closed tab's key leaving the live set;
   Peeks (TASK-230): the derived key (stable, distinct from the host's, per
@@ -351,3 +375,4 @@ survives a relaunch.
 [^task-229]: TASK-229
 [^harness-229]: TASK-229 runtime harness
 [^task-230]: TASK-230
+[^task-383]: TASK-383

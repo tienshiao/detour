@@ -5,9 +5,7 @@ description: "The sidebar's row views — TabCellView, FolderCellView and friend
 tags: [sidebar, cells, progress, split-tabs, appkit]
 status: stable
 resource: ../../Detour/Browser/Sidebar/TabCellView.swift
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:17:19Z }
-verified:
-  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:46:27Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T22:23:17Z }
 sources:
   - id: tab-cell
     resource: ../../Detour/Browser/Sidebar/TabCellView.swift
@@ -45,6 +43,12 @@ sources:
   - id: commit-b9ef265
     resource: commit:b9ef265
     title: "Sidebar: ID-based drag payloads, pure drop resolver, drag fixes"
+  - id: task-383
+    resource: backlog:TASK-383
+    title: "Windows: clicking a link that opens a new tab selects the tab but also brings another window to the front"
+  - id: pointer-window
+    resource: ../../Detour/Browser/Shared/PointerWindow.swift
+    title: PointerWindow.swift
 ---
 
 # Role
@@ -218,6 +222,21 @@ background; Esc restores the original text and gives focus to the table.
   a gap. `recheckHover()` re-derives hover from
   `mouseLocationOutsideOfEventStream`; the controller calls it after
   scrolls, batch updates, row reloads and drag end.
+- **The position alone sees through other windows** (TASK-383).
+  `mouseLocationOutsideOfEventStream` is the pointer in this window's
+  coordinates whether or not another window covers it there, so a re-check
+  after a tab-list change marked a covered row of a window behind as
+  hovered, and its hover card followed. `recheckHover()` (and the New Tab
+  row's, and `FavoriteTileView`'s) now also asks `PointerWindow.isOver(window)`: the topmost window
+  at the pointer (`NSWindow.windowNumber(at:belowWindowWithWindowNumber: 0)`,
+  any app's) must be this window or one of its children. Tracking-area
+  enter and exit events need no such check: the window server sends them
+  to the window it finds under the pointer.[^task-383]
+  Not covered: a window that becomes key with the pointer already
+  resting on a row (Cmd+`) gets no card until the pointer moves to
+  another row and back, since no enter event comes; and whether
+  `windowNumber(at:)` counts a click-through overlay of another app
+  (one that ignores mouse events) as on top was not measured.
 - **Layer colours are `CGColor`s** and do not follow appearance changes; the
   cells re-resolve them in `viewDidChangeEffectiveAppearance` or inside
   `performAsCurrentDrawingAppearance`.
@@ -252,3 +271,4 @@ background; Esc restores the original text and gives focus to the table.
 [^task-114]: A background tab whose load stalls shows its URL as the title until it is first shown
 [^task-124]: Fade out the progress bar on a background tab whose load has stalled
 [^commit-b9ef265]: Sidebar: ID-based drag payloads, pure drop resolver, drag fixes
+[^task-383]: TASK-383

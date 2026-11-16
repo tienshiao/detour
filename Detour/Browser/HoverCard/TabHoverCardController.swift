@@ -24,7 +24,8 @@ protocol TabHoverCardHost: AnyObject {
 /// window (a local event monitor, installed only while a card is pending or
 /// up), the window resigning key, or the sidebar hiding dismisses the card
 /// and keeps it away until the pointer leaves that row. Nothing shows while
-/// a mouse button is down. Thumbnails come from the tab's in-memory switcher
+/// a mouse button is down, and none for a window that is not key (TASK-383).
+/// Thumbnails come from the tab's in-memory switcher
 /// preview, else from `TabThumbnailCache` on disk; no tab is ever woken,
 /// hosted or snapshotted for one.
 final class TabHoverCardController {
@@ -33,6 +34,9 @@ final class TabHoverCardController {
     /// `NSEvent.pressedMouseButtons`, injectable so tests do not read the
     /// real mouse.
     var pressedMouseButtons: () -> Int = { NSEvent.pressedMouseButtons }
+    /// `NSWindow.isKeyWindow`, injectable so tests need not make a window key
+    /// (the test host is often not the active app).
+    var isKeyWindow: (NSWindow) -> Bool = { $0.isKeyWindow }
     var thumbnailCache: TabThumbnailCache = .shared
 
     private struct Hover {
@@ -145,8 +149,14 @@ final class TabHoverCardController {
     }
 
     private func show() {
+        // Only for the key window (TASK-383). The card is a child window, and
+        // ordering a child in orders its parent's group in front with it, so
+        // a card for a window behind brought that window in front of the
+        // key one (measured: resting the pointer on a background window's
+        // row raised it). A card the key window shows is hidden when it
+        // resigns key, so a window that is not key has none either way.
         guard let hover, suppressed == nil, let host,
-              let window = host.hoverCardParentWindow, window.isVisible,
+              let window = host.hoverCardParentWindow, window.isVisible, isKeyWindow(window),
               let sidebarRect = host.hoverCardSidebarRectInWindow,
               let content = content(for: hover.target) else {
             hideCard()

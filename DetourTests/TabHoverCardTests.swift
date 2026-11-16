@@ -511,6 +511,9 @@ nonisolated final class TabHoverCardControllerTests: XCTestCase {
         controller = TabHoverCardController()
         controller.host = host
         controller.pressedMouseButtons = { 0 }
+        // A borderless window never becomes key; the card shows only for
+        // the key window (TASK-383).
+        controller.isKeyWindow = { _ in true }
     }
 
     @MainActor override func tearDown() async throws {
@@ -518,6 +521,42 @@ nonisolated final class TabHoverCardControllerTests: XCTestCase {
         controller = nil
         window.orderOut(nil)
         window = nil
+        coveringWindow?.orderOut(nil)
+        coveringWindow = nil
+    }
+
+    private var coveringWindow: NSWindow?
+
+    /// TASK-383: a window that is not key gets no card. The card is a child
+    /// window, and ordering one in brings its parent's group in front, so a
+    /// card for a window behind raised it over the key window.
+    @MainActor func testAWindowThatIsNotKeyShowsNoCardAndKeepsItsPlaceBehind() {
+        controller.isKeyWindow = { _ in false }
+        let front = NSWindow(contentRect: NSRect(x: 300, y: 250, width: 800, height: 600),
+                             styleMask: [.borderless], backing: .buffered, defer: false)
+        front.isReleasedWhenClosed = false
+        front.orderFront(nil)
+        coveringWindow = front
+        func frontToBack() -> [Int] {
+            (NSWindow.windowNumbers(options: []) ?? []).map(\.intValue)
+                .filter { $0 == window.windowNumber || $0 == front.windowNumber }
+        }
+        // The window server may take a moment to order the covering window
+        // in under load; wait for it rather than test from a wrong start.
+        let expected = [front.windowNumber, window.windowNumber]
+        let ordered = expectation(for: NSPredicate { _, _ in frontToBack() == expected }, evaluatedWith: nil)
+        wait(for: [ordered], timeout: 5)
+
+        let tab = makeTab("A")
+        controller.hoverBegan(.tab(tab), rowRectInWindow: row)
+        let past = expectation(description: "past the show delay")
+        DispatchQueue.main.asyncAfter(deadline: .now() + HoverCardTiming.showDelay + 0.3) { past.fulfill() }
+        wait(for: [past], timeout: HoverCardTiming.showDelay + 2)
+
+        XCTAssertFalse(controller.isShowing)
+        XCTAssertNil(controller.panelForTesting?.parent, "no card was added to the window")
+        XCTAssertEqual(frontToBack(), [front.windowNumber, window.windowNumber], "the window stays behind")
+        XCTAssertFalse(controller.hasEventMonitorForTesting)
     }
 
     @MainActor private func makeTab(_ title: String) -> BrowserTab {
@@ -777,5 +816,21 @@ nonisolated final class TabCellPeekBadgeHoverTests: XCTestCase {
         XCTAssertNil(cell.leftPanePeekFaviconImageView.image)
         cell.mouseEntered(with: event(.mouseEntered, at: center(TabCellView.leftPanePeekBadgeHoverRect(in: bounds))))
         XCTAssertEqual(recorder.reports.last?.overPeekBadge, false)
+    }
+}
+
+/// TASK-383: hover worked out from the pointer's position counts only where
+/// the window is the topmost one under the pointer, or one of its children is.
+nonisolated final class PointerWindowTests: XCTestCase {
+
+    @MainActor func testTheWindowItselfOrItsChildAtThePointerIsItsOwn() {
+        XCTAssertTrue(PointerWindow.isOwn(topmostWindowNumber: 10, windowNumber: 10, childWindowNumbers: []))
+        XCTAssertTrue(PointerWindow.isOwn(topmostWindowNumber: 12, windowNumber: 10, childWindowNumbers: [11, 12]))
+    }
+
+    @MainActor func testAnotherWindowOnTopAtThePointerIsNot() {
+        XCTAssertFalse(PointerWindow.isOwn(topmostWindowNumber: 20, windowNumber: 10, childWindowNumbers: [11]))
+        // Nothing found there (0): not over this window either.
+        XCTAssertFalse(PointerWindow.isOwn(topmostWindowNumber: 0, windowNumber: 10, childWindowNumbers: []))
     }
 }

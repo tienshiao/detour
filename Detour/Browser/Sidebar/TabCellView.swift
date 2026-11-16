@@ -480,11 +480,13 @@ class TabCellView: NSTableCellView, NSTextFieldDelegate {
     /// Re-evaluate hover state using the current mouse position.
     /// Call this when scrolling moves cells under/away from the mouse,
     /// since NSTrackingArea doesn't reliably fire mouseExited in that case.
+    /// Only where this window is the one under the pointer: the position
+    /// alone also falls on rows another window covers (TASK-383).
     func recheckHover() {
         guard let window else { return }
         let mouseInWindow = window.mouseLocationOutsideOfEventStream
         let mouseInSelf = convert(mouseInWindow, from: nil)
-        let shouldHover = bounds.contains(mouseInSelf)
+        let shouldHover = bounds.contains(mouseInSelf) && PointerWindow.isOver(window)
         guard shouldHover != isHovered || (shouldHover && hoverRegionChanged(at: mouseInSelf)) else { return }
         updateHover(to: shouldHover, at: shouldHover ? mouseInSelf : nil)
     }
@@ -1213,11 +1215,13 @@ class NewTabCellView: NSTableCellView {
         hoverBackground.isHidden = true
     }
 
+    /// As `TabCellView.recheckHover()`: only where this window is the one
+    /// under the pointer (TASK-383).
     func recheckHover() {
         guard let window else { return }
         let mouseInWindow = window.mouseLocationOutsideOfEventStream
         let mouseInSelf = convert(mouseInWindow, from: nil)
-        let shouldHover = bounds.contains(mouseInSelf)
+        let shouldHover = bounds.contains(mouseInSelf) && PointerWindow.isOver(window)
         if shouldHover {
             effectiveAppearance.performAsCurrentDrawingAppearance {
                 hoverBackground.layer?.backgroundColor = UIConstants.hoverBackgroundColor.cgColor

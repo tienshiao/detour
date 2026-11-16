@@ -825,7 +825,9 @@ class FavoriteTileView: NSView {
     private func recheckHover() {
         guard let window else { return }
         let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
-        let inside = bounds.contains(point)
+        // Only where this window is the one under the pointer (TASK-383),
+        // as `TabCellView.recheckHover()`.
+        let inside = bounds.contains(point) && PointerWindow.isOver(window)
         setHovering(inside, overPeekBadge: inside && isOverPeekBadge(at: point))
     }
 

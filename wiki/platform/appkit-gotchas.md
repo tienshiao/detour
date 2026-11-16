@@ -4,7 +4,7 @@ title: AppKit gotchas
 description: A collection of AppKit behaviours that cost debugging time in Detour — first responder and key-view loop, split and stack view layout, hit testing, table views under a drag session, popovers, Accessibility — each with where it bit and what to do instead.
 tags: [appkit, platform, focus, layout, drag-and-drop, hit-testing]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T08:23:10Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T22:23:47Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-349
@@ -130,6 +130,9 @@ sources:
   - id: task-350
     resource: backlog:TASK-350
     title: "Shortcuts: Reset and saved-pair checks also compare against the Quick Detour hotkey's item and AppKit's own menu items"
+  - id: task-383
+    resource: backlog:TASK-383
+    title: "Windows: clicking a link that opens a new tab selects the tab but also brings another window to the front"
 ---
 
 # Behavior
@@ -190,7 +193,8 @@ Related.
 | A table view that is a drag source delays window ordering on **every** mouse-down so a row can be dragged out of a background window. A mouse-down that instead moves the window then drags a background window around underneath the others. | Sidebar list, empty area below the rows | `shouldDelayWindowOrdering(for:)` returns `false` when the point is not on a row (`DraggableTableView`) |
 | `WindowDragView` forwards a click that did not drag by calling `mouseDown` and then a synthesized `mouseUp` on the view under it. An `NSButton` under the strip cannot take that: its `mouseDown` tracks the real event queue for a mouse-up the strip already consumed.[^task-186-2] | Dev mode's toolbar sits inside the content area's top 38 pt | Adopt `WindowDragPassThrough`: the strip's `hitTest` returns nil over such a view, so its controls get the events directly ([dev toolbar](../features/dev-toolbar.md#the-drag-strip)) |
 | `WindowDragView.mouseDown` runs a nested `trackEvents` loop. Entered from inside a Swift `Task` (events delivered with `window.sendEvent`), AppKit throws from `nextEventMatchingMask` and the app aborts.[^notes-inprocess] | In-process UI automation | Deliver synthetic events with `NSApp.postEvent(_:atStart:)`; see [in-process UI automation](../playbooks/in-process-ui-automation.md) |
-| Tracking areas do not reliably send `mouseExited` when scrolling moves a view from under the pointer, and send nothing while a drag session is active.[^commit-b9ef265] | Hover backgrounds stuck on rows after scrolls and drags; a hover-revealed sidebar that stayed open (TASK-169) | Do not let state hang on one exit event: re-derive it from `mouseLocationOutsideOfEventStream` (`recheckHover()` after scrolls, batch updates and drag end; the sidebar's pointer sample, see [visibility and auto-hide](../sidebar/visibility-and-auto-hide.md)) |
+| Tracking areas do not reliably send `mouseExited` when scrolling moves a view from under the pointer, and send nothing while a drag session is active.[^commit-b9ef265] | Hover backgrounds stuck on rows after scrolls and drags; a hover-revealed sidebar that stayed open (TASK-169) | Do not let state hang on one exit event: re-derive it from `mouseLocationOutsideOfEventStream` (`recheckHover()` after scrolls, batch updates and drag end; the sidebar's pointer sample, see [visibility and auto-hide](../sidebar/visibility-and-auto-hide.md)); that position ignores windows on top, so also check the window is the topmost one there, `PointerWindow.isOver` (TASK-383) |
+| Ordering in a child window (`addChildWindow` then `orderFront` on the child) brings its parent's whole group in front, above a window that was covering the parent (measured 2026-11-16, TASK-383).[^task-383] | A tab hover card shown for a background window raised that window over the key window | Show such a child only for a window already in front (the hover card: key window only) |
 | `mouseMoved` events posted with `NSApp.postEvent` do not produce `mouseEntered` or `mouseExited`, even for an `.activeAlways` tracking area.[^task-169] | Trying to drive hover from a harness | Call the code the tracking area would call; say that the pointer never moved |
 | A view's `bounds` are not what is on screen while it slides in: the sidebar's bounds reached past the window's edge during the reveal animation, and a pointer outside the window tested as inside them. `visibleRect` was empty then, and equal to the bounds once settled.[^task-169] | "Is the pointer over the sidebar" during a hover reveal | Test against `visibleRect` |
 | A `Timer` scheduled in the default run loop mode does not fire while AppKit tracks a context menu; a `DispatchQueue.main.asyncAfter` block does (it ran in `NSEventTrackingRunLoopMode`). `NSMenu.didBeginTrackingNotification` and `didEndTrackingNotification` are posted for a context menu too.[^task-169] | The sidebar's hide delay collapsed it under an open context menu | Use a default-mode `Timer` for anything that must wait for a menu or drag to finish |
@@ -313,3 +317,4 @@ from a probe or a measurement.
 [^task-349]: "Undo: ⌘Z in Settings text fields and extension popups reaches the browser window's closed-tab undo"
 [^task-375]: "Shortcuts: Fn menu items are compared with Fn dropped, and AppKit's one-item rule can hide a fixed command's key"
 [^task-350]: "Shortcuts: Reset and saved-pair checks also compare against the Quick Detour hotkey's item and AppKit's own menu items"
+[^task-383]: TASK-383
