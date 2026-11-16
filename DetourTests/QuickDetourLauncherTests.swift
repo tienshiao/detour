@@ -226,4 +226,75 @@ nonisolated final class QuickDetourLauncherTests: XCTestCase {
         XCTAssertNil(controller.commandPaletteView, "and no palette of its own")
         XCTAssertTrue(controller.profile === profile)
     }
+
+    // MARK: - Undo (TASK-346)
+
+    private final class Counter { var undone = 0 }
+
+    /// A close on the browser's undo list (`TabStore.undoManager`), counting
+    /// its undo; the list is emptied again after the test.
+    @MainActor private func seedBrowserUndo() -> Counter {
+        let counter = Counter()
+        let undoManager = TabStore.shared.undoManager
+        undoManager.removeAllActions()
+        undoManager.groupsByEvent = false
+        undoManager.beginUndoGrouping()
+        undoManager.registerUndo(withTarget: counter) { $0.undone += 1 }
+        undoManager.setActionName("Close Tab")
+        undoManager.endUndoGrouping()
+        undoManager.groupsByEvent = true
+        addTeardownBlock { @MainActor in TabStore.shared.undoManager.removeAllActions() }
+        return counter
+    }
+
+    @MainActor private func validated(_ command: BrowserCommand, in panel: NSWindow) -> (NSMenuItem, Bool) {
+        let item = NSMenuItem(title: command.title, action: command.action, keyEquivalent: "")
+        return (item, panel.validateMenuItem(item))
+    }
+
+    /// ⌘Z / ⇧⌘Z and Edit > Undo / Redo in the launcher's field undo and redo
+    /// its typing, titled from it, and do nothing when there is none; with a
+    /// closed tab on the browser's list, that list is never reached (before,
+    /// the actions fell through to the main window, a browser window, and
+    /// reopened the tab).
+    @MainActor func testUndoInTheLauncherIsItsFieldsAndNeverTheBrowsers() throws {
+        let browser = seedBrowserUndo()
+        launcher.show(profile: makeProfile(), sourceSpace: nil)
+        let panel = try XCTUnwrap(launcher.panel)
+        try XCTSkipIf(!panel.isKeyWindow, "the panel is not key in this run")
+        let editor = try XCTUnwrap(panel.firstResponder as? NSTextView, "the palette's field is being edited")
+        XCTAssertTrue(editor.allowsUndo, "the field editor records typing")
+
+        // The actions stop at the panel, whichever window is main.
+        for command in [BrowserCommands.undo, BrowserCommands.redo] {
+            XCTAssertTrue(CommandDispatch.responderTarget(for: command.action, in: panel) === panel, "\(command.id)")
+        }
+
+        // Nothing typed: disabled, plain titles, and nothing happens.
+        var (item, enabled) = validated(BrowserCommands.undo, in: panel)
+        XCTAssertFalse(enabled)
+        XCTAssertEqual(item.title, "Undo")
+        panel.browserUndo(item)
+        XCTAssertEqual(browser.undone, 0)
+
+        editor.insertText("qd", replacementRange: NSRange(location: NSNotFound, length: 0))
+        // The typing's undo group closes with the event loop's turn.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(editor.string, "qd")
+        XCTAssertTrue(panel.fieldUndoManager !== TabStore.shared.undoManager)
+        (item, enabled) = validated(BrowserCommands.undo, in: panel)
+        XCTAssertTrue(enabled)
+        XCTAssertEqual(item.title, "Undo Typing")
+        panel.browserUndo(item)
+        XCTAssertEqual(editor.string, "")
+
+        (item, enabled) = validated(BrowserCommands.redo, in: panel)
+        XCTAssertTrue(enabled)
+        XCTAssertEqual(item.title, "Redo Typing")
+        panel.browserRedo(item)
+        XCTAssertEqual(editor.string, "qd")
+
+        XCTAssertEqual(browser.undone, 0, "TabStore's list is never reached from the launcher")
+        XCTAssertTrue(TabStore.shared.undoManager.canUndo, "the closed tab is still there to reopen")
+    }
 }

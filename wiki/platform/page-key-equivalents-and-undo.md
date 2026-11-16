@@ -34,6 +34,9 @@ sources:
   - id: harness
     resource: ../../docs/harness/task345
     title: TASK-345 runtime checks (drive.py, undo.html fixture)
+  - id: task-346
+    resource: backlog:TASK-346
+    title: "Quick Detour launcher: ⌘Z in its field undoes the typing, never Detour's closed-tab list"
   - id: feature
     resource: ../tabs/tab-lifecycle.md
     title: Tab lifecycle (Reopening and undo)
@@ -166,6 +169,50 @@ endpoint's `run_menu_item` landed in one undo group (both came back with one
 capitalization on focus loss, most likely; TASK-333 saw "ab" become "Ab"),
 so the checks compare text without case.
 
+# A window without a controller: the Quick Detour launcher (TASK-346)
+
+Edit > Undo and Redo are `browserUndo:`/`browserRedo:` with a nil target, so
+AppKit looks for them along the key window's responder chain and its
+delegate, then along the **main** window's, then NSApp and its delegate. The
+Quick Detour launcher panel (`QuickDetourPalettePanel`, the palette alone in
+a non-activating panel) has neither a window controller nor a delegate that
+answers them, and it never becomes main, so ⌘Z typed in its field went on to
+the main window, a browser window, whose `browserUndo:` ran `TabStore`'s
+undo: a closed tab reopened behind the launcher and the typing stayed
+(reproduced in `QuickDetourLauncherTests` against a panel that does not
+answer the actions).[^task-346] The panel now answers both itself, with
+its first responder's undo manager: the field editor's, which is the panel's
+own `NSWindow.undoManager` (the text field has none of its own, and the
+field editor's `allowsUndo` is on), and validates them, titled from it
+("Undo Typing") and disabled with nothing typed. The in-window palette is a
+browser window's view, and there ⌘Z stays the browser's undo (TASK-345).
+
+Measured with real keys (Debug, `docs/harness/task346/drive.py`, a tab
+closed with a real ⌘W on the browser's list, the launcher opened with
+⌥⌘N while Detour was in front): with nothing typed Edit > Undo and Redo were
+disabled and ⌘Z changed nothing; after typing "qd" Edit > Undo read "Undo
+Typing", enabled; ⌘Z emptied the field and ⇧⌘Z brought "qd" back; the
+closed tab stayed closed throughout, and back in the browser window ⌘Z
+reopened it. Not measured: the launcher opened by the global hotkey over
+another app, where that app keeps the menu bar (the hotkey is not registered
+in a Debug build, and the user's own Detour holds ⌥⌘N); whether AppKit then
+offers ⌘Z to Detour's main menu at all was not seen.
+
+Limits found in the code review, not changed and not measured at runtime
+(the runtime check used a profile with no history, so nothing completed):
+the palette rewrites its field with `stringValue` for an inline completion,
+a suggestion chosen with the arrows, Escape or Backspace on a completion,
+and setting `stringValue` on a field being edited empties the field
+editor's undo list (a throwaway probe test in the review, not kept), so
+after one of those ⌘Z does nothing there (still never the browser's undo).
+And the launcher answers only Undo and Redo: by the same responder-chain
+reading, the browser window commands it does not answer (⌘W, ⌘R, ⌘T…)
+would go on to the main browser window behind it (read in the code, not
+run); Settings' and extension popups' text fields still reach the main
+window's `browserUndo:` (TASK-345).
+
 From the source only, not measured: a page whose web process is gone
 swallows the key; the docked Web Inspector (a plain `WKWebView`) leaves ⌘Z
 to the browser's undo.
+
+[^task-346]: TASK-346

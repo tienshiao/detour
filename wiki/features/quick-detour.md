@@ -210,6 +210,11 @@ configured time, "auto-closed" ([below](#the-archive),
   (`QuickDetourLauncher.defaultOpenWindow`; see
   [activation](#activating-with-only-the-new-window-forward)). A typed URL
   is a typed visit.
+- **Undo** (TASK-346): Edit > Undo and Redo (⌘Z, ⇧⌘Z) undo and redo the
+  field's typing, titled "Undo Typing" and disabled with nothing typed; the
+  panel answers `browserUndo:`/`browserRedo:` itself, so they no longer fall
+  through to the main browser window's undo and reopen a closed tab there
+  ([A page's key equivalents and its undo](../platform/page-key-equivalents-and-undo.md)).
 - **Escape** follows the palette's own steps: it clears typed text first, and
   closes the panel on an empty field. **Clicking away** closes it through
   `NSWindow.didResignKeyNotification` on the panel.
@@ -1191,7 +1196,7 @@ closes the profile's Quick Detours before it releases the profile.
 | Suite | Covers |
 |---|---|
 | `QuickDetourTests` (26) | the rules (history scope, which profile); the tab in no space: creation from the profile's store and controller, adoption, close and its idempotence, observers, several at once, every space-walking lookup, never slept/archived/saved, profile deletion; history: recorded under the scope (real load), Private records nothing, the profile scope, the launch sweep, the page payload, `spaceID` on listed and searched rows; the Private session both ways; Private downloads |
-| `QuickDetourLauncherTests` (12) | the panel (non-activating, borderless, floating, can become key, the palette's profile, the profile's whole history whichever window asked (TASK-209), none for Private, and no tabs), no window or tab before submit; submit (URL, search, suggestion) closing it and opening the window; Escape and clicking away opening nothing; one panel; the centring rule; the real window opening on its page |
+| `QuickDetourLauncherTests` (14) | the panel (non-activating, borderless, floating, can become key, the palette's profile, the profile's whole history whichever window asked (TASK-209), none for Private, and no tabs), no window or tab before submit; submit (URL, search, suggestion) closing it and opening the window; Escape and clicking away opening nothing; one panel; the centring rule; the real window opening on its page; Undo/Redo answered by the panel with its field's typing, never `TabStore`'s list (TASK-346) |
 | `QuickDetourWindowTests` (15) | opening on its page with no palette, loading in the one web view, the host palette (profile, no tabs, history scope), dismissing it keeping the window, a search from it, navigating in place, back/forward/zoom/find, Cmd+Z not undoing a browser action, Copy Link, Cmd+W, two windows, closing from the store, a page-opened window, the extension window lookups, no leaks |
 | `HotKeyShortcutTests` (27) | the shortcut (default, narrowing, equality), Carbon modifier bits both ways for all 16 combinations, state bits ignored, key equivalents (letters, F-keys, arrows, Space, Return, Forward Delete, a layout's character), the label and key names, the defaults round trip and malformed values; validation (a modifier needed, an unnamed key, Detour's menu items by path including submenus, function-key items and an uppercase key equivalent meaning Shift, the Quick Detour item excepted, Control-Tab, macOS shortcuts with and without the Fn bit, the real main menu), the messages; recording (Escape, Delete, with a modifier, refused) |
 | `HotKeyRegistrationTests` (20) | the state machine against a fake registrar: off, on, idempotent, off unregisters, a change unregisters first, cleared, refused keeps the choice and holds nothing, changing away from a refusal, retry, suspend and resume, `isConflict`; the settings (defaults per data directory, persistence and notification, cleared stays cleared, malformed) |

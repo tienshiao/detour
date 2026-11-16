@@ -186,4 +186,44 @@ final class QuickDetourPalettePanel: NSPanel {
     /// so typing goes straight to the palette.
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    // MARK: - Undo (TASK-346)
+
+    /// Edit > Undo and Redo (`browserUndo:`/`browserRedo:`, ⌘Z / ⇧⌘Z) undo
+    /// and redo the field's typing here, and never the browser's list. The
+    /// panel is in its field's responder chain, so it answers them itself:
+    /// with no answer in the panel, AppKit went on to the main window, a
+    /// browser window, whose `browserUndo:` ran `TabStore`'s undo (a closed
+    /// tab reopened behind the launcher). As Quick Detour and quarantine
+    /// windows answer them for their page (TASK-345). The in-window palette
+    /// is a browser window's and keeps the browser's undo there.
+    @objc func browserUndo(_ sender: Any?) {
+        guard let undoManager = fieldUndoManager, undoManager.canUndo else { return }
+        undoManager.undo()
+    }
+
+    @objc func browserRedo(_ sender: Any?) {
+        guard let undoManager = fieldUndoManager, undoManager.canRedo else { return }
+        undoManager.redo()
+    }
+
+    /// The undo manager of what has the keys: the field editor while the
+    /// palette's field is edited, which registers its typing with this
+    /// panel's own manager (the field has no undo manager of its own).
+    var fieldUndoManager: UndoManager? { firstResponder?.undoManager }
+
+    /// Undo and Redo are titled from the field's undo ("Undo Typing") and
+    /// enabled only when it has something; disabled with nothing typed.
+    override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(browserUndo(_:)):
+            menuItem.title = fieldUndoManager?.undoMenuItemTitle ?? "Undo"
+            return fieldUndoManager?.canUndo ?? false
+        case #selector(browserRedo(_:)):
+            menuItem.title = fieldUndoManager?.redoMenuItemTitle ?? "Redo"
+            return fieldUndoManager?.canRedo ?? false
+        default:
+            return super.validateMenuItem(menuItem)
+        }
+    }
 }
