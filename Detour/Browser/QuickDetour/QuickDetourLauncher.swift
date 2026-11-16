@@ -69,6 +69,11 @@ final class QuickDetourLauncher: NSObject {
         palette.historySpaceIDs = PaletteTabScope.historySpaceIDs(profile: profile, in: .shared)
         palette.glassTint = QuickDetourPalettePanel.glassTint
         panel.palette = palette
+        // Close Tab (⌘W) in the launcher closes it (TASK-348).
+        panel.onCloseCommand = { [weak self, weak panel] in
+            guard let self, let panel, self.panel === panel else { return }
+            self.close()
+        }
         panel.setFrame(QuickDetour.panelFrame(size: panel.frame.size, in: Self.targetScreen().visibleFrame),
                        display: false)
         self.panel = panel
@@ -93,6 +98,7 @@ final class QuickDetourLauncher: NSObject {
         guard let panel else { return }
         self.panel = nil
         panel.palette?.delegate = nil
+        panel.onCloseCommand = nil
         panel.palette?.removeFromSuperview()
         panel.orderOut(nil)
         panel.close()
@@ -209,7 +215,90 @@ final class QuickDetourPalettePanel: NSPanel {
 
     /// Undo and Redo are titled from the field's undo ("Undo Typing") and
     /// enabled only when it has something; disabled with nothing typed.
+    /// Close Tab is enabled (it closes the launcher); every other browser
+    /// window command is disabled here (TASK-348).
     override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        FieldUndo.validate(menuItem, in: self) ?? super.validateMenuItem(menuItem)
+        if let answer = FieldUndo.validate(menuItem, in: self) { return answer }
+        if menuItem.action == BrowserCommands.closeTab.action { return true }
+        if let action = menuItem.action, Self.windowControllerActions.contains(action) {
+            // Back to the registry's title: a browser window retitles some
+            // ("Unpin Tab", "Open Peek in New Tab"), which would otherwise
+            // show here, disabled, naming a tab the launcher does not have.
+            if let command = BrowserCommands.command(for: menuItem), command.contextualTitle != nil {
+                menuItem.title = command.title
+            }
+            return false
+        }
+        return super.validateMenuItem(menuItem)
     }
+
+    // MARK: - Browser-window commands (TASK-348)
+
+    /// What Close Tab (⌘W) does here: closes the launcher, opening nothing.
+    /// Set by the launcher that owns the panel.
+    var onCloseCommand: (() -> Void)?
+
+    /// The actions of the registry's window-controller commands. The panel
+    /// answers every one of them below, so none falls through to the main
+    /// window: the panel has no controller, its delegate answers none and it
+    /// never becomes main, so a nil-target action AppKit found nothing for in
+    /// the panel's chain went on to the main window's (measured: ⌘W closed a
+    /// tab in the browser window behind the launcher, ⇧⌘T reopened one, ⌘D
+    /// pinned one, ⌘Y opened History, ⌘T and ⌘L opened its palette).
+    /// `QuickDetourLauncherTests` checks that each one stops here, so a
+    /// command added to the registry needs a method below.
+    static let windowControllerActions: Set<Selector> = Set(BrowserCommands.all.compactMap { command in
+        if case .windowController = command.responder { return command.action }
+        return nil
+    })
+
+    /// ⌘W closes the launcher, as Escape on an empty field does. Chosen by
+    /// Claude (TASK-348), not yet confirmed by the user; the alternative was
+    /// disabling it like the others.
+    /// Kept alive to the end: closing drops the launcher's reference to the
+    /// panel while this method runs.
+    @objc func closeCurrentTab(_ sender: Any?) { withExtendedLifetime(self) { onCloseCommand?() } }
+
+    // The rest do nothing here, and validate as disabled (a beep for their
+    // key equivalent). The field has the keys, so Open Location (⌘L) has
+    // nothing to open, and the launcher has no tab, page, space or history
+    // of its own. Chosen by Claude (TASK-348), not yet confirmed by the user.
+    @objc func newTab(_ sender: Any?) {}
+    @objc func focusAddressBar(_ sender: Any?) {}
+    @objc func reopenClosedTab(_ sender: Any?) {}
+    @objc func togglePinTab(_ sender: Any?) {}
+    @objc func splitSelectedTabWith(_ sender: Any?) {}
+    @objc func openInDefaultSpace(_ sender: Any?) {}
+    @objc func copyCurrentURL(_ sender: Any?) {}
+    @objc func showFindBar(_ sender: Any?) {}
+    @objc func findNext(_ sender: Any?) {}
+    @objc func findPrevious(_ sender: Any?) {}
+    @objc func toggleSidebarMode(_ sender: Any?) {}
+    @objc func reloadPage(_ sender: Any?) {}
+    @objc func zoomActualSize(_ sender: Any?) {}
+    @objc func zoomIn(_ sender: Any?) {}
+    @objc func zoomOut(_ sender: Any?) {}
+    @objc func goBack(_ sender: Any?) {}
+    @objc func goForward(_ sender: Any?) {}
+    /// NSWindow's own (window tabbing), which the panel has no use for.
+    override func selectNextTab(_ sender: Any?) {}
+    override func selectPreviousTab(_ sender: Any?) {}
+    @objc func showHistory(_ sender: Any?) {}
+    @objc func showArchivedTabs(_ sender: Any?) {}
+    @objc func clearArchivedTabs(_ sender: Any?) {}
+    @objc func nextSpace(_ sender: Any?) {}
+    @objc func previousSpace(_ sender: Any?) {}
+    @objc func jumpToSpace1(_ sender: Any?) {}
+    @objc func jumpToSpace2(_ sender: Any?) {}
+    @objc func jumpToSpace3(_ sender: Any?) {}
+    @objc func jumpToSpace4(_ sender: Any?) {}
+    @objc func jumpToSpace5(_ sender: Any?) {}
+    @objc func jumpToSpace6(_ sender: Any?) {}
+    @objc func jumpToSpace7(_ sender: Any?) {}
+    @objc func jumpToSpace8(_ sender: Any?) {}
+    @objc func jumpToSpace9(_ sender: Any?) {}
+    @objc func selectSpaceFromMenu(_ sender: Any?) {}
+    @objc func moveSelectedTabToSpace(_ sender: Any?) {}
+    @objc func openSpacesSettings(_ sender: Any?) {}
+    @objc func showWebInspector(_ sender: Any?) {}
 }

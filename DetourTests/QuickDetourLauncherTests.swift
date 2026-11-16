@@ -297,4 +297,88 @@ nonisolated final class QuickDetourLauncherTests: XCTestCase {
         XCTAssertEqual(browser.undone, 0, "TabStore's list is never reached from the launcher")
         XCTAssertTrue(TabStore.shared.undoManager.canUndo, "the closed tab is still there to reopen")
     }
+
+    // MARK: - Browser-window commands (TASK-348)
+
+    /// Every command a window controller answers (the registry's
+    /// `.windowController` commands: Close Tab, New Tab, Reopen Closed Tab,
+    /// Pin, Reload, History…) stops at the panel, so none falls through to the
+    /// main window behind it (measured before the fix: ⌘W closed a tab there,
+    /// ⇧⌘T reopened one, ⌘D pinned one, ⌘Y opened History, ⌘T and ⌘L opened
+    /// its palette). Close Tab closes the launcher; Undo and Redo are the
+    /// field's (TASK-346); every other one is disabled. Read from the
+    /// registry, so a command added later is covered too.
+    @MainActor func testEveryBrowserWindowCommandStopsAtTheLauncher() throws {
+        launcher.show(profile: makeProfile(), sourceSpace: nil)
+        let panel = try XCTUnwrap(launcher.panel)
+        let commands = BrowserCommands.all.filter {
+            if case .windowController = $0.responder { return true }
+            return false
+        }
+        XCTAssertGreaterThan(commands.count, 30)
+        for command in commands {
+            let target = CommandDispatch.responderTarget(for: command.action, in: panel)
+            XCTAssertTrue(target === panel, "\(command.id) stops at the panel, not \(String(describing: target))")
+            let item = command.makeMenuItem()
+            // As a browser window may have left it ("Unpin Tab").
+            if command.contextualTitle != nil { item.title = "Retitled by a browser window" }
+            let enabled = panel.validateMenuItem(item)
+            if command.contextualTitle != nil {
+                XCTAssertEqual(item.title, command.title, "\(command.id) is not left with a browser window's title")
+            }
+            switch command.id {
+            case BrowserCommands.closeTab.id:
+                XCTAssertTrue(enabled, "Close Tab closes the launcher")
+                XCTAssertEqual(item.title, "Close Tab", "not retitled: browser windows do not retitle it back")
+            default:
+                XCTAssertFalse(enabled, "\(command.id) is disabled in the launcher (nothing typed for Undo/Redo)")
+            }
+        }
+
+        // The app's own commands still reach the app delegate (⌥⌘N toggles
+        // the launcher, ⌘N opens a window) and AppKit's text items the field.
+        for command in [BrowserCommands.newQuickDetourWindow, BrowserCommands.newWindow, BrowserCommands.settings] {
+            XCTAssertTrue(CommandDispatch.responderTarget(for: command.action, in: panel) === NSApp.delegate,
+                          "\(command.id)")
+        }
+        let editor = try XCTUnwrap(panel.firstResponder as? NSTextView, "the palette's field is being edited")
+        XCTAssertTrue(CommandDispatch.responderTarget(for: BrowserCommands.paste.action, in: panel) === editor)
+    }
+
+    /// ⌘W in the launcher with a tab open in the browser window behind it:
+    /// the launcher closes and opens nothing; the browser window keeps its
+    /// tab.
+    @MainActor func testCloseTabInTheLauncherClosesItAndLeavesTheBrowserWindowsTab() throws {
+        let wc = BrowserWindowController(incognito: true)
+        wc.sidebarSplitView.autosaveName = nil
+        let browserWindow = try XCTUnwrap(wc.window)
+        browserWindow.isReleasedWhenClosed = false
+        addTeardownBlock { @MainActor in browserWindow.close() }
+        let space = try XCTUnwrap(wc.activeSpace)
+        let tab = TabStore.shared.addTab(in: space, url: URL(string: "about:blank"))
+        wc.selectTab(id: tab.id)
+        browserWindow.makeKeyAndOrderFront(nil)
+        let tabsBefore = space.tabs.map(\.id)
+        XCTAssertTrue(tabsBefore.contains(tab.id))
+
+        launcher.show(profile: makeProfile(), sourceSpace: space)
+        let panel = try XCTUnwrap(launcher.panel)
+        let close = BrowserCommands.closeTab
+        let item = close.makeMenuItem()
+        XCTAssertTrue(CommandDispatch.responderTarget(for: close.action, in: panel) === panel)
+        // With the panel key and the browser window main, as at runtime, the
+        // menu's own resolution (key window's chain, then the main window's)
+        // stops at the panel too.
+        if panel.isKeyWindow, browserWindow.isMainWindow {
+            XCTAssertTrue(NSApp.target(forAction: close.action, to: nil, from: item) as AnyObject === panel)
+        }
+
+        XCTAssertTrue(CommandDispatch.perform(close, in: panel, menu: NSApp.mainMenu), "⌘W is answered in the launcher")
+
+        XCTAssertFalse(launcher.isShowing, "the launcher closed")
+        XCTAssertNil(launcher.panel)
+        XCTAssertTrue(opened.isEmpty, "nothing opened")
+        XCTAssertEqual(space.tabs.map(\.id), tabsBefore, "the browser window's tab is still open")
+        XCTAssertEqual(wc.selectedTabID, tab.id)
+    }
 }

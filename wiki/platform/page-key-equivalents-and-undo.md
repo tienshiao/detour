@@ -218,10 +218,12 @@ a suggestion chosen with the arrows, Escape or Backspace on a completion,
 and setting `stringValue` on a field being edited empties the field
 editor's undo list (a throwaway probe test in the review, not kept), so
 after one of those ⌘Z does nothing there (still never the browser's undo).
-And the launcher answers only Undo and Redo: by the same responder-chain
-reading, the browser window commands it does not answer (⌘W, ⌘R, ⌘T…)
-would go on to the main browser window behind it (read in the code, not
-run).
+The same responder-chain reading held for the browser window's other
+commands, which the launcher did not answer: measured in TASK-348, ⌘W, ⇧⌘T,
+⌘D, ⌘Y, ⌘T and ⌘L typed in the launcher acted on the main browser window
+behind it. The panel now answers every window-controller command itself
+(⌘W closes the launcher, the rest are disabled; [Quick Detour launcher
+panel](../features/quick-detour-launcher.md)).
 
 # Settings, its sheet and an extension's popup (TASK-349)
 

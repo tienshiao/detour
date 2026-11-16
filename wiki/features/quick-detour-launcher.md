@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Quick Detour launcher panel
-description: "The Spotlight-like panel that opens a Quick Detour: a non-activating borderless floating panel holding the command palette, its suggestions and undo, which profile it opens on, and how submitting activates Detour with only the new window forward."
+description: "The Spotlight-like panel that opens a Quick Detour: a non-activating borderless floating panel holding the command palette, its suggestions, undo and the browser-window commands it answers itself, which profile it opens on, and how submitting activates Detour with only the new window forward."
 tags: [window, palette, profiles]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:09Z }
@@ -22,6 +22,12 @@ sources:
   - id: task-346
     resource: backlog:TASK-346
     title: "Quick Detour launcher: ⌘Z in its field undoes the typing, never Detour's closed-tab list"
+  - id: task-348
+    resource: backlog:TASK-348
+    title: "Quick Detour launcher: browser-window shortcuts typed in its field (⌘W, ⌘R, ⌘T) act on the browser window behind it"
+  - id: harness-348
+    resource: ../../docs/harness/task348/drive.py
+    title: TASK-348 runtime check (real keys in the launcher)
   - id: launcher
     resource: ../../Detour/Browser/QuickDetour/QuickDetourLauncher.swift
     title: QuickDetourLauncher.swift (the palette panel)
@@ -81,6 +87,20 @@ File > New Quick Detour Window, or the [global hotkey](./quick-detour-hotkey.md)
   through to the main browser window's
   [undo](../architecture/browser-undo.md) and reopen a closed tab there
   ([A page's key equivalents and its undo](../platform/page-key-equivalents-and-undo.md)).
+- **Browser-window commands** (TASK-348): the panel answers every command
+  a window controller answers (the registry's `.windowController`
+  commands), so none reaches the window behind it. **⌘W** closes the
+  launcher, opening nothing; Undo and Redo are the field's (above); every
+  other one (⌘T, ⌘L, ⇧⌘T, ⌘D, ⌘R, ⌘Y, ⌥⌘↓, the Spaces items…) is disabled
+  here, a beep for its key. Before, they fell through to the main window:
+  measured with real keys, ⌘W closed a tab in the browser window behind the
+  launcher, ⇧⌘T reopened one, ⌘D pinned one, ⌘Y opened History, and ⌘T and
+  ⌘L opened that window's palette behind the launcher.[^harness-348] The
+  app's own commands (⌘N, ⌥⌘N, ⌘,) still reach the app delegate, and Cut,
+  Copy, Paste and Select All the field. The panel holds one plain `@objc`
+  method per command; `QuickDetourLauncherTests` walks the registry, so a
+  command added there without one fails. ⌘W closing the launcher and the
+  rest doing nothing are Claude's choices (TASK-348), to confirm.
 - **Escape** follows the palette's own steps: it clears typed text first, and
   closes the panel on an empty field. **Clicking away** closes it through
   `NSWindow.didResignKeyNotification` on the panel.
@@ -154,3 +174,4 @@ Suites, counts and the runtime passes are on [Quick Detour tests and runtime che
 
 [^harness]: TASK-193.1 runtime harness and its results
 [^harness-2]: TASK-193.2 runtime harness, its scratch tools and results
+[^harness-348]: TASK-348 runtime check (real keys in the launcher)
