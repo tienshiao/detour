@@ -36,9 +36,6 @@ sources:
   - id: task-347
     resource: backlog:TASK-347
     title: "Settings: panes ordered by topic, and a tall pane opens at a design maximum height instead of the screen's"
-  - id: task-353
-    resource: backlog:TASK-353
-    title: "Code comments contradicted by later tasks, and RuntimeInstalledEvent's NSLock"
 ---
 
 # Summary
@@ -100,8 +97,7 @@ profile selected), and in TASK-347's own runtime run Profiles opened at the
 kept 720 knowing this (the user's decision, 2026-11-15): Profiles opens at
 the maximum and scrolls, and "so that Profiles opens whole" is no longer the
 reason for the figure.[^task-347] The code's comment on
-`designMaximumContentHeight` still gives that old reason; correcting it is
-planned in TASK-353.[^task-353]
+`designMaximumContentHeight` gives this reason.
 
 # Measured heights
 
@@ -175,4 +171,3 @@ content and never from the window, and that Links fits the 400 pt minimum.
 [^task-338]: TASK-338
 [^task-340]: TASK-340
 [^task-347]: TASK-347
-[^task-353]: TASK-353

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import WebKit
 
 /// `chrome.runtime.onInstalled` as Detour emits it (TASK-22, TASK-29).
@@ -140,17 +141,23 @@ final class ProvisionalInstalledEventClaims {
         weak var context: AnyObject?
         let claim: RuntimeInstalledEventClaim
     }
-    private var entries: [String: Entry] = [:]
-    private let lock = NSLock()
+    /// The class is main-actor (the target's default isolation), and so are both
+    /// callers (the claim's reply handler and the context-error notification),
+    /// so the lock is never contended. It is a `Mutex` rather than an `NSLock`
+    /// per CLAUDE.md, and holds the record correctly should the class ever be
+    /// made `nonisolated`.
+    private let entries = Mutex<[String: Entry]>([:])
 
     private static func key(extensionID: String, profileID: String) -> String { "\(profileID)|\(extensionID)" }
 
     /// Remember `claim`, made by `context`. A newer claim for the same profile
     /// and extension replaces an older one.
     func record(_ claim: RuntimeInstalledEventClaim, context: AnyObject, extensionID: String, profileID: String) {
-        lock.lock(); defer { lock.unlock() }
-        entries = entries.filter { $0.value.context != nil }
-        entries[Self.key(extensionID: extensionID, profileID: profileID)] = Entry(context: context, claim: claim)
+        let key = Self.key(extensionID: extensionID, profileID: profileID)
+        entries.withLock { entries in
+            entries = entries.filter { $0.value.context != nil }
+            entries[key] = Entry(context: context, claim: claim)
+        }
     }
 
     /// `context`'s background content failed to load: undo the claim it made, if
@@ -159,14 +166,13 @@ final class ProvisionalInstalledEventClaims {
     func contextFailedToLoad(_ context: AnyObject, extensionID: String, profileID: String,
                              database: AppDatabase = .shared) -> RuntimeInstalledEvent.Details? {
         let key = Self.key(extensionID: extensionID, profileID: profileID)
-        lock.lock()
-        guard let entry = entries[key], entry.context === context else {
-            lock.unlock()
-            return nil
+        let claim: RuntimeInstalledEventClaim? = entries.withLock { entries in
+            guard let entry = entries[key], entry.context === context else { return nil }
+            entries[key] = nil
+            return entry.claim
         }
-        entries[key] = nil
-        lock.unlock()
-        return database.undoRuntimeInstalledEventClaim(entry.claim) ? entry.claim.details : nil
+        guard let claim else { return nil }
+        return database.undoRuntimeInstalledEventClaim(claim) ? claim.details : nil
     }
 }
 

@@ -267,7 +267,11 @@ class Profile {
         // run in the same ephemeral store its browsing does: nothing an
         // extension writes in Private reaches the disk or outlives the process.
         // (Not the *window*: the built-in Private profile, its store and its
-        // loaded contexts live until quit, exactly like its browsing cookies.)
+        // controller are kept until quit, but when the Private session ends —
+        // the last Private window or Private Quick Detour closes —
+        // `resetPrivateSession` unloads its contexts, clears their storage and
+        // the store's website data, and loads them again on new origins,
+        // exactly as its browsing cookies go (TASK-298).)
         //
         // The 2026-09-13 experiment that first put the ephemeral store here —
         // 1Password's worker never answering keep-alive ping #1, WebKit

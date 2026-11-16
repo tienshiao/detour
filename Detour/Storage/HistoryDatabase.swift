@@ -427,10 +427,12 @@ nonisolated struct HistoryDatabase: Sendable {
                 """)
 
             // Maintenance lives in SQL triggers rather than in Swift because the
-            // visits are written and deleted by a dozen paths — `recordVisit`,
-            // `updateTitle`, four delete APIs, `expireOldVisits`' GRDB
-            // `deleteAll`, FK cascades from `historyURL`, and the tests' own raw
-            // SQL seeding. A trigger is the only place all of them pass through.
+            // visits are written and deleted by many paths — `recordVisit`,
+            // `importVisits`, `updateTitle`, the three `deleteVisits` APIs
+            // (`ids:spaceIDs:`, `spaceIDs:since:`, `notInSpaceIDs:alsoKeeping:`),
+            // `expireOldVisits`' GRDB `deleteAll`, FK cascades from
+            // `historyURL`, and the tests' own raw SQL seeding. A trigger is the
+            // only place all of them pass through.
             //
             // A visit counts iff it has a usable title of its own.
             try db.execute(sql: """

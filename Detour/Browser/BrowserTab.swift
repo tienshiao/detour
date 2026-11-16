@@ -1275,10 +1275,14 @@ class BrowserTab: NSObject {
     /// The configuration a fresh web view for this tab must be built from.
     ///
     /// A `webkit-extension://` page can only load in the configuration of the
-    /// context that serves its origin — the space's own configuration has no
-    /// handler for the scheme, which is why `TabStore.addExtensionTab` takes the
-    /// context's configuration in the first place. So an extension tab is woken
-    /// from its owning context's configuration, resolved by *origin host* because
+    /// context that serves its origin. Every web view on the profile's
+    /// controller has WebKit's handler for the scheme, but the handler refuses
+    /// a main-frame load (`NSURLErrorResourceUnavailable`) unless the
+    /// configuration's `_requiredWebExtensionBaseURL` is that extension's, and
+    /// only the context's own `webViewConfiguration` sets it (TASK-352) — which
+    /// is why `TabStore.addExtensionTab` takes the context's configuration in
+    /// the first place. So an extension tab is woken from its owning context's
+    /// configuration, resolved by *origin host* because
     /// WebKit gives every loaded context a fresh base URL.
     ///
     /// Falls back to the space's configuration when no loaded context claims the

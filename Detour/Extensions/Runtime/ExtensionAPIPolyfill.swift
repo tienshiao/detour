@@ -1965,8 +1965,9 @@ struct ExtensionAPIPolyfill {
     /// keep alive and a port would be retained in Detour for nothing.
     ///
     /// If the background stops answering altogether — WebKit terminated the worker
-    /// under a hidden page that is still loaded, which is what a `chrome.offscreen`
-    /// document's close does to it (TASK-68) — Detour notices the missing replies
+    /// under a hidden page that is still loaded, which is what tracking
+    /// prevention purging the extension origin's script-written storage does to
+    /// it (TASK-68, TASK-70) — Detour notices the missing replies
     /// and restarts the background context
     /// (`ExtensionManager.restartUnresponsiveBackground`). Nothing here can help
     /// with that: the code that would react is the code that died.
@@ -2125,8 +2126,10 @@ struct ExtensionAPIPolyfill {
         }
 
         // Re-anchor when this port ends. Nothing holds the port: a port the
-        // extension drops is collected as before, and WebKit's removal of a
-        // collected port runs its onDisconnect listeners too.
+        // extension drops is collected as before. WebKit removes a collected
+        // port without running its onDisconnect listeners (measured in a
+        // worker, TASK-142), so that removal is not seen here and only the
+        // next ping re-anchors after it.
         //
         // The other side closing it fires onDisconnect here. The background
         // closing it itself is seen by wrapping the port's `disconnect`:

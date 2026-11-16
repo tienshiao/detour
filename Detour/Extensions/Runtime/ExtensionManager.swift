@@ -1163,23 +1163,26 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// and start it again (TASK-68).
     ///
     /// **Why this is needed at all.** In production (2026-09-13, verified in
-    /// WebKit's own log) 1Password's worker opened a `chrome.offscreen` document
-    /// and closed it a second later; 14 ms after that page closed the Networking
-    /// process cleared the *service worker registration*
-    /// (`SWServerRegistration::clear`) and the content process terminated the
-    /// worker (`SWContextManager::terminateWorker`) — WebKit treats the offscreen
-    /// page's close as the service-worker page's close
-    /// (`SWServer::unregisterServiceWorkerClientInternal` clears the registration
-    /// for the client whose identifier is the registration's
-    /// `serviceWorkerPageIdentifier`). The hidden background page was *not*
-    /// closed: it stayed loaded around a dead worker, so every port stayed open,
-    /// every alarm was lost and Detour's pings went unanswered for two full
-    /// minutes until WebKit finally unloaded the page — and only then did the next
-    /// alarm start a working worker.
+    /// WebKit's own log) the Networking process cleared 1Password's *service
+    /// worker registration* (`SWServerRegistration::clear`) and the content
+    /// process terminated the worker (`SWContextManager::terminateWorker`). The
+    /// trigger was tracking prevention: the clear came right after
+    /// `deleteAndRestrictWebsiteDataForRegistrableDomains` purged script-written
+    /// storage for the extension origin, which never earns first-party user
+    /// interaction (TASK-68's correction; the store fix is TASK-70). An
+    /// offscreen document of 1Password's closed 14 ms before the clear and
+    /// first looked like the cause; it was a coincidence, and in the harness
+    /// neither closing a Detour-hosted offscreen document nor closing an
+    /// ordinary page kills the worker. The hidden background page was *not*
+    /// closed: it stayed loaded around a dead worker, so every port stayed
+    /// open, every alarm was lost and Detour's pings went unanswered for two
+    /// full minutes until WebKit finally unloaded the page — and only then did
+    /// the next alarm start a working worker.
     ///
-    /// Nothing Detour can do prevents that termination, so this is the safety
-    /// net: the pings are the only thing that can tell a dead background from a
-    /// live one, and two silent intervals are enough to act on.
+    /// Detour cannot rule out every way WebKit ends a worker under a loaded
+    /// page, so this is the safety net: the pings are the only thing that can
+    /// tell a dead background from a live one, and two silent intervals are
+    /// enough to act on.
     ///
     /// The teardown is the same one a replaced context gets (TASK-67): the hosts
     /// and relayed sockets belong to a context that is gone, and WebKit will never

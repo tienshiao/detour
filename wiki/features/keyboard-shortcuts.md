@@ -47,9 +47,6 @@ sources:
   - id: spike
     resource: ../../docs/harness/task327
     title: "TASK-327 spikes (standalone AppKit programs building a menu in code, run with -NSUserKeyEquivalents as a launch argument; menu matching from real CGEvents; macOS 26, 2026-11-14) and the Accessibility helper for driving Settings"
-  - id: task-353
-    resource: backlog:TASK-353
-    title: "Code comments contradicted by later tasks, and RuntimeInstalledEvent's NSLock"
 ---
 
 # What it does
@@ -140,7 +137,7 @@ not on a binding change).
 |---|---|
 | Every parameterless main-menu command, AppKit's application and window items included (Hide, Quit, Minimize, Zoom) | `bindable` |
 | New Quick Detour Window | `quickDetourPane`: listed read-only, with a link to that pane |
-| Undo, Redo, Cut, Copy, Paste, Select All | `fixed`: listed read-only, the reason as tooltip (Undo and Redo: the user's decision, 2026-11-15, TASK-345; Cut, Copy, Paste and Select All stay fixed too, like Undo and Redo: the user's decision, 2026-11-15[^task-327]. The comment in `BrowserCommands.fixedShortcuts` still marks the text commands PROVISIONAL; correcting it is planned in TASK-353[^task-353]) |
+| Undo, Redo, Cut, Copy, Paste, Select All | `fixed`: listed read-only, the reason as tooltip (Undo and Redo: the user's decision, 2026-11-15, TASK-345; Cut, Copy, Paste and Select All stay fixed too, like Undo and Redo: the user's decision, 2026-11-15[^task-327]. The comment on `BrowserCommands.fixedShortcuts` records both decisions) |
 | Parameterised commands (a space, an extension) | `notListed` |
 | Check for Updates… | listed only in a run that starts Sparkle |
 
@@ -493,4 +490,3 @@ for the app. To try one at runtime, pass it as a launch argument; never
 [^spike-335]: TASK-335 spikes
 [^task-343]: TASK-343
 [^spike]: NSUserKeyEquivalents spikes
-[^task-353]: TASK-353

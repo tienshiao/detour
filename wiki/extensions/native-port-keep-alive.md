@@ -356,14 +356,10 @@ itself.[^task-21]
 
 # Gotchas
 
-- **Stale comments.** The doc comment on `restartUnresponsiveBackground` and
-  a paragraph in `nativePortKeepAliveJS` still say a `chrome.offscreen`
-  document's close terminates the worker. TASK-68's own correction found that a coincidence; the trigger was
-  the ITP pass that ran in the same millisecond.[^task-68] And the comment
-  above `watchPort` in `nativePortKeepAliveJS` says WebKit's removal of a
-  collected port runs its `onDisconnect` listeners; TASK-142's own
-  measurement (in a worker) found they do not run, which is why such a port
-  waits for the next ping (see "Where it does not hold").[^task-142]
+- **An offscreen document's close does not kill the worker.** It closed
+  14 ms before the 2026-09-13 termination and first looked like the cause;
+  TASK-68's own correction found that a coincidence, the trigger being the
+  ITP pass that ran in the same millisecond.[^task-68]
 - **Take the registry entry before disconnecting.** Every teardown removes
   the whole entry first, so the callbacks it sets off find nothing to
   release. Reordering this double-releases a host.
