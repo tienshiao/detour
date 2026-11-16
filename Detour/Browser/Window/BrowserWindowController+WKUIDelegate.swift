@@ -192,7 +192,9 @@ extension BrowserWindowController: WKUIDelegate {
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable (String?) -> Void) {
         let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         textField.stringValue = defaultText ?? ""
-        showJSAlert(in: webView, from: frame, message: prompt, showCancel: true, accessoryView: textField) { response in
+        // Wrapped so the sheet answers Undo/Redo with the field's typing (TASK-367).
+        showJSAlert(in: webView, from: frame, message: prompt, showCancel: true,
+                    accessoryView: FieldUndoView.wrapping(textField)) { response in
             completionHandler(response == .alertFirstButtonReturn ? textField.stringValue : nil)
         }
     }

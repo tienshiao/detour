@@ -501,4 +501,116 @@ nonisolated final class SettingsAndPopupUndoTests: XCTestCase {
         XCTAssertEqual(editor.string, "typed", "Settings' typing is left alone")
         assertBrowserListUntouched(browser)
     }
+
+    // MARK: - A page's prompt() (TASK-367)
+
+    /// The sheet's first editable plain text field (a secure field is left
+    /// out) typed into: Undo and Redo stop inside the sheet, ahead of the
+    /// window it is attached to, undo and redo its typing and never reach the
+    /// browser's list.
+    @MainActor private func checkSheetFieldUndo(in sheet: NSWindow, browser: Counter) throws {
+        func fields(in view: NSView) -> [NSTextField] {
+            ((view as? NSTextField).map { $0.isEditable && !($0 is NSSecureTextField) ? [$0] : [] } ?? [])
+                + view.subviews.flatMap(fields(in:))
+        }
+        let field = try XCTUnwrap(fields(in: try XCTUnwrap(sheet.contentView)).first, "the sheet's field")
+        XCTAssertTrue(sheet.makeFirstResponder(field))
+        let editor = try XCTUnwrap(sheet.firstResponder as? NSTextView, "the sheet's field is being edited")
+
+        let target = try XCTUnwrap(CommandDispatch.responderTarget(for: BrowserCommands.undo.action, in: sheet),
+                                   "something in the sheet answers Undo")
+        XCTAssertTrue((target as? NSView)?.window === sheet, "it is in the sheet, ahead of the window: \(target)")
+        XCTAssertTrue(CommandDispatch.responderTarget(for: BrowserCommands.redo.action, in: sheet) === target)
+        let validator = try XCTUnwrap(target as? NSMenuItemValidation)
+        func run(_ item: NSMenuItem) {
+            guard let action = item.action else { return XCTFail("no action") }
+            NSApp.sendAction(action, to: target, from: item)
+        }
+        checkFieldUndo(editor: editor, validator: validator, undo: run, redo: run, browser: browser)
+    }
+
+    /// A page's `prompt()` in `window`: an alert sheet with a text field,
+    /// asked through the window's real UI delegate. The field is typed into;
+    /// Undo and Redo stop inside the sheet (AppKit disables an action aimed
+    /// at a window with a sheet attached, so before, nothing answered them:
+    /// disabled, and the typing could not be undone), undo and redo its
+    /// typing and never reach the browser's list. OK then hands the page the
+    /// field's text.
+    @MainActor private func checkPromptUndo(in window: NSWindow, page: WKWebView, browser: Counter) async throws {
+        _ = try await page.evaluateJavaScript("setTimeout(() => { window.answer = prompt('Name?', '') }, 0); 1")
+        try await waitUntil("the prompt sheet") { window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        addTeardownBlock { @MainActor in
+            if window.attachedSheet === sheet { window.endSheet(sheet, returnCode: .alertSecondButtonReturn) }
+        }
+        try checkSheetFieldUndo(in: sheet, browser: browser)
+
+        window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+        try await waitUntil("the sheet to go") { window.attachedSheet == nil }
+        let answer = try await page.evaluateJavaScript("window.answer") as? String
+        XCTAssertEqual(answer, "qd", "OK hands the page the field's text")
+    }
+
+    @MainActor func testUndoInAPagesPromptInABrowserWindowIsItsFieldsTyping() async throws {
+        let browser = seedBrowserUndo()
+        let wc = BrowserWindowController(incognito: true)
+        wc.sidebarSplitView.autosaveName = nil
+        let window = try XCTUnwrap(wc.window)
+        window.isReleasedWhenClosed = false
+        windows.append(window)
+        addTeardownBlock { @MainActor in wc.window?.close() }
+        let space = try XCTUnwrap(wc.activeSpace)
+        let tab = TabStore.shared.addTab(in: space, url: URL(string: "about:blank"))
+        wc.selectTab(id: tab.id)
+        window.makeKeyAndOrderFront(nil)
+        try await waitUntil("the page") { tab.webView?.window === window && tab.webView?.isLoading == false }
+        try await checkPromptUndo(in: window, page: try XCTUnwrap(tab.webView), browser: browser)
+    }
+
+    @MainActor func testUndoInAPagesPromptInAQuickDetourIsItsFieldsTyping() async throws {
+        let browser = seedBrowserUndo()
+        let profile = TabStore.shared.addProfile(name: "Prompt Undo")
+        createdProfiles.append(profile)
+        let quick = QuickDetourWindowController.open(profile: profile, url: URL(string: "about:blank")!)
+        let window = try XCTUnwrap(quick.window)
+        window.isReleasedWhenClosed = false
+        windows.append(window)
+        addTeardownBlock { @MainActor in quick.close() }
+        let page = try XCTUnwrap(quick.tab?.webView)
+        try await waitUntil("the page") { page.window === window && !page.isLoading }
+        try await checkPromptUndo(in: window, page: page, browser: browser)
+    }
+
+    private final class ChallengeSender: NSObject, URLAuthenticationChallengeSender {
+        func use(_ credential: URLCredential, for challenge: URLAuthenticationChallenge) {}
+        func continueWithoutCredential(for challenge: URLAuthenticationChallenge) {}
+        func cancel(_ challenge: URLAuthenticationChallenge) {}
+    }
+
+    /// The HTTP sign-in sheet (browser and Quick Detour windows share it):
+    /// its username field's typing, answered inside the sheet, as a
+    /// `prompt()`'s is.
+    @MainActor func testUndoInTheSignInSheetIsItsFieldsTyping() async throws {
+        let browser = seedBrowserUndo()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.makeKeyAndOrderFront(nil)
+        windows.append(window)
+        let space = URLProtectionSpace(host: "signin.invalid", port: 443, protocol: "https", realm: "Test",
+                                       authenticationMethod: NSURLAuthenticationMethodHTTPBasic)
+        let challenge = URLAuthenticationChallenge(protectionSpace: space, proposedCredential: nil, previousFailureCount: 0,
+                                                   failureResponse: nil, error: nil, sender: ChallengeSender())
+        var disposition: URLSession.AuthChallengeDisposition?
+        HTTPAuthenticationPrompt.handle(challenge, in: window) { result, _ in disposition = result }
+        try await waitUntil("the sign-in sheet") { window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        addTeardownBlock { @MainActor in
+            if window.attachedSheet === sheet { window.endSheet(sheet, returnCode: .alertSecondButtonReturn) }
+        }
+        try checkSheetFieldUndo(in: sheet, browser: browser)  // the username field
+        window.endSheet(sheet, returnCode: .alertSecondButtonReturn)
+        try await waitUntil("the sheet to go") { window.attachedSheet == nil }
+        XCTAssertEqual(disposition, .rejectProtectionSpace)
+    }
 }

@@ -655,7 +655,8 @@ enum HTTPAuthenticationPrompt {
         let passwordField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
         passwordField.placeholderString = "Password"
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 56))
+        // Answers Undo/Redo with the fields' typing (TASK-367).
+        let container = FieldUndoView(frame: NSRect(x: 0, y: 0, width: 200, height: 56))
         usernameField.frame = NSRect(x: 0, y: 32, width: 200, height: 24)
         passwordField.frame = NSRect(x: 0, y: 0, width: 200, height: 24)
         container.addSubview(usernameField)

@@ -14,7 +14,8 @@ import AppKit
 /// popover) it reached the browser window behind it, whose `browserUndo:`
 /// reopened a closed tab; and Settings, which is main, left the item
 /// disabled with whatever title a browser window gave it last. A sheet's
-/// fields answer for themselves (`SiteSearchForm`, `AddProfileViewController`):
+/// fields answer for themselves (`SiteSearchForm`, `AddProfileViewController`,
+/// an alert's `FieldUndoView`):
 /// AppKit disables an action aimed at a window with a sheet attached. Behind
 /// them all, a browser or Quick Detour window that the actions still reach
 /// while another window that does not answer them has the keys runs this for
@@ -97,5 +98,33 @@ enum FieldUndo {
         default:
             return nil
         }
+    }
+}
+
+/// A container for an alert sheet's text fields that answers Edit > Undo and
+/// Redo (⌘Z / ⇧⌘Z) with their typing (`FieldUndo`), never the browser's list:
+/// a page's `prompt()` (browser and Quick Detour windows, TASK-367) and the
+/// HTTP sign-in sheet. AppKit disables a menu action aimed at a window with a
+/// sheet attached, so the window's controller, which the actions would reach
+/// next as the main window's, cannot answer for the sheet (measured: after
+/// typing in a `prompt()` field Edit > Undo read "Undo", disabled, and ⌘Z
+/// left the text). The view is in its fields' responder chain, ahead of the
+/// sheet's window, as `SiteSearchForm` is for its sheet.
+final class FieldUndoView: NSView, NSMenuItemValidation {
+    @objc func browserUndo(_ sender: Any?) { FieldUndo.undo(in: window) }
+
+    @objc func browserRedo(_ sender: Any?) { FieldUndo.redo(in: window) }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        FieldUndo.validate(menuItem, in: window) ?? true
+    }
+
+    /// `field` alone, at the container's origin and the field's size: an
+    /// alert's accessory view.
+    static func wrapping(_ field: NSView) -> FieldUndoView {
+        let container = FieldUndoView(frame: NSRect(origin: .zero, size: field.frame.size))
+        field.setFrameOrigin(.zero)
+        container.addSubview(field)
+        return container
     }
 }

@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><title>Prompt fixture</title></head>
+<body>
+<p>TASK-367: this page asks with prompt() once it has loaded.</p>
+<script>
+  window.addEventListener("load", () => setTimeout(() => {
+    const answer = prompt("Name?", "");
+    document.title = "Answered: " + String(answer);
+  }, 300));
+</script>
+</body></html>

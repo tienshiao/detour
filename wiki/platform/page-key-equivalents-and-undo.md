@@ -1,7 +1,7 @@
 ---
 type: Platform Quirk
 title: A page's key equivalents and its undo
-description: How a WKWebView on macOS hands a Cmd key to the page first and gives the ones the page leaves back to AppKit (re-sent through NSApp.sendEvent, so the main menu gets them once; no Cocoa delegate callback), where WebKit keeps a page's edits for undo (the view's undoManager, by inheritance the window's) and when it drops them (the view changing windows, a tab switch) — read in WebKit's source and measured for TASK-345; and how the windows that are not browser windows (the Quick Detour launcher, Settings and its sheet, an extension's popup) answer Edit > Undo with their own field's typing (TASK-346, TASK-349).
+description: How a WKWebView on macOS hands a Cmd key to the page first and gives the ones the page leaves back to AppKit (re-sent through NSApp.sendEvent, so the main menu gets them once; no Cocoa delegate callback), where WebKit keeps a page's edits for undo (the view's undoManager, by inheritance the window's) and when it drops them (the view changing windows, a tab switch) — read in WebKit's source and measured for TASK-345; and how the windows that are not browser windows (the Quick Detour launcher, Settings and its sheet, an extension's popup, a page's prompt() sheet) answer Edit > Undo with their own field's typing (TASK-346, TASK-349, TASK-366, TASK-367).
 tags: [webkit, keyboard, undo, menus, responder-chain]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:55:23Z }
@@ -55,6 +55,12 @@ sources:
   - id: harness-366
     resource: ../../docs/harness/task366/drive.py
     title: TASK-366 runtime check (a popup from a Quick Detour window)
+  - id: task-367
+    resource: backlog:TASK-367
+    title: "Undo: typing in a page's prompt() dialog (and other alert sheets with a text field) cannot be undone"
+  - id: harness-367
+    resource: ../../docs/harness/task367
+    title: TASK-367 runtime check (drive.py, prompt.html fixture)
   - id: feature
     resource: ../tabs/tab-lifecycle.md
     title: Tab lifecycle (Reopening and undo)
@@ -231,7 +237,7 @@ behind it. The panel now answers every window-controller command itself
 (⌘W closes the launcher, the rest are disabled; [Quick Detour launcher
 panel](../features/quick-detour-launcher.md)).
 
-# Settings, its sheet and an extension's popup (TASK-349)
+# Settings, its sheet, an extension's popup and a page's prompt() (TASK-349, TASK-366, TASK-367)
 
 Checked first with real keys (`docs/harness/task349/drive.py`, Debug,
 Detour in front, a tab closed with a real ⌘W on the browser's list, fields
@@ -283,6 +289,17 @@ review; `testAnAddressedUndoWhileSettingsIsKeyIsTheBrowserWindowsOwn`). That a
 field-less popover's ⌘Z now does nothing, rather than the browser's undo,
 is the user's decision (2026-11-16).
 
+Measured with the fix, the same script: in the profile name, a space's
+name, the site search sheet's Name, the Add Profile sheet's name, a route's
+pattern and the popup's input,
+Edit > Undo was "Undo" and disabled with nothing typed and ⌘Z changed
+nothing; after typing it read "Undo Typing", ⌘Z removed the typing and ⇧⌘Z
+put it back; the closed tab stayed closed throughout, and back in the
+browser window ⌘Z reopened it (46/46 checks). Not measured at runtime: a popup opened
+from the sidebar's extension button rather than the endpoint, the popover
+window losing first responder to itself, and a field-less popover (both
+covered by tests with a stand-in key window).
+
 A Quick Detour or quarantine window has the same fallback since TASK-366
 (the rule now lives in `FieldUndo.keyWindowHandingUndo(to:in:)`, which both
 controllers ask before their own undo, in `browserUndo:` and in
@@ -298,16 +315,18 @@ popup's web view first responder, ⌘Z / ⇧⌘Z undid and redid the typing,
 titled "Undo Typing", and the closed tab behind stayed closed. The popover
 window losing first responder to itself is covered by the test only.
 
-Measured with the fix, the same script: in the profile name, a space's
-name, the site search sheet's Name, the Add Profile sheet's name, a route's
-pattern and the popup's input,
-Edit > Undo was "Undo" and disabled with nothing typed and ⌘Z changed
-nothing; after typing it read "Undo Typing", ⌘Z removed the typing and ⇧⌘Z
-put it back; the closed tab stayed closed throughout, and back in the
-browser window ⌘Z reopened it (46/46 checks). Not measured at runtime: a popup opened
-from the sidebar's extension button rather than the endpoint, the popover
-window losing first responder to itself, and a field-less popover (both
-covered by tests with a stand-in key window).
+A page's `prompt()` (an alert sheet whose accessory is a text field, in a
+browser or a Quick Detour window) had the sheet problem: measured with real
+keys before TASK-367 (`docs/harness/task367/drive.py`, a fixture page calling
+`prompt()` after load), the sheet's field had the keys when it opened, and
+after typing Edit > Undo read "Undo", disabled, and ⌘Z left the text, in
+both kinds of window. The prompt's field and the HTTP sign-in sheet's
+username and password now sit in a `FieldUndoView`, which answers the
+actions in the sheet's chain with `FieldUndo` for the sheet window, as
+`SiteSearchForm` does. Measured with the fix: "Undo Typing", enabled; ⌘Z
+emptied the field and ⇧⌘Z brought it back; a closed tab on the browser's
+list stayed closed; OK still handed the page the text. The sign-in sheet is
+covered by a test only (no fixture server asks for Basic auth here).
 
 From the source only, not measured: a page whose web process is gone
 swallows the key; the docked Web Inspector (a plain `WKWebView`) leaves ⌘Z

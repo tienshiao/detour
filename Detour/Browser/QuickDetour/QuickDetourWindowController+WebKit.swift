@@ -327,7 +327,9 @@ extension QuickDetourWindowController: WKUIDelegate {
                  initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable (String?) -> Void) {
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = defaultText ?? ""
-        runScriptDialog(in: webView, from: frame, message: prompt, showCancel: true, accessoryView: field) {
+        // Wrapped so the sheet answers Undo/Redo with the field's typing (TASK-367).
+        runScriptDialog(in: webView, from: frame, message: prompt, showCancel: true,
+                        accessoryView: FieldUndoView.wrapping(field)) {
             completionHandler($0 == .alertFirstButtonReturn ? field.stringValue : nil)
         }
     }
