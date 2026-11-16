@@ -466,7 +466,18 @@ nonisolated final class ExtensionOriginTrackingPreventionTests: XCTestCase {
         // is no way back either — `setTimeAdvanceForTesting` only steps forward
         // — but the advanced clock lives in this profile's own ITP session,
         // which is discarded with the profile in tearDown.
-        await store.setResourceLoadStatisticsTimeAdvanceForTesting(24 * 60 * 60)
+        //
+        // Eight days, past ITP's grandfathering window (7 days,
+        // `grandfatheringTime`): a new statistics database grandfathers every
+        // domain that already has website data when the store populates, and
+        // that population races the localStorage writes above. A domain it
+        // catches is exempt until the window ends, so with a one-day advance
+        // the pass spared `itp-purged.example` whenever the population ran
+        // after its write (a timing flake, seen in a full run; a passing run's
+        // database had `itp-kept.example` grandfathered). The interactions are
+        // not expired by the advance: the long window counts operating dates,
+        // not wall time.
+        await store.setResourceLoadStatisticsTimeAdvanceForTesting(8 * 24 * 60 * 60)
         await store.processStatisticsAndDataRecords()
 
         try await waitUntil("the uninteracted origin's localStorage to be deleted", timeout: 30) {

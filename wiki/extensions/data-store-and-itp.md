@@ -179,8 +179,8 @@ Step-by-step commands are in
 per loaded context; nothing for a non-persistent store, the incognito
 profile or a deleted profile; extension web views use the profile store) and
 drives a real pass: two http origins write localStorage, one gets the
-keeper's `logInteraction`, both are marked prevalent, the clock is advanced a
-day, and the pass empties only the uninteracted one while a loaded probe
+keeper's `logInteraction`, both are marked prevalent, the clock is advanced
+eight days, and the pass empties only the uninteracted one while a loaded probe
 extension keeps its IndexedDB and its worker.
 
 Traps met while writing it:[^task-70]
@@ -193,6 +193,18 @@ Traps met while writing it:[^task-70]
   profile's session.
 - Interaction expiry needs 30 recorded operating days, so the control origin
   is marked prevalent instead.
+- A new statistics database **grandfathers** the domains that already have
+  website data when the store populates: they are exempt from deletion for
+  `grandfatheringTime`, 7 days (WebKit's `ResourceLoadStatisticsStore`,
+  read 2026-11-16). That population can land in the middle of the test's
+  localStorage writes (a passing run's database had `itp-kept.example`
+  grandfathered and `itp-purged.example` not), so with the one-day advance the
+  test used before, a run whose snapshot also caught `itp-purged.example`
+  timed out waiting for its deletion (one full-suite run and the re-runs after
+  it, 2026-11-16; not reproduced in a dozen runs since). The advance is now
+  eight days, past the window, which makes the pass ignore and clear
+  grandfathering; the kept interaction is unaffected, since its expiry counts
+  operating dates.
 
 # Open questions
 

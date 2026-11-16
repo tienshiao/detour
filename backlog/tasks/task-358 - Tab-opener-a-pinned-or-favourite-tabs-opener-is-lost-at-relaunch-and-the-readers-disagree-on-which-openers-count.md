@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T05:53:00Z'
-updated_date: '2026-11-16T09:07:00Z'
+updated_date: '2026-11-16T09:45:00Z'
 labels:
   - tabs
   - opener
@@ -60,6 +60,8 @@ Not verified: the real trackpad swipe on a child of a favourite (the mode and op
 
 Correction to decision (c): Move to Space keeps the link while it resolves in the destination by the one rule (a favourite of the destination's profile, or an opener moved there before the child), not only a favourite; before, it was always cut. Alternative: always cut (tab.parentID = nil in moveTab). Covered by TabOpenerRuleTests.testAChildFollowingItsOpenerToAnotherSpaceKeepsTheLink (undo takes the child home unlinked). TabOpenerRuleTests + TabOpenerWindowTests + MoveTabToSpaceTests rerun: 46 passed, 0 failed. Wiki runtime-check section added on tab-opener.md.
 Out of scope, found: the sidebar Back button's enabled state is recomputed only in the selected tab's canGoBack sink, so it stays enabled when the selected child's opener closes or (now) a favourite opener goes dormant; pressing it then does nothing. Predates this task (the same for a normal opener closing). A pinned tab or favourite that sleeps loses its own link (waking builds a new tab at its home page).
+
+Follow-up (lead's full run on 0818dadb: ExtensionOriginTrackingPreventionTests.testTrackingPreventionPassSparesOriginsWithALoggedInteraction timed out waiting for itp-purged.example's localStorage to go). No TASK-358 code runs in that test (it adds a profile, loads a probe extension, drives an ITP pass; the test host's session DB had no tabs, so the restore change does nothing; the favourites refresh fires only for a window whose active space is on that profile). It passed 12 times on 0818dadb here (alone, with the suite, after the window suites). Cause found in WebKit: a new ITP database grandfathers the domains that have website data when the store populates, exempting them for 7 days (grandfatheringTime), and the test advanced the clock one day; a passing run's observations.db had itp-kept.example grandfathered and itp-purged.example not, so the population lands mid-write, and a run that also catches itp-purged spares it. Fix in the test: advance eight days (past the window; the pass then ignores and clears grandfathering; interaction expiry counts operating dates, so the kept origin is unaffected). ITP suite 3x 7/7; with the opener suites 167 passed, 0 failed. Wiki: data-store-and-itp.md trap.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
