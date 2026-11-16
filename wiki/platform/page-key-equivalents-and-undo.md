@@ -49,6 +49,12 @@ sources:
   - id: harness-349
     resource: ../../docs/harness/task349
     title: TASK-349 runtime checks (drive.py, axundo.swift)
+  - id: task-366
+    resource: backlog:TASK-366
+    title: "Undo: an extension popup shown from a Quick Detour window cannot undo its typing once its web view loses first responder"
+  - id: harness-366
+    resource: ../../docs/harness/task366/drive.py
+    title: TASK-366 runtime check (a popup from a Quick Detour window)
   - id: feature
     resource: ../tabs/tab-lifecycle.md
     title: Tab lifecycle (Reopening and undo)
@@ -261,7 +267,8 @@ the web view's chain. The popover makes its web view first responder when
 it opens (asserted in `SettingsAndPopupUndoTests`; at runtime Edit > Undo
 read "Undo", disabled, right after the popup opened). Behind those, the
 browser window's own `browserUndo:` runs the key window's `FieldUndo`
-whenever the key window is not a browser window (`nonBrowserKeyWindow`), so
+whenever the key window is not a browser window (`nonBrowserKeyWindow`, which asks
+`FieldUndo.keyWindowHandingUndo`), so
 a popup whose window itself is first responder, a popover without fields
 (Downloads, site settings: nothing, disabled) or a future sheet or panel
 that forgets to answer never reaches `TabStore`'s list either. The
@@ -275,6 +282,21 @@ Settings' Automation section or a Private window (found in TASK-349's
 review; `testAnAddressedUndoWhileSettingsIsKeyIsTheBrowserWindowsOwn`). That a
 field-less popover's ⌘Z now does nothing, rather than the browser's undo,
 is the user's decision (2026-11-16).
+
+A Quick Detour or quarantine window has the same fallback since TASK-366
+(the rule now lives in `FieldUndo.keyWindowHandingUndo(to:in:)`, which both
+controllers ask before their own undo, in `browserUndo:` and in
+`validateMenuItem`). A popup shown from a Quick Detour window's title bar
+hands the actions to `QuickDetourWindowController` through the popover
+window's next responder, the same way (asserted in the test). Before, with
+the popover window itself first responder, the Quick Detour answered only
+for its own page: Edit > Undo was disabled and the popup's typing could not
+be undone (confirmed by a failing test). Measured with real keys
+(`docs/harness/task366/drive.py`: API Explorer pinned, a Quick Detour opened
+from the launcher, the popup opened from its title bar button): with the
+popup's web view first responder, ⌘Z / ⇧⌘Z undid and redid the typing,
+titled "Undo Typing", and the closed tab behind stayed closed. The popover
+window losing first responder to itself is covered by the test only.
 
 Measured with the fix, the same script: in the profile name, a space's
 name, the site search sheet's Name, the Add Profile sheet's name, a route's

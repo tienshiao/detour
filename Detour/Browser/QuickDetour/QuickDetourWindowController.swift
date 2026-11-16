@@ -1259,13 +1259,19 @@ extension QuickDetourWindowController: NSMenuItemValidation {
     /// Edit > Undo and Redo, and Cmd+Z / Shift+Cmd+Z once the page has left
     /// them (TASK-345): the page's own undo while an editable element in it
     /// has focus, and nothing else. A Quick Detour has no browser undo
-    /// (TASK-193.1); `TabStore`'s list is never reached from here.
+    /// (TASK-193.1); `TabStore`'s list is never reached from here. While a
+    /// window that hands the actions here has the keys (an extension's popup
+    /// shown from this window whose web view lost first responder), only
+    /// that window's own undo (`FieldUndo.keyWindowHandingUndo`, TASK-366),
+    /// as in a browser window (TASK-349).
     @objc func browserUndo(_ sender: Any?) {
+        if let keyWindow = FieldUndo.keyWindowHandingUndo(to: self, in: window) { return FieldUndo.undo(in: keyWindow) }
         guard let undoManager = editingPageUndoManager, undoManager.canUndo else { return }
         undoManager.undo()
     }
 
     @objc func browserRedo(_ sender: Any?) {
+        if let keyWindow = FieldUndo.keyWindowHandingUndo(to: self, in: window) { return FieldUndo.redo(in: keyWindow) }
         guard let undoManager = editingPageUndoManager, undoManager.canRedo else { return }
         undoManager.redo()
     }
@@ -1275,9 +1281,11 @@ extension QuickDetourWindowController: NSMenuItemValidation {
 
     /// The registry's rule for the item's command, in this window, after
     /// retitling it (TASK-320). Items that are no command (the title bar's
-    /// own menus) are enabled.
+    /// own menus) are enabled. Undo and Redo while a window that hands them
+    /// here has the keys are that window's (TASK-366).
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        BrowserCommands.validate(menuItem, in: self)
+        if let answer = FieldUndo.validateForKeyWindow(menuItem, handingUndoTo: self, in: window) { return answer }
+        return BrowserCommands.validate(menuItem, in: self)
     }
 }
 

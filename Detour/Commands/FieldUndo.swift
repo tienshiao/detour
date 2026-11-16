@@ -16,9 +16,9 @@ import AppKit
 /// disabled with whatever title a browser window gave it last. A sheet's
 /// fields answer for themselves (`SiteSearchForm`, `AddProfileViewController`):
 /// AppKit disables an action aimed at a window with a sheet attached. Behind
-/// them all, a browser window that the actions still reach while a window
-/// that is not a browser window has the keys runs this for that key window
-/// (`BrowserWindowController.nonBrowserKeyWindow`).
+/// them all, a browser or Quick Detour window that the actions still reach
+/// while another window that does not answer them has the keys runs this for
+/// that key window (`keyWindowHandingUndo(to:in:)`).
 enum FieldUndo {
 
     /// The undo manager of the first responder in `window`: the field
@@ -39,6 +39,47 @@ enum FieldUndo {
     static func redo(in window: NSWindow?) {
         guard let manager = undoManager(in: window), manager.canRedo else { return }
         manager.redo()
+    }
+
+    /// The key window, when Edit > Undo or Redo reached `controller` (a
+    /// browser window's or a Quick Detour's, in `window`) although another
+    /// window that is not one of theirs has the keys: a popover shown from
+    /// `window` (its own next responder is that window, so anything in it
+    /// that does not answer the actions hands them to `controller`, as an
+    /// extension's popup whose web view is not its first responder does), or
+    /// a window that never becomes main. The controller then runs that
+    /// window's own undo (`undo(in:)`, nothing when it has none: Downloads,
+    /// site settings) and never its own: the browser's list, or the Quick
+    /// Detour's page (TASK-349, TASK-366). Nil when `window` or another
+    /// browser or Quick Detour window has the keys, or none does (a menu
+    /// command sent with the app in the background).
+    ///
+    /// Only a key window whose own chain hands the actions to `controller`
+    /// (or to nothing, in a window that is not main): a command addressed to
+    /// `window` while another window answers them for itself (the automation
+    /// endpoint's `run_menu_item` with Settings, the launcher or another
+    /// window's popup key) is `window`'s, and never reaches into that window,
+    /// which may be Private or Settings' Automation section.
+    static func keyWindowHandingUndo(to controller: NSResponder, in window: NSWindow?) -> NSWindow? {
+        guard let keyWindow = keyWindowSource(), keyWindow !== window,
+              !(keyWindow.windowController is BrowserWindowController),
+              !(keyWindow.windowController is QuickDetourWindowController) else { return nil }
+        let target = CommandDispatch.responderTarget(for: BrowserCommands.undo.action, in: keyWindow)
+        guard target === controller || (target == nil && !keyWindow.isMainWindow) else { return nil }
+        return keyWindow
+    }
+
+    /// Where `keyWindowHandingUndo` reads the key window: AppKit's. Tests
+    /// stand in a window, as the test host is rarely the active app.
+    static var keyWindowSource: () -> NSWindow? = { NSApp.keyWindow }
+
+    /// Undo and Redo validated for that key window, when there is one; nil
+    /// for any other item, or when the controller answers for itself.
+    static func validateForKeyWindow(_ item: NSMenuItem, handingUndoTo controller: NSResponder,
+                                     in window: NSWindow?) -> Bool? {
+        guard item.action == BrowserCommands.undo.action || item.action == BrowserCommands.redo.action,
+              let keyWindow = keyWindowHandingUndo(to: controller, in: window) else { return nil }
+        return validate(item, in: keyWindow)
     }
 
     /// Edit > Undo and Redo titled from `window`'s undo and enabled only

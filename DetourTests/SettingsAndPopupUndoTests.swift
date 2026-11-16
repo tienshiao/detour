@@ -44,7 +44,7 @@ nonisolated final class SettingsAndPopupUndoTests: XCTestCase {
         tempDirs.removeAll()
         TabStore.shared.undoManager.removeAllActions()
         TabStore.shared.undoManager.groupsByEvent = true
-        BrowserWindowController.keyWindowSource = { NSApp.keyWindow }
+        FieldUndo.keyWindowSource = { NSApp.keyWindow }
         try await super.tearDown()
     }
 
@@ -203,6 +203,22 @@ nonisolated final class SettingsAndPopupUndoTests: XCTestCase {
     /// and the web view first responder in the popover.
     @MainActor private func showPopup() async throws -> (popoverWindow: NSWindow, webView: WKWebView,
                                                          browser: BrowserWindowController) {
+        let (extensionID, profile) = try await loadPopupExtension()
+        let wc = BrowserWindowController(incognito: true)
+        wc.sidebarSplitView.autosaveName = nil
+        let browserWindow = try XCTUnwrap(wc.window)
+        browserWindow.isReleasedWhenClosed = false
+        browserWindow.makeKeyAndOrderFront(nil)
+        windows.append(browserWindow)
+        addTeardownBlock { @MainActor in wc.window?.close() }
+        let (popoverWindow, webView) = try await presentPopup(extensionID, profile: profile,
+                                                              from: try XCTUnwrap(browserWindow.contentView))
+        return (popoverWindow, webView, wc)
+    }
+
+    /// A test extension with a popup holding one `<input>`, loaded in a new
+    /// profile.
+    @MainActor private func loadPopupExtension() async throws -> (extensionID: String, profile: Profile) {
         let ext = try await makeTestExtension(
             id: "popup-undo-\(UUID().uuidString.prefix(8))",
             manifestJSON: """
@@ -215,17 +231,14 @@ nonisolated final class SettingsAndPopupUndoTests: XCTestCase {
         createdProfiles.append(profile)
         let context = try loadTestContext(ext, in: profile)
         contexts.append(context)
+        return (ext.id, profile)
+    }
 
-        let wc = BrowserWindowController(incognito: true)
-        wc.sidebarSplitView.autosaveName = nil
-        let browserWindow = try XCTUnwrap(wc.window)
-        browserWindow.isReleasedWhenClosed = false
-        browserWindow.makeKeyAndOrderFront(nil)
-        windows.append(browserWindow)
-        addTeardownBlock { @MainActor in wc.window?.close() }
-        let anchor = try XCTUnwrap(browserWindow.contentView)
-
-        let controller = ExtensionPopoverController(extensionID: ext.id, profile: profile)
+    /// The extension's popup shown from `anchor`'s window, its `<input>`
+    /// focused and the web view first responder in the popover.
+    @MainActor private func presentPopup(_ extensionID: String, profile: Profile,
+                                         from anchor: NSView) async throws -> (popoverWindow: NSWindow, webView: WKWebView) {
+        let controller = ExtensionPopoverController(extensionID: extensionID, profile: profile)
         controllers.append(controller)
         controller.show(relativeTo: NSRect(x: 100, y: anchor.bounds.maxY - 40, width: 30, height: 30), of: anchor,
                         preferredEdge: .maxY)
@@ -243,7 +256,7 @@ nonisolated final class SettingsAndPopupUndoTests: XCTestCase {
         XCTAssertTrue(popoverWindow.firstResponder === webView, "\(String(describing: popoverWindow.firstResponder))")
         XCTAssertTrue(popoverWindow.makeFirstResponder(webView))
         _ = try await webView.evaluateJavaScript("document.getElementById('i').focus(); 0")
-        return (popoverWindow, webView, wc)
+        return (popoverWindow, webView)
     }
 
     @MainActor private func inputValue(_ webView: WKWebView) async throws -> String? {
@@ -348,7 +361,7 @@ nonisolated final class SettingsAndPopupUndoTests: XCTestCase {
         XCTAssertTrue(CommandDispatch.responderTarget(for: BrowserCommands.undo.action, in: popoverWindow) === wc,
                       "the popover window's chain goes on to the window it is shown from")
 
-        BrowserWindowController.keyWindowSource = { popoverWindow }
+        FieldUndo.keyWindowSource = { popoverWindow }
         XCTAssertTrue(wc.nonBrowserKeyWindow === popoverWindow)
         var (item, enabled) = validated(BrowserCommands.undo, by: wc)
         XCTAssertFalse(enabled)
@@ -360,7 +373,7 @@ nonisolated final class SettingsAndPopupUndoTests: XCTestCase {
         assertBrowserListUntouched(browser)
 
         // The browser window with the keys again: its undo, as before.
-        BrowserWindowController.keyWindowSource = { wc.window }
+        FieldUndo.keyWindowSource = { wc.window }
         XCTAssertNil(wc.nonBrowserKeyWindow)
         (item, enabled) = validated(BrowserCommands.undo, by: wc)
         XCTAssertTrue(enabled)
@@ -384,7 +397,7 @@ nonisolated final class SettingsAndPopupUndoTests: XCTestCase {
         popoverWindow.makeFirstResponder(nil)
         XCTAssertTrue(CommandDispatch.responderTarget(for: BrowserCommands.undo.action, in: popoverWindow) === wc,
                       "with the popover window first responder the chain skips the popup's view")
-        BrowserWindowController.keyWindowSource = { popoverWindow }
+        FieldUndo.keyWindowSource = { popoverWindow }
         let (item, enabled) = validated(BrowserCommands.undo, by: wc)
         XCTAssertTrue(enabled)
         XCTAssertEqual(item.title, "Undo Typing", "the popup's own typing, on the popover window's manager")
@@ -403,7 +416,7 @@ nonisolated final class SettingsAndPopupUndoTests: XCTestCase {
         let (_, settingsWindow, editor) = try editSettingsField()
         type("typed", into: editor)
 
-        BrowserWindowController.keyWindowSource = { settingsWindow }
+        FieldUndo.keyWindowSource = { settingsWindow }
         XCTAssertNil(wc.nonBrowserKeyWindow, "Settings answers its own undo")
         let (item, enabled) = validated(BrowserCommands.undo, by: wc)
         XCTAssertTrue(enabled)
@@ -411,5 +424,81 @@ nonisolated final class SettingsAndPopupUndoTests: XCTestCase {
         wc.browserUndo(item)
         XCTAssertEqual(browser.undone, 1)
         XCTAssertEqual(editor.string, "typed", "Settings' typing is left alone")
+    }
+
+    // MARK: - A Quick Detour window (TASK-366)
+
+    /// A Quick Detour window on `profile`, closed after the test.
+    @MainActor private func openQuickDetour(on profile: Profile) throws -> QuickDetourWindowController {
+        let quick = QuickDetourWindowController.open(profile: profile, url: URL(string: "https://quick-detour.invalid/")!)
+        let window = try XCTUnwrap(quick.window)
+        window.isReleasedWhenClosed = false
+        windows.append(window)
+        addTeardownBlock { @MainActor in quick.close() }
+        return quick
+    }
+
+    /// An extension's popup shown from a Quick Detour window whose window
+    /// itself is first responder (its web view lost the keys): the actions
+    /// skip `PopupContentView` and reach the Quick Detour's controller
+    /// through the popover window's next responder, which runs the popup
+    /// window's own undo, as a browser window's does (TASK-349). Before, it
+    /// answered only for its own page: disabled, and the popup's typing
+    /// could not be undone.
+    @MainActor func testUndoInAPopupFromAQuickDetourWithoutAFirstResponderIsStillThePopups() async throws {
+        let browser = seedBrowserUndo()
+        let (extensionID, profile) = try await loadPopupExtension()
+        let quick = try openQuickDetour(on: profile)
+        let (popoverWindow, webView) = try await presentPopup(extensionID, profile: profile,
+                                                              from: try XCTUnwrap(quick.window?.contentView))
+        _ = try await webView.evaluateJavaScript("document.execCommand('insertText', false, 'qd'); 0")
+        let pageUndo = try XCTUnwrap(webView.undoManager)
+        try await waitUntil("the page's typing to be registered") { pageUndo.canUndo }
+        try await Task.sleep(for: .milliseconds(100))
+
+        popoverWindow.makeFirstResponder(nil)
+        XCTAssertTrue(CommandDispatch.responderTarget(for: BrowserCommands.undo.action, in: popoverWindow) === quick,
+                      "with the popover window first responder the chain goes on to the Quick Detour's controller")
+        FieldUndo.keyWindowSource = { popoverWindow }
+        var (item, enabled) = validated(BrowserCommands.undo, by: quick)
+        XCTAssertTrue(enabled)
+        XCTAssertEqual(item.title, "Undo Typing", "the popup's own typing, on the popover window's manager")
+        quick.browserUndo(item)
+        try await waitForInput(webView, "", "the popup's typing undone")
+
+        (item, enabled) = validated(BrowserCommands.redo, by: quick)
+        XCTAssertTrue(enabled)
+        XCTAssertEqual(item.title, "Redo Typing")
+        quick.browserRedo(item)
+        try await waitForInput(webView, "qd", "the popup's typing redone")
+        assertBrowserListUntouched(browser)
+
+        // The Quick Detour with the keys again: its own page's undo only,
+        // nothing here (its page edits nothing).
+        FieldUndo.keyWindowSource = { quick.window }
+        (item, enabled) = validated(BrowserCommands.undo, by: quick)
+        XCTAssertFalse(enabled)
+        XCTAssertEqual(item.title, "Undo")
+    }
+
+    /// A command addressed to a Quick Detour (the automation endpoint's
+    /// `run_menu_item`) while Settings has the keys: Settings answers the
+    /// actions itself, so the Quick Detour's Undo stays its own (nothing
+    /// here) and never reaches into Settings' fields.
+    @MainActor func testAnAddressedUndoWhileSettingsIsKeyIsTheQuickDetoursOwn() throws {
+        let browser = seedBrowserUndo()
+        let profile = TabStore.shared.addProfile(name: "Quick Detour Undo")
+        createdProfiles.append(profile)
+        let quick = try openQuickDetour(on: profile)
+        let (_, settingsWindow, editor) = try editSettingsField()
+        type("typed", into: editor)
+
+        FieldUndo.keyWindowSource = { settingsWindow }
+        XCTAssertNil(FieldUndo.keyWindowHandingUndo(to: quick, in: quick.window), "Settings answers its own undo")
+        let (item, enabled) = validated(BrowserCommands.undo, by: quick)
+        XCTAssertFalse(enabled)
+        quick.browserUndo(item)
+        XCTAssertEqual(editor.string, "typed", "Settings' typing is left alone")
+        assertBrowserListUntouched(browser)
     }
 }
