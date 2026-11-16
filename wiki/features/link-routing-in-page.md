@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Typed URLs and links clicked in a page
-description: "Which typed URLs and in-page link clicks Link Routes move, from where: the entry points (palette submit in new-tab mode, the Cmd+click branch, the policy after the download check, createWebViewWith), the pure linkRoutingEligibility rule (new-tab opens route, plain clicks only to another host, never redirects, scripts, popups, Opt-Cmd/Option/Shift-clicks, Peeks, subframes or the link menu; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, the user's decisions of 2026-11-15 (the link menu's New Tab and New Window to be routed, TASK-356), and the runtime check."
+description: "Which typed URLs and in-page link clicks Link Routes move, from where: the entry points (palette submit in new-tab mode, the Cmd+click branch, the policy after the download check, createWebViewWith for a page's window and for the link menu), the pure linkRoutingEligibility rule (new-tab opens route, the link menu's New Tab and New Window as a Cmd+click, plain clicks only to another host; never redirects, scripts, popups, Opt-Cmd/Option/Shift-clicks, Peeks, subframes, Open Link in Split View or in Quick Detour; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, the user's decisions of 2026-11-15 (TASK-356 done), and the runtime checks."
 tags: [links, navigation, webkit, peek]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:00:00Z }
 stale_after: 2027-01-31T00:00:00Z
 sources:
   - id: eligibility
@@ -55,6 +55,12 @@ sources:
   - id: task-356
     resource: backlog:TASK-356
     title: "Link Routes: Open Link in New Tab and Open Link in New Window go through Link Routes"
+  - id: harness-356
+    resource: ../../docs/harness/task356-link-menu-checks.py
+    title: TASK-356 runtime check through the automation endpoint
+  - id: link-menu
+    resource: ../../Detour/Browser/Window/BrowserWebView.swift
+    title: BrowserWebView.swift (willOpenMenu, the contextMenuOpenIn… actions)
 ---
 
 TASK-191.4.[^task-191-4] Inside Detour, a URL typed in a new tab and some
@@ -86,10 +92,11 @@ Quarantine route matches opens a quarantine window instead (TASK-194).[^task-194
 | `decidePolicy`, Cmd+click branch | the rule, before the background tab | Cmd+click (Cmd+Shift too; Cmd+Option only with the Quick Detour click off in Settings, or to a non-web URL) |
 | `decidePolicy`, after the download check, before the anchor intercept | the rule for every link activation that gets that far | A `target=_blank` link (nil `targetFrame`, before WebKit would call `createWebViewWith`), and a plain click to another host |
 | `createWebViewWith`, a page's own request (not the link menu's) | the rule, before the anchor intercept | A tab-style `window.open` |
+| `createWebViewWith`, a link menu action (`contextMenuLinkAction`, TASK-356) | the rule with `.linkMenuAction(action)`, before the action's own code; no anchor intercept | Open Link in New Tab and Open Link in New Window. Open Link in Split View and Open Link in Quick Detour never. |
 
 A routed click is cancelled (the page's tab stays on its page; a routed
-`window.open` returns nil, so the page gets no window) and opened one
-main-queue turn later (`openRoutedLink`), so the policy decision returns
+`window.open` or link menu action returns nil, so the page gets no window)
+and opened one main-queue turn later (`openRoutedLink`), so the policy decision returns
 before windows switch spaces or come forward. A typed URL is opened at once,
 keeping its typed flag for history.
 
@@ -97,7 +104,7 @@ keeping its typed flag for history.
 
 `linkRoutingEligibility(InPageLinkRequest) -> .routable(kind) | .notRouted(reason)`.
 The request carries the entry (`.navigationAction(isLinkActivation:targetsMainFrame:opensNewWindow:isRedirect:)`,
-`.pageWindowRequest(isLinkActivation:wantsPopup:)`, `.linkMenuAction`), the
+`.pageWindowRequest(isLinkActivation:wantsPopup:)`, `.linkMenuAction(LinkMenuAction)`), the
 modifiers, the user-gesture signal, whether it is in a Peek, the page URL
 (`webView.url`), the target and the Opt-Cmd setting
 (`quickDetourClickEnabled`). Checked in this order:
@@ -106,7 +113,8 @@ modifiers, the user-gesture signal, whether it is in a Peek, the page URL
 |---|---|---|
 | Target not http/https (`mailto:`, `detour://`, `data:`, `about:`, `blob:`, `file:`, app schemes) | not routed (`notWebURL`) | Routes match web pages only; non-web schemes and downloads are decided by the policy before it asks anyway. |
 | Fired by a Peek's page, or while a Peek is presented | `inPeek` | A Peek is a look at a link; its links navigate the Peek (decided 2026-10-25). The overlay is modal, so while it is up a click can only be in it. |
-| The link menu's own actions (Open Link in New Tab / Window / Split View) | `linkMenuAction` | The user picked where it opens. All three are unrouted today; the user decided on 2026-11-15 that Open Link in New Tab and Open Link in New Window will be routed like a Cmd+click (planned in TASK-356) while Open Link in Split View stays unrouted (see [decisions](#decisions-2026-11-15)).[^task-356] TASK-300's Open Link in Quick Detour never reaches the rule: it does what Opt-Cmd-click does, never routed.[^task-300] |
+| The link menu's Open Link in New Tab / in New Window | **routed** (`linkMenuNewTab` / `linkMenuNewWindow`) | As a Cmd+click: whatever the host (the same host included), the modifiers held or WebKit's gesture signal for the replayed request (the menu item is the user's). The user's decision of 2026-11-15, built in TASK-356 (see [decisions](#decisions-2026-11-15)).[^task-356] A Peek's page and non-web links are refused above. |
+| The link menu's Open Link in Split View / in Quick Detour | `linkMenuAction` | The user picked where it opens: next to this tab, or outside any space (TASK-300's item does what Opt-Cmd-click does).[^task-300] |
 | A `_blank` link reaching `createWebViewWith` | `decidedByNavigationPolicy` | WebKit asked the policy first; it was routed (cancelled) or not there. |
 | Popup-style `window.open` (`_wantsPopup`, else explicit x/y/width/height) | `popupWindow` | It must keep its opener (sign-in and payment windows, TASK-168). |
 | Tab-style `window.open` without a gesture | `noUserGesture` | WebKit blocks those anyway (`javaScriptCanOpenWindowsAutomatically` is off). |
@@ -210,17 +218,30 @@ Cases the task's decisions did not name were decided while implementing
 (TASK-191.4 notes, 2026-10-25) and put to the user, who decided them on
 2026-11-15.[^task-191-4]
 
-**Changed** (the user's decision, 2026-11-15):
+**Changed** (the user's decision, 2026-11-15; done in TASK-356):[^task-356]
 
-- **Open Link in New Tab and Open Link in New Window will be routed like a
-  Cmd+click**; planned in TASK-356.[^task-356] Until it lands, the link
-  menu's actions are not routed (`linkMenuAction`), on the reasoning they
-  were built with: the user chose where the link opens. The user's reason
-  for the change is consistency with other browsers' link rules: Arc's Air
-  Traffic Control and Firefox's Multi-Account Containers apply their rules
-  whatever opened the link. When the task was built, routing Open Link in
-  New Tab like Cmd+click was estimated at one line in `createWebViewWith`.
-- **Open Link in Split View and Open Link in Quick Detour stay unrouted.**
+- **Open Link in New Tab and Open Link in New Window are routed like a
+  Cmd+click.** TASK-191.4 had left the link menu unrouted on the reasoning
+  that the user chose where the link opens; the user's reason for the change
+  is consistency with other browsers' link rules: Arc's Air Traffic Control
+  and Firefox's Multi-Account Containers apply their rules whatever opened
+  the link. A routed one is placed as a routed Cmd+click is (where the route
+  says, selected, its window in front), so a routed **New Window** opens a
+  window of its own only where placement would for any routed link: with no
+  window on the space, the most recent normal window switches to it
+  ([placement](./link-routing-placement.md)). Unrouted (no route, a route to
+  the current space, Most Recent Space, a Private window), each opens as
+  before: a background tab from the page's tab, or `createNewWindowWithURL`.
+  The TASK-191.4 estimate of "one line in `createWebViewWith`" was short:
+  production never built a `.linkMenuAction` request, so the menu's
+  `contextMenuLinkAction` now asks the rule there, and the entry carries the
+  action so the rule tells the four items apart.
+- **Open Link in Split View and Open Link in Quick Detour stay unrouted**
+  (`linkMenuAction`). The menu items are built in `BrowserWebView.willOpenMenu`
+  (a browser window only; a Quick Detour window keeps WebKit's own) and each
+  replays WebKit's Open Link in New Window item, which reaches
+  `createWebViewWith` (seen at runtime: each routed item logged one `Link
+  routed` line, of the menu's kind, and no other).[^link-menu]
 
 **Confirmed as built** (the user's decision, 2026-11-15):
 
@@ -275,6 +296,25 @@ Cmd-clicks; the harness now activates Detour and makes the window key before
 each input. Even then the first plain click after a window became key
 occasionally produced no navigation action at all and was re-posted.
 
+**The link menu (TASK-356)**, 2026-11-16, `docs/harness/task356-link-menu-checks.py`
+through the automation endpoint, `DETOUR_DATA_DIR=DetourVerify-356`:[^harness-356]
+a world with Personal (a page of links on `127.0.0.1`) and Work, one route
+(`localhost` → Work), a window on each, side by side. Each case right-clicks a
+link (`click button=right`), reads the menu (`list_menu`) and chooses the item
+by title (`choose_menu_item`), with the links window made key first:
+
+| Item, link | Result |
+|---|---|
+| New Tab, `localhost` | `routable(linkMenuNewTab)` → Work: the tab in Work, selected in the Work window, which is key; no tab in Personal; the links window kept its space and page |
+| New Window, `localhost` | `routable(linkMenuNewWindow)` → Work: the same, and no new window |
+| Split View, `localhost` | not routed: a split with the links page in Personal, nothing in Work |
+| Quick Detour, `localhost` | not routed: a Quick Detour window (not a quarantine), nothing in Work |
+| New Tab, `127.0.0.1` (no route) | a background tab in Personal |
+| New Window, `127.0.0.1` (no route) | a new browser window with the link |
+
+Only the two routed cases logged `Link routed`. Not run: a Private window
+and a Peek's link menu (the in-app tests cover both).
+
 **Not verified at runtime:** a favourite's tab (the pinned tab stands in for
 the anchor intercept; both go through `PeekAnchor.anchorURL`), a split pane
 clicking (the eligibility does not look at panes), a link in an iframe
@@ -299,6 +339,17 @@ clicking (the eligibility does not look at panes), a link in an iframe
   routed, in place not, a search not, no route and a route to the current
   space open here, a Private window ignores normal routes, a Private route
   opens a Private window.
+- The link menu (TASK-356): `LinkRoutingEligibilityTests` answers each of the
+  four actions, with modifiers, without a gesture, the same host, a hostless
+  or internal page, in a Peek, to non-web links, and with the resolver (a
+  space, the current space, Private both ways, Quarantine, the Default; Split
+  View and Quick Detour never ask it). `InPageLinkRoutingTests` set the
+  pending `contextMenuLinkAction` and call the page's `window.open`, which
+  reaches the menu's branch in `createWebViewWith` as WebKit's replayed item
+  does (the item itself is the runtime check): New Tab and New Window open in
+  the Work window, selected, in front (with no Work window, the clicking one
+  switches), unrouted they open as before, Split View and Quick Detour are not
+  routed, nor New Tab in a Peek or a Private window.
 - Cmd+click is not in the unit tests: a script's event carries no modifiers
   into the navigation action, so it is checked at runtime only.
 
@@ -318,3 +369,5 @@ clicking (the eligibility does not look at panes), a link in an iframe
 [^task-300]: Link context menu: Open Link in Quick Detour
 [^task-307]: Peek: ⌘O opens the Peek as a tab, a setting turns Peek off, and ⇧⌘T / ⌘Z reopen a closed Peek
 [^task-356]: Link Routes: Open Link in New Tab and Open Link in New Window go through Link Routes
+[^harness-356]: TASK-356 runtime check through the automation endpoint
+[^link-menu]: BrowserWebView.swift (willOpenMenu, the contextMenuOpenIn… actions)

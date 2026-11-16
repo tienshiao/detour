@@ -16,6 +16,18 @@ extension BrowserWindowController: WKUIDelegate {
         // open a tab whose only navigation the policy would then cancel.
         if InternalPage.isInternal(url) { return nil }
 
+        // Open Link in New Tab and in New Window go where a route sends the
+        // link, as a Cmd+click does: cancelled here, opened one main-queue
+        // turn later, selected with its window in front (TASK-356). The rule
+        // keeps Split View and Quick Detour where the user picked, and the
+        // link menu of a Peek's page unrouted.
+        if let menuAction = linkAction.linkMenuAction,
+           let routed = routedDecision(for: inPageLinkRequest(for: navigationAction, to: url, in: webView,
+                                                              entry: .linkMenuAction(menuAction))) {
+            openRoutedLink(url, routed)
+            return nil
+        }
+
         switch linkAction {
         case .openInNewTab:
             _ = TabStore.shared.addTab(in: space, url: url, parentID: selectedTabID)

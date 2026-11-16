@@ -4,7 +4,7 @@ title: Link Routes
 description: Link Routes (formerly Air Traffic Control) send links from other apps, URLs typed in a new tab and links clicked to another site to a chosen space, Private window, Quick Detour or Quarantine by rule; this hub summarises the feature and links its pages.
 tags: [links, spaces, privacy]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:00:00Z }
 sources:
   - id: linkrouting-dir
     resource: ../../Detour/Browser/LinkRouting
@@ -53,7 +53,7 @@ only carries out:
 
 | Step | Function | Page |
 |---|---|---|
-| **Whether** a link inside Detour is routed at all (new-tab opens and plain clicks to another host; never redirects, scripts, popups, Peeks, Option/Shift/Opt-Cmd-clicks; typed URLs only from the new-tab palette) | `linkRoutingEligibility`, `typedURLIsRoutable` | [Typed URLs and links clicked in a page](./link-routing-in-page.md) |
+| **Whether** a link inside Detour is routed at all (new-tab opens, the link menu's New Tab and New Window, and plain clicks to another host; never redirects, scripts, popups, Peeks, Option/Shift/Opt-Cmd-clicks, the link menu's Split View or Quick Detour; typed URLs only from the new-tab palette) | `linkRoutingEligibility`, `typedURLIsRoutable` | [Typed URLs and links clicked in a page](./link-routing-in-page.md) |
 | **Where** it goes: a space, Most Recent Space, a Private window, Quick Detour, Quarantine, or stay | `resolveLinkRoute`, `resolveExternalLinkRoute` | [Link Routes resolver](./link-routing-resolver.md) |
 | **Which window** it opens in | `linkPlacement` | [Link placement](./link-routing-placement.md) |
 
@@ -75,7 +75,7 @@ URLs). See [Quick Detour](./quick-detour.md) and [Quarantine](./quarantine.md).
 - [Space deletion blocked by Link Routes](./link-routing-space-deletion.md) — `SpaceDeletionResult.blockedByLinkRoutes`, the sidebar, Spaces pane and undo/redo refusals, the one-step undo bounce, the alert, and the TASK-191.1 runtime check.
 - [Link placement](./link-routing-placement.md) — `linkPlacement` and `AppDelegate.openLink`/`placeTab`, shared by both paths, and what a routed link that becomes a download puts back (TASK-205).
 - [Links from other apps](./link-routing-external-links.md) — Detour's Get URL handler, reading the sending app (what macOS 26.7 reports), multi-URL opens, the link that launched Detour and its fail-closed rule (TASK-304), delivering test links safely, and the runtime checks.
-- [Typed URLs and links clicked in a page](./link-routing-in-page.md) — the entry points, the eligibility rule case by case, host not site, the WebKit signals that tell a click from a script or a redirect, a route winning over the Peek intercept, the decisions the user made on 2026-11-15 (Open Link in New Tab and New Window to be routed, planned in TASK-356), and the TASK-191.4 runtime check.[^task-356]
+- [Typed URLs and links clicked in a page](./link-routing-in-page.md) — the entry points, the eligibility rule case by case, host not site, the WebKit signals that tell a click from a script or a redirect, a route winning over the Peek intercept, the decisions the user made on 2026-11-15 (Open Link in New Tab and New Window routed like a Cmd+click, TASK-356), and the runtime checks.[^task-356]
 - [The Links pane](./link-routing-links-pane.md) — the Settings pane (TASK-191.3): rows, pop-ups, the "no condition" choices, drafts and refused edits, broken routes, the alert's highlighting, and its runtime checks.
 
 # How they connect

@@ -444,6 +444,170 @@ nonisolated final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertTrue(work.tabs.isEmpty)
     }
 
+    // MARK: - The link menu (TASK-356)
+
+    /// One of the link menu's Open Link items chosen on a link to
+    /// `localhost/target?open`. The menu item sets the pending action and
+    /// replays WebKit's own item, which reaches `createWebViewWith`; the
+    /// page's `window.open` reaches it the same way, so this drives the
+    /// menu's branch there (WebKit's item itself is checked at runtime).
+    @MainActor private func chooseLinkMenuItem(_ action: BrowserWindowController.ContextMenuLinkAction,
+                                               in wc: BrowserWindowController, on webView: WKWebView?) async throws {
+        wc.contextMenuLinkAction = action
+        try await run("window.openTab()", in: webView)
+        XCTAssertEqual(wc.contextMenuLinkAction, .none, "consumed by the request")
+    }
+
+    @MainActor func testOpenLinkInNewTabOpensInTheRoutedSpaceAsACommandClick() async throws {
+        let base = try await makeServer()
+        let workWindow = makeWindow(showing: work)
+        let wc = makeWindow(showing: personal)
+        let tab = try await openPage(base + "/links", in: wc)
+
+        try await chooseLinkMenuItem(.openInNewTab, in: wc, on: tab.webView)
+        try await waitUntil("the link to open in Work") { !self.tabs(in: self.work, query: "open").isEmpty }
+        try await settle()
+
+        XCTAssertEqual(tabs(in: work, query: "open").count, 1)
+        XCTAssertEqual(personal.tabs.count, 1, "no tab in the current space")
+        XCTAssertEqual(workWindow.selectedTabID, tabs(in: work, query: "open").first?.id,
+                       "selected in the window showing Work")
+        XCTAssertTrue(NSApp.browserWindowControllersFrontToBack.first === workWindow, "that window comes forward")
+        XCTAssertEqual(wc.activeSpaceID, personal.id)
+        XCTAssertEqual(wc.selectedTabID, tab.id)
+        XCTAssertEqual(tab.webView?.url?.path, "/links", "the tab stays on its page")
+    }
+
+    @MainActor func testOpenLinkInNewWindowOpensInTheRoutedSpaceAsACommandClick() async throws {
+        let base = try await makeServer()
+        let workWindow = makeWindow(showing: work)
+        let wc = makeWindow(showing: personal)
+        let tab = try await openPage(base + "/links", in: wc)
+        let windowsBeforeMenu = browserWindows().count
+
+        try await chooseLinkMenuItem(.openInNewWindow, in: wc, on: tab.webView)
+        try await waitUntil("the link to open in Work") { !self.tabs(in: self.work, query: "open").isEmpty }
+        try await settle()
+
+        XCTAssertEqual(browserWindows().count, windowsBeforeMenu, "placed as a Cmd+click: no new window")
+        XCTAssertEqual(workWindow.selectedTabID, tabs(in: work, query: "open").first?.id)
+        XCTAssertTrue(NSApp.browserWindowControllersFrontToBack.first === workWindow)
+        XCTAssertEqual(personal.tabs.count, 1)
+        XCTAssertEqual(tab.webView?.url?.path, "/links")
+    }
+
+    @MainActor func testOpenLinkInNewWindowWithNoWindowOnTheRoutedSpaceSwitchesTheClickingWindow() async throws {
+        let base = try await makeServer()
+        let wc = makeWindow(showing: personal)
+        let tab = try await openPage(base + "/links", in: wc)
+        let windowsBeforeMenu = browserWindows().count
+
+        try await chooseLinkMenuItem(.openInNewWindow, in: wc, on: tab.webView)
+        try await waitUntil("the link to open in Work") { !self.tabs(in: self.work, query: "open").isEmpty }
+
+        XCTAssertEqual(browserWindows().count, windowsBeforeMenu, "as a Cmd+click: the most recent window switches")
+        XCTAssertEqual(wc.activeSpaceID, work.id)
+        XCTAssertEqual(wc.selectedTabID, tabs(in: work, query: "open").first?.id)
+        XCTAssertTrue(personal.tabs.contains { $0 === tab })
+    }
+
+    @MainActor func testOpenLinkInNewTabWithNoRouteOpensATabHereAsBefore() async throws {
+        let base = try await makeServer()
+        if let id = localhostRouteID { routes.removeRoute(id: id) }
+        makeWindow(showing: work)
+        let wc = makeWindow(showing: personal)
+        let tab = try await openPage(base + "/links", in: wc)
+
+        try await chooseLinkMenuItem(.openInNewTab, in: wc, on: tab.webView)
+        try await waitUntil("a tab here") { !self.tabs(in: self.personal, query: "open").isEmpty }
+        try await settle()
+
+        let opened = try XCTUnwrap(tabs(in: personal, query: "open").first)
+        XCTAssertEqual(opened.parentID, tab.id, "opened from the tab, as before")
+        XCTAssertEqual(wc.selectedTabID, tab.id, "in the background, as before")
+        XCTAssertTrue(work.tabs.isEmpty)
+    }
+
+    @MainActor func testOpenLinkInNewWindowWithNoRouteOpensANewWindowAsBefore() async throws {
+        let base = try await makeServer()
+        if let id = localhostRouteID { routes.removeRoute(id: id) }
+        let workWindow = makeWindow(showing: work)
+        let wc = makeWindow(showing: personal)
+        let tab = try await openPage(base + "/links", in: wc)
+
+        try await chooseLinkMenuItem(.openInNewWindow, in: wc, on: tab.webView)
+        let isNew: (BrowserWindowController) -> Bool = {
+            !self.windowsBefore.contains(ObjectIdentifier($0)) && $0 !== wc && $0 !== workWindow
+        }
+        try await waitUntil("a new window with the link") {
+            self.browserWindows().contains { isNew($0) && $0.selectedTab?.url?.query == "open" }
+        }
+        XCTAssertEqual(browserWindows().filter(isNew).count, 1)
+        XCTAssertEqual(wc.selectedTabID, tab.id)
+    }
+
+    @MainActor func testOpenLinkInSplitViewIsNeverRouted() async throws {
+        let base = try await makeServer()
+        makeWindow(showing: work)
+        let wc = makeWindow(showing: personal)
+        let tab = try await openPage(base + "/links", in: wc)
+
+        try await chooseLinkMenuItem(.openInSplitView, in: wc, on: tab.webView)
+        try await waitUntil("a split here") { !self.tabs(in: self.personal, query: "open").isEmpty }
+        try await settle()
+
+        let pane = try XCTUnwrap(tabs(in: personal, query: "open").first)
+        let group = try XCTUnwrap(store.splitGroup(containing: tab.id, in: personal), "split with the clicked tab")
+        XCTAssertTrue(group.members.contains { $0 === pane })
+        XCTAssertTrue(work.tabs.isEmpty, "the route to Work is not asked")
+    }
+
+    @MainActor func testOpenLinkInQuickDetourIsNeverRouted() async throws {
+        let base = try await makeServer()
+        makeWindow(showing: work)
+        let wc = makeWindow(showing: personal)
+        let tab = try await openPage(base + "/links", in: wc)
+
+        try await chooseLinkMenuItem(.openInQuickDetour, in: wc, on: tab.webView)
+        try await waitUntil("a Quick Detour with the link") {
+            self.newQuickDetours().contains { $0.tab?.url?.query == "open" }
+        }
+        try await settle()
+
+        XCTAssertEqual(newQuickDetours().count, 1)
+        XCTAssertEqual(newQuickDetours().first?.isQuarantine, false)
+        XCTAssertTrue(work.tabs.isEmpty, "the route to Work is not asked")
+        XCTAssertEqual(personal.tabs.count, 1)
+    }
+
+    @MainActor func testOpenLinkInNewTabInsideAPeekIsNotRouted() async throws {
+        let base = try await makeServer()
+        makeWindow(showing: work)
+        let wc = makeWindow(showing: personal)
+        _ = try await openPage(base + "/links", in: wc)
+        wc.showPeekOverlay(url: URL(string: base + "/links")!)
+        let peek = try XCTUnwrap(wc.selectedTab?.peekTab)
+        try await waitUntil("the Peek to load") { peek.webView?.title == "Links" && peek.isLoading == false }
+
+        try await chooseLinkMenuItem(.openInNewTab, in: wc, on: peek.webView)
+        try await waitUntil("a tab here") { !self.tabs(in: self.personal, query: "open").isEmpty }
+        try await settle()
+        XCTAssertTrue(work.tabs.isEmpty)
+    }
+
+    @MainActor func testOpenLinkInNewTabInAPrivateWindowIgnoresRoutesToNormalSpaces() async throws {
+        let base = try await makeServer()
+        makeWindow(showing: work)
+        let wc = makePrivateWindow()
+        let tab = try await openPage(base + "/links", in: wc)
+        let privateSpace = try XCTUnwrap(wc.activeSpace)
+
+        try await chooseLinkMenuItem(.openInNewTab, in: wc, on: tab.webView)
+        try await waitUntil("a tab in the Private window") { !self.tabs(in: privateSpace, query: "open").isEmpty }
+        try await settle()
+        XCTAssertTrue(work.tabs.isEmpty)
+    }
+
     // MARK: - Typed URLs
 
     @MainActor private func submit(_ input: String, in wc: BrowserWindowController, inPlace: Bool) {

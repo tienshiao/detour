@@ -16,9 +16,15 @@ enum InPageLinkEntry: Equatable {
     /// `window.open` reaches only this (`isLinkActivation` false); a `_blank`
     /// link reaches it after the navigation policy allowed it (true).
     case pageWindowRequest(isLinkActivation: Bool, wantsPopup: Bool)
-    /// One of the link menu's own actions (Open Link in New Tab, in New
-    /// Window, in Split View): the user picked where it opens.
-    case linkMenuAction
+    /// One of the link menu's own actions: New Tab and New Window route as
+    /// a Cmd+click does; Split View and Quick Detour place the link where the
+    /// user picked (TASK-356).
+    case linkMenuAction(LinkMenuAction)
+}
+
+/// The link menu's Open Link items, of a browser window's page.
+enum LinkMenuAction: Equatable, CaseIterable {
+    case newTab, newWindow, splitView, quickDetour
 }
 
 /// The modifier keys held for a link activation, of those that pick a branch.
@@ -55,12 +61,18 @@ enum RoutableLinkKind: Equatable {
     case scriptedWindow
     /// A plain click that would navigate the tab in place, to another host.
     case crossHostClick
+    /// The link menu's Open Link in New Tab.
+    case linkMenuNewTab
+    /// The link menu's Open Link in New Window.
+    case linkMenuNewWindow
 }
 
 /// Why a link is not routed.
 enum LinkRoutingExclusion: String, Equatable {
     case notWebURL
     case inPeek
+    /// Open Link in Split View or in Quick Detour: the user picked where the
+    /// link opens (TASK-356).
     case linkMenuAction
     /// A `_blank` link in `createWebViewWith`: the navigation policy already decided it.
     case decidedByNavigationPolicy
@@ -93,14 +105,16 @@ enum LinkRoutingEligibility: Equatable {
 /// decisions 2026-10-25, recorded in wiki/features/link-routing.md):
 ///
 /// - New-tab opens route: Cmd+click, a `target=_blank` link, a tab-style
-///   `window.open`.
+///   `window.open`, and the link menu's Open Link in New Tab and in New
+///   Window (user decision 2026-11-15, TASK-356) as a Cmd+click: whatever
+///   the host, the modifiers or the gesture (a menu item is the user's).
 /// - A plain click that would navigate in place routes only to another host
 ///   (a leading `www.` is the same host): the tab stays where it is.
 /// - Never: redirects, script navigations and clicks without a user gesture,
 ///   same-host clicks, a popup `window.open` (it keeps its opener), Opt-Cmd
 ///   (Quick Detour, TASK-193.5), Shift (Peek) and Option (split) clicks,
 ///   anything in a Peek, subframe navigations, non-web URLs, the link menu's
-///   own actions.
+///   Open Link in Split View and in Quick Detour.
 ///
 /// The modifier order is the navigation policy's (`inPageLinkClickBranch`):
 /// Opt-Cmd, then Cmd, then Shift, then Option. Downloads and non-web schemes
@@ -110,8 +124,12 @@ func linkRoutingEligibility(_ request: InPageLinkRequest) -> LinkRoutingEligibil
     guard isWebURL(request.targetURL) else { return .notRouted(.notWebURL) }
     guard !request.isInPeek else { return .notRouted(.inPeek) }
     switch request.entry {
-    case .linkMenuAction:
-        return .notRouted(.linkMenuAction)
+    case .linkMenuAction(let action):
+        switch action {
+        case .newTab: return .routable(.linkMenuNewTab)
+        case .newWindow: return .routable(.linkMenuNewWindow)
+        case .splitView, .quickDetour: return .notRouted(.linkMenuAction)
+        }
     case .pageWindowRequest(let isLinkActivation, let wantsPopup):
         // A `_blank` link was routed (or not) when the policy saw it.
         if isLinkActivation { return .notRouted(.decidedByNavigationPolicy) }

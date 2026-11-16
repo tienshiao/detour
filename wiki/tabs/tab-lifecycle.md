@@ -4,7 +4,7 @@ title: Tab lifecycle
 description: How a tab comes into being, navigates, closes and comes back, which object is its navigation delegate at each point, and when each step reaches the database.
 tags: [tabs, lifecycle, navigation, persistence]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:43:40Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:00:00Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -92,7 +92,7 @@ extension contexts (the list's `didSet`, see
 | Submitting the [command palette](../features/command-palette.md) in new-tab mode | `addTab(in:)`, then `tab.load(url, typed:)`; a URL a route sends to another space opens there instead ([link routing](../features/link-routing-in-page.md)) | yes |
 | Cmd+click on a link | `addTab(in:url:parentID:)` with the selected tab as parent | no (a toast says so when the sidebar is collapsed) |
 | Opt-Cmd-click on a link, or on a sidebar tab | no tab: a new [Quick Detour](../features/quick-detour-entry-points.md) window (a sidebar tab's address copied; the tab untouched) | — |
-| Context menu "Open Link in New Tab" | sets `contextMenuLinkAction`, replays WebKit's own item, lands in `createWebViewWith` → `addTab(in:url:parentID:)` | no |
+| Context menu "Open Link in New Tab" | sets `contextMenuLinkAction`, replays WebKit's own item, lands in `createWebViewWith` → `addTab(in:url:parentID:)`; a link a route sends to another space opens there instead, as a routed Cmd+click (TASK-356, [link routing](../features/link-routing-in-page.md)), and so does "Open Link in New Window" | no (routed: yes, in its window) |
 | `window.open` or a `_blank` link in a normal tab | `createWebViewWith` → `addTab(in:openedWith:parentID:)`, with the opener as parent, in the opener's space; the tab's web view is returned to WebKit, which loads the URL | yes, unless the opener is in a space the window is not showing |
 | Option+click on a link, or "Open Link in Split View" | `addTabInSplit(with:url:in:)`, or from a favourite or lone pinned tab `addSplitInNormalSection(copying:rightPane:in:)`, which adds two tabs ([split](./split-tabs.md#opening-a-split-from-a-tab))[^task-185] | yes (the right pane) |
 | Expanding a Peek | `addTab(in:webView:parentID:)`, adopting the Peek's web view | yes |

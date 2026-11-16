@@ -219,6 +219,17 @@ class BrowserWindowController: NSWindowController {
 
     enum ContextMenuLinkAction {
         case none, openInNewTab, openInNewWindow, openInSplitView, openInQuickDetour
+
+        /// The action as the routing rule sees it; nil for none.
+        var linkMenuAction: LinkMenuAction? {
+            switch self {
+            case .none: nil
+            case .openInNewTab: .newTab
+            case .openInNewWindow: .newWindow
+            case .openInSplitView: .splitView
+            case .openInQuickDetour: .quickDetour
+            }
+        }
     }
     var contextMenuLinkAction: ContextMenuLinkAction = .none
 
