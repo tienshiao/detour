@@ -40,6 +40,9 @@ sources:
   - id: task-186-3
     resource: backlog:TASK-186.3
     title: "Dev mode: capture buttons in the dev toolbar"
+  - id: task-355
+    resource: backlog:TASK-355
+    title: "Back swipe: swiping forward shows a picture of the page being returned to, not a blank card"
 ---
 
 The dev toolbar's capture buttons ([dev toolbar captures](../features/dev-toolbar-captures.md))
@@ -131,6 +134,12 @@ priority ([hidden web view load stalls](./hidden-webview-load-stalls.md)), so
 how long a capture takes depends on how busy the machine is. Take a snapshot
 you will need later while the page is still on screen.
 
+A snapshot requested just before a navigation (`takeSnapshot`, then
+`goBack()` in the same turn) paints the page being left: the request reaches
+the web process ahead of the navigation. Checked by colour for a back within
+one process (loopback pages, a test and the running app); a back that swaps
+processes was not measured.[^task-355]
+
 ## Testing at 2x on a 1x display
 
 `-[WKWebView _setOverrideDeviceScaleFactor:]` makes WebKit render and
@@ -160,3 +169,4 @@ screen; move the window onto it.
 [^webpage-cocoa]: WebPageCocoa.mm (drawToPDF)
 [^geometry]: PageCaptureGeometry.swift (CaptureGeometry, CaptureFileName)
 [^task-325-spike]: docs/harness/task325-underlay-snapshot-spike.swift, run 2026-11-14 on macOS 26.7 (2x via `_setOverrideDeviceScaleFactor:`).
+[^task-355]: Back swipe: swiping forward shows a picture of the page being returned to, not a blank card

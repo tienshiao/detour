@@ -21,7 +21,8 @@ extension AutomationTools {
             title: "Inspect or drive the back swipe",
             description: "Debug builds and test runs only. action state (the default) reports, for each pane window_id "
                 + "hosts, whether its web view is in Detour's own back-swipe mode (a tab opened from another, with no "
-                + "back item), WebKit's gesture flag, the rubber-band edges, its history and its opener. action begin "
+                + "back item), WebKit's gesture flag, the rubber-band edges, its history, its opener and whether a forward "
+                + "swipe would show a picture of the forward page. action begin "
                 + "starts a swipe on context's pane (default the selected tab) in direction (back or forward) and holds "
                 + "it at progress (0 to 1) with the veneer showing; action finish completes it (complete true, the "
                 + "default) or springs it back (complete false), through the completion a trackpad swipe runs.",
@@ -38,6 +39,7 @@ extension AutomationTools {
                 "selected_tab_id": ["type": ["string", "null"]],
                 "swipe_active": MCPSchema.booleanType,
                 "began": ["type": ["boolean", "null"]],
+                "forward_picture": ["type": ["boolean", "null"]],
             ]),
             annotations: ["readOnlyHint": false, "destructiveHint": true],
             handler: { [self] arguments in
@@ -101,6 +103,10 @@ extension AutomationTools {
                     "selected_tab_id": .nullable(controller.selectedTabID?.uuidString),
                     "swipe_active": .bool(controller.navigationSwipe.session != nil),
                     "began": began.map(JSONValue.bool) ?? .null,
+                    // A held forward swipe's card carries a picture (TASK-355).
+                    "forward_picture": controller.navigationSwipe.session.map {
+                        .bool($0.overlay.forwardPage != nil)
+                    } ?? .null,
                 ]
             })
     }
@@ -127,6 +133,7 @@ extension AutomationTools {
             "is_normal_tab": .bool(pane.facts.isNormalTab),
             "opener_id": .nullable(pane.openerID?.uuidString),
             "opener_picture": .bool(pane.hasOpenerPicture),
+            "forward_picture": .bool(pane.hasForwardPicture),
         ]
     }
     #endif

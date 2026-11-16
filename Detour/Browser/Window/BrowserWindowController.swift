@@ -2583,6 +2583,9 @@ class BrowserWindowController: NSWindowController {
     func navigateBackOrCloseChildTab(_ tab: BrowserTab) {
         if tab.canGoBack {
             ensureOwnsWebView()
+            // Before the navigation: a back to a child's first page pictures
+            // the page it leaves, for the forward swipe (TASK-355).
+            pictureLeavingPageIfNeeded(tab)
             tab.webView?.goBack()
         } else if let parent = parentTab(for: tab) {
             guard let space = activeSpace else { return }

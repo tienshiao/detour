@@ -310,9 +310,10 @@ struct OpenerUnderlayCapture {
     }
 }
 
-/// The opener pictures a window keeps: a few, most recently stored last; the
+/// The swipe pictures a window keeps per tab (the openers', TASK-325; the
+/// pages left going back, TASK-355): a few, most recently stored last; the
 /// oldest goes when a new one would exceed `capacity`.
-struct OpenerUnderlayCache<Value> {
+struct SwipePictureCache<Value> {
     static var capacity: Int { 4 }
 
     private(set) var entries: [(id: UUID, value: Value)] = []
@@ -338,6 +339,68 @@ struct OpenerUnderlayCache<Value> {
 
     mutating func prune(keeping keep: (UUID) -> Bool) {
         entries.removeAll { !keep($0.id) }
+    }
+
+    /// Re-checks the value for `id` in place (its place in the order kept):
+    /// `keep` may update it, and returns false to drop it.
+    mutating func revise(_ id: UUID, _ keep: (inout Value) -> Bool) {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        if !keep(&entries[index].value) { entries.remove(at: index) }
+    }
+}
+
+// MARK: - Pictures of pages left going back (TASK-355)
+
+extension NavigationSwipeRules {
+    /// Whether to picture a tab's page as a back navigation leaves it, for the
+    /// forward swipe that returns to it: only when the back lands on the tab's
+    /// first page (`backListCount` 1) and the tab is a normal tab with an
+    /// opener. Only there does Detour's own swipe run forward
+    /// (`.ownSwipe(canGoForward: true)`); everywhere else WebKit's own swipe
+    /// shows WebKit's own picture of the forward page.
+    static func picturesPageLeftGoingBack(_ facts: NavigationSwipeFacts, backListCount: Int) -> Bool {
+        facts.isNormalTab && facts.hasOpener && backListCount == 1
+    }
+}
+
+/// A picture of a page taken as a back navigation left it, kept with the
+/// back/forward item it is of, for the forward swipe that returns to it.
+/// `Item` is `WKBackForwardListItem` in the app (WebKit keeps one wrapper per
+/// item, so identity holds); tests use a plain class.
+struct ForwardPagePicture<Item: AnyObject> {
+    let item: Item
+    let image: NSImage
+    /// The web view's size when pictured.
+    let size: CGSize
+    /// The back navigation has left `item`: once it is current again (the
+    /// forward swipe or Forward returned to it) the picture is spent.
+    private(set) var hasBeenLeft = false
+
+    init(item: Item, image: NSImage, size: CGSize) {
+        self.item = item
+        self.image = image
+        self.size = size
+    }
+
+    /// Whether the picture still belongs to a page a forward swipe can return
+    /// to, from the web view's history now. It does while `item` is still the
+    /// current item (the back navigation that leaves it has not committed:
+    /// while a load is provisional `currentItem` is the old entry) and then
+    /// while it is the forward item. A navigation from the first page replaces
+    /// the forward list, a jump elsewhere in the history moves it, and a return
+    /// to the pictured page uses it up: each drops it.
+    mutating func stillApplies(currentItem: Item?, forwardItem: Item?) -> Bool {
+        if currentItem === item { return !hasBeenLeft }
+        hasBeenLeft = true
+        return forwardItem === item
+    }
+
+    /// Whether a forward swipe on a web view whose forward item is
+    /// `forwardItem` and whose size is `webViewSize` shows it. A pane resized
+    /// since (window, split divider, dev toolbar) would stretch the picture:
+    /// the plain card then.
+    func shows(forwardItem: Item?, webViewSize: CGSize) -> Bool {
+        forwardItem === item && abs(size.width - webViewSize.width) <= 1 && abs(size.height - webViewSize.height) <= 1
     }
 }
 

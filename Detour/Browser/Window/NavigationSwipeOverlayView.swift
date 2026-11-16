@@ -6,9 +6,10 @@ import AppKit
 ///
 /// - Back: a picture of the page slides right, off an underlay — the opener's
 ///   picture where there is one, else a plain page background.
-/// - Forward: a plain card slides in from the right over the live page, and
-///   the forward page loads under it (PROVISIONAL: WebKit's own picture of the
-///   forward page is not readable, so nothing better is shown).
+/// - Forward: a card slides in from the right over the live page, and the
+///   forward page loads under it. The card carries Detour's own picture of
+///   that page, taken as a back navigation left it (TASK-355; WebKit's own
+///   picture of it is in a store Detour cannot read); without one it is plain.
 final class NavigationSwipeOverlayView: NSView {
 
     /// An image drawn into the underlay at `frame` (the overlay's coordinates).
@@ -18,6 +19,8 @@ final class NavigationSwipeOverlayView: NSView {
     }
 
     let direction: NavigationSwipeDirection
+    /// Forward: the picture of the forward page the card carries, if any.
+    let forwardPage: Picture?
     private(set) var progress: CGFloat = 0
 
     private let underlayLayer = CALayer()
@@ -29,8 +32,9 @@ final class NavigationSwipeOverlayView: NSView {
     private static let shadowOpacity: Float = 0.25
 
     init(frame: NSRect, direction: NavigationSwipeDirection, page: NSImage?, underlay: [Picture],
-         cornerRadius: CGFloat) {
+         forwardPage: Picture? = nil, cornerRadius: CGFloat) {
         self.direction = direction
+        self.forwardPage = direction == .forward ? forwardPage : nil
         super.init(frame: frame)
         wantsLayer = true
         autoresizingMask = []
@@ -72,6 +76,15 @@ final class NavigationSwipeOverlayView: NSView {
             slidingLayer.backgroundColor = pageBackground
         } else {
             slidingLayer.backgroundColor = pageBackground
+            if let forwardPage = self.forwardPage {
+                // At the web view's frame in the pane: a dev toolbar beside it
+                // stays plain.
+                let pictureLayer = CALayer()
+                pictureLayer.frame = forwardPage.frame
+                pictureLayer.contents = forwardPage.image
+                pictureLayer.contentsGravity = .resize
+                slidingLayer.addSublayer(pictureLayer)
+            }
         }
         slidingLayer.frame = bounds
         slidingLayer.shadowColor = NSColor.black.cgColor

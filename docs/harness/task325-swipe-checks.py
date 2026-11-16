@@ -16,6 +16,9 @@ scripted tracker in place of the real one:
   3. A cancelled back swipe leaves it open and selected.
   4. A page 2 gives the gesture back to WebKit; Back to page 1 brings the own
      swipe back with forward (edges 10); a forward swipe goes forward.
+     TASK-355: Back pictured page 2 as it left it, and the forward swipe's
+     card carries that picture (its colour sampled from a screenshot); after
+     the page's own history.back() there is no picture and the card is plain.
   5. A completed back swipe closes it and selects the opener; Reopen Closed
      Tab brings it back.
   6. The sidebar's Back button still closes a child to its opener.
@@ -25,6 +28,9 @@ scripted tracker in place of the real one:
 Needs a Debug build and the sandbox off (it launches an app). Usage:
 
   docs/harness/task325-swipe-checks.py /path/to/Detour.app [output-dir]
+
+SWIPE_CHECKS_DATA_DIR=<name> picks the isolated data directory (it must start
+with DetourVerify); by default a fresh DetourVerify325-<random>.
 
 Exit status 0 when every check passed.
 """
@@ -44,6 +50,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zlib
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -109,6 +116,53 @@ PAGE = """<!doctype html><html><head><title>{title}</title>
 </head><body><h1>{title}</h1>{body}</body></html>"""
 
 
+def png_pixel(path, fx, fy):
+    """The RGB at (fx, fy), fractions of the width and height, of an 8-bit
+    non-interlaced PNG (what the screenshot tool writes)."""
+    with open(path, "rb") as f:
+        data = f.read()
+    pos, idat, width = 8, b"", 0
+    while pos < len(data):
+        length = int.from_bytes(data[pos:pos + 4], "big")
+        kind, body = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + length]
+        if kind == b"IHDR":
+            width, height = int.from_bytes(body[0:4], "big"), int.from_bytes(body[4:8], "big")
+            depth, colour = body[8], body[9]
+        elif kind == b"IDAT":
+            idat += body
+        pos += 12 + length
+    assert depth == 8 and colour in (2, 6), f"unsupported PNG (depth {depth}, colour type {colour})"
+    bpp = 3 if colour == 2 else 4
+    raw, stride = zlib.decompress(idat), width * bpp
+    target = int(height * fy)
+    previous = bytearray(stride)
+    for y in range(target + 1):
+        start = y * (stride + 1)
+        kind, line = raw[start], bytearray(raw[start + 1:start + 1 + stride])
+        for i in range(stride):
+            a = line[i - bpp] if i >= bpp else 0
+            b = previous[i]
+            c = previous[i - bpp] if i >= bpp else 0
+            if kind == 1:
+                line[i] = (line[i] + a) & 0xFF
+            elif kind == 2:
+                line[i] = (line[i] + b) & 0xFF
+            elif kind == 3:
+                line[i] = (line[i] + (a + b) // 2) & 0xFF
+            elif kind == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 0xFF
+        previous = line
+    x = int(width * fx) * bpp
+    return tuple(previous[x:x + 3])
+
+
+def is_page2_green(rgb):
+    """Page 2's background, #d8f5d0, within a little colour management."""
+    return rgb is not None and abs(rgb[0] - 0xd8) < 20 and abs(rgb[1] - 0xf5) < 20 and abs(rgb[2] - 0xd0) < 20
+
+
 def write_fixture(directory):
     pages = {
         "opener.html": ("Opener", "#cfe8ff", '<a id="blank" href="child.html" target="_blank">Open child</a>'
@@ -129,7 +183,10 @@ def main():
     app = os.path.abspath(sys.argv[1])
     out_dir = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="task325-")
     os.makedirs(out_dir, exist_ok=True)
-    data_dir = f"DetourVerify325-{secrets.token_hex(3)}"
+    data_dir = os.environ.get("SWIPE_CHECKS_DATA_DIR") or f"DetourVerify325-{secrets.token_hex(3)}"
+    if not data_dir.startswith("DetourVerify") or "/" in data_dir:
+        print("SWIPE_CHECKS_DATA_DIR must start with DetourVerify and name one folder")
+        return 2
     support = os.path.expanduser(f"~/Library/Application Support/{data_dir}")
     client = load_client()
 
@@ -167,8 +224,9 @@ def main():
             return content
 
         def shoot(name):
-            call("screenshot", window_id=1, save_to=os.path.join(out_dir, f"{name}.png"), include_image=False,
-                 overwrite=True)
+            path = os.path.join(out_dir, f"{name}.png")
+            call("screenshot", window_id=1, save_to=path, include_image=False, overwrite=True)
+            return path
 
         def check(name, ok, detail):
             results.append((name, ok))
@@ -244,17 +302,33 @@ def main():
         p = wait(lambda: (lambda q: q if q and q["own_swipe"] else None)(pane(child)))
         check("Back on page 1: the own swipe with forward", p and p["own_swipe_forward"] and p["can_go_forward"]
               and not p["gestures_enabled"] and p["rubber_band_edges"] == 10, p)
+        p = wait(lambda: (lambda q: q if q and q["forward_picture"] else None)(pane(child)), timeout=5) or pane(child)
+        check("Back pictured page 2 as it left it (TASK-355)", bool(p and p["forward_picture"]), p)
         began = swipe("begin", direction="forward", progress=0.5)
         time.sleep(0.3)
-        shoot("4-forward-swipe-half-way")
+        # The card covers the right half of the content area at 0.5.
+        rgb = png_pixel(shoot("4-forward-swipe-half-way"), 0.85, 0.6)
+        check("The forward card shows page 2, not a blank card (TASK-355)",
+              began.get("forward_picture") is True and is_page2_green(rgb),
+              f"card picture {began.get('forward_picture')}, colour {rgb}")
         swipe("finish", complete=True)
         went = wait_selected_url("/page2.html")
         # Committed (it has a back item again) before Back is pressed.
         went = went and wait(lambda: (lambda q: q if q and q["can_go_back"] and not q["own_swipe"] else None)(pane(child)))
         check("A forward swipe goes forward", began["began"] is True and bool(went), selected().get("selected_tab_url"))
-        call("run_menu_item", window_id=1, path=["Navigate", "Back"])
+        # The page's own history.back(): no picture, the plain card.
+        call("evaluate_js", context=ctx(child), expression="history.back()")
         wait_selected_url("/child.html")
-        wait(lambda: (lambda q: q if q and q["own_swipe"] else None)(pane(child)))
+        p = wait(lambda: (lambda q: q if q and q["own_swipe_forward"] else None)(pane(child)))
+        began = swipe("begin", direction="forward", progress=0.5)
+        time.sleep(0.3)
+        rgb = png_pixel(shoot("4-forward-swipe-plain-card"), 0.85, 0.6)
+        check("Without a picture the forward card is plain (TASK-355)",
+              bool(p) and not p["forward_picture"] and began["began"] is True
+              and began.get("forward_picture") is False and not is_page2_green(rgb),
+              f"pane {p}, card picture {began.get('forward_picture')}, colour {rgb}")
+        swipe("finish", complete=False)
+        time.sleep(0.4)
 
         # 5. Completed, then Reopen Closed Tab.
         began = swipe("begin", direction="back", progress=0.6)
@@ -340,7 +414,7 @@ def main():
         server.shutdown()
         for key in (f"NSWindow Frame BrowserWindow-{data_dir}", f"NSSplitView Subview Frames BrowserSplitView-{data_dir}"):
             subprocess.run(["defaults", "delete", "com.detourbrowser.mac", key], capture_output=True)
-        if os.path.basename(support) == data_dir and data_dir.startswith("DetourVerify325-"):
+        if os.path.basename(support) == data_dir and data_dir.startswith("DetourVerify"):
             subprocess.run(["defaults", "delete", f"com.detourbrowser.mac.{data_dir}"], capture_output=True)
             plist = os.path.expanduser(f"~/Library/Preferences/com.detourbrowser.mac.{data_dir}.plist")
             if os.path.exists(plist):
