@@ -316,8 +316,11 @@ by title (`choose_menu_item`), with the links window made key first:
 | New Tab, `127.0.0.1` (no route) | a background tab in Personal |
 | New Window, `127.0.0.1` (no route) | a new browser window with the link |
 
-Only the two routed cases logged `Link routed`. Not run: a Private window
-and a Peek's link menu (the in-app tests cover both).
+Only the two routed cases logged `Link routed`. Run again on the final build
+(with the Private New Window fix), all as above. Not run: a Private window's
+link menu (the endpoint does not reach Private windows by default), so the
+Private Open Link in New Window fix is checked by its in-app test only, and
+a Peek's link menu (in-app tests).
 
 **Not verified at runtime:** a favourite's tab (the pinned tab stands in for
 the anchor intercept; both go through `PeekAnchor.anchorURL`), a split pane

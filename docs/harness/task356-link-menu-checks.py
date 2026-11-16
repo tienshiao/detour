@@ -17,8 +17,10 @@ Needs the sandbox off (it launches an app and serves loopback HTTP). Usage:
 
   docs/harness/task356-link-menu-checks.py /path/to/Detour.app <output-dir> [data-dir-name]
 
-The data directory (default DetourVerify-356), its WebKit stores and its
-window keys are removed when it ends.
+The data directory (default DetourVerify-356), its WebKit stores, its
+defaults suite and its window keys are removed when it ends. Each case
+makes the links window key with set_window_frame activate=true, which brings
+Detour to the front.
 """
 import http.server, importlib.machinery, importlib.util, json, os, shutil, signal, subprocess, sys, threading, time
 
@@ -86,6 +88,9 @@ def cleanup():
     support = os.path.expanduser(f"~/Library/Application Support/{data_dir}")
     t324.remove_webkit_storage(support, data_dir)
     shutil.rmtree(support, ignore_errors=True)
+    subprocess.run(["defaults", "delete", f"com.detourbrowser.mac.{data_dir}"], capture_output=True)
+    suite = os.path.expanduser(f"~/Library/Preferences/com.detourbrowser.mac.{data_dir}.plist")
+    if os.path.exists(suite): os.remove(suite)
     for key in (f"NSWindow Frame BrowserWindow-{data_dir}", f"NSSplitView Subview Frames BrowserSplitView-{data_dir}"):
         subprocess.run(["defaults", "delete", "com.detourbrowser.mac", key], capture_output=True)
 

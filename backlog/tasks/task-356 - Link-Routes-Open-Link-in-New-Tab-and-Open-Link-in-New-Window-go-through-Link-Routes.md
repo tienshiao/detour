@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T05:53:00Z'
-updated_date: '2026-11-16T08:52:00Z'
+updated_date: '2026-11-16T08:56:00Z'
 labels:
   - links
   - link-routes
@@ -55,6 +55,9 @@ The user's decision 2026-11-15 on TASK-191.4's unconfirmed choices. Today none o
 
 Review (/code-review medium --fix, forked): 5 findings. Fixed (separate commit, out of the ACs, easy to drop): Open Link in New Window from a Private window called createNewWindowWithURL(url) with incognito false, so the link opened in a NORMAL window on the last normal space and its profile (pre-existing, confirmed red: the new test testOpenLinkInNewWindowInAPrivateWindowOpensAPrivateWindow fails against the old line); now createNewWindowWithURL(url, incognito: isIncognito). Not checked at runtime (the endpoint does not reach Private windows by default); the in-app test covers it. Skipped: routedDecision also builds a request for Split View / Quick Detour (negligible; keeps the rule the single authority); LinkMenuAction duplicates ContextMenuLinkAction (folding them touches ~37 call sites, out of scope); the Peek test passes on the overlay alone (isPeekWebView's overlay shortcut, unchanged); the in-app tests stand window.open in for WebKit's replayed menu item (covered by the runtime check).
 - After the review: LinkRoutingEligibilityTests 51/0, InPageLinkRoutingTests 34/0, LinkPlacementTests 24/0, OpenInQuickDetourMenuTests 11/0, PageOpenedWindowTests 11/0 (131 tests, 0 failures). The runtime check ran before the Private fix (it does not touch that path).
+
+Correction: the plain-newwindow runtime case does exercise the branch the Private fix edits. Rebuilt (dylib 00:56) and re-ran docs/harness/task356-link-menu-checks.py on the final tree: ALL PASS again (both routed items, Split View, Quick Detour, unrouted New Tab and New Window; exactly two 'Link routed' lines). The harness now also removes its defaults suite (com.detourbrowser.mac.DetourVerify-356.plist was left by the first runs; removed). It brings Detour to the front (set_window_frame activate=true) before each case.
+Chosen by Claude (not yet confirmed by the user): keep the review's Private-window fix (a Private window's Open Link in New Window opens a new Private window) in this task as its own commit; alternative: drop that commit (and this note and the summary's mention) and file it as a separate task.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
