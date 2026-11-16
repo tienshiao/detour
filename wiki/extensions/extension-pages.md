@@ -4,7 +4,7 @@ title: Extension pages in tabs
 description: A tab showing a webkit-extension:// page is tied to one loaded context's origin, which dies on every context reload and every relaunch; how such tabs, pinned tiles, favourites and closed-tab records are rehomed, restored, refused or closed, and why a Quick Detour or quarantine window cannot show one.
 tags: [extensions, tabs, persistence, pinned, favorites]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T16:05:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T17:00:00Z }
 sources:
   - id: page-url
     resource: ../../Detour/Extensions/Runtime/ExtensionPageURL.swift
@@ -60,6 +60,18 @@ sources:
   - id: provenance-tests
     resource: ../../DetourTests/ExtensionPageProvenanceTests.swift
     title: ExtensionPageProvenanceTests
+  - id: task-382
+    resource: backlog:TASK-382
+    title: "Extensions: a web page in a tab built from an extension's configuration can navigate to that extension's private pages"
+  - id: webkit-navigation-state
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Cocoa/NavigationState.mm
+    title: WebKit, NavigationState.mm (isUnsupportedWebExtensionNavigation)
+  - id: navigation-policy
+    resource: ../../Detour/Extensions/Runtime/ExtensionPageNavigationPolicy.swift
+    title: ExtensionPageNavigationPolicy.swift
+  - id: navigation-policy-tests
+    resource: ../../DetourTests/ExtensionPageNavigationPolicyTests.swift
+    title: ExtensionPageNavigationPolicyTests
   - id: task-352
     resource: backlog:TASK-352
     title: "Extensions: reloading or updating an extension leaves its page in a Quick Detour window on the dead origin"
@@ -97,6 +109,11 @@ page follows from the origin being short-lived.
   records, tiles and rehoming. So a page a web page chose never reaches the
   extension's configuration
   ([below](#only-a-servable-page-becomes-the-tabs-url)).
+- A tab built from an extension's configuration never leaves that extension
+  in its main frame: WebKit ignores the navigation. Web content can only be
+  in its frames, and a frame that is not the extension's may not send the tab
+  to the extension's pages
+  ([below](#web-content-inside-an-extensions-tab)).
 
 # Rules
 
@@ -214,17 +231,113 @@ the hole.
 
 **Not covered.**
 
-- A tab already built from extension A's configuration that navigates to a
-  web page stays in that configuration. That web page can navigate it to
-  A's non-web-accessible pages live, with no sleep involved. WebKit serves
-  them, because the frame's request URL equals the request. This is read
-  from `WebExtensionURLSchemeHandlerCocoa.mm`, not measured.
+- The live route through a tab built from extension A's configuration was
+  filed here as "the tab navigates to a web page, which then navigates it to
+  A's pages". Measured in TASK-382, the tab cannot get to a web page; the
+  route that is real goes through a web frame in A's page, and is closed
+  ([below](#web-content-inside-an-extensions-tab)).
 - Rows saved before the fix that already hold a refused URL cannot be told
   apart, so they are grandfathered.
 - An extension page's own `window.open` of its own page still opens a space
   tab, which is refused (TASK-167's rule). The same goes for `tabs.update`
   from an extension to its own page in a web tab. Both used to start working
   after a sleep. Now they never do.
+
+## Web content inside an extension's tab
+
+Added in TASK-382 (2026-11-16): the gate is read from WebKit `main`, and the
+results were measured in XCTest and in the running app (macOS 26.7).[^task-382]
+
+**The main frame stays on the extension.** In a web view whose configuration
+carries `_requiredWebExtensionBaseURL`, WebKit ignores every main-frame
+navigation whose URL is not that extension's
+(`isUnsupportedWebExtensionNavigation`).[^webkit-navigation-state] It does
+this *after* the navigation delegate has answered `.allow`, and reports
+nothing: no provisional load, no failure, no request.
+
+Measured on a tab from `addExtensionTab` and on a plain `WKWebView` from
+`context.webViewConfiguration`:
+
+- a link in the options page to a loopback page;
+- `location.href` from the options page;
+- `webView.load` of the page, and `open_url` with `in_place` through the
+  endpoint.
+
+The server saw no request for the page. The only request was Detour's own
+`/favicon.ico` guess for the in-place load. The tab stayed on `options.html`.
+So no web page is ever the main frame of such a tab, and the tab's own
+`window.open` children are space tabs
+([`isExtensionContextConfiguration`](../platform/wkwebview-delegate-order.md)).
+
+**Its frames can hold web content, and a frame can steer the top.** A
+subframe navigation is exempt from that gate. When the extension's page
+embeds a loopback frame, the frame's `top.location =
+'webkit-extension://<ext>/other.html'` (`other.html` not web-accessible, no
+user gesture) loaded `other.html` into the tab, with the extension's
+privileges. WebKit's scheme handler serves it as a main frame in the
+extension's own configuration. A script-clicked `target=_top` link in the
+frame arrived instead with no target frame: it went the new-window way and
+ended as a space tab on the -1008 error page.
+
+**The rule** (`ExtensionPageNavigationPolicy`[^navigation-policy]). Both
+navigation delegates apply it through `BrowserTab.authorizesNavigation`: the
+window's for a web view it has claimed, the tab's own otherwise. A main-frame
+navigation to a page of the extension that built the tab's web view
+(`servedExtensionOriginHost`) goes ahead only in these cases:
+
+- The requesting frame (`navigationAction.sourceFrame`) has that extension's
+  origin. That covers its links, its scripts and Back from its page. It also
+  covers an app load while the extension's page is on screen, such as
+  `tabs.update` or Reload, because an app load reports the main frame as its
+  source.
+- The requesting frame is the main frame holding one of Detour's own
+  documents: the initial `about:blank` (an empty origin) of the web view that
+  `wake` or `addExtensionTab` loads, or the error page.
+- No frame is named at all.
+
+Anything else is cancelled, with a `navigation-policy` log line and no error
+page: a web frame, an opaque frame (sandboxed or `data:`), another
+extension's frame, and a main frame holding a web page, should WebKit's gate
+ever go. `sourceFrame` is read by KVC (`WKNavigationAction.requestingFrame`),
+because it is imported as non-optional yet can be nil for an app load. When
+the window's delegate gets an extension-page navigation in a web view that
+belongs to no tab, it applies the rule as if that web view served the page's
+extension.
+
+The rule refuses a web frame even when the target page is web-accessible.
+This is Claude's choice, not yet confirmed by the user. A web page in a
+space tab cannot top-navigate to one either, because WebKit refuses the main
+frame (-1008, [below](#where-an-extension-page-cannot-be)), so the rule keeps
+the two kinds of tab alike. The alternative is to let through targets that
+the extension's `web_accessible_resources` match for the frame's origin.
+That would serve, for example, a framed sign-in page that hands back to the
+extension's callback page.
+
+**Not touched.**
+
+- Another extension's page in such a tab is still refused by WebKit, and the
+  error page names it (TASK-372).
+- A tab no context built is not this rule's business.
+- Subframe loads are left to the scheme handler, which serves a subframe only
+  web-accessible pages or pages framed by the extension itself.
+- Back and forward started by a web frame (`top.history.back()`) were not
+  measured. If WebKit names the main frame as the requester, they pass, but
+  they can only reach pages the tab has already shown.
+- A Cmd-click on a `target=_top` link to the extension's page, inside a web
+  frame, now does nothing. Before, it opened a space tab, which WebKit then
+  refused.
+
+**Rejected.**
+
+- *Moving the tab to a web configuration when it leaves the extension's
+  origin.* The tab never leaves: WebKit drops the navigation. A replacement
+  web view would also lose the back/forward list, because WebKit cannot swap
+  a live web view's configuration.
+- *Arming Detour's loads, as `InternalPageNavigationPolicy` does.* An app
+  load already names the extension's page or one of Detour's documents as its
+  source, because no web page is ever the main frame. Arming would have to
+  thread through `addExtensionTab`, `wake`, `tabs.update` and Reload for no
+  gain.
 
 ## Waking resolves the owning context
 
@@ -403,7 +516,8 @@ out. The probe test was not kept; it was the
 - [Profile.swift](../../Detour/Browser/Profile.swift) — locations, retarget, pending origins.
 - [BrowserTab.swift](../../Detour/Browser/BrowserTab.swift) — `retarget`, `wake`, `wakeConfiguration`.
 - [TabStore.swift](../../Detour/Browser/TabStore.swift) — restore, rebuild helpers, refusals.
-- Tests: [ExtensionPageProvenanceTests](../../DetourTests/ExtensionPageProvenanceTests.swift) (TASK-381: a `window.open` child, a page-chosen `load`, another extension's `tabs.create` and a relaunch, which all fail with `mayAdopt` always true; a page navigating itself, which already passed; positive controls). Runtime check through the endpoint: [docs/harness/task381-endpoint-checks.py](../../docs/harness/task381-endpoint-checks.py) (a page's `window.open` child, Reload, Cmd+Q and relaunch, with the options tab as the control; 9/9 on 2026-11-16), `ExtensionPageURLTests`, [ExtensionPageRehostTests](../../DetourTests/ExtensionPageRehostTests.swift), [ExtensionPagePersistenceTests](../../DetourTests/ExtensionPagePersistenceTests.swift), `ExtensionPageUndoTests`, `ExtensionPageFavoriteTests`, `MoveTabToSpaceTests`.
+- [ExtensionPageNavigationPolicy.swift](../../Detour/Extensions/Runtime/ExtensionPageNavigationPolicy.swift) — the rule for web content in an extension's tab (TASK-382).
+- Tests: [ExtensionPageNavigationPolicyTests](../../DetourTests/ExtensionPageNavigationPolicyTests.swift) (TASK-382's rule, table cases); [ExtensionPageProvenanceTests](../../DetourTests/ExtensionPageProvenanceTests.swift) (TASK-382: a framed web page's `top.location` in a window and in the background, which load `other.html` without the rule; the extension's own link, Back, own frame and `tabs.update`; a pin of WebKit's gate. TASK-381: a `window.open` child, a page-chosen `load`, another extension's `tabs.create` and a relaunch, which all fail with `mayAdopt` always true; a page navigating itself, which already passed; positive controls). Runtime check through the endpoint: [docs/harness/task381-endpoint-checks.py](../../docs/harness/task381-endpoint-checks.py) (a page's `window.open` child, Reload, Cmd+Q and relaunch, with the options tab as the control; 9/9 on 2026-11-16), `ExtensionPageURLTests`, [ExtensionPageRehostTests](../../DetourTests/ExtensionPageRehostTests.swift), [ExtensionPagePersistenceTests](../../DetourTests/ExtensionPagePersistenceTests.swift), `ExtensionPageUndoTests`, `ExtensionPageFavoriteTests`, `MoveTabToSpaceTests`.
 
 # Related
 
@@ -419,5 +533,8 @@ out. The probe test was not kept; it was the
 [^task-37]: Activating a dormant pinned entry of a disabled or uninstalled extension gives a dead tab
 [^task-38]: Move to Space loses extension pages
 [^task-381]: Extensions: a web page can make a tab load an extension's non-web-accessible page (window.open, then sleep/wake or Reload)
+[^task-382]: Extensions: a web page in a tab built from an extension's configuration can navigate to that extension's private pages
+[^webkit-navigation-state]: WebKit, NavigationState.mm (isUnsupportedWebExtensionNavigation)
+[^navigation-policy]: ExtensionPageNavigationPolicy.swift
 [^task-352]: Extensions: reloading or updating an extension leaves its page in a Quick Detour window on the dead origin
 [^webkit-scheme-handler]: WebKit, WebExtensionURLSchemeHandlerCocoa.mm (main-frame loads need the configuration's requiredWebExtensionBaseURL)

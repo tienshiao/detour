@@ -4,6 +4,7 @@ import Combine
 import os.log
 
 private let webProcessLog = Logger(subsystem: "com.detourbrowser.mac", category: "web-process")
+private let navigationPolicyLog = Logger(subsystem: "com.detourbrowser.mac", category: "navigation-policy")
 
 // Private C API to enable PiP support in WKWebView on macOS
 @_silgen_name("WKPreferencesSetAllowsPictureInPictureMediaPlayback")
@@ -1420,14 +1421,31 @@ class BrowserTab: NSObject {
         webView.load(URLRequest(url: url))
     }
 
-    /// Applies `InternalPageNavigationPolicy` for this tab, for whichever
-    /// navigation delegate the web view has. Arming is single-use, spent by the
+    /// Applies `ExtensionPageNavigationPolicy` and `InternalPageNavigationPolicy`
+    /// for this tab, for whichever navigation delegate the web view has.
+    ///
+    /// The extension rule: only the extension's own frames, or Detour, may send
+    /// a tab its configuration serves to one of its pages; a web page it frames
+    /// may not (TASK-382).
+    ///
+    /// Arming is single-use, spent by the
     /// navigation it lets through: left armed for as long as the page is
     /// showing, the tab would wave through a redirect back to the internal
     /// scheme from the first history entry the user clicked. (An arming whose
     /// load never reaches the policy is dropped by the URL observer once a web
     /// page commits.)
     func authorizesNavigation(_ action: WKNavigationAction, in webView: WKWebView) -> Bool {
+        let requester = ExtensionPageNavigationPolicy.requester(of: action)
+        guard ExtensionPageNavigationPolicy.allows(
+            action.request.url, targetsMainFrame: action.targetFrame?.isMainFrame == true,
+            servedOriginHost: servedExtensionOriginHost, requester: requester)
+        else {
+            navigationPolicyLog.notice(
+                "Refused a frame of \(requester?.originProtocol ?? "nil", privacy: .public)://\(requester?.originHost ?? "", privacy: .private) sending the tab to its extension's page")
+            return false
+        }
+        // Not an internal URL: nothing to decide, and no back-forward list to walk.
+        guard InternalPage.isInternal(action.request.url) else { return true }
         let decision = InternalPageNavigationPolicy.decision(
             for: action.request.url, targetsMainFrame: action.targetFrame?.isMainFrame == true,
             navigationType: action.navigationType, armedPage: armedInternalPage,

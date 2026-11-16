@@ -106,7 +106,12 @@ nonisolated final class ExtensionPageProvenanceTests: XCTestCase {
                 }
                 """,
             files: ["options.html": "<html><head><title>\(Self.optionsTitle)</title></head><body>options</body></html>",
-                    "other.html": "<html><head><title>Other</title></head><body>other</body></html>"])
+                    "other.html": "<html><head><title>Other</title></head><body>other</body></html>",
+                    // Framed with `?go`, sends the top frame to `other.html?top=1`
+                    // itself: the requesting frame is a subframe of the
+                    // extension's own origin (TASK-382).
+                    "jump.html": "<html><head><script src=\"jump.js\"></script></head><body>jump</body></html>",
+                    "jump.js": "if (location.search === '?go') top.location = 'other.html?top=1';"])
         tempDirs.append(ext.basePath)
         return ext
     }
@@ -407,5 +412,164 @@ nonisolated final class ExtensionPageProvenanceTests: XCTestCase {
         }
         XCTAssertEqual(restoredOwn.url, rewriteExtensionPageURL(ownPage, from: base1, to: base2),
                        "the extension's own page is rehomed as before")
+    }
+
+    // MARK: - TASK-382: web content inside an extension's own tab
+
+    /// A loopback server for the framed attacker: `/top` sends the top frame
+    /// to the URL in its fragment as soon as it loads, with no user gesture.
+    @MainActor private func makeFramedAttacker() async throws -> (LoopbackHTTPServer, UInt16) {
+        let server = try LoopbackHTTPServer(routes: [
+            "/top": "<html><body>top<script>top.location = decodeURIComponent(location.hash.slice(1));</script></body></html>",
+            "/page": "<html><head><title>Web</title></head><body>web</body></html>",
+        ])
+        servers.append(server)
+        return (server, try await server.start())
+    }
+
+    /// Frames `src` into the page `tab` shows, as the extension's own page
+    /// would with an `<iframe>` of its markup.
+    @MainActor private func frame(_ src: String, into tab: BrowserTab) async throws {
+        _ = try await XCTUnwrap(tab.webView).callAsyncJavaScript(
+            "const f = document.createElement('iframe'); f.src = src; document.body.appendChild(f);",
+            arguments: ["src": src], contentWorld: .page)
+    }
+
+    @MainActor private func fragment(_ url: URL) -> String {
+        "#" + (url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")
+    }
+
+    /// WebKit's own gate, which is why the route TASK-382 was filed for is not
+    /// real: a web view built from an extension context's configuration ignores
+    /// every main-frame navigation off that extension (`NavigationState.mm`,
+    /// `isUnsupportedWebExtensionNavigation`), after the delegate allowed it.
+    /// The link from the options page never reaches the server, and the tab
+    /// stays on the options page, so no web page is ever this tab's main frame.
+    /// If WebKit drops the gate this fails, and the policy below is what then
+    /// stands between such a page and the extension's pages.
+    @MainActor func testAnExtensionsTabNeverLoadsAWebPageInItsMainFrame() async throws {
+        let (server, port) = try await makeFramedAttacker()
+        let (profile, contexts) = try makeProfile(loading: [try await makeExtension()])
+        let context = try testElement(contexts, 0)
+        let options = try extensionPageURL("options.html", on: context.baseURL)
+        let space = makeSpace(profile)
+        let tab = TabStore.shared.addExtensionTab(in: space, url: options, context: context)
+        try await waitUntil("the options page") { showsOptions(tab, options) }
+
+        _ = try await XCTUnwrap(tab.webView).callAsyncJavaScript(
+            "const a = document.createElement('a'); a.href = href; document.body.appendChild(a); a.click();",
+            arguments: ["href": "http://127.0.0.1:\(port)/page"], contentWorld: .page)
+        let left = try await pollUntil(timeout: 2) { server.requestedPaths.contains("/page") || tab.title == "Web" }
+        XCTAssertFalse(left, "WebKit let the extension's tab load a web page")
+        XCTAssertEqual(tab.webView?.url, options)
+    }
+
+    /// The live route that is real: web content the extension's page frames
+    /// sends the top frame to one of the extension's pages that is not
+    /// web-accessible. WebKit serves it (main frame, the context's own
+    /// configuration), so the navigation policy refuses it: the requesting
+    /// frame is not the extension's. Here the tab is shown in a window, whose
+    /// navigation delegate decides.
+    @MainActor func testAWebFrameInAnExtensionsPageCannotNavigateItsTabToTheExtensionsPages() async throws {
+        let (server, port) = try await makeFramedAttacker()
+        let (profile, contexts) = try makeProfile(loading: [try await makeExtension()])
+        let context = try testElement(contexts, 0)
+        let options = try extensionPageURL("options.html", on: context.baseURL)
+        let other = try extensionPageURL("other.html", on: context.baseURL)
+        let space = makeSpace(profile)
+        let wc = BrowserWindowController(incognito: false)
+        wc.sidebarSplitView.autosaveName = nil
+        controllers.append(wc)
+        wc.setActiveSpace(id: space.id, selectTab: false)
+        wc.showWindow(nil)
+
+        let tab = TabStore.shared.addExtensionTab(in: space, url: options, context: context)
+        wc.selectTab(id: tab.id)
+        try await waitUntil("the options page") { showsOptions(tab, options) }
+        XCTAssertTrue(tab.webView?.navigationDelegate === wc, "the window decides")
+        try await frame("http://127.0.0.1:\(port)/top\(fragment(other))", into: tab)
+        try await waitUntil("the framed page to load") { server.requestedPaths.contains("/top") }
+
+        let loaded = try await pollUntil(timeout: 3) { tab.title == "Other" || tab.webView?.url == other }
+        XCTAssertFalse(loaded, "the framed web page loaded the extension's page into the tab")
+        XCTAssertEqual(tab.url, options)
+        XCTAssertEqual(tab.webView?.url, options)
+        XCTAssertFalse(showsErrorPage(tab), "a refused navigation leaves the page as it was")
+    }
+
+    /// The same from a tab no window has claimed: its own navigation delegate
+    /// decides.
+    @MainActor func testAWebFrameInABackgroundExtensionTabCannotNavigateItToTheExtensionsPages() async throws {
+        let (server, port) = try await makeFramedAttacker()
+        let (profile, contexts) = try makeProfile(loading: [try await makeExtension()])
+        let context = try testElement(contexts, 0)
+        let options = try extensionPageURL("options.html", on: context.baseURL)
+        let other = try extensionPageURL("other.html", on: context.baseURL)
+        let space = makeSpace(profile)
+        let tab = TabStore.shared.addExtensionTab(in: space, url: options, context: context)
+        try await waitUntil("the options page") { showsOptions(tab, options) }
+        XCTAssertTrue(tab.webView?.navigationDelegate === tab, "no window has claimed the tab")
+
+        try await frame("http://127.0.0.1:\(port)/top\(fragment(other))", into: tab)
+        try await waitUntil("the framed page to load") { server.requestedPaths.contains("/top") }
+        let loaded = try await pollUntil(timeout: 3) { tab.title == "Other" || tab.webView?.url == other }
+        XCTAssertFalse(loaded, "the framed web page loaded the extension's page into the tab")
+        XCTAssertEqual(tab.url, options)
+    }
+
+    /// AC #2's other half: the extension still moves between its own pages, by
+    /// a link in its page, by Back, by a frame of its own sending the top frame
+    /// on, and by `tabs.update` on its own tab — in a window and in the
+    /// background.
+    @MainActor func testAnExtensionsOwnNavigationBetweenItsPagesStillWorks() async throws {
+        let (profile, contexts) = try makeProfile(loading: [try await makeExtension()])
+        let context = try testElement(contexts, 0)
+        let options = try extensionPageURL("options.html", on: context.baseURL)
+        let other = try extensionPageURL("other.html", on: context.baseURL)
+        let space = makeSpace(profile)
+        let wc = BrowserWindowController(incognito: false)
+        wc.sidebarSplitView.autosaveName = nil
+        controllers.append(wc)
+        wc.setActiveSpace(id: space.id, selectTab: false)
+        wc.showWindow(nil)
+
+        for shownInWindow in [true, false] {
+            let label = shownInWindow ? "in a window" : "in the background"
+            let tab = TabStore.shared.addExtensionTab(in: space, url: options, context: context)
+            if shownInWindow { wc.selectTab(id: tab.id) }
+            try await waitUntil("the options page, \(label)") { showsOptions(tab, options) }
+            XCTAssertTrue(tab.webView?.navigationDelegate === (shownInWindow ? wc as AnyObject : tab as AnyObject),
+                          "the delegate this leg means to cover, \(label)")
+
+            // A link in its page.
+            _ = try await XCTUnwrap(tab.webView).callAsyncJavaScript(
+                "const a = document.createElement('a'); a.href = href; document.body.appendChild(a); a.click();",
+                arguments: ["href": other.absoluteString], contentWorld: .page)
+            try await waitUntil("the link, \(label)") { tab.title == "Other" && tab.url == other }
+
+            // Back.
+            tab.webView?.goBack()
+            try await waitUntil("Back, \(label)") {
+                tab.webView?.url == options && tab.webView?.isLoading == false && tab.title == Self.optionsTitle
+            }
+
+            // A frame of its own sends the top frame on, from its own script.
+            try await frame("jump.html?go", into: tab)
+            try await waitUntil("its own frame's top navigation, \(label)") {
+                tab.title == "Other" && tab.url?.query == "top=1"
+            }
+
+            // tabs.update on its own tab.
+            let target = try extensionPageURL("options.html?updated=1", on: context.baseURL)
+            let updated = expectation(description: "tabs.update \(label)")
+            tab.loadURL(target, for: context) { error in
+                XCTAssertNil(error)
+                updated.fulfill()
+            }
+            await fulfillment(of: [updated], timeout: 5)
+            try await waitUntil("tabs.update, \(label)") {
+                tab.url == target && tab.title == Self.optionsTitle && tab.webView?.isLoading == false
+            }
+        }
     }
 }

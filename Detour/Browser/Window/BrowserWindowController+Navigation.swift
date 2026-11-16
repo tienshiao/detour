@@ -40,6 +40,20 @@ extension BrowserWindowController: WKNavigationDelegate {
             return allowed ? .allow : .cancel
         }
 
+        // A page of the extension whose configuration built this web view,
+        // asked for by a frame that is not the extension's: web content its
+        // page embeds (TASK-382). The tab's rule, shared with its own delegate.
+        // A web view that is no tab's is held to it as if it served the page's
+        // extension: what built it is unknown, and a web view that does not
+        // serve that extension cannot show the page anyway.
+        if let url = navigationAction.request.url, isExtensionPageURL(url) {
+            let allowed = tab(owning: webView)?.authorizesNavigation(navigationAction, in: webView)
+                ?? ExtensionPageNavigationPolicy.allows(
+                    url, targetsMainFrame: navigationAction.targetFrame?.isMainFrame == true,
+                    servedOriginHost: url.host, requester: ExtensionPageNavigationPolicy.requester(of: navigationAction))
+            if !allowed { return .cancel }
+        }
+
         // Opt-Cmd-click (TASK-193.5): a Quick Detour on the page's profile — a
         // Private page's is Private — in any frame, a `target=_blank` link
         // too, and inside a Peek. Before Cmd, which it contains; never routed

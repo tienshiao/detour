@@ -86,12 +86,10 @@ extension BrowserWindowController {
         return splitMembers(of: selected).contains { $0.webView === webView }
     }
 
-    /// The origin key of the frame that asked for the navigation. Read through
-    /// KVC because `sourceFrame` is imported as non-optional yet is nil for
-    /// navigations the app itself started (`load(_:)`), and a nil read through
-    /// the typed accessor is undefined behaviour.
+    /// The origin key of the frame that asked for the navigation; nil for a
+    /// navigation the app itself started (`WKNavigationAction.requestingFrame`).
     private static func requestingOrigin(of action: WKNavigationAction) -> String? {
-        guard let frame = action.value(forKey: "sourceFrame") as? WKFrameInfo else { return nil }
+        guard let frame = action.requestingFrame else { return nil }
         let origin = frame.securityOrigin
         return ExternalAppLaunchPolicy.origin(protocol: origin.protocol, host: origin.host, port: origin.port)
     }
