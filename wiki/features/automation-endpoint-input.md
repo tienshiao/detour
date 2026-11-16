@@ -33,6 +33,9 @@ sources:
   - id: webkit-resend
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/mac/WebViewImpl.mm
     title: WebKit's WebViewImpl.mm (doneWithKeyEvent, performKeyEquivalent)
+  - id: task-365
+    resource: backlog:TASK-365
+    title: "Tests: flaky in full runs — native pop-up menu click, Quick Detour profile switch, site search chip icon, Settings row skip"
   - id: sidebar-components
     resource: ../../Detour/Browser/Sidebar/SidebarComponents.swift
     title: SidebarComponents.swift (DraggableTableView, FocusGatedTableView)
@@ -174,6 +177,9 @@ pointer](./automation-endpoint-agent-pointer.md).
   every menu in the app; the newest one open is what `list_menu` shows.
   Choosing calls `performActionForItem(at:)` while the menu is still
   tracking (WebKit's items need their live menu), then `cancelTracking()`.
+  `closeAll()`, which a click runs before its press, waits until the
+  tracker has seen every menu end **and** the endpoint's press that opened
+  one has returned (see the traps).
 
 # Which window is key
 
@@ -355,6 +361,25 @@ other-Space guard cannot be tested in the host.
   (`invalid_arguments`, "Unknown argument(s): tab_id", exit 1 from
   `scripts/detour-mcp`), the script discarded the answer, and Cmd+W closed
   the tab still selected.
+- **A menu's end is announced before its loop unwinds.** AppKit posts
+  `didEndTrackingNotification` while the closed menu's tracking loop, and
+  the press body that opened it (inside `rightMouseDown` or the pop-up's
+  tracking), are still on the stack. The main queue drains in that loop,
+  so `closeAll()`'s wait could resume there and the next click went on
+  inside it: it posted its mouse-up and opened its menu while the first
+  one's loop still ran. In a combined test run that second menu closed
+  itself about 0.4 s after it opened, and the next `choose_menu_item` said
+  `no_open_menu`. `runFromRunLoop` now counts the bodies it started that
+  have not returned (`bodiesRunning`); the tracker notes that count when a
+  menu opened by one of the endpoint's own presses begins tracking
+  (`pressDepth`), and `closeAll()` also waits, within the same one-second
+  cap, until fewer bodies run, so a body running around the menu (a
+  click whose alert is up) is not waited for. It waits even when the menu
+  has already ended (chosen from) and only its press is left; a press still
+  running after the second is not waited on again. `testASecondRightClickOpensItsMenuWhileTheFirstStillUnwinds`
+  slows the first menu's unwinding with a `didEndTracking` observer that
+  runs the run loop; without the wait the second press ran nested inside
+  the first (two bodies running).[^task-365]
 - **Local event monitors do not see the endpoint's input.** AppKit runs
   `NSEvent.addLocalMonitorForEvents` handlers only for events going through
   `NSApp.sendEvent`, and the input tools hand events to views directly (that
@@ -379,7 +404,9 @@ TASK-228.10's two windows on one tab; the input errors), and
 `AutomationWindowKindsTests`' Settings list row (TASK-228.12, which also
 checks that every Settings pane's table is an `AutomationTableView`). The
 tests that need an inactive host (the row selects, both TASK-228.10 tests)
-skip when the host is the active app. Details in [the endpoint's
+first hand the host's activation away (`moveTestHostToBackground()`, see
+[build and test](../playbooks/build-and-test.md#traps)) and skip only if
+it is still the active app. Details in [the endpoint's
 tests](./automation-endpoint-tests.md).[^tests]
 
 # Related
@@ -403,5 +430,6 @@ tests](./automation-endpoint-tests.md).[^tests]
 [^task-228-12]: Automation: endpoint clicks select rows in the other table views (Archived Tabs list, Settings lists)
 [^task-364]: Automation: select_tab then Cmd+W closed a different tab once (investigate)
 [^webkit-resend]: WebKit's WebViewImpl.mm (doneWithKeyEvent, performKeyEquivalent)
+[^task-365]: Tests: flaky in full runs — native pop-up menu click, Quick Detour profile switch, site search chip icon, Settings row skip
 [^sidebar-components]: SidebarComponents.swift (DraggableTableView, FocusGatedTableView)
 [^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests, and the other Automation suites

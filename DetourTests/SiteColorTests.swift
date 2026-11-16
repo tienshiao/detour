@@ -197,7 +197,12 @@ nonisolated final class SiteSearchChipColorTests: XCTestCase {
         let site = try XCTUnwrap(fillRGB(palette))
         XCTAssertEqual(site.red, 1, accuracy: 0.02, "the icon's red")
         XCTAssertEqual(site.green, 0, accuracy: 0.02)
-        XCTAssertEqual(fetched.map(\.absoluteString), ["https://www.example.com/icon.png"])
+        // Only the recorded icon, but not necessarily once (TASK-365): the
+        // palette's history row for the site asks the shared loader for it
+        // too, and the loader's NSCache can drop the first answer before the
+        // second asks (a full run's host is gigabytes in) — its coalescing and
+        // cache are FaviconLoader's own tests', not the chip's.
+        XCTAssertEqual(Set(fetched.map(\.absoluteString)), ["https://www.example.com/icon.png"])
         XCTAssertEqual(palette.chip.textColor, .white, "white reads on red")
     }
 

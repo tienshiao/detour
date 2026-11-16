@@ -39,6 +39,9 @@ sources:
   - id: task-235
     resource: backlog:TASK-235
     title: Tests - SettingsPaneColumnsTests depends on the shared DetourTests data directory being empty of link routes
+  - id: task-365
+    resource: backlog:TASK-365
+    title: "Tests: flaky in full runs — native pop-up menu click, Quick Detour profile switch, site search chip icon, Settings row skip"
   - id: notes-locked-run
     resource: "Agent session notes, 2026-11-02 (not in the repository)"
     title: Session notes on two full test runs that failed while the screen was locked
@@ -283,6 +286,34 @@ Match the executable path `…/Detour.app/Contents/MacOS/Detour` and exclude
   every 60 new stores. If the cluster comes back, look for `errno = 12`
   in the log before you bisect. See
   [WebKit test host traps](../platform/webkit-test-host-traps.md).
+- **The test host comes to the front partway through a run.** It starts
+  in the background, and macOS's cooperative activation usually refuses
+  its `NSApp.activate` calls, but a Settings window shown by a test
+  (`SettingsWindowController.showWindow` calls
+  `NSApp.activate(ignoringOtherApps:)`; `AutomationStagingTests`'
+  `open_ui settings` and the Settings fixtures do it) was granted it in
+  every run of the Automation suites together, and the host stayed active
+  for the rest of the run. Every later "in the background" test then
+  skipped, or failed an `isKeyWindow` assert before its skip. A test that
+  needs the host in the background calls `moveTestHostToBackground()`
+  (`ExtensionTestSupport.swift`) first: `NSApp.deactivate()` alone left
+  it active, so the helper yields activation to the app whose window is
+  frontmost behind the host's (the Finder when there is none) and
+  activates that app. That app takes the focus for a moment during such
+  runs.[^task-365]
+- **A nested run loop inside an async test runs no main-queue work.** An
+  `async` test method is a main-actor job, so GCD will not drain the main
+  queue inside it: `RunLoop.main.run(until:)` there lets timers and
+  run-loop sources fire but no `DispatchQueue.main.async` block or other
+  main-actor job. A wait for something that needs one (a release, a
+  completion) can only time out; in an async test, wait with `await
+  waitUntil`/`pollUntil`.[^task-365]
+- **A count of fetches through `FaviconLoader` depends on its `NSCache`.**
+  Two callers in one view (a palette's history row and its site-search
+  chip) ask for the same icon; one fetch happens only because the second
+  finds the first in the cache, which the system may empty in a host
+  gigabytes in. Assert which URLs were fetched, not how often, unless the
+  test is about the loader's cache.[^task-365]
 - **WebKit storage.** The test host shares
   `~/Library/WebKit/com.detourbrowser.mac/` with the installed app (the
   directory is keyed by bundle id); isolation there comes from
@@ -308,3 +339,4 @@ Match the executable path `…/Detour.app/Contents/MacOS/Detour` and exclude
 [^notes-crash]: Session notes on test host crashes
 [^task-235]: TASK-235
 [^notes-locked-run]: Session notes on two full test runs that failed while the screen was locked
+[^task-365]: Tests: flaky in full runs — native pop-up menu click, Quick Detour profile switch, site search chip icon, Settings row skip

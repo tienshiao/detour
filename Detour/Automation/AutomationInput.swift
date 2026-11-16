@@ -37,6 +37,12 @@ enum AutomationInput {
 
     // MARK: Running input from the run loop
 
+    /// How many bodies `runFromRunLoop` has started that have not returned:
+    /// a press whose menu is still tracking, or whose menu was closed but
+    /// whose tracking loop has not unwound yet (`AutomationMenuTracker.closeAll`
+    /// waits for that, TASK-365).
+    private(set) static var bodiesRunning = 0
+
     /// Runs `body` from the main run loop and waits up to `wait` for it to
     /// return. True when it returned within the wait.
     ///
@@ -71,7 +77,9 @@ enum AutomationInput {
             RunLoop.main.perform(inModes: [.common]) {
                 // Not a crossing: the main run loop runs this on the main thread.
                 MainActor.assumeIsolated {
+                    bodiesRunning += 1
                     body()
+                    bodiesRunning -= 1
                     once.finish(true)
                 }
             }
@@ -677,6 +685,21 @@ final class AutomationMenuTracker {
     /// everywhere one over its Automation section (TASK-228.7). Absent: none.
     private var menuSettingsReach: [ObjectIdentifier: AutomationSettingsReach] = [:]
     private var observers: [any NSObjectProtocol] = []
+    /// How many `runFromRunLoop` bodies were running when the outermost menu
+    /// a synthetic press opened began tracking: that press is the innermost
+    /// of them, so it has returned once fewer run (TASK-365). Counting from
+    /// there, not from zero, leaves out a body that runs on around the menu
+    /// (a click whose alert is up). Nil when no such press is unwinding.
+    private var pressDepth: Int?
+
+    /// Whether the press that opened a menu has not returned yet, though
+    /// the menu may have ended (closed, or chosen from).
+    private var pressUnwinding: Bool {
+        guard let pressDepth else { return false }
+        if AutomationInput.bodiesRunning >= pressDepth { return true }
+        self.pressDepth = nil
+        return false
+    }
 
     var topMenu: NSMenu? { openMenus.last }
 
@@ -703,6 +726,10 @@ final class AutomationMenuTracker {
             // a tool's event is current (a `hit_test` since the person's
             // right click), the person's last event's window counts too.
             let event = NSApp.currentEvent
+            let depth = AutomationInput.bodiesRunning
+            if depth > 0, let event, AutomationInput.isSynthetic(event) {
+                pressDepth = min(pressDepth ?? depth, depth)
+            }
             let displaced = event.flatMap { AutomationInput.isSynthetic($0) ? AutomationInput.displacedEventWindow : nil }
             let key = NSApp.isActive ? NSApp.keyWindow : nil
             let access = (openMenus.map { self.access(of: $0) } + [
@@ -730,15 +757,28 @@ final class AutomationMenuTracker {
     }
 
     /// Closes every open menu, newest first, and waits up to a second for
-    /// AppKit to say they ended. True when none is left open.
+    /// AppKit to say they ended and for the presses that opened them to
+    /// return, also when the menu had already ended (chosen from) and only
+    /// its press is left. True when none is left open.
+    ///
+    /// The second wait (TASK-365): AppKit posts `didEndTrackingNotification`
+    /// before the menu's tracking loop has unwound, and this wait's main-actor
+    /// job can resume inside that loop (the main queue drains in it). A click
+    /// that went on from there posted its mouse-up and opened its menu while
+    /// the closed one's loop still ran; in a combined test run that menu
+    /// closed itself about 0.4 s after it opened, and the next
+    /// `choose_menu_item` found no open menu.
     @discardableResult
     func closeAll() async -> Bool {
-        guard !openMenus.isEmpty else { return true }
+        guard !openMenus.isEmpty || pressUnwinding else { return true }
         for menu in openMenus.reversed() { menu.cancelTracking() }
         let deadline = ContinuousClock.now + .seconds(1)
-        while !openMenus.isEmpty && ContinuousClock.now < deadline {
+        while (!openMenus.isEmpty || pressUnwinding) && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
+        // A press still running after a second is held by something else (a
+        // menu item's alert): later calls do not wait on it again.
+        pressDepth = nil
         return openMenus.isEmpty
     }
 

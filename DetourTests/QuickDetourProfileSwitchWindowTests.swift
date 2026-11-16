@@ -185,8 +185,11 @@ nonisolated final class QuickDetourProfileSwitchWindowTests: XCTestCase {
         XCTAssertEqual(page.url, base)
         try await waitForTitle("Signed out", in: controller)
         XCTAssertFalse(page.canGoBack, "a fresh web view: no back history")
-        for _ in 0..<40 where oldWebView != nil { spin() }
-        XCTAssertNil(oldWebView, "the old web view is released")
+        // Awaited, not spun (TASK-365): a nested run loop inside this
+        // main-actor job runs no main-queue work, so a release that waits on
+        // one could not happen within the old 2 s spin, and a loaded full run
+        // took longer.
+        try await waitUntil("the old web view is released", timeout: 10) { oldWebView == nil }
 
         XCTAssertTrue(controller.switchProfile(to: work))
         try await waitForTitle("Signed in", in: controller)

@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 import Network
 import Synchronization
 import WebKit
@@ -121,6 +122,40 @@ func pollUntil(timeout: TimeInterval, pollInterval: TimeInterval = 0.1,
         try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
     }
     return true
+}
+
+/// Puts the test host in the background, as Detour is when an agent drives
+/// it, for a test that needs it there (TASK-365). True when the host is in
+/// the background.
+///
+/// The host is launched in the background and macOS's cooperative
+/// activation usually refuses its `NSApp.activate` calls, but not always:
+/// in combined runs a Settings window shown by an earlier suite or by the
+/// test's own fixture (`SettingsWindowController.showWindow` activates) was
+/// seen to bring it to the front, where it stayed for the rest of the run,
+/// and every later "in the background" test skipped. `NSApp.deactivate()`
+/// alone left it active there, so it hands activation to the app whose
+/// window is frontmost behind the host's (the one it took the front from),
+/// or to the Finder, as the active app may (`yieldActivation(to:)` and
+/// `activate(from:)`).
+@MainActor @discardableResult
+func moveTestHostToBackground(timeout: TimeInterval = 3) async -> Bool {
+    guard NSApp.isActive else { return true }
+    let host = NSRunningApplication.current
+    let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+        as? [[String: Any]] ?? []
+    let behind = windows.lazy
+        .filter { ($0[kCGWindowLayer as String] as? Int) == 0 }
+        .compactMap { $0[kCGWindowOwnerPID as String] as? pid_t }
+        .filter { $0 != host.processIdentifier }
+        .compactMap { NSRunningApplication(processIdentifier: $0) }
+        .first { $0.activationPolicy == .regular }
+    if let next = behind ?? NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first {
+        NSApp.yieldActivation(to: next)
+        next.activate(from: host, options: [])
+    }
+    NSApp.deactivate()
+    return (try? await pollUntil(timeout: timeout, pollInterval: 0.05) { !NSApp.isActive }) ?? false
 }
 
 /// How a test page reaches the background worker.

@@ -337,6 +337,50 @@ nonisolated final class AutomationInputTests: XCTestCase {
         try await waitUntil("the menu to close", timeout: 3) { AutomationMenuTracker.shared.topMenu == nil }
     }
 
+    /// A second right click closes the first menu and opens its own only once
+    /// the first has unwound, even when that is slow (TASK-365). `closeAll`
+    /// returned on the end-of-tracking notification, so the click went on
+    /// inside the closed menu's loop; in a combined run its menu then closed
+    /// itself about 0.4 s later and `choose_menu_item` found none open.
+    @MainActor func testASecondRightClickOpensItsMenuWhileTheFirstStillUnwinds() async throws {
+        let f = try await makeFixture()
+        let content = try XCTUnwrap(f.window.window?.contentView)
+        let receiver = Receiver()
+        let menu = NSMenu(title: "Slow Menu")
+        menu.addItem(NSMenuItem(title: "First", action: #selector(Receiver.chosen(_:)), keyEquivalent: ""))
+        menu.items[0].target = receiver
+        // Slow to unwind once AppKit has said the tracking ended: the first
+        // time it ends, the run loop runs a while before the press that
+        // opened it returns, as a loaded host's does.
+        var slowed = false
+        let observer = NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: menu,
+                                                              queue: nil) { _ in
+            MainActor.assumeIsolated {  // posted on the main thread, from the menu's tracking
+                guard !slowed else { return }
+                slowed = true
+                RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let menuView = MenuView(frame: NSRect(x: content.bounds.midX - 60, y: content.bounds.midY + 40, width: 120, height: 40))
+        menuView.contextMenu = menu
+        content.addSubview(menuView)
+        defer { menuView.removeFromSuperview() }
+        let (mx, my) = try contentCentre(of: menuView)
+        let click: JSONValue = ["window_id": .int(f.windowID), "x": .double(mx), "y": .double(my), "button": "right"]
+
+        _ = try await call(f, "click", click)
+        XCTAssertEqual(AutomationMenuTracker.shared.openMenus.count, 1, "the first menu opened")
+        _ = try await call(f, "click", click)
+        XCTAssertEqual(AutomationInput.bodiesRunning, 1, "only the second press is still running: its menu")
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(AutomationMenuTracker.shared.openMenus.count, 1, "the second menu stays open")
+        let (chosen, chooseError) = try await call(f, "choose_menu_item", ["title": "First"])
+        XCTAssertFalse(chooseError, chosen.jsonString)
+        try await waitUntil("the menu item's action", timeout: 3) { receiver.actions == ["chosen"] }
+        try await waitUntil("the menu to close", timeout: 3) { AutomationMenuTracker.shared.topMenu == nil }
+    }
+
     /// AppKit's own controls take a click as a person's (TASK-228.8): a
     /// switch toggles and a pop-up opens its menu. They track a click with
     /// gesture recognizers that only the window's routing feeds, so the press
@@ -535,6 +579,7 @@ nonisolated final class AutomationInputTests: XCTestCase {
     /// while the table needs its panel to become key, which the list now
     /// denies for the endpoint's press only.
     @MainActor func testALeftClickOnASidebarRowSelectsItsTab() async throws {
+        await moveTestHostToBackground()
         try XCTSkipIf(NSApp.isActive, "needs the test host in the background, as Detour is when an agent drives it")
         let f = try await makeFixture()
         let other = try await addOtherTab(f)
@@ -698,6 +743,7 @@ nonisolated final class AutomationInputTests: XCTestCase {
     /// make a window key, so "active" and "make key" are injected: making
     /// key tells the controller what AppKit would.
     @MainActor func testWithDetourActiveAClickInAWindowThatIsNotKeyMakesItKeyAndTakesTheWebView() async throws {
+        await moveTestHostToBackground()
         try XCTSkipIf(NSApp.isActive, "needs the test host in the background, as Detour is when an agent drives it")
         var madeKey: [NSWindow] = []
         let (tools, server, first, second, tab) = try await makeTwoWindows { env, first, second in
@@ -748,6 +794,7 @@ nonisolated final class AutomationInputTests: XCTestCase {
     /// a click activates nothing and changes no key window, so the web view
     /// stays where it was, on both routes.
     @MainActor func testInTheBackgroundAClickChangesNeitherTheKeyWindowNorTheWebViewsOwner() async throws {
+        await moveTestHostToBackground()
         try XCTSkipIf(NSApp.isActive, "needs the test host in the background, as Detour is when an agent drives it")
         let (tools, server, first, second, tab) = try await makeTwoWindows()
         XCTAssertFalse(NSApp.isActive, "the test host is in the background")
@@ -800,6 +847,7 @@ nonisolated final class AutomationInputTests: XCTestCase {
     /// and goes through the window, reaching the table up the responder
     /// chain.
     @MainActor func testAnArchivedTabsRowAndACommandPaletteRowTakeAClick() async throws {
+        await moveTestHostToBackground()
         try XCTSkipIf(NSApp.isActive, "needs the test host in the background, as Detour is when an agent drives it")
         let f = try await makeFixture()
         let window = try XCTUnwrap(f.window.window)
@@ -869,6 +917,7 @@ nonisolated final class AutomationInputTests: XCTestCase {
     /// its action, the window stays not key and no release is left queued;
     /// a click beside it selects the row.
     @MainActor func testASwitchInATableRowTogglesAndTheRowSelects() async throws {
+        await moveTestHostToBackground()
         try XCTSkipIf(NSApp.isActive, "needs the test host in the background, as Detour is when an agent drives it")
         let f = try await makeFixture()
         let window = try XCTUnwrap(f.window.window)

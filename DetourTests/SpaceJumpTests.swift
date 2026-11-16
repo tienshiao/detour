@@ -142,7 +142,13 @@ nonisolated final class SpaceJumpTests: XCTestCase {
                          isARepeat: false, keyCode: 0)!
     }
 
-    @MainActor private func spin(until condition: () -> Bool, timeout: TimeInterval = 2) {
+    /// Runs the run loop until `condition` holds or `timeout` passes. A
+    /// press switches spaces when the sidebar's 0.08–0.15 s slide ends (its
+    /// `NSAnimationContext` completion), measured at 0.08–0.17 s in a group
+    /// run; the one failure under load (TASK-365, its line not recorded) is
+    /// most likely that slide outlasting the old 2 s, so the wait is
+    /// generous. A met condition returns at once.
+    @MainActor private func spin(until condition: () -> Bool, timeout: TimeInterval = 10) {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.02))

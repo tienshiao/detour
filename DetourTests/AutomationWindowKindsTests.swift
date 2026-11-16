@@ -599,9 +599,12 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
     /// up on the press (the trap TASK-228.9 met in the sidebar); every list
     /// in Settings is now an `AutomationTableView`.
     @MainActor func testARowOfASettingsListSelectsForATestRunsClick() async throws {
-        try XCTSkipIf(NSApp.isActive, "needs the test host in the background, as Detour is when an agent drives it")
         let f = try makeFixture(settings: true)
         let settings = try XCTUnwrap(f.settings)
+        // An earlier suite, or `showPane` just now, can have brought the host
+        // to the front (TASK-365).
+        await moveTestHostToBackground()
+        try XCTSkipIf(NSApp.isActive, "needs the test host in the background, as Detour is when an agent drives it")
         // Through the toolbar, as a person switches: `showPane` also shows
         // the window, which activates the app.
         let toolbar = try XCTUnwrap(settings.window?.toolbar)
@@ -624,14 +627,15 @@ nonisolated final class AutomationWindowKindsTests: XCTestCase {
         for pane in ["spaces", "profiles", "search"] {
             try show(pane)
             let settingsWindow = try await settledWindow(settings)
+            await moveTestHostToBackground()
             let table = try XCTUnwrap(settings.visiblePaneTables.first, pane)
             XCTAssertGreaterThanOrEqual(table.numberOfRows, 2, pane)
             let target = table.selectedRow == 1 ? 0 : 1
             let content = try XCTUnwrap(settingsWindow.contentView)
             let rect = table.rect(ofRow: target)
             let point = table.convert(NSPoint(x: rect.minX + min(60, rect.width / 3), y: rect.midY), to: content)
+            try XCTSkipIf(NSApp.isActive, "the test host stayed active (\(pane)): not a background click")
             XCTAssertFalse(settingsWindow.isKeyWindow, pane)
-            try XCTSkipIf(NSApp.isActive, "the test host became active (\(pane)): not a background click")
 
             let clicked = try await ok(testRun, "click", ["window_id": settingsID, "x": .double(point.x),
                                                           "y": .double(content.isFlipped ? point.y
