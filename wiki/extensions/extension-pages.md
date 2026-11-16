@@ -4,7 +4,7 @@ title: Extension pages in tabs
 description: A tab showing a webkit-extension:// page is tied to one loaded context's origin, which dies on every context reload and every relaunch; how such tabs, pinned tiles, favourites and closed-tab records are rehomed, restored, refused or closed, and why a Quick Detour or quarantine window cannot show one.
 tags: [extensions, tabs, persistence, pinned, favorites]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T10:40:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T12:00:00Z }
 sources:
   - id: page-url
     resource: ../../Detour/Extensions/Runtime/ExtensionPageURL.swift
@@ -54,6 +54,12 @@ sources:
   - id: webkit-scheme-handler
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionURLSchemeHandlerCocoa.mm
     title: WebKit, WebExtensionURLSchemeHandlerCocoa.mm (main-frame loads need the configuration's requiredWebExtensionBaseURL)
+  - id: task-381
+    resource: backlog:TASK-381
+    title: "Extensions: a web page can make a tab load an extension's non-web-accessible page (window.open, then sleep/wake or Reload)"
+  - id: provenance-tests
+    resource: ../../DetourTests/ExtensionPageProvenanceTests.swift
+    title: ExtensionPageProvenanceTests
   - id: task-352
     resource: backlog:TASK-352
     title: "Extensions: reloading or updating an extension leaves its page in a Quick Detour window on the dead origin"
@@ -85,6 +91,12 @@ page follows from the origin being short-lived.
   resolves to no loaded context.
 - So the durable identity of an extension page is **(extension id, path)**,
   not its URL.
+- A tab's `url` names an extension page only if the tab's web view can show
+  it, or the tab is asleep on one that such a web view showed. Everything
+  that trusts an extension URL is built from `url`: wake, the save, closed-tab
+  records, tiles and rehoming. So a page a web page chose never reaches the
+  extension's configuration
+  ([below](#only-a-servable-page-becomes-the-tabs-url)).
 
 # Rules
 
@@ -130,6 +142,86 @@ The caller reloads the context and then announces the profile's live tabs to
 it; a synchronous post would wake the displayed tab first, announcing it from
 `wake()` and again from the sweep
 ([Tab and window bridge](./tab-and-window-bridge.md)).
+
+## Only a servable page becomes the tab's URL
+
+Added in TASK-381 (2026-11-16).[^task-381] `BrowserTab.servedExtensionOriginHost` is the origin host of
+the context whose `webViewConfiguration` built the tab's current web view.
+Only two places set it: `wake`, from the context that `wakeConfiguration`
+picked, and `TabStore.addExtensionTab(in:url:context:)`, from the calling
+context. It is nil for every other web view and while the tab sleeps.
+`BrowserTab.mayAdopt` lets an extension URL become `url` only from that host,
+which is exactly WebKit's main-frame gate
+([below](#where-an-extension-page-cannot-be)). Every write of `url` on a tab
+that has a web view goes through it:
+
+- the URL observer;
+- `load(_:)`;
+- `showErrorPage`;
+- `init(webView:)`;
+- `restoreArchivedPage`.
+
+The sleeping writes are trusted because what they carry came from `url`:
+the sleeping init (restore, records, tiles) and `retarget`.
+
+`currentPageURL` is the web view's URL when it may be adopted, else `url`.
+`showsExtensionPage`, the rehoming walk, `existingOptionsPageTab`, and a
+peek's saved and moved URL (`savePeekStateForPersistence`, `planMove`) read
+it instead of `webView?.url ?? url`. The provisional URL of a refused load
+lingers in `webView.url`: until the error page loads, and for good in a
+window a page opened. A context reload would otherwise have retargeted that
+URL onto the live origin.
+
+**Why.** Before this, a refused URL stayed in `url`, and `wakeConfiguration`
+trusts `url`. A web page's `window.open('webkit-extension://<id>/options.html')`
+ended on an error page, but after a sleep and Reload the tab loaded
+`options.html` in the extension's configuration. That page is not
+web-accessible, and it ran with the extension's privileges. The same held
+for:
+
+- a page-chosen URL the app loads itself (`load(_:)`: Open Link in New Tab, a
+  routed link);
+- `tabs.create` with *another* extension's URL, built from the caller's
+  configuration;
+- a relaunch: the save stamps `extensionID` from `url`, so the restore
+  rehomed the tab onto the new origin.
+
+A page navigating *itself* was safe on main, because WebKit sets the web view
+back to the committed page before the failure. The parked TASK-372 fix would
+have widened the hole to that case too.
+
+**What the tab shows instead** (Chosen by Claude, not yet confirmed by the
+user):
+
+- The error page still names the refused URL, and Reload retries it.
+  `lastAttemptedURL` keeps it, and the retry is refused again, because the
+  web view's configuration is unchanged.
+- `url` stays on the page the tab was on. A `window.open` child has no such
+  page, so its `url` stays nil, and it is saved and restored that way.
+
+**Rejected.**
+
+- *A provenance flag checked at wake, persisted in a new column.* It would
+  have to be carried through every record type: closed tabs, the undos,
+  pinned entries, favourites, Move to Space. The `extensionID` column already
+  plays that part once `url` is clean, because it is stamped from `url`.
+- *Reading `_requiredWebExtensionBaseURL` from `webView.configuration`.* It
+  is SPI. The tracked host is set only where Detour builds the web view, so
+  it fails safe.
+
+**Not covered.**
+
+- A tab already built from extension A's configuration that navigates to a
+  web page stays in that configuration. That web page can navigate it to
+  A's non-web-accessible pages live, with no sleep involved. WebKit serves
+  them, because the frame's request URL equals the request. This is read
+  from `WebExtensionURLSchemeHandlerCocoa.mm`, not measured.
+- Rows saved before the fix that already hold a refused URL cannot be told
+  apart, so they are grandfathered.
+- An extension page's own `window.open` of its own page still opens a space
+  tab, which is refused (TASK-167's rule). The same goes for `tabs.update`
+  from an extension to its own page in a web tab. Both used to start working
+  after a sleep. Now they never do.
 
 ## Waking resolves the owning context
 
@@ -264,7 +356,7 @@ a loopback page). Every cell ended on Detour's error page with -1008, and
 
 | Entry | Example path | Result |
 |---|---|---|
-| Fresh window loads the extension URL | sidebar Opt-Cmd-click or Open in Quick Detour on an extension-page tab (`sidebarCopyURL` has no scheme filter), an archived record | error page; `tab.url` keeps the extension URL |
+| Fresh window loads the extension URL | sidebar Opt-Cmd-click or Open in Quick Detour on an extension-page tab (`sidebarCopyURL` has no scheme filter), an archived record | error page; `tab.url` kept the extension URL (since TASK-381 it stays nil: read from the code, not re-measured) |
 | Same, web-accessible page | — | error page |
 | `location.href =` from a web page, web-accessible or not | a content script or a link followed in the page | error page |
 | A link clicked in a web page | — | error page |
@@ -284,12 +376,15 @@ out. The probe test was not kept; it was the
 - A Peek cannot show an extension page: its web view is built from the space
   configuration, which WebKit refuses for an extension main frame
   ([below](#where-an-extension-page-cannot-be)).
-- A refused extension page can still become a space tab's URL: a
-  `window.open` child of a web page keeps the extension URL it failed on, and
-  `wakeConfiguration` then builds the woken tab from the extension's
-  configuration, so Reload after a sleep loads it, even a page that is not
-  web-accessible (measured 2026-11-16, TASK-372; see
-  [error pages](../features/error-pages.md#edge-cases)).
+- Until TASK-381 a refused extension page could become a space tab's URL.
+  A `window.open` child of a web page kept the extension URL it failed on, and
+  Reload after a sleep loaded it, even a page that is not web-accessible
+  (measured 2026-11-16, TASK-372). See
+  [above](#only-a-servable-page-becomes-the-tabs-url).
+- A tab made by `addExtensionTab` has a plain `WKWebView`, not one from
+  `BrowserTab.makeWebView`, so it has no `browser-error` handler. A failed
+  load there, such as another extension's page from `tabs.create`, shows a
+  blank page, not the error page (measured 2026-11-16, TASK-381).
 - If an extension is enabled but its `WKWebExtension` fails to load, its
   restored pages stay pending and display as an empty page, not an error page.
 - The window registers its owned-pane script message handlers on the web
@@ -305,7 +400,7 @@ out. The probe test was not kept; it was the
 - [Profile.swift](../../Detour/Browser/Profile.swift) — locations, retarget, pending origins.
 - [BrowserTab.swift](../../Detour/Browser/BrowserTab.swift) — `retarget`, `wake`, `wakeConfiguration`.
 - [TabStore.swift](../../Detour/Browser/TabStore.swift) — restore, rebuild helpers, refusals.
-- Tests: `ExtensionPageURLTests`, [ExtensionPageRehostTests](../../DetourTests/ExtensionPageRehostTests.swift), [ExtensionPagePersistenceTests](../../DetourTests/ExtensionPagePersistenceTests.swift), `ExtensionPageUndoTests`, `ExtensionPageFavoriteTests`, `MoveTabToSpaceTests`.
+- Tests: [ExtensionPageProvenanceTests](../../DetourTests/ExtensionPageProvenanceTests.swift) (TASK-381: a `window.open` child, a page-chosen `load`, another extension's `tabs.create` and a relaunch, which all fail with `mayAdopt` always true; a page navigating itself, which already passed; positive controls). Runtime check through the endpoint: [docs/harness/task381-endpoint-checks.py](../../docs/harness/task381-endpoint-checks.py) (a page's `window.open` child, Reload, Cmd+Q and relaunch, with the options tab as the control; 9/9 on 2026-11-16), `ExtensionPageURLTests`, [ExtensionPageRehostTests](../../DetourTests/ExtensionPageRehostTests.swift), [ExtensionPagePersistenceTests](../../DetourTests/ExtensionPagePersistenceTests.swift), `ExtensionPageUndoTests`, `ExtensionPageFavoriteTests`, `MoveTabToSpaceTests`.
 
 # Related
 
@@ -320,5 +415,6 @@ out. The probe test was not kept; it was the
 [^task-34]: Moving an extension-page favourite must give a loadable tab
 [^task-37]: Activating a dormant pinned entry of a disabled or uninstalled extension gives a dead tab
 [^task-38]: Move to Space loses extension pages
+[^task-381]: Extensions: a web page can make a tab load an extension's non-web-accessible page (window.open, then sleep/wake or Reload)
 [^task-352]: Extensions: reloading or updating an extension leaves its page in a Quick Detour window on the dead origin
 [^webkit-scheme-handler]: WebKit, WebExtensionURLSchemeHandlerCocoa.mm (main-frame loads need the configuration's requiredWebExtensionBaseURL)

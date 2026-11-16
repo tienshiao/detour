@@ -550,7 +550,7 @@ nonisolated final class ExtensionUpdaterTests: XCTestCase {
         let space = TabStore.shared.addSpace(name: "Busy", emoji: "🧪", colorHex: "007AFF", profileID: profile.id)
         createdSpaceIDs.append(space.id)
         let tab = TabStore.shared.addExtensionTab(in: space, url: try XCTUnwrap(context.optionsPageURL),
-                                                  configuration: try XCTUnwrap(context.webViewConfiguration))
+                                                  context: context)
         return (fixture, profile, space, tab)
     }
 

@@ -100,8 +100,8 @@ nonisolated final class ExtensionEnabledStateTests: XCTestCase {
         let context = try XCTUnwrap(profile.extensionContexts[ext.id],
                                     "precondition: the context should be loaded in \(profile.name)")
         let pageURL = try XCTUnwrap(URL(string: "options.html", relativeTo: context.baseURL)?.absoluteURL)
-        let config = try XCTUnwrap(context.webViewConfiguration)
-        let tab = TabStore.shared.addExtensionTab(in: space, url: pageURL, configuration: config)
+        XCTAssertNotNil(context.webViewConfiguration)
+        let tab = TabStore.shared.addExtensionTab(in: space, url: pageURL, context: context)
         XCTAssertEqual(tab.webView?.url, pageURL, "precondition: the tab should show the extension page")
         return tab
     }

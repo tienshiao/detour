@@ -4,7 +4,7 @@ title: Error pages
 description: "What a failed load looks like: the browser-error:// page, which failures earn one (only those before commit) and which are ignored, how the tab keeps the URL the user asked for, and how retry, restore and background tabs behave."
 tags: [navigation, errors, webkit, tabs]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T10:40:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T12:00:00Z }
 sources:
   - id: scheme-handler
     resource: ../../Detour/Browser/Window/ErrorSchemeHandler.swift
@@ -36,6 +36,9 @@ sources:
   - id: task-372-patch
     resource: ../../docs/harness/task372/provisional-url-fallback.patch
     title: The parked TASK-372 fix, its tests and the two wake probes
+  - id: task-381
+    resource: backlog:TASK-381
+    title: "Extensions: a web page can make a tab load an extension's non-web-accessible page (window.open, then sleep/wake or Reload)"
   - id: navigation-failure-tests
     resource: ../../DetourTests/NavigationFailureURLTests.swift
     title: NavigationFailureURLTests.swift
@@ -124,19 +127,30 @@ The fix is parked, not applied:
 [docs/harness/task372/provisional-url-fallback.patch](../../docs/harness/task372/provisional-url-fallback.patch)
 records `webView.url` at `didStartProvisionalNavigation` (already the target
 there), clears it on commit and uses it when the error has no failing URL. Its
-five tests fail without it and pass with it. It is held back because adopting a
-refused extension URL makes it the tab's URL, and **`wakeConfiguration` builds
+five tests fail without it and pass with it. It was held back because adopting a
+refused extension URL made it the tab's URL, and **`wakeConfiguration` builds
 a tab whose URL is an extension page from that extension's own
-configuration**: after the tab sleeps and wakes, Reload loads the page WebKit
+configuration**: after the tab slept and woke, Reload loaded the page WebKit
 refused, a non-web-accessible one included (`options.html`, measured with the
-patch's probe B). How a page-chosen extension URL may be named, kept and
-retried is not settled; the options considered are in TASK-372's notes.
+patch's probe B).
+
+Since TASK-381 an extension URL the tab's web view cannot serve never becomes
+`url` ([extension pages](../extensions/extension-pages.md#only-a-servable-page-becomes-the-tabs-url)).
+`showErrorPage` names it but leaves `url` alone.[^task-381] With the patch
+applied on top (2026-11-16):
+
+- the error page names the refused page;
+- `url` stays on the page the tab was on;
+- probes A and B end on the error page after sleep, wake and Reload;
+- the patch's five tests then fail only on their `tab.url == refused URL`
+  assertion, which has to become "unchanged".
 
 Neither delegate implements `webView(_:didFail:withError:)`, the failure of
 a navigation that already committed. See
 [Failures after commit](#failures-after-commit).
 
-`showErrorPage` sets `tab.url` to the failed URL, clears the favicon, bumps
+`showErrorPage` sets `tab.url` to the failed URL (unless it is an extension
+page the web view cannot show, TASK-381), clears the favicon, bumps
 `faviconGeneration`, resets `previousFaviconSite`, and loads the error URL.
 
 ## Failures after commit
@@ -257,14 +271,14 @@ loads the original URL again.
   manual reload. A process the tab replaced because it was not answering a
   load is not counted
   ([unresponsive web process](../platform/unresponsive-web-process.md)).
-- **A `window.open` child refused an extension page keeps its URL** (main,
-  not only the parked TASK-372 patch). The child has no committed page, so
-  the URL observer's provisional extension URL stays `lastAttemptedURL` and
-  `tab.url` through the failure, and the error page names it. After
-  `sleep(force:)` and `wake()` the tab is rebuilt from the extension's
-  configuration (`showsExtensionPage` is true while it sleeps) and Reload
-  loads the page, `options.html` included. Measured 2026-11-16 with the
-  patch's probe A on the unpatched tree; a relaunch was not tried.[^task-372]
+- **A `window.open` child refused an extension page.** Before TASK-381 it
+  kept the extension URL: the child has no committed page, so the URL
+  observer's provisional URL stayed `lastAttemptedURL` and `tab.url` through
+  the failure. After `sleep(force:)` and `wake()` the tab was rebuilt from
+  the extension's configuration and Reload loaded the page, `options.html`
+  included (measured 2026-11-16 with probe A).[^task-372] Now the error page
+  names the URL and `tab.url` stays nil. Reload retries the URL and is
+  refused again, before and after a sleep and after a relaunch.[^task-381]
 - **Back/forward re-attempt targets the selected tab.** The branch calls
   `selectedTab?.load(originalURL)` rather than resolving the tab from the web
   view that fired. Read from the code; the case of an unfocused split pane
@@ -311,4 +325,5 @@ loads the original URL again.
 [^task-122]: A background (unowned) tab whose load fails never shows the error page
 [^task-178]: TASK-178, from the unified log of the affected process
 [^task-372]: Error page: a failed in-page navigation names the previous page's URL, so Reload goes back instead of retrying
+[^task-381]: Extensions: a web page can make a tab load an extension's non-web-accessible page (window.open, then sleep/wake or Reload)
 [^task-170]: When a page-started navigation fails, the error page names the page the tab was on, and Reload goes back to it

@@ -186,14 +186,14 @@ nonisolated final class ExtensionPageFavoriteTests: XCTestCase {
 
     @MainActor func testLiveFavoriteMovesItsBackingTabAsIs() async throws {
         let f = try await makeFixture("Live")
-        let config = try XCTUnwrap(f.context.webViewConfiguration)
+        XCTAssertNotNil(f.context.webViewConfiguration)
         let tabURL = try extensionPageURL("options.html?live=tab", on: f.context.baseURL)
         let pinnedURL = try extensionPageURL("options.html?live=pinned", on: f.context.baseURL)
 
-        let toTab = f.store.addExtensionTab(in: f.space, url: tabURL, configuration: config)
+        let toTab = f.store.addExtensionTab(in: f.space, url: tabURL, context: f.context)
         f.store.detachTab(id: toTab.id, from: f.space)
         f.store.addFavorite(from: toTab, profileID: f.profile.id)
-        let toPinned = f.store.addExtensionTab(in: f.space, url: pinnedURL, configuration: config)
+        let toPinned = f.store.addExtensionTab(in: f.space, url: pinnedURL, context: f.context)
         f.store.detachTab(id: toPinned.id, from: f.space)
         f.store.addFavorite(from: toPinned, profileID: f.profile.id)
         let webViewForTab = try XCTUnwrap(toTab.webView)

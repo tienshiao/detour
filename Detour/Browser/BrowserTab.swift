@@ -488,7 +488,9 @@ class BrowserTab: NSObject {
     @Published var peekFavicon: NSImage?
 
     func savePeekStateForPersistence() {
-        peekURL = peekTab?.webView?.url ?? peekURL
+        // Not a refused extension page the peek's web view is still on
+        // provisionally (`currentPageURL`, TASK-381).
+        peekURL = peekTab.flatMap { $0.webView == nil ? nil : $0.currentPageURL } ?? peekURL
         peekFaviconURL = peekTab?.faviconURL ?? peekFaviconURL
         if let data = peekTab?.currentInteractionStateData() {
             peekInteractionState = data
@@ -587,6 +589,23 @@ class BrowserTab: NSObject {
     /// internal scheme, so nothing that merely hands the tab a URL — an
     /// extension, a link, another app — can open a privileged page.
     private(set) var armedInternalPage: InternalPage?
+    /// The origin host of the extension context whose `webViewConfiguration`
+    /// built this tab's current web view: the one extension whose pages that
+    /// web view can show. Nil for any other configuration (a space's, a Quick
+    /// Detour's, a page's window) and while the tab has no web view. Set only
+    /// where Detour builds the web view from a context's configuration
+    /// (`wake`, `TabStore.addExtensionTab`), so it is what the tab, the
+    /// extension or a restored record asked for, never what a page chose.
+    ///
+    /// WebKit refuses a main-frame `webkit-extension://` load unless the
+    /// configuration's `_requiredWebExtensionBaseURL` is that extension's
+    /// (TASK-352), but a refused URL used to stay in `url`, and `wake` builds
+    /// a tab whose `url` is an extension page from that extension's
+    /// configuration: a web page's `window.open` of a non-web-accessible page
+    /// loaded it after one sleep and Reload, and a relaunch restored it the
+    /// same way (TASK-381). So `url` only takes an extension page this host
+    /// serves (`mayAdopt`).
+    private(set) var servedExtensionOriginHost: String?
     private static let blankURL = URL(string: "about:blank")!
     /// Whether the web view shows no page at all: it never navigated, or it fell
     /// back to `about:blank` after a provisional failure with nothing committed.
@@ -639,9 +658,14 @@ class BrowserTab: NSObject {
     }
 
     /// Creates a tab that adopts an existing, already-loaded WKWebView.
-    init(id: UUID = UUID(), webView: WKWebView) {
+    ///
+    /// - Parameter servedExtensionOriginHost: the origin host of the extension
+    ///   context whose configuration built `webView`, when one did
+    ///   (`TabStore.addExtensionTab`); nil for every other web view.
+    init(id: UUID = UUID(), webView: WKWebView, servedExtensionOriginHost: String? = nil) {
         self.id = id
         self.webView = webView
+        self.servedExtensionOriginHost = servedExtensionOriginHost
         super.init()
         ExtensionPageHostRegistry.register(webView)
         FaviconLinkBridge.register(webView, for: self)
@@ -649,10 +673,10 @@ class BrowserTab: NSObject {
         webView.navigationDelegate = self
         self.webView?.isInspectable = true
         // Seed published properties from the existing webView state
-        self.url = webView.url
+        if mayAdopt(webView.url) { self.url = webView.url }
         if let t = webView.title, !t.isEmpty {
             self.title = t
-            self.titledURL = webView.url
+            self.titledURL = self.url
         }
         self.isLoading = webView.isLoading
         self.canGoBack = webView.canGoBack
@@ -708,7 +732,7 @@ class BrowserTab: NSObject {
             self.previousFaviconSite = faviconSiteKey(for: fallbackURL)
             downloadFavicon(from: faviconURL, generation: self.faviconGeneration)
         }
-        self.url = fallbackURL
+        if mayAdopt(fallbackURL) { self.url = fallbackURL }
         if let archivedInteractionState,
            let state = Self.unarchiveInteractionState(archivedInteractionState) {
             webView?.interactionState = state
@@ -878,6 +902,10 @@ class BrowserTab: NSObject {
                 // After cancellation, webView URL reverts to nil — keep showing the attempted URL.
                 if url == nil, self.lastAttemptedURL != nil { return }
                 if blankAfterFailedRestore { return }
+                // An extension page WebKit will refuse in this web view stays
+                // out of `url`, where a wake would build it into its
+                // extension's configuration (TASK-381).
+                guard self.mayAdopt(url) else { return }
                 self.url = url
             }
             .store(in: &faviconCancellables)
@@ -1083,6 +1111,7 @@ class BrowserTab: NSObject {
         webViewContainer?.removeFromSuperview()
         webViewContainer = nil
         self.webView = nil
+        servedExtensionOriginHost = nil
     }
 
     /// A window just hosted this tab's web view — the pane was attached, or an
@@ -1102,8 +1131,32 @@ class BrowserTab: NSObject {
     /// view is preferred while one is attached; `url` covers a sleeping tab, or
     /// one whose web view another window owns.
     func showsExtensionPage(ofOriginHost host: String) -> Bool {
-        guard let url = webView?.url ?? url else { return false }
-        return isExtensionPage(url, ofOriginHost: host)
+        guard let page = currentPageURL else { return false }
+        return isExtensionPage(page, ofOriginHost: host)
+    }
+
+    /// The page this tab is on: its web view's URL, which moves before the
+    /// published `url` does, unless that is an extension page the web view
+    /// cannot show (WebKit refuses it; the provisional URL lingers until the
+    /// error page loads, and in a window a page opened, after); else `url`.
+    /// What a rehome, a move or the options-page lookup may act on: a refused
+    /// URL taken from the web view would be retargeted, sleeping, onto the
+    /// extension's live origin and woken in its configuration (TASK-381).
+    var currentPageURL: URL? {
+        if let live = webView?.url, mayAdopt(live) { return live }
+        return url
+    }
+
+    /// Whether `candidate` may become `url`: anything but an extension page,
+    /// and an extension page only from the origin this tab's web view is
+    /// built for (`servedExtensionOriginHost`), which is exactly the page
+    /// WebKit lets that web view load in its main frame. Applies to every
+    /// write of `url` while the tab has a web view; the sleeping writes
+    /// (restore, `retarget`) carry URLs that already passed it (TASK-381).
+    private func mayAdopt(_ candidate: URL?) -> Bool {
+        guard let candidate, isExtensionPageURL(candidate) else { return true }
+        guard let served = servedExtensionOriginHost, let host = candidate.host else { return false }
+        return host.caseInsensitiveCompare(served) == .orderedSame
     }
 
     // MARK: - Sleep / Wake
@@ -1214,7 +1267,9 @@ class BrowserTab: NSObject {
         guard webView == nil else { return }
 
         let space = spaceID.flatMap { TabStore.shared.space(withID: $0) }
-        self.webView = Self.makeWebView(configuration: wakeConfiguration(in: space))
+        let (configuration, servedHost) = wakeConfiguration(in: space)
+        self.webView = Self.makeWebView(configuration: configuration)
+        servedExtensionOriginHost = servedHost
         webView?.navigationDelegate = self
         // A fresh web view means a fresh WebContent process and a fresh slice of
         // the GPU process's IOSurface pool: the show budget starts over (TASK-104).
@@ -1290,23 +1345,30 @@ class BrowserTab: NSObject {
     /// restored from the previous launch whose context has not loaded yet — see
     /// `Profile.pendingExtensionOrigins`): the tab still gets a web view rather
     /// than crashing the wake.
-    private func wakeConfiguration(in space: Space?) -> WKWebViewConfiguration {
+    ///
+    /// Trusts `url`: it only names an extension page that a web view built
+    /// from that extension's configuration showed, or that a restore, a
+    /// record or a rehome carried over from such a page (`mayAdopt`,
+    /// TASK-381). Also returns the origin host the configuration serves,
+    /// for `servedExtensionOriginHost`.
+    private func wakeConfiguration(in space: Space?) -> (WKWebViewConfiguration, servedOriginHost: String?) {
         if let url, let host = url.host,
            url.scheme?.caseInsensitiveCompare(ExtensionPageURL.scheme) == .orderedSame,
            let profile = space?.profile,
            let extensionID = profile.extensionID(forOriginScheme: ExtensionPageURL.scheme, host: host),
-           let extensionConfig = profile.extensionContext(for: extensionID)?.webViewConfiguration {
-            return extensionConfig
+           let context = profile.extensionContext(for: extensionID),
+           let extensionConfig = context.webViewConfiguration {
+            return (extensionConfig, context.baseURL.host)
         }
-        if let space { return space.makeWebViewConfiguration() }
+        if let space { return (space.makeWebViewConfiguration(), nil) }
         // A Quick Detour's page belongs to a profile and no space (TASK-193.1);
         // a quarantine's keeps its own store (TASK-194).
         if let quickDetourProfile {
             let configuration = Space.makeWebViewConfiguration(for: quickDetourProfile, inSpace: false)
             if let quarantine { configuration.websiteDataStore = quarantine.dataStore }
-            return configuration
+            return (configuration, nil)
         }
-        return WKWebViewConfiguration()
+        return (WKWebViewConfiguration(), nil)
     }
 
     /// Records a web content process termination and returns how many have hit
@@ -1403,7 +1465,11 @@ class BrowserTab: NSObject {
         // the error page.
         restoringSession = false
         lastAttemptedURL = url
-        self.url = url
+        // Not an extension page this web view cannot show (TASK-381): it
+        // fails, and in `url` a wake would build it into its extension's
+        // configuration. `lastAttemptedURL` still names it, for the error
+        // page and Reload, which retry it here and fail again.
+        if mayAdopt(url) { self.url = url }
         resetBlockedCount()
         navigationPending = true
         applySpoofedUserAgent(for: url)
@@ -1660,7 +1726,9 @@ class BrowserTab: NSObject {
     }
 
     private func showErrorPage(for failedURL: URL, error: Error) {
-        url = failedURL
+        // A refused extension page is named by the error page but never
+        // becomes `url` (TASK-381): the tab keeps the page it was on, or none.
+        if mayAdopt(failedURL) { url = failedURL }
         favicon = nil
         faviconURL = nil
         faviconGeneration += 1

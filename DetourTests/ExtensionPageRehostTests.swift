@@ -120,9 +120,8 @@ nonisolated final class ExtensionPageRehostTests: XCTestCase {
         _ context: WKWebExtensionContext, in space: Space, path: String
     ) throws -> (tab: BrowserTab, url: URL) {
         let pageURL = try XCTUnwrap(URL(string: path, relativeTo: context.baseURL)?.absoluteURL)
-        let config = try XCTUnwrap(context.webViewConfiguration,
-                                   "a loaded context must offer a web view configuration")
-        let tab = TabStore.shared.addExtensionTab(in: space, url: pageURL, configuration: config)
+        XCTAssertNotNil(context.webViewConfiguration, "a loaded context must offer a web view configuration")
+        let tab = TabStore.shared.addExtensionTab(in: space, url: pageURL, context: context)
         XCTAssertEqual(tab.webView?.url, pageURL,
                        "precondition: the tab should be showing the extension page")
         // The placement rule reads the profile off the web view's own

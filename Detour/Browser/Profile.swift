@@ -895,7 +895,7 @@ class Profile {
         var retargetedTabIDs = Set<UUID>()
         for location in extensionPageLocations(forOriginHost: oldHost, in: store) {
             let tab = location.tab
-            guard let url = tab.webView?.url ?? tab.url,
+            guard let url = tab.currentPageURL,
                   let rewritten = rewriteExtensionPageURL(url, from: oldBase, to: newBase) else { continue }
             tab.retarget(to: rewritten)
             retargetedTabIDs.insert(tab.id)

@@ -451,7 +451,7 @@ nonisolated final class ExtensionPageOpenedWindowTests: XCTestCase {
         wc.setActiveSpace(id: space.id)
         wc.showWindow(nil)
         let page = TabStore.shared.addExtensionTab(in: space, url: try XCTUnwrap(context.optionsPageURL),
-                                                   configuration: try XCTUnwrap(context.webViewConfiguration))
+                                                   context: context)
         wc.selectTab(id: page.id)
         let pageWebView = try XCTUnwrap(page.webView)
         try await waitUntil("the options page to load") { isExtensionPageURL(pageWebView.url) && !pageWebView.isLoading }

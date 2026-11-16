@@ -2644,8 +2644,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             return
         }
         let tab: BrowserTab
-        if url.scheme == "webkit-extension", let extConfig = extensionContext.webViewConfiguration {
-            tab = TabStore.shared.addExtensionTab(in: space, url: url, configuration: extConfig)
+        if url.scheme == "webkit-extension", extensionContext.webViewConfiguration != nil {
+            tab = TabStore.shared.addExtensionTab(in: space, url: url, context: extensionContext)
         } else {
             tab = TabStore.shared.addTab(in: space, url: url)
         }
@@ -2740,8 +2740,8 @@ class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         var lastTab: BrowserTab?
         if let space = wc.activeSpace {
             for url in configuration.tabURLs {
-                if url.scheme == "webkit-extension", let extConfig = extensionContext.webViewConfiguration {
-                    lastTab = TabStore.shared.addExtensionTab(in: space, url: url, configuration: extConfig)
+                if url.scheme == "webkit-extension", extensionContext.webViewConfiguration != nil {
+                    lastTab = TabStore.shared.addExtensionTab(in: space, url: url, context: extensionContext)
                 } else {
                     lastTab = TabStore.shared.addTab(in: space, url: url)
                 }

@@ -2883,11 +2883,21 @@ class TabStore {
 
     /// Create a tab for an extension page (webkit-extension://) using the extension
     /// context's webViewConfiguration, which is required to resolve the URL scheme.
+    ///
+    /// The tab can show only `context`'s own pages: a URL of another extension
+    /// is refused by WebKit and never becomes the tab's `url`, so no sleep or
+    /// relaunch builds it into that extension's configuration (TASK-381). A
+    /// context without a configuration gets the space's, which serves no
+    /// extension page.
     @discardableResult
-    func addExtensionTab(in space: Space, url: URL, configuration: WKWebViewConfiguration) -> BrowserTab {
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+    func addExtensionTab(in space: Space, url: URL, context: WKWebExtensionContext) -> BrowserTab {
+        let configuration = context.webViewConfiguration
+        let webView = WKWebView(frame: .zero, configuration: configuration ?? space.makeWebViewConfiguration())
         webView.load(URLRequest(url: url))
-        return addTab(in: space, webView: webView)
+        let tab = BrowserTab(webView: webView,
+                             servedExtensionOriginHost: configuration == nil ? nil : context.baseURL.host)
+        insertTab(tab, in: space, parentID: nil)
+        return tab
     }
 
     /// Opens the tab for a window a page asked for (`window.open`, a
@@ -3189,7 +3199,7 @@ class TabStore {
         // The peek's current page, as `savePeekStateForPersistence` would record
         // it: a live peek may have navigated since the URL was last saved.
         var peek = MovedPeek.kept
-        if let peekURL = tab.peekTab?.webView?.url ?? tab.peekURL {
+        if let peekURL = tab.peekTab.flatMap({ $0.webView == nil ? nil : $0.currentPageURL }) ?? tab.peekURL {
             switch movedPage(peekURL, from: source, to: destination, section: .tabList, availability: availability) {
             case .unchanged: peek = .kept
             case .retargeted(let rehomed): peek = .retargeted(rehomed)

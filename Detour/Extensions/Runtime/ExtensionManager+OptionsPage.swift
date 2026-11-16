@@ -31,14 +31,14 @@ extension ExtensionManager {
     func optionsPageTab(for context: WKWebExtensionContext, in profile: Profile,
                         preferring preferredSpaceID: UUID? = nil) -> (tab: BrowserTab, space: Space)? {
         guard let optionsURL = context.optionsPageURL,
-              let configuration = context.webViewConfiguration else { return nil }
+              context.webViewConfiguration != nil else { return nil }
 
         if let existing = existingOptionsPageTab(for: context, in: profile) { return existing }
 
         let profileSpaces = TabStore.shared.spaces.filter { $0.profileID == profile.id }
         let target = profileSpaces.first { $0.id == preferredSpaceID } ?? profileSpaces.first
         guard let space = target else { return nil }
-        let tab = TabStore.shared.addExtensionTab(in: space, url: optionsURL, configuration: configuration)
+        let tab = TabStore.shared.addExtensionTab(in: space, url: optionsURL, context: context)
         return (tab, space)
     }
 
@@ -52,7 +52,7 @@ extension ExtensionManager {
         guard let optionsURL = context.optionsPageURL else { return nil }
         for space in TabStore.shared.spaces where space.profileID == profile.id {
             if let tab = (space.tabs + space.pinnedTabs).first(where: {
-                Self.isOptionsPage($0.webView?.url ?? $0.url, optionsURL: optionsURL, baseURL: context.baseURL)
+                Self.isOptionsPage($0.currentPageURL, optionsURL: optionsURL, baseURL: context.baseURL)
             }) {
                 return (tab, space)
             }

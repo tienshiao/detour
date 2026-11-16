@@ -180,9 +180,9 @@ nonisolated final class MoveTabToSpaceTests: XCTestCase {
         let f = makeSharedFixture("Characterize")
         _ = f.profile.extensionController
         let context = try loadTestContext(ext, in: f.profile)
-        let contextConfig = try XCTUnwrap(context.webViewConfiguration)
+        XCTAssertNotNil(context.webViewConfiguration)
         let url = try extensionPageURL("options.html?old=1", on: context.baseURL)
-        let tab = f.store.addExtensionTab(in: f.a, url: url, configuration: contextConfig)
+        let tab = f.store.addExtensionTab(in: f.a, url: url, context: context)
         createdTabs.append(tab)
         let webView = try XCTUnwrap(tab.webView)
 
@@ -582,9 +582,9 @@ nonisolated final class MoveTabToSpaceTests: XCTestCase {
         let f = makeSharedFixture("ExtSameProfile")
         _ = f.profile.extensionController
         let context = try loadTestContext(ext, in: f.profile)
-        let contextConfig = try XCTUnwrap(context.webViewConfiguration)
+        XCTAssertNotNil(context.webViewConfiguration)
         let url = try extensionPageURL("options.html?same=1#frag", on: context.baseURL)
-        let tab = f.store.addExtensionTab(in: f.a, url: url, configuration: contextConfig)
+        let tab = f.store.addExtensionTab(in: f.a, url: url, context: context)
         createdTabs.append(tab)
         let webView = try XCTUnwrap(tab.webView)
 
@@ -617,8 +617,7 @@ nonisolated final class MoveTabToSpaceTests: XCTestCase {
         let url = try extensionPageURL("options.html?cross=1#frag", on: source.baseURL)
         let expected = try XCTUnwrap(rewriteExtensionPageURL(url, from: source.baseURL,
                                                              to: destination.baseURL))
-        let tab = f.store.addExtensionTab(in: f.a, url: url,
-                                          configuration: try XCTUnwrap(source.webViewConfiguration))
+        let tab = f.store.addExtensionTab(in: f.a, url: url, context: source)
         createdTabs.append(tab)
         // Its peek is on the same doomed origin, and is rehomed the same way.
         let peeked = try extensionPageURL("options.html?peek=cross", on: source.baseURL)
@@ -661,8 +660,7 @@ nonisolated final class MoveTabToSpaceTests: XCTestCase {
         ExtensionManager.shared.setEnabled(id: ext.id, profileID: f.other.id, enabled: false)
         XCTAssertNil(f.other.extensionContext(for: ext.id), "precondition: off in the destination profile")
         let url = try extensionPageURL("options.html?refused=1", on: context.baseURL)
-        let tab = f.store.addExtensionTab(in: f.a, url: url,
-                                          configuration: try XCTUnwrap(context.webViewConfiguration))
+        let tab = f.store.addExtensionTab(in: f.a, url: url, context: context)
         createdTabs.append(tab)
         let webView = try XCTUnwrap(tab.webView)
 

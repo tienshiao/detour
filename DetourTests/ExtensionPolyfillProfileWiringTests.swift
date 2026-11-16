@@ -3947,8 +3947,8 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         _ = profile.loadExtensionContext(ext)
         let context = try XCTUnwrap(profile.extensionContexts[ext.id])
         let controller = profile.extensionController
-        let configuration = try XCTUnwrap(context.webViewConfiguration,
-                                          "webViewConfiguration is nil — context not loaded in a controller")
+        XCTAssertNotNil(context.webViewConfiguration,
+                        "webViewConfiguration is nil — context not loaded in a controller")
 
         context.loadBackgroundContent { _ in }
         try await waitUntil("the real background page to open its keep-alive port", timeout: 30) {
@@ -3963,7 +3963,7 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         let tab = TabStore.shared.addExtensionTab(
             in: space,
             url: context.baseURL.appendingPathComponent(String(backgroundPagePath.dropFirst())),
-            configuration: configuration)
+            context: context)
         let tabView = try XCTUnwrap(tab.webView)
         var tabInstance = ""
         try await waitUntil("the extension tab to run the background script", timeout: 20) {
@@ -4705,8 +4705,8 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         _ = profile.extensionController
         _ = profile.loadExtensionContext(ext)
         let context = try XCTUnwrap(profile.extensionContexts[ext.id])
-        let configuration = try XCTUnwrap(context.webViewConfiguration,
-                                          "webViewConfiguration is nil — context not loaded in a controller")
+        XCTAssertNotNil(context.webViewConfiguration,
+                        "webViewConfiguration is nil — context not loaded in a controller")
 
         XCTAssertEqual(ExtensionManager.shared.installedEventOwingWake(extensionID: ext.id, in: profile),
                        .init(reason: .install, previousVersion: nil),
@@ -4719,7 +4719,7 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         let tab = TabStore.shared.addExtensionTab(
             in: space,
             url: context.baseURL.appendingPathComponent(String(backgroundPagePath.dropFirst())),
-            configuration: configuration)
+            context: context)
         let tabView = try XCTUnwrap(tab.webView)
         XCTAssertTrue(ExtensionPageHostRegistry.isDetourHosted(tabView),
                       "precondition: a tab's web view is one Detour hosts")
@@ -4790,7 +4790,7 @@ nonisolated final class ExtensionPolyfillProfileWiringTests: XCTestCase {
         let space = addSpace(for: profile, name: "Host Registry Space")
         let tab = TabStore.shared.addExtensionTab(
             in: space, url: context.baseURL.appendingPathComponent("test.html"),
-            configuration: configuration)
+            context: context)
         let tabView = try XCTUnwrap(tab.webView)
         XCTAssertFalse(tabView is BrowserWebView,
                        "precondition: an extension tab adopts a plain WKWebView, so a class check would miss it")
