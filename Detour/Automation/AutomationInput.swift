@@ -239,7 +239,8 @@ enum AutomationInput {
     /// window ordering for the press (a sidebar row, so it can be dragged out
     /// of a background window): through the window, the sidebar's table ran
     /// no tracking loop for the press, so such a view keeps the direct route,
-    /// where the list selects the row (`viewTakingPress`). Never for a
+    /// where the table's own mouse-down selects the row. (`viewTakingPress`
+    /// is set on both routes, so a table answers for either.) Never for a
     /// view whose class overrides `mouseDown`
     /// (it tracks the press itself, and some of Detour's read
     /// `acceptsFirstMouse` as "this press activates the window", so it is
@@ -340,11 +341,12 @@ enum AutomationInput {
                                context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)
     }
 
-    /// The view `click` is handing a left press straight to
-    /// (`view.mouseDown(with:)`, the direct route), while it does, for a view
-    /// that has to take such a press as one in its key window: the sidebar's
-    /// list, whose table would otherwise select nothing in a window that is
-    /// not key (`DraggableTableView.needsPanelToBecomeKey`, TASK-228.9).
+    /// The view `click` is handing a left press to, while it does (on either
+    /// route: straight to `view.mouseDown(with:)` or through the window), for
+    /// a view that has to take such a press as one in its key window: a
+    /// table, which would otherwise select nothing in a window that is not
+    /// key (`AutomationTableView.needsPanelToBecomeKey`, TASK-228.9,
+    /// TASK-228.12).
     private(set) static weak var viewTakingPress: NSView?
 
     /// Whether `click` is handing a press to `view` or a view inside it.
@@ -404,12 +406,15 @@ enum AutomationInput {
                         // editor over the view and change the hit test.
                         routed = deliversThroughWindow(down, to: view, in: window)
                         focus(view, in: window)
+                        // On both routes: a press on a row's label goes
+                        // through the window (the command palette's rows)
+                        // and reaches the table up the responder chain.
+                        let previous = viewTakingPress
+                        viewTakingPress = view
+                        defer { viewTakingPress = previous }
                         if routed {
                             window.sendEvent(down)
                         } else {
-                            let previous = viewTakingPress
-                            viewTakingPress = view
-                            defer { viewTakingPress = previous }
                             view.mouseDown(with: down)
                         }
                     } else {
@@ -756,5 +761,34 @@ final class AutomationMenuTracker {
                 "separator": false,
             ]
         }
+    }
+}
+
+/// Detour's table views: each takes the automation endpoint's left press as
+/// one in its key window (TASK-228.9, TASK-228.12). `-[NSTableView
+/// mouseDown:]` gives up on a press in a window that is not key unless it
+/// becomes a drag (`_shouldAbortMouseDownAfterDragAttempt:`: the window is
+/// not key, can become key, and the table needs its panel to become key;
+/// found in the disassembly and confirmed in the test host). The endpoint
+/// leaves the key window alone while Detour is in the background
+/// (TASK-228.10), so before this no row of any table selected, and no
+/// table's click action ran (the Archived Tabs list's restore, the command
+/// palette's rows). `needsPanelToBecomeKey` answers false only while
+/// `AutomationInput.click` hands this table, or a view inside it, a press
+/// (`AutomationInput.isHandingPress(to:)`); then the table's own mouse-down
+/// runs as in the key window. A person's press keeps AppKit's answer: the
+/// window's routing asks this too, and in a window that is not key a
+/// person's press on a sidebar row must still drag it out without selecting
+/// it first.
+///
+/// One class rather than an override per table, so a new list gets it by
+/// being made from this class (`AutomationWindowKindsTests` checks every
+/// Settings list, `AutomationInputTests` the sidebar's, the Archived Tabs
+/// list and the command palette's). The table has to cooperate: the check
+/// is its own and reads the window's key state, so nothing in the delivery
+/// alone gets past it short of swizzling AppKit.
+class AutomationTableView: NSTableView {
+    override var needsPanelToBecomeKey: Bool {
+        AutomationInput.isHandingPress(to: self) ? false : super.needsPanelToBecomeKey
     }
 }

@@ -721,7 +721,7 @@ final class LinksSettingsViewController: SettingsPaneViewController, NSTableView
 
 /// The route list never takes keyboard focus: its rows are not selectable,
 /// so Tab from a pattern field goes to the next field rather than to the list.
-private final class LinkRouteTableView: NSTableView {
+private final class LinkRouteTableView: AutomationTableView {
     override var acceptsFirstResponder: Bool { false }
 }
 

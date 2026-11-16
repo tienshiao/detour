@@ -4,7 +4,7 @@ title: "Automation endpoint: how input is delivered"
 description: How the automation endpoint's clicks, keys and menu choices reach pages, native views, sidebar rows and AppKit's own controls inside Detour without HID events or activating the app, when a click makes its window key (the user's decision on TASK-228.10), the pointer-arrival hover, and the AppKit and WebKit traps met on the way (current-event hit tests, renumbered posted events, gesture-recognizer controls, a table that will not select in a window that is not key, key ordering).
 tags: [automation, mcp, appkit, input]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:58:12Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T06:48:01Z }
 sources:
   - id: input
     resource: ../../Detour/Automation/AutomationInput.swift
@@ -29,7 +29,7 @@ sources:
     title: "Automation: endpoint clicks select rows in the other table views (Archived Tabs list, Settings lists)"
   - id: sidebar-components
     resource: ../../Detour/Browser/Sidebar/SidebarComponents.swift
-    title: SidebarComponents.swift (DraggableTableView.needsPanelToBecomeKey)
+    title: SidebarComponents.swift (DraggableTableView, FocusGatedTableView)
   - id: tests
     resource: ../../DetourTests/MCPServerTests.swift
     title: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests
@@ -63,22 +63,33 @@ pointer](./automation-endpoint-agent-pointer.md).
   inside the call), as in AppKit's own dispatch (see the trap on a sidebar
   row's label). Checked at runtime with Detour in the background: the
   sidebar's Add Space button opened the space editor.
-- **A sidebar row** takes a left click on that direct route and selects its
-  tab, a pinned entry or (a folder's row) toggles the folder, with Detour in
-  the background as when it is active (TASK-228.9).[^task-228-9] AppKit's
-  table gives up on a press in a window that is not key unless it becomes a
-  drag (see Traps), so the list (`DraggableTableView.needsPanelToBecomeKey`)
-  answers false while the endpoint hands it a press
-  (`AutomationInput.isHandingPress(to:)`), and the table's own mouse-down
-  selects.[^sidebar-components] The list has to cooperate: the check is the
+- **A table row** takes a left click and acts as for a person's click, with
+  Detour in the background as when it is active: a sidebar row selects its
+  tab, a pinned entry or (a folder's row) toggles the folder
+  (TASK-228.9);[^task-228-9] an Archived Tabs row restores its tab, a
+  command palette row runs (switches to the tab, opens the page), a Settings
+  list row (Spaces, Profiles, Extensions, Site Search) selects
+  (TASK-228.12).[^task-228-12] AppKit's table gives up on a press in a
+  window that is not key unless it becomes a drag (see Traps), so every
+  Detour table is an `AutomationTableView`,[^input] whose
+  `needsPanelToBecomeKey` answers false while the endpoint hands it, or a
+  view inside it, a press (`AutomationInput.isHandingPress(to:)`), and the
+  table's own mouse-down selects and sends its click action. The flag is set
+  on both routes: a press on a row's label goes through the window when the
+  label takes a first click (the palette's rows) and reaches the table up
+  the responder chain; a press the table hit-tests to itself (a sidebar,
+  archive or Settings row) stays on the direct route, since the table
+  delays window ordering. The table has to cooperate: the check is the
   table's own, it asks the window whether it is key, and the endpoint must
   leave the key window alone in the background, so nothing in the delivery
-  alone gets past it short of swizzling AppKit. No select call stands in for
-  the click: the table's own code runs (the clicked row, the drag check, the
-  New Tab row opening the palette, Opt-Cmd-click's Quick Detour). A
+  alone gets past it short of swizzling AppKit. One base class rather than
+  an override per table, so a new list gets it by being made from it. No
+  select call stands in for the click: the table's own code runs (the
+  clicked row, the drag check, the New Tab row opening the palette,
+  Opt-Cmd-click's Quick Detour, a click action reading `clickedRow`). A
   person's press is untouched, so a row dragged out of a background window
-  still drags without selecting first. Detour's other tables are not fixed
-  yet (TASK-228.12, see Traps).[^task-228-12]
+  still drags without selecting first.[^sidebar-components] Which tables
+  were affected is in Traps.
 - **The pointer arrives before a left click on a native view**
   (`AutomationInput.pointerArrived`, then `pointerLeft` after the click): the
   views under the point, from the hit view down, that own a tracking area
@@ -283,11 +294,18 @@ other-Space guard cannot be tested in the host.
   (it blocks ordering and orders the window on the release,
   `_NXDoMouseUpWindowOrdering`), so a person's first click on a row of a
   window that is not key probably only brings the window forward; not
-  checked with a real click. Only the sidebar's `DraggableTableView` has
-  the fix; Detour's other tables (the Archived Tabs list, Settings' lists:
-  Shortcuts, Link Routes, Profiles, Spaces, Extensions) likely have the same
-  problem, to be checked and fixed in a shared way
-  (TASK-228.12).[^task-228-12] See also [AppKit
+  checked with a real click. Every other table had the same trap
+  (TASK-228.12, probed in the test host before the fix, Detour in the
+  background):[^task-228-12] a click on an Archived Tabs row restored
+  nothing, one on a command palette row ran nothing (the press, on the
+  row's label, went through the window and reached the table up the
+  responder chain, where the same check stopped it), and one on a Spaces,
+  Profiles or Site Search row selected nothing. All three are plain
+  `NSTableView`s, and each delays window ordering, so it is not only a
+  drag source that does. The Shortcuts and Link Routes lists select no row
+  by design (`shouldSelectRow` false); their controls take the press
+  themselves. The Downloads popover's list is out of reach (popovers are
+  not addressable), and is an `AutomationTableView` all the same. See also [AppKit
   gotchas](../platform/appkit-gotchas.md).
 - **Local event monitors do not see the endpoint's input.** AppKit runs
   `NSEvent.addLocalMonitorForEvents` handlers only for events going through
@@ -306,10 +324,13 @@ other-Space guard cannot be tested in the host.
 `AutomationInputTests` (trusted clicks by selector, page point and window
 point; typing; context menus; native views; `NSSwitch` and `NSPopUpButton`
 with the window not key; right and left clicks on sidebar rows, the
-hover-only close button, pinned entries, folders, the New Tab row;
-TASK-228.10's two windows on one tab; the input errors). The three tests
-that need an inactive host (row select and both TASK-228.10 tests) skip
-when the host is the active app. Details in [the endpoint's
+hover-only close button, pinned entries, folders, the New Tab row; an
+Archived Tabs row and a command palette row, TASK-228.12;
+TASK-228.10's two windows on one tab; the input errors), and
+`AutomationWindowKindsTests`' Settings list row (TASK-228.12, which also
+checks that every Settings pane's table is an `AutomationTableView`). The
+tests that need an inactive host (the row selects, both TASK-228.10 tests)
+skip when the host is the active app. Details in [the endpoint's
 tests](./automation-endpoint-tests.md).[^tests]
 
 # Related
@@ -331,5 +352,5 @@ tests](./automation-endpoint-tests.md).[^tests]
 [^task-228-9]: Automation: a left click on a sidebar row selects its tab, as a person's click does
 [^task-228-10]: Automation: an endpoint click that brings a window forward hands web view ownership over correctly (test it)
 [^task-228-12]: Automation: endpoint clicks select rows in the other table views (Archived Tabs list, Settings lists)
-[^sidebar-components]: SidebarComponents.swift (DraggableTableView.needsPanelToBecomeKey)
+[^sidebar-components]: SidebarComponents.swift (DraggableTableView, FocusGatedTableView)
 [^tests]: MCPServerTests, AutomationHTTPTests, AutomationToolsTests, AutomationEndpointTests, and the other Automation suites

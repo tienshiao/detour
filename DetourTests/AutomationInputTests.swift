@@ -769,4 +769,81 @@ nonisolated final class AutomationInputTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(second.window).isKeyWindow)
         try assertOwner(first, other: second, of: tab, "after both clicks")
     }
+
+    // MARK: Other tables (TASK-228.12)
+
+    /// The first `T` in `view`'s tree.
+    @MainActor private func first<T: NSView>(_ type: T.Type, in view: NSView) -> T? {
+        (view as? T) ?? view.subviews.lazy.compactMap { self.first(type, in: $0) }.first
+    }
+
+    /// A click at `row` of `table`, left of its centre (on the row's label,
+    /// where it has one).
+    @MainActor private func click(_ f: Fixture, row: Int, of table: NSTableView) async throws -> JSONValue {
+        let content = try XCTUnwrap(f.window.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+        let rect = table.rect(ofRow: row)
+        let point = table.convert(NSPoint(x: rect.minX + min(60, rect.width / 3), y: rect.midY), to: content)
+        let (clicked, isError) = try await call(f, "click", [
+            "window_id": .int(f.windowID), "x": .double(point.x),
+            "y": .double(content.isFlipped ? point.y : content.bounds.height - point.y),
+        ])
+        XCTAssertFalse(isError, clicked.jsonString)
+        return clicked
+    }
+
+    /// A click on an Archived Tabs row restores its tab, and one on a command
+    /// palette row acts on it, in a window that is not key with the test host
+    /// in the background (TASK-228.12). Both act from the table's click
+    /// action, which `-[NSTableView mouseDown:]` never sent for the
+    /// endpoint's press before. The palette's press lands on the row's label
+    /// and goes through the window, reaching the table up the responder
+    /// chain.
+    @MainActor func testAnArchivedTabsRowAndACommandPaletteRowTakeAClick() async throws {
+        try XCTSkipIf(NSApp.isActive, "needs the test host in the background, as Detour is when an agent drives it")
+        let f = try await makeFixture()
+        let window = try XCTUnwrap(f.window.window)
+        let sidebar = f.window.tabSidebar
+        XCTAssertTrue(sidebar.tableView is AutomationTableView)
+
+        let closed = try await addOtherTab(f)
+        TabStore.shared.closeTab(id: closed.id, in: f.space)
+        sidebar.showArchivePage(animated: false)
+        let archive = try XCTUnwrap(first(ArchivePageView.self, in: sidebar.view))
+        let archiveTable: NSTableView = archive.tableView
+        XCTAssertTrue(archiveTable is AutomationTableView)
+        let entryRow = try XCTUnwrap(archive.rows.firstIndex {
+            if case .entry(let entry) = $0 { entry.spaceID == f.space.id && entry.url?.hasSuffix("/other") == true } else { false }
+        }, "the closed tab's archive row")
+        var restored: [ArchiveEntry] = []
+        archive.onRestore = { restored.append($0) }
+        let archiveClick = try await click(f, row: entryRow, of: archiveTable)
+        XCTAssertEqual(archiveClick["view"], "ArchiveTableView")
+        XCTAssertEqual(restored.map(\.url), [closed.url?.absoluteString], "the row's tab is restored, once")
+        sidebar.dismissArchivePage(animated: false)
+
+        let other = try await addOtherTab(f)
+        f.window.showCommandPalette()
+        let palette = try XCTUnwrap(f.window.commandPaletteView)
+        let paletteTable = try XCTUnwrap(first(NSTableView.self, in: palette))
+        XCTAssertTrue(paletteTable is AutomationTableView)
+        try await waitUntil("the palette to list the other tab", timeout: 3) {
+            palette.suggestions.contains { if case .openTab(let id, _, _, _, _) = $0 { id == other.id } else { false } }
+        }
+        let otherRow = try XCTUnwrap(palette.suggestions.firstIndex {
+            if case .openTab(let id, _, _, _, _) = $0 { id == other.id } else { false }
+        })
+        XCTAssertNotEqual(f.window.selectedTabID, other.id)
+        palette.layoutSubtreeIfNeeded()
+        paletteTable.scrollRowToVisible(otherRow)
+        _ = try await click(f, row: otherRow, of: paletteTable)
+        XCTAssertEqual(f.window.selectedTabID, other.id, "the palette's row switched to its tab")
+        XCTAssertNil(f.window.commandPaletteView, "and closed the palette")
+
+        XCTAssertFalse(NSApp.isActive, "the clicks did not activate the app")
+        XCTAssertFalse(window.isKeyWindow, "nor make the window key")
+        XCTAssertNil(AutomationInput.viewTakingPress)
+        XCTAssertNil(NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .eventTracking, dequeue: false),
+                     "no release is left queued")
+    }
 }

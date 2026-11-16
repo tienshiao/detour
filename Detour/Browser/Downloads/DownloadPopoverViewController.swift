@@ -1,7 +1,7 @@
 import AppKit
 
 class DownloadPopoverViewController: NSViewController {
-    private let tableView = NSTableView()
+    private let tableView = AutomationTableView()
     private let emptyLabel = NSTextField(labelWithString: "No downloads")
     private let manager: DownloadManager
     /// The window this popover belongs to: it lists that window's downloads

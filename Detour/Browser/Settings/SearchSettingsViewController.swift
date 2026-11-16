@@ -80,7 +80,7 @@ final class SearchSettingsViewController: SettingsPaneViewController, NSTableVie
         scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        tableView = NSTableView()
+        tableView = AutomationTableView()
         tableView.style = .plain
         tableView.rowHeight = SettingsMetrics.listRowHeight
         tableView.backgroundColor = .clear

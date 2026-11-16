@@ -327,7 +327,7 @@ Three rules for focus tests:
   with the mouse-up queued nor posted events pumped through `NSApp.sendEvent`
   changed the selection (the pumped click did move first responder to a list
   that accepted it).[^task-174] The cause, found in TASK-228.9 (the comment
-  on `DraggableTableView.needsPanelToBecomeKey`): in a window that is not
+  on `AutomationTableView`, Detour's base table class since TASK-228.12): in a window that is not
   key, `-[NSTableView mouseDown:]` gives up unless the press becomes a drag,
   because the table needs its panel to become key. An automation press, for
   which the list answers `needsPanelToBecomeKey == false`, does select the

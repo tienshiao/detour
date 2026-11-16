@@ -4,7 +4,7 @@ title: AppKit gotchas
 description: A collection of AppKit behaviours that cost debugging time in Detour — first responder and key-view loop, split and stack view layout, hit testing, table views under a drag session, popovers, Accessibility — each with where it bit and what to do instead.
 tags: [appkit, platform, focus, layout, drag-and-drop, hit-testing]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:38Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T06:48:01Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-322
@@ -115,6 +115,9 @@ sources:
   - id: task-228-9
     resource: backlog:TASK-228.9
     title: "Automation: a left click on a sidebar row selects its tab, as a person's click does"
+  - id: task-228-12
+    resource: backlog:TASK-228.12
+    title: "Automation: endpoint clicks select rows in the other table views (Archived Tabs list, Settings lists)"
   - id: task-315
     resource: backlog:TASK-315
     title: "Windows: find what keeps a closed browser window's controller in memory"
@@ -197,7 +200,7 @@ Related.
 | `.sourceList` drop feedback can mark a whole row or a gap, nothing finer. | Split-edge drops | Draw your own overlay |
 | The session's drag image disappears the moment a drop is accepted, and `animatesToDestination` needs the destination to exist now.[^task-129] | Dropped rows appeared to travel from their origin | Take the image over as an overlay view and animate it yourself (`beginDropLanding`) |
 | A view at `alphaValue` 0 still receives drags. | Favorite drop hint after it faded out | Set `isHidden` once the fade completes |
-| `-[NSTableView mouseDown:]` gives up on a press in a window that is not key (and can become key) while the table's `needsPanelToBecomeKey` is true: it only tries a drag, then returns without selecting unless Command is held (`_shouldAbortMouseDownAfterDragAttempt:`, from the disassembly).[^task-228-9] | The automation endpoint's left click on a sidebar row selected nothing, Detour being in the background | `DraggableTableView` answers false only while the endpoint hands it a press ([automation endpoint: input](../features/automation-endpoint-input.md)) |
+| `-[NSTableView mouseDown:]` gives up on a press in a window that is not key (and can become key) while the table's `needsPanelToBecomeKey` is true: it only tries a drag, then returns without selecting unless Command is held (`_shouldAbortMouseDownAfterDragAttempt:`, from the disassembly).[^task-228-9] | The automation endpoint's left click on a sidebar row selected nothing, Detour being in the background; the same for the Archived Tabs list, the command palette and Settings' lists (a plain `NSTableView` delays window ordering too, and a press on a row's label that goes through the window reaches the table up the responder chain and meets the same check)[^task-228-12] | Every Detour table is an `AutomationTableView`, which answers false only while the endpoint hands it, or a view inside it, a press ([automation endpoint: input](../features/automation-endpoint-input.md)) |
 
 # Popovers
 
@@ -289,4 +292,5 @@ from a probe or a measurement.
 [^task-314]: Window: a closed browser window can be re-shown by a link placement, with its sidebar deaf to the store
 [^task-336]: Settings: switches have one accessible name and VoiceOver reads each setting once
 [^task-228-9]: Automation: a left click on a sidebar row selects its tab, as a person's click does
+[^task-228-12]: Automation: endpoint clicks select rows in the other table views (Archived Tabs list, Settings lists)
 [^task-338]: Settings: System Settings–style grouped rows

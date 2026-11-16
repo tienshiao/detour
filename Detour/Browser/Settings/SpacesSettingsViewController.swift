@@ -59,7 +59,7 @@ class SpacesSettingsViewController: SettingsPaneViewController, NSTableViewDataS
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
-        tableView = NSTableView()
+        tableView = AutomationTableView()
         tableView.headerView = nil
         tableView.rowHeight = SettingsMetrics.listRowHeight
         tableView.style = .plain

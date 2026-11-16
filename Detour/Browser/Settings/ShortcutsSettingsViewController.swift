@@ -285,7 +285,7 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
         scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        tableView = NSTableView()
+        tableView = AutomationTableView()
         tableView.style = .plain
         tableView.headerView = nil
         tableView.backgroundColor = .clear

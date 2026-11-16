@@ -219,10 +219,10 @@ edges ([UI probes](./ui-probes.md)).
   not change; nor did it with `tableView.mouseDown(with:)` called directly
   and the mouse-up queued.[^task-174] The cause (TASK-228.9): AppKit's
   table gives up on a press in a window that is not key unless it becomes a
-  drag. The endpoint's `click` on a row selects it, because the sidebar's
-  table (`needsPanelToBecomeKey`) answers false while
-  `AutomationInput.isHandingPress(to:)` is true; a harness's own posted
-  click still does not. From a harness, make the selection with
+  drag. The endpoint's `click` on a row selects it, because every Detour
+  table (`AutomationTableView.needsPanelToBecomeKey`, TASK-228.12) answers
+  false while `AutomationInput.isHandingPress(to:)` is true; a harness's
+  own posted click still does not. From a harness, make the selection with
   `selectRowIndexes` (it runs the delegate's selection handler) and use the
   posted click for what else the click does.
 - **A posted plain click on a web view of an inactive app is swallowed; a

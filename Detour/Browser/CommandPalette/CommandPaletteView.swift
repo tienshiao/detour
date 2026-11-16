@@ -113,7 +113,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     private let searchIcon = NSImageView()
     private let separator = NSBox()
     private let scrollView = NSScrollView()
-    private let tableView = NSTableView()
+    private let tableView = AutomationTableView()
 
     /// Replaced in tests with a provider over an in-memory history database.
     var suggestionProvider = SuggestionProvider()
