@@ -344,3 +344,26 @@ class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         window.screen ?? NSScreen.main
     }
 }
+
+// MARK: - Undo (TASK-349)
+
+extension SettingsWindowController: NSMenuItemValidation {
+    /// Edit > Undo and Redo (`browserUndo:`/`browserRedo:`, ⌘Z / ⇧⌘Z) undo
+    /// and redo the typing in the Settings field that has the keys, and never
+    /// the browser's list (`FieldUndo`). Settings is the main window while
+    /// it is key, so the actions never reached a browser window from here;
+    /// with no answer they were disabled, still titled from the browser
+    /// window that validated them last ("Undo Close Tab"), and the field's
+    /// typing could not be undone. A sheet's fields answer for themselves
+    /// (`SiteSearchForm`): AppKit disables a menu action aimed at a window
+    /// with a sheet attached.
+    @objc func browserUndo(_ sender: Any?) { FieldUndo.undo(in: window) }
+
+    @objc func browserRedo(_ sender: Any?) { FieldUndo.redo(in: window) }
+
+    /// Undo and Redo are titled from the field's undo ("Undo Typing") and
+    /// enabled only when it has something; other items as before (enabled).
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        FieldUndo.validate(menuItem, in: window) ?? true
+    }
+}

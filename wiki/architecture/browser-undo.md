@@ -4,7 +4,7 @@ title: Browser undo
 description: "Detour's undo of browsing actions: the one app-wide UndoManager on TabStore, which mutations register an entry and which do not, how closures capture spaces (the instance) and tabs (by id), grouping, when the stack is cleared, how a closed Private window's entries leave it, the identity and deleted-profile pitfalls, and which window answers Edit > Undo."
 tags: [architecture, undo, state, menus]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T06:40:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:10:00Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -21,6 +21,21 @@ sources:
   - id: launcher
     resource: ../../Detour/Browser/QuickDetour/QuickDetourLauncher.swift
     title: QuickDetourLauncher.swift (browserUndo:, the field's typing)
+  - id: field-undo
+    resource: ../../Detour/Commands/FieldUndo.swift
+    title: FieldUndo.swift (the launcher's, Settings' and the popup's own undo)
+  - id: settings
+    resource: ../../Detour/Browser/Settings/SettingsWindowController.swift
+    title: SettingsWindowController.swift (browserUndo:, its fields' typing)
+  - id: site-search-form
+    resource: ../../Detour/Browser/Settings/SearchSettingsViewController.swift
+    title: SearchSettingsViewController.swift (SiteSearchForm's browserUndo:, the sheet's fields)
+  - id: add-profile
+    resource: ../../Detour/Browser/Sidebar/AddProfileViewController.swift
+    title: AddProfileViewController.swift (browserUndo:, the Add Profile sheet's field)
+  - id: popup
+    resource: ../../Detour/Extensions/UI/ExtensionPopoverController.swift
+    title: ExtensionPopoverController.swift (PopupContentView's browserUndo:, the popup page's edits)
   - id: commands
     resource: ../../Detour/Commands/BrowserCommands.swift
     title: BrowserCommands.swift (edit.undo, edit.redo)
@@ -63,6 +78,12 @@ sources:
   - id: task-346
     resource: backlog:TASK-346
     title: "Quick Detour launcher: ⌘Z in its field undoes the typing, never Detour's closed-tab list"
+  - id: task-349
+    resource: backlog:TASK-349
+    title: "Undo: ⌘Z in Settings text fields and extension popups reaches the browser window's closed-tab undo"
+  - id: tests-settings-popup
+    resource: ../../DetourTests/SettingsAndPopupUndoTests.swift
+    title: SettingsAndPopupUndoTests.swift
   - id: task-193-1
     resource: backlog:TASK-193.1
     title: "Quick Detour: the window, its single tab and the palette that opens it"
@@ -259,11 +280,21 @@ then the main window's.
 | A browser window | the focused page's undo while it edits (`undoTarget(focusedPageIsEditing:isKeyWindow:)` is `.page`), else `TabStore.undoManager` (focus in the palette or the find bar included) | — |
 | A [Quick Detour](../features/quick-detour-window.md) or quarantine window | its page's undo while a field in it has the keys; otherwise the item is disabled | `TabStore`'s list (TASK-193.1, TASK-345) |
 | The [Quick Detour launcher](../features/quick-detour-launcher.md) panel | the palette field's typing | `TabStore`'s list: before TASK-346 the item fell through to the main browser window and reopened a closed tab behind the panel[^task-346] |
-| Settings, an extension's popup, any window that does not answer | the **main** browser window's `browserUndo:`, which then runs `TabStore.undoManager` | the page's undo: `undoTarget` returns `.page` only when the browser window is key (or no window is), so it never undoes typing in a page the user is not in |
+| Settings | the typing in its field with the keys (`SettingsWindowController`) | `TabStore`'s list. Settings is the main window while it is key, so the actions never reached a browser window from it; before TASK-349 nothing answered them: disabled, still titled from the browser window that validated them last ("Undo Close Tab"), and the typing could not be undone[^task-349] |
+| A sheet on Settings with a field (Add Site Search, Add Profile) | its fields' typing, on the sheet's own undo manager (`SiteSearchForm`, `AddProfileViewController`, in the fields' chain) | `TabStore`'s list. Settings' controller cannot answer for it: AppKit disables a menu action aimed at a window with a sheet attached (measured: "Undo Typing", disabled) |
+| An extension's action popup | the popup page's edits, which WebKit registers with the web view's undo manager (the popover window's), answered by its `PopupContentView`; with the popover window itself first responder, by the browser window's fallback below | `TabStore`'s list: the popover window is key but never main, and its own next responder is the window it is shown from, so before TASK-349 ⌘Z in the popup reopened a closed tab in the browser window behind it |
+| Any other window that is not a browser window, has the keys and does not answer (the Downloads, site settings and emoji picker popovers, none with a text field) | the browser window's `browserUndo:` (through the popover window's next responder, or as the main window's), which runs **that key window's** own undo (`nonBrowserKeyWindow` + `FieldUndo`; only when the key window's chain hands Undo to this controller, or to nothing in a window that is not main, so a command addressed to a browser window stays its own): nothing for those popovers, disabled and titled "Undo" | `TabStore`'s list; before TASK-349 ⌘Z there reopened a closed tab. Chosen by Claude, not yet confirmed by the user: the alternative keeps the browser's undo for a popover without fields[^task-349] |
 
 The item's title and enabled state come from the same choice
 (`BrowserCommands.undo` / `.redo`: "Undo Typing" from the page, "Undo
-Close Tab" from the store). Neither is offered in the command palette.
+Close Tab" from the store). Neither is offered in the command palette. The
+launcher, Settings, its sheets and the popup share one rule,
+`FieldUndo`: the undo manager of the first responder in that window (the
+field editor's, or the popup web view's), undo or redo when it can, titled
+from it, disabled with nothing, and never `TabStore.undoManager`. The
+browser window's own `browserUndo:` applies it too, to the key window,
+whenever the key window is not a browser window: a safety net for any
+popover, panel or sheet that does not answer the actions itself.[^task-349]
 
 # Where it lives
 
@@ -273,7 +304,8 @@ Close Tab" from the store). Neither is offered in the command palette.
 | `undoManager` override, `browserUndo:`, `UndoTarget`, `handleTabRestoredByUndo` | [BrowserWindowController.swift](../../Detour/Browser/Window/BrowserWindowController.swift) |
 | The page's undo manager, `editingPage(in:)` | [BrowserWebView.swift](../../Detour/Browser/Window/BrowserWebView.swift) |
 | Quick Detour and launcher responders | [QuickDetourWindowController.swift](../../Detour/Browser/QuickDetour/QuickDetourWindowController.swift), [QuickDetourLauncher.swift](../../Detour/Browser/QuickDetour/QuickDetourLauncher.swift) |
-| Tests | `UndoAfterDeleteSpaceTests`, `ProfileDeletionUndoTests`, `PrivateWindowUndoTests`, `PrivateWindowUndoWindowTests`, `PageUndoRoutingTests`, `ExtensionPageUndoTests`, `ClosedTabOpenerTests`, `ClosedPeekTests`, `MoveTabToSpaceTests`, `LinkRouteStoreTests`, `QuickDetourLauncherTests`, `TabStoreTests` |
+| The field-undo rule; Settings, its sheets and the popup; the fallback (`nonBrowserKeyWindow`, in BrowserWindowController.swift) | [FieldUndo.swift](../../Detour/Commands/FieldUndo.swift), [SettingsWindowController.swift](../../Detour/Browser/Settings/SettingsWindowController.swift), [SearchSettingsViewController.swift](../../Detour/Browser/Settings/SearchSettingsViewController.swift) (`SiteSearchForm`), [AddProfileViewController.swift](../../Detour/Browser/Sidebar/AddProfileViewController.swift), [ExtensionPopoverController.swift](../../Detour/Extensions/UI/ExtensionPopoverController.swift) (`PopupContentView`) |
+| Tests | `UndoAfterDeleteSpaceTests`, `ProfileDeletionUndoTests`, `PrivateWindowUndoTests`, `PrivateWindowUndoWindowTests`, `PageUndoRoutingTests`, `ExtensionPageUndoTests`, `ClosedTabOpenerTests`, `ClosedPeekTests`, `MoveTabToSpaceTests`, `LinkRouteStoreTests`, `QuickDetourLauncherTests`, `SettingsAndPopupUndoTests`, `TabStoreTests` |
 
 # Related
 
@@ -291,3 +323,4 @@ Close Tab" from the store). Neither is offered in the command palette.
 [^task-35]: Undo of Delete Space / Edit Space after its profile was deleted crashes
 [^task-346]: "Quick Detour launcher: ⌘Z in its field undoes the typing, never Detour's closed-tab list"
 [^task-357]: Private windows: their undo entries outlive the window and can rebuild a Private tab nobody sees
+[^task-349]: "Undo: ⌘Z in Settings text fields and extension popups reaches the browser window's closed-tab undo"

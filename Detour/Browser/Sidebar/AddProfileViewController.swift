@@ -73,3 +73,20 @@ class AddProfileViewController: NSViewController, NSTextFieldDelegate {
         errorLabel.isHidden = true
     }
 }
+
+// MARK: - Undo (TASK-349)
+
+/// Edit > Undo and Redo (⌘Z / ⇧⌘Z) in the sheet's name field undo and redo
+/// its typing (`FieldUndo`), never the browser's list. Settings presents this
+/// as a sheet, and AppKit disables a menu action aimed at the window a sheet
+/// is attached to, so the sheet's own chain (the field, then this
+/// controller) has to answer them, as `SiteSearchForm` does.
+extension AddProfileViewController: NSMenuItemValidation {
+    @objc func browserUndo(_ sender: Any?) { FieldUndo.undo(in: view.window) }
+
+    @objc func browserRedo(_ sender: Any?) { FieldUndo.redo(in: view.window) }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        FieldUndo.validate(menuItem, in: view.window) ?? true
+    }
+}

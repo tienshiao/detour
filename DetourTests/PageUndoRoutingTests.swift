@@ -98,7 +98,7 @@ nonisolated final class PageUndoRoutingTests: XCTestCase {
 
     @MainActor func testAnotherWindowWithTheKeysNeverReachesThisWindowsPage() {
         XCTAssertEqual(target(true, key: false), .browser,
-                       "Settings or a popup key: Edit > Undo falls through to the main window")
+                       "another window key that does not answer Edit > Undo (a popover): it falls through to the main window")
         XCTAssertEqual(target(nil, key: false), .browser)
     }
 

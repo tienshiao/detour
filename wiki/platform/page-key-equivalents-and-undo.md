@@ -1,10 +1,10 @@
 ---
 type: Platform Quirk
 title: A page's key equivalents and its undo
-description: How a WKWebView on macOS hands a Cmd key to the page first and gives the ones the page leaves back to AppKit (re-sent through NSApp.sendEvent, so the main menu gets them once; no Cocoa delegate callback), where WebKit keeps a page's edits for undo (the view's undoManager, by inheritance the window's) and when it drops them (the view changing windows, a tab switch) — read in WebKit's source and measured for TASK-345.
+description: How a WKWebView on macOS hands a Cmd key to the page first and gives the ones the page leaves back to AppKit (re-sent through NSApp.sendEvent, so the main menu gets them once; no Cocoa delegate callback), where WebKit keeps a page's edits for undo (the view's undoManager, by inheritance the window's) and when it drops them (the view changing windows, a tab switch) — read in WebKit's source and measured for TASK-345; and how the windows that are not browser windows (the Quick Detour launcher, Settings and its sheet, an extension's popup) answer Edit > Undo with their own field's typing (TASK-346, TASK-349).
 tags: [webkit, keyboard, undo, menus, responder-chain]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T21:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:10:00Z }
 verified:
   - { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:44Z }
 stale_after: 2027-06-01T00:00:00Z
@@ -39,6 +39,18 @@ sources:
   - id: task-346
     resource: backlog:TASK-346
     title: "Quick Detour launcher: ⌘Z in its field undoes the typing, never Detour's closed-tab list"
+  - id: task-349
+    resource: backlog:TASK-349
+    title: "Undo: ⌘Z in Settings text fields and extension popups reaches the browser window's closed-tab undo"
+  - id: field-undo
+    resource: ../../Detour/Commands/FieldUndo.swift
+    title: FieldUndo.swift
+  - id: tests-349
+    resource: ../../DetourTests/SettingsAndPopupUndoTests.swift
+    title: SettingsAndPopupUndoTests.swift
+  - id: harness-349
+    resource: ../../docs/harness/task349
+    title: TASK-349 runtime checks (drive.py, axundo.swift)
   - id: feature
     resource: ../tabs/tab-lifecycle.md
     title: Tab lifecycle (Reopening and undo)
@@ -113,9 +125,10 @@ every menu shortcut, not only undo.
   no browser undo behind it): the focused page's own
   undo when the window's first responder is a `BrowserWebView` whose
   `isEditingWebContent` is set (the `editableFieldFocus` script message),
-  else `TabStore.undoManager` ([browser undo](../architecture/browser-undo.md)); never the page while another window (Settings,
-  an extension's popup) has the keys, since Edit > Undo then falls through to
-  the main window. The first-responder check matters: a field keeps DOM
+  else `TabStore.undoManager` ([browser undo](../architecture/browser-undo.md)); never the page while another window has the
+  keys and leaves Edit > Undo to fall through to the main window (a popover
+  over the window with no text field; Settings, the launcher and an
+  extension's popup answer it themselves, TASK-349). The first-responder check matters: a field keeps DOM
   focus when the keys move to the palette or the find bar, and no focusout
   says so.
 - The flag comes from the `editableFieldFocus` script (every frame; a field
@@ -210,8 +223,69 @@ after one of those ⌘Z does nothing there (still never the browser's undo).
 And the launcher answers only Undo and Redo: by the same responder-chain
 reading, the browser window commands it does not answer (⌘W, ⌘R, ⌘T…)
 would go on to the main browser window behind it (read in the code, not
-run); Settings' and extension popups' text fields still reach the main
-window's `browserUndo:` (TASK-345).
+run).
+
+# Settings, its sheet and an extension's popup (TASK-349)
+
+Checked first with real keys (`docs/harness/task349/drive.py`, Debug,
+Detour in front, a tab closed with a real ⌘W on the browser's list, fields
+and the Edit menu read through Accessibility), before any change:
+
+- **An extension's action popup** (API Explorer, its URL input): ⌘Z with
+  nothing typed reopened the closed tab in the browser window behind the
+  popup, ⇧⌘Z closed it again, and the typing was never undone. The popover
+  window is key but never main, and its own next responder is the window it
+  is shown from, then that window's controller (seen in the test host:
+  `_NSPopoverWindow` → the browser window → `BrowserWindowController`), so
+  the actions the popup page leaves reach the browser's undo along the key
+  window's own chain.
+- **Settings' fields** (a profile's name, a new Link Route's pattern) and
+  **the Add Site Search sheet**: no fall-through. Settings is the main
+  window while it is key (the sheet is key with Settings main), so nothing
+  answered the actions: Edit > Undo was disabled and kept the title the
+  browser window gave it last ("Undo Close Tab"), and ⌘Z did nothing, the
+  typing included. No search engine text field exists to check: the search
+  engine is a pop-up button in the Profiles pane.
+
+Since TASK-349 each answers Undo and Redo itself with one rule (`FieldUndo`,
+shared with the launcher): the undo manager of the first responder in that
+window (the field editor's, which registers a field's typing with its
+window's manager; the popup web view's, which is the popover window's),
+titled from it, disabled with nothing, never `TabStore`'s. Where it sits:
+`SettingsWindowController` for Settings; `SiteSearchForm` and
+`AddProfileViewController` for its two sheets with fields, because AppKit
+disables a menu action aimed at a window with a sheet attached (measured:
+with Settings' controller answering, the item read "Undo Typing" yet stayed
+disabled); `PopupContentView` for the popup, ahead of the popover window in
+the web view's chain. The popover makes its web view first responder when
+it opens (asserted in `SettingsAndPopupUndoTests`; at runtime Edit > Undo
+read "Undo", disabled, right after the popup opened). Behind those, the
+browser window's own `browserUndo:` runs the key window's `FieldUndo`
+whenever the key window is not a browser window (`nonBrowserKeyWindow`), so
+a popup whose window itself is first responder, a popover without fields
+(Downloads, site settings: nothing, disabled) or a future sheet or panel
+that forgets to answer never reaches `TabStore`'s list either. The
+fallback applies only when the key window's own chain hands Undo to this
+browser window's controller (a popover shown from it), or to nothing in a
+window that is not main. A command addressed to a browser window while a
+window that answers for itself is key (the automation endpoint's
+`run_menu_item` with Settings, a Quick Detour or another window's popup
+key) stays that browser window's own undo, so it never reaches into
+Settings' Automation section or a Private window (found in TASK-349's
+review; `testAnAddressedUndoWhileSettingsIsKeyIsTheBrowserWindowsOwn`). That a
+field-less popover's ⌘Z now does nothing, rather than the browser's undo,
+was chosen by Claude and is not yet confirmed by the user.
+
+Measured with the fix, the same script: in the profile name, a space's
+name, the site search sheet's Name, the Add Profile sheet's name, a route's
+pattern and the popup's input,
+Edit > Undo was "Undo" and disabled with nothing typed and ⌘Z changed
+nothing; after typing it read "Undo Typing", ⌘Z removed the typing and ⇧⌘Z
+put it back; the closed tab stayed closed throughout, and back in the
+browser window ⌘Z reopened it (46/46 checks). Not measured at runtime: a popup opened
+from the sidebar's extension button rather than the endpoint, the popover
+window losing first responder to itself, and a field-less popover (both
+covered by tests with a stand-in key window).
 
 From the source only, not measured: a page whose web process is gone
 swallows the key; the docked Web Inspector (a plain `WKWebView`) leaves ⌘Z

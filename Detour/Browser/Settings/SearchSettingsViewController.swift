@@ -413,3 +413,20 @@ final class SiteSearchForm: NSView, NSTextFieldDelegate {
         return store.add(entry)
     }
 }
+
+// MARK: - Undo (TASK-349)
+
+/// Edit > Undo and Redo (⌘Z / ⇧⌘Z) in the sheet's fields undo and redo their
+/// typing (`FieldUndo`), never the browser's list. The sheet answers them
+/// itself, from its fields' responder chain: nothing else in it does, and
+/// AppKit disables a menu action aimed at Settings, the main window the
+/// actions reach next, while the sheet is attached to it.
+extension SiteSearchForm: NSMenuItemValidation {
+    @objc func browserUndo(_ sender: Any?) { FieldUndo.undo(in: window) }
+
+    @objc func browserRedo(_ sender: Any?) { FieldUndo.redo(in: window) }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        FieldUndo.validate(menuItem, in: window) ?? true
+    }
+}

@@ -278,8 +278,25 @@ class ExtensionPopoverController: NSObject, NSPopoverDelegate, WKUIDelegate {
 /// The popover's content: hosts the popup web view at its top leading corner
 /// and reports the web view's size whenever Auto Layout changes it — which it
 /// does when WebKit invalidates the web view's intrinsic content size.
-private final class PopupContentView: NSView {
+///
+/// It also answers Edit > Undo and Redo for the popup (TASK-349): the popup
+/// page's own edits, which WebKit registers with the web view's undo manager
+/// (the popover window's), titled from them, and nothing when there are none;
+/// never the browser's list (`FieldUndo`). The popover window is key but
+/// never main, so with no answer in it the actions went on to the main
+/// window, the browser window behind the popup, and ⌘Z in the popup reopened
+/// a closed tab there. The view is in the web view's responder chain, ahead
+/// of the window.
+final class PopupContentView: NSView, NSMenuItemValidation {
     var onWebViewSizeChange: ((NSSize) -> Void)?
+
+    @objc func browserUndo(_ sender: Any?) { FieldUndo.undo(in: window) }
+
+    @objc func browserRedo(_ sender: Any?) { FieldUndo.redo(in: window) }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        FieldUndo.validate(menuItem, in: window) ?? true
+    }
 
     override var isFlipped: Bool { true }
 

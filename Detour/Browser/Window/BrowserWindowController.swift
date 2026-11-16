@@ -3561,16 +3561,48 @@ class BrowserWindowController: NSWindowController {
 extension BrowserWindowController: NSMenuItemValidation {
     /// Edit > Undo, and Cmd+Z once a page has left it (TASK-345): the
     /// focused page's own undo while an editable element in it has focus,
-    /// else the browser's.
+    /// else the browser's. While another window that is not a browser
+    /// window has the keys, only that window's own undo (TASK-349).
     @objc func browserUndo(_ sender: Any?) {
+        if let keyWindow = nonBrowserKeyWindow { return FieldUndo.undo(in: keyWindow) }
         guard let undoManager = editUndoManager, undoManager.canUndo else { return }
         undoManager.undo()
     }
 
     @objc func browserRedo(_ sender: Any?) {
+        if let keyWindow = nonBrowserKeyWindow { return FieldUndo.redo(in: keyWindow) }
         guard let undoManager = editUndoManager, undoManager.canRedo else { return }
         undoManager.redo()
     }
+
+    /// The key window, when Edit > Undo or Redo reached this window although
+    /// another window that is not a browser window has the keys: a popover
+    /// shown from this window (its own next responder is this window, so
+    /// anything in it that does not answer the actions hands them here, as
+    /// an extension's popup whose web view is not its first responder does),
+    /// or a window that never becomes main. The actions then run that
+    /// window's own undo (`FieldUndo`, nothing when it has none: Downloads,
+    /// site settings) and never the browser's list (TASK-349). Nil when this
+    /// window or another browser window has the keys, or none does (a menu
+    /// command sent with the app in the background).
+    ///
+    /// Only a key window whose own chain hands the actions to this window (or
+    /// to nothing, in a window that is not main): a command addressed to this
+    /// window while another window answers them for itself (the automation
+    /// endpoint's `run_menu_item` with Settings, a Quick Detour or another
+    /// browser window's popup key) is this window's, and never reaches into
+    /// that window, which may be Private or Settings' Automation section.
+    var nonBrowserKeyWindow: NSWindow? {
+        guard let keyWindow = Self.keyWindowSource(), keyWindow !== window,
+              !(keyWindow.windowController is BrowserWindowController) else { return nil }
+        let target = CommandDispatch.responderTarget(for: BrowserCommands.undo.action, in: keyWindow)
+        guard target === self || (target == nil && !keyWindow.isMainWindow) else { return nil }
+        return keyWindow
+    }
+
+    /// Where `nonBrowserKeyWindow` reads the key window: AppKit's. Tests
+    /// stand in a window, as the test host is rarely the active app.
+    static var keyWindowSource: () -> NSWindow? = { NSApp.keyWindow }
 
     /// Whose undo Edit > Undo and Redo run (TASK-345).
     enum UndoTarget: Equatable {
@@ -3585,10 +3617,10 @@ extension BrowserWindowController: NSMenuItemValidation {
     /// editable element in it has focus. A page with none focused had the key
     /// first and left it, so the browser's undo runs. `isKeyWindow`: whether
     /// this window has the keys (or no window does: a menu command sent to it
-    /// with the app in the background). When another window has them
-    /// (Settings, an extension's popup), Edit > Undo falls through to this
-    /// window as the main one, and must not undo typing in a page the user
-    /// is not in.
+    /// with the app in the background). A window that is not a browser window
+    /// and has the keys gets its own undo before this is asked
+    /// (`nonBrowserKeyWindow`); another browser window's keys still leave a
+    /// page here alone, never undoing typing in a page the user is not in.
     static func undoTarget(focusedPageIsEditing: Bool?, isKeyWindow: Bool) -> UndoTarget {
         focusedPageIsEditing == true && isKeyWindow ? .page : .browser
     }
@@ -3604,8 +3636,14 @@ extension BrowserWindowController: NSMenuItemValidation {
     /// The registry's rule for the item's command, in this window, after
     /// retitling it (TASK-320): `BrowserCommands` holds what this method
     /// used to answer item by item. Items that are no command are enabled.
+    /// Undo and Redo while another window has the keys are that window's
+    /// (`nonBrowserKeyWindow`).
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        BrowserCommands.validate(menuItem, in: self)
+        if menuItem.action == BrowserCommands.undo.action || menuItem.action == BrowserCommands.redo.action,
+           let keyWindow = nonBrowserKeyWindow, let answer = FieldUndo.validate(menuItem, in: keyWindow) {
+            return answer
+        }
+        return BrowserCommands.validate(menuItem, in: self)
     }
 }
 

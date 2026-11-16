@@ -4,7 +4,7 @@ title: Extension popup, menu and options page
 description: The browser-side entry points to an extension — the pinned sidebar buttons, the Extensions menu, the action popup popover and how it takes the popup's size, and the options page — and the rule that nothing but an explicit present may read an action's popupWebView.
 tags: [extensions, ui, popup, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:07Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:10:00Z }
 sources:
   - id: popover
     resource: ../../Detour/Extensions/UI/ExtensionPopoverController.swift
@@ -33,6 +33,9 @@ sources:
   - id: task-77
     resource: backlog:TASK-77
     title: Keys the extension popup page declines still play the unhandled-key beep
+  - id: task-349
+    resource: backlog:TASK-349
+    title: "Undo: ⌘Z in Settings text fields and extension popups reaches the browser window's closed-tab undo"
   - id: task-103
     resource: backlog:TASK-103
     title: Browser-side entry points to an extension's options page
@@ -237,9 +240,14 @@ window. For a Private profile it only ever uses its own window.
 - In the test host AppKit never finishes a popover's close animation: the
   window goes, `isShown` stays true and `popoverDidClose` never comes, so a
   test of close handling calls the delegate method itself.[^task-220]
-- A key the popup page declines falls off the end of the popover's responder
-  chain and beeps. The popover window has no window controller, so the fix
-  used for browser windows does not apply ([AppKit gotchas](../platform/appkit-gotchas.md)).[^task-77]
+- A key the popup page declines beeps (TASK-77). The popover window has no
+  window controller, so the fix used for browser windows does not apply; its
+  next responder is the window the popover is shown from, so anything the
+  popup must keep to itself has to be answered inside the popover ([AppKit gotchas](../platform/appkit-gotchas.md)).[^task-77]
+- Edit > Undo and Redo (⌘Z / ⇧⌘Z) in the popup undo and redo the popup
+  page's edits, answered by `PopupContentView` (`FieldUndo`); before
+  TASK-349 they went on to the browser window behind the popup and reopened
+  a closed tab there ([a page's key equivalents and its undo](../platform/page-key-equivalents-and-undo.md)).[^task-349]
 - An MV3 extension page's CSP blocks inline `fetch`; the test that proves the
   menu loads no popup uses an `<img>` beacon to a loopback server instead.[^task-55]
 - In tests, releasing a profile whose extension configuration hosted a popup
@@ -257,6 +265,7 @@ window. For a Private profile it only ever uses its own window.
 - [ExtensionOptionsPageEntryTests](../../DetourTests/ExtensionOptionsPageEntryTests.swift) — `hasOptionsPage`, `resolveProfile`, tab reuse.
 - [ExtensionPopoverSizingTests](../../DetourTests/ExtensionPopoverSizingTests.swift) — a real popup in a window: opens at its content size through `show` and through `presentPopupWebView` with a loaded web view, the clamp, resizing when the content grows and shrinks or navigates, a second open of the reused web view, a close before the page loads.[^sizing-tests]
 - `MenuKeyEquivalentMatcherTests` — the key-equivalent fast path against the real main menu.
+- [SettingsAndPopupUndoTests](../../DetourTests/SettingsAndPopupUndoTests.swift) — Undo and Redo in a popup typed into through the page, with a closed tab on the browser's list.
 
 # Related
 
@@ -270,6 +279,7 @@ window. For a Private profile it only ever uses its own window.
 [^task-56]: Implement menuHasKeyEquivalent so key presses stop rebuilding the menus
 [^task-77]: Keys the extension popup page declines still play the unhandled-key beep
 [^task-103]: Browser-side entry points to an extension's options page
+[^task-349]: "Undo: ⌘Z in Settings text fields and extension popups reaches the browser window's closed-tab undo"
 [^notes-updates]: Options-page entry points — what the real 1Password manifest declares
 [^task-220]: A popup whose content is wider than its first size stays at 126x126 and is cut off
 [^sizing-tests]: ExtensionPopoverSizingTests
