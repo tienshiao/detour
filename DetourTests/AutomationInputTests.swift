@@ -535,6 +535,7 @@ nonisolated final class AutomationInputTests: XCTestCase {
     /// while the table needs its panel to become key, which the list now
     /// denies for the endpoint's press only.
     @MainActor func testALeftClickOnASidebarRowSelectsItsTab() async throws {
+        try XCTSkipIf(NSApp.isActive, "needs the test host in the background, as Detour is when an agent drives it")
         let f = try await makeFixture()
         let other = try await addOtherTab(f)
         let window = try XCTUnwrap(f.window.window)
@@ -628,5 +629,144 @@ nonisolated final class AutomationInputTests: XCTestCase {
         XCTAssertNotNil(f.window.commandPaletteView, "the New Tab row opens the palette")
         XCTAssertEqual(f.space.tabs.count, tabCount)
         f.window.dismissCommandPalette()
+    }
+
+    // MARK: Which window is key (TASK-228.10)
+
+    /// Two browser windows on one space showing the same tab: the first
+    /// hosts its web view, the second shows the snapshot. Tools reach both,
+    /// with `environment` changed as the test needs.
+    @MainActor private func makeTwoWindows(_ environment: (inout AutomationEnvironment, BrowserWindowController,
+                                                             BrowserWindowController) -> Void = { _, _, _ in })
+        async throws -> (tools: AutomationTools, server: MCPServer, first: BrowserWindowController,
+                         second: BrowserWindowController, tab: BrowserTab) {
+        let f = try await makeFixture()
+        let second = BrowserWindowController(incognito: false)
+        second.sidebarSplitView.autosaveName = nil
+        windows.append(second)
+        second.setActiveSpace(id: f.space.id, selectTab: false)
+        second.showWindow(nil)
+        second.selectTab(id: f.tab.id)
+        // As AppKit tells the delegate when a window becomes key: the first
+        // window has the web view, whatever showing the second did.
+        f.window.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: f.window.window))
+        var env = AutomationEnvironment(windowControllers: { [f.window, second] }, mainMenu: { nil }, store: .shared)
+        environment(&env, f.window, second)
+        let tools = AutomationTools(environment: env)
+        tools.inputWait = .milliseconds(400)
+        tools.menuActionWait = .milliseconds(400)
+        let server = MCPServer(tools: tools.all, serverVersion: "test", instructions: "")
+        return (tools, server, f.window, second, f.tab)
+    }
+
+    /// Exactly one window hosts the tab's live web view and the other shows
+    /// its snapshot.
+    @MainActor private func assertOwner(_ owner: BrowserWindowController, other: BrowserWindowController,
+                                        of tab: BrowserTab, _ message: String,
+                                        file: StaticString = #filePath, line: UInt = #line) throws {
+        let container = try XCTUnwrap(tab.webViewContainer, file: file, line: line)
+        XCTAssertTrue(container.isDescendant(of: try XCTUnwrap(owner.window?.contentView)),
+                      "\(message): the live web view", file: file, line: line)
+        XCTAssertFalse(container.isDescendant(of: try XCTUnwrap(other.window?.contentView)), file: file, line: line)
+        XCTAssertFalse(owner.isShowingSnapshot, file: file, line: line)
+        XCTAssertTrue(other.isShowingSnapshot, "\(message): the other window's snapshot", file: file, line: line)
+    }
+
+    @MainActor private func click(_ server: MCPServer, _ windowID: Int, centreOf view: NSView) async throws -> JSONValue {
+        let (x, y) = try contentCentre(of: view)
+        let tool = try XCTUnwrap(server.tools.first { $0.name == "click" })
+        let result = await server.call(tool, arguments: ["window_id": .int(windowID), "x": .double(x), "y": .double(y)])
+        let content = try XCTUnwrap(result["structuredContent"])
+        XCTAssertNotEqual(result["isError"], true, content.jsonString)
+        return content
+    }
+
+    /// A switch added to `window`'s content, sending `receiver` its action.
+    @MainActor private func addSwitch(to wc: BrowserWindowController, receiver: Receiver) throws -> NSSwitch {
+        let toggle = NSSwitch(frame: NSRect(x: 300, y: 300, width: 40, height: 22))
+        toggle.target = receiver
+        toggle.action = #selector(Receiver.chosen(_:))
+        try XCTUnwrap(wc.window?.contentView).addSubview(toggle)
+        return toggle
+    }
+
+    /// The user's decision (2026-11-15): with Detour active, an agent's click
+    /// in a window that is not key makes that window key, as a person's click
+    /// does, so the web view moves there and the other window shows the
+    /// snapshot. A control the window routes (a switch) and a view handed the
+    /// press directly both do. The host is never the active app and cannot
+    /// make a window key, so "active" and "make key" are injected: making
+    /// key tells the controller what AppKit would.
+    @MainActor func testWithDetourActiveAClickInAWindowThatIsNotKeyMakesItKeyAndTakesTheWebView() async throws {
+        try XCTSkipIf(NSApp.isActive, "needs the test host in the background, as Detour is when an agent drives it")
+        var madeKey: [NSWindow] = []
+        let (tools, server, first, second, tab) = try await makeTwoWindows { env, first, second in
+            env.isAppActive = { true }
+            env.makeKey = { window in
+                madeKey.append(window)
+                let controller = window === first.window ? first : second
+                controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
+            }
+        }
+        try assertOwner(first, other: second, of: tab, "before")
+
+        let receiver = Receiver()
+        let toggle = try addSwitch(to: second, receiver: receiver)
+        let switched = try await click(server, tools.windowIDs.id(for: second), centreOf: toggle)
+        XCTAssertEqual(switched["view"], "NSSwitch")
+        XCTAssertEqual(madeKey.map(ObjectIdentifier.init), [ObjectIdentifier(try XCTUnwrap(second.window))],
+                       "the clicked window is made key")
+        try assertOwner(second, other: first, of: tab, "after a routed click in the second window")
+        XCTAssertEqual(toggle.state, .on, "and the click still reached the switch")
+
+        let clickView = ClickView(frame: NSRect(x: 300, y: 300, width: 120, height: 30))
+        try XCTUnwrap(first.window?.contentView).addSubview(clickView)
+        _ = try await click(server, tools.windowIDs.id(for: first), centreOf: clickView)
+        XCTAssertEqual(madeKey.last.map(ObjectIdentifier.init), ObjectIdentifier(try XCTUnwrap(first.window)))
+        XCTAssertEqual(madeKey.count, 2)
+        try assertOwner(first, other: second, of: tab, "after a direct click in the first window")
+        XCTAssertEqual(clickView.downs.count, 1)
+
+        // A page's click and type_text's click, by tab: the window hosting the
+        // page is made key too (the stand-in never makes it key for real).
+        let clickTool = try XCTUnwrap(server.tools.first { $0.name == "click" })
+        let page = await server.call(clickTool, arguments: ["context": .string(tab.id.uuidString), "selector": "#btn"])
+        XCTAssertNotEqual(page["isError"], true, page.jsonString)
+        XCTAssertEqual(madeKey.count, 3)
+        XCTAssertEqual(madeKey.last.map(ObjectIdentifier.init), ObjectIdentifier(try XCTUnwrap(first.window)))
+        let typeTool = try XCTUnwrap(server.tools.first { $0.name == "type_text" })
+        let typed = await server.call(typeTool, arguments: ["context": .string(tab.id.uuidString), "selector": "#field",
+                                                            "text": "x"])
+        XCTAssertNotEqual(typed["isError"], true, typed.jsonString)
+        XCTAssertEqual(madeKey.count, 4)
+        XCTAssertEqual(madeKey.last.map(ObjectIdentifier.init), ObjectIdentifier(try XCTUnwrap(first.window)))
+        try assertOwner(first, other: second, of: tab, "after the page's clicks")
+        _ = tools
+    }
+
+    /// With Detour in the background (the test host is not the active app),
+    /// a click activates nothing and changes no key window, so the web view
+    /// stays where it was, on both routes.
+    @MainActor func testInTheBackgroundAClickChangesNeitherTheKeyWindowNorTheWebViewsOwner() async throws {
+        try XCTSkipIf(NSApp.isActive, "needs the test host in the background, as Detour is when an agent drives it")
+        let (tools, server, first, second, tab) = try await makeTwoWindows()
+        XCTAssertFalse(NSApp.isActive, "the test host is in the background")
+        let keyBefore = NSApp.keyWindow
+        try assertOwner(first, other: second, of: tab, "before")
+
+        let receiver = Receiver()
+        let toggle = try addSwitch(to: second, receiver: receiver)
+        let switched = try await click(server, tools.windowIDs.id(for: second), centreOf: toggle)
+        XCTAssertEqual(switched["view"], "NSSwitch")
+        XCTAssertEqual(toggle.state, .on, "the routed click toggled the switch")
+        let clickView = ClickView(frame: NSRect(x: 300, y: 360, width: 120, height: 30))
+        try XCTUnwrap(second.window?.contentView).addSubview(clickView)
+        _ = try await click(server, tools.windowIDs.id(for: second), centreOf: clickView)
+        XCTAssertEqual(clickView.downs.count, 1, "the direct click reached the view")
+
+        XCTAssertFalse(NSApp.isActive, "no click activated Detour")
+        XCTAssertTrue(NSApp.keyWindow === keyBefore, "nor changed the key window")
+        XCTAssertFalse(try XCTUnwrap(second.window).isKeyWindow)
+        try assertOwner(first, other: second, of: tab, "after both clicks")
     }
 }

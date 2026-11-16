@@ -87,6 +87,9 @@ sources:
   - id: task-228-9
     resource: backlog:TASK-228.9
     title: "Automation: a left click on a sidebar row selects its tab, as a person's click does"
+  - id: task-228-10
+    resource: backlog:TASK-228.10
+    title: "Automation: an endpoint click that brings a window forward hands web view ownership over correctly (test it)"
   - id: task-228-11
     resource: backlog:TASK-228.11
     title: "Automation: a visible agent pointer shows where the endpoint clicks and types"
@@ -373,7 +376,7 @@ tool's schema to hold it.
 | `select_tab` | Selects an item as a row click does | Switches the window's space first; wakes a dormant pinned entry or favourite; `dormant_refused` when its extension keeps it dormant. |
 | `open_url` | The palette's typed-URL path (`openTypedURL`): a new tab, or `in_place` | Link Routes apply as for a typed URL; `routed` says the URL went elsewhere. |
 | `run_menu_item` | A main-menu command by path or key equivalent, sent to that window's responder chain and validated there; any kind of window | Works with Detour in the background, where there is no key window. Each menu on a path is validated for the named window before it is matched (TASK-228.7), so a title that changes with the window is the one it shows there ("File > Unpin Tab" while that window's tab is pinned, whichever window validated the shared item last). |
-| `click` | A click by element (`context` + CSS `selector`), by page point (`context` + CSS-pixel `x`, `y`) or by window point (`window_id` of any kind + `x`, `y`, the content's top-left origin); `button` left/right, `modifiers`, `count` 2 for a double click | Closes an open menu first. `completed` false: the click opened a menu or an alert that is still open. A right click on a sidebar row's label or icon opens the row's menu (TASK-228.7; see Traps). A switch toggles and a pop-up opens (TASK-228.8): aim at the centre of the frame `hit_test` gives. |
+| `click` | A click by element (`context` + CSS `selector`), by page point (`context` + CSS-pixel `x`, `y`) or by window point (`window_id` of any kind + `x`, `y`, the content's top-left origin); `button` left/right, `modifiers`, `count` 2 for a double click | Closes an open menu first. `completed` false: the click opened a menu or an alert that is still open. A right click on a sidebar row's label or icon opens the row's menu (TASK-228.7; see Traps). A switch toggles and a pop-up opens (TASK-228.8): aim at the centre of the frame `hit_test` gives. A left click on a sidebar row selects it; at a window point it hovers the views under the point first, so a row's close button (shown on hover only, at the row's right end) closes the tab (TASK-228.9). With Detour active a click in a window that is not key makes it key first; in the background never (TASK-228.10). |
 | `type_text` | Key presses for `text` into a tab's page (after clicking `selector`, if given) or a window's focused control; `interval_ms` paces them | US key codes; other characters as key presses with no physical key. |
 | `press_key` | One key with modifiers (`return`, `shift+tab`, `cmd+a`) | A Cmd key goes through the target's key equivalents (`handled`); menu commands are `run_menu_item`. |
 | `hit_test` | What a click at a window point would reach: view class, accessibility role and label, frame; any kind of window, Settings on any endpoint | Read-only; aims `click` without a screenshot. Hit-tests as AppKit's dispatch does, with the press as the current event: a sidebar row's label reports `DraggableTableView`. |
@@ -560,10 +563,32 @@ reaches each kind of target:
   (its stored `PeekEnabled` changes), Settings > Quick Detour's pop-up opens
   (`list_menu` lists it) and `choose_menu_item` changes the stored value;
   the sidebar's Back button (a `HoverButton`) still goes back with Detour in
-  the background, and the app stays inactive. One difference from direct
-  delivery: with Detour active, a routed click in a window that is not key
-  makes that window key, as a person's click does (between two browser
-  windows that also moves the web view ownership; not covered by a test).
+  the background, and the app stays inactive.
+- **Which window is key: the user's decision (2026-11-15, TASK-228.10).**[^task-228-10]
+  Agent clicks behave like a person's. With Detour active, a click in a
+  window that is not key makes it key (`AutomationTools.bringForward`:
+  `makeKeyAndOrderFront`, after the glide and its checks and before the
+  hover and the press, then the target is checked again), on every route: a
+  page, a view handed the press, a press routed through the window. Not a
+  window on another Space (chosen by Claude: no person could click it from
+  where they are, and it would switch their desktop). Making the window key
+  takes the key from a popover or sheet of it, as a person's click does. Between two browser
+  windows showing the same tab the web view moves to the clicked window
+  (`windowDidBecomeKey` claims it, see [web view ownership](../architecture/webview-ownership.md))
+  and the other shows the snapshot; a click on the snapshot's place then
+  reaches the live page that replaced it (a person's first click there would
+  only bring the window forward). With Detour in the background a click
+  never activates Detour or changes the key window, so the web view stays
+  where it is and a click on a snapshot does nothing. Before, only a press
+  routed through the window could make it key. `type_text`'s `selector`
+  click does the same; typing alone never changes the key window. Checked
+  at runtime with two windows on one tab: in the background two clicks in
+  the window showing the snapshot left `app_active` false, no window key and
+  the snapshot where it was; active, a click on its page made it key, moved
+  the web view there and reached the page, and a click on the other window's
+  row moved it back. `AutomationEnvironment.isAppActive` and `makeKey` are
+  injectable because the XCTest host is never active and cannot make a
+  window key.
 - **Every event goes out from `RunLoop.main.perform`**, as `run_menu_item`'s
   actions do (see Traps): a native context menu runs its whole tracking loop
   inside `rightMouseDown`, so the click answers `completed: false` after
@@ -1500,8 +1525,12 @@ sidebar row's label and icon opening the row's menu, a left click on a row
 selecting its tab with the window not key and the app inactive and no hover
 left on the rows after, a click where a row's close button shows on hover
 closing the tab, a pinned entry's row selecting, a folder's row and its
-disclosure each toggling it once, the New Tab row opening the palette, and
-the input errors),
+disclosure each toggling it once, the New Tab row opening the palette,
+TASK-228.10's two browser windows on one tab (with Detour active, injected,
+a routed switch and a direct view each make their window key and take the
+web view, one live web view and one snapshot after each; in the background
+neither click activates the app, changes the key window or moves the web
+view), and the input errors),
 `AutomationAgentPointerTests` (TASK-228.11: off, a click and typing wait
 for nothing and make no overlay; on, the 150 ms glide comes before the
 click, the overlay is a click-through child that is never key or main and
@@ -1624,5 +1653,6 @@ its contexts following the setting).[^tests][^approval-tests]
 [^task-228-7]: Automation: run_menu_item and right clicks match what the user sees (live titles, row labels), and Quick Detour windows and Settings can be addressed
 [^task-228-8]: Automation: a click from the endpoint toggles a switch and opens a pop-up in Settings
 [^task-228-9]: Automation: a left click on a sidebar row selects its tab, as a person's click does
+[^task-228-10]: Automation: an endpoint click that brings a window forward hands web view ownership over correctly (test it)
 [^task-228-11]: Automation: a visible agent pointer shows where the endpoint clicks and types
 [^agent-pointer]: AutomationAgentPointer.swift (the setting, the overlay window, the glide, the arrival order)

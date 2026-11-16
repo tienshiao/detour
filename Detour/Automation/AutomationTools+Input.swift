@@ -70,7 +70,9 @@ extension AutomationTools {
         MCPTool(
             name: "click",
             title: "Click",
-            description: "Clicks inside Detour without bringing it to the front or moving the pointer. Target an "
+            description: "Clicks inside Detour without bringing it to the front or moving the pointer. With Detour "
+                + "already active, a click in a window that is not key makes it key, as a person's click does (a tab "
+                + "shown in two windows then moves its live page there); in the background it never does. Target an "
                 + "element with context (a tab_id or tab:<id> from list_tabs) and selector (CSS, top document), or "
                 + "a point: x and y in the window's content (top-left origin, points) with window_id (any kind of "
                 + "window from list_windows), or in the "
@@ -163,7 +165,14 @@ extension AutomationTools {
                     // one, once its arguments are known to be good.
                     await AutomationMenuTracker.shared.closeAll()
                     let byWindowPoint = !arguments.has("context")
+                    // Checked again after the glide before the window is made
+                    // key (the Private setting can change during it), and again
+                    // after: the web view may have moved in.
                     if await glidePointer(to: point, in: window) {
+                        target = try retarget(target, at: point, in: window, button: button, modifiers: modifiers,
+                                              byWindowPoint: byWindowPoint)
+                    }
+                    if bringForward(window) {
                         target = try retarget(target, at: point, in: window, button: button, modifiers: modifiers,
                                               byWindowPoint: byWindowPoint)
                     }
@@ -219,6 +228,26 @@ extension AutomationTools {
     func glidePointer(to point: NSPoint, in window: NSWindow) async -> Bool {
         guard environment.showsAgentPointer(), agentPointer.canShow(in: window) else { return false }
         await agentPointer.glide(to: point, in: window, slow: stagingInUse)
+        return true
+    }
+
+    /// Makes `window` key before a click in it while Detour is the active
+    /// app and it is not key, as a person's click does; between two browser
+    /// windows showing one tab that moves the web view there
+    /// (`windowDidBecomeKey` claims it; the other window shows the snapshot).
+    /// With Detour in the background a click never activates Detour or
+    /// changes the key window. Both are the user's decision (TASK-228.10,
+    /// 2026-11-15). A press routed through the window would make it key by
+    /// itself; this does it for every click, page and direct ones included,
+    /// before the target is checked again. True when it asked, so the caller
+    /// checks the target again (`retarget`): the view tree changes when the
+    /// web view moves in.
+    func bringForward(_ window: NSWindow) -> Bool {
+        // Not a window on another Space: no person could click it from
+        // where they are, and making it key would switch their desktop.
+        guard environment.isAppActive(), !window.isKeyWindow, window.canBecomeKey, window.isVisible,
+              window.isOnActiveSpace else { return false }
+        environment.makeKey(window)
         return true
     }
 
@@ -384,6 +413,10 @@ extension AutomationTools {
                     if let selector, let webView = responder as? WKWebView {
                         let point = try await AutomationInput.elementPoint(selector, in: webView)
                         if await glidePointer(to: point, in: window) {
+                            _ = try retarget(.webView(webView), at: point, in: window, button: .left, modifiers: [],
+                                             byWindowPoint: false)
+                        }
+                        if bringForward(window) {
                             _ = try retarget(.webView(webView), at: point, in: window, button: .left, modifiers: [],
                                              byWindowPoint: false)
                         }

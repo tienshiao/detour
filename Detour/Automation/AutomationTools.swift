@@ -125,6 +125,13 @@ struct AutomationEnvironment {
     /// every call. Off unless given, so a test's clicks gain no delay; live,
     /// the Settings switch (or a Debug override).
     var showsAgentPointer: () -> Bool = { false }
+    /// Whether Detour is the active app, and how a window is made key, for
+    /// an agent's click in a window that is not key (TASK-228.10): with
+    /// Detour active it makes that window key first, as a person's click
+    /// does. Injected because the XCTest host is never the active app and
+    /// cannot make a window key.
+    var isAppActive: () -> Bool = { NSApp.isActive }
+    var makeKey: (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) }
 
     static var live: AutomationEnvironment {
         AutomationEnvironment(

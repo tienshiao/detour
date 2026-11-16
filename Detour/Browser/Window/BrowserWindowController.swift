@@ -54,6 +54,9 @@ class BrowserWindowController: NSWindowController {
     let navigationSwipe = NavigationSwipeWindowState()
     private var activeTabSubscriptions = Set<AnyCancellable>()
     private var snapshotImageView: NSImageView?
+    /// Whether this window shows the selected tab's snapshot (another window
+    /// hosts its web view).
+    var isShowingSnapshot: Bool { snapshotImageView?.superview != nil }
     /// Whether this window currently displays the selected tab's live web view.
     /// Derived from the view hierarchy — a container can only be parented in one
     /// window at a time — so it cannot drift out of sync with reality. Split

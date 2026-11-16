@@ -52,7 +52,10 @@ split moves as a whole: both pane containers inside one `NSSplitView`.
 
 `claimWebView(for:)` runs when:
 
-- the window becomes key (`windowDidBecomeKey`);
+- the window becomes key (`windowDidBecomeKey`), including when an agent's
+  click through the [automation endpoint](../features/automation-endpoint.md)
+  makes it key: with Detour active it does, as a person's click does; in the
+  background it never does (the user's decision, TASK-228.10);
 - `selectTab(id:)` runs in the key window;
 - `selectTab(id:)` runs in a background window **and** no member's container
   is parented anywhere (nobody is hosting it, so there is nothing to
