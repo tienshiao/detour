@@ -19,12 +19,14 @@ enum InPageLinkEntry: Equatable {
     /// One of the link menu's own actions: New Tab and New Window route as
     /// a Cmd+click does; Split View and Quick Detour place the link where the
     /// user picked (TASK-356).
-    case linkMenuAction(LinkMenuAction)
+    case linkMenuAction(ContextMenuLinkAction)
 }
 
-/// The link menu's Open Link items, of a browser window's page.
-enum LinkMenuAction: Equatable, CaseIterable {
-    case newTab, newWindow, splitView, quickDetour
+/// The link menu's Open Link items, of a browser window's page: which one the
+/// user chose, held by the window until WebKit's `createWebViewWith` for the
+/// link (`BrowserWindowController.contextMenuLinkAction`, nil for none).
+enum ContextMenuLinkAction: Equatable, CaseIterable {
+    case openInNewTab, openInNewWindow, openInSplitView, openInQuickDetour
 }
 
 /// The modifier keys held for a link activation, of those that pick a branch.
@@ -126,9 +128,9 @@ func linkRoutingEligibility(_ request: InPageLinkRequest) -> LinkRoutingEligibil
     switch request.entry {
     case .linkMenuAction(let action):
         switch action {
-        case .newTab: return .routable(.linkMenuNewTab)
-        case .newWindow: return .routable(.linkMenuNewWindow)
-        case .splitView, .quickDetour: return .notRouted(.linkMenuAction)
+        case .openInNewTab: return .routable(.linkMenuNewTab)
+        case .openInNewWindow: return .routable(.linkMenuNewWindow)
+        case .openInSplitView, .openInQuickDetour: return .notRouted(.linkMenuAction)
         }
     case .pageWindowRequest(let isLinkActivation, let wantsPopup):
         // A `_blank` link was routed (or not) when the policy saw it.

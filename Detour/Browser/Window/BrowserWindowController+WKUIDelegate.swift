@@ -10,7 +10,7 @@ extension BrowserWindowController: WKUIDelegate {
         // set by an early return would route the next page's own window.open
         // through it, past the `data:` and extension-context checks below.
         let linkAction = contextMenuLinkAction
-        contextMenuLinkAction = .none
+        contextMenuLinkAction = nil
         guard let url = navigationAction.request.url, let space = activeSpace else { return nil }
         // window.open() never consults decidePolicy; refuse here rather than
         // open a tab whose only navigation the policy would then cancel.
@@ -21,7 +21,7 @@ extension BrowserWindowController: WKUIDelegate {
         // turn later, selected with its window in front (TASK-356). The rule
         // keeps Split View and Quick Detour where the user picked, and the
         // link menu of a Peek's page unrouted.
-        if let menuAction = linkAction.linkMenuAction,
+        if let menuAction = linkAction,
            let routed = routedDecision(for: inPageLinkRequest(for: navigationAction, to: url, in: webView,
                                                               entry: .linkMenuAction(menuAction))) {
             openRoutedLink(url, routed)
@@ -44,7 +44,7 @@ extension BrowserWindowController: WKUIDelegate {
             }
         case .openInQuickDetour:
             openLinkInQuickDetourFromMenu(url, firing: webView, in: space)
-        case .none:
+        case nil:
             // A page's own new-window request (a `target=_blank` link, a
             // script's window.open) for a `data:` URL. A peek below loads the
             // URL itself, and a load the app asks for is one WebKit allows —

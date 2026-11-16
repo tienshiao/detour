@@ -209,7 +209,7 @@ nonisolated final class LinkRoutingEligibilityTests: XCTestCase {
     // MARK: - The link menu (TASK-356)
 
     /// One of the link menu's Open Link items, chosen on a link to `target`.
-    @MainActor private func menuItem(_ action: LinkMenuAction, _ target: String = "https://other.test/",
+    @MainActor private func menuItem(_ action: ContextMenuLinkAction, _ target: String = "https://other.test/",
                                      from page: String? = "https://example.com/start",
                                      modifiers: LinkClickModifiers = [], gesture: Bool = true,
                                      inPeek: Bool = false, quickDetourClick: Bool = true) -> LinkRoutingEligibility {
@@ -221,18 +221,18 @@ nonisolated final class LinkRoutingEligibilityTests: XCTestCase {
     @MainActor func testEachLinkMenuActionHasItsAnswer() {
         // The user's decision of 2026-11-15: New Tab and New Window route as a
         // Cmd+click; Split View and Quick Detour open where the user picked.
-        for action in LinkMenuAction.allCases {
+        for action in ContextMenuLinkAction.allCases {
             let expected: LinkRoutingEligibility = switch action {
-            case .newTab: .routable(.linkMenuNewTab)
-            case .newWindow: .routable(.linkMenuNewWindow)
-            case .splitView, .quickDetour: .notRouted(.linkMenuAction)
+            case .openInNewTab: .routable(.linkMenuNewTab)
+            case .openInNewWindow: .routable(.linkMenuNewWindow)
+            case .openInSplitView, .openInQuickDetour: .notRouted(.linkMenuAction)
             }
             XCTAssertEqual(menuItem(action), expected, "\(action)")
         }
     }
 
     @MainActor func testOpenLinkInNewTabAndNewWindowRouteWhateverTheHostAsACommandClick() {
-        for action in [LinkMenuAction.newTab, .newWindow] {
+        for action in [ContextMenuLinkAction.openInNewTab, .openInNewWindow] {
             XCTAssertTrue(menuItem(action, "https://example.com/b").isRoutable, "\(action): the same host too")
             XCTAssertTrue(menuItem(action, "https://other.test/", from: nil).isRoutable, "\(action): a hostless page")
             XCTAssertTrue(menuItem(action, from: "detour://history").isRoutable, "\(action): from an internal page")
@@ -244,26 +244,26 @@ nonisolated final class LinkRoutingEligibilityTests: XCTestCase {
         // keys (Opt-Cmd included) and WebKit's signal for the replayed request
         // change nothing.
         for modifiers: LinkClickModifiers in [[], .command, .shift, .option, [.command, .option]] {
-            XCTAssertEqual(menuItem(.newTab, modifiers: modifiers), .routable(.linkMenuNewTab), "\(modifiers)")
-            XCTAssertEqual(menuItem(.newWindow, modifiers: modifiers), .routable(.linkMenuNewWindow), "\(modifiers)")
-            XCTAssertEqual(menuItem(.splitView, modifiers: modifiers), .notRouted(.linkMenuAction), "\(modifiers)")
-            XCTAssertEqual(menuItem(.quickDetour, modifiers: modifiers), .notRouted(.linkMenuAction), "\(modifiers)")
+            XCTAssertEqual(menuItem(.openInNewTab, modifiers: modifiers), .routable(.linkMenuNewTab), "\(modifiers)")
+            XCTAssertEqual(menuItem(.openInNewWindow, modifiers: modifiers), .routable(.linkMenuNewWindow), "\(modifiers)")
+            XCTAssertEqual(menuItem(.openInSplitView, modifiers: modifiers), .notRouted(.linkMenuAction), "\(modifiers)")
+            XCTAssertEqual(menuItem(.openInQuickDetour, modifiers: modifiers), .notRouted(.linkMenuAction), "\(modifiers)")
         }
-        XCTAssertEqual(menuItem(.newTab, gesture: false), .routable(.linkMenuNewTab))
-        XCTAssertEqual(menuItem(.newWindow, gesture: false), .routable(.linkMenuNewWindow))
-        XCTAssertEqual(menuItem(.quickDetour, gesture: false, quickDetourClick: false), .notRouted(.linkMenuAction),
+        XCTAssertEqual(menuItem(.openInNewTab, gesture: false), .routable(.linkMenuNewTab))
+        XCTAssertEqual(menuItem(.openInNewWindow, gesture: false), .routable(.linkMenuNewWindow))
+        XCTAssertEqual(menuItem(.openInQuickDetour, gesture: false, quickDetourClick: false), .notRouted(.linkMenuAction),
                        "the Opt-Cmd setting governs only the gesture")
     }
 
     @MainActor func testTheLinkMenuInAPeekIsNotRouted() {
         // As a Cmd+click in a Peek is not.
-        for action in LinkMenuAction.allCases {
+        for action in ContextMenuLinkAction.allCases {
             XCTAssertEqual(menuItem(action, inPeek: true), .notRouted(.inPeek), "\(action)")
         }
     }
 
     @MainActor func testTheLinkMenuOnANonWebLinkIsNotRouted() {
-        for action in LinkMenuAction.allCases {
+        for action in ContextMenuLinkAction.allCases {
             for target in ["mailto:a@example.com", "data:text/html,hi", "about:blank", "zoommtg://zoom.us/join"] {
                 XCTAssertEqual(menuItem(action, target), .notRouted(.notWebURL), "\(action) \(target)")
             }
@@ -398,7 +398,7 @@ nonisolated final class LinkRoutingEligibilityTests: XCTestCase {
     }
 
     /// Both layers for one of the link menu's actions.
-    @MainActor private func routedMenuItem(_ action: LinkMenuAction, _ target: String, in space: UUID,
+    @MainActor private func routedMenuItem(_ action: ContextMenuLinkAction, _ target: String, in space: UUID,
                                            isPrivate: Bool = false,
                                            defaultTarget: LinkRouteTarget = .mostRecentSpace) -> LinkRouteDecision? {
         routedLinkDecision(menuItem(action, target)) {
@@ -408,7 +408,7 @@ nonisolated final class LinkRoutingEligibilityTests: XCTestCase {
     }
 
     @MainActor func testOpenLinkInNewTabAndNewWindowGoWhereACommandClickGoes() {
-        for action in [LinkMenuAction.newTab, .newWindow] {
+        for action in [ContextMenuLinkAction.openInNewTab, .openInNewWindow] {
             XCTAssertEqual(routedMenuItem(action, "https://app.work.test/inbox", in: personal), .openInSpace(work), "\(action)")
             XCTAssertNil(routedMenuItem(action, "https://app.work.test/inbox", in: work),
                          "\(action): a route to the current space opens as before")
@@ -423,7 +423,7 @@ nonisolated final class LinkRoutingEligibilityTests: XCTestCase {
     }
 
     @MainActor func testOpenLinkInSplitViewAndQuickDetourNeverReachTheRoutesOrTheDefault() {
-        for action in [LinkMenuAction.splitView, .quickDetour] {
+        for action in [ContextMenuLinkAction.openInSplitView, .openInQuickDetour] {
             XCTAssertNil(routedMenuItem(action, "https://app.work.test/inbox", in: personal), "\(action)")
             XCTAssertNil(routedMenuItem(action, "https://other.test/secret", in: personal), "\(action)")
             XCTAssertNil(routedMenuItem(action, "https://later.test/", in: personal), "\(action)")

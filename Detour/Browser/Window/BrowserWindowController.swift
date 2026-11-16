@@ -217,21 +217,9 @@ class BrowserWindowController: NSWindowController {
     var confirmClosingWithPrivateDownloads: @MainActor (PrivateDownloadClosePolicy.Prompt) -> Bool =
         BrowserWindowController.runPrivateDownloadCloseAlert
 
-    enum ContextMenuLinkAction {
-        case none, openInNewTab, openInNewWindow, openInSplitView, openInQuickDetour
-
-        /// The action as the routing rule sees it; nil for none.
-        var linkMenuAction: LinkMenuAction? {
-            switch self {
-            case .none: nil
-            case .openInNewTab: .newTab
-            case .openInNewWindow: .newWindow
-            case .openInSplitView: .splitView
-            case .openInQuickDetour: .quickDetour
-            }
-        }
-    }
-    var contextMenuLinkAction: ContextMenuLinkAction = .none
+    /// The link menu item the user just chose, until `createWebViewWith`
+    /// consumes it; nil for a page's own new-window request.
+    var contextMenuLinkAction: ContextMenuLinkAction?
 
     /// Set while this window inserts tabs it is about to select (a split opened
     /// from a link or a Peek): the collapsed sidebar's "Opened new tab in

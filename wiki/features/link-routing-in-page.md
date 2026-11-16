@@ -4,7 +4,7 @@ title: Typed URLs and links clicked in a page
 description: "Which typed URLs and in-page link clicks Link Routes move, from where: the entry points (palette submit in new-tab mode, the Cmd+click branch, the policy after the download check, createWebViewWith for a page's window and for the link menu), the pure linkRoutingEligibility rule (new-tab opens route, the link menu's New Tab and New Window as a Cmd+click, plain clicks only to another host; never redirects, scripts, popups, Opt-Cmd/Option/Shift-clicks, Peeks, subframes, Open Link in Split View or in Quick Detour; host not site), the WebKit signals that tell a click from a script or a redirect, a route winning over the pinned/favourite Peek intercept, the user's decisions of 2026-11-15 (TASK-356 done), and the runtime checks."
 tags: [links, navigation, webkit, peek]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T18:30:00Z }
 stale_after: 2027-01-31T00:00:00Z
 sources:
   - id: eligibility
@@ -104,7 +104,7 @@ keeping its typed flag for history.
 
 `linkRoutingEligibility(InPageLinkRequest) -> .routable(kind) | .notRouted(reason)`.
 The request carries the entry (`.navigationAction(isLinkActivation:targetsMainFrame:opensNewWindow:isRedirect:)`,
-`.pageWindowRequest(isLinkActivation:wantsPopup:)`, `.linkMenuAction(LinkMenuAction)`), the
+`.pageWindowRequest(isLinkActivation:wantsPopup:)`, `.linkMenuAction(ContextMenuLinkAction)`), the
 modifiers, the user-gesture signal, whether it is in a Peek, the page URL
 (`webView.url`), the target and the Opt-Cmd setting
 (`quickDetourClickEnabled`). Checked in this order:

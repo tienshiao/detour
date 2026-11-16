@@ -162,7 +162,7 @@ nonisolated final class OpenInQuickDetourMenuTests: XCTestCase {
 
         XCTAssertEqual(webKit.performed, 1, "WebKit's item asks for the new window")
         XCTAssertEqual(wc.contextMenuLinkAction, .openInQuickDetour)
-        wc.contextMenuLinkAction = .none
+        wc.contextMenuLinkAction = nil
     }
 
     // MARK: - What choosing it does

@@ -451,11 +451,11 @@ nonisolated final class InPageLinkRoutingTests: XCTestCase {
     /// replays WebKit's own item, which reaches `createWebViewWith`; the
     /// page's `window.open` reaches it the same way, so this drives the
     /// menu's branch there (WebKit's item itself is checked at runtime).
-    @MainActor private func chooseLinkMenuItem(_ action: BrowserWindowController.ContextMenuLinkAction,
+    @MainActor private func chooseLinkMenuItem(_ action: ContextMenuLinkAction,
                                                in wc: BrowserWindowController, on webView: WKWebView?) async throws {
         wc.contextMenuLinkAction = action
         try await run("window.openTab()", in: webView)
-        XCTAssertEqual(wc.contextMenuLinkAction, .none, "consumed by the request")
+        XCTAssertNil(wc.contextMenuLinkAction, "consumed by the request")
     }
 
     @MainActor func testOpenLinkInNewTabOpensInTheRoutedSpaceAsACommandClick() async throws {
