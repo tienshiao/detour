@@ -4,7 +4,7 @@ title: "Automation endpoint: how input is delivered"
 description: How the automation endpoint's clicks, keys and menu choices reach pages, native views, sidebar rows and AppKit's own controls inside Detour without HID events or activating the app, when a click makes its window key (the user's decision on TASK-228.10), the pointer-arrival hover, and the AppKit and WebKit traps met on the way (current-event hit tests, renumbered posted events, gesture-recognizer controls, a table that will not select in a window that is not key, key ordering).
 tags: [automation, mcp, appkit, input]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T19:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T21:46:03Z }
 sources:
   - id: input
     resource: ../../Detour/Automation/AutomationInput.swift
@@ -80,14 +80,14 @@ pointer](./automation-endpoint-agent-pointer.md).
   A key with no menu item is dropped. The resend comes after `press_key` has
   answered, so its command acts on what the window holds when it arrives
   (a `select_tab` sent in between can change which tab Cmd+W closes), as
-  AppKit's own resend does for a person's key; not guarded. The mark lives as long as the event
+  AppKit's own resend does for a person's key; not guarded (TASK-400). The mark lives as long as the event
   (weak keys): the page answered after more than a second once at runtime.
   A Cmd key a native first responder declines at once
   (`performKeyEquivalent` false) goes to the same menu lookup
   (`menuKeyEquivalent`), and press_key awaits the command before it returns,
   so a later input in arrival order (a select_tab) cannot run first, as AppKit
-  tries the menu next for a person's key (chosen by Claude, not yet
-  confirmed by the user; alternative: leave it unhandled).
+  tries the menu next for a person's key (the user's decision, 2026-11-16;
+  the alternative, rejected, was to leave it unhandled).
 - **A native view** under a window point gets `mouseDown(with:)` directly,
   with the mouse-up posted to the app's queue first, where a control's
   tracking loop finds it. The view is hit-tested, and the press handled,

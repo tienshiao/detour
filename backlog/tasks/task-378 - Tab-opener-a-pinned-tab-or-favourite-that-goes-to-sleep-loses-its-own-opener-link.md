@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:55:00Z'
-updated_date: '2026-11-16T17:16:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - tabs
   - opener
@@ -54,6 +54,8 @@ Tests: TabOpenerRuleTests + TabOpenerWindowTests + TabStoreTests, ClosedTabOpene
 Code review (/code-review medium --fix): fixed by the review (above: Undo Delete Space, Undo Delete pinned, favourite-to-pinned, makeFavoriteDormant dedupe; 3 tests added). Skipped: one makeTab(loading:) opener parameter for the 4 wake sites (cleanup); clearing dormantOpenerID on wake (would lose it when unpinSplitGroup materializes then bails; every dormant transition overwrites it); persistence (question above).
 /verify (docs/harness/task378-dormant-opener-checks.py, Debug build from .derived, data dir DetourVerify-377, ALL PASSED, 6 checks): a target=_blank child pinned with Cmd+D, closed to a dormant tile with Cmd+W, woken by selecting the tile (new tab id); Cmd+[ selects the opener and keeps the pinned tab; dormant again with the opener closed meanwhile, Navigate > Back is disabled on the woken tab. Data dir and defaults keys removed.
 Not verified at runtime: the favourite cases and the undos (tests only); the full suite (the lead's).
+
+User decisions 2026-11-16: CHANGED (c): YES, keep a dormant pinned tab's or favourite's opener link across a relaunch (new columns on pinnedTab and favorite, migration v27); filed as TASK-384. (a) keeping the link across dormancy stands (the relaunch decision builds on it). (b) (put back through space.liveOpenerID in the space the tile wakes in) was not addressed in the user's answer and stays as built. Also filed: TASK-393 (a dormant pinned tile dragged to the favourites bar loses the link), TASK-394 (children of a tile that went dormant lose their opener after its wake).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

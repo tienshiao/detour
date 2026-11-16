@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T10:45:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - undo
   - tests
@@ -46,6 +46,8 @@ Fix: TabStore gets an isolated deinit (the repo's pattern) that removes droppedU
 Tests: new testAStoreGoneWhileARemovalWaitsTakesItsObserversAlong; PrivateWindowUndoTests 20, TabStoreTests 40, UndoAfterDeleteSpaceTests 8, ProfileDeletionUndoTests 13, WindowCloseReleaseTests 21, PrivateSessionResetTests 6 = 108, 0 failures; PrivateWindowUndoTests re-run after the review edit: 20/0.
 /code-review medium --fix: no correctness bug; applied a shared removeDroppedUndoEntryObservers() helper. Skipped (reported to the lead): a released test store's repeating archiveTimer (300 s) is not invalidated either (same kind of leftover, out of this task's AC); the test leaves its undo group open (harmless, the manager dies with the store).
 Runtime: not applicable (tests only).
+
+Follow-up filed 2026-11-16: TASK-386 (the archive timer is never invalidated).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

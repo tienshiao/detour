@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T10:40:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - spaces
   - incognito
@@ -49,6 +49,8 @@ Chosen by Claude (not yet confirmed by the user): deleteSpace REFUSES a Private 
 Tests: new testDeleteSpaceRefusesAPrivateWindowsSpace (fails on the old code, 3 assertions); PrivateWindowUndoTests 19, LinkRouteStoreTests 42, TabStoreTests 40, UndoAfterDeleteSpaceTests 8, ArchivedTabRestoreTests 20 = 129, 0 failures; PrivateWindowUndoTests re-run after the review tidy: 19/0.
 /code-review medium --fix: code correct; fixed a wiki bullet the new invariant had split (forceRemoveSpace line); removed a vacuous assertion in the test. Skipped: the sidebar's delete handler would show its confirmation and then do nothing for a Private space (unreachable: never offered).
 Runtime: not applicable (no UI path).
+
+User decisions 2026-11-16: confirmed: deleteSpace refuses a Private window's space (.notDeleted); a Private space goes only with its window, through removeIncognitoSpace (rather than deleteSpace dropping its undo entries).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

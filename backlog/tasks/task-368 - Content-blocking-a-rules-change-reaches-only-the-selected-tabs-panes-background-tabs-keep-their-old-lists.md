@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T17:06:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - content-blocking
 dependencies: []
@@ -51,6 +51,8 @@ Tests: LivePageContentBlockingTests (new, 4): failed before the fix for every pa
 Runtime (/verify, DETOUR_DATA_DIR=DetourVerify-368, endpoint): real lists downloaded and compiled; a loopback page polling /alive.png and EasyPrivacy's /1pixel.php every 2 s opened, then a second tab selected over it; the server saw /alive.png only. EasyPrivacy switched off for Default in Settings > Profiles (09:03:21): /1pixel.php requested from the next poll (09:03:29) on, the other tab still selected; switched back on (09:03:42): /1pixel.php no longer requested. Not checked at runtime: a Peek, split pair, pinned or favourite tab (test-covered except favourites, which the enumeration test covers), a refresh or Clear Cache recompile.
 
 Code review (/code-review medium --fix, forked): no correctness findings. Applied: stale descriptions of the old window handler in docs/content-blocking.md, docs/architecture.md, wiki/architecture/overview.md, wiki/features/quick-detour-window.md. Skipped: folding Quick Detour pages into the store pass (changes TASK-359's design; recorded above as a provisional choice), reusing allLiveTabs (it carries no profile per tab), caching ruleLists per profile (negligible gain). Docs-only changes after the test run, so tests not rerun.
+
+User decisions 2026-11-16: confirmed: Quick Detour and quarantine pages stay with their window's observer (TASK-359) and the store's pass skips them; a web view built from an extension context's configuration (servedExtensionOriginHost != nil) is left alone (rather than given its profile's lists); sleeping tabs, which have no web view, are left out.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

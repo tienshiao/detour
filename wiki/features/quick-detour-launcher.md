@@ -4,7 +4,7 @@ title: Quick Detour launcher panel
 description: "The Spotlight-like panel that opens a Quick Detour: a non-activating borderless floating panel holding the command palette, its suggestions, undo and the browser-window commands it answers itself, which profile it opens on, and how submitting activates Detour with only the new window forward."
 tags: [window, palette, profiles]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:09Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T21:49:17Z }
 stale_after: 2026-12-31T00:00:00Z
 sources:
   - id: task-193-1
@@ -100,7 +100,11 @@ File > New Quick Detour Window, or the [global hotkey](./quick-detour-hotkey.md)
   Copy, Paste and Select All the field. The panel holds one plain `@objc`
   method per command; `QuickDetourLauncherTests` walks the registry, so a
   command added there without one fails. ⌘W closing the launcher and the
-  rest doing nothing are Claude's choices (TASK-348), to confirm.
+  rest doing nothing are the user's decision (2026-11-16, TASK-348); the
+  alternatives, rejected, were ⌘W disabled like the rest, and ⌘L selecting
+  the field's text. Read in TASK-348's review, not run: another key window
+  that never becomes main (the automation approval panel) still lets these
+  commands through to the browser window (TASK-390).
 - **Escape** follows the palette's own steps: it clears typed text first, and
   closes the panel on an empty field. **Clicking away** closes it through
   `NSWindow.didResignKeyNotification` on the panel.

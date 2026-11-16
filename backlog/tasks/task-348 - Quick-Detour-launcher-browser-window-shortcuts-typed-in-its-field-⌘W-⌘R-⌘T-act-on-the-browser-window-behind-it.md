@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T04:51:00Z'
-updated_date: '2026-11-16T16:11:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - keyboard
   - quick-detour
@@ -57,6 +57,8 @@ Runtime after the fix (Debug 08:01, same data dir, docs/harness/task348/drive.py
 Review (code-review medium --fix): fixed: the panel resets a disabled command's contextual title to the registry's ('Unpin Tab' or 'Open Peek in New Tab' left by a browser window no longer shows, disabled, while the launcher is key; the test seeds a stale title); Close Tab keeps the panel alive while the launcher closes it (withExtendedLifetime). Not changed: the test's NSApp.target(forAction:) check runs only with the panel key and the browser window main (it ran in this run: it failed before the fix); the 'is a window-controller command' filter is written twice (panel and test), kept apart on purpose. Out of scope, for the lead: any other key window that never becomes main and does not answer these commands still lets them fall through to the main browser window, e.g. the automation approval panel (non-activating, key only if needed; with Full Keyboard Access on, Cmd+W/Cmd+D/Shift+Cmd+T there would act on the browser window behind it; read in the review, not run). A general fix would disable every .windowController command in BrowserWindowController.validateMenuItem when a non-main key window hands it there, as nonBrowserKeyWindow does for Undo.
 
 After the review fixes: QuickDetourLauncherTests, BrowserCommandRegistryTests, MainMenuCharacterizationTests: 49 tests, 0 failures.
+
+User decisions 2026-11-16: kept as built: Cmd+W in the launcher closes it (the item keeps its Close Tab title) and every other browser-window command is disabled there. Follow-up filed: TASK-390 (other never-main key windows, e.g. the automation approval panel, still let these commands through to the browser window).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

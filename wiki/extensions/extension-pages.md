@@ -4,7 +4,7 @@ title: Extension pages in tabs
 description: A tab showing a webkit-extension:// page is tied to one loaded context's origin, which dies on every context reload and every relaunch; how such tabs, pinned tiles, favourites and closed-tab records are rehomed, restored, refused or closed, and why a Quick Detour or quarantine window cannot show one.
 tags: [extensions, tabs, persistence, pinned, favorites]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T18:40:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T21:46:03Z }
 sources:
   - id: page-url
     resource: ../../Detour/Extensions/Runtime/ExtensionPageURL.swift
@@ -243,7 +243,8 @@ the hole.
   route that is real goes through a web frame in A's page, and is closed
   ([below](#web-content-inside-an-extensions-tab)).
 - Rows saved before the fix that already hold a refused URL cannot be told
-  apart, so they are grandfathered.
+  apart, so they are grandfathered (clean them on load or accept them:
+  TASK-387).
 - An extension page's own `window.open` of its own page still opens a space
   tab, which is refused (TASK-167's rule). The same goes for `tabs.update`
   from an extension to its own page in a web tab. Both used to start working
@@ -311,10 +312,10 @@ belongs to no tab, it applies the rule as if that web view served the page's
 extension.
 
 The rule refuses a web frame even when the target page is web-accessible.
-This is Claude's choice, not yet confirmed by the user. A web page in a
+This is the user's decision (2026-11-16). A web page in a
 space tab cannot top-navigate to one either, because WebKit refuses the main
 frame (-1008, [below](#where-an-extension-page-cannot-be)), so the rule keeps
-the two kinds of tab alike. The alternative is to let through targets that
+the two kinds of tab alike. The alternative, rejected, was to let through targets that
 the extension's `web_accessible_resources` match for the frame's origin.
 That would serve, for example, a framed sign-in page that hands back to the
 extension's callback page.
@@ -527,7 +528,7 @@ out.
 - A tab made by `addExtensionTab` has a plain `WKWebView`, not one from
   `BrowserTab.makeWebView`, so it has no `browser-error` handler. A failed
   load there, such as another extension's page from `tabs.create`, shows a
-  blank page, not the error page (measured 2026-11-16, TASK-381).
+  blank page, not the error page (measured 2026-11-16, TASK-381; TASK-388).
 - If an extension is enabled but its `WKWebExtension` fails to load, its
   restored pages stay pending and display as an empty page, not an error page.
 - The window registers its owned-pane script message handlers on the web

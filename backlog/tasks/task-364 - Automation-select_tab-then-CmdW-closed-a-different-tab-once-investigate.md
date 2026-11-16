@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T19:11:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - automation
   - tabs
@@ -60,6 +60,8 @@ Code review (/code-review medium --fix, forked): 8 findings, 3 fixed by the revi
 Tests: AutomationInputTests + AutomationToolsTests + AutomationWindowKindsTests + AutomationAgentPointerTests + AutomationEndpointTests + AutomationPageTests 88/0 before the review and 88/0 after (no skips). The four new tests failed with the catcher disabled (both integration tests timed out waiting for the close) and pass with it. One review-time run of AutomationInputTests had testANativeButtonTakesTheClickAndANativeMenuCanBeChosenFrom fail ('the earlier menu closed before this one opened'); it uses no key tools, and the four suite runs after it passed; looks load-sensitive, not related.
 Runtime after the review fixes: phase 7 re-run on a fresh build, same results (F1-F6).
 Not verified: the native-first-responder Cmd fallback at runtime (test only); type_text's given-back keys at runtime; a person's real keys (unchanged code path).
+
+User decisions 2026-11-16: confirmed both: a Cmd key a native first responder declines at once goes to the window's main menu, awaited (rather than left unhandled); a key given back outside its own key window that no menu item has is dropped, and the window's own view key equivalents are not tried again (rather than handed to the first responder's keyDown). Follow-up filed: TASK-400 (a given-back key arrives after press_key has answered).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

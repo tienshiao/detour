@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:55:00Z'
-updated_date: '2026-11-16T18:11:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - keyboard
   - shortcuts
@@ -56,6 +56,8 @@ Review (code-review medium --fix): 6 findings, 2 fixed by the review. Fixed: the
 Tests run after the review: ShortcutConflictTests, ShortcutBindingStoreTests, ShortcutsSettingsPaneTests, ShortcutMenuTests, SpaceJumpTests, MenuKeyEquivalentMatcherTests, HotKeyShortcutTests, QuickDetourHotKeyTests, MainMenuCharacterizationTests: 189 tests, 0 failures; AutomationToolsTests, AutomationWindowKindsTests, PaletteCommandWindowTests: 42 tests, 0 failures. The runtime check ran before the review's matcher change (which only changes Fn presses).
 
 Correction to the first notes block: MenuKeyEquivalentMatcher is changed (the review's fix, above), not unchanged; the fast path is no longer under 'Not changed'. After the advisor pass: the spikes reproduce what their headers say (fn-items.swift has an app item given Fn again: AppKit's log line and the dropped mask; dup-released.swift runs both variants), the Fn and recorder tests loop over US and French, an arrow press carrying Fn and the numeric-pad bit is pinned as a fast-path match. Run: ShortcutConflictTests, ShortcutBindingStoreTests, ShortcutsSettingsPaneTests, ShortcutMenuTests, SpaceJumpTests, MenuKeyEquivalentMatcherTests, HotKeyShortcutTests, QuickDetourHotKeyTests, MainMenuCharacterizationTests, SettingsAndPopupUndoTests, AutomationPrivateAccessTests, AutomationToolsTests, AutomationWindowKindsTests, PaletteCommandWindowTests: 248 tests, 0 failures. Copy's live key was not read in the own-row runtime launch: that it was empty rests on TASK-350's runtime measurement and dup-released.swift.
+
+Follow-up filed 2026-11-16: TASK-397 (a press made with Fn held is recorded without Fn; the macOS-shortcut checks drop Fn).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

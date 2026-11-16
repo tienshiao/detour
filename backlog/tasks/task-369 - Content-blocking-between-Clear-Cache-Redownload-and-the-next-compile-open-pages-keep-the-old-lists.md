@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T17:29:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - content-blocking
 dependencies: []
@@ -53,6 +53,8 @@ Code review (/code-review medium --fix, forked): applied — (1) the kept-lists 
 Final run: LivePageContentBlockingTests, QuickDetourContentBlockingTests, ContentRuleStoreThreadingTests, ContentRuleListChunkTests, ContentBlockerTests, ContentBlockerWhitelistTests: 96 tests, 0 failures. Runtime check above was on the first version (before the completedLists change, which only affects a clear during a running compile).
 
 Correction to the note above: the completedLists change is not limited to a clear during a running compile — it replaced the snapshot source for every clear and added the launch look-up's entry (lookUpList fills completedLists), the path a real Clear Cache normally takes. Added ContentRuleStoreThreadingTests.testAClearAfterALaunchLookUpKeepsTheListsItFound (look-up in a relaunched store, clear, the kept lists are the found objects): ContentRuleStoreThreadingTests + LivePageContentBlockingTests 26 tests, 0 failures. Runtime rerun on the final build (DetourVerify-368, two launches so the lists came from the look-up): Clear Cache at 09:27:37, new probe tab at :38; easylist recompiled :43, easyprivacy :45; the new tab polled at :40/:42/:44 without asking for /1pixel.php. The screen locked at about :44 (timers stopped), so the background tab's part of the rerun is missing; it was seen on the first build and is test-covered.
+
+User decisions 2026-11-16: confirmed: between Clear Cache & Redownload and a list's recompile, open pages and pages opened meanwhile keep blocking with its old rules while the redownload is in flight (clearedLists, attachableLists(forList:); Settings, counts and isCompiled say cleared; a list or master switch turned off still removes them). CHANGED: when the redownload fails or times out the old rules are to be DROPPED (today they stay on every page until quit while Settings says cleared). Filed by rescoping the existing TASK-219 (whose second criterion was this; now priority medium). Also filed: TASK-395 (a rules change during a split list's refresh attaches a mix of new and old chunks, pre-existing).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

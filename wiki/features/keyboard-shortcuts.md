@@ -5,7 +5,7 @@ description: "Where Detour's shortcuts are defined (the command registry's defau
 resource: ../../Detour/Commands/ShortcutBindings.swift
 tags: [keyboard, menus, settings, commands]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T10:05:16Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T21:46:03Z }
 stale_after: 2027-06-01T00:00:00Z
 sources:
   - id: task-56
@@ -410,7 +410,8 @@ also compare with what the store does not resolve:[^task-350]
   restore put the default back and the "Same key as" mark (below) was the
   only sign; with the hotkey on, the default then did nothing (the Carbon
   hotkey takes the key first). Keeping the row rather than restoring it and warning
-  is Claude's choice (2026-11-16, not yet confirmed by the user), so a
+  is the user's decision (2026-11-16; the alternative, rejected, was to
+  restore it and warn), so a
   restore never leaves a command on a taken key, as a row's Reset never
   does.
 - **Saved shortcuts**: the pane asks it with the effective keys once per

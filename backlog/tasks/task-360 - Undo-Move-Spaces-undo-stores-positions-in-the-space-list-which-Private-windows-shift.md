@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T10:28:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - undo
   - spaces
@@ -49,6 +49,8 @@ Fix: moveSpace(from:to:) registers its undo with the space id + stablePosition(o
 Tests: PrivateWindowUndoTests 16, SidebarPageFocusTests 27, SpaceJumpTests 15, TabStoreTests 40 = 98, 0 failures (after the review fix).
 /code-review medium --fix: no correctness bug; applied stablePosition without a filtered copy. Not fixed (reported): Delete Space's undo re-inserts at an index into spaces (savedIndex), the same drift (N, P, B, C: delete B, close P, undo -> N, C, B); the exact Private-space placement on undo; the shared move tail.
 Not verified at runtime: the automation endpoint has no way to reorder spaces (only the Settings pane's drag calls moveSpace), so the Move Space undo was checked by tests only.
+
+Follow-up filed 2026-11-16: TASK-385 (Delete Space's undo has the same index drift).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

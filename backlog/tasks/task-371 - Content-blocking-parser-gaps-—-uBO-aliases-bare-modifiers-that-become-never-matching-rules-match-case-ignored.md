@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T18:05:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - content-blocking
   - filter-lists
@@ -60,6 +60,8 @@ Code review (/code-review medium --fix, 5 findings): fixed $beacon alias (review
 Chosen by Claude (not yet confirmed by the user): unknown bare modifiers are a catalogue of the names uBO and AdGuard document (unsupportedModifiers), so a bare word outside it ($foo) still compiles to a never-matching literal; alternative: treat any option-shaped trailing $word as an option, as ABP and uBO do, which would reverse TASK-351's tested /hit$value rule. The catalogue includes ordinary words (content, network, extension, empty, mp4): a $ before one now reads as the option separator.
 
 Chosen by Claude (not yet confirmed by the user): rulesFormatVersion bumped to 5 although the four built-in lists parse byte-identically, following the wiki rule (bump whenever the output for the same text changes); cost: every install re-parses and recompiles all four lists once at the next launch; alternative: no bump (only custom text using these options would differ).
+
+User decisions 2026-11-16: confirmed: $from= maps to domain=; $css, $doc, $first-party and $beacon mapped besides the four named aliases; unknown bare modifiers are a catalogue of the names uBO and AdGuard document (unsupportedModifiers), not any option-shaped trailing $word; rulesFormatVersion bumped to 5. $noop/$_ left literal and $badfilter matching its target textually are filed as TASK-396.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:55:00Z'
-updated_date: '2026-11-16T17:05:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - sidebar
   - tabs
@@ -51,6 +51,8 @@ Tests: TabOpenerWindowTests, TabOpenerRuleTests, BrowserCommandRegistryTests, Ma
 Code review (/code-review medium --fix): no correctness findings. Fixed: deselectAllTabs now calls refreshBackButton() instead of writing the button. Added from it: a Peek test (Back follows the Peek's history). Skipped: canNavigateBack follows a saved Peek while another window owns the view (pre-existing navigateBackOrCloseChildTab behaviour); tabStoreDidUpdateSpaces does not refresh Back on a space's profile change (the rehost re-select refreshes it); the pageCanGoBack/canNavigateBack double name; the tests' 50 ms run-loop turn for the sink.
 /verify (docs/harness/task377-back-enabled-checks.py, Debug build from .derived, data dir DetourVerify-377, ALL PASSED, 8 checks): Navigate > Back refused as disabled on a root tab; on a target=_blank child the chevron is drawn enabled (darkest luma 113 vs 183); after the opener is archived from its row's menu with the child selected, Navigate > Back and Cmd+[ are refused as disabled, the chevron is drawn as on the root tab (183), the child stays open; Detour stayed in the background. Data dir and defaults keys removed.
 Not verified at runtime: the pinned-dormant and favourite cases (tests only); the full suite (the lead's).
+
+User decisions 2026-11-16: kept as built: Navigate > Back (and the palette's Back) is disabled whenever the sidebar button is, a root tab with no history included; Forward unchanged.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -4,7 +4,7 @@ title: Error pages
 description: "What a failed load looks like: the browser-error:// page, which failures earn one (only those before commit) and which are ignored, how the tab keeps the URL the user asked for, and how retry, restore and background tabs behave."
 tags: [navigation, errors, webkit, tabs]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T16:05:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T21:49:17Z }
 sources:
   - id: scheme-handler
     resource: ../../Detour/Browser/Window/ErrorSchemeHandler.swift
@@ -94,7 +94,10 @@ failure. Both delegates are pure forwarders:
 2. `restoringSession` is set - return (the restored session is kept);
 3. the URL that failed: the error's `NSURLErrorFailingURLErrorKey`, or, when
    the error has none, the web view's URL when the provisional navigation
-   started (`provisionalURL`, TASK-372); else `lastAttemptedURL`. Never
+   started (`provisionalURL`, TASK-372; read from code, not measured: no
+   delegate updates it on a server redirect, so after one it would name the
+   URL before the redirect, TASK-389); else
+   `lastAttemptedURL`. Never
    `about:blank`, the error scheme or an internal `detour://` URL: Reload
    passes `lastAttemptedURL` to `loadRecordedURL`, which arms it, and a
    failing internal URL the tab did not load itself is one a page chose;
@@ -145,8 +148,8 @@ TASK-381).[^task-381] Reload does not retry it because the web view's
 configuration has not changed, so the retry can only be refused again. Rejected
 for the tab with a page: retrying the refused URL (TASK-381's first choice).
 A window a page opened has no page to reload, so its Reload retries the
-refused URL (Chosen by Claude, not yet confirmed by the user; the alternative
-is a Reload that does nothing there).
+refused URL (the user's decision, 2026-11-16; the alternative, rejected,
+was a Reload that does nothing there).
 
 Neither delegate implements `webView(_:didFail:withError:)`, the failure of
 a navigation that already committed. See

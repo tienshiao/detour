@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T17:52:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - content-blocking
   - tests
@@ -50,6 +50,8 @@ Result 2026-11-16 (test data dir copies downloaded 2026-11-15, rulesFormatVersio
 Tests: ContentRuleListChunkTests 37 (with the gated legs on) + ContentBlockerTests 11: 48 run, 0 failures. Not verified: element hiding in a web view for the split EasyList; a real (non-padding) rule loaded in a web view (would contact a live malware/ad host) — real rules are checked by compiling them.
 
 Code review (/code-review medium --fix, 7 findings): fixed — a negative prefix count now fails instead of trapping on the range; paddingIndex ignores the padding exception (could have been chosen as a later chunk's probe); cachedFilterListFile is one file-scope helper shared with ContentBlockerTests; wiki wording 'loaded' -> 'was not blocked'. Also added (from the review's last finding) the check that no element-hiding rule is laid out after chunk 0. Left: the real list is parsed twice (once for counts) and the big arrays live to the end of the leg — gated test, ~1.2 GB peak, kept simple.
+
+Follow-up filed 2026-11-16: TASK-401 (a compiler warning about a weak self capture in ContentBlockerManager, reported by the lead). The wiki's build-and-test traps now say WebKit rule-list compiles fail inside the Bash sandbox.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

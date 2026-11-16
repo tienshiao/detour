@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T15:57:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - navigation
   - error-pages
@@ -64,6 +64,8 @@ Tests: NavigationFailureURLTests 14 (6 new: script, link, tabs.update, backgroun
 Runtime (/verify, DetourVerify-372, build of this tree before the review's two-line follow-up): docs/harness/task372-endpoint-checks.py 10/10 — trusted clicks on a loopback page: dead-port link -> error page and list_tabs url name the dead URL, Cmd+R retries it; link to an installed extension's options.html -> error page names it (screenshot: 'Looks like you took a Detour.' + the webkit-extension URL), url stays the page, Cmd+R loads the page ('Links'); window.open of options.html -> child error page names it, url empty, Cmd+R refused again. Defaults keys and the data dir removed.
 /code-review medium --fix: 6 findings; fixed: stale load(_:) comment, provisionalURL cleared in releaseWebView, parked patch removed, harness script cleanups. Not fixed: provisionalURL is not updated on a server redirect (a redirect to a refused extension page would name the pre-redirect URL; needs didReceiveServerRedirect in both delegates + reachability rows). The reviewer asked about a typed refused extension URL: typed webkit-extension:// is a search (AddressInputClassifier), so load(_:) only sees page-chosen ones (Open Link in New Tab, routed links), which the decision covers.
 Not verified: a relaunch with this change (TASK-381's check covers url/extensionID persistence, unchanged here); Quick Detour (same BrowserTab method).
+
+User decisions 2026-11-16: confirmed: a window.open child with no page of its own keeps reload()'s fallback, so its Reload retries the error page's URL and is refused again (rather than a Reload that does nothing there). Follow-up filed: TASK-389 (provisionalURL is not updated on a server redirect).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

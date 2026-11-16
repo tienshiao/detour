@@ -4,7 +4,7 @@ title: Favourites
 description: Per-profile tiles above the tab list, each with an optional backing tab that lives on the profile rather than in any space; how they are selected, moved, parked, peeked and kept visible to extensions.
 tags: [tabs, favorites, sidebar, profile, peek]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:12:56Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T21:46:03Z }
 sources:
   - id: model
     resource: ../../Detour/Browser/Favorite.swift
@@ -74,7 +74,9 @@ optional `tab`) lives in `Profile.favorites`. A favourite with `tab == nil` is
 dormant. A dormant favourite keeps its last backing tab's
 [opener link](./tab-opener.md) in memory (`dormantOpenerID`); activating it,
 or dragging it into the tab list, gives the new tab that link while the
-opener is still one in the space it wakes in.[^task-378] The code spells it `Favorite`; comments and tasks say "favourite".
+opener is still one in the space it wakes in.[^task-378] A relaunch while it
+is dormant loses the link; keeping it is the user's decision (2026-11-16),
+pending TASK-384. The code spells it `Favorite`; comments and tasks say "favourite".
 
 ## The backing tab is in no space
 

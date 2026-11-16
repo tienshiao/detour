@@ -4,7 +4,7 @@ title: Content blocking Clear Cache & Redownload
 description: "What Settings > Content Blocking's Clear Cache & Redownload removes and refetches, and how a compile or look-up asked for before it is refused at every stage (compile tickets, ContentRuleStore's generation, CompileOutcome.superseded) so cleared lists cannot come back (TASK-202); refresh tokens for the Updating... state, the old lists pages keep until each list compiles again (TASK-369), and the runtime runs."
 tags: [content-blocker, webkit, settings]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T17:25:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T21:46:03Z }
 sources:
   - id: manager
     resource: ../../Detour/Browser/ContentBlocker/ContentBlockerManager.swift
@@ -91,12 +91,14 @@ removal).
 
 # Pages between the clear and the recompile
 
-Decided (TASK-369, Claude's choice, not yet confirmed by the user): until a
-cleared list compiles again, pages keep blocking with its old rules, open
-ones and ones opened meanwhile alike. Removing them would leave every page
-unblocked for as long as the redownload takes (indefinitely offline), which
-the user asked for no part of; they pressed Clear Cache & Redownload to get
-fresh lists, not none.
+The user's decision (2026-11-16, TASK-369): while a cleared list's
+redownload is in flight, pages keep blocking with its old rules, open ones
+and ones opened meanwhile alike, so the clear does not leave every page
+unblocked for as long as the download and compile take. When the redownload
+fails or times out, the old rules are to be dropped, not kept: pending
+TASK-219, the code still keeps them until quit (below). The alternatives,
+rejected, were dropping them at the clear (pages unblocked until the
+recompile) and keeping them on open pages only (new pages get none).
 
 `invalidateAll` keeps each list's chunks in memory (`clearedLists`): the
 set its last completed compile or launch look-up gave (`completedLists`),
@@ -113,9 +115,12 @@ list is cleared ("No active rules. Updating 4 lists..."), they are never
 written anywhere, and a second clear before the recompile keeps the first
 clear's. WebKit keeps applying a `WKContentRuleList` whose file was removed
 from its store, in a new web view too. A list or the master switch turned
-off in the gap still takes them off, as for a compiled list. A redownload
-that fails (offline, or a list that no longer compiles) leaves them in use
-until the app quits; the next launch has nothing.
+off in the gap still takes them off, as for a compiled list. Today a
+redownload that fails (a fetch error, such as offline or a request that
+timed out; a response that is not 200 or 304; a list that no longer compiles)
+leaves them in use until the app quits, while Settings says the list is
+cleared; the next launch has nothing. Dropping them then is the user's
+decision, pending TASK-219.
 
 Before, the clear posted no rules change, so open pages kept the old lists
 only until the next one: the first list to compile again (or a switch

@@ -4,7 +4,7 @@ title: Build and test
 description: How to generate the project, build, and run the test suite without clobbering another build, another test run or the machine's memory.
 tags: [playbook, build, tests, xcodebuild]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:55:10Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T21:49:17Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
@@ -27,6 +27,9 @@ sources:
   - id: notes-parallel
     resource: "Agent session notes, 2026-09-12 (not in the repository)"
     title: Session notes on parallel builds and test data directories
+  - id: notes-rule-compile
+    resource: "Agent session notes, 2026-11-16, the second two-lane batch's content-blocking runs (TASK-370; not in the repository)"
+    title: Session notes on WebKit rule-list compiles failing inside the Bash sandbox
   - id: notes-stale
     resource: "Agent session notes, 2026-09-19 (not in the repository)"
     title: Session notes on stale DerivedData builds
@@ -241,7 +244,11 @@ Match the executable path `…/Detour.app/Contents/MacOS/Detour` and exclude
 - **Sandboxed agent shells.** `xcodegen generate` and `xcodebuild` write to
   the system temporary directory and fail inside a filesystem sandbox; run
   them with the sandbox off. `pgrep`, `ps` and `log show` are blocked the
-  same way.[^notes-parallel]
+  same way.[^notes-parallel] A WebKit content rule list compile
+  (`WKContentRuleListStore`) run from inside the sandbox fails with
+  "Unspecified error during compile" (reported during TASK-370's runs, not
+  reproduced here); run it with the sandbox off before suspecting the
+  rules.[^notes-rule-compile]
 - **Codesign timestamp.** `project.yml` signs with `--timestamp`. When the
   timestamp server is unreachable, pass `OTHER_CODE_SIGN_FLAGS=--timestamp=none`
   on the `xcodebuild` command line for local runs; do not change
@@ -340,3 +347,4 @@ Match the executable path `…/Detour.app/Contents/MacOS/Detour` and exclude
 [^task-235]: TASK-235
 [^notes-locked-run]: Session notes on two full test runs that failed while the screen was locked
 [^task-365]: Tests: flaky in full runs — native pop-up menu click, Quick Detour profile switch, site search chip icon, Settings row skip
+[^notes-rule-compile]: Session notes on WebKit rule-list compiles failing inside the Bash sandbox

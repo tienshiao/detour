@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:55:00Z'
-updated_date: '2026-11-16T18:18:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - cleanup
   - links
@@ -47,6 +47,8 @@ Chosen by Claude (not yet confirmed by the user): the surviving name is ContextM
 Tests (sandbox off, -only-testing): InPageLinkRoutingTests 34, LinkPlacementTests 24, LinkRoutingEligibilityTests 51, OpenInQuickDetourMenuTests 11, PageOpenedWindowTests 11 — 131 tests, 0 failures. No other suite references either type (grep of Detour/DetourTests/wiki/docs). No /verify: behaviour-neutral refactor.
 
 Review (/code-review medium --fix, forked): no correctness findings. Fixed: wiki/log.md line + generated stamp. Not fixed: (a) naming mix linkMenuAction case vs ContextMenuLinkAction type (cosmetic, see choice above); (b) pre-existing: if WebKit's replay of a menu item never reaches createWebViewWith the pending action stays set and the page's next window.open is treated as that menu choice (skips the data: refusal and pageWindowRequest routing) — out of scope, reported to the lead.
+
+User decisions 2026-11-16: confirmed: the surviving name is ContextMenuLinkAction with the menu items' case names; the rule's entry case and exclusion keep linkMenuAction (InPageLinkEntry.linkMenuAction, LinkRoutingExclusion.linkMenuAction). Follow-up filed: TASK-398 (a menu action WebKit never acts on stays pending and takes the page's next window.open; pre-existing).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

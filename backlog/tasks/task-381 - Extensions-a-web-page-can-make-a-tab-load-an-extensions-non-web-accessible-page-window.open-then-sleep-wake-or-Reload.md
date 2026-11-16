@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T10:32:00Z'
-updated_date: '2026-11-16T11:11:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - extensions
   - security
@@ -66,6 +66,8 @@ Verification (2026-11-16):
 - /code-review medium --fix: 8 findings. Fixed by the review: a peek's saved and moved URL (savePeekStateForPersistence, planMove) now use the gated currentPageURL; init(webView:) sets titledURL from the adopted url. Left: (1) records saved before the fix holding a refused URL are grandfathered (cannot be told apart; follow-up candidate); (2) a tab built from extension A's configuration that navigates to a web page keeps that configuration, so the web page can navigate it to A's non-web-accessible pages live (WebKit serves them; pre-existing, separate hole, follow-up candidate); (3) tabs.update from an extension to its own page in a web tab, and an extension page's own window.open of its own page, stay refused and no longer start working after a sleep (was refused live before too; typed webkit-extension:// input is a search, not a load); (6) context.webViewConfiguration built twice per addExtensionTab call (cost only); (8) addExtensionTab repeats addTab(in:webView:)'s two lines.
 
 Follow-up checks (2026-11-16, after the review fixes): runtime check rerun on a rebuild of the post-review tree (dylib 03:10:32), 9/9 again (the first 9/9 run was on the pre-review build). Quick Detour/quarantine suites (15 classes incl. QuickDetourExtensionTests): 277 tests, 0 failures. Peek URLs: recordClosedPeek and the reopen paths take peek.url (gated); the open-time host.peekURL only ever rebuilds a Peek from the space configuration (refused again), and a Peek becomes a tab only through its live web view (init(webView:), gated), so no peek URL reaches makeTab(loading:)/restoredTab ungated. Wiki: the TASK-352 table row 'tab.url keeps the extension URL' corrected (now nil, from the code, not re-measured); the 'extension-config tab steered by a web page' claim labelled as read from WebKit source. 'Old behaviour' in the tests = mayAdopt forced to true, not a checkout of dc0fafa6.
+
+User decisions 2026-11-16: confirmed the core rule: tab.url never names a webkit-extension:// page its current web view cannot serve (servedExtensionOriginHost, every url write on a live tab gated by mayAdopt, readers of the live URL on currentPageURL; the existing extensionID column stays the persisted provenance, no new column). The other choice in these notes (the error page names the refused URL and Reload retries it) had already been replaced by the user's option (c) on TASK-372 (Reload acts on the page the tab was on). Follow-ups filed: TASK-387 (rows saved before the fix that hold a refused URL are grandfathered: clean or accept), TASK-388 (addExtensionTab's plain WKWebView shows a blank page on a refused load; the configuration built twice; the lines repeated from addTab(in:webView:)).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

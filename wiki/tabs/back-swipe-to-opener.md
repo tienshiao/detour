@@ -4,7 +4,7 @@ title: Back swipe to the opener
 description: "On a tab opened from another tab, with no back history, the two-finger back swipe does what the Back button does — closes the tab and selects its opener — through Detour's own swipe (WebKit's needs a back item): when a pane's web view is in that mode, how a swipe starts from the scrolls the page did not use, the veneer that shows during it (the opener's picture going back, a picture of the page left going back on the forward swipe), the decisions per case (splits, Peek, pinned tabs, Quick Detour), and what is verified only by hand."
 tags: [tabs, navigation, gestures, webkit, split]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T18:40:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T21:49:17Z }
 sources:
   - id: rules
     resource: ../../Detour/Browser/Window/NavigationSwipe.swift
@@ -160,7 +160,8 @@ an unrelated tab.
 - **An opener that was asleep** is woken by the close; the veneer stays
   until its load commits (or 1 s).
 - **Forward**: a card slides in from the right and stays until the forward
-  page commits (or 1 s). WebKit's picture of the forward page is in its own
+  page commits (or 1 s; read from code, not measured: a same-document
+  forward page has no commit, so its card stays the full second, TASK-399). WebKit's picture of the forward page is in its own
   store, which Detour cannot read, so the card carries Detour's own picture
   of that page, taken as the user left it going back (the user's decision,
   2026-11-15; before TASK-355 the card was blank).[^task-325][^task-355]
@@ -219,8 +220,8 @@ else WebKit's own swipe shows WebKit's own picture.[^task-355]
 - **Another window**: when another window takes the tab's web view over
   (`webViewOwnershipChanged`), the tab's picture moves to that window's cache
   and a request in flight is let go, so none is left behind and a forward
-  swipe there shows it (Chosen by Claude, not yet confirmed by the user:
-  handed over; the other option was to drop it).[^task-376]
+  swipe there shows it (the user's decision, 2026-11-16; the alternative,
+  rejected, was to drop it).[^task-376]
 - **When it shows**: only when its item is the web view's forward item and
   the web view's size still matches within a point; a pane resized since
   would stretch it, so the plain card then (the user's decision,

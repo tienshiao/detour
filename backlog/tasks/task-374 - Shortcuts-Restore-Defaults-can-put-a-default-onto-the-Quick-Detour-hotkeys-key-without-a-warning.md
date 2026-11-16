@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T17:43:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - keyboard
   - shortcuts
@@ -51,6 +51,8 @@ Chosen by Claude (not yet confirmed by the user): on a clash Restore Defaults le
 Tests: failing first against the old Restore Defaults (4 new tests, 13 assertions failed; the swap test passes either way). New: ShortcutConflictTests +5 (Quick Detour shortcut, Quick Detour keystroke on US and French, an item outside the commands on French only, a command kept because a kept one holds its default exactly and on the keystroke, a swap restored and an earlier refusal cleared), testTheStoreFindsTheHolderInEitherDirection rewritten as testTheResetCheckFindsTheHolderInEitherDirection; ShortcutBindingStoreTests +1 (resetAll(keeping:)). Run: ShortcutConflictTests, ShortcutBindingStoreTests, ShortcutsSettingsPaneTests, ShortcutMenuTests, SpaceJumpTests, MenuKeyEquivalentMatcherTests, HotKeyShortcutTests, QuickDetourHotKeyTests: 173 tests, 0 failures (after the review). One earlier run had SpaceJumpTests.testAddReorderAndDeleteChangeWhatAShortcutOpensWithNoMenuRebuild fail on its spin wait; it passed alone and in the next full run of the group (timing, not this change).
 Runtime (/verify, DETOUR_DATA_DIR=DetourVerify-374, endpoint; screen locked, so open_ui settings pane=shortcuts, click and screenshots through the endpoint instead of Accessibility): suite seeded with New Tab cleared, Reload Page ⌘T, Close Tab ⌥⌘W, the Quick Detour hotkey ⌘R and off. Restore Defaults clicked: Close Tab back on ⌘W, New Tab still None, Reload Page kept, the warning line 'Restore Defaults left 2 commands as they are. New Tab: ⌘T is now Reload Page's shortcut. Change that one first. Reload Page: ⌘R is the Quick Detour shortcut (Settings > Quick Detour). Change that one first.', the list kept its height; the stored CommandShortcuts held only tab.new and page.reload. Not verified at runtime: a non-US layout (tests only).
 Review (code-review medium --fix): no correctness bug; 1 fixed (resetAll(keeping:) reuses write(); doc comment). Left: a command not overridden whose new default an override took is not named (pre-existing resolver rule: it had none before the restore either); Check for Updates hidden from the pane is checked too (it has no default, so it can never be kept); holders' shifted equivalents re-read per check (a handful of commands); an empty reason list cannot happen from the caller.
+
+User decisions 2026-11-16: confirmed: on a clash, Restore Defaults leaves that command as it is (keeps its shortcut) and names it on the warning line with Reset's reason (rather than restoring everything and warning).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

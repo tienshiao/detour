@@ -4,7 +4,7 @@ title: Tab opener
 description: "The link from a tab to the tab it was opened from (BrowserTab.parentID): which paths set it, the one opener rule (Space.openerTab: a normal, live pinned or live favourite tab) every reader resolves it by (close selection, Back and the back swipe, window.close, reopen and the close undos, Move to Space), the deliberate exceptions, and when the link is cut, re-checked or left dangling."
 tags: [tabs, opener, rules, undo]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:55:23Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T21:46:03Z }
 sources:
   - id: browsertab
     resource: ../../Detour/Browser/BrowserTab.swift
@@ -217,11 +217,14 @@ favourite of its profile, an opener moved there first).
   the pinned section hands the link to its entry, and Undo Delete (pinned
   entry) and Undo Delete Space bring a dormant entry back with it. Before
   TASK-378 the woken tab had no link.[^task-378] Limits: it is kept **in
-  memory only** (a relaunch with the tile dormant loses it: keeping it would
-  need new columns on the `pinnedTab` and `favorite` tables); and a favourite woken in
-  another space than its opener's is unlinked. The other direction is not
-  kept: the woken tab has a new id, so children of the tab that went dormant
-  no longer resolve it.
+  memory only** (a relaunch with the tile dormant loses it). Keeping it
+  across a relaunch is the user's decision (2026-11-16), pending TASK-384:
+  new columns on the `pinnedTab` and `favorite` tables, migration v27. A
+  favourite woken in another space than its opener's is unlinked; a dormant
+  pinned tile dragged to the favourites bar (`addFavoriteFromEntry`) starts
+  without the link (TASK-393). The other direction is not kept: the woken
+  tab has a new id, so children of the tab that went dormant no longer
+  resolve it (TASK-394).
 
 # Runtime check
 

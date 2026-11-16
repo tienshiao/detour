@@ -5,7 +5,7 @@ description: "EasyListParser, which turns Adblock Plus filter-list text into Web
 resource: ../../Detour/Browser/ContentBlocker/EasyListParser.swift
 tags: [content-blocker, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T18:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T21:46:03Z }
 sources:
   - id: parser
     resource: ../../Detour/Browser/ContentBlocker/EasyListParser.swift
@@ -127,10 +127,11 @@ accepted an alias while the trigger ignored it would turn `||x^$3p,xhr` into
 a block rule for every load from the host, the TASK-351 bug again. Before,
 a bare alias was read as part of the pattern (a literal rule that matched
 nothing) and, after TASK-351, a `$from=` rule was left out.[^task-371] Mapping
-`$from=` is Claude's choice (not yet confirmed by the user); the
-alternative is to keep leaving such rules out. `$to=` (the request's
+`$from=` is the user's decision (2026-11-16); the alternative, rejected,
+was to keep leaving such rules out. `$to=` (the request's
 domains) stays unsupported. A `$badfilter` line still names its target
-textually, so `||x^$3p,badfilter` does not disable `||x^$third-party`.
+textually, so `||x^$3p,badfilter` does not disable `||x^$third-party`
+(TASK-396).
 
 **Other modifiers written without a value** are options too: the rule is
 left out and counted as skipped, block rule and exception alike. The list

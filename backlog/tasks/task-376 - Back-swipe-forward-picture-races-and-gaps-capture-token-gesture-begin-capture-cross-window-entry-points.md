@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:55:00Z'
-updated_date: '2026-11-16T18:37:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - tabs
   - navigation
@@ -63,6 +63,8 @@ Tests (Debug, -derivedDataPath .derived): NavigationSwipeTests 54 + WebKitDelega
 Runtime (/verify via docs/harness/task325-swipe-checks.py, Debug build of the source before the review's log/prune edits, data dir DetourVerify-376, Detour in the background, cleaned up): 18/18 passed, among them Back pictures page 2 and the held forward card is page 2's colour (222, 244, 210); the page's own history.back() now pictures page 2 too, card (222, 244, 210); after a window resize (set_window_frame, -120 pt) the card is plain (255, 255, 255). Screenshot checked.
 
 Not verified: a real trackpad swipe back (WebKit's gesture) then forward, and the three-finger swipe (synthetic events cannot drive them; the shouldGoTo path they take is the one checked for goBack() and history.back()); macOS 15 (private fallback); a back that swaps processes.
+
+User decisions 2026-11-16: confirmed: when another window claims the tab's web view, the forward picture is handed over to that window (rather than dropped). Follow-up filed: TASK-399 (a forward swipe onto a same-document page keeps its card the full 1 s).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

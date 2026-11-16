@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T16:38:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - undo
   - webkit
@@ -54,6 +54,8 @@ Runtime with the fix (Debug 08:27, a fresh DETOUR_DATA_DIR=DetourVerify-348, doc
 Review (code-review medium --fix): no correctness findings. Fixed: the prompt and sign-in tests share one in-sheet check (checkSheetFieldUndo; the sign-in copy now also asserts Redo resolves to the same target); FieldUndo's overview names FieldUndoView; the wiki's TASK-366 and TASK-367 paragraphs moved after TASK-349's 'Measured with the fix, the same script' paragraph, which they had split from its subject. The reviewer probed with a standalone AppKit run: the wrapped field still has the keys when the sheet opens, and in the sign-in sheet Undo after moving to the password field has only the password's typing. Not changed: FieldUndoView, PopupContentView and SiteSearchForm each carry the same three members (unifying touches classes outside this task); the harness focuses the field through Accessibility if needed (it never needed to: it had the keys when the sheet opened, both runs). Altitude, for the lead: each alert sheet with a text field opts in at its call site; an app-level fallback for a sheet key window would cover any future one.
 
 After the review's edits: SettingsAndPopupUndoTests + QuickDetourLauncherTests: 28 tests, 0 failures.
+
+User decisions 2026-11-16: kept as built (no choice in these notes was marked Chosen by Claude): FieldUndoView as the accessory of the prompt() sheet in both window kinds and of the HTTP sign-in sheet, each opting in at its call site. The review's altitude notes (an app-level fallback for sheet key windows; FieldUndoView, PopupContentView and SiteSearchForm repeating the same three members) are filed with TASK-366's as TASK-391.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

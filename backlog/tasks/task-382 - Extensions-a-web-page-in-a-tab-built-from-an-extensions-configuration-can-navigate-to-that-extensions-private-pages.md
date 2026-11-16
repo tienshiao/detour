@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T15:44:00Z'
-updated_date: '2026-11-16T16:46:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - extensions
   - security
@@ -59,6 +59,8 @@ Verification (2026-11-16):
 - Tests failing first: testAWebFrameInAnExtensionsPageCannotNavigateItsTabToTheExtensionsPages (window delegate) and testAWebFrameInABackgroundExtensionTabCannotNavigateItToTheExtensionsPages (tab delegate) failed on the old code (other.html loaded; 5 assertion failures) and pass with the fix. New: ExtensionPageNavigationPolicyTests (5, table cases), testAnExtensionsOwnNavigationBetweenItsPagesStillWorks (link, Back, its own frame's script sending top on, tabs.update via loadURL(_:for:), in a window and in the background), testAnExtensionsTabNeverLoadsAWebPageInItsMainFrame (pins WebKit's gate). Affected suites (27 classes: ExtensionPage*, BrowserTabUnclaimedNavigation, BrowserTabWake, CommittedLoadFailure, ExtensionOptionsPageEntry, ExtensionTabLifecycle, ExternalAppPermission, InternalPage*, LinkRoutingEligibility, MoveTabToSpace, NavigationFailureURL, PageOpenedWindow, QuickDetourExtension, WebKitDelegateReachability, WKExtensionIntegration, ExtensionEnabledState, ExtensionPolyfillProfileWiring, ExtensionUpdater, ExtensionWindowsCreatePrivate, ...): 445 tests 0 failures 13 skipped before review fixes; 457 tests 0 failures 13 skipped after.
 - Runtime (/verify through the endpoint, DetourVerify-382, build 08:45): docs/harness/task382-endpoint-checks.py 6/6 — fixture options tab loads; a framed loopback page's top.location to the non-web-accessible other.html is refused (log line, tab stays on Opts, screenshot checked); the options page's link to a web page goes nowhere (no request); its own link opens other.html and Cmd+[ returns; tabs.update on its own tab loads options.html?updated=1. Not exercised at runtime: the background-tab delegate path (tests only), sleep/wake.
 - /code-review medium --fix: 9 findings. Fixed: own-frame test step now runs from the frame's own script (jump.js) so the requester really is an extension-origin subframe; delegate asserted per test leg; authorizesNavigation skips the internal-page walk for non-internal URLs; shared requestingFrame accessor; window fails safe when no tab owns the web view; log host private. Left as decisions/reports: WAR targets refused (Chosen by Claude above), Cmd-click order, history traversal from a web frame.
+
+User decisions 2026-11-16: confirmed: a web frame is refused even when the target page is web-accessible, as for space tabs (rather than letting through targets the extension's web_accessible_resources match for the frame's origin). Follow-up filed: TASK-392 (a plain link from an extension's options page to a website silently does nothing, WebKit's gate; open it in a new tab).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

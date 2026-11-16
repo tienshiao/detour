@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T16:23:00Z'
+updated_date: '2026-11-16T21:45:00Z'
 labels:
   - undo
   - extensions
@@ -51,6 +51,8 @@ Tests (SettingsAndPopupUndoTests +2; showPopup split into loadPopupExtension + p
 Runtime (Debug 08:19, DETOUR_DATA_DIR=DetourVerify-348, docs/harness/task366/drive.py: API Explorer installed and pinned in the isolated DB, a tab closed with a real Cmd+W, a Quick Detour opened from the launcher with real keys, the popup opened with an Accessibility press on the Quick Detour's title-bar button, seen in a screen capture with typing in its Create Tab input): 10/10: Edit > Undo/Redo disabled with nothing typed and Cmd+Z did nothing; typed 'qd': 'Undo Typing' enabled, Cmd+Z removed it, Shift+Cmd+Z put it back; the closed tab stayed closed; back in the browser window Cmd+Z reopened it. Not verified at runtime: the popover window losing first responder to itself (the case this task fixes; no real input produces it, covered by the test).
 
 Review (code-review medium --fix): no correctness findings, nothing changed. Kept as is: the browser/Quick Detour type checks in keyWindowHandingUndo (redundant with the responder-target check, kept as a guard); BrowserWindowController.nonBrowserKeyWindow as a named wrapper (the TASK-349 tests and wiki use it); the test's fixed 100 ms wait and .invalid Quick Detour page (the suite's existing pattern). Altitude, for the lead: the fallback lives in each presenting controller (browser, now Quick Detour); a responder installed by ExtensionPopoverController between the popover window and the presenting window, answering Undo/Redo with FieldUndo, would cover any future presenter at once.
+
+Follow-up filed 2026-11-16: TASK-391 (one responder in ExtensionPopoverController instead of a fallback per presenter, with TASK-367's altitude notes).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

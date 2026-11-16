@@ -4,7 +4,7 @@ title: Pinned tabs and folders
 description: The pinned section's model (PinnedEntry with an optional backing tab, PinnedFolder, per-level sort order), what live, asleep and dormant mean, how closing and home work, and why a dormant tile can refuse to open.
 tags: [tabs, pinned, folders, sidebar, model]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:12:56Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T21:46:03Z }
 sources:
   - id: entry
     resource: ../../Detour/Browser/PinnedEntry.swift
@@ -74,8 +74,10 @@ view) when the question is
 "Dormant" and "asleep" are different things. A dormant entry draws its cached
 `favicon` / `faviconURL` (copied from the tab when it went dormant) and its
 `pinnedTitle`. It also keeps the tab's [opener link](./tab-opener.md)
-(`dormantOpenerID`, in memory only), which the tab built on activation or
-unpin gets back while that opener is still one in the space.[^task-378]
+(`dormantOpenerID`, in memory only for now: keeping it across a relaunch
+is the user's decision of 2026-11-16, pending TASK-384), which the tab built
+on activation or unpin gets back while that opener is still one in the
+space.[^task-378]
 
 ## Identity
 
