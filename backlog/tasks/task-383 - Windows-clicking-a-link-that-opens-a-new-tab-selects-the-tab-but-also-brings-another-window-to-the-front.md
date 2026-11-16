@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-16T21:22:00Z'
+updated_date: '2026-11-16T21:29:00Z'
 labels:
   - window
   - links
@@ -34,3 +35,11 @@ What the code reading on 2026-11-16 (main f555314c) ruled out or found:
 - [ ] #2 Opening a link in a new tab leaves the window it was clicked in at the front, and no other window comes forward
 - [ ] #3 A test covers the fix where the cause is in testable code (a TabStore/policy rule or a delegate path)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+User's details (2026-11-16): the window that comes forward is another Detour window showing the same space. Steps: two Detour windows on the same space; the front one shows a Reddit thread (https://www.reddit.com/r/xteinkereader/comments/1teaa7g/whats_your_favorite_new_font_on_crosspoint_13/), the one behind a YouTube video tab. Click a photo in a comment: it opens larger in a new tab, which is selected in the front window, and the window behind comes forward. The user thinks it happens only when the photo is directly above the window behind (its page, sidebar or tab), "almost like the click was passed through to the Detour window underneath".
+
+That the pointer's position over the window behind matters points to the WindowServer delivering an event to it, not to app code picking a window: nothing in the new-tab path orders a window front, and the browser window is opaque (no click-through by alpha). Plan: reproduce in an isolated /verify run with two windows on one space, the back one placed under the click point, and a local fixture page with an image link (target=_blank, and a window.open variant). Use real HID clicks (CGEvent tap). The automation endpoint's in-process clicks skip WindowServer hit-testing, so if only the real click reproduces it, the cause is at that level. Then log key/main window changes (NSWindow.didBecomeKey/didBecomeMain with timestamps) and the mouseDown/mouseUp windows around the click.
+<!-- SECTION:NOTES:END -->
