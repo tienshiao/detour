@@ -315,6 +315,29 @@ nonisolated final class PrivateWindowUndoTests: XCTestCase {
         XCTAssertFalse(f.store.undoManager.canRedo)
     }
 
+    // MARK: - A store gone while a removal waits (TASK-363)
+
+    /// The observers a waiting removal installs go with the store: before the
+    /// fix, NotificationCenter kept them for the life of the process once a
+    /// store (a test's) was released before its undo group closed.
+    @MainActor func testAStoreGoneWhileARemovalWaitsTakesItsObserversAlong() throws {
+        weak var releasedStore: TabStore?
+        weak var observer: AnyObject?
+        try autoreleasepool {
+            let f = try makeFixture()
+            releasedStore = f.store
+            let (priv, page) = addPrivateSpace(f.store)
+            f.store.undoManager.beginUndoGrouping()
+            f.store.closeTab(id: page.id, in: priv)
+            f.store.removeIncognitoSpace(id: priv.id)
+            let token = try XCTUnwrap(f.store.droppedUndoEntryObservers.first,
+                                      "precondition: the removal waits for the open group")
+            observer = token as AnyObject
+        }
+        XCTAssertNil(releasedStore, "precondition: the store is gone")
+        XCTAssertNil(observer, "NotificationCenter must not keep the store's observers")
+    }
+
     // MARK: - Delete Space on a Private window's space (TASK-362)
 
     /// `deleteSpace` refuses a Private window's space: it goes only with its

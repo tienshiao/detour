@@ -257,6 +257,9 @@ it was (TASK-357).[^task-357]
   redo starting (`willUndo`/`willRedo`): Undo closes the open group itself
   and runs it at once, so the entries are taken off there and the undo
   reaches the action below. Until then the dropped entries do nothing.
+  A store released while the removal waits (only a test's) removes those
+  observers in its `isolated deinit`; before TASK-363 NotificationCenter
+  kept them.
 - **`UndoManager` does not retain a target** (measured), so the entry's
   closure holds it.
 - **Guards.** No entry is registered for a Private space already gone (an

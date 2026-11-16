@@ -780,7 +780,8 @@ class TabStore {
     /// Dropped entries not yet taken off the stack, and the observers that
     /// wait for the moment they can be: see `removeDroppedUndoEntries`.
     private var droppedUndoEntries: [PrivateUndoEntry] = []
-    private var droppedUndoEntryObservers: [any NSObjectProtocol] = []
+    /// Readable for tests.
+    private(set) var droppedUndoEntryObservers: [any NSObjectProtocol] = []
 
     /// Drops every undo and redo entry acting in the Private space `id`, when
     /// its window closes (TASK-357). The store's one undo stack is app wide,
@@ -837,9 +838,21 @@ class TabStore {
         ]
     }
 
+    /// A store released while a removal waits (only a test's: the app's lives
+    /// as long as the process) takes the waiting observers along, or
+    /// NotificationCenter would keep them for good (TASK-363). The undo
+    /// manager, and the entries on it, go with the store.
+    isolated deinit {
+        removeDroppedUndoEntryObservers()
+    }
+
     private func takeDroppedUndoEntriesOffTheStack() {
         for entry in droppedUndoEntries { undoManager.removeAllActions(withTarget: entry) }
         droppedUndoEntries.removeAll()
+        removeDroppedUndoEntryObservers()
+    }
+
+    private func removeDroppedUndoEntryObservers() {
         for observer in droppedUndoEntryObservers { NotificationCenter.default.removeObserver(observer) }
         droppedUndoEntryObservers.removeAll()
     }
